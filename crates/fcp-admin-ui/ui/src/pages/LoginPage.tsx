@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Boxes } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,7 +10,21 @@ import { auth } from '@/api/endpoints'
 import { ApiRequestError } from '@/api/client'
 import { setExpiredPasswordState } from '@/stores/expired-password'
 import { RecoveryCodesList, TotpSetup } from '@/components/TotpSetup'
-import type { LoginResponse, TotpEnrollment } from '@/types'
+import type { DiscoverResponse, LoginResponse, TotpEnrollment } from '@/types'
+
+/** What a failed sign-in through a provider means to the person. */
+const SSO_ERRORS: Record<string, string> = {
+  bad_state: 'That sign-in was started elsewhere or has expired. Try again.',
+  expired: 'That sign-in took too long. Try again.',
+  not_provisioned: 'Your account is not set up here yet. Ask your administrator.',
+  disabled: 'Your account is disabled.',
+  provider_refused: 'Your identity provider did not sign you in.',
+  provider_unavailable: 'Your identity provider could not be reached. Try again shortly.',
+  bad_id_token: 'Your identity provider\'s answer could not be verified.',
+  username_taken: 'An account with your name already exists. Ask your administrator to link it.',
+  no_username: 'Your identity provider gave no name to make an account with.',
+  super_admin: 'A platform administrator signs in with a password.',
+}
 
 /**
  * Signing in: a password, then — when the user has a second factor, or
@@ -26,6 +40,7 @@ type Step =
 export function LoginPage() {
   const [username, setUsername] = useState('')
   const [organisation, setOrganisation] = useState<string | null>(null)
+  const [found, setFound] = useState<DiscoverResponse | null>(null)
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
   const [step, setStep] = useState<Step>({ kind: 'password' })
@@ -40,9 +55,17 @@ export function LoginPage() {
     if (!username.includes('@')) return
     auth
       .discover(username)
-      .then((found) => setOrganisation(found.tenant_name ?? null))
-      .catch(() => setOrganisation(null))
+      .then((found) => {
+        setOrganisation(found.tenant_name ?? null)
+        setFound(found)
+      })
+      .catch(() => {
+        setOrganisation(null)
+        setFound(null)
+      })
   }
+  const providers = found?.providers ?? []
+  const passwordOffered = !found || found.methods.includes('password')
 
   const enter = (response: LoginResponse) => {
     if (!response.token) return
@@ -75,6 +98,22 @@ export function LoginPage() {
     }
     enter(response)
   }
+
+  // Back from an identity provider (docs/IDENTITY_AND_DEVICES.md phase 3):
+  // a one-time code to exchange, once, or why it failed.
+  const [params, setParams] = useSearchParams()
+  const handled = useRef(false)
+  useEffect(() => {
+    if (handled.current) return
+    const code = params.get('sso_code')
+    const failed = params.get('sso_error')
+    if (!code && !failed) return
+    handled.current = true
+    setParams({}, { replace: true })
+    if (failed) setError(SSO_ERRORS[failed] ?? 'Signing in through your identity provider failed.')
+    if (code) void attempt(() => auth.ssoExchange(code))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params])
 
   const attempt = async (action: () => Promise<LoginResponse>) => {
     setError(null)
@@ -129,7 +168,7 @@ export function LoginPage() {
                 <Input
                   id="username"
                   value={username}
-                  onChange={(e) => { setUsername(e.target.value); setOrganisation(null) }}
+                  onChange={(e) => { setUsername(e.target.value); setOrganisation(null); setFound(null) }}
                   onBlur={discover}
                   placeholder="Username or name@company.com"
                   required
@@ -140,21 +179,39 @@ export function LoginPage() {
                   <p className="text-xs text-muted-foreground">Signing in to {organisation}</p>
                 )}
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter your password"
-                  required
-                  autoComplete="current-password"
-                />
-              </div>
-              <Button type="submit" className="w-full" disabled={loading}>
-                {loading ? 'Signing in...' : 'Sign in'}
-              </Button>
+              {providers.map((p) => (
+                <Button
+                  key={p.id}
+                  type="button"
+                  variant={passwordOffered ? 'outline' : 'default'}
+                  className="w-full"
+                  onClick={() => { window.location.href = auth.ssoStartUrl(p.id) }}
+                >
+                  Continue with {p.name}
+                </Button>
+              ))}
+              {passwordOffered && (
+                <>
+                  {providers.length > 0 && (
+                    <p className="text-center text-xs text-muted-foreground">or with your password</p>
+                  )}
+                  <div className="space-y-2">
+                    <Label htmlFor="password">Password</Label>
+                    <Input
+                      id="password"
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Enter your password"
+                      required
+                      autoComplete="current-password"
+                    />
+                  </div>
+                  <Button type="submit" className="w-full" disabled={loading}>
+                    {loading ? 'Signing in...' : 'Sign in'}
+                  </Button>
+                </>
+              )}
             </form>
           )}
 

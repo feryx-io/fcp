@@ -237,6 +237,9 @@ pub enum Permission {
     /// The tenant's webhooks: endpoints, their secrets, deliveries and
     /// replays (docs/DEVELOPER_SURFACE.md §3, phase 5).
     WebhookManage,
+    /// The tenant's identity providers: who signs in through what, and
+    /// the roles their groups give (docs/IDENTITY_AND_DEVICES.md phase 3).
+    IdentityProviderManage,
 }
 
 impl FromStr for Permission {
@@ -306,6 +309,7 @@ impl FromStr for Permission {
             "extension_read" => Ok(Self::ExtensionRead),
             "extension_manage" => Ok(Self::ExtensionManage),
             "webhook_manage" => Ok(Self::WebhookManage),
+            "identity_provider_manage" => Ok(Self::IdentityProviderManage),
             other => Err(format!("unknown permission: {}", other)),
         }
     }
@@ -376,6 +380,7 @@ impl Permission {
         Self::ExtensionRead,
         Self::ExtensionManage,
         Self::WebhookManage,
+        Self::IdentityProviderManage,
     ];
 
     /// The area a permission belongs to, for grouping it in a picker.
@@ -424,6 +429,7 @@ impl Permission {
             Self::LocationRead | Self::LocationManage => "Locations",
             Self::ExtensionRead | Self::ExtensionManage => "Extensions",
             Self::WebhookManage => "Webhooks",
+            Self::IdentityProviderManage => "Single sign-on",
         }
     }
 
@@ -492,6 +498,7 @@ impl Permission {
             Self::ExtensionRead => "extension_read",
             Self::ExtensionManage => "extension_manage",
             Self::WebhookManage => "webhook_manage",
+            Self::IdentityProviderManage => "identity_provider_manage",
         }
     }
 
@@ -560,6 +567,7 @@ impl Permission {
             Self::ExtensionRead => "View Extensions",
             Self::ExtensionManage => "Manage Extensions",
             Self::WebhookManage => "Manage Webhooks",
+            Self::IdentityProviderManage => "Manage Identity Providers",
         }
     }
 }
@@ -632,6 +640,12 @@ impl UserRole {
                 _,
             ) => true,
             (_, ComplianceManage | LegalHoldManage | SubjectRequestManage | AuditView, _) => false,
+
+            // Who signs in through what, and the roles a provider's groups
+            // give: the tenant's administrator alone, since a provider can
+            // make anyone a tenant admin.
+            (TenantAdmin, IdentityProviderManage, _) => true,
+            (_, IdentityProviderManage, _) => false,
 
             // A tenant's routing rules are its call policy — barring premium
             // numbers, sending international calls to a trunk group — and

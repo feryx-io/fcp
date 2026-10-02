@@ -24,6 +24,7 @@ from .cdr_response import CdrResponse
 from .change_expired_password_request import ChangeExpiredPasswordRequest
 from .change_password_request import ChangePasswordRequest
 from .civic_elements import CivicElements
+from .claim_mapping import ClaimMapping
 from .class_of_service_request import ClassOfServiceRequest
 from .class_of_service_response import ClassOfServiceResponse
 from .class_report import ClassReport
@@ -84,6 +85,7 @@ from .device_validation_response import DeviceValidationResponse
 from .dialog_info import DialogInfo
 from .discover_request import DiscoverRequest
 from .discover_response import DiscoverResponse
+from .discovered_provider import DiscoveredProvider
 from .e911_address_response import E911AddressResponse
 from .emergency_call_response import EmergencyCallResponse
 from .emergency_config_response import EmergencyConfigResponse
@@ -123,10 +125,13 @@ from .flow_trace_response import FlowTraceResponse
 from .grantable_permission import GrantablePermission
 from .greeting_response import GreetingResponse
 from .greeting_upload import GreetingUpload
+from .group_role import GroupRole
 from .hold_request import HoldRequest
 from .hold_response import HoldResponse
 from .hold_response_held_type_0 import HoldResponseHeldType0
 from .holiday import Holiday
+from .identity_provider_request import IdentityProviderRequest
+from .identity_provider_response import IdentityProviderResponse
 from .join_role import JoinRole
 from .join_token_response import JoinTokenResponse
 from .lcr_route_response import LcrRouteResponse
@@ -208,6 +213,8 @@ from .page_greeting_response_data_item import PageGreetingResponseDataItem
 from .page_hold_response import PageHoldResponse
 from .page_hold_response_data_item import PageHoldResponseDataItem
 from .page_hold_response_data_item_held_type_0 import PageHoldResponseDataItemHeldType0
+from .page_identity_provider_response import PageIdentityProviderResponse
+from .page_identity_provider_response_data_item import PageIdentityProviderResponseDataItem
 from .page_lcr_route_response import PageLcrRouteResponse
 from .page_lcr_route_response_data_item import PageLcrRouteResponseDataItem
 from .page_library_template_response import PageLibraryTemplateResponse
@@ -276,6 +283,8 @@ from .page_tenant_response import PageTenantResponse
 from .page_tenant_response_data_item import PageTenantResponseDataItem
 from .page_trunk_response import PageTrunkResponse
 from .page_trunk_response_data_item import PageTrunkResponseDataItem
+from .page_user_identity_response import PageUserIdentityResponse
+from .page_user_identity_response_data_item import PageUserIdentityResponseDataItem
 from .page_user_response import PageUserResponse
 from .page_user_response_data_item import PageUserResponseDataItem
 from .page_watcher_response import PageWatcherResponse
@@ -301,6 +310,8 @@ from .presence_stats_response import PresenceStatsResponse
 from .profile_response import ProfileResponse
 from .prompt_audio_upload import PromptAudioUpload
 from .prompt_response import PromptResponse
+from .provider_check import ProviderCheck
+from .provider_settings import ProviderSettings
 from .queue_config_response import QueueConfigResponse
 from .queue_response import QueueResponse
 from .queue_stats_response import QueueStatsResponse
@@ -341,6 +352,7 @@ from .site_response import SiteResponse
 from .site_response_versions import SiteResponseVersions
 from .site_status import SiteStatus
 from .site_with_token_response import SiteWithTokenResponse
+from .sso_exchange_request import SsoExchangeRequest
 from .status_response import StatusResponse
 from .subject_expansion import SubjectExpansion
 from .subject_identifier_type_0 import SubjectIdentifierType0
@@ -406,6 +418,7 @@ from .update_voicemail_request import UpdateVoicemailRequest
 from .update_webhook_request import UpdateWebhookRequest
 from .upsert_rate_request import UpsertRateRequest
 from .usage_response import UsageResponse
+from .user_identity_response import UserIdentityResponse
 from .user_readiness import UserReadiness
 from .user_response import UserResponse
 from .validate_address_request import ValidateAddressRequest
@@ -452,6 +465,7 @@ __all__ = (
     "ChangeExpiredPasswordRequest",
     "ChangePasswordRequest",
     "CivicElements",
+    "ClaimMapping",
     "ClassifyResponse",
     "ClassOfServiceRequest",
     "ClassOfServiceResponse",
@@ -510,6 +524,7 @@ __all__ = (
     "DeviceResponse",
     "DeviceValidationResponse",
     "DialogInfo",
+    "DiscoveredProvider",
     "DiscoverRequest",
     "DiscoverResponse",
     "E911AddressResponse",
@@ -551,10 +566,13 @@ __all__ = (
     "GrantablePermission",
     "GreetingResponse",
     "GreetingUpload",
+    "GroupRole",
     "HoldRequest",
     "HoldResponse",
     "HoldResponseHeldType0",
     "Holiday",
+    "IdentityProviderRequest",
+    "IdentityProviderResponse",
     "JoinRole",
     "JoinTokenResponse",
     "LcrRouteResponse",
@@ -636,6 +654,8 @@ __all__ = (
     "PageHoldResponse",
     "PageHoldResponseDataItem",
     "PageHoldResponseDataItemHeldType0",
+    "PageIdentityProviderResponse",
+    "PageIdentityProviderResponseDataItem",
     "PageLcrRouteResponse",
     "PageLcrRouteResponseDataItem",
     "PageLibraryTemplateResponse",
@@ -704,6 +724,8 @@ __all__ = (
     "PageTenantResponseDataItem",
     "PageTrunkResponse",
     "PageTrunkResponseDataItem",
+    "PageUserIdentityResponse",
+    "PageUserIdentityResponseDataItem",
     "PageUserResponse",
     "PageUserResponseDataItem",
     "PageWatcherResponse",
@@ -729,6 +751,8 @@ __all__ = (
     "ProfileResponse",
     "PromptAudioUpload",
     "PromptResponse",
+    "ProviderCheck",
+    "ProviderSettings",
     "QueueConfigResponse",
     "QueueResponse",
     "QueueStatsResponse",
@@ -769,6 +793,7 @@ __all__ = (
     "SiteResponseVersions",
     "SiteStatus",
     "SiteWithTokenResponse",
+    "SsoExchangeRequest",
     "StatusResponse",
     "SubjectExpansion",
     "SubjectIdentifierType0",
@@ -834,6 +859,7 @@ __all__ = (
     "UpdateWebhookRequest",
     "UpsertRateRequest",
     "UsageResponse",
+    "UserIdentityResponse",
     "UserReadiness",
     "UserResponse",
     "ValidateAddressRequest",

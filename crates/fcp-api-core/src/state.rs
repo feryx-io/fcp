@@ -187,6 +187,24 @@ pub struct ApiState {
     /// whether a webhook may name a private address. Absent, webhooks are
     /// managed but not tested or replayed here.
     pub webhook_dispatcher: Option<Arc<fcp_webhooks::WebhookDispatcher>>,
+    /// Sign-in through tenants' identity providers (`[api.sso]`,
+    /// `docs/IDENTITY_AND_DEVICES.md` phase 3). Absent, providers can be
+    /// configured but nobody signs in through one.
+    pub sso: Option<Arc<SsoRuntime>>,
+}
+
+/// What single sign-on needs at run time.
+pub struct SsoRuntime {
+    /// Where browsers reach this admin, without a trailing slash.
+    pub public_url: String,
+    pub client: crate::oidc::OidcClient,
+}
+
+impl SsoRuntime {
+    /// The address providers send browsers back to.
+    pub fn redirect_uri(&self) -> String {
+        format!("{}/api/v1/auth/sso/callback", self.public_url)
+    }
 }
 
 impl ApiState {
@@ -254,6 +272,7 @@ impl ApiState {
             managed_by: None,
             site_files: None,
             webhook_dispatcher: None,
+            sso: None,
         }
     }
 
@@ -431,6 +450,17 @@ impl ApiState {
 
     pub fn with_trunk_health(mut self, health: crate::trunk_health::TrunkHealthMap) -> Self {
         self.trunk_health = Some(health);
+        self
+    }
+
+    /// Sign in through identity providers as `[api.sso]` says.
+    pub fn with_sso_config(mut self, sso: &fcp_core::ApiSsoConfig) -> Self {
+        self.sso = sso.public_url().map(|public_url| {
+            Arc::new(SsoRuntime {
+                public_url,
+                client: crate::oidc::OidcClient::new(sso.allow_private_issuers),
+            })
+        });
         self
     }
 

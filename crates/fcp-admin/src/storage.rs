@@ -75,6 +75,7 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
         .with_sip_trace_store(sip_trace_store as Arc<dyn fcp_core::sip_trace::SipTraceStore>)
         .with_api_token_store(api_token_store as Arc<dyn fcp_core::storage::ApiTokenStore>)
         .with_totp_store(storage.clone() as Arc<dyn fcp_core::totp::TotpStore>)
+        .with_identity_store(storage.clone() as Arc<dyn fcp_core::identity::IdentityStore>)
         .with_login_session_store(Arc::new(
             fcp_storage_postgres::login_session::PostgresLoginSessionStore::new(
                 storage.pool().clone(),

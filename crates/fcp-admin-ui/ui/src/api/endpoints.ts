@@ -2,6 +2,9 @@ import type { components } from '@/api/schema'
 import { apiClient } from './client'
 import type {
   DiscoverResponse,
+  IdentityProvider,
+  IdentityProviderRequest,
+  ProviderCheck,
   RecoveryCodes,
   TotpEnrollment,
   TotpStatus,
@@ -133,6 +136,10 @@ export const auth = {
   enrollTotp: (mfa_token: string) => apiClient.post<TotpEnrollment>('/auth/totp/enroll', { mfa_token }),
   confirmTotp: (mfa_token: string, code: string) =>
     apiClient.post<LoginResponse>('/auth/totp/confirm', { mfa_token, code }),
+  /** Where the browser goes to sign in through a provider (docs/IDENTITY_AND_DEVICES.md phase 3). */
+  ssoStartUrl: (providerId: string) => `/api/v1/auth/sso/${encodeURIComponent(providerId)}/start`,
+  /** A session for the one-time code the provider's sign-in landed with. */
+  ssoExchange: (code: string) => apiClient.post<LoginResponse>('/auth/sso/exchange', { code }),
   logout: () => apiClient.post<void>('/auth/logout'),
   refresh: () => apiClient.post<LoginResponse>('/auth/refresh'),
   me: () => apiClient.get<AuthUser>('/auth/me'),
@@ -652,6 +659,15 @@ export const apiTokens = {
     apiClient.post<CreateApiTokenResponse>(`/api-tokens/${encodeURIComponent(id)}/rotate`, data),
   /** Revokes: the token is kept, marked, and refused. */
   delete: (id: string) => apiClient.delete<void>(`/api-tokens/${encodeURIComponent(id)}`),
+}
+
+export const identityProviders = {
+  list: () => apiClient.getAll<IdentityProvider>('/identity-providers'),
+  create: (data: IdentityProviderRequest) => apiClient.post<IdentityProvider>('/identity-providers', data),
+  update: (id: string, data: IdentityProviderRequest) =>
+    apiClient.put<IdentityProvider>(`/identity-providers/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/identity-providers/${encodeURIComponent(id)}`),
+  check: (id: string) => apiClient.post<ProviderCheck>(`/identity-providers/${encodeURIComponent(id)}/check`, {}),
 }
 
 export const webhooks = {

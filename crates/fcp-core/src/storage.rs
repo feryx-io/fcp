@@ -3375,6 +3375,8 @@ pub struct DynStorage {
     login_session_store: Option<Arc<dyn crate::session::LoginSessionStore>>,
     /// Users' second factors (`docs/IDENTITY_AND_DEVICES.md` phase 2b).
     totp_store: Option<Arc<dyn crate::totp::TotpStore>>,
+    /// Identity providers and users' identities (phase 3).
+    identity_store: Option<Arc<dyn crate::identity::IdentityStore>>,
     prompt_store: Option<Arc<dyn crate::prompt::PromptStore>>,
     flow_trace_store: Option<Arc<dyn crate::flow_trace::FlowTraceStore>>,
     config_template_store: Option<Arc<dyn ConfigTemplateStore>>,
@@ -3455,6 +3457,7 @@ impl DynStorage {
             api_token_store: None,
             login_session_store: None,
             totp_store: None,
+            identity_store: None,
             prompt_store: None,
             flow_trace_store: None,
             config_template_store: None,
@@ -3537,6 +3540,7 @@ impl DynStorage {
             api_token_store: None,
             login_session_store: None,
             totp_store: None,
+            identity_store: None,
             prompt_store: None,
             flow_trace_store: None,
             config_template_store: Some(storage),
@@ -3638,6 +3642,17 @@ impl DynStorage {
     pub fn with_totp_store(mut self, store: Arc<dyn crate::totp::TotpStore>) -> Self {
         self.totp_store = Some(store);
         self
+    }
+
+    /// Attach the identity-provider store.
+    pub fn with_identity_store(mut self, store: Arc<dyn crate::identity::IdentityStore>) -> Self {
+        self.identity_store = Some(store);
+        self
+    }
+
+    /// The identity-provider store, if one is attached.
+    pub fn identity_store(&self) -> Option<&Arc<dyn crate::identity::IdentityStore>> {
+        self.identity_store.as_ref()
     }
 
     /// The second-factor store, if one is attached.

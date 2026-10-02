@@ -11,6 +11,8 @@ from ..types import UNSET, Unset
 from ..types import UNSET, Unset
 from typing import cast
 
+if TYPE_CHECKING:
+  from ..models.discovered_provider import DiscoveredProvider
 
 
 
@@ -25,14 +27,18 @@ class DiscoverResponse:
     """ Where a login signs in, and how.
 
         Attributes:
-            methods (list[str]): The ways in: `password` (later the tenant's identity providers).
+            methods (list[str]): The ways in: `password`, and `sso` when the tenant has identity
+                providers to sign in with.
             tenant_id (None | str | Unset): The tenant the login's email domain belongs to, when it is one.
             tenant_name (None | str | Unset):
+            providers (list[DiscoveredProvider] | Unset): The tenant's identity providers: a button each on the login page,
+                which goes to `/api/v1/auth/sso/{id}/start`.
      """
 
     methods: list[str]
     tenant_id: None | str | Unset = UNSET
     tenant_name: None | str | Unset = UNSET
+    providers: list[DiscoveredProvider] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -40,6 +46,7 @@ class DiscoverResponse:
 
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.discovered_provider import DiscoveredProvider # noqa: PLC0415
         methods = self.methods
 
 
@@ -56,6 +63,15 @@ class DiscoverResponse:
         else:
             tenant_name = self.tenant_name
 
+        providers: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.providers, Unset):
+            providers = []
+            for providers_item_data in self.providers:
+                providers_item = providers_item_data.to_dict()
+                providers.append(providers_item)
+
+
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -66,6 +82,8 @@ class DiscoverResponse:
             field_dict["tenant_id"] = tenant_id
         if tenant_name is not UNSET:
             field_dict["tenant_name"] = tenant_name
+        if providers is not UNSET:
+            field_dict["providers"] = providers
 
         return field_dict
 
@@ -73,6 +91,7 @@ class DiscoverResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.discovered_provider import DiscoveredProvider # noqa: PLC0415
         d = dict(src_dict)
         methods = cast(list[str], d.pop("methods"))
 
@@ -97,10 +116,23 @@ class DiscoverResponse:
         tenant_name = _parse_tenant_name(d.pop("tenant_name", UNSET))
 
 
+        _providers = d.pop("providers", UNSET)
+        providers: list[DiscoveredProvider] | Unset = UNSET
+        if _providers is not UNSET:
+            providers = []
+            for providers_item_data in _providers:
+                providers_item = DiscoveredProvider.from_dict(providers_item_data)
+
+
+
+                providers.append(providers_item)
+
+
         discover_response = cls(
             methods=methods,
             tenant_id=tenant_id,
             tenant_name=tenant_name,
+            providers=providers,
         )
 
 

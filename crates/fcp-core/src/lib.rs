@@ -22,6 +22,7 @@ pub mod flow_trace;
 pub mod geographic;
 pub mod hoteling;
 pub mod identifiers;
+pub mod identity;
 pub mod join_token;
 pub mod lcr_route;
 pub mod legal_hold;
@@ -70,8 +71,9 @@ pub use crate::calling::{
 };
 pub use crate::codec::{AudioCodec, Codec, CodecPreferences, VideoCodec};
 pub use crate::config::{
-    ApiConfig, ApiRateLimitConfig, ApiSessionConfig, FcpConfig, LogFormat, NodeConfig,
-    ObservabilityConfig, RegistrarConfig, StorageBackend, StorageConfig, TransportConfig,
+    ApiConfig, ApiRateLimitConfig, ApiSessionConfig, ApiSsoConfig, FcpConfig, LogFormat,
+    NodeConfig, ObservabilityConfig, RegistrarConfig, StorageBackend, StorageConfig,
+    TransportConfig,
 };
 pub use crate::config_store::{
     get_config_with_tenant_fallback, load_or_seed_config, spawn_config_poll_loop, AuditEntry,

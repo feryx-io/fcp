@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable, CalendarClock, ShieldCheck, BedDouble, Webhook } from 'lucide-react'
+  LayoutDashboard, Users, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable, CalendarClock, ShieldCheck, BedDouble, Webhook, KeyRound,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -60,6 +61,7 @@ const navItems: NavItem[] = [
   { label: 'Audit Log', href: '/admin/audit', icon: ScrollText, section: 'Advanced' },
   { label: 'API Tokens', href: '/admin/tokens', icon: Key, section: 'Advanced' },
   { label: 'Webhooks', href: '/admin/webhooks', icon: Webhook, section: 'Advanced' },
+  { label: 'Single Sign-On', href: '/admin/sso', icon: KeyRound, section: 'Advanced' },
   { label: 'System Settings', href: '/admin/system-settings', icon: Settings, section: 'Advanced' },
 ]
 

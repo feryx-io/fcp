@@ -394,6 +394,485 @@
         }
       }
     },
+    "/api/v1/auth/sso/{id}/start": {
+      "get": {
+        "tags": [
+          "auth_session"
+        ],
+        "summary": "GET /api/v1/auth/sso/{id}/start — off to the provider.",
+        "operationId": "auth_session_sso_start",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The identity provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "To the provider's sign-in page"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/sso/callback": {
+      "get": {
+        "tags": [
+          "auth_session"
+        ],
+        "summary": "GET /api/v1/auth/sso/callback — back from the provider: to the login\npage with a one-time code, or with the reason it failed.",
+        "operationId": "auth_session_sso_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "The provider's refusal (`access_denied`, …).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "To the login page, with `sso_code` or `sso_error`"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/sso/exchange": {
+      "post": {
+        "tags": [
+          "auth_session"
+        ],
+        "summary": "POST /api/v1/auth/sso/exchange — a session for the one-time code.",
+        "operationId": "auth_session_sso_exchange",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SsoExchangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/identity-providers": {
+      "get": {
+        "tags": [
+          "identity_providers"
+        ],
+        "summary": "GET /api/v1/identity-providers",
+        "operationId": "identity_providers_list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_IdentityProviderResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "identity_providers"
+        ],
+        "summary": "POST /api/v1/identity-providers",
+        "operationId": "identity_providers_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityProviderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProviderResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/identity-providers/{id}": {
+      "get": {
+        "tags": [
+          "identity_providers"
+        ],
+        "summary": "GET /api/v1/identity-providers/{id}",
+        "operationId": "identity_providers_get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProviderResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "identity_providers"
+        ],
+        "summary": "PUT /api/v1/identity-providers/{id}",
+        "operationId": "identity_providers_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityProviderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProviderResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "identity_providers"
+        ],
+        "summary": "DELETE /api/v1/identity-providers/{id} — and every identity at it.",
+        "operationId": "identity_providers_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/identity-providers/{id}/check": {
+      "post": {
+        "tags": [
+          "identity_providers"
+        ],
+        "summary": "POST /api/v1/identity-providers/{id}/check — fetch the provider's\ndiscovery document and keys, as a sign-in would.",
+        "operationId": "identity_providers_check",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the check found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderCheck"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{username}/identities": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "GET /api/v1/users/{username}/identities",
+        "operationId": "users_list_identities",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_UserIdentityResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{username}/identities/{provider_id}": {
+      "delete": {
+        "tags": [
+          "users"
+        ],
+        "summary": "DELETE /api/v1/users/{username}/identities/{provider_id} — unlink a\nuser from their account at a provider; the next sign-in there links\nor creates afresh, as the provider's settings say.",
+        "operationId": "users_unlink_identity",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Unlinked"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": [
@@ -16329,6 +16808,27 @@
           }
         }
       },
+      "ClaimMapping": {
+        "type": "object",
+        "description": "Which claims become the user's names.",
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "The username of a user made just in time; the part before the `@`\nwhen the claim is an address. Falls back to the email's."
+          },
+          "email": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "groups": {
+            "type": "string",
+            "description": "A list of strings: the user's groups (Entra ID sends ids, Okta\nand Google Workspace names, when asked to)."
+          }
+        },
+        "additionalProperties": false
+      },
       "ClassOfServiceRequest": {
         "type": "object",
         "description": "What a class is written as. `allowed` unset allows everything;\n`max_calls` unset is two, `null` no limit.",
@@ -19273,7 +19773,30 @@
             "items": {
               "type": "string"
             },
-            "description": "The ways in: `password` (later the tenant's identity providers)."
+            "description": "The ways in: `password`, and `sso` when the tenant has identity\nproviders to sign in with."
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscoveredProvider"
+            },
+            "description": "The tenant's identity providers: a button each on the login page,\nwhich goes to `/api/v1/auth/sso/{id}/start`."
+          }
+        }
+      },
+      "DiscoveredProvider": {
+        "type": "object",
+        "description": "An identity provider a login can sign in through.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -20287,6 +20810,24 @@
           }
         }
       },
+      "GroupRole": {
+        "type": "object",
+        "description": "A provider group, and the role its members get.",
+        "required": [
+          "group",
+          "role"
+        ],
+        "properties": {
+          "group": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "description": "Any role but `super_admin`, which no tenant's provider grants."
+          }
+        },
+        "additionalProperties": false
+      },
       "HoldRequest": {
         "type": "object",
         "description": "Who is put on hold.",
@@ -20442,6 +20983,86 @@
             ],
             "format": "date",
             "description": "The last day, when more than one."
+          }
+        }
+      },
+      "IdentityProviderRequest": {
+        "type": "object",
+        "description": "A provider written: its settings, and the client secret — absent to\nkeep the one it has, empty to remove it.",
+        "required": [
+          "name",
+          "settings"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ProviderSettings"
+          },
+          "client_secret": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "IdentityProviderResponse": {
+        "type": "object",
+        "description": "An identity provider, its client secret withheld.",
+        "required": [
+          "id",
+          "tenant_id",
+          "name",
+          "kind",
+          "enabled",
+          "settings",
+          "has_client_secret",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ProviderSettings"
+          },
+          "has_client_secret": {
+            "type": "boolean",
+            "description": "Whether a client secret is set (it is never shown)."
+          },
+          "redirect_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address to register with the provider as the redirect URI;\nabsent where `[api.sso] public_url` is not set."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -23647,6 +24268,88 @@
                   "propertyNames": {
                     "type": "string"
                   }
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_IdentityProviderResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "An identity provider, its client secret withheld.",
+              "required": [
+                "id",
+                "tenant_id",
+                "name",
+                "kind",
+                "enabled",
+                "settings",
+                "has_client_secret",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "tenant_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "settings": {
+                  "$ref": "#/components/schemas/ProviderSettings"
+                },
+                "has_client_secret": {
+                  "type": "boolean",
+                  "description": "Whether a client secret is set (it is never shown)."
+                },
+                "redirect_uri": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The address to register with the provider as the redirect URI;\nabsent where `[api.sso] public_url` is not set."
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
                 }
               }
             }
@@ -27162,6 +27865,68 @@
           }
         }
       },
+      "Page_UserIdentityResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A user's account at one of the tenant's providers.",
+              "required": [
+                "provider_id",
+                "subject",
+                "created_at"
+              ],
+              "properties": {
+                "provider_id": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "last_sign_in_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_UserResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -28525,6 +29290,74 @@
             "format": "date-time"
           }
         }
+      },
+      "ProviderCheck": {
+        "type": "object",
+        "description": "What a provider's check found.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "The discovery document and keys were fetched."
+          },
+          "authorization_endpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ProviderSettings": {
+        "type": "object",
+        "description": "A provider's configuration, kept as one JSON document.",
+        "required": [
+          "issuer",
+          "client_id"
+        ],
+        "properties": {
+          "issuer": {
+            "type": "string",
+            "description": "The issuer, as its ID tokens name it; discovery is read from\n`<issuer>/.well-known/openid-configuration`."
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Scopes asked for besides `openid`."
+          },
+          "claims": {
+            "$ref": "#/components/schemas/ClaimMapping"
+          },
+          "group_roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GroupRole"
+            },
+            "description": "Groups the provider asserts, and the role each gives. The most\nprivileged role a user's groups give wins, and is set at every\nsign-in; with no mapping, a user's role is left as an admin set it."
+          },
+          "jit": {
+            "type": "boolean",
+            "description": "Create a user the first time someone the provider vouches for\nsigns in, with no FCP account yet."
+          },
+          "link_by_email": {
+            "type": "boolean",
+            "description": "Link an existing user whose email is the one the provider asserts\nas verified (`email_verified`), on their first sign-in."
+          }
+        },
+        "additionalProperties": false
       },
       "QueueConfigResponse": {
         "type": "object",
@@ -29985,6 +30818,18 @@
           }
         ],
         "description": "A site just made, or a new token for one: the token, shown this once."
+      },
+      "SsoExchangeRequest": {
+        "type": "object",
+        "description": "The one-time code the login page was handed.",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          }
+        }
       },
       "StatusResponse": {
         "type": "object",
@@ -33458,6 +34303,40 @@
       "UserId": {
         "type": "string",
         "description": "A UserId: `user-<uuid>`, or the bare UUID"
+      },
+      "UserIdentityResponse": {
+        "type": "object",
+        "description": "A user's account at one of the tenant's providers.",
+        "required": [
+          "provider_id",
+          "subject",
+          "created_at"
+        ],
+        "properties": {
+          "provider_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_sign_in_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
       },
       "UserReadiness": {
         "type": "object",

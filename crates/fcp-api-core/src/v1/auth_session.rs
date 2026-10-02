@@ -197,8 +197,20 @@ pub struct DiscoverResponse {
     pub tenant_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tenant_name: Option<String>,
-    /// The ways in: `password` (later the tenant's identity providers).
+    /// The ways in: `password`, and `sso` when the tenant has identity
+    /// providers to sign in with.
     pub methods: Vec<String>,
+    /// The tenant's identity providers: a button each on the login page,
+    /// which goes to `/api/v1/auth/sso/{id}/start`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<DiscoveredProvider>,
+}
+
+/// An identity provider a login can sign in through.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DiscoveredProvider {
+    pub id: String,
+    pub name: String,
 }
 
 /// POST /api/v1/auth/discover — where a login signs in: the tenant its
@@ -233,14 +245,28 @@ pub async fn discover(
     let password = tenant
         .as_ref()
         .is_none_or(|t| t.sign_in.password_login != fcp_core::PasswordLogin::Disabled);
+    let providers = match &tenant {
+        Some(t) => crate::v1::sso::offered(&state, &t.id).await,
+        None => Vec::new(),
+    };
+    let mut methods = Vec::new();
+    if password {
+        methods.push("password".to_string());
+    }
+    if !providers.is_empty() {
+        methods.push("sso".to_string());
+    }
     Ok(Json(DiscoverResponse {
         tenant_id: tenant.as_ref().map(|t| t.id.to_string()),
         tenant_name: tenant.map(|t| t.name),
-        methods: if password {
-            vec!["password".to_string()]
-        } else {
-            Vec::new()
-        },
+        methods,
+        providers: providers
+            .into_iter()
+            .map(|p| DiscoveredProvider {
+                id: p.id.to_string(),
+                name: p.name,
+            })
+            .collect(),
     }))
 }
 
@@ -521,7 +547,7 @@ async fn after_password(
 }
 
 /// Signed in: the failed attempts forgotten, the session begun, published.
-async fn complete_sign_in(
+pub(crate) async fn complete_sign_in(
     state: &ApiState,
     headers: &HeaderMap,
     mut user: fcp_core::User,
@@ -852,7 +878,7 @@ pub(crate) async fn revoke_sessions(
     }
 }
 
-fn publish(state: &ApiState, event: fcp_events::UserEvent) {
+pub(crate) fn publish(state: &ApiState, event: fcp_events::UserEvent) {
     let bus = std::sync::Arc::clone(&state.event_bus);
     tokio::spawn(async move {
         let _ = bus.publish(fcp_events::PlatformEvent::User(event)).await;
