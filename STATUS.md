@@ -1700,6 +1700,16 @@ Phase 3b done (v0.25.312): single sign-on finished.
 - `docs/SSO.md` has guides for Entra ID, Okta and Google Workspace.
 - Phase 3 is complete; phase 4 (SAML) is next.
 
+Phase 4a done (v0.25.313): SAML sign-in.
+- A tenant adds a SAML 2.0 provider by pasting its metadata, and gives
+  the provider FCP's metadata address.
+- Responses are taken only signed by the provider's certificate (SHA-256
+  and up), for FCP, answering this browser's request, and once.
+- The admin image is built with SAML (the xmlsec library); a build
+  without it says so.
+- Next, 4b: single logout, metadata by URL, encrypted assertions, and
+  the SAML guides.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

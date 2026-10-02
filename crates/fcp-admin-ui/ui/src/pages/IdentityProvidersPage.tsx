@@ -20,8 +20,11 @@ function errorText(e: unknown) {
 const ROLES = ['tenant_admin', 'telecom_admin', 'user_admin', 'department_admin', 'read_only', 'end_user']
 
 interface Form {
+  kind: 'oidc' | 'saml'
   name: string
   enabled: boolean
+  metadata: string
+  trust_email: boolean
   issuer: string
   client_id: string
   client_secret: string
@@ -38,6 +41,7 @@ interface Form {
 }
 
 const blank: Form = {
+  kind: 'oidc', metadata: '', trust_email: false,
   name: '', enabled: true, issuer: '', client_id: '', client_secret: '', scopes: 'profile email',
   username_claim: 'preferred_username', email_claim: 'email', name_claim: 'name', groups_claim: 'groups',
   group_roles: '', jit: false, link_by_email: true, email_verified_claim: 'email_verified', required_claims: '',
@@ -46,7 +50,9 @@ const blank: Form = {
 function formOf(p: IdentityProvider): Form {
   const s = p.settings
   return {
-    name: p.name, enabled: p.enabled, issuer: s.issuer, client_id: s.client_id, client_secret: '',
+    kind: p.kind === 'saml' ? 'saml' : 'oidc',
+    metadata: s.saml?.idp_metadata_xml ?? '', trust_email: s.saml?.trust_email ?? false,
+    name: p.name, enabled: p.enabled, issuer: s.issuer ?? '', client_id: s.client_id ?? '', client_secret: '',
     scopes: (s.scopes ?? []).join(' '),
     username_claim: s.claims?.username ?? 'preferred_username', email_claim: s.claims?.email ?? 'email',
     name_claim: s.claims?.display_name ?? 'name', groups_claim: s.claims?.groups ?? 'groups',
@@ -78,12 +84,15 @@ function parseGroupRoles(text: string) {
 }
 
 function requestOf(f: Form, editing: boolean): IdentityProviderRequest {
+  const saml = f.kind === 'saml'
   return {
     name: f.name.trim(),
+    kind: f.kind,
     enabled: f.enabled,
     settings: {
-      issuer: f.issuer.trim(),
-      client_id: f.client_id.trim(),
+      issuer: saml ? '' : f.issuer.trim(),
+      client_id: saml ? '' : f.client_id.trim(),
+      saml: saml ? { idp_metadata_xml: f.metadata.trim(), trust_email: f.trust_email } : undefined,
       scopes: f.scopes.split(/\s+/).filter(Boolean),
       claims: { username: f.username_claim, email: f.email_claim, display_name: f.name_claim, groups: f.groups_claim },
       group_roles: parseGroupRoles(f.group_roles),
@@ -93,7 +102,7 @@ function requestOf(f: Form, editing: boolean): IdentityProviderRequest {
       required_claims: parseRequiredClaims(f.required_claims),
     },
     // Editing, a blank secret keeps the one the provider has.
-    client_secret: f.client_secret ? f.client_secret : editing ? undefined : null,
+    client_secret: saml ? undefined : f.client_secret ? f.client_secret : editing ? undefined : null,
   }
 }
 
@@ -168,9 +177,12 @@ export function IdentityProvidersPage() {
               <CardTitle className="flex items-center gap-2">
                 {p.name}
                 <Badge variant={p.enabled ? 'default' : 'secondary'}>{p.enabled ? 'Enabled' : 'Disabled'}</Badge>
+                <Badge variant="outline">{p.kind === 'saml' ? 'SAML' : 'OpenID Connect'}</Badge>
                 {p.settings.jit && <Badge variant="outline">Creates users</Badge>}
               </CardTitle>
-              <CardDescription className="break-all font-mono text-xs">{p.settings.issuer}</CardDescription>
+              {p.kind !== 'saml' && (
+                <CardDescription className="break-all font-mono text-xs">{p.settings.issuer}</CardDescription>
+              )}
             </div>
             <div className="flex gap-1">
               <Button variant="ghost" size="icon" title="Check" onClick={() => void check(p)}><Stethoscope className="h-4 w-4" /></Button>
@@ -184,10 +196,25 @@ export function IdentityProvidersPage() {
             </div>
           </CardHeader>
           <CardContent className="space-y-1 text-sm">
-            <div>Client id: <span className="font-mono">{p.settings.client_id}</span>{p.has_client_secret ? ' · secret set' : ' · public client'}</div>
-            {p.redirect_uri
-              ? <div>Redirect URI to register: <span className="break-all font-mono">{p.redirect_uri}</span></div>
-              : <div className="text-amber-600">Single sign-on is off on this server: set [api.sso] public_url.</div>}
+            {p.kind === 'saml' ? (
+              p.sp_entity_id && (
+                <>
+                  <div>
+                    Service provider entity id (its metadata):{' '}
+                    <a className="break-all font-mono underline" href={p.sp_entity_id} target="_blank" rel="noreferrer">{p.sp_entity_id}</a>
+                  </div>
+                  <div>Assertion consumer service: <span className="break-all font-mono">{p.redirect_uri}</span></div>
+                </>
+              )
+            ) : (
+              <>
+                <div>Client id: <span className="font-mono">{p.settings.client_id}</span>{p.has_client_secret ? ' · secret set' : ' · public client'}</div>
+                {p.redirect_uri && <div>Redirect URI to register: <span className="break-all font-mono">{p.redirect_uri}</span></div>}
+              </>
+            )}
+            {!p.redirect_uri && (
+              <div className="text-amber-600">Single sign-on is off on this server: set [api.sso] public_url.</div>
+            )}
             {p.backchannel_logout_uri && (
               <div>Back-channel logout URI: <span className="break-all font-mono">{p.backchannel_logout_uri}</span></div>
             )}
@@ -206,18 +233,56 @@ export function IdentityProvidersPage() {
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{editing === 'new' ? 'Add identity provider' : 'Edit identity provider'}</DialogTitle>
-            <DialogDescription>OpenID Connect: the issuer, and the client you registered there.</DialogDescription>
+            <DialogDescription>
+              OpenID Connect: the issuer and the client you registered there. SAML: the provider's metadata.
+            </DialogDescription>
           </DialogHeader>
           <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); setFormError(null); save.mutate() }}>
             {formError && <div className="rounded-md bg-destructive/15 p-3 text-sm text-destructive">{formError}</div>}
             <div className="space-y-1"><Label htmlFor="idp-name">Name (the login button says "Continue with …")</Label><Input id="idp-name" required {...field('name')} /></div>
-            <div className="space-y-1"><Label htmlFor="idp-issuer">Issuer</Label><Input id="idp-issuer" required placeholder="https://login.microsoftonline.com/<tenant>/v2.0" {...field('issuer')} /></div>
-            <div className="space-y-1"><Label htmlFor="idp-client">Client id</Label><Input id="idp-client" required {...field('client_id')} /></div>
             <div className="space-y-1">
-              <Label htmlFor="idp-secret">Client secret</Label>
-              <Input id="idp-secret" type="password" autoComplete="off" placeholder={editing !== 'new' && editing?.has_client_secret ? 'Unchanged' : ''} {...field('client_secret')} />
+              <Label htmlFor="idp-kind">Protocol</Label>
+              <select
+                id="idp-kind"
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={form.kind}
+                disabled={editing !== 'new'}
+                onChange={(e) => setForm({ ...form, kind: e.target.value as Form['kind'] })}
+              >
+                <option value="oidc">OpenID Connect</option>
+                <option value="saml">SAML 2.0</option>
+              </select>
             </div>
-            <div className="space-y-1"><Label htmlFor="idp-scopes">Scopes besides openid</Label><Input id="idp-scopes" {...field('scopes')} /></div>
+            {form.kind === 'saml' ? (
+              <>
+                <div className="space-y-1">
+                  <Label htmlFor="idp-metadata">Identity provider metadata (XML)</Label>
+                  <textarea
+                    id="idp-metadata" rows={6} required placeholder="<md:EntityDescriptor …>"
+                    className="flex w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
+                    {...field('metadata')}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Its entity id, sign-in address and signing certificate. Attribute names below are the SAML
+                    attribute names; <code>NameID</code> is the subject.
+                  </p>
+                </div>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="idp-trust">Trust its email attribute (for linking)</Label>
+                  <Switch id="idp-trust" checked={form.trust_email} onCheckedChange={(v) => setForm({ ...form, trust_email: v })} />
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="space-y-1"><Label htmlFor="idp-issuer">Issuer</Label><Input id="idp-issuer" required placeholder="https://login.microsoftonline.com/<tenant>/v2.0" {...field('issuer')} /></div>
+                <div className="space-y-1"><Label htmlFor="idp-client">Client id</Label><Input id="idp-client" required {...field('client_id')} /></div>
+                <div className="space-y-1">
+                  <Label htmlFor="idp-secret">Client secret</Label>
+                  <Input id="idp-secret" type="password" autoComplete="off" placeholder={editing !== 'new' && editing?.has_client_secret ? 'Unchanged' : ''} {...field('client_secret')} />
+                </div>
+                <div className="space-y-1"><Label htmlFor="idp-scopes">Scopes besides openid</Label><Input id="idp-scopes" {...field('scopes')} /></div>
+              </>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1"><Label htmlFor="idp-uc">Username claim</Label><Input id="idp-uc" {...field('username_claim')} /></div>
               <div className="space-y-1"><Label htmlFor="idp-ec">Email claim</Label><Input id="idp-ec" {...field('email_claim')} /></div>

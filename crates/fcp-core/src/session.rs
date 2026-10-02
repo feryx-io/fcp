@@ -44,6 +44,8 @@ pub mod method {
     pub const RECOVERY_CODE: &str = "recovery_code";
     /// Through a tenant's OpenID Connect provider.
     pub const OIDC: &str = "oidc";
+    /// Through a tenant's SAML provider.
+    pub const SAML: &str = "saml";
 }
 
 /// A sign-in session.

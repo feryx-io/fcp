@@ -15,6 +15,7 @@ if TYPE_CHECKING:
   from ..models.claim_mapping import ClaimMapping
   from ..models.group_role import GroupRole
   from ..models.required_claim import RequiredClaim
+  from ..models.saml_settings import SamlSettings
 
 
 
@@ -29,9 +30,10 @@ class ProviderSettings:
     """ A provider's configuration, kept as one JSON document.
 
         Attributes:
-            issuer (str): The issuer, as its ID tokens name it; discovery is read from
+            issuer (str | Unset): OIDC: the issuer, as its ID tokens name it; discovery is read from
                 `<issuer>/.well-known/openid-configuration`.
-            client_id (str):
+            client_id (str | Unset): OIDC: the client registered at the issuer.
+            saml (None | SamlSettings | Unset):
             scopes (list[str] | Unset): Scopes asked for besides `openid`.
             claims (ClaimMapping | Unset): Which claims become the user's names.
             group_roles (list[GroupRole] | Unset): Groups the provider asserts, and the role each gives. The most
@@ -49,8 +51,9 @@ class ProviderSettings:
                 Entra's `tid`. A claim that is a list must contain the value.
      """
 
-    issuer: str
-    client_id: str
+    issuer: str | Unset = UNSET
+    client_id: str | Unset = UNSET
+    saml: None | SamlSettings | Unset = UNSET
     scopes: list[str] | Unset = UNSET
     claims: ClaimMapping | Unset = UNSET
     group_roles: list[GroupRole] | Unset = UNSET
@@ -67,9 +70,18 @@ class ProviderSettings:
         from ..models.claim_mapping import ClaimMapping # noqa: PLC0415
         from ..models.group_role import GroupRole # noqa: PLC0415
         from ..models.required_claim import RequiredClaim # noqa: PLC0415
+        from ..models.saml_settings import SamlSettings # noqa: PLC0415
         issuer = self.issuer
 
         client_id = self.client_id
+
+        saml: dict[str, Any] | None | Unset
+        if isinstance(self.saml, Unset):
+            saml = UNSET
+        elif isinstance(self.saml, SamlSettings):
+            saml = self.saml.to_dict()
+        else:
+            saml = self.saml
 
         scopes: list[str] | Unset = UNSET
         if not isinstance(self.scopes, Unset):
@@ -109,9 +121,13 @@ class ProviderSettings:
         field_dict: dict[str, Any] = {}
 
         field_dict.update({
-            "issuer": issuer,
-            "client_id": client_id,
         })
+        if issuer is not UNSET:
+            field_dict["issuer"] = issuer
+        if client_id is not UNSET:
+            field_dict["client_id"] = client_id
+        if saml is not UNSET:
+            field_dict["saml"] = saml
         if scopes is not UNSET:
             field_dict["scopes"] = scopes
         if claims is not UNSET:
@@ -136,10 +152,31 @@ class ProviderSettings:
         from ..models.claim_mapping import ClaimMapping # noqa: PLC0415
         from ..models.group_role import GroupRole # noqa: PLC0415
         from ..models.required_claim import RequiredClaim # noqa: PLC0415
+        from ..models.saml_settings import SamlSettings # noqa: PLC0415
         d = dict(src_dict)
-        issuer = d.pop("issuer")
+        issuer = d.pop("issuer", UNSET)
 
-        client_id = d.pop("client_id")
+        client_id = d.pop("client_id", UNSET)
+
+        def _parse_saml(data: object) -> None | SamlSettings | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                saml_type_0 = SamlSettings.from_dict(data)
+
+
+
+                return saml_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | SamlSettings | Unset, data)
+
+        saml = _parse_saml(d.pop("saml", UNSET))
+
 
         scopes = cast(list[str], d.pop("scopes", UNSET))
 
@@ -187,6 +224,7 @@ class ProviderSettings:
         provider_settings = cls(
             issuer=issuer,
             client_id=client_id,
+            saml=saml,
             scopes=scopes,
             claims=claims,
             group_roles=group_roles,

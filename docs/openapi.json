@@ -566,6 +566,93 @@
         }
       }
     },
+    "/api/v1/auth/saml/{id}/acs": {
+      "post": {
+        "tags": [
+          "auth_session"
+        ],
+        "summary": "POST /api/v1/auth/saml/{id}/acs — a SAML provider's answer: to the\nlogin page with a one-time code, or with the reason it failed.",
+        "operationId": "auth_session_saml_acs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The identity provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/SamlPost"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "302": {
+            "description": "To the login page, with `sso_code` or `sso_error`"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/saml/{id}": {
+      "get": {
+        "tags": [
+          "auth_session"
+        ],
+        "summary": "GET /api/v1/auth/saml/{id} — the service provider's metadata, for the\nidentity provider's administrator to import. Its address is also the\nservice provider's entity id.",
+        "operationId": "auth_session_saml_metadata",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The identity provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SAML metadata",
+            "content": {
+              "application/samlmetadata+xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/identity-providers": {
       "get": {
         "tags": [
@@ -21054,6 +21141,13 @@
           "name": {
             "type": "string"
           },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`oidc` (the default) or `saml`."
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -21111,14 +21205,21 @@
               "string",
               "null"
             ],
-            "description": "The address to register with the provider as the redirect URI;\nabsent where `[api.sso] public_url` is not set."
+            "description": "The address to register with the provider as the redirect URI —\nfor SAML, the assertion consumer service; absent where `[api.sso]\npublic_url` is not set."
           },
           "backchannel_logout_uri": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The address to register as its back-channel logout URI."
+            "description": "OIDC: the address to register as its back-channel logout URI."
+          },
+          "sp_entity_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SAML: this service provider's entity id, which is also where its\nmetadata is served for the identity provider to import."
           },
           "created_at": {
             "type": "string",
@@ -24405,14 +24506,21 @@
                     "string",
                     "null"
                   ],
-                  "description": "The address to register with the provider as the redirect URI;\nabsent where `[api.sso] public_url` is not set."
+                  "description": "The address to register with the provider as the redirect URI —\nfor SAML, the assertion consumer service; absent where `[api.sso]\npublic_url` is not set."
                 },
                 "backchannel_logout_uri": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "description": "The address to register as its back-channel logout URI."
+                  "description": "OIDC: the address to register as its back-channel logout URI."
+                },
+                "sp_entity_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "SAML: this service provider's entity id, which is also where its\nmetadata is served for the identity provider to import."
                 },
                 "created_at": {
                   "type": "string",
@@ -29371,13 +29479,28 @@
         "properties": {
           "ok": {
             "type": "boolean",
-            "description": "The discovery document and keys were fetched."
+            "description": "OIDC: the discovery document and keys were fetched; SAML: the\nmetadata names a single sign-on address and a signing certificate."
           },
           "authorization_endpoint": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Where people are sent to sign in."
+          },
+          "idp_entity_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SAML: the provider's entity id, and how many certificates it signs\nwith."
+          },
+          "signing_certificates": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
           },
           "error": {
             "type": [
@@ -29390,17 +29513,25 @@
       "ProviderSettings": {
         "type": "object",
         "description": "A provider's configuration, kept as one JSON document.",
-        "required": [
-          "issuer",
-          "client_id"
-        ],
         "properties": {
           "issuer": {
             "type": "string",
-            "description": "The issuer, as its ID tokens name it; discovery is read from\n`<issuer>/.well-known/openid-configuration`."
+            "description": "OIDC: the issuer, as its ID tokens name it; discovery is read from\n`<issuer>/.well-known/openid-configuration`."
           },
           "client_id": {
-            "type": "string"
+            "type": "string",
+            "description": "OIDC: the client registered at the issuer."
+          },
+          "saml": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SamlSettings",
+                "description": "SAML: the identity provider's metadata and what to trust of it."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "scopes": {
             "type": "array",
@@ -30328,6 +30459,42 @@
             "format": "date-time"
           }
         }
+      },
+      "SamlPost": {
+        "type": "object",
+        "description": "What a SAML provider posts back (the HTTP-POST binding).",
+        "required": [
+          "SAMLResponse"
+        ],
+        "properties": {
+          "SAMLResponse": {
+            "type": "string"
+          },
+          "RelayState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SamlSettings": {
+        "type": "object",
+        "description": "A SAML identity provider, from its metadata.",
+        "required": [
+          "idp_metadata_xml"
+        ],
+        "properties": {
+          "idp_metadata_xml": {
+            "type": "string",
+            "description": "The provider's metadata XML, as it publishes it: its entity id, its\nsingle sign-on address and the certificates it signs with."
+          },
+          "trust_email": {
+            "type": "boolean",
+            "description": "Take the email attribute as the person's own, for linking by\nemail. SAML has no `email_verified`; turn this on only for a\nprovider whose directory owns its users' addresses."
+          }
+        },
+        "additionalProperties": false
       },
       "SayRequest": {
         "type": "object",

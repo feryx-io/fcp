@@ -28,6 +28,26 @@ use std::time::SystemTime;
 pub enum ProviderKind {
     #[default]
     Oidc,
+    /// SAML 2.0 (phase 4): the browser SSO profile, HTTP-Redirect out and
+    /// HTTP-POST back.
+    Saml,
+}
+
+impl ProviderKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Oidc => "oidc",
+            Self::Saml => "saml",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "oidc" => Some(Self::Oidc),
+            "saml" => Some(Self::Saml),
+            _ => None,
+        }
+    }
 }
 
 /// A tenant's identity provider. Serialized whole only for a site's link,
@@ -54,10 +74,16 @@ pub struct IdentityProvider {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ProviderSettings {
-    /// The issuer, as its ID tokens name it; discovery is read from
+    /// OIDC: the issuer, as its ID tokens name it; discovery is read from
     /// `<issuer>/.well-known/openid-configuration`.
+    #[serde(default)]
     pub issuer: String,
+    /// OIDC: the client registered at the issuer.
+    #[serde(default)]
     pub client_id: String,
+    /// SAML: the identity provider's metadata and what to trust of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saml: Option<SamlSettings>,
     /// Scopes asked for besides `openid`.
     #[serde(default = "default_scopes")]
     pub scopes: Vec<String>,
@@ -100,6 +126,25 @@ pub struct RequiredClaim {
     pub claim: String,
     pub value: String,
 }
+
+/// A SAML identity provider, from its metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SamlSettings {
+    /// The provider's metadata XML, as it publishes it: its entity id, its
+    /// single sign-on address and the certificates it signs with.
+    pub idp_metadata_xml: String,
+    /// Take the email attribute as the person's own, for linking by
+    /// email. SAML has no `email_verified`; turn this on only for a
+    /// provider whose directory owns its users' addresses.
+    #[serde(default)]
+    pub trust_email: bool,
+}
+
+/// The attribute name that means the assertion's subject (`NameID`), in a
+/// SAML provider's claim mapping.
+pub const SAML_NAME_ID: &str = "NameID";
 
 fn default_scopes() -> Vec<String> {
     vec!["profile".to_string(), "email".to_string()]
@@ -190,10 +235,21 @@ impl ProviderSettings {
             })
     }
 
-    /// What is wrong with it, if anything.
-    pub fn problems(&self) -> Option<String> {
-        if self.issuer.trim().is_empty() || self.client_id.trim().is_empty() {
-            return Some("issuer and client_id are required".to_string());
+    /// What is wrong with it for a provider of `kind`, if anything.
+    pub fn problems(&self, kind: ProviderKind) -> Option<String> {
+        match kind {
+            ProviderKind::Oidc => {
+                if self.issuer.trim().is_empty() || self.client_id.trim().is_empty() {
+                    return Some("issuer and client_id are required".to_string());
+                }
+                if self.saml.is_some() {
+                    return Some("an OIDC provider has no saml settings".to_string());
+                }
+            }
+            ProviderKind::Saml => match &self.saml {
+                Some(s) if !s.idp_metadata_xml.trim().is_empty() => {}
+                _ => return Some("saml.idp_metadata_xml is required".to_string()),
+            },
         }
         if self
             .group_roles
@@ -305,6 +361,14 @@ pub trait IdentityStore: Send + Sync {
     /// Record a finished sign-in for the UI to collect by the hash of its
     /// one-time code.
     async fn put_sso_handoff(&self, handoff: &SsoHandoff, now: SystemTime) -> crate::Result<()>;
+    /// Remember a SAML assertion's id until `until`: false when it was
+    /// already seen — a replay (phase 4).
+    async fn remember_saml_assertion(
+        &self,
+        provider_id: &IdentityProviderId,
+        assertion_id: &str,
+        until: SystemTime,
+    ) -> crate::Result<bool>;
     /// Collect it, once, within [`SSO_HANDOFF_TTL`].
     async fn take_sso_handoff(
         &self,
@@ -321,6 +385,7 @@ mod tests {
         ProviderSettings {
             issuer: "https://idp.example.com".to_string(),
             client_id: "fcp".to_string(),
+            saml: None,
             scopes: default_scopes(),
             claims: ClaimMapping::default(),
             group_roles: group_roles
@@ -359,9 +424,11 @@ mod tests {
     #[test]
     fn no_provider_grants_super_admin() {
         assert!(settings(vec![("root", UserRole::SuperAdmin)])
-            .problems()
+            .problems(ProviderKind::Oidc)
             .is_some());
-        assert!(settings(vec![]).problems().is_none());
+        assert!(settings(vec![]).problems(ProviderKind::Oidc).is_none());
+        // A SAML provider is its metadata.
+        assert!(settings(vec![]).problems(ProviderKind::Saml).is_some());
     }
 
     #[test]

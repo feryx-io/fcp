@@ -25,6 +25,7 @@ const SSO_ERRORS: Record<string, string> = {
   no_username: 'Your identity provider gave no name to make an account with.',
   super_admin: 'A platform administrator signs in with a password.',
   claim_mismatch: 'This account is not one your organisation signs in with.',
+  bad_assertion: 'Your identity provider\'s answer could not be verified.',
 }
 
 /**

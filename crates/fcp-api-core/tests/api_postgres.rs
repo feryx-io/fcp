@@ -10673,3 +10673,400 @@ async fn a_site_signs_its_people_in_but_neither_makes_them_nor_sets_their_roles(
 
     app.finish().await;
 }
+
+// ---------------------------------------------------------------------------
+// SAML sign-in (docs/IDENTITY_AND_DEVICES.md phase 4), with the `saml`
+// feature: the test is the identity provider — a key, its certificate in
+// metadata, responses written from a template and signed by xmlsec.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "saml")]
+mod saml {
+    use super::*;
+    use base64::Engine;
+    use samael::crypto::{Crypto, CryptoProvider};
+    use samael::idp::{CertificateParams, IdentityProvider, KeyType, Rsa};
+
+    const IDP_ENTITY: &str = "https://idp.acme.test/saml";
+    const IDP_SSO: &str = "https://idp.acme.test/sso";
+
+    /// A SAML identity provider: its key, and the metadata naming its
+    /// certificate.
+    pub(super) struct SamlIdp {
+        key_der: Vec<u8>,
+        pub metadata: String,
+    }
+
+    impl SamlIdp {
+        pub fn new() -> Self {
+            let idp = IdentityProvider::generate_new(KeyType::Rsa(Rsa::Rsa2048)).unwrap();
+            let cert = idp
+                .create_certificate(&CertificateParams {
+                    common_name: "idp.acme.test",
+                    issuer_name: "idp.acme.test",
+                    days_until_expiration: 30,
+                })
+                .unwrap();
+            let cert = base64::engine::general_purpose::STANDARD.encode(cert.der_data());
+            Self {
+                key_der: idp.export_private_key_der().unwrap(),
+                metadata: metadata(Some(&cert)),
+            }
+        }
+    }
+
+    /// Metadata with the signing certificate, or none.
+    pub(super) fn metadata(cert: Option<&str>) -> String {
+        let key = cert.map(|c| format!(
+            r#"<md:KeyDescriptor use="signing"><ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>{c}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>"#
+        )).unwrap_or_default();
+        format!(
+            r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{IDP_ENTITY}"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">{key}<md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="{IDP_SSO}"/></md:IDPSSODescriptor></md:EntityDescriptor>"#
+        )
+    }
+
+    /// What a response says; each test changes what it is about.
+    pub(super) struct Assertion {
+        pub request_id: String,
+        pub sp_entity: String,
+        pub acs: String,
+        pub name_id: String,
+        pub name_id_format: String,
+        pub assertion_id: String,
+        pub attributes: Vec<(&'static str, Vec<String>)>,
+    }
+
+    impl Assertion {
+        pub fn new(request_id: &str, sp_entity: &str, name_id: &str) -> Self {
+            Self {
+                request_id: request_id.to_string(),
+                sp_entity: sp_entity.to_string(),
+                acs: format!("{sp_entity}/acs"),
+                name_id: name_id.to_string(),
+                name_id_format: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent".to_string(),
+                assertion_id: format!("_a{}", Uuid::new_v4().simple()),
+                attributes: Vec::new(),
+            }
+        }
+
+        fn xml(&self) -> String {
+            let now = chrono::Utc::now();
+            let at = |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            let (issued, until, before) = (
+                at(now),
+                at(now + chrono::Duration::minutes(5)),
+                at(now - chrono::Duration::minutes(1)),
+            );
+            let response_id = format!("_r{}", Uuid::new_v4().simple());
+            let attributes: String = self
+                .attributes
+                .iter()
+                .map(|(name, values)| {
+                    let values: String = values
+                        .iter()
+                        .map(|v| format!("<saml:AttributeValue>{v}</saml:AttributeValue>"))
+                        .collect();
+                    format!(r#"<saml:Attribute Name="{name}">{values}</saml:Attribute>"#)
+                })
+                .collect();
+            format!(
+                r##"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{response_id}" Version="2.0" IssueInstant="{issued}" Destination="{acs}" InResponseTo="{req}"><saml:Issuer>{IDP_ENTITY}</saml:Issuer><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI="#{response_id}"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue></ds:Signature><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status><saml:Assertion ID="{aid}" Version="2.0" IssueInstant="{issued}"><saml:Issuer>{IDP_ENTITY}</saml:Issuer><saml:Subject><saml:NameID Format="{format}">{name_id}</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData NotOnOrAfter="{until}" Recipient="{acs}" InResponseTo="{req}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="{before}" NotOnOrAfter="{until}"><saml:AudienceRestriction><saml:Audience>{audience}</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant="{issued}" SessionIndex="idp-session-1"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:Password</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement><saml:AttributeStatement>{attributes}</saml:AttributeStatement></saml:Assertion></samlp:Response>"##,
+                acs = self.acs,
+                req = self.request_id,
+                aid = self.assertion_id,
+                format = self.name_id_format,
+                name_id = self.name_id,
+                audience = self.sp_entity,
+            )
+        }
+
+        /// Signed with `idp`'s key, base64 as the HTTP-POST binding sends it.
+        pub fn signed_by(&self, idp: &SamlIdp) -> String {
+            let signed = Crypto::sign_xml(self.xml().as_bytes(), &idp.key_der).unwrap();
+            base64::engine::general_purpose::STANDARD.encode(signed)
+        }
+
+        /// The same, with its signature taken out.
+        pub fn unsigned(&self) -> String {
+            let xml = self.xml();
+            let (head, rest) = xml.split_once("<ds:Signature").unwrap();
+            let tail = &rest[rest.find("</ds:Signature>").unwrap() + "</ds:Signature>".len()..];
+            base64::engine::general_purpose::STANDARD.encode(format!("{head}{tail}"))
+        }
+    }
+
+    impl App {
+        pub(super) async fn make_saml_provider(
+            &self,
+            idp: &SamlIdp,
+            settings: Value,
+        ) -> (String, String) {
+            let mut base = json!({
+                "saml": {"idp_metadata_xml": idp.metadata},
+                "claims": {"username": "NameID", "email": "email", "display_name": "name", "groups": "groups"},
+            });
+            base.as_object_mut()
+                .unwrap()
+                .extend(settings.as_object().unwrap().clone());
+            let res = self
+                .admin(
+                    Method::POST,
+                    "/api/v1/identity-providers",
+                    Some(json!({"name": "Acme SAML", "kind": "saml", "settings": base})),
+                )
+                .await;
+            assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+            let id = res.json["id"].as_str().unwrap().to_string();
+            let entity = res.json["sp_entity_id"].as_str().unwrap().to_string();
+            (id, entity)
+        }
+
+        /// Begin a SAML sign-in: the request id a response must answer,
+        /// the relay state and the cookie.
+        pub(super) async fn saml_start(&self, provider: &str) -> (String, String, String) {
+            let res = self
+                .send(
+                    Method::GET,
+                    &format!("/api/v1/auth/sso/{provider}/start"),
+                    &[],
+                    None,
+                )
+                .await;
+            assert_eq!(res.status, StatusCode::SEE_OTHER, "{}", res.text);
+            let to = location(&res);
+            assert!(to.starts_with(IDP_SSO), "{to}");
+            assert!(query_param(&to, "SAMLRequest").is_some(), "{to}");
+            let relay = query_param(&to, "RelayState").expect("relay state");
+            let cookie = res
+                .headers
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .find(|v| v.starts_with("fcp_saml="))
+                .map(|v| v.split(';').next().unwrap().to_string())
+                .expect("the SAML state cookie");
+            let request_id: String =
+                sqlx::query_scalar("SELECT nonce FROM sso_logins WHERE state = $1")
+                    .bind(&relay)
+                    .fetch_one(self.storage.pool())
+                    .await
+                    .unwrap();
+            (request_id, relay, cookie)
+        }
+
+        /// Post a response to the provider's ACS: where the login page is sent.
+        pub(super) async fn saml_post(
+            &self,
+            provider: &str,
+            response: &str,
+            relay: &str,
+            cookie: &str,
+        ) -> String {
+            let body = format!(
+                "SAMLResponse={}&RelayState={}",
+                urlencoding::encode(response),
+                urlencoding::encode(relay)
+            );
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/auth/saml/{provider}/acs"))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(body))
+                .unwrap();
+            let res = self.router.clone().oneshot(request).await.unwrap();
+            assert_eq!(res.status(), StatusCode::SEE_OTHER);
+            res.headers()[header::LOCATION]
+                .to_str()
+                .unwrap()
+                .to_string()
+        }
+    }
+}
+
+#[cfg(feature = "saml")]
+#[tokio::test]
+async fn a_tenants_people_sign_in_through_its_saml_provider() {
+    use saml::{Assertion, SamlIdp};
+    let app = require_app!();
+    let idp = SamlIdp::new();
+    let (provider, entity) = app
+        .make_saml_provider(
+            &idp,
+            json!({"jit": true, "group_roles": [{"group": "it", "role": "tenant_admin"}]}),
+        )
+        .await;
+    assert_eq!(
+        entity,
+        format!("{SSO_PUBLIC_URL}/api/v1/auth/saml/{provider}")
+    );
+    let shown = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/identity-providers/{provider}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        shown.json["redirect_uri"],
+        format!("{entity}/acs"),
+        "{}",
+        shown.text
+    );
+    assert!(shown.json.get("backchannel_logout_uri").is_none());
+    let checked = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/identity-providers/{provider}/check"),
+            None,
+        )
+        .await;
+    assert_eq!(checked.json["ok"], true, "{}", checked.text);
+    assert_eq!(checked.json["signing_certificates"], 1);
+
+    // The service provider's metadata, for the identity provider's admin.
+    let metadata = app
+        .send(
+            Method::GET,
+            &format!("/api/v1/auth/saml/{provider}"),
+            &[],
+            None,
+        )
+        .await;
+    assert_eq!(metadata.status, StatusCode::OK, "{}", metadata.text);
+    assert!(
+        metadata.text.contains(&entity) && metadata.text.contains("/acs"),
+        "{}",
+        metadata.text
+    );
+
+    // Signed in, made at first sign-in, an admin by the "it" group.
+    let (request_id, relay, cookie) = app.saml_start(&provider).await;
+    let mut said = Assertion::new(&request_id, &entity, "rosa@acme.test");
+    said.attributes = vec![
+        ("email", vec!["rosa@acme.test".into()]),
+        ("name", vec!["Rosa Diaz".into()]),
+        ("groups", vec!["staff".into(), "it".into()]),
+    ];
+    let response = said.signed_by(&idp);
+    let landing = app.saml_post(&provider, &response, &relay, &cookie).await;
+    let signed_in = app.sso_exchange(&landing).await;
+    assert_eq!(
+        signed_in.status,
+        StatusCode::OK,
+        "{landing} {}",
+        signed_in.text
+    );
+    assert_eq!(signed_in.json["user"]["username"], "rosa");
+    assert_eq!(signed_in.json["user"]["role"], "tenant_admin");
+
+    // The same post again: the sign-in it answered is over.
+    let again = app.saml_post(&provider, &response, &relay, &cookie).await;
+    assert_eq!(query_param(&again, "sso_error").as_deref(), Some("expired"));
+
+    app.finish().await;
+}
+
+#[cfg(feature = "saml")]
+#[tokio::test]
+async fn a_saml_response_is_taken_only_signed_for_us_and_once() {
+    use saml::{Assertion, SamlIdp};
+    let app = require_app!();
+    let idp = SamlIdp::new();
+    let (provider, entity) = app.make_saml_provider(&idp, json!({"jit": true})).await;
+    let error = |landing: &str| query_param(landing, "sso_error").unwrap_or_default();
+
+    // Each refused response, against a fresh sign-in.
+    /// A response made for a sign-in's request id.
+    type Make<'a> = Box<dyn Fn(&str) -> String + 'a>;
+    let cases: Vec<(&str, Make)> = vec![
+        (
+            "unsigned",
+            Box::new(|req: &str| Assertion::new(req, &entity, "u1").unsigned()),
+        ),
+        (
+            "tampered",
+            Box::new(|req: &str| {
+                let signed = Assertion::new(req, &entity, "u1").signed_by(&idp);
+                let xml = String::from_utf8(
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, signed)
+                        .unwrap(),
+                )
+                .unwrap()
+                .replace(">u1<", ">admin<");
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, xml)
+            }),
+        ),
+        (
+            "signed by another key",
+            Box::new(|req: &str| Assertion::new(req, &entity, "u1").signed_by(&SamlIdp::new())),
+        ),
+        (
+            "for another service provider",
+            Box::new(|req: &str| {
+                let mut a = Assertion::new(req, &entity, "u1");
+                a.sp_entity = "https://elsewhere.test/sp".to_string();
+                a.acs = format!("{entity}/acs");
+                a.signed_by(&idp)
+            }),
+        ),
+        (
+            "a transient subject",
+            Box::new(|req: &str| {
+                let mut a = Assertion::new(req, &entity, "u1");
+                a.name_id_format =
+                    "urn:oasis:names:tc:SAML:2.0:nameid-format:transient".to_string();
+                a.signed_by(&idp)
+            }),
+        ),
+        (
+            "an answer to another request",
+            Box::new(|_req: &str| Assertion::new("_other", &entity, "u1").signed_by(&idp)),
+        ),
+    ];
+    for (what, make) in cases {
+        let (request_id, relay, cookie) = app.saml_start(&provider).await;
+        let landing = app
+            .saml_post(&provider, &make(&request_id), &relay, &cookie)
+            .await;
+        assert_eq!(error(&landing), "bad_assertion", "{what}: {landing}");
+    }
+
+    // A post this browser did not begin.
+    let (request_id, relay, _) = app.saml_start(&provider).await;
+    let (_, _, other_cookie) = app.saml_start(&provider).await;
+    let response = Assertion::new(&request_id, &entity, "u1").signed_by(&idp);
+    let landing = app
+        .saml_post(&provider, &response, &relay, &other_cookie)
+        .await;
+    assert_eq!(error(&landing), "bad_state");
+
+    // An assertion taken once is not taken again, even answering a new
+    // request.
+    let (request_id, relay, cookie) = app.saml_start(&provider).await;
+    let first = Assertion::new(&request_id, &entity, "u1");
+    let landing = app
+        .saml_post(&provider, &first.signed_by(&idp), &relay, &cookie)
+        .await;
+    assert!(query_param(&landing, "sso_code").is_some(), "{landing}");
+    let (request_id, relay, cookie) = app.saml_start(&provider).await;
+    let mut replayed = Assertion::new(&request_id, &entity, "u1");
+    replayed.assertion_id = first.assertion_id.clone();
+    let landing = app
+        .saml_post(&provider, &replayed.signed_by(&idp), &relay, &cookie)
+        .await;
+    assert_eq!(error(&landing), "bad_assertion");
+
+    // Metadata that names no signing certificate is no provider: samael
+    // would verify nothing against it.
+    let refused = app
+        .admin(
+            Method::POST,
+            "/api/v1/identity-providers",
+            Some(json!({"name": "x", "kind": "saml", "settings": {"saml": {"idp_metadata_xml": saml::metadata(None)}}})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+
+    app.finish().await;
+}
