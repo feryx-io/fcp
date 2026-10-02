@@ -38,6 +38,10 @@ pub const REFRESH_REUSE_GRACE: Duration = Duration::from_secs(10);
 pub mod method {
     pub const PASSWORD: &str = "password";
     pub const SIGNUP: &str = "signup";
+    /// A password and a one-time code.
+    pub const TOTP: &str = "totp";
+    /// A password and a recovery code.
+    pub const RECOVERY_CODE: &str = "recovery_code";
 }
 
 /// A sign-in session.
@@ -143,6 +147,11 @@ pub struct SessionClaims {
     pub display_name: Option<String>,
     pub exp: usize,
     pub iat: usize,
+    /// What the token is for when it is not an access token: a sign-in
+    /// halfway through its second factor (`totp`, `totp_enroll`). Such a
+    /// token is never a session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
 }
 
 /// One signing key, named by its id.
@@ -367,6 +376,10 @@ pub async fn authenticate_session(
     now: SystemTime,
 ) -> Option<SessionPrincipal> {
     let claims = keys.decode(token, now).ok()?;
+    // A sign-in halfway through its second factor is not signed in.
+    if claims.purpose.is_some() {
+        return None;
+    }
     let tenant_id: TenantId = claims.tenant_id.parse().ok()?;
     let user = match (claims.sid.as_deref(), claims.sub.parse::<UserId>()) {
         // A session's token: the session must be live, and the user's.
@@ -417,6 +430,7 @@ mod tests {
             display_name: None,
             exp: (now + exp_in) as usize,
             iat: now as usize,
+            purpose: None,
         }
     }
 

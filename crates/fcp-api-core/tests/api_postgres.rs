@@ -162,6 +162,7 @@ impl App {
             Arc::new(
                 DynStorage::from_all_in_one(Arc::clone(&storage))
                     .with_api_token_store(api_tokens)
+                    .with_totp_store(Arc::clone(&storage) as Arc<dyn fcp_core::totp::TotpStore>)
                     .with_login_session_store(Arc::new(
                         fcp_storage_postgres::login_session::PostgresLoginSessionStore::new(
                             storage.pool().clone(),
@@ -9572,6 +9573,7 @@ async fn a_user_made_again_with_the_same_name_inherits_nothing() {
         display_name: None,
         exp: now + 600,
         iat: now,
+        purpose: None,
     });
     let me = app
         .send_as(&old, Method::GET, "/api/v1/auth/me", None)
@@ -9782,6 +9784,232 @@ async fn a_tenants_password_policy_is_kept_and_never_shuts_out_a_super_admin() {
         )
         .await;
     assert_eq!(found.json["methods"], json!([]), "{}", found.text);
+
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// A second factor (docs/IDENTITY_AND_DEVICES.md phase 2b)
+// ---------------------------------------------------------------------------
+
+/// The code an app shows for `secret`, `ahead` steps from now.
+fn totp_code(secret: &str, ahead: u64) -> String {
+    let step = fcp_core::totp::step_at(std::time::SystemTime::now()) + ahead;
+    fcp_core::totp::code_at(secret, step).unwrap()
+}
+
+impl App {
+    async fn login_totp(&self, ticket: &str, body: Value) -> Response {
+        let mut body = body;
+        body["mfa_token"] = json!(ticket);
+        self.send(Method::POST, "/api/v1/auth/login/totp", &[], Some(body))
+            .await
+    }
+}
+
+#[tokio::test]
+async fn a_second_factor_is_set_up_asked_for_and_each_code_good_once() {
+    let app = require_app!();
+    app.create_user_with_role("tia", "end_user").await;
+    let session = app.login("tia", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let status = app
+        .send_as(&session, Method::GET, "/api/v1/me/totp", None)
+        .await;
+    assert_eq!(status.json["enabled"], false, "{}", status.text);
+
+    // Set up: a secret for the app, confirmed by a code from it.
+    let enrolled = app
+        .send_as(&session, Method::POST, "/api/v1/me/totp/enroll", None)
+        .await;
+    assert_eq!(enrolled.status, StatusCode::OK, "{}", enrolled.text);
+    let secret = enrolled.json["secret"].as_str().unwrap().to_string();
+    assert!(enrolled.json["otpauth_uri"]
+        .as_str()
+        .unwrap()
+        .starts_with("otpauth://totp/"));
+    let wrong = app
+        .send_as(
+            &session,
+            Method::POST,
+            "/api/v1/me/totp/confirm",
+            Some(json!({"code": "000000"})),
+        )
+        .await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+    let confirmed = app
+        .send_as(
+            &session,
+            Method::POST,
+            "/api/v1/me/totp/confirm",
+            Some(json!({"code": totp_code(&secret, 0)})),
+        )
+        .await;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.text);
+    let recovery: Vec<String> = confirmed.json["recovery_codes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(recovery.len(), 10);
+
+    // Signing in now wants a code: a ticket, not a session.
+    let first = app.login("tia", PASSWORD).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text);
+    assert_eq!(first.json["mfa_required"], "totp");
+    assert!(first.json.get("token").is_none(), "{}", first.text);
+    assert!(refresh_cookie(&first).is_none());
+    let ticket = first.json["mfa_token"].as_str().unwrap().to_string();
+    assert_eq!(
+        app.send_as(&ticket, Method::GET, "/api/v1/auth/me", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED,
+        "a ticket is not a session"
+    );
+    let bad = app.login_totp(&ticket, json!({"code": "123456"})).await;
+    assert_eq!(bad.status, StatusCode::UNAUTHORIZED);
+    // The code the set-up used is spent; the next step's is good, once.
+    let next = totp_code(&secret, 1);
+    let ok = app.login_totp(&ticket, json!({"code": next})).await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.text);
+    assert!(ok.json["token"].is_string());
+    let replay = app.login_totp(&ticket, json!({"code": next})).await;
+    assert_eq!(
+        replay.status,
+        StatusCode::UNAUTHORIZED,
+        "a code is good once"
+    );
+
+    // A recovery code stands in for the phone, once.
+    let rescued = app
+        .login_totp(
+            &ticket,
+            json!({"recovery_code": recovery[0].to_uppercase()}),
+        )
+        .await;
+    assert_eq!(rescued.status, StatusCode::OK, "{}", rescued.text);
+    let again = app
+        .login_totp(&ticket, json!({"recovery_code": recovery[0]}))
+        .await;
+    assert_eq!(again.status, StatusCode::UNAUTHORIZED);
+
+    // An administrator resets it (a lost phone): a password signs in.
+    let reset = app
+        .admin(Method::DELETE, "/api/v1/users/tia/totp", None)
+        .await;
+    assert_eq!(reset.status, StatusCode::NO_CONTENT, "{}", reset.text);
+    let plain = app.login("tia", PASSWORD).await;
+    assert!(plain.json["token"].is_string(), "{}", plain.text);
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn wrong_codes_lock_the_account_as_wrong_passwords_do() {
+    let app = require_app!();
+    app.create_user_with_role("lou", "end_user").await;
+    let session = app.login("lou", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let secret = app
+        .send_as(&session, Method::POST, "/api/v1/me/totp/enroll", None)
+        .await
+        .json["secret"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    app.send_as(
+        &session,
+        Method::POST,
+        "/api/v1/me/totp/confirm",
+        Some(json!({"code": totp_code(&secret, 0)})),
+    )
+    .await;
+
+    // A right password does not reset the count the wrong codes add to.
+    for _ in 0..5 {
+        let ticket = app.login("lou", PASSWORD).await.json["mfa_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let bad = app.login_totp(&ticket, json!({"code": "000000"})).await;
+        assert_eq!(bad.status, StatusCode::UNAUTHORIZED);
+    }
+    let locked = app.login("lou", PASSWORD).await;
+    assert_eq!(locked.status, StatusCode::FORBIDDEN, "{}", locked.text);
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn a_tenant_requiring_a_second_factor_has_its_admins_set_one_up_signing_in() {
+    let app = require_app!();
+    let set = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"sign_in": {"password_login": "allowed", "require_totp": "admins"}})),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    assert_eq!(set.json["sign_in"]["require_totp"], "admins");
+
+    // An end user is not asked.
+    app.create_user_with_role("eve", "end_user").await;
+    assert!(app.login("eve", PASSWORD).await.json["token"].is_string());
+
+    // An admin without one sets it up before they are in.
+    app.create_user_with_role("ada", "tenant_admin").await;
+    let first = app.login("ada", PASSWORD).await;
+    assert_eq!(
+        first.json["mfa_required"], "totp_enrollment",
+        "{}",
+        first.text
+    );
+    let ticket = first.json["mfa_token"].as_str().unwrap().to_string();
+    let enrolled = app
+        .send(
+            Method::POST,
+            "/api/v1/auth/totp/enroll",
+            &[],
+            Some(json!({"mfa_token": ticket})),
+        )
+        .await;
+    assert_eq!(enrolled.status, StatusCode::OK, "{}", enrolled.text);
+    let secret = enrolled.json["secret"].as_str().unwrap().to_string();
+    let done = app
+        .send(
+            Method::POST,
+            "/api/v1/auth/totp/confirm",
+            &[],
+            Some(json!({"mfa_token": ticket, "code": totp_code(&secret, 0)})),
+        )
+        .await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.text);
+    assert!(done.json["token"].is_string());
+    assert_eq!(done.json["recovery_codes"].as_array().unwrap().len(), 10);
+    let session = done.json["token"].as_str().unwrap().to_string();
+
+    // And cannot turn it off.
+    let off = app
+        .send_as(
+            &session,
+            Method::POST,
+            "/api/v1/me/totp/disable",
+            Some(json!({"code": totp_code(&secret, 1)})),
+        )
+        .await;
+    assert_eq!(off.status, StatusCode::FORBIDDEN, "{}", off.text);
+    let status = app
+        .send_as(&session, Method::GET, "/api/v1/me/totp", None)
+        .await;
+    assert_eq!(status.json["required"], true, "{}", status.text);
+    assert_eq!(status.json["enabled"], true);
 
     app.finish().await;
 }

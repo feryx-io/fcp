@@ -49,6 +49,12 @@ export function ChangePasswordPage() {
         current_password: state.currentPassword,
         new_password: newPassword,
       })
+      if (!response.token) {
+        // A second factor still to give: sign in again with the new
+        // password (docs/IDENTITY_AND_DEVICES.md phase 2b).
+        navigate('/login', { replace: true })
+        return
+      }
       login(response.token, response.user, response.expires_in)
       if (response.user.role === 'end_user') {
         navigate('/user', { replace: true })

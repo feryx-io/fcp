@@ -1670,7 +1670,16 @@ policy.
 - A tenant's policy can keep passwords to admins or to nobody, a super
   admin excepted; it waits for phase 3's identity providers before the
   API lets a tenant restrict it.
-- 2b (TOTP) is next.
+
+Phase 2b done (v0.25.310): a second factor.
+- A user may add an authenticator app's code (TOTP) to their password,
+  with ten recovery codes; each code is good once.
+- A tenant may require it of its administrators or of everyone; they set
+  it up at their next sign-in.
+- Wrong codes lock the account as wrong passwords do; an administrator
+  resets a lost phone.
+- An expired password no longer answers a usable token.
+- Phase 2 is complete; phase 3 (OIDC) is next.
 
 ## Historical documents
 

@@ -54,6 +54,7 @@ pub mod subject_request;
 pub mod sync;
 pub mod tenant;
 pub mod time;
+pub mod totp;
 pub mod transport;
 pub mod trunk;
 pub mod trunk_report;
@@ -162,8 +163,8 @@ pub use crate::storage::{
 };
 pub use crate::sync::{JournalEntry, SyncOp, SyncStore, SYNC_TABLES};
 pub use crate::tenant::{
-    is_host_literal, login_domain, normalize_login_domain, PasswordLogin, Tenant, TenantCalling,
-    TenantSignIn, TenantStatus,
+    is_host_literal, login_domain, normalize_login_domain, PasswordLogin, RequireTotp, Tenant,
+    TenantCalling, TenantSignIn, TenantStatus,
 };
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,

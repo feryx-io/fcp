@@ -138,6 +138,9 @@ export type LoginRequest = S['LoginRequest']
 
 export type LoginResponse = S['LoginResponse']
 export type DiscoverResponse = S['DiscoverResponse']
+export type TotpEnrollment = S['TotpEnrollment']
+export type TotpStatus = S['TotpStatus']
+export type RecoveryCodes = S['RecoveryCodes']
 
 export type ChangeExpiredPasswordRequest = S['ChangeExpiredPasswordRequest']
 

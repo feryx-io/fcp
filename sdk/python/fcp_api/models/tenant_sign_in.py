@@ -9,6 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 from ..models.password_login import PasswordLogin
+from ..models.require_totp import RequireTotp
 from ..types import UNSET, Unset
 
 
@@ -26,9 +27,11 @@ class TenantSignIn:
 
         Attributes:
             password_login (PasswordLogin | Unset): Who may sign in with a password.
+            require_totp (RequireTotp | Unset): Who must add a one-time code to a password sign-in.
      """
 
     password_login: PasswordLogin | Unset = UNSET
+    require_totp: RequireTotp | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -41,6 +44,11 @@ class TenantSignIn:
             password_login = self.password_login.value
 
 
+        require_totp: str | Unset = UNSET
+        if not isinstance(self.require_totp, Unset):
+            require_totp = self.require_totp.value
+
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -48,6 +56,8 @@ class TenantSignIn:
         })
         if password_login is not UNSET:
             field_dict["password_login"] = password_login
+        if require_totp is not UNSET:
+            field_dict["require_totp"] = require_totp
 
         return field_dict
 
@@ -66,8 +76,19 @@ class TenantSignIn:
 
 
 
+        _require_totp = d.pop("require_totp", UNSET)
+        require_totp: RequireTotp | Unset
+        if isinstance(_require_totp,  Unset):
+            require_totp = UNSET
+        else:
+            require_totp = RequireTotp(_require_totp)
+
+
+
+
         tenant_sign_in = cls(
             password_login=password_login,
+            require_totp=require_totp,
         )
 
 

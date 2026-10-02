@@ -59,6 +59,341 @@
         }
       }
     },
+    "/api/v1/auth/login/totp": {
+      "post": {
+        "tags": [
+          "auth_session"
+        ],
+        "summary": "POST /api/v1/auth/login/totp",
+        "operationId": "auth_session_login_totp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/totp/enroll": {
+      "post": {
+        "tags": [
+          "auth_session"
+        ],
+        "summary": "POST /api/v1/auth/totp/enroll — set up the second factor a tenant\nrequires, in the middle of signing in.",
+        "operationId": "auth_session_enroll_totp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaTicketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The secret to add to an app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TotpEnrollment"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/totp/confirm": {
+      "post": {
+        "tags": [
+          "auth_session"
+        ],
+        "summary": "POST /api/v1/auth/totp/confirm — finish setting it up, and sign in.",
+        "operationId": "auth_session_confirm_totp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in, with the recovery codes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/totp": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /api/v1/me/totp",
+        "operationId": "self_service_get_totp",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TotpStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/totp/enroll": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /api/v1/me/totp/enroll — a secret for an authenticator app.",
+        "operationId": "self_service_enroll_totp",
+        "responses": {
+          "200": {
+            "description": "The secret to add to an app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TotpEnrollment"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/totp/confirm": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /api/v1/me/totp/confirm — a code from the app turns it on.",
+        "operationId": "self_service_confirm_totp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "On, with the recovery codes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodes"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/totp/disable": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /api/v1/me/totp/disable — off, with a current code; not when the\ntenant requires one.",
+        "operationId": "self_service_disable_totp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Off"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/totp/recovery-codes": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /api/v1/me/totp/recovery-codes — new recovery codes, the old ones\nspent, with a current code.",
+        "operationId": "self_service_renew_recovery_codes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "New codes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodes"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{username}/totp": {
+      "delete": {
+        "tags": [
+          "users"
+        ],
+        "summary": "DELETE /api/v1/users/:username/totp — reset a user's second factor (a\nlost phone): they set one up again at their next sign-in if their\ntenant requires it.",
+        "operationId": "users_reset_totp",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Reset"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": [
@@ -20586,13 +20921,15 @@
       "LoginResponse": {
         "type": "object",
         "required": [
-          "token",
           "user"
         ],
         "properties": {
           "token": {
-            "type": "string",
-            "description": "The access token: `Authorization: Bearer <token>`."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The access token: `Authorization: Bearer <token>`. Absent while a\nsecond factor is wanted (`mfa_required`) or the password must be\nchanged (`password_expired`)."
           },
           "expires_in": {
             "type": [
@@ -20611,6 +20948,30 @@
               "boolean",
               "null"
             ]
+          },
+          "mfa_required": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The password was right; now a second factor\n(`docs/IDENTITY_AND_DEVICES.md` phase 2b): `totp` — a code to\n`/auth/login/totp` — or `totp_enrollment` — the tenant requires one\nthe user has not set up: `/auth/totp/enroll` then `/auth/totp/confirm`."
+          },
+          "mfa_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ticket those routes take, valid five minutes."
+          },
+          "recovery_codes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Recovery codes, shown once, when a second factor was just set up."
           }
         }
       },
@@ -21017,6 +21378,18 @@
               "null"
             ],
             "format": "date-time"
+          }
+        }
+      },
+      "MfaTicketRequest": {
+        "type": "object",
+        "description": "A ticket to set a second factor up with.",
+        "required": [
+          "mfa_token"
+        ],
+        "properties": {
+          "mfa_token": {
+            "type": "string"
           }
         }
       },
@@ -28650,6 +29023,21 @@
           }
         }
       },
+      "RecoveryCodes": {
+        "type": "object",
+        "description": "Recovery codes, shown once.",
+        "required": [
+          "recovery_codes"
+        ],
+        "properties": {
+          "recovery_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "RedirectRequest": {
         "type": "object",
         "description": "The flow a party is moved into.",
@@ -28766,6 +29154,15 @@
             "type": "string"
           }
         }
+      },
+      "RequireTotp": {
+        "type": "string",
+        "description": "Who must add a one-time code to a password sign-in.",
+        "enum": [
+          "none",
+          "admins",
+          "everyone"
+        ]
       },
       "ResourceCounts": {
         "type": "object",
@@ -30135,6 +30532,10 @@
           "password_login": {
             "$ref": "#/components/schemas/PasswordLogin",
             "description": "Whether a password signs in."
+          },
+          "require_totp": {
+            "$ref": "#/components/schemas/RequireTotp",
+            "description": "Who must add a one-time code to a password (phase 2b)."
           }
         }
       },
@@ -30179,6 +30580,105 @@
               "minimum": 0
             },
             "description": "Days of week (0=Sun, 1=Mon, ..., 6=Sat). Empty = all days."
+          }
+        }
+      },
+      "TotpCodeRequest": {
+        "type": "object",
+        "description": "A code from the app.",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          }
+        }
+      },
+      "TotpConfirmRequest": {
+        "type": "object",
+        "description": "A code from the app, proving it holds the secret.",
+        "required": [
+          "mfa_token",
+          "code"
+        ],
+        "properties": {
+          "mfa_token": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          }
+        }
+      },
+      "TotpEnrollment": {
+        "type": "object",
+        "description": "A second factor being set up: the secret for the app, and the URI its\nQR code carries.",
+        "required": [
+          "secret",
+          "otpauth_uri"
+        ],
+        "properties": {
+          "secret": {
+            "type": "string"
+          },
+          "otpauth_uri": {
+            "type": "string"
+          }
+        }
+      },
+      "TotpLoginRequest": {
+        "type": "object",
+        "description": "The second step of a sign-in with a second factor.",
+        "required": [
+          "mfa_token"
+        ],
+        "properties": {
+          "mfa_token": {
+            "type": "string",
+            "description": "The ticket the password step answered."
+          },
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The app's six-digit code."
+          },
+          "recovery_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Or one of the recovery codes, each good once."
+          }
+        }
+      },
+      "TotpStatus": {
+        "type": "object",
+        "description": "Whether the caller has a second factor, and whether their tenant\nrequires one of them.",
+        "required": [
+          "enabled",
+          "pending",
+          "recovery_codes_left",
+          "required"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Set up and confirmed: every password sign-in asks for a code."
+          },
+          "pending": {
+            "type": "boolean",
+            "description": "Set up, waiting for a code to confirm it."
+          },
+          "recovery_codes_left": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "required": {
+            "type": "boolean",
+            "description": "The tenant requires a second factor of the caller's role."
           }
         }
       },

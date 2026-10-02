@@ -2,6 +2,9 @@ import type { components } from '@/api/schema'
 import { apiClient } from './client'
 import type {
   DiscoverResponse,
+  RecoveryCodes,
+  TotpEnrollment,
+  TotpStatus,
   User,
   CreateUserRequest,
   UpdateUserRequest,
@@ -123,6 +126,13 @@ export const auth = {
   /** Where a login signs in: the tenant its email domain is, and the ways in. */
   discover: (login: string) => apiClient.post<DiscoverResponse>('/auth/discover', { login }),
   login: (data: LoginRequest) => apiClient.post<LoginResponse>('/auth/login', data),
+  /** The second step of a sign-in with a second factor (docs/IDENTITY_AND_DEVICES.md phase 2b). */
+  loginTotp: (mfa_token: string, answer: { code?: string; recovery_code?: string }) =>
+    apiClient.post<LoginResponse>('/auth/login/totp', { mfa_token, ...answer }),
+  /** Setting up the second factor a tenant requires, mid sign-in. */
+  enrollTotp: (mfa_token: string) => apiClient.post<TotpEnrollment>('/auth/totp/enroll', { mfa_token }),
+  confirmTotp: (mfa_token: string, code: string) =>
+    apiClient.post<LoginResponse>('/auth/totp/confirm', { mfa_token, code }),
   logout: () => apiClient.post<void>('/auth/logout'),
   refresh: () => apiClient.post<LoginResponse>('/auth/refresh'),
   me: () => apiClient.get<AuthUser>('/auth/me'),
@@ -721,6 +731,12 @@ export const me = {
   getProfile: () => apiClient.get<MeProfile>('/me/profile'),
   updateProfile: (data: UpdateProfileRequest) => apiClient.put<MeProfile>('/me/profile', data),
   changePassword: (data: ChangePasswordRequest) => apiClient.put<void>('/me/password', data),
+  // A second factor
+  totpStatus: () => apiClient.get<TotpStatus>('/me/totp'),
+  enrollTotp: () => apiClient.post<TotpEnrollment>('/me/totp/enroll'),
+  confirmTotp: (code: string) => apiClient.post<RecoveryCodes>('/me/totp/confirm', { code }),
+  disableTotp: (code: string) => apiClient.post<void>('/me/totp/disable', { code }),
+  renewRecoveryCodes: (code: string) => apiClient.post<RecoveryCodes>('/me/totp/recovery-codes', { code }),
 
   // Voicemail
   getMailbox: () => apiClient.get<MeMailbox>('/me/voicemail'),
