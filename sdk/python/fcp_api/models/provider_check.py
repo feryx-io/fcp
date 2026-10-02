@@ -25,13 +25,19 @@ class ProviderCheck:
     """ What a provider's check found.
 
         Attributes:
-            ok (bool): The discovery document and keys were fetched.
-            authorization_endpoint (None | str | Unset):
+            ok (bool): OIDC: the discovery document and keys were fetched; SAML: the
+                metadata names a single sign-on address and a signing certificate.
+            authorization_endpoint (None | str | Unset): Where people are sent to sign in.
+            idp_entity_id (None | str | Unset): SAML: the provider's entity id, and how many certificates it signs
+                with.
+            signing_certificates (int | None | Unset):
             error (None | str | Unset):
      """
 
     ok: bool
     authorization_endpoint: None | str | Unset = UNSET
+    idp_entity_id: None | str | Unset = UNSET
+    signing_certificates: int | None | Unset = UNSET
     error: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -48,6 +54,18 @@ class ProviderCheck:
         else:
             authorization_endpoint = self.authorization_endpoint
 
+        idp_entity_id: None | str | Unset
+        if isinstance(self.idp_entity_id, Unset):
+            idp_entity_id = UNSET
+        else:
+            idp_entity_id = self.idp_entity_id
+
+        signing_certificates: int | None | Unset
+        if isinstance(self.signing_certificates, Unset):
+            signing_certificates = UNSET
+        else:
+            signing_certificates = self.signing_certificates
+
         error: None | str | Unset
         if isinstance(self.error, Unset):
             error = UNSET
@@ -62,6 +80,10 @@ class ProviderCheck:
         })
         if authorization_endpoint is not UNSET:
             field_dict["authorization_endpoint"] = authorization_endpoint
+        if idp_entity_id is not UNSET:
+            field_dict["idp_entity_id"] = idp_entity_id
+        if signing_certificates is not UNSET:
+            field_dict["signing_certificates"] = signing_certificates
         if error is not UNSET:
             field_dict["error"] = error
 
@@ -84,6 +106,26 @@ class ProviderCheck:
         authorization_endpoint = _parse_authorization_endpoint(d.pop("authorization_endpoint", UNSET))
 
 
+        def _parse_idp_entity_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        idp_entity_id = _parse_idp_entity_id(d.pop("idp_entity_id", UNSET))
+
+
+        def _parse_signing_certificates(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        signing_certificates = _parse_signing_certificates(d.pop("signing_certificates", UNSET))
+
+
         def _parse_error(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -97,6 +139,8 @@ class ProviderCheck:
         provider_check = cls(
             ok=ok,
             authorization_endpoint=authorization_endpoint,
+            idp_entity_id=idp_entity_id,
+            signing_certificates=signing_certificates,
             error=error,
         )
 

@@ -267,6 +267,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/saml/{id}/acs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/auth/saml/{id}/acs — a SAML provider's answer: to the
+         *     login page with a one-time code, or with the reason it failed.
+         */
+        post: operations["auth_session_saml_acs"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/saml/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/auth/saml/{id} — the service provider's metadata, for the
+         *     identity provider's administrator to import. Its address is also the
+         *     service provider's entity id.
+         */
+        get: operations["auth_session_saml_metadata"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/identity-providers": {
         parameters: {
             query?: never;
@@ -6232,6 +6273,8 @@ export interface components {
          */
         IdentityProviderRequest: {
             name: string;
+            /** @description `oidc` (the default) or `saml`. */
+            kind?: string | null;
             enabled?: boolean;
             settings: components["schemas"]["ProviderSettings"];
             client_secret?: string | null;
@@ -6247,12 +6290,18 @@ export interface components {
             /** @description Whether a client secret is set (it is never shown). */
             has_client_secret: boolean;
             /**
-             * @description The address to register with the provider as the redirect URI;
-             *     absent where `[api.sso] public_url` is not set.
+             * @description The address to register with the provider as the redirect URI —
+             *     for SAML, the assertion consumer service; absent where `[api.sso]
+             *     public_url` is not set.
              */
             redirect_uri?: string | null;
-            /** @description The address to register as its back-channel logout URI. */
+            /** @description OIDC: the address to register as its back-channel logout URI. */
             backchannel_logout_uri?: string | null;
+            /**
+             * @description SAML: this service provider's entity id, which is also where its
+             *     metadata is served for the identity provider to import.
+             */
+            sp_entity_id?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -7298,12 +7347,18 @@ export interface components {
                 /** @description Whether a client secret is set (it is never shown). */
                 has_client_secret: boolean;
                 /**
-                 * @description The address to register with the provider as the redirect URI;
-                 *     absent where `[api.sso] public_url` is not set.
+                 * @description The address to register with the provider as the redirect URI —
+                 *     for SAML, the assertion consumer service; absent where `[api.sso]
+                 *     public_url` is not set.
                  */
                 redirect_uri?: string | null;
-                /** @description The address to register as its back-channel logout URI. */
+                /** @description OIDC: the address to register as its back-channel logout URI. */
                 backchannel_logout_uri?: string | null;
+                /**
+                 * @description SAML: this service provider's entity id, which is also where its
+                 *     metadata is served for the identity provider to import.
+                 */
+                sp_entity_id?: string | null;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -8823,19 +8878,31 @@ export interface components {
         };
         /** @description What a provider's check found. */
         ProviderCheck: {
-            /** @description The discovery document and keys were fetched. */
+            /**
+             * @description OIDC: the discovery document and keys were fetched; SAML: the
+             *     metadata names a single sign-on address and a signing certificate.
+             */
             ok: boolean;
+            /** @description Where people are sent to sign in. */
             authorization_endpoint?: string | null;
+            /**
+             * @description SAML: the provider's entity id, and how many certificates it signs
+             *     with.
+             */
+            idp_entity_id?: string | null;
+            signing_certificates?: number | null;
             error?: string | null;
         };
         /** @description A provider's configuration, kept as one JSON document. */
         ProviderSettings: {
             /**
-             * @description The issuer, as its ID tokens name it; discovery is read from
+             * @description OIDC: the issuer, as its ID tokens name it; discovery is read from
              *     `<issuer>/.well-known/openid-configuration`.
              */
-            issuer: string;
-            client_id: string;
+            issuer?: string;
+            /** @description OIDC: the client registered at the issuer. */
+            client_id?: string;
+            saml?: components["schemas"]["SamlSettings"] | null;
             /** @description Scopes asked for besides `openid`. */
             scopes?: string[];
             claims?: components["schemas"]["ClaimMapping"];
@@ -9144,6 +9211,25 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description What a SAML provider posts back (the HTTP-POST binding). */
+        SamlPost: {
+            SAMLResponse: string;
+            RelayState?: string | null;
+        };
+        /** @description A SAML identity provider, from its metadata. */
+        SamlSettings: {
+            /**
+             * @description The provider's metadata XML, as it publishes it: its entity id, its
+             *     single sign-on address and the certificates it signs with.
+             */
+            idp_metadata_xml: string;
+            /**
+             * @description Take the email attribute as the person's own, for linking by
+             *     email. SAML has no `email_verified`; turn this on only for a
+             *     provider whose directory owns its users' addresses.
+             */
+            trust_email?: boolean;
         };
         /** @description Text spoken into the call by the node's text-to-speech. */
         SayRequest: {
@@ -11078,6 +11164,72 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_session_saml_acs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The identity provider */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": components["schemas"]["SamlPost"];
+            };
+        };
+        responses: {
+            /** @description To the login page, with `sso_code` or `sso_error` */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_session_saml_metadata: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The identity provider */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SAML metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/samlmetadata+xml": string;
+                };
             };
             /** @description An error */
             default: {

@@ -40,8 +40,7 @@ impl PostgresStorage {
                 .parse()
                 .map_err(store_error)?,
             name: row.get("name"),
-            // OIDC is the only kind until SAML (phase 4).
-            kind: ProviderKind::Oidc,
+            kind: ProviderKind::parse(&row.get::<String, _>("kind")).unwrap_or_default(),
             enabled: row.get("enabled"),
             settings: serde_json::from_value(settings).map_err(store_error)?,
             client_secret: self
@@ -123,14 +122,14 @@ impl IdentityStore for PostgresStorage {
                  client_secret, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (id) DO UPDATE SET
-                 name = EXCLUDED.name, enabled = EXCLUDED.enabled,
+                 name = EXCLUDED.name, kind = EXCLUDED.kind, enabled = EXCLUDED.enabled,
                  settings_json = EXCLUDED.settings_json,
                  client_secret = EXCLUDED.client_secret, updated_at = EXCLUDED.updated_at",
         )
         .bind(p.id.to_string())
         .bind(p.tenant_id.to_string())
         .bind(&p.name)
-        .bind("oidc")
+        .bind(p.kind.as_str())
         .bind(p.enabled)
         .bind(serde_json::to_value(&p.settings).map_err(store_error)?)
         .bind(secret)
@@ -303,6 +302,29 @@ impl IdentityStore for PostgresStorage {
         .await
         .map_err(store_error)?;
         Ok(())
+    }
+
+    async fn remember_saml_assertion(
+        &self,
+        provider_id: &IdentityProviderId,
+        assertion_id: &str,
+        until: SystemTime,
+    ) -> fcp_core::Result<bool> {
+        sqlx::query("DELETE FROM saml_assertions WHERE expires_at < NOW()")
+            .execute(&self.pool)
+            .await
+            .map_err(store_error)?;
+        let done = sqlx::query(
+            "INSERT INTO saml_assertions (provider_id, assertion_id, expires_at)
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        )
+        .bind(provider_id.to_string())
+        .bind(assertion_id)
+        .bind(at(until))
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(done.rows_affected() == 1)
     }
 
     async fn take_sso_handoff(

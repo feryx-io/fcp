@@ -30,12 +30,14 @@ class IdentityProviderRequest:
         Attributes:
             name (str):
             settings (ProviderSettings): A provider's configuration, kept as one JSON document.
+            kind (None | str | Unset): `oidc` (the default) or `saml`.
             enabled (bool | Unset):
             client_secret (None | str | Unset):
      """
 
     name: str
     settings: ProviderSettings
+    kind: None | str | Unset = UNSET
     enabled: bool | Unset = UNSET
     client_secret: None | str | Unset = UNSET
 
@@ -48,6 +50,12 @@ class IdentityProviderRequest:
         name = self.name
 
         settings = self.settings.to_dict()
+
+        kind: None | str | Unset
+        if isinstance(self.kind, Unset):
+            kind = UNSET
+        else:
+            kind = self.kind
 
         enabled = self.enabled
 
@@ -64,6 +72,8 @@ class IdentityProviderRequest:
             "name": name,
             "settings": settings,
         })
+        if kind is not UNSET:
+            field_dict["kind"] = kind
         if enabled is not UNSET:
             field_dict["enabled"] = enabled
         if client_secret is not UNSET:
@@ -84,6 +94,16 @@ class IdentityProviderRequest:
 
 
 
+        def _parse_kind(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        kind = _parse_kind(d.pop("kind", UNSET))
+
+
         enabled = d.pop("enabled", UNSET)
 
         def _parse_client_secret(data: object) -> None | str | Unset:
@@ -99,6 +119,7 @@ class IdentityProviderRequest:
         identity_provider_request = cls(
             name=name,
             settings=settings,
+            kind=kind,
             enabled=enabled,
             client_secret=client_secret,
         )

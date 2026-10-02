@@ -10,6 +10,8 @@ description = "FCP Admin API binary - management and administration endpoints"
 [features]
 default = []
 redis = ["fcp-presence/redis"]
+# SAML sign-in (docs/SSO.md): links libxmlsec1. The image builds with it.
+saml = ["fcp-api-core/saml"]
 
 [[bin]]
 name = "fcp-admin"

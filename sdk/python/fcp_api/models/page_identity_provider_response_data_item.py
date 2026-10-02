@@ -37,9 +37,12 @@ class PageIdentityProviderResponseDataItem:
             has_client_secret (bool): Whether a client secret is set (it is never shown).
             created_at (datetime.datetime):
             updated_at (datetime.datetime):
-            redirect_uri (None | str | Unset): The address to register with the provider as the redirect URI;
-                absent where `[api.sso] public_url` is not set.
-            backchannel_logout_uri (None | str | Unset): The address to register as its back-channel logout URI.
+            redirect_uri (None | str | Unset): The address to register with the provider as the redirect URI —
+                for SAML, the assertion consumer service; absent where `[api.sso]
+                public_url` is not set.
+            backchannel_logout_uri (None | str | Unset): OIDC: the address to register as its back-channel logout URI.
+            sp_entity_id (None | str | Unset): SAML: this service provider's entity id, which is also where its
+                metadata is served for the identity provider to import.
      """
 
     id: str
@@ -53,6 +56,7 @@ class PageIdentityProviderResponseDataItem:
     updated_at: datetime.datetime
     redirect_uri: None | str | Unset = UNSET
     backchannel_logout_uri: None | str | Unset = UNSET
+    sp_entity_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -91,6 +95,12 @@ class PageIdentityProviderResponseDataItem:
         else:
             backchannel_logout_uri = self.backchannel_logout_uri
 
+        sp_entity_id: None | str | Unset
+        if isinstance(self.sp_entity_id, Unset):
+            sp_entity_id = UNSET
+        else:
+            sp_entity_id = self.sp_entity_id
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -109,6 +119,8 @@ class PageIdentityProviderResponseDataItem:
             field_dict["redirect_uri"] = redirect_uri
         if backchannel_logout_uri is not UNSET:
             field_dict["backchannel_logout_uri"] = backchannel_logout_uri
+        if sp_entity_id is not UNSET:
+            field_dict["sp_entity_id"] = sp_entity_id
 
         return field_dict
 
@@ -165,6 +177,16 @@ class PageIdentityProviderResponseDataItem:
         backchannel_logout_uri = _parse_backchannel_logout_uri(d.pop("backchannel_logout_uri", UNSET))
 
 
+        def _parse_sp_entity_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        sp_entity_id = _parse_sp_entity_id(d.pop("sp_entity_id", UNSET))
+
+
         page_identity_provider_response_data_item = cls(
             id=id,
             tenant_id=tenant_id,
@@ -177,6 +199,7 @@ class PageIdentityProviderResponseDataItem:
             updated_at=updated_at,
             redirect_uri=redirect_uri,
             backchannel_logout_uri=backchannel_logout_uri,
+            sp_entity_id=sp_entity_id,
         )
 
 

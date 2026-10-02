@@ -131,6 +131,11 @@ jobs:
       # them all the way its own CI does.
       - name: Install native video codec libraries
         uses: ./external/forge-media/.github/actions/video-codecs
+      # SAML sign-in (`fcp-api-core/saml`, docs/SSO.md) verifies XML
+      # signatures through xmlsec; samael generates its bindings with
+      # libclang.
+      - name: Install xmlsec for SAML
+        run: sudo apt-get update && sudo apt-get install -y libxmlsec1-dev libclang-dev
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -183,7 +188,7 @@ jobs:
       - name: Tests
         env:
           FCP_SDK_TESTS: required
-        run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/video-openh264
+        run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/video-openh264,fcp-api-core/saml
 
   # The packaging: the compose file, alone and with the GPU overlay, must
   # be a valid stack with the shipped .env (docs/SHIP_AND_OPERATE.md phase

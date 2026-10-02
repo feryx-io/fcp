@@ -1,8 +1,10 @@
 # Single sign-on
 
 A tenant's people sign in through the tenant's identity provider: Entra
-ID, Okta, Google Workspace or any other OpenID Connect provider. This is
-phase 3 of `docs/IDENTITY_AND_DEVICES.md`. SAML is phase 4.
+ID, Okta, Google Workspace or any other OpenID Connect provider (phase 3
+of `docs/IDENTITY_AND_DEVICES.md`), or any SAML 2.0 provider (phase 4,
+§8). Everything here applies to both, except where a section says it is
+one protocol's.
 
 ## 1. The operator: `[api.sso]`
 
@@ -26,6 +28,15 @@ allow_private_issuers = false
   fetches the issuer's discovery document and keys through the webhook
   guard (`docs/WEBHOOKS.md`), so a tenant cannot point the admin at the
   operator's own network.
+- **SAML needs the `saml` build** of `fcp-admin`, which links the xmlsec
+  C library. The images are built with it. From source, install
+  `libxmlsec1-dev` and `libclang-dev`, then build with
+  `cargo build -p fcp-admin --features saml`.
+  - A build without it keeps SAML providers, but signs nobody in through
+    them: it answers 503 saying so.
+  - SAML also needs an HTTPS `public_url`. The provider posts its answer
+    from its own site, and the browser carries the sign-in's cookie on
+    that post only when it is `SameSite=None; Secure`.
 
 ## 2. The tenant: a provider
 
@@ -262,9 +273,62 @@ move, but the settings do not.
    apply. Set roles in FCP, or provision them by SCIM (phase 6).
 4. Google sends no back-channel logout.
 
-## 8. Not yet
+## 8. SAML
+
+A SAML provider is added like any other, with protocol **SAML 2.0**. It
+is described by its metadata, which every SAML provider publishes.
+
+- **The provider side.**
+  1. Paste the identity provider's metadata XML. It gives:
+     - its entity id;
+     - its HTTP-Redirect sign-in address;
+     - the certificate it signs with.
+
+     Metadata naming no signing certificate is refused: nothing could be
+     verified against it.
+  2. The page then shows what to give the identity provider:
+     - FCP's entity id, `<public_url>/api/v1/auth/saml/{id}`, which
+       serves FCP's metadata for import;
+     - its assertion consumer service, `…/{id}/acs` (HTTP-POST).
+  3. **Check** reads the metadata as a sign-in would.
+- **Attributes.** The username, email, name and groups settings name
+  SAML attributes, by their `Name` or `FriendlyName`. `NameID` means the
+  subject itself, so a username can be the NameID.
+  - The account is the NameID, which should be persistent. A transient
+    NameID is refused: it would name a different person every time.
+  - **Trust its email attribute** says that the provider's email is the
+    person's own, for linking by email. SAML has nothing like
+    `email_verified`, so it is off unless turned on.
+  - Required claims and roles by group apply to attributes as they do to
+    claims.
+- **What is checked.** A response is taken only if all of these hold:
+  - it is signed, the response or its assertion, by a certificate in the
+    metadata, with RSA or ECDSA over SHA-256 or stronger;
+  - it is reduced to its signed parts before anything is read, so
+    nothing unsigned rides along;
+  - it answers this browser's sign-in: its `InResponseTo`, and its
+    RelayState matching the `fcp_saml` cookie;
+  - its destination and recipient are FCP's assertion consumer service;
+  - it carries an audience naming FCP's entity id;
+  - it is within its time window, allowing three minutes of clock skew;
+  - its assertion has not been taken before, as assertion ids are
+    remembered until they expire.
+
+  Anything else lands on `/login?sso_error=bad_assertion`. A sign-in the
+  identity provider starts by itself (IdP-initiated) is refused as
+  `bad_state`: there is no sign-in of this browser for it to answer.
+- **The session** that follows has `method: "saml"`. Sites, the password
+  policy and identities work as for OpenID Connect.
+
+## 9. Not yet
 
 - **Logging out at the provider.** Signing out of FCP ends the FCP
   session only; it does not send the browser to the provider's
   end-session endpoint.
-- **SAML** is phase 4, and SCIM provisioning is phase 6.
+- **SAML, still to come** (phase 4b):
+  - single logout;
+  - metadata fetched from the provider's URL;
+  - encrypted assertions and signed AuthnRequests, which need FCP's own
+    signing key;
+  - the SAML guides for Entra ID, Okta and Google.
+- **SCIM provisioning** is phase 6.

@@ -463,6 +463,31 @@ Each phase is one PR based on main, with its admin UI and its docs.
    - Attribute and group mapping as for OIDC; single logout.
    - Proved against a stand-in IdP that signs with a test key. The
      library is Q2.
+   - Split in two: 4a the sign-in, with the build, CI and the image
+     carrying xmlsec; 4b single logout, metadata by URL, encrypted
+     assertions and signed requests, and the guides.
+   - **4a done (v0.25.313)** (`docs/SSO.md` §8).
+     - `ProviderKind::Saml`, configured by the IdP's metadata XML
+       (`SamlSettings`), with `trust_email` for linking.
+     - `fcp_api_core::saml` over `samael` 0.0.22 behind the `saml`
+       feature. A build without it keeps every route and answers 503.
+     - Checks on top of samael's:
+       - a provider without a signing certificate is refused, since
+         samael would verify nothing;
+       - the allowed algorithms are pinned to SHA-256 and up, digests
+         included;
+       - an audience naming FCP is required;
+       - a transient NameID is refused.
+     - Routes and state: `/auth/saml/{id}` serves FCP's metadata (also
+       its entity id); `/auth/saml/{id}/acs` takes the HTTP-POST.
+       Migration 095 remembers assertion ids. The `fcp_saml` cookie is
+       `SameSite=None; Secure` over HTTPS.
+     - The image builds with `--features saml` and carries
+       `libxmlsec1t64-openssl`; CI installs `libxmlsec1-dev` and runs
+       the tests with the feature.
+     - The tests sign real responses with xmlsec: a sign-in, then
+       unsigned, tampered, wrong-key, wrong-audience, transient,
+       unsolicited, wrong-cookie and replayed responses all refused.
 5. **A user's lifecycle.**
    - One status: Active, Suspended, Deprovisioned. `enabled` is read
      from it and kept for one release.

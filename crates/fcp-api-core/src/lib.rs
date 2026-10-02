@@ -20,6 +20,7 @@ pub mod openapi;
 pub mod page;
 pub mod rate_limit;
 pub mod route_permissions;
+pub mod saml;
 pub mod shape;
 pub mod site_files;
 pub mod state;

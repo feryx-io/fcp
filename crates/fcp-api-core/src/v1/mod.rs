@@ -86,6 +86,9 @@ pub fn pre_auth_router(enable_signup: bool) -> Router<ApiState> {
             "/auth/sso/:id/backchannel-logout",
             post(sso::backchannel_logout),
         )
+        // SAML sign-in (phase 4)
+        .route("/auth/saml/:id", get(sso::saml_metadata))
+        .route("/auth/saml/:id/acs", post(sso::saml_acs))
         .route("/auth/refresh", post(auth_session::refresh))
         .route("/auth/logout", post(auth_session::logout))
         .route(
