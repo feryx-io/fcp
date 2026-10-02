@@ -23,6 +23,7 @@ pub mod compose;
 pub mod cut;
 pub mod db;
 pub mod media;
+pub mod oidc;
 pub mod phone;
 pub mod seed;
 pub mod service;

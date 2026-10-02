@@ -402,6 +402,39 @@ Each phase is one PR based on main, with its admin UI and its docs.
    - The admin UI's SSO page, and guides for Entra ID, Okta and Google.
    - Proved against a stand-in identity provider in `fcp-testkit` that
      signs real tokens.
+   - Split in two: 3a the sign-in (providers, the flow, mapping,
+     just-in-time creation, identities, the policy unlocked, the admin
+     page); 3b back-channel logout, sites (Q11) and the guides.
+   - **3a done (v0.25.311)** (`docs/SSO.md`).
+     - Migration 093 holds four tables:
+       - `identity_providers`, with the client secret sealed and in the
+         re-encrypt list;
+       - `user_identities`, keyed by provider and `sub`;
+       - `sso_logins` and `sso_handoffs`, each taken by one
+         `DELETE … RETURNING`.
+     - `fcp_core::identity` is the model and store. `fcp_api_core::oidc`
+       is the relying party:
+       - discovery and the JWKS are fetched through the webhook guard and
+         cached, with the keys refetched once for an unknown `kid`;
+       - the code is exchanged with PKCE and client_secret_basic;
+       - RS256 and ES256 are verified with the `rsa` and `p256` crates;
+       - `iss`, `aud`/`azp`, `exp`/`iat` and `nonce` are checked.
+     - The routes: `/auth/sso/{id}/start`, the callback bound to the
+       browser by an `fcp_sso` cookie, and `/auth/sso/exchange` with a
+       one-time code.
+     - Discovery lists the tenant's providers. Linking is by verified
+       email; creation just in time; roles follow groups, the most
+       privileged winning and never `super_admin`.
+     - `identity_provider_manage` (tenant admin) guards
+       `/identity-providers` (CRUD and `check`), alongside
+       `/users/{username}/identities`.
+     - `password_login` can be restricted once an enabled provider
+       exists. The last one cannot be taken away while it is.
+     - `[api.sso] public_url` and `allow_private_issuers` configure it.
+     - The UI gains a Single Sign-On page, the login page's provider
+       buttons and its landing, and the tenant form's password policy.
+     - It is proved by `fcp_testkit::oidc::StandInIdp`, which signs RS256
+       with a fixed test key.
 4. **SAML sign-in.**
    - SP metadata per provider, and IdP metadata imported.
    - Signed responses and assertions verified, with audience,

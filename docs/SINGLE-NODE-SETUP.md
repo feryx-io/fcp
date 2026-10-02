@@ -95,6 +95,10 @@ is derived from `auth_token`. The events server takes the same key as
 `[auth] session_signing_key` (`FCP_EVENTS_SESSION_SIGNING_KEY`) so the
 admin UI's live views work (`docs/API_TOKENS.md` §7).
 
+**Single sign-on** (`[api.sso] public_url`) is where browsers reach the
+admin. Tenants' identity providers send people back there. Unset, nobody
+signs in through a provider (`docs/SSO.md`).
+
 **The admin's provisioning token** (`[api] provisioning_auth_token`,
 what phones fetch their configuration with) must be at least 32
 characters and differ from `auth_token`; `provisioning_require_https`

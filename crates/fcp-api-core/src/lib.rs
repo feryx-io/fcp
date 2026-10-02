@@ -15,6 +15,7 @@ pub mod auth;
 pub mod e911_validator;
 pub mod error;
 pub mod managed;
+pub mod oidc;
 pub mod openapi;
 pub mod page;
 pub mod rate_limit;
@@ -206,6 +207,9 @@ pub fn create_router_with(
     // with `[api.session] signing_key`, else a key derived from the static
     // token as before. Independent of the bearer middleware.
     state = state.with_session_config(&api_config.session, api_config.auth_token.as_deref());
+    // Single sign-on (phase 3): providers send browsers back to
+    // `[api.sso] public_url`.
+    state = state.with_sso_config(&api_config.sso);
     state = state
         .with_provisioning_auth_token(api_config.provisioning_auth_token.clone())
         .with_provisioning_require_https(api_config.provisioning_require_https);

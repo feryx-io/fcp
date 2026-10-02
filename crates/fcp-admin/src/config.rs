@@ -529,6 +529,12 @@ pub struct ApiConfig {
     /// (`docs/IDENTITY_AND_DEVICES.md` phase 1).
     #[serde(default)]
     pub session: fcp_core::ApiSessionConfig,
+
+    /// `[api.sso]`: sign-in through tenants' identity providers — the
+    /// public address providers send browsers back to, and whether an
+    /// issuer may be a private address (phase 3).
+    #[serde(default)]
+    pub sso: fcp_core::ApiSsoConfig,
 }
 
 fn default_bind_address() -> SocketAddr {
@@ -552,6 +558,7 @@ impl Default for ApiConfig {
             managed_by: None,
             rate_limit: fcp_core::ApiRateLimitConfig::default(),
             session: fcp_core::ApiSessionConfig::default(),
+            sso: fcp_core::ApiSsoConfig::default(),
         }
     }
 }
@@ -771,6 +778,7 @@ pub fn validate_config(config: &AdminConfig) -> Result<()> {
         .session
         .validate(config.api.auth_token.as_deref())
         .map_err(anyhow::Error::msg)?;
+    config.api.sso.validate().map_err(anyhow::Error::msg)?;
     if let Some(cloud) = &config.api.managed_by {
         let cloud = cloud.trim();
         if !(cloud.starts_with("https://") || cloud.starts_with("http://")) {

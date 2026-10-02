@@ -191,6 +191,155 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/sso/{id}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/auth/sso/{id}/start — off to the provider. */
+        get: operations["auth_session_sso_start"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sso/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/auth/sso/callback — back from the provider: to the login
+         *     page with a one-time code, or with the reason it failed.
+         */
+        get: operations["auth_session_sso_callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sso/exchange": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/auth/sso/exchange — a session for the one-time code. */
+        post: operations["auth_session_sso_exchange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/identity-providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/identity-providers */
+        get: operations["identity_providers_list"];
+        put?: never;
+        /** POST /api/v1/identity-providers */
+        post: operations["identity_providers_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/identity-providers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/identity-providers/{id} */
+        get: operations["identity_providers_get"];
+        /** PUT /api/v1/identity-providers/{id} */
+        put: operations["identity_providers_update"];
+        post?: never;
+        /** DELETE /api/v1/identity-providers/{id} — and every identity at it. */
+        delete: operations["identity_providers_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/identity-providers/{id}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/identity-providers/{id}/check — fetch the provider's
+         *     discovery document and keys, as a sign-in would.
+         */
+        post: operations["identity_providers_check"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{username}/identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/users/{username}/identities */
+        get: operations["users_list_identities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{username}/identities/{provider_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /api/v1/users/{username}/identities/{provider_id} — unlink a
+         *     user from their account at a provider; the next sign-in there links
+         *     or creates afresh, as the provider's settings say.
+         */
+        delete: operations["users_unlink_identity"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -4791,6 +4940,21 @@ export interface components {
             /** @description `NAM`: the name of the place (`Example HQ`). */
             name?: string | null;
         };
+        /** @description Which claims become the user's names. */
+        ClaimMapping: {
+            /**
+             * @description The username of a user made just in time; the part before the `@`
+             *     when the claim is an address. Falls back to the email's.
+             */
+            username?: string;
+            email?: string;
+            display_name?: string;
+            /**
+             * @description A list of strings: the user's groups (Entra ID sends ids, Okta
+             *     and Google Workspace names, when asked to).
+             */
+            groups?: string;
+        };
         /**
          * @description What a class is written as. `allowed` unset allows everything;
          *     `max_calls` unset is two, `null` no limit.
@@ -5617,8 +5781,21 @@ export interface components {
             /** @description The tenant the login's email domain belongs to, when it is one. */
             tenant_id?: string | null;
             tenant_name?: string | null;
-            /** @description The ways in: `password` (later the tenant's identity providers). */
+            /**
+             * @description The ways in: `password`, and `sso` when the tenant has identity
+             *     providers to sign in with.
+             */
             methods: string[];
+            /**
+             * @description The tenant's identity providers: a button each on the login page,
+             *     which goes to `/api/v1/auth/sso/{id}/start`.
+             */
+            providers?: components["schemas"]["DiscoveredProvider"][];
+        };
+        /** @description An identity provider a login can sign in through. */
+        DiscoveredProvider: {
+            id: string;
+            name: string;
         };
         E911AddressResponse: components["schemas"]["CivicElements"] & {
             address1: string;
@@ -5968,6 +6145,12 @@ export interface components {
              */
             audio: string;
         };
+        /** @description A provider group, and the role its members get. */
+        GroupRole: {
+            group: string;
+            /** @description Any role but `super_admin`, which no tenant's provider grants. */
+            role: string;
+        };
         /** @description Who is put on hold. */
         HoldRequest: {
             /**
@@ -6016,6 +6199,36 @@ export interface components {
              * @description The last day, when more than one.
              */
             to?: string | null;
+        };
+        /**
+         * @description A provider written: its settings, and the client secret — absent to
+         *     keep the one it has, empty to remove it.
+         */
+        IdentityProviderRequest: {
+            name: string;
+            enabled?: boolean;
+            settings: components["schemas"]["ProviderSettings"];
+            client_secret?: string | null;
+        };
+        /** @description An identity provider, its client secret withheld. */
+        IdentityProviderResponse: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            kind: string;
+            enabled: boolean;
+            settings: components["schemas"]["ProviderSettings"];
+            /** @description Whether a client secret is set (it is never shown). */
+            has_client_secret: boolean;
+            /**
+             * @description The address to register with the provider as the redirect URI;
+             *     absent where `[api.sso] public_url` is not set.
+             */
+            redirect_uri?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
         };
         /**
          * @description The role a token admits its holder in.
@@ -7036,6 +7249,35 @@ export interface components {
                 held?: {
                     [key: string]: number | null;
                 } | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_IdentityProviderResponse: {
+            data: {
+                id: string;
+                tenant_id: string;
+                name: string;
+                kind: string;
+                enabled: boolean;
+                settings: components["schemas"]["ProviderSettings"];
+                /** @description Whether a client secret is set (it is never shown). */
+                has_client_secret: boolean;
+                /**
+                 * @description The address to register with the provider as the redirect URI;
+                 *     absent where `[api.sso] public_url` is not set.
+                 */
+                redirect_uri?: string | null;
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                updated_at: string;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -8095,6 +8337,25 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_UserIdentityResponse: {
+            data: {
+                provider_id: string;
+                subject: string;
+                email?: string | null;
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                last_sign_in_at?: string | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_UserResponse: {
             data: {
                 id: string;
@@ -8529,6 +8790,41 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description What a provider's check found. */
+        ProviderCheck: {
+            /** @description The discovery document and keys were fetched. */
+            ok: boolean;
+            authorization_endpoint?: string | null;
+            error?: string | null;
+        };
+        /** @description A provider's configuration, kept as one JSON document. */
+        ProviderSettings: {
+            /**
+             * @description The issuer, as its ID tokens name it; discovery is read from
+             *     `<issuer>/.well-known/openid-configuration`.
+             */
+            issuer: string;
+            client_id: string;
+            /** @description Scopes asked for besides `openid`. */
+            scopes?: string[];
+            claims?: components["schemas"]["ClaimMapping"];
+            /**
+             * @description Groups the provider asserts, and the role each gives. The most
+             *     privileged role a user's groups give wins, and is set at every
+             *     sign-in; with no mapping, a user's role is left as an admin set it.
+             */
+            group_roles?: components["schemas"]["GroupRole"][];
+            /**
+             * @description Create a user the first time someone the provider vouches for
+             *     signs in, with no FCP account yet.
+             */
+            jit?: boolean;
+            /**
+             * @description Link an existing user whose email is the one the provider asserts
+             *     as verified (`email_verified`), on their first sign-in.
+             */
+            link_by_email?: boolean;
         };
         /** @description Queue config response. */
         QueueConfigResponse: {
@@ -8992,6 +9288,10 @@ export interface components {
             enrollment_token: string;
             /** Format: date-time */
             enrollment_token_expires_at: string;
+        };
+        /** @description The one-time code the login page was handed. */
+        SsoExchangeRequest: {
+            code: string;
         };
         /** @description System status response. */
         StatusResponse: {
@@ -9967,6 +10267,16 @@ export interface components {
         };
         /** @description A UserId: `user-<uuid>`, or the bare UUID */
         UserId: string;
+        /** @description A user's account at one of the tenant's providers. */
+        UserIdentityResponse: {
+            provider_id: string;
+            subject: string;
+            email?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_sign_in_at?: string | null;
+        };
         UserReadiness: {
             user_id: string;
             username: string;
@@ -10587,6 +10897,356 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Reset */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_session_sso_start: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The identity provider */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description To the provider's sign-in page */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_session_sso_callback: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+                /** @description The provider's refusal (`access_denied`, …). */
+                error?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description To the login page, with `sso_code` or `sso_error` */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_session_sso_exchange: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SsoExchangeRequest"];
+            };
+        };
+        responses: {
+            /** @description Signed in */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    identity_providers_list: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_IdentityProviderResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    identity_providers_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityProviderRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityProviderResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    identity_providers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityProviderResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    identity_providers_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityProviderRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityProviderResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    identity_providers_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    identity_providers_check: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What the check found */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderCheck"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    users_list_identities: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_UserIdentityResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    users_unlink_identity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unlinked */
             204: {
                 headers: {
                     [name: string]: unknown;

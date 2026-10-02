@@ -43,7 +43,11 @@ tracing = { workspace = true }
 
 # JWT / crypto for auth sessions
 hmac = "0.12"
-sha2 = "0.10"
+sha2 = { version = "0.10", features = ["oid"] }
+# ID tokens verified (docs/IDENTITY_AND_DEVICES.md phase 3): RS256 and ES256.
+rsa = "0.9"
+p256 = { version = "0.13", features = ["ecdsa"] }
+url = "2"
 base64 = "0.22"
 
 # HTTP client (for proxying to events server)
@@ -61,6 +65,7 @@ regex = "1"
 async-trait = "0.1"
 
 [dev-dependencies]
+fcp-testkit = { path = "../fcp-testkit" }
 # Every response the Postgres suite sees is checked against the OpenAPI
 # contract (docs/DEVELOPER_SURFACE.md §3, phase 3).
 jsonschema = { version = "0.58", default-features = false }

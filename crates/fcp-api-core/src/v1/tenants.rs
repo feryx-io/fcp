@@ -296,10 +296,13 @@ async fn ensure_login_domains_unique<S: fcp_core::TenantStore + ?Sized>(
 /// A sign-in policy the tenant's people can live with: a password is the
 /// only way in until the tenant has an identity provider, so it cannot be
 /// taken from them before then.
-fn check_sign_in(sign_in: &fcp_core::TenantSignIn) -> Result<(), ApiError> {
-    if sign_in.password_login != fcp_core::PasswordLogin::Allowed {
+/// Passwords can be kept from a tenant's people only once they have an
+/// identity provider to sign in with instead (`docs/IDENTITY_AND_DEVICES.md`
+/// phase 3); a platform super admin is never shut out either way.
+fn check_sign_in(sign_in: &fcp_core::TenantSignIn, has_provider: bool) -> Result<(), ApiError> {
+    if sign_in.password_login != fcp_core::PasswordLogin::Allowed && !has_provider {
         return Err(ApiError::BadRequest(
-            "password_login can be restricted once the tenant has an identity provider to sign in with; it has none".to_string(),
+            "password_login can be restricted once the tenant has an enabled identity provider to sign in with; it has none".to_string(),
         ));
     }
     Ok(())
@@ -435,7 +438,8 @@ pub async fn create_tenant(
     let login_domains = normalize_login_domains(&req.login_domains)?;
     ensure_login_domains_unique(storage.as_ref(), &login_domains, None).await?;
     let sign_in = req.sign_in.clone().unwrap_or_default();
-    check_sign_in(&sign_in)?;
+    // A new tenant has no identity provider yet.
+    check_sign_in(&sign_in, false)?;
 
     let now = SystemTime::now();
     let status = if let Some(status_str) = &req.status {
@@ -601,7 +605,15 @@ pub async fn update_tenant(
     }
 
     if let Some(sign_in) = req.sign_in {
-        check_sign_in(&sign_in)?;
+        let has_provider = match storage.identity_store() {
+            Some(store) => store
+                .list_identity_providers(&tenant.id)
+                .await?
+                .iter()
+                .any(|p| p.enabled),
+            None => false,
+        };
+        check_sign_in(&sign_in, has_provider)?;
         tenant.sign_in = sign_in;
     }
 

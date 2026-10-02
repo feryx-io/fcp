@@ -42,6 +42,8 @@ pub mod method {
     pub const TOTP: &str = "totp";
     /// A password and a recovery code.
     pub const RECOVERY_CODE: &str = "recovery_code";
+    /// Through a tenant's OpenID Connect provider.
+    pub const OIDC: &str = "oidc";
 }
 
 /// A sign-in session.

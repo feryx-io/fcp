@@ -1099,6 +1099,63 @@ pub async fn delete_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// A user with no web password, as single sign-on creates one just in time
+/// (`docs/IDENTITY_AND_DEVICES.md` phase 3): their SIP password generated,
+/// everything else as `create_user` defaults it.
+pub(crate) fn user_without_password(
+    realm: &str,
+    tenant_id: fcp_core::TenantId,
+    username: &str,
+    display_name: Option<String>,
+    email: Option<String>,
+    role: UserRole,
+) -> Result<User, ApiError> {
+    let sip_password = generated_sip_password();
+    let digest = password::hash_password(&sip_password)
+        .map_err(|e| ApiError::Internal(format!("hashing a generated password: {e}")))?;
+    let now = std::time::SystemTime::now();
+    Ok(User {
+        id: fcp_core::UserId::new(),
+        username: username.to_string(),
+        // No web password: nothing a password can match.
+        password: String::new(),
+        digest_password: Some(digest),
+        sip_ha1_hash: Some(password::compute_ha1(username, realm, &sip_password)),
+        sip_provisioning_password: Some(sip_password),
+        display_name,
+        tenant_id,
+        enabled: true,
+        role,
+        department_id: None,
+        created_at: now,
+        updated_at: now,
+        media_preferences: Default::default(),
+        email,
+        password_last_reset: None,
+        phone_number: None,
+        mobile_number: None,
+        pin: None,
+        extension: None,
+        department: None,
+        job_title: None,
+        location: None,
+        location_id: None,
+        language: "en-US".to_string(),
+        timezone: "UTC".to_string(),
+        account_status: AccountStatus::Active,
+        last_login: None,
+        emergency_contact: EmergencyContact {
+            name: None,
+            phone: None,
+        },
+        primary_phone_number_id: None,
+        voicemail_box_id: None,
+        profile_picture: None,
+        failed_login_attempts: 0,
+        account_locked_until: None,
+    })
+}
+
 /// A SIP password for a user who has no web password to derive one from:
 /// 24 random bytes, with the classes the password rules ask for.
 fn generated_sip_password() -> String {

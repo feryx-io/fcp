@@ -163,6 +163,9 @@ impl App {
                 DynStorage::from_all_in_one(Arc::clone(&storage))
                     .with_api_token_store(api_tokens)
                     .with_totp_store(Arc::clone(&storage) as Arc<dyn fcp_core::totp::TotpStore>)
+                    .with_identity_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::identity::IdentityStore>
+                    )
                     .with_login_session_store(Arc::new(
                         fcp_storage_postgres::login_session::PostgresLoginSessionStore::new(
                             storage.pool().clone(),
@@ -279,6 +282,11 @@ impl App {
             auth_token: Some(ADMIN_TOKEN.to_string()),
             provisioning_auth_token: Some(PROVISIONING_TOKEN.to_string()),
             provisioning_require_https: true,
+            // A stand-in identity provider listens on loopback.
+            sso: fcp_core::ApiSsoConfig {
+                public_url: Some(SSO_PUBLIC_URL.to_string()),
+                allow_private_issuers: true,
+            },
             ..ApiConfig::default()
         };
 
@@ -1074,6 +1082,8 @@ fn is_prefixed_id_key(key: &str) -> bool {
     )
 }
 
+/// Where the test admin says browsers reach it (`[api.sso] public_url`).
+const SSO_PUBLIC_URL: &str = "https://pbx.test";
 const PASSWORD: &str = "Str0ng-Passw0rd!";
 const BEARER: &str = "Bearer test-admin-token";
 
@@ -10010,6 +10020,418 @@ async fn a_tenant_requiring_a_second_factor_has_its_admins_set_one_up_signing_in
         .await;
     assert_eq!(status.json["required"], true, "{}", status.text);
     assert_eq!(status.json["enabled"], true);
+
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Single sign-on (docs/IDENTITY_AND_DEVICES.md phase 3)
+// ---------------------------------------------------------------------------
+
+use fcp_testkit::oidc::StandInIdp;
+
+const IDP_CLIENT: &str = "fcp-client";
+const IDP_SECRET: &str = "idp-s3cret";
+
+fn location(res: &Response) -> String {
+    res.headers
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn query_param(url: &str, name: &str) -> Option<String> {
+    let url = reqwest::Url::parse(url).ok()?;
+    url.query_pairs()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.into_owned())
+}
+
+impl App {
+    /// A provider for tenant A at the stand-in, with `settings` over the
+    /// usual ones.
+    async fn make_provider(&self, idp: &StandInIdp, settings: Value) -> String {
+        let mut base = json!({"issuer": idp.issuer, "client_id": IDP_CLIENT});
+        base.as_object_mut()
+            .unwrap()
+            .extend(settings.as_object().unwrap().clone());
+        let res = self
+            .admin(
+                Method::POST,
+                "/api/v1/identity-providers",
+                Some(json!({"name": "Acme SSO", "settings": base, "client_secret": IDP_SECRET})),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+        res.json["id"].as_str().unwrap().to_string()
+    }
+
+    /// Begin a sign-in through `provider`: the provider's authorize URL and
+    /// the state cookie.
+    async fn sso_start(&self, provider: &str) -> (String, String) {
+        let res = self
+            .send(
+                Method::GET,
+                &format!("/api/v1/auth/sso/{provider}/start"),
+                &[],
+                None,
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::SEE_OTHER, "{}", res.text);
+        let cookie = res
+            .headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .find(|v| v.starts_with("fcp_sso="))
+            .map(|v| v.split(';').next().unwrap().to_string())
+            .expect("the state cookie");
+        (location(&res), cookie)
+    }
+
+    /// The provider's answer to `authorize`: the callback path and query.
+    async fn at_provider(&self, authorize: &str) -> String {
+        let back = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+            .get(authorize)
+            .send()
+            .await
+            .unwrap();
+        let to = back.headers()[header::LOCATION.as_str()]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            to.starts_with(&format!("{SSO_PUBLIC_URL}/api/v1/auth/sso/callback?")),
+            "{to}"
+        );
+        to.trim_start_matches(SSO_PUBLIC_URL).to_string()
+    }
+
+    /// Sign in through `provider` as `claims`: where the login page is
+    /// sent (`sso_code` or `sso_error`).
+    async fn sso_landing(&self, idp: &StandInIdp, provider: &str, claims: Value) -> String {
+        idp.sign_in_as(claims);
+        let (authorize, cookie) = self.sso_start(provider).await;
+        let callback = self.at_provider(&authorize).await;
+        let res = self.with_cookie(Method::GET, &callback, &cookie).await;
+        assert_eq!(res.status, StatusCode::SEE_OTHER, "{}", res.text);
+        let landing = location(&res);
+        assert!(
+            landing.starts_with(&format!("{SSO_PUBLIC_URL}/login?")),
+            "{landing}"
+        );
+        landing
+    }
+
+    /// Exchange a landing's one-time code.
+    async fn sso_exchange(&self, landing: &str) -> Response {
+        let code = query_param(landing, "sso_code").unwrap_or_default();
+        self.send(
+            Method::POST,
+            "/api/v1/auth/sso/exchange",
+            &[],
+            Some(json!({"code": code})),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn a_tenants_people_sign_in_through_its_identity_provider() {
+    let app = require_app!();
+    let idp = StandInIdp::start(IDP_CLIENT, Some(IDP_SECRET))
+        .await
+        .unwrap();
+    let set = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"login_domains": ["acme.test"]})),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let provider = app
+        .make_provider(
+            &idp,
+            json!({"jit": true, "group_roles": [{"group": "fcp-admins", "role": "tenant_admin"}]}),
+        )
+        .await;
+
+    // The secret is kept, never shown; the redirect URI to register is.
+    let read = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/identity-providers/{provider}"),
+            None,
+        )
+        .await;
+    assert_eq!(read.json["has_client_secret"], true, "{}", read.text);
+    assert!(!read.text.contains(IDP_SECRET));
+    assert_eq!(
+        read.json["redirect_uri"],
+        format!("{SSO_PUBLIC_URL}/api/v1/auth/sso/callback")
+    );
+    let checked = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/identity-providers/{provider}/check"),
+            None,
+        )
+        .await;
+    assert_eq!(checked.json["ok"], true, "{}", checked.text);
+
+    // The login page offers it to the tenant's people.
+    let found = app
+        .send(
+            Method::POST,
+            "/api/v1/auth/discover",
+            &[],
+            Some(json!({"login": "jane@acme.test"})),
+        )
+        .await;
+    assert_eq!(
+        found.json["methods"],
+        json!(["password", "sso"]),
+        "{}",
+        found.text
+    );
+    assert_eq!(found.json["providers"][0]["id"], provider.as_str());
+
+    // First sign-in: Jane is made, an end user, named from her address.
+    let jane = json!({
+        "sub": "jane-1", "email": "jane@acme.test", "email_verified": true,
+        "preferred_username": "jane@acme.test", "name": "Jane Doe", "groups": ["staff"],
+    });
+    let landing = app.sso_landing(&idp, &provider, jane.clone()).await;
+    let signed_in = app.sso_exchange(&landing).await;
+    assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.text);
+    assert_eq!(signed_in.json["user"]["username"], "jane");
+    assert_eq!(signed_in.json["user"]["role"], "end_user");
+    assert!(refresh_cookie(&signed_in).is_some());
+    let token = signed_in.json["token"].as_str().unwrap().to_string();
+    let me = app
+        .send_as(&token, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(me.json["username"], "jane", "{}", me.text);
+
+    // The one-time code is good once.
+    let again = app.sso_exchange(&landing).await;
+    assert_eq!(again.status, StatusCode::UNAUTHORIZED);
+
+    // Her groups decide her role, at every sign-in; she is the same user
+    // however the provider names her now.
+    let mut promoted = jane.clone();
+    promoted["groups"] = json!(["staff", "fcp-admins"]);
+    promoted["preferred_username"] = json!("jane.doe@acme.test");
+    let landing = app.sso_landing(&idp, &provider, promoted).await;
+    let signed_in = app.sso_exchange(&landing).await;
+    assert_eq!(
+        signed_in.json["user"]["username"], "jane",
+        "{}",
+        signed_in.text
+    );
+    assert_eq!(signed_in.json["user"]["role"], "tenant_admin");
+
+    let identities = app
+        .admin(Method::GET, "/api/v1/users/jane/identities", None)
+        .await;
+    assert_eq!(
+        identities.json[0]["subject"], "jane-1",
+        "{}",
+        identities.text
+    );
+    assert_eq!(identities.json[0]["provider_id"], provider.as_str());
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn a_sign_in_through_a_provider_is_refused_when_it_should_be() {
+    let app = require_app!();
+    let idp = StandInIdp::start(IDP_CLIENT, Some(IDP_SECRET))
+        .await
+        .unwrap();
+    let provider = app.make_provider(&idp, json!({"jit": false})).await;
+    let error = |landing: &str| query_param(landing, "sso_error").unwrap_or_default();
+
+    // An existing user is linked by the email the provider has verified.
+    app.admin(
+        Method::POST,
+        "/api/v1/users",
+        Some(json!({"username": "bob", "email": "bob@acme.test"})),
+    )
+    .await;
+    let landing = app
+        .sso_landing(
+            &idp,
+            &provider,
+            json!({"sub": "b", "email": "bob@acme.test", "email_verified": true}),
+        )
+        .await;
+    assert_eq!(
+        app.sso_exchange(&landing).await.json["user"]["username"],
+        "bob",
+        "{landing}"
+    );
+
+    // An unverified email links nobody; with no creation, no way in.
+    app.admin(
+        Method::POST,
+        "/api/v1/users",
+        Some(json!({"username": "carol", "email": "carol@acme.test"})),
+    )
+    .await;
+    let landing = app
+        .sso_landing(
+            &idp,
+            &provider,
+            json!({"sub": "c", "email": "carol@acme.test"}),
+        )
+        .await;
+    assert_eq!(error(&landing), "not_provisioned");
+
+    // A callback this browser did not begin.
+    idp.sign_in_as(json!({"sub": "b"}));
+    let (authorize, _cookie) = app.sso_start(&provider).await;
+    let callback = app.at_provider(&authorize).await;
+    let res = app.send(Method::GET, &callback, &[], None).await;
+    assert_eq!(error(&location(&res)), "bad_state");
+    let (_, other_cookie) = app.sso_start(&provider).await;
+    let res = app.with_cookie(Method::GET, &callback, &other_cookie).await;
+    assert_eq!(error(&location(&res)), "bad_state");
+
+    // A token for another client, and a provider that turns us away.
+    idp.override_claims(json!({"aud": "someone-else"}));
+    let landing = app.sso_landing(&idp, &provider, json!({"sub": "b"})).await;
+    assert_eq!(error(&landing), "bad_id_token");
+    idp.override_claims(json!({}));
+    let wrong_secret = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/identity-providers/{provider}"),
+            Some(json!({
+                "name": "Acme SSO",
+                "settings": {"issuer": idp.issuer, "client_id": IDP_CLIENT},
+                "client_secret": "wrong",
+            })),
+        )
+        .await;
+    assert_eq!(wrong_secret.status, StatusCode::OK, "{}", wrong_secret.text);
+    let landing = app.sso_landing(&idp, &provider, json!({"sub": "b"})).await;
+    assert_eq!(error(&landing), "provider_refused");
+
+    // A disabled user does not get in by their provider either.
+    app.admin(
+        Method::PUT,
+        &format!("/api/v1/identity-providers/{provider}"),
+        Some(json!({
+            "name": "Acme SSO",
+            "settings": {"issuer": idp.issuer, "client_id": IDP_CLIENT},
+            "client_secret": IDP_SECRET,
+        })),
+    )
+    .await;
+    app.admin(
+        Method::PUT,
+        "/api/v1/users/bob",
+        Some(json!({"enabled": false})),
+    )
+    .await;
+    let landing = app.sso_landing(&idp, &provider, json!({"sub": "b"})).await;
+    assert_eq!(error(&landing), "disabled");
+
+    // A platform administrator is never signed in by a tenant's provider,
+    // even one asserting their verified email.
+    app.admin(
+        Method::POST,
+        "/api/v1/users",
+        Some(json!({"username": "root2", "password": PASSWORD, "role": "super_admin", "email": "root@acme.test"})),
+    )
+    .await;
+    let landing = app
+        .sso_landing(
+            &idp,
+            &provider,
+            json!({"sub": "r", "email": "root@acme.test", "email_verified": true}),
+        )
+        .await;
+    assert_eq!(error(&landing), "super_admin");
+
+    // A tenant's provider grants no platform role.
+    let root = app
+        .admin(
+            Method::POST,
+            "/api/v1/identity-providers",
+            Some(
+                json!({"name": "x", "settings": {"issuer": idp.issuer, "client_id": "c",
+                "group_roles": [{"group": "g", "role": "super_admin"}]}}),
+            ),
+        )
+        .await;
+    assert_eq!(root.status, StatusCode::BAD_REQUEST, "{}", root.text);
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn passwords_can_be_kept_from_a_tenant_once_it_has_a_provider() {
+    let app = require_app!();
+    let idp = StandInIdp::start(IDP_CLIENT, Some(IDP_SECRET))
+        .await
+        .unwrap();
+    let tenant_path = format!("/api/v1/tenants/{}", app.tenant_a);
+    let policy = |p: &str| json!({"sign_in": {"password_login": p}});
+
+    let early = app
+        .admin(Method::PUT, &tenant_path, Some(policy("disabled")))
+        .await;
+    assert_eq!(early.status, StatusCode::BAD_REQUEST, "{}", early.text);
+
+    let provider = app.make_provider(&idp, json!({"jit": true})).await;
+    let set = app
+        .admin(Method::PUT, &tenant_path, Some(policy("disabled")))
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+
+    app.create_user_with_role("pat", "end_user").await;
+    let refused = app.login("pat", PASSWORD).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let landing = app
+        .sso_landing(
+            &idp,
+            &provider,
+            json!({"sub": "p", "preferred_username": "pat2"}),
+        )
+        .await;
+    assert_eq!(
+        app.sso_exchange(&landing).await.status,
+        StatusCode::OK,
+        "{landing}"
+    );
+
+    // The last way in cannot be taken away while passwords are kept out.
+    let path = format!("/api/v1/identity-providers/{provider}");
+    let gone = app.admin(Method::DELETE, &path, None).await;
+    assert_eq!(gone.status, StatusCode::CONFLICT, "{}", gone.text);
+    let off = app
+        .admin(
+            Method::PUT,
+            &path,
+            Some(json!({"name": "Acme SSO", "enabled": false,
+                "settings": {"issuer": idp.issuer, "client_id": IDP_CLIENT}})),
+        )
+        .await;
+    assert_eq!(off.status, StatusCode::CONFLICT, "{}", off.text);
+    app.admin(Method::PUT, &tenant_path, Some(policy("allowed")))
+        .await;
+    assert_eq!(
+        app.admin(Method::DELETE, &path, None).await.status,
+        StatusCode::NO_CONTENT
+    );
 
     app.finish().await;
 }

@@ -25,6 +25,9 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 rcgen = "0.13"
 base64 = "0.22"
+# The stand-in identity provider signs ID tokens RS256.
+rsa = "0.9"
+sha2 = { version = "0.10", features = ["oid"] }
 # HTTPS in the HTTP helpers and the phone over SIPS, with a CA of the test's.
 tokio-rustls = "0.26"
 rustls-pemfile = "2"

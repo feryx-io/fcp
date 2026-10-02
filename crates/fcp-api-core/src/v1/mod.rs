@@ -44,6 +44,7 @@ pub mod self_service;
 pub mod signup;
 pub mod sip_trace;
 pub mod sites;
+pub mod sso;
 pub mod supervision;
 pub mod system;
 pub mod tenants;
@@ -77,6 +78,10 @@ pub fn pre_auth_router(enable_signup: bool) -> Router<ApiState> {
         .route("/auth/login/totp", post(auth_session::login_totp))
         .route("/auth/totp/enroll", post(auth_session::enroll_totp))
         .route("/auth/totp/confirm", post(auth_session::confirm_totp))
+        // Single sign-on (docs/IDENTITY_AND_DEVICES.md phase 3)
+        .route("/auth/sso/:id/start", get(sso::start))
+        .route("/auth/sso/callback", get(sso::callback))
+        .route("/auth/sso/exchange", post(sso::exchange))
         .route("/auth/refresh", post(auth_session::refresh))
         .route("/auth/logout", post(auth_session::logout))
         .route(
@@ -335,6 +340,18 @@ pub fn router() -> Router<ApiState> {
         .route("/users", get(users::list_users).post(users::create_user))
         .route("/users/by-id/:id", get(users::get_user_by_id))
         .route("/users/:username/totp", delete(totp::reset_totp))
+        .route("/users/:username/identities", get(sso::list_identities))
+        .route(
+            "/users/:username/identities/:provider_id",
+            delete(sso::unlink_identity),
+        )
+        // A tenant's identity providers (phase 3)
+        .route("/identity-providers", get(sso::list).post(sso::create))
+        .route(
+            "/identity-providers/:id",
+            get(sso::get).put(sso::update).delete(sso::delete),
+        )
+        .route("/identity-providers/:id/check", post(sso::check_provider))
         .route(
             "/users/:username",
             get(users::get_user)

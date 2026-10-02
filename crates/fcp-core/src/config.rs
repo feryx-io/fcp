@@ -809,6 +809,48 @@ pub struct ApiConfig {
     /// Sign-in sessions (`docs/IDENTITY_AND_DEVICES.md` phase 1).
     #[serde(default)]
     pub session: ApiSessionConfig,
+
+    /// Single sign-on through tenants' identity providers (phase 3).
+    #[serde(default)]
+    pub sso: ApiSsoConfig,
+}
+
+/// `[api.sso]`: sign-in through a tenant's identity provider
+/// (`docs/IDENTITY_AND_DEVICES.md` phase 3).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiSsoConfig {
+    /// Where browsers reach this admin, e.g. `https://pbx.example.com`:
+    /// a provider sends them back to `<public_url>/api/v1/auth/sso/callback`,
+    /// the address registered with it. Unset, nobody signs in through a
+    /// provider (they can still be configured).
+    #[serde(default)]
+    pub public_url: Option<String>,
+    /// Let an issuer be a private or loopback address, over plain HTTP: a
+    /// lab's own provider. Off, an issuer must be public and HTTPS.
+    #[serde(default)]
+    pub allow_private_issuers: bool,
+}
+
+impl ApiSsoConfig {
+    /// `public_url` without its trailing slash, if set.
+    pub fn public_url(&self) -> Option<String> {
+        self.public_url
+            .as_deref()
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty())
+    }
+
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if let Some(url) = self.public_url() {
+            let ok = (url.starts_with("https://") || url.starts_with("http://"))
+                && !url[url.find("://").unwrap_or(0) + 3..].contains(['?', '#']);
+            if !ok {
+                return Err("api.sso.public_url must be an http(s):// address".to_string());
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `[api.session]`: sign-in sessions. A signed-in browser holds an access
@@ -948,6 +990,7 @@ impl Default for ApiConfig {
             deployment_mode: crate::permissions::DeploymentMode::default(),
             rate_limit: ApiRateLimitConfig::default(),
             session: ApiSessionConfig::default(),
+            sso: ApiSsoConfig::default(),
         }
     }
 }

@@ -43,6 +43,7 @@ const editSchema = z.object({
   sip_domains: z.string().optional(),
   login_domains: z.string().optional(),
   require_totp: z.enum(['none', 'admins', 'everyone']).optional(),
+  password_login: z.enum(['allowed', 'admins_only', 'disabled']).optional(),
   platform_trunk_fallback: z.boolean().optional(),
   calling_country: z.string().optional(),
   calling_timezone: z.string().optional(),
@@ -215,6 +216,7 @@ export function TenantsPage() {
       sip_domains: (editItem.sip_domains ?? []).join('\n'),
       login_domains: (editItem.login_domains ?? []).join('\n'),
       require_totp: editItem.sign_in?.require_totp ?? 'none',
+      password_login: editItem.sign_in?.password_login ?? 'allowed',
       platform_trunk_fallback: editItem.platform_trunk_fallback ?? true,
       calling_country: editItem.calling?.country ?? '',
       calling_timezone: editItem.calling?.timezone ?? '',
@@ -246,6 +248,7 @@ export function TenantsPage() {
       calling_overrides,
       hoteling_session_hours,
       require_totp,
+      password_login,
       ...rest
     } = data
     updateMutation.mutate({
@@ -263,7 +266,7 @@ export function TenantsPage() {
         contact_phone: data.contact_phone || undefined,
         sip_domains: parseSipDomains(rawDomains),
         sign_in: {
-          password_login: editItem.sign_in?.password_login ?? 'allowed',
+          password_login: password_login ?? 'allowed',
           require_totp: require_totp ?? 'none',
         },
         // A login domain decides where a person's sign-in goes: only a
@@ -453,6 +456,22 @@ export function TenantsPage() {
               <p className="text-xs text-muted-foreground">
                 One per line. Someone signing in as name@one-of-these is this
                 tenant's. Set by a platform admin.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="e-password_login">Passwords</Label>
+              <select
+                id="e-password_login"
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                {...editForm.register('password_login')}
+              >
+                <option value="allowed">Everyone may sign in with a password</option>
+                <option value="admins_only">Only administrators may</option>
+                <option value="disabled">Nobody may: single sign-on only</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                Restricting passwords needs an enabled identity provider (Single Sign-On). A
+                platform super admin is never shut out.
               </p>
             </div>
             <div className="space-y-2">

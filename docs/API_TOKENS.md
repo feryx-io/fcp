@@ -141,6 +141,10 @@ Who holds the new permissions:
 | `read_only` | Every new `…_read` permission, and `cdr_read`; nothing that changes anything |
 | `end_user` | None; an end user reaches `/me` |
 
+`identity_provider_manage` (`/identity-providers`, `docs/SSO.md`) came
+later, with single sign-on. Only `super_admin` and `tenant_admin` hold
+it: a provider's groups can make anyone a tenant admin.
+
 ## 4. What changed on upgrade
 
 - **Read-only and other limited roles.** Before this release, a
@@ -354,6 +358,10 @@ their tenant, how they signed in, when it ends and whether it was revoked
     (`password_not_allowed`).
   - The API takes nothing but `allowed` until the tenant has an identity
     provider (phase 3) to sign in with instead.
+- **Single sign-on.** A tenant's people can sign in through its OpenID
+  Connect provider (`docs/SSO.md`). The session that follows is like any
+  other, with `method: "oidc"`. Once the tenant has an enabled provider,
+  `password_login` can be `admins_only` or `disabled`.
 - **A second factor.** A user may add a one-time code (TOTP, RFC 6238:
   six digits, thirty seconds, any authenticator app) to their password.
   - Set up from the portal's settings: `POST /me/totp/enroll` answers the

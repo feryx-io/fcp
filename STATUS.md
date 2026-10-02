@@ -1681,6 +1681,16 @@ Phase 2b done (v0.25.310): a second factor.
 - An expired password no longer answers a usable token.
 - Phase 2 is complete; phase 3 (OIDC) is next.
 
+Phase 3a done (v0.25.311): single sign-on through OpenID Connect
+(`docs/SSO.md`).
+- A tenant admin adds the tenant's provider (Entra ID, Okta, Google, any
+  OIDC), and its people get a "Continue with …" button on the login page.
+- People are linked by verified email or created at first sign-in, and
+  their roles can follow the provider's groups.
+- Passwords can be kept to admins or to nobody once a provider exists.
+- Next, 3b: back-channel logout, sign-in at sites, and the provider
+  guides.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
