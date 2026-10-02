@@ -1032,6 +1032,15 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
             object,
         });
     }
+    // After the users: an identity names its user.
+    if let Some(identities) = storage.identity_store() {
+        for p in identities.list_identity_providers(tenant).await? {
+            items.push(item("identity_providers", &p.id, &p)?);
+        }
+        for i in identities.list_tenant_identities(tenant).await? {
+            items.push(item("user_identities", &i.row_id(), &i)?);
+        }
+    }
     Ok(items)
 }
 
@@ -1162,6 +1171,19 @@ async fn object_now(
                 None => None,
             },
             Err(_) => None,
+        },
+        "identity_providers" => match (storage.identity_store(), id.parse()) {
+            (Some(store), Ok(id)) => same_tenant!(store.get_identity_provider(&id).await?),
+            _ => None,
+        },
+        "user_identities" => match (
+            storage.identity_store(),
+            fcp_core::identity::UserIdentity::parse_row_id(id),
+        ) {
+            (Some(store), Some((provider, subject))) => {
+                same_tenant!(store.get_user_identity(&provider, &subject).await?)
+            }
+            _ => None,
         },
         _ => None,
     })

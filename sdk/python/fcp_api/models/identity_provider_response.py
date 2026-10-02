@@ -39,6 +39,7 @@ class IdentityProviderResponse:
             updated_at (datetime.datetime):
             redirect_uri (None | str | Unset): The address to register with the provider as the redirect URI;
                 absent where `[api.sso] public_url` is not set.
+            backchannel_logout_uri (None | str | Unset): The address to register as its back-channel logout URI.
      """
 
     id: str
@@ -51,6 +52,7 @@ class IdentityProviderResponse:
     created_at: datetime.datetime
     updated_at: datetime.datetime
     redirect_uri: None | str | Unset = UNSET
+    backchannel_logout_uri: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -83,6 +85,12 @@ class IdentityProviderResponse:
         else:
             redirect_uri = self.redirect_uri
 
+        backchannel_logout_uri: None | str | Unset
+        if isinstance(self.backchannel_logout_uri, Unset):
+            backchannel_logout_uri = UNSET
+        else:
+            backchannel_logout_uri = self.backchannel_logout_uri
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -99,6 +107,8 @@ class IdentityProviderResponse:
         })
         if redirect_uri is not UNSET:
             field_dict["redirect_uri"] = redirect_uri
+        if backchannel_logout_uri is not UNSET:
+            field_dict["backchannel_logout_uri"] = backchannel_logout_uri
 
         return field_dict
 
@@ -145,6 +155,16 @@ class IdentityProviderResponse:
         redirect_uri = _parse_redirect_uri(d.pop("redirect_uri", UNSET))
 
 
+        def _parse_backchannel_logout_uri(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        backchannel_logout_uri = _parse_backchannel_logout_uri(d.pop("backchannel_logout_uri", UNSET))
+
+
         identity_provider_response = cls(
             id=id,
             tenant_id=tenant_id,
@@ -156,6 +176,7 @@ class IdentityProviderResponse:
             created_at=created_at,
             updated_at=updated_at,
             redirect_uri=redirect_uri,
+            backchannel_logout_uri=backchannel_logout_uri,
         )
 
 

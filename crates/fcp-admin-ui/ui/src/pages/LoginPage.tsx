@@ -24,6 +24,7 @@ const SSO_ERRORS: Record<string, string> = {
   username_taken: 'An account with your name already exists. Ask your administrator to link it.',
   no_username: 'Your identity provider gave no name to make an account with.',
   super_admin: 'A platform administrator signs in with a password.',
+  claim_mismatch: 'This account is not one your organisation signs in with.',
 }
 
 /**

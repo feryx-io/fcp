@@ -295,6 +295,65 @@ format = "compact"
         "alice's registration at the site: {text}"
     );
 
+    // The tenant's identity provider reaches the site with its client
+    // secret, so the site signs its people in itself
+    // (docs/IDENTITY_AND_DEVICES.md Q11); the site's admin may read it,
+    // not change it.
+    let (code, made) = cloud
+        .admin_call(
+            "POST",
+            "/api/v1/identity-providers",
+            true,
+            Some(
+                &serde_json::json!({
+                    "name": "Acme SSO",
+                    "settings": {"issuer": "https://login.example.com/acme/v2.0", "client_id": "fcp"},
+                    "client_secret": "the-client-secret",
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+    assert_eq!(code, 201, "{made}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let synced = loop {
+        let (code, text) = http_request(
+            "GET",
+            &loopback(site_admin_http, "/api/v1/identity-providers"),
+            &site_headers,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 200, "{text}");
+        let listed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        if let Some(p) = listed["data"].as_array().and_then(|d| d.first()) {
+            break p.clone();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the provider never reached the site: {text}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    assert_eq!(synced["name"], "Acme SSO", "{synced}");
+    assert_eq!(synced["has_client_secret"], true, "{synced}");
+    let (code, text) = http_request(
+        "DELETE",
+        &loopback(
+            site_admin_http,
+            &format!(
+                "/api/v1/identity-providers/{}",
+                synced["id"].as_str().unwrap()
+            ),
+        ),
+        &site_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 403, "a synced provider is the cloud's: {text}");
+
     // A user deleted in the cloud is gone at the site.
     let (code, gone) = cloud
         .admin_call("DELETE", "/api/v1/users/alice", true, None)

@@ -35,6 +35,11 @@ pub const SYNC_TABLES: &[&str] = &[
     "emergency_configs",
     "rate_plans",
     "rates",
+    // Single sign-on at a site (docs/IDENTITY_AND_DEVICES.md Q11): the
+    // tenant's providers, their client secrets sealed with the site's own
+    // key, and the identities its users have at them.
+    "identity_providers",
+    "user_identities",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -36,7 +36,9 @@ hold.
 
 1. Register an application (a "web" client) with the provider. Its
    redirect URI is the one the page shows:
-   `<public_url>/api/v1/auth/sso/callback`.
+   `<public_url>/api/v1/auth/sso/callback`. Its back-channel logout URI,
+   where the provider supports one, is also shown (§5). The guides in §7
+   walk through Entra ID, Okta and Google.
 2. Add the provider here with these settings:
    - **issuer**: what the provider's ID tokens name in `iss`;
    - **client id**;
@@ -45,6 +47,18 @@ hold.
 3. **Check** fetches the discovery document and the keys, as a sign-in
    would.
 
+Two settings decide whose tokens count:
+
+- **Required claims.** These are claims every token must carry, with the
+  given value; any other token is refused as `claim_mismatch`.
+  - Google's `hd` names the Workspace domain. Without it, any Google
+    account at all could sign in.
+  - Entra's `tid` names the directory.
+  - A claim that is a list must contain the value.
+- **The verified-email claim.** This is the claim that says the email is
+  the person's, used for linking. It is `email_verified` by default, and
+  `xms_edov` for Entra ID, whose tokens carry no `email_verified`.
+
 How a sign-in becomes a user:
 
 - **The account.** It is the provider's `sub` for the person, kept as an
@@ -52,8 +66,8 @@ How a sign-in becomes a user:
   name or email the provider gives them later.
 - **The first sign-in** is decided in this order:
   - **Link by verified email** (on by default). It links the one user
-    whose email the provider asserts with `email_verified: true`. An
-    unverified email links nobody.
+    whose email the provider asserts as verified (the verified-email
+    claim, `true`). An unverified email links nobody.
   - **Create users** (just in time; off by default). It makes an end
     user with no password, named by the username claim
     (`preferred_username`), or the part of it before the `@`, or else
@@ -106,8 +120,8 @@ How a sign-in becomes a user:
   - `user.signed_in` with `method: "oidc"`.
   - `user.sign_in_failed` with the reason: `bad_state`, `expired`,
     `provider_refused`, `provider_unavailable`, `bad_id_token`,
-    `not_provisioned`, `username_taken`, `no_username`, `disabled` or
-    `super_admin`.
+    `not_provisioned`, `username_taken`, `no_username`, `disabled`,
+    `super_admin` or `claim_mismatch`.
   - `user.created` for a user made at sign-in.
 - **A tenant's password policy.** `sign_in.password_login` can be
   `admins_only` or `disabled` once the tenant has an enabled provider.
@@ -123,14 +137,134 @@ How a sign-in becomes a user:
   (`user_update`). The next sign-in there links or creates afresh.
 - Deleting a provider deletes the identities at it.
 
-## 5. Not yet
+## 5. Back-channel logout
 
-These come in phase 3b:
+A provider that supports OpenID Connect Back-Channel Logout 1.0 tells FCP
+when someone signs out there. Keycloak does, as does Okta where the org
+has it enabled; Entra ID and Google do not.
+Register the provider's back-channel logout URI, which the page shows:
+`<public_url>/api/v1/auth/sso/{id}/backchannel-logout`.
 
-- **Back-channel logout.** A provider's logout does not yet end FCP
-  sessions.
-- **Sites.** A site does not yet sign its people in through the tenant's
-  provider.
-- **Step-by-step guides** for Entra ID, Okta and Google.
+- **The request.** The provider POSTs a `logout_token`, verified as
+  strictly as an ID token:
+  - signed by its keys;
+  - its `iss`;
+  - `aud` is our client;
+  - issued in the last five minutes, so a captured one replayed later is
+    refused;
+  - the logout event in `events`;
+  - no `nonce`;
+  - a `sub`, a `sid` or both.
+- **What ends:**
+  - with a `sid`, the sessions begun as that provider session (the `sid`
+    the ID token carried at sign-in);
+  - with only a `sub`, every session of that person begun through the
+    provider.
+- **The answer** is 200, with `Cache-Control: no-store`. A token that
+  does not verify is answered 400 and ends nothing.
+- **The effect** is at once: an ended session's access token is refused
+  at its next request, and its refresh cookie no longer refreshes.
 
-SAML is phase 4, and SCIM provisioning is phase 6.
+## 6. Sites
+
+A site signs its people in through its tenant's provider itself, so
+sign-in works while the link to the cloud is down
+(`docs/IDENTITY_AND_DEVICES.md` Q11).
+
+- **What syncs.** The tenant's providers and their users' identities are
+  in the site's slice (`docs/HYBRID_CONTROL_PLANE.md`).
+  - The client secret travels only over the link's mutual TLS, and the
+    link stores it sealed with the site's own master key.
+  - The site's admin reads providers, but a change is the cloud's.
+- **The site's own address.** Set `[api.sso] public_url` on the site's
+  admin to where browsers reach it. Register its callback,
+  `<site public_url>/api/v1/auth/sso/callback`, with the provider as a
+  second redirect URI of the same client.
+- **What a site does not do.**
+  - It does not create users at first sign-in: users come from the cloud,
+    so a stranger is refused as `not_provisioned`.
+  - It does not set roles from groups: the cloud is the users' system of
+    record and applies them at the person's next sign-in there.
+  - It does link a person by verified email. The identity it records
+    there is the site's own, until the cloud's arrives.
+- **When the provider is unreachable**, people sign in with a password
+  only if the tenant's policy allows it. There is no other fallback.
+- **Back-channel logout** reaches the URI the provider has. A provider
+  takes one per client, so register the cloud's; sessions at a site end
+  when they expire.
+
+## 7. Guides
+
+These were written against each provider's console as of 2026. Labels
+move, but the settings do not.
+
+### Entra ID (Microsoft)
+
+1. **Entra admin center → App registrations → New registration.**
+   - Supported account types: *this organizational directory only*.
+   - Redirect URI: platform *Web*, the callback URI.
+2. **Certificates & secrets → New client secret.** Copy the value: that
+   is the client secret.
+3. **Token configuration.**
+   - *Add optional claim → ID → `email` and `xms_edov`*. `xms_edov` says
+     the email belongs to a domain the directory has verified.
+   - For roles by group: *Add groups claim → Security groups*, emitted
+     as group object IDs. Over about 200 groups the token carries none;
+     choose *groups assigned to the application* to stay under.
+4. **In FCP:**
+   - Issuer: `https://login.microsoftonline.com/<directory id>/v2.0`.
+     The `common` and `organizations` endpoints are not single issuers
+     and are refused.
+   - Client id: the application (client) ID.
+   - Verified-email claim: `xms_edov`.
+   - Required claim: `tid <directory id>`.
+   - Username claim: `preferred_username`, the UPN.
+   - Roles by group: the group's object ID, then the role.
+5. Entra ID sends no back-channel logout.
+
+### Okta
+
+1. **Admin console → Applications → Create App Integration.** Choose
+   *OIDC*, then *Web Application*.
+   - Sign-in redirect URI: the callback URI.
+   - Client authentication: *Client secret*. FCP sends it as HTTP Basic,
+     Okta's default.
+2. **Assignments.** Assign the people or groups who may sign in.
+3. **Back-channel logout.** On the app's *General* tab, where the org
+   offers it, enter the back-channel logout URI.
+4. **Groups.** Two routes:
+   - With the org authorization server (issuer `https://<org>.okta.com`):
+     the app's *Sign On → OpenID Connect ID Token → Groups claim filter*.
+     Name it `groups` and match, say, `fcp-` prefixes.
+   - With a custom authorization server (issuer
+     `https://<org>.okta.com/oauth2/<server id>`): *Security → API →
+     Authorization Servers → Claims*. Add a claim `groups`, *ID Token*,
+     *Always*, value type *Groups*, with a filter.
+5. **In FCP:** the issuer exactly as Okta's discovery document names it,
+   the client id and secret, and roles by group name. The verified-email
+   claim stays `email_verified`.
+
+### Google Workspace
+
+1. **Google Cloud console → APIs & Services.**
+   - *OAuth consent screen*: user type *Internal*, so only your Workspace
+     users are offered it.
+   - *Credentials → Create credentials → OAuth client ID → Web
+     application*, with the callback URI as an authorized redirect URI.
+2. **In FCP:**
+   - Issuer: `https://accounts.google.com`.
+   - The client id and secret.
+   - Required claim: `hd <your Workspace domain>`. Without it a personal
+     Google account would be accepted wherever the consent screen is
+     external.
+   - Username claim: `email`. Google sends no `preferred_username`.
+3. **Groups.** Google's ID token carries none, so roles by group do not
+   apply. Set roles in FCP, or provision them by SCIM (phase 6).
+4. Google sends no back-channel logout.
+
+## 8. Not yet
+
+- **Logging out at the provider.** Signing out of FCP ends the FCP
+  session only; it does not send the browser to the provider's
+  end-session endpoint.
+- **SAML** is phase 4, and SCIM provisioning is phase 6.

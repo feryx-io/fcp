@@ -14,6 +14,7 @@ from typing import cast
 if TYPE_CHECKING:
   from ..models.claim_mapping import ClaimMapping
   from ..models.group_role import GroupRole
+  from ..models.required_claim import RequiredClaim
 
 
 
@@ -39,7 +40,13 @@ class ProviderSettings:
             jit (bool | Unset): Create a user the first time someone the provider vouches for
                 signs in, with no FCP account yet.
             link_by_email (bool | Unset): Link an existing user whose email is the one the provider asserts
-                as verified (`email_verified`), on their first sign-in.
+                as verified, on their first sign-in.
+            email_verified_claim (str | Unset): The claim that says the email is verified: `email_verified`, the
+                standard one; `xms_edov` for Entra ID, whose tokens carry no
+                `email_verified`.
+            required_claims (list[RequiredClaim] | Unset): Claims a token must carry to sign anyone in: Google's `hd` (the
+                Workspace domain), so a personal Google account is turned away;
+                Entra's `tid`. A claim that is a list must contain the value.
      """
 
     issuer: str
@@ -49,6 +56,8 @@ class ProviderSettings:
     group_roles: list[GroupRole] | Unset = UNSET
     jit: bool | Unset = UNSET
     link_by_email: bool | Unset = UNSET
+    email_verified_claim: str | Unset = UNSET
+    required_claims: list[RequiredClaim] | Unset = UNSET
 
 
 
@@ -57,6 +66,7 @@ class ProviderSettings:
     def to_dict(self) -> dict[str, Any]:
         from ..models.claim_mapping import ClaimMapping # noqa: PLC0415
         from ..models.group_role import GroupRole # noqa: PLC0415
+        from ..models.required_claim import RequiredClaim # noqa: PLC0415
         issuer = self.issuer
 
         client_id = self.client_id
@@ -84,6 +94,17 @@ class ProviderSettings:
 
         link_by_email = self.link_by_email
 
+        email_verified_claim = self.email_verified_claim
+
+        required_claims: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.required_claims, Unset):
+            required_claims = []
+            for required_claims_item_data in self.required_claims:
+                required_claims_item = required_claims_item_data.to_dict()
+                required_claims.append(required_claims_item)
+
+
+
 
         field_dict: dict[str, Any] = {}
 
@@ -101,6 +122,10 @@ class ProviderSettings:
             field_dict["jit"] = jit
         if link_by_email is not UNSET:
             field_dict["link_by_email"] = link_by_email
+        if email_verified_claim is not UNSET:
+            field_dict["email_verified_claim"] = email_verified_claim
+        if required_claims is not UNSET:
+            field_dict["required_claims"] = required_claims
 
         return field_dict
 
@@ -110,6 +135,7 @@ class ProviderSettings:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.claim_mapping import ClaimMapping # noqa: PLC0415
         from ..models.group_role import GroupRole # noqa: PLC0415
+        from ..models.required_claim import RequiredClaim # noqa: PLC0415
         d = dict(src_dict)
         issuer = d.pop("issuer")
 
@@ -144,6 +170,20 @@ class ProviderSettings:
 
         link_by_email = d.pop("link_by_email", UNSET)
 
+        email_verified_claim = d.pop("email_verified_claim", UNSET)
+
+        _required_claims = d.pop("required_claims", UNSET)
+        required_claims: list[RequiredClaim] | Unset = UNSET
+        if _required_claims is not UNSET:
+            required_claims = []
+            for required_claims_item_data in _required_claims:
+                required_claims_item = RequiredClaim.from_dict(required_claims_item_data)
+
+
+
+                required_claims.append(required_claims_item)
+
+
         provider_settings = cls(
             issuer=issuer,
             client_id=client_id,
@@ -152,6 +192,8 @@ class ProviderSettings:
             group_roles=group_roles,
             jit=jit,
             link_by_email=link_by_email,
+            email_verified_claim=email_verified_claim,
+            required_claims=required_claims,
         )
 
         return provider_settings

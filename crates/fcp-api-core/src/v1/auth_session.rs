@@ -368,6 +368,7 @@ pub(crate) async fn begin_session(
     user: &fcp_core::User,
     method: &str,
     headers: &HeaderMap,
+    idp: Option<session::IdpSession>,
 ) -> Result<Issued, ApiError> {
     let now = SystemTime::now();
     let Some(store) = session_store(state) else {
@@ -397,6 +398,7 @@ pub(crate) async fn begin_session(
             .map(|v| v.chars().take(512).collect()),
         refresh_hash,
         previous_refresh_hash: None,
+        idp,
     };
     store
         .create_login_session(&row)
@@ -550,9 +552,22 @@ async fn after_password(
 pub(crate) async fn complete_sign_in(
     state: &ApiState,
     headers: &HeaderMap,
+    user: fcp_core::User,
+    method: &str,
+    recovery_codes: Option<Vec<String>>,
+) -> Result<Response, ApiError> {
+    complete_sign_in_through(state, headers, user, method, recovery_codes, None).await
+}
+
+/// Signed in, through an identity provider when `idp` says which: the
+/// session remembers it, for the provider's back-channel logout.
+pub(crate) async fn complete_sign_in_through(
+    state: &ApiState,
+    headers: &HeaderMap,
     mut user: fcp_core::User,
     method: &str,
     recovery_codes: Option<Vec<String>>,
+    idp: Option<session::IdpSession>,
 ) -> Result<Response, ApiError> {
     let now = SystemTime::now();
     if let Some(storage) = state.storage.as_ref() {
@@ -561,7 +576,7 @@ pub(crate) async fn complete_sign_in(
         user.updated_at = now;
         let _ = storage.put_user(user.clone()).await;
     }
-    let issued = begin_session(state, &user, method, headers).await?;
+    let issued = begin_session(state, &user, method, headers, idp).await?;
     if let Some(session_id) = &issued.session {
         publish(
             state,

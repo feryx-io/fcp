@@ -140,6 +140,27 @@ impl StandInIdp {
     pub fn sign(&self, claims: &Value) -> String {
         sign(&self.inner.key, claims)
     }
+
+    /// A back-channel logout token for the registered client, naming the
+    /// provider's session `sid`, the user `sub`, or both.
+    pub fn logout_token(&self, sub: Option<&str>, sid: Option<&str>) -> String {
+        let t = now();
+        let mut claims = json!({
+            "iss": self.inner.issuer,
+            "aud": self.inner.client_id,
+            "iat": t,
+            "exp": t + 120,
+            "jti": uuid::Uuid::new_v4().to_string(),
+            "events": {"http://schemas.openid.net/event/backchannel-logout": {}},
+        });
+        if let Some(sub) = sub {
+            claims["sub"] = json!(sub);
+        }
+        if let Some(sid) = sid {
+            claims["sid"] = json!(sid);
+        }
+        sign(&self.inner.key, &claims)
+    }
 }
 
 fn now() -> u64 {

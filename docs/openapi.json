@@ -521,6 +521,51 @@
         }
       }
     },
+    "/api/v1/auth/sso/{id}/backchannel-logout": {
+      "post": {
+        "tags": [
+          "auth_session"
+        ],
+        "summary": "POST /api/v1/auth/sso/{id}/backchannel-logout — the provider says a\nperson signed out there (OpenID Connect Back-Channel Logout 1.0): the\nsessions begun through it as that provider session (`sid`), or all of\nthat person's (`sub`), end.",
+        "operationId": "auth_session_sso_backchannel_logout",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The identity provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/BackchannelLogoutForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The sessions it names are ended"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/identity-providers": {
       "get": {
         "tags": [
@@ -15985,6 +16030,18 @@
           "type": "string"
         }
       },
+      "BackchannelLogoutForm": {
+        "type": "object",
+        "description": "A provider's back-channel logout request.",
+        "required": [
+          "logout_token"
+        ],
+        "properties": {
+          "logout_token": {
+            "type": "string"
+          }
+        }
+      },
       "BalanceResponse": {
         "type": "object",
         "description": "Balance response.",
@@ -21056,6 +21113,13 @@
             ],
             "description": "The address to register with the provider as the redirect URI;\nabsent where `[api.sso] public_url` is not set."
           },
+          "backchannel_logout_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address to register as its back-channel logout URI."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -24342,6 +24406,13 @@
                     "null"
                   ],
                   "description": "The address to register with the provider as the redirect URI;\nabsent where `[api.sso] public_url` is not set."
+                },
+                "backchannel_logout_uri": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The address to register as its back-channel logout URI."
                 },
                 "created_at": {
                   "type": "string",
@@ -29354,7 +29425,18 @@
           },
           "link_by_email": {
             "type": "boolean",
-            "description": "Link an existing user whose email is the one the provider asserts\nas verified (`email_verified`), on their first sign-in."
+            "description": "Link an existing user whose email is the one the provider asserts\nas verified, on their first sign-in."
+          },
+          "email_verified_claim": {
+            "type": "string",
+            "description": "The claim that says the email is verified: `email_verified`, the\nstandard one; `xms_edov` for Entra ID, whose tokens carry no\n`email_verified`."
+          },
+          "required_claims": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RequiredClaim"
+            },
+            "description": "Claims a token must carry to sign anyone in: Google's `hd` (the\nWorkspace domain), so a personal Google account is turned away;\nEntra's `tid`. A claim that is a list must contain the value."
           }
         },
         "additionalProperties": false
@@ -29996,6 +30078,23 @@
           "admins",
           "everyone"
         ]
+      },
+      "RequiredClaim": {
+        "type": "object",
+        "description": "A claim a token must carry, with this value.",
+        "required": [
+          "claim",
+          "value"
+        ],
+        "properties": {
+          "claim": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "ResourceCounts": {
         "type": "object",

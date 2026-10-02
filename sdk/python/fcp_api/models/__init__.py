@@ -11,6 +11,7 @@ from .audit_event_response import AuditEventResponse
 from .auth_user_response import AuthUserResponse
 from .avatar_upload import AvatarUpload
 from .b_tree_map import BTreeMap
+from .backchannel_logout_form import BackchannelLogoutForm
 from .balance_response import BalanceResponse
 from .balance_transaction_kind import BalanceTransactionKind
 from .balance_transaction_response import BalanceTransactionResponse
@@ -328,6 +329,7 @@ from .reencrypt_report import ReencryptReport
 from .registration_response import RegistrationResponse
 from .release_hold_request import ReleaseHoldRequest
 from .require_totp import RequireTotp
+from .required_claim import RequiredClaim
 from .resource_counts import ResourceCounts
 from .retention_run_response import RetentionRunResponse
 from .rotate_api_token_request import RotateApiTokenRequest
@@ -451,6 +453,7 @@ __all__ = (
     "AuditEventResponse",
     "AuthUserResponse",
     "AvatarUpload",
+    "BackchannelLogoutForm",
     "BalanceResponse",
     "BalanceTransactionKind",
     "BalanceTransactionResponse",
@@ -768,6 +771,7 @@ __all__ = (
     "ReencryptReport",
     "RegistrationResponse",
     "ReleaseHoldRequest",
+    "RequiredClaim",
     "RequireTotp",
     "ResourceCounts",
     "RetentionRunResponse",
