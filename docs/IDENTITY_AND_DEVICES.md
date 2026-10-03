@@ -559,6 +559,40 @@ Each phase is one PR based on main, with its admin UI and its docs.
        `a_tenants_users_are_listed_filtered_and_capped` (`api_postgres.rs`)
        and `a_suspended_users_phone_is_refused_and_a_locked_ones_is_not`
        (`fcp-call-manager/tests/registrations.rs`, over SIP).
+   - **5b done (v0.25.316)** (`docs/USERS.md` §4).
+     - `AccountStatus::Deprovisioned` with `users.deprovisioned_at`
+       (migration 097); refused everywhere a suspension is; set only by a
+       delete, cleared only by `POST /users/{username}/restore`.
+     - The tenant's `offboarding` (`grace_days`, default 30;
+       `meetings_owner`), on the tenants API and the Tenants page.
+     - `fcp_core::offboarding` (`OffboardingStore::purge_user`, one
+       transaction in Postgres, under `DeletionCause::Offboarding`) and
+       `fcp_api_core::offboarding` (deprovision, restore, purge, the
+       hourly sweep run by `fcp-admin` under the `fcp:offboarding` lock).
+     - The purge: devices unassigned; lines and user extensions released
+       (numbers kept); the mailbox kept closed and off its line, removed
+       by the sweep once retention empties it (its foreign key to the line
+       is now `ON DELETE SET NULL`); calling settings, tokens, hoteling
+       sessions, queue seats (and queues' agent lists), declared
+       location, registrations and presence removed; others' forwards,
+       find-me steps and assistants forgetting the user
+       (`CallingSettings::forget_user`); meetings to the named owner or
+       nobody; the profile picture on the file queue; a `user` row in
+       the deletion log; the user row last.
+     - An open erasure for the user holds the purge until it completes.
+     - `POST /users/{username}/purge` for a platform admin;
+       `user.deprovisioned` (with `purge_after`), `user.restored`, and
+       `user.deleted` at the purge.
+     - Sites: the link purges what only the site holds (tokens, hoteling,
+       queue seats, declared location, registrations, the mailbox) when
+       the cloud's delete of the user reaches it; the synced rows follow
+       through the journal.
+     - Not done: deprovisioned users still count toward `max_users` until
+       purged.
+     - Proved by `a_deleted_user_waits_out_the_grace_period_and_is_purged_from_every_store`,
+       `a_tenant_without_a_grace_period_purges_at_once_and_a_platform_admin_may_early`
+       (`api_postgres.rs`) and the site half of
+       `fcp-link/tests/apply.rs`.
 6. **SCIM 2.0.**
    - `/scim/v2/{Users,Groups,ServiceProviderConfig,ResourceTypes,Schemas}`.
    - Filters, PATCH and ETags.

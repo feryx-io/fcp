@@ -52,6 +52,8 @@ class UserResponse:
             account_locked_until (datetime.datetime | None | Unset):
             emergency_contact_name (None | str | Unset):
             emergency_contact_phone (None | str | Unset):
+            deprovisioned_at (datetime.datetime | None | Unset): When the user was deleted; they are purged the tenant's
+                `offboarding.grace_days` later unless restored.
      """
 
     id: str
@@ -80,6 +82,7 @@ class UserResponse:
     account_locked_until: datetime.datetime | None | Unset = UNSET
     emergency_contact_name: None | str | Unset = UNSET
     emergency_contact_phone: None | str | Unset = UNSET
+    deprovisioned_at: datetime.datetime | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -205,6 +208,14 @@ class UserResponse:
         else:
             emergency_contact_phone = self.emergency_contact_phone
 
+        deprovisioned_at: None | str | Unset
+        if isinstance(self.deprovisioned_at, Unset):
+            deprovisioned_at = UNSET
+        elif isinstance(self.deprovisioned_at, datetime.datetime):
+            deprovisioned_at = self.deprovisioned_at.isoformat()
+        else:
+            deprovisioned_at = self.deprovisioned_at
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -251,6 +262,8 @@ class UserResponse:
             field_dict["emergency_contact_name"] = emergency_contact_name
         if emergency_contact_phone is not UNSET:
             field_dict["emergency_contact_phone"] = emergency_contact_phone
+        if deprovisioned_at is not UNSET:
+            field_dict["deprovisioned_at"] = deprovisioned_at
 
         return field_dict
 
@@ -467,6 +480,26 @@ class UserResponse:
         emergency_contact_phone = _parse_emergency_contact_phone(d.pop("emergency_contact_phone", UNSET))
 
 
+        def _parse_deprovisioned_at(data: object) -> datetime.datetime | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                deprovisioned_at_type_0 = datetime.datetime.fromisoformat(data)
+
+
+
+                return deprovisioned_at_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(datetime.datetime | None | Unset, data)
+
+        deprovisioned_at = _parse_deprovisioned_at(d.pop("deprovisioned_at", UNSET))
+
+
         user_response = cls(
             id=id,
             username=username,
@@ -494,6 +527,7 @@ class UserResponse:
             account_locked_until=account_locked_until,
             emergency_contact_name=emergency_contact_name,
             emergency_contact_phone=emergency_contact_phone,
+            deprovisioned_at=deprovisioned_at,
         )
 
 

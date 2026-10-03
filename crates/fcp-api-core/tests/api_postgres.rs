@@ -95,6 +95,8 @@ struct App {
     compliance: Arc<PostgresComplianceStore>,
     /// The storage the API runs on, for a test to run a worker against.
     dyn_storage: Arc<DynStorage>,
+    /// The API's state, for a test to run a sweep against.
+    state: ApiState,
     event_bus: Arc<InMemoryEventBus>,
     dialog_manager: Arc<DialogManager>,
     subscription_manager: Arc<SubscriptionManager>,
@@ -206,7 +208,10 @@ impl App {
                     .with_subject_data_store(Arc::clone(&storage)
                         as Arc<dyn fcp_core::subject_request::SubjectDataStore>)
                     .with_subject_erase_store(Arc::clone(&storage)
-                        as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>),
+                        as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>)
+                    .with_offboarding_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::offboarding::OffboardingStore>
+                    ),
             );
         let dir = tempfile::Builder::new()
             .prefix("fcp-api-test-")
@@ -305,7 +310,8 @@ impl App {
         };
 
         Some(Self {
-            router: create_router(state, &api_config),
+            router: create_router(state.clone(), &api_config),
+            state,
             storage,
             traces,
             sip_traces,
@@ -3418,11 +3424,11 @@ async fn legal_holds_are_placed_block_deletion_and_are_released() {
         .await;
     assert_eq!(other.status, StatusCode::NOT_FOUND, "another tenant's hold");
 
-    // Deleting the message, its mailbox or its number is refused.
+    // Deleting the message or its mailbox is refused. (Deleting the number
+    // no longer reaches them: a mailbox outlives its line.)
     for path in [
         format!("/api/v1/voicemail/messages/{}", message.id),
         format!("/api/v1/voicemail/mailboxes/{mailbox_id}"),
-        format!("/api/v1/phone-numbers/{number_id}"),
     ] {
         let refused = app.admin(Method::DELETE, &path, None).await;
         assert_eq!(
@@ -9550,8 +9556,12 @@ async fn a_user_made_again_with_the_same_name_inherits_nothing() {
         StatusCode::NOT_FOUND
     );
 
-    // Bob is deleted, and another Bob is made.
+    // Bob is deleted and purged, and another Bob is made.
     app.admin(Method::DELETE, "/api/v1/users/bob", None).await;
+    let purged = app
+        .admin(Method::POST, "/api/v1/users/bob/purge", None)
+        .await;
+    assert_eq!(purged.status, StatusCode::OK, "{}", purged.text);
     let second_id = app.create_user_with_role("bob", "tenant_admin").await;
     assert_ne!(first_id, second_id);
     assert_eq!(
@@ -11660,6 +11670,465 @@ async fn a_tenants_users_are_listed_filtered_and_capped() {
         )
         .await;
     assert_eq!(over.status, StatusCode::CONFLICT, "{}", over.text);
+
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Deprovisioning and the purge (docs/IDENTITY_AND_DEVICES.md phase 5b)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_deleted_user_waits_out_the_grace_period_and_is_purged_from_every_store() {
+    use fcp_core::storage::VoicemailStore;
+    let app = require_app!();
+    let pool = app.storage.pool().clone();
+    let tenant = app.tenant_a.to_string();
+    let dee_id = app.create_user_with_role("dee", "end_user").await;
+    app.create_user_with_role("boss", "end_user").await;
+    app.create_user_with_role("owner", "end_user").await;
+    app.create_user_with_role("ta", "tenant_admin").await;
+    let set = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/dee",
+            Some(json!({"extension": "2001"})),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+
+    // The tenant's offboarding: checked, then set.
+    for bad in [
+        json!({"grace_days": 99_999}),
+        json!({"grace_days": 30, "meetings_owner": "nobody"}),
+    ] {
+        let refused = app
+            .admin(
+                Method::PUT,
+                &format!("/api/v1/tenants/{}", app.tenant_a),
+                Some(json!({ "offboarding": bad })),
+            )
+            .await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    }
+    let set = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({ "offboarding": {"grace_days": 30, "meetings_owner": "owner"} })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    assert_eq!(set.json["offboarding"]["grace_days"], 30, "{}", set.text);
+
+    // Everything Dee has: a phone, a line on a number, a mailbox with a
+    // message, an extension, calling settings, an assistant's place, a
+    // token, a registration, a declared location, a queue seat, a meeting.
+    let (device, _) = app
+        .create_phone("dee's phone", "00:15:65:00:55:01", Some(&dee_id))
+        .await;
+    let number = app
+        .admin(
+            Method::POST,
+            "/api/v1/phone-numbers",
+            Some(json!({ "e164": "+15550005501", "tenant_id": app.tenant_a })),
+        )
+        .await;
+    assert_eq!(number.status, StatusCode::CREATED, "{}", number.text);
+    let number_id = number.json["id"].as_str().unwrap().to_string();
+    let line = app
+        .admin(
+            Method::POST,
+            "/api/v1/line-bindings",
+            Some(json!({
+                "phone_number_id": number_id,
+                "owner_user_id": dee_id,
+                "binding_type": "user",
+                "tenant_id": app.tenant_a,
+            })),
+        )
+        .await;
+    assert_eq!(line.status, StatusCode::CREATED, "{}", line.text);
+    let line_id: fcp_core::LineBindingId = line.json["id"].as_str().unwrap().parse().unwrap();
+    let mailbox = fcp_core::VoicemailMailbox::new(
+        app.tenant_a,
+        dee_id.parse().unwrap(),
+        line_id,
+        "dee".to_string(),
+        "1234".to_string(),
+    );
+    let mailbox_id = mailbox.id.clone();
+    app.storage.put_mailbox(mailbox).await.unwrap();
+    let message = fcp_core::VoicemailMessage::new(
+        mailbox_id.clone(),
+        "sip:caller@example.com".to_string(),
+        12,
+        std::path::PathBuf::from("/var/lib/fcp/voicemail/dee-1.wav"),
+    );
+    let message_id = message.id.clone();
+    app.storage.put_message(message).await.unwrap();
+    sqlx::query(
+        "INSERT INTO extensions (id, number, target_type, target_id, tenant_id)
+         VALUES ('ext-dee', '2001', 'user', $1, $2)",
+    )
+    .bind(&dee_id)
+    .bind(&tenant)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let set = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/dee/calling",
+            Some(json!({ "dnd": true })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let set = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/boss/calling",
+            Some(json!({ "executive": { "enabled": true, "assistants": ["dee"] } })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let session = app.login("dee", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let token = app
+        .send_as(
+            &session,
+            Method::POST,
+            "/api/v1/me/api-tokens",
+            Some(json!({"name": "dee's script", "permissions": []})),
+        )
+        .await;
+    assert_eq!(token.status, StatusCode::CREATED, "{}", token.text);
+    let token = token.json["secret"].as_str().unwrap().to_string();
+    app.seed_registration(
+        app.tenant_a,
+        &format!("sip:dee@{REALM}"),
+        "sip:dee@10.0.0.7:5060",
+    )
+    .await;
+    for statement in [
+        "INSERT INTO declared_locations (tenant_id, user_id, address, expires_at)
+         VALUES ($1, $2, '{}'::jsonb, now() + interval '1 day')",
+        "INSERT INTO queue_agents (tenant_id, agent_id, extension) VALUES ($1, 'dee', '2001')",
+        "INSERT INTO conference_meetings (id, tenant_id, room_number, name, owner_id)
+         VALUES ('meeting-dee', $1, '9001', 'Dee''s room', 'dee')",
+    ] {
+        let query = sqlx::query(statement).bind(&tenant);
+        let query = if statement.contains("$2") {
+            query.bind(&dee_id)
+        } else {
+            query
+        };
+        query.execute(&pool).await.unwrap();
+    }
+
+    let mut events = fcp_events::EventSubscriber::subscribe(
+        app.event_bus.as_ref(),
+        fcp_events::EventFilter::new(),
+    )
+    .await
+    .unwrap();
+
+    // Deleted: deprovisioned, refused everywhere, and changed by nothing
+    // but a restore.
+    let deleted = app.admin(Method::DELETE, "/api/v1/users/dee", None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    let dee = app.admin(Method::GET, "/api/v1/users/dee", None).await;
+    assert_eq!(dee.json["account_status"], "deprovisioned", "{}", dee.text);
+    assert_eq!(dee.json["enabled"], false);
+    assert!(dee.json["deprovisioned_at"].is_string(), "{}", dee.text);
+    assert_eq!(
+        app.login("dee", PASSWORD).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        app.send_as(&token, Method::GET, "/api/v1/me/profile", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let edited = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/dee",
+            Some(json!({"display_name": "Dee"})),
+        )
+        .await;
+    assert_eq!(edited.status, StatusCode::CONFLICT, "{}", edited.text);
+    let not_settable = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/boss",
+            Some(json!({"account_status": "deprovisioned"})),
+        )
+        .await;
+    assert_eq!(not_settable.status, StatusCode::BAD_REQUEST);
+    let listed = app
+        .admin(Method::GET, "/api/v1/users?status=deprovisioned", None)
+        .await;
+    assert_eq!(listed.json.as_array().unwrap().len(), 1, "{}", listed.text);
+    let purge_after = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = events.next().await {
+            if let PlatformEvent::User(fcp_events::UserEvent::Deprovisioned {
+                username,
+                purge_after,
+                ..
+            }) = event
+            {
+                if username == "dee" {
+                    return purge_after;
+                }
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .expect("user.deprovisioned");
+    let in_days = purge_after
+        .duration_since(std::time::SystemTime::now())
+        .unwrap()
+        .as_secs()
+        / 86_400;
+    assert_eq!(in_days, 29, "purged thirty days on");
+
+    // Restored: as they were, and signing in.
+    let restored = app
+        .admin(Method::POST, "/api/v1/users/dee/restore", None)
+        .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text);
+    assert_eq!(restored.json["account_status"], "active");
+    assert!(restored.json["deprovisioned_at"].is_null());
+    assert_eq!(app.login("dee", PASSWORD).await.status, StatusCode::OK);
+    let again = app
+        .admin(Method::POST, "/api/v1/users/dee/restore", None)
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+
+    // Deleted again. A tenant admin cannot purge early; the sweep does not
+    // before the grace period ends, nor while an erasure for Dee is open.
+    app.admin(Method::DELETE, "/api/v1/users/dee", None).await;
+    let ta = app.login("ta", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let early = app
+        .send_as(&ta, Method::POST, "/api/v1/users/dee/purge", None)
+        .await;
+    assert_eq!(early.status, StatusCode::FORBIDDEN, "{}", early.text);
+    let now = std::time::SystemTime::now();
+    let swept = fcp_api_core::offboarding::run_sweep(&app.state, now, "test").await;
+    assert_eq!(swept.purged, 0, "{swept:?}");
+    sqlx::query(
+        "INSERT INTO subject_requests
+             (id, tenant_id, kind, subjects, status, received_at, due_at, requested_by)
+         VALUES ('sr-dee', $1, 'erasure', '[{\"type\": \"user\", \"username\": \"dee\"}]'::jsonb,
+                 'preview', now(), now() + interval '30 days', 'admin')",
+    )
+    .bind(&tenant)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let later = now + Duration::from_secs(31 * 86_400);
+    let swept = fcp_api_core::offboarding::run_sweep(&app.state, later, "test").await;
+    assert_eq!(
+        (swept.purged, swept.waiting_for_erasure),
+        (0, 1),
+        "{swept:?}"
+    );
+    sqlx::query("UPDATE subject_requests SET status = 'completed' WHERE id = 'sr-dee'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // The grace period over: purged.
+    let swept = fcp_api_core::offboarding::run_sweep(&app.state, later, "test").await;
+    assert_eq!(swept.purged, 1, "{swept:?}");
+    assert!(swept.errors.is_empty(), "{swept:?}");
+    assert_eq!(
+        app.admin(Method::GET, "/api/v1/users/dee", None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let count = |sql: &'static str| {
+        let pool = pool.clone();
+        let tenant = tenant.clone();
+        let dee_id = dee_id.clone();
+        async move {
+            let query = sqlx::query_scalar::<_, i64>(sql).bind(tenant);
+            let query = if sql.contains("$2") {
+                query.bind(dee_id)
+            } else {
+                query
+            };
+            query.fetch_one(&pool).await.unwrap()
+        }
+    };
+    // Kept by the tenant: the phone, unassigned; the number, released.
+    assert_eq!(
+        count("SELECT count(*) FROM devices WHERE tenant_id = $1 AND owner_user_id IS NULL AND name = 'dee''s phone'").await,
+        1
+    );
+    let _ = &device;
+    assert_eq!(
+        count("SELECT count(*) FROM phone_numbers WHERE tenant_id = $1 AND e164 = '+15550005501'")
+            .await,
+        1
+    );
+    for (what, sql) in [
+        (
+            "line",
+            "SELECT count(*) FROM line_bindings WHERE tenant_id = $1 AND owner_user_id = $2",
+        ),
+        (
+            "extension",
+            "SELECT count(*) FROM extensions WHERE tenant_id = $1 AND target_id = $2",
+        ),
+        (
+            "settings",
+            "SELECT count(*) FROM user_calling_settings WHERE tenant_id = $1 AND user_id = $2",
+        ),
+        (
+            "tokens",
+            "SELECT count(*) FROM api_tokens WHERE tenant_id = $1 AND user_id = $2",
+        ),
+        (
+            "location",
+            "SELECT count(*) FROM declared_locations WHERE tenant_id = $1 AND user_id = $2",
+        ),
+        (
+            "queue",
+            "SELECT count(*) FROM queue_agents WHERE tenant_id = $1 AND agent_id = 'dee'",
+        ),
+        (
+            "registrations",
+            "SELECT count(*) FROM registrations WHERE tenant_id = $1 AND aor LIKE '%dee@%'",
+        ),
+        (
+            "sessions",
+            "SELECT count(*) FROM login_sessions WHERE tenant_id = $1 AND user_id = $2",
+        ),
+    ] {
+        assert_eq!(count(sql).await, 0, "{what} left behind");
+    }
+    // Forgotten by the executive; the meeting is the owner's.
+    let boss = app
+        .admin(Method::GET, "/api/v1/users/boss/calling", None)
+        .await;
+    assert_eq!(
+        boss.json["executive"]["assistants"],
+        json!([]),
+        "{}",
+        boss.text
+    );
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM conference_meetings WHERE tenant_id = $1 AND owner_id = 'owner'"
+        )
+        .await,
+        1
+    );
+    // The mailbox kept, closed and off its line, while it holds a message.
+    let kept = app.storage.get_mailbox(&mailbox_id).await.unwrap().unwrap();
+    assert_eq!(kept.line_binding_id, None);
+    assert!(!kept.enabled);
+    assert!(
+        kept.extension.starts_with("offboarded-"),
+        "{}",
+        kept.extension
+    );
+    // Logged, and announced.
+    assert_eq!(
+        count("SELECT count(*) FROM deletion_log WHERE tenant_id = $1 AND class = 'user' AND item = $2 AND cause = 'offboarding'")
+            .await,
+        1
+    );
+    let deleted = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = events.next().await {
+            if let PlatformEvent::User(fcp_events::UserEvent::Deleted { username, .. }) = event {
+                if username == "dee" {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(deleted, Ok(true), "user.deleted");
+
+    // Retention empties the mailbox; the sweep then removes it.
+    app.storage.delete_message(&message_id).await.unwrap();
+    let swept = fcp_api_core::offboarding::run_sweep(&app.state, later, "test").await;
+    assert_eq!(swept.mailboxes_removed, 1, "{swept:?}");
+    assert!(app
+        .storage
+        .get_mailbox(&mailbox_id)
+        .await
+        .unwrap()
+        .is_none());
+
+    // The username is free again.
+    app.create_user_with_role("dee", "end_user").await;
+    let purged_again = app
+        .dyn_storage
+        .offboarding_store()
+        .unwrap()
+        .deprovisioned_users(&app.tenant_a, later)
+        .await
+        .unwrap();
+    assert!(purged_again.is_empty());
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn a_tenant_without_a_grace_period_purges_at_once_and_a_platform_admin_may_early() {
+    let app = require_app!();
+    app.create_user_with_role("zed", "end_user").await;
+    app.create_user_with_role("yan", "end_user").await;
+
+    // A platform admin purges before the grace period ends; only someone
+    // deleted.
+    let not_deleted = app
+        .admin(Method::POST, "/api/v1/users/yan/purge", None)
+        .await;
+    assert_eq!(
+        not_deleted.status,
+        StatusCode::CONFLICT,
+        "{}",
+        not_deleted.text
+    );
+    app.admin(Method::DELETE, "/api/v1/users/yan", None).await;
+    let purged = app
+        .admin(Method::POST, "/api/v1/users/yan/purge", None)
+        .await;
+    assert_eq!(purged.status, StatusCode::OK, "{}", purged.text);
+    assert_eq!(purged.json["username"], "yan");
+    assert!(purged.json["report"].is_object(), "{}", purged.text);
+
+    // A grace period of 0: a delete is a purge.
+    let set = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({ "offboarding": {"grace_days": 0} })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let deleted = app.admin(Method::DELETE, "/api/v1/users/zed", None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    assert_eq!(
+        app.admin(Method::GET, "/api/v1/users/zed", None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
 
     app.finish().await;
 }

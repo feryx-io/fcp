@@ -619,7 +619,11 @@ async fn main() -> Result<()> {
                     auto_routes += 1;
 
                     // Register by associated phone number E.164 and dial plan extensions
-                    if let Ok(Some(lb)) = dyn_storage.get_line_binding(&mb.line_binding_id).await {
+                    let line = match &mb.line_binding_id {
+                        Some(id) => dyn_storage.get_line_binding(id).await,
+                        None => Ok(None),
+                    };
+                    if let Ok(Some(lb)) = line {
                         if let Ok(Some(pn)) =
                             dyn_storage.get_phone_number(&lb.phone_number_id).await
                         {
@@ -1587,7 +1591,11 @@ async fn handle_mailbox_created(
     }
 
     // Register by phone number and dial plan extensions
-    if let Ok(Some(lb)) = storage.get_line_binding(&mb.line_binding_id).await {
+    let line = match &mb.line_binding_id {
+        Some(id) => storage.get_line_binding(id).await,
+        None => Ok(None),
+    };
+    if let Ok(Some(lb)) = line {
         if let Ok(Some(pn)) = storage.get_phone_number(&lb.phone_number_id).await {
             flow_handler
                 .add_route(pn.e164.clone(), flow_id.clone())

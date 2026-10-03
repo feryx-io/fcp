@@ -219,6 +219,7 @@ impl SiteAccounts {
             primary_phone_number_id: None,
             voicemail_box_id: None,
             profile_picture: None,
+            deprovisioned_at: None,
             failed_login_attempts: 0,
             account_locked_until: None,
         })

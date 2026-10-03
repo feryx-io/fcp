@@ -39,6 +39,7 @@ pub mod flow_trace;
 mod holds;
 mod identity;
 pub mod login_session;
+mod offboarding;
 pub mod prompt;
 pub mod recording;
 pub mod sip_trace;
@@ -871,7 +872,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until
+                    failed_login_attempts, account_locked_until, deprovisioned_at
              FROM users
              WHERE username = $1",
         )
@@ -901,7 +902,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until
+                    failed_login_attempts, account_locked_until, deprovisioned_at
              FROM users
              WHERE username = $1 AND tenant_id = $2",
         )
@@ -924,7 +925,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until
+                    failed_login_attempts, account_locked_until, deprovisioned_at
              FROM users
              WHERE username = $1
              ORDER BY tenant_id",
@@ -954,7 +955,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until
+                    failed_login_attempts, account_locked_until, deprovisioned_at
              FROM users
              WHERE tenant_id = $1 AND LOWER(email) = LOWER($2)",
         )
@@ -977,7 +978,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until
+                    failed_login_attempts, account_locked_until, deprovisioned_at
              FROM users
              WHERE id = $1",
         )
@@ -1022,9 +1023,9 @@ impl CredentialStore for PostgresStorage {
                 extension, department, job_title, location, location_id, language, timezone,
                 account_status, last_login, emergency_contact_json,
                 primary_phone_number_id, voicemail_box_id, profile_picture,
-                failed_login_attempts, account_locked_until
+                failed_login_attempts, account_locked_until, deprovisioned_at
              )
-	             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
+	             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
 	             ON CONFLICT(username, tenant_id) DO UPDATE SET
 	                 password_hash = EXCLUDED.password_hash,
 	                 digest_password = EXCLUDED.digest_password,
@@ -1055,7 +1056,8 @@ impl CredentialStore for PostgresStorage {
                  voicemail_box_id = EXCLUDED.voicemail_box_id,
                  profile_picture = EXCLUDED.profile_picture,
                  failed_login_attempts = EXCLUDED.failed_login_attempts,
-                 account_locked_until = EXCLUDED.account_locked_until",
+                 account_locked_until = EXCLUDED.account_locked_until,
+                 deprovisioned_at = EXCLUDED.deprovisioned_at",
         )
         .bind(&id)
         .bind(&user.username)
@@ -1091,6 +1093,7 @@ impl CredentialStore for PostgresStorage {
         .bind(&user.profile_picture)
         .bind(user.failed_login_attempts)
         .bind(account_locked_until)
+        .bind(user.deprovisioned_at.map(system_time_to_datetime))
         .execute(self.writes())
         .await?;
 
@@ -1154,7 +1157,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until
+                    failed_login_attempts, account_locked_until, deprovisioned_at
              FROM users
              WHERE tenant_id = $1
                AND ($2::TEXT IS NULL OR account_status = $2)
@@ -1191,7 +1194,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until
+                    failed_login_attempts, account_locked_until, deprovisioned_at
              FROM users
              ORDER BY username",
         )
@@ -1419,7 +1422,7 @@ impl RegistrationStore for PostgresStorage {
 const TENANT_SELECT_COLS: &str = "id, name, description, status, contact_email, contact_phone,
     max_users, max_phone_numbers, max_concurrent_calls, billing_id,
     created_at, updated_at, trial_expires_at, metadata, sip_domains,
-    platform_trunk_fallback, calling_json, login_domains, sign_in_json";
+    platform_trunk_fallback, calling_json, login_domains, sign_in_json, offboarding_json";
 
 #[async_trait]
 impl TenantStore for PostgresStorage {
@@ -1540,9 +1543,10 @@ impl TenantStore for PostgresStorage {
                 id, name, description, status, contact_email, contact_phone,
                 max_users, max_phone_numbers, max_concurrent_calls, billing_id,
                 created_at, updated_at, trial_expires_at, metadata, sip_domains,
-                platform_trunk_fallback, data, calling_json, login_domains, sign_in_json
+                platform_trunk_fallback, data, calling_json, login_domains, sign_in_json,
+                offboarding_json
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17, $18, $19)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17, $18, $19, $20)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
@@ -1560,7 +1564,8 @@ impl TenantStore for PostgresStorage {
                  platform_trunk_fallback = EXCLUDED.platform_trunk_fallback,
                  calling_json = EXCLUDED.calling_json,
                  login_domains = EXCLUDED.login_domains,
-                 sign_in_json = EXCLUDED.sign_in_json",
+                 sign_in_json = EXCLUDED.sign_in_json,
+                 offboarding_json = EXCLUDED.offboarding_json",
         )
         .bind(&id)
         .bind(&tenant.name)
@@ -1581,6 +1586,7 @@ impl TenantStore for PostgresStorage {
         .bind(serde_json::to_value(&tenant.calling)?)
         .bind(&login_domains)
         .bind(serde_json::to_value(&tenant.sign_in)?)
+        .bind(serde_json::to_value(&tenant.offboarding)?)
         .execute(self.writes())
         .await?;
 
@@ -1647,6 +1653,8 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
             .try_get::<Vec<String>, _>("login_domains")
             .unwrap_or_default(),
         sign_in: serde_json::from_value(row.get("sign_in_json")).context("a tenant's sign-in")?,
+        offboarding: serde_json::from_value(row.get("offboarding_json"))
+            .context("a tenant's offboarding")?,
     })
 }
 
@@ -3060,6 +3068,9 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         profile_picture: row.get("profile_picture"),
         failed_login_attempts,
         account_locked_until,
+        deprovisioned_at: row
+            .get::<Option<DateTime<Utc>>, _>("deprovisioned_at")
+            .map(datetime_to_system_time),
     };
     // A row from before phase 5 may disagree with itself.
     user.normalize_status();
@@ -7019,8 +7030,10 @@ impl PostgresStorage {
         let id: String = row.try_get("id")?;
         let tenant_id = fcp_core::TenantId::from_str(&row.try_get::<String, _>("tenant_id")?)?;
         let user_id = fcp_core::UserId::from_str(&row.try_get::<String, _>("user_id")?)?;
-        let line_binding_id =
-            fcp_core::LineBindingId::from_str(&row.try_get::<String, _>("line_binding_id")?)?;
+        let line_binding_id = row
+            .try_get::<Option<String>, _>("line_binding_id")?
+            .map(|id| fcp_core::LineBindingId::from_str(&id))
+            .transpose()?;
         let extension: String = row.try_get("extension")?;
         let pin: String = row.try_get("pin")?;
         let enabled: bool = row.try_get("enabled")?;
@@ -7290,7 +7303,7 @@ impl VoicemailStore for PostgresStorage {
         .bind(&mailbox.id)
         .bind(mailbox.tenant_id.to_string())
         .bind(mailbox.user_id.to_string())
-        .bind(mailbox.line_binding_id.to_string())
+        .bind(mailbox.line_binding_id.map(|id| id.to_string()))
         .bind(&mailbox.extension)
         .bind(&mailbox.pin)
         .bind(mailbox.enabled)

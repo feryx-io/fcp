@@ -15,6 +15,7 @@ pub mod auth;
 pub mod e911_validator;
 pub mod error;
 pub mod managed;
+pub mod offboarding;
 pub mod oidc;
 pub mod openapi;
 pub mod page;

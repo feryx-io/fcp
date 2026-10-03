@@ -72,7 +72,10 @@ pub async fn open_site(database_url: &str, max_connections: u32) -> Result<SiteS
         .with_config_template_store(
             storage.clone() as Arc<dyn fcp_core::storage::ConfigTemplateStore>
         )
-        .with_identity_store(storage.clone() as Arc<dyn fcp_core::identity::IdentityStore>);
+        .with_identity_store(storage.clone() as Arc<dyn fcp_core::identity::IdentityStore>)
+        .with_offboarding_store(
+            storage.clone() as Arc<dyn fcp_core::offboarding::OffboardingStore>
+        );
     Ok(SiteStores {
         storage: Arc::new(dyn_storage),
         flows: storage as Arc<dyn FlowStore>,
@@ -453,9 +456,35 @@ impl Syncer {
             "tenants" => storage.delete_tenant(&id!()).await?,
             "users" => {
                 if let Some(user) = storage.get_user_by_id(&id!()).await? {
-                    storage
-                        .delete_user_in_tenant(&user.username, &user.tenant_id)
-                        .await?;
+                    // The cloud purged the user (`docs/USERS.md` §4): what
+                    // only the site holds goes with them — tokens, hoteling,
+                    // queue memberships, registrations, the mailbox off its
+                    // line — while the synced rows arrive on their own.
+                    match self.stores.storage.offboarding_store() {
+                        Some(offboarding) => {
+                            let request = fcp_core::offboarding::PurgeRequest {
+                                tenant_id: user.tenant_id,
+                                user_id: user.id,
+                                deprovisioned_before: None,
+                                mirror: true,
+                                meetings_owner: None,
+                                profile_picture_path: None,
+                            };
+                            fcp_core::compliance::deleting_as(
+                                fcp_core::compliance::Deleter::new(
+                                    fcp_core::compliance::DeletionCause::Offboarding,
+                                    "fcp-link",
+                                ),
+                                offboarding.purge_user(&request),
+                            )
+                            .await?;
+                        }
+                        None => {
+                            storage
+                                .delete_user_in_tenant(&user.username, &user.tenant_id)
+                                .await?
+                        }
+                    }
                 }
             }
             "schedules" => storage.delete_schedule(&id!()).await?,

@@ -33,4 +33,5 @@ uuid = { workspace = true }
 [dev-dependencies]
 fcp-cdr = { path = "../fcp-cdr" }
 fcp-testkit = { path = "../fcp-testkit" }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
 tempfile = "3"

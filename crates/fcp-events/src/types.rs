@@ -728,7 +728,28 @@ pub enum UserEvent {
         timestamp: SystemTime,
     },
 
-    /// User deleted
+    /// A deleted user is deprovisioned: suspended now, purged at
+    /// `purge_after` unless restored (`docs/USERS.md` §4).
+    Deprovisioned {
+        user_id: String,
+        username: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        purge_after: SystemTime,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A deprovisioned user restored within the grace period.
+    Restored {
+        user_id: String,
+        username: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// User deleted: purged, gone from every store
     Deleted {
         user_id: String,
         username: String,
@@ -1701,6 +1722,8 @@ impl PlatformEvent {
         "user.created",
         "user.updated",
         "user.deleted",
+        "user.deprovisioned",
+        "user.restored",
         "user.enabled",
         "user.disabled",
         "user.calling_changed",
@@ -1850,6 +1873,8 @@ impl PlatformEvent {
                 UserEvent::Created { .. } => "user.created",
                 UserEvent::Updated { .. } => "user.updated",
                 UserEvent::Deleted { .. } => "user.deleted",
+                UserEvent::Deprovisioned { .. } => "user.deprovisioned",
+                UserEvent::Restored { .. } => "user.restored",
                 UserEvent::Enabled { .. } => "user.enabled",
                 UserEvent::Disabled { .. } => "user.disabled",
                 UserEvent::CallingChanged { .. } => "user.calling_changed",
@@ -1981,6 +2006,8 @@ impl PlatformEvent {
                 UserEvent::Created { tenant_id, .. }
                 | UserEvent::Updated { tenant_id, .. }
                 | UserEvent::Deleted { tenant_id, .. }
+                | UserEvent::Deprovisioned { tenant_id, .. }
+                | UserEvent::Restored { tenant_id, .. }
                 | UserEvent::Enabled { tenant_id, .. }
                 | UserEvent::Disabled { tenant_id, .. }
                 | UserEvent::CallingChanged { tenant_id, .. }
@@ -2152,6 +2179,8 @@ impl UserEvent {
             UserEvent::Created { timestamp, .. }
             | UserEvent::Updated { timestamp, .. }
             | UserEvent::Deleted { timestamp, .. }
+            | UserEvent::Deprovisioned { timestamp, .. }
+            | UserEvent::Restored { timestamp, .. }
             | UserEvent::Enabled { timestamp, .. }
             | UserEvent::Disabled { timestamp, .. }
             | UserEvent::CallingChanged { timestamp, .. }

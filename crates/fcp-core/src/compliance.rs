@@ -387,6 +387,8 @@ pub enum DeletionCause {
     /// Deleted at its site, mirrored here as the deletion came up the
     /// site's link (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
     Site,
+    /// A deprovisioned user's purge (`docs/USERS.md` §4).
+    Offboarding,
 }
 
 impl DeletionCause {
@@ -399,6 +401,7 @@ impl DeletionCause {
             DeletionCause::Erasure => "erasure",
             DeletionCause::TenantDeletion => "tenant_deletion",
             DeletionCause::Site => "site",
+            DeletionCause::Offboarding => "offboarding",
         }
     }
 }

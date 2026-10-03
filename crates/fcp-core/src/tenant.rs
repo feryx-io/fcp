@@ -151,6 +151,50 @@ pub struct Tenant {
     /// How the tenant's people may sign in.
     #[serde(default)]
     pub sign_in: TenantSignIn,
+
+    /// What happens to a deleted user (`docs/USERS.md` §4).
+    #[serde(default)]
+    pub offboarding: TenantOffboarding,
+}
+
+/// What happens to a tenant's deleted user (`docs/USERS.md` §4): they are
+/// suspended at once and purged `grace_days` later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TenantOffboarding {
+    /// Days between a delete and the purge, so a mistake can be undone and
+    /// a mailbox collected. 0 purges at once.
+    #[serde(default = "default_grace_days")]
+    pub grace_days: u32,
+    /// The username a purged user's meetings move to; without one they
+    /// are left without an owner.
+    #[serde(default)]
+    pub meetings_owner: Option<String>,
+}
+
+/// The grace period when a tenant names none.
+pub const DEFAULT_GRACE_DAYS: u32 = 30;
+/// The longest grace period a tenant may set.
+pub const MAX_GRACE_DAYS: u32 = 3650;
+
+fn default_grace_days() -> u32 {
+    DEFAULT_GRACE_DAYS
+}
+
+impl Default for TenantOffboarding {
+    fn default() -> Self {
+        Self {
+            grace_days: DEFAULT_GRACE_DAYS,
+            meetings_owner: None,
+        }
+    }
+}
+
+impl TenantOffboarding {
+    /// The grace period.
+    pub fn grace(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.grace_days) * 86_400)
+    }
 }
 
 /// How a tenant's people may sign in (`docs/IDENTITY_AND_DEVICES.md` §2).
@@ -343,6 +387,7 @@ impl Tenant {
             calling: TenantCalling::default(),
             login_domains: Vec::new(),
             sign_in: TenantSignIn::default(),
+            offboarding: TenantOffboarding::default(),
         }
     }
 

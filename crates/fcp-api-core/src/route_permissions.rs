@@ -212,6 +212,8 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (DELETE, "/users/:username", Needs(UserDelete)),
     (PUT, "/users/:username/password", Needs(UserSetPassword)),
     (POST, "/users/:username/unlock", Needs(UserUpdate)),
+    (POST, "/users/:username/restore", Needs(UserDelete)),
+    (POST, "/users/:username/purge", Needs(UserDelete)),
     (
         PUT,
         "/users/:username/digest-password",

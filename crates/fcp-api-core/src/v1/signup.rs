@@ -139,6 +139,7 @@ pub async fn signup(
         calling: Default::default(),
         login_domains: Vec::new(),
         sign_in: Default::default(),
+        offboarding: Default::default(),
         created_at: now,
         updated_at: now,
         trial_expires_at: Some(now + Duration::from_secs(14 * 24 * 3600)),
@@ -193,6 +194,7 @@ pub async fn signup(
         primary_phone_number_id: None,
         voicemail_box_id: None,
         profile_picture: None,
+        deprovisioned_at: None,
         failed_login_attempts: 0,
         account_locked_until: None,
     };

@@ -72,8 +72,8 @@ Since the compliance foundations (`docs/COMPLIANCE_FOLLOWUPS.md` §4, §7):
   never for a caller or a queue; the API route's `path` is placed under the
   tenant's directory and may not climb out of it.
 - **Rows are deleted, files follow.** Deleting a recording's or a voicemail
-  message's row — by retention, the API, a phone's voicemail menu, or a
-  number, line binding or mailbox it belonged to — queues its file in the
+  message's row — by retention, the API, a phone's voicemail menu, or the
+  mailbox it belonged to — queues its file in the
   same transaction; the reaper in `fcp-admin` removes it, only from the
   directories it mounts (`call_recordings_dir`, `voicemail_recordings_dir`,
   `voicemail_greetings_dir`, `profile_pictures_dir`, `[retention]
@@ -127,8 +127,9 @@ gone and the file waits for the node's own sweep.
 
 A legal hold stops the deletion of what it covers until it is released —
 by retention, the API, a phone's voicemail menu, a conference node's sweep,
-a cascade from a number, line binding or mailbox, or the tenant's own
-deletion. Released holds stay, with who released them, when and why.
+a cascade from a mailbox, or the tenant's own deletion. (Since v0.25.316
+a number or line binding no longer takes its mailbox with it: the mailbox
+outlives its line, `docs/USERS.md` §4.) Released holds stay, with who released them, when and why.
 
 `POST /api/v1/compliance/holds` places one:
 

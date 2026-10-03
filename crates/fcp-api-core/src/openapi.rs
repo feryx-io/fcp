@@ -159,6 +159,8 @@ use utoipa::{Modify, OpenApi};
         crate::v1::users::delete_user,
         crate::v1::users::update_password,
         crate::v1::users::unlock_user,
+        crate::v1::users::restore_user,
+        crate::v1::users::purge_user,
         crate::v1::users::update_digest_password,
         crate::v1::users::delete_digest_password,
         crate::v1::calling::get_user_calling,

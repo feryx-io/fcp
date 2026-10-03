@@ -61,7 +61,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
 
 ) -> Response[Any | ErrorResponse]:
-    """ Delete a user.
+    """ Delete a user: they are suspended at once and purged when the tenant's
+    grace period (`offboarding.grace_days`) runs out, unless restored
+    (`docs/USERS.md` §4).
 
      DELETE /api/v1/users/:username
 
@@ -94,7 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
 
 ) -> Any | ErrorResponse | None:
-    """ Delete a user.
+    """ Delete a user: they are suspended at once and purged when the tenant's
+    grace period (`offboarding.grace_days`) runs out, unless restored
+    (`docs/USERS.md` §4).
 
      DELETE /api/v1/users/:username
 
@@ -122,7 +126,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
 
 ) -> Response[Any | ErrorResponse]:
-    """ Delete a user.
+    """ Delete a user: they are suspended at once and purged when the tenant's
+    grace period (`offboarding.grace_days`) runs out, unless restored
+    (`docs/USERS.md` §4).
 
      DELETE /api/v1/users/:username
 
@@ -155,7 +161,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
 
 ) -> Any | ErrorResponse | None:
-    """ Delete a user.
+    """ Delete a user: they are suspended at once and purged when the tenant's
+    grace period (`offboarding.grace_days`) runs out, unless restored
+    (`docs/USERS.md` §4).
 
      DELETE /api/v1/users/:username
 

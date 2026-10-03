@@ -1735,6 +1735,23 @@ Phase 5a done (v0.25.315): one status, and suspension that means it
   `user.updated` names its changes.
 - Next, 5b: deprovisioning and the offboarding purge.
 
+Phase 5b done (v0.25.316): a delete deprovisions, and the purge reaches
+every store (`docs/USERS.md` §4).
+- Deleting a user suspends them at once and purges them when the
+  tenant's grace period runs out (`offboarding.grace_days`, default 30;
+  0 purges at once). Until then they can be restored; a platform admin
+  can purge early.
+- Before, a delete removed the user row and left their devices, lines,
+  extensions, calling settings, tokens, queue seats, declared location
+  and meetings naming nobody.
+- The purge is one transaction: devices unassigned, lines and extensions
+  released, the mailbox kept off its line until retention empties it,
+  everyone else's forwards and assistants forgetting the user, meetings
+  to the tenant's named owner, logged as `offboarding`.
+- An open erasure request runs first. A site purges what only it holds
+  when the cloud's delete reaches it.
+- Next, 5c: groups.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

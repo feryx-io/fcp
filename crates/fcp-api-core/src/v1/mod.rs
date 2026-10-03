@@ -376,6 +376,8 @@ pub fn router() -> Router<ApiState> {
         )
         .route("/users/:username/password", put(users::update_password))
         .route("/users/:username/unlock", post(users::unlock_user))
+        .route("/users/:username/restore", post(users::restore_user))
+        .route("/users/:username/purge", post(users::purge_user))
         .route(
             "/users/:username/digest-password",
             put(users::update_digest_password).delete(users::delete_digest_password),

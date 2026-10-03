@@ -363,6 +363,12 @@ pub struct User {
 
     /// Profile picture filename (e.g. "avatar.png")
     pub profile_picture: Option<String>,
+
+    /// When the user was deprovisioned; the purge follows the tenant's
+    /// grace period later. Set only while `account_status` is
+    /// `Deprovisioned`.
+    #[serde(with = "optional_system_time_serde", default)]
+    pub deprovisioned_at: Option<SystemTime>,
 }
 
 fn default_language() -> String {
@@ -416,6 +422,10 @@ pub enum AccountStatus {
     Suspended,
     /// Account is locked (e.g., after too many failed login attempts)
     Locked,
+    /// Deleted by an admin or a provisioner: suspended, and purged when
+    /// the tenant's grace period runs out (`docs/USERS.md` §4). Set only
+    /// by a delete and cleared only by a restore.
+    Deprovisioned,
 }
 
 impl std::fmt::Display for AccountStatus {
@@ -424,6 +434,7 @@ impl std::fmt::Display for AccountStatus {
             Self::Active => write!(f, "active"),
             Self::Suspended => write!(f, "suspended"),
             Self::Locked => write!(f, "locked"),
+            Self::Deprovisioned => write!(f, "deprovisioned"),
         }
     }
 }
@@ -436,6 +447,7 @@ impl std::str::FromStr for AccountStatus {
             "active" => Ok(Self::Active),
             "suspended" => Ok(Self::Suspended),
             "locked" => Ok(Self::Locked),
+            "deprovisioned" => Ok(Self::Deprovisioned),
             // What the admin UI and the CLI called a suspension.
             "disabled" => Ok(Self::Suspended),
             _ => anyhow::bail!("Invalid account status: {}", s),
@@ -495,7 +507,16 @@ impl User {
     /// (`docs/IDENTITY_AND_DEVICES.md` phase 5). `enabled: false` is the
     /// same thing, kept for one release.
     pub fn is_suspended(&self) -> bool {
-        !self.enabled || self.account_status == AccountStatus::Suspended
+        !self.enabled
+            || matches!(
+                self.account_status,
+                AccountStatus::Suspended | AccountStatus::Deprovisioned
+            )
+    }
+
+    /// Whether the user is deleted and waiting for their purge.
+    pub fn is_deprovisioned(&self) -> bool {
+        self.account_status == AccountStatus::Deprovisioned
     }
 
     /// Whether the user's phones and services work. A Locked user's do:
@@ -510,10 +531,23 @@ impl User {
     /// suspension is both. `enabled` follows the status; a write that
     /// clears `enabled` alone suspends.
     pub fn normalize_status(&mut self) {
-        if !self.enabled && self.account_status != AccountStatus::Suspended {
+        if !self.enabled
+            && matches!(
+                self.account_status,
+                AccountStatus::Active | AccountStatus::Locked
+            )
+        {
             self.account_status = AccountStatus::Suspended;
         }
-        self.enabled = self.account_status != AccountStatus::Suspended;
+        self.enabled = !matches!(
+            self.account_status,
+            AccountStatus::Suspended | AccountStatus::Deprovisioned
+        );
+        if self.account_status != AccountStatus::Deprovisioned {
+            self.deprovisioned_at = None;
+        } else if self.deprovisioned_at.is_none() {
+            self.deprovisioned_at = Some(SystemTime::now());
+        }
     }
 
     /// Check if user has a specific permission in the given deployment mode
@@ -3467,6 +3501,7 @@ pub struct DynStorage {
     call_recording_store: Option<Arc<dyn crate::recording::CallRecordingStore>>,
     subject_data_store: Option<Arc<dyn crate::subject_request::SubjectDataStore>>,
     subject_erase_store: Option<Arc<dyn crate::subject_erasure::SubjectEraseStore>>,
+    offboarding_store: Option<Arc<dyn crate::offboarding::OffboardingStore>>,
 }
 
 impl DynStorage {
@@ -3546,6 +3581,7 @@ impl DynStorage {
             compliance_store: None,
             subject_data_store: None,
             subject_erase_store: None,
+            offboarding_store: None,
             recording_store: None,
             call_recording_store: None,
         }
@@ -3629,6 +3665,7 @@ impl DynStorage {
             compliance_store: None,
             subject_data_store: None,
             subject_erase_store: None,
+            offboarding_store: None,
             recording_store: None,
             call_recording_store: None,
         }
@@ -3861,6 +3898,20 @@ impl DynStorage {
     ) -> Self {
         self.subject_data_store = Some(store);
         self
+    }
+
+    /// Attach where deprovisioned users are purged (`docs/USERS.md` §4).
+    pub fn with_offboarding_store(
+        mut self,
+        store: Arc<dyn crate::offboarding::OffboardingStore>,
+    ) -> Self {
+        self.offboarding_store = Some(store);
+        self
+    }
+
+    /// Where deprovisioned users are purged, when attached.
+    pub fn offboarding_store(&self) -> Option<&Arc<dyn crate::offboarding::OffboardingStore>> {
+        self.offboarding_store.as_ref()
     }
 
     /// Attach where erasures act (`docs/COMPLIANCE_FOLLOWUPS.md` §6.3).
@@ -5325,6 +5376,7 @@ mod tests {
             primary_phone_number_id: None,
             voicemail_box_id: None,
             profile_picture: None,
+            deprovisioned_at: None,
             failed_login_attempts: 0,
             account_locked_until: None,
         };

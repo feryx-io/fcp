@@ -30,6 +30,7 @@ pub mod line_binding;
 pub mod meeting;
 pub mod metrics;
 pub mod migration_ticket;
+pub mod offboarding;
 pub mod permissions;
 pub mod phone_number;
 pub mod pidf_lo;
@@ -166,7 +167,7 @@ pub use crate::storage::{
 pub use crate::sync::{JournalEntry, SyncOp, SyncStore, SYNC_TABLES};
 pub use crate::tenant::{
     is_host_literal, login_domain, normalize_login_domain, PasswordLogin, RequireTotp, Tenant,
-    TenantCalling, TenantSignIn, TenantStatus,
+    TenantCalling, TenantOffboarding, TenantSignIn, TenantStatus,
 };
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,
