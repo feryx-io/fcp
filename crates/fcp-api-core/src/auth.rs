@@ -45,6 +45,9 @@ pub enum AuthIdentity {
         user_id: Option<fcp_core::UserId>,
         /// The sign-in session the token belongs to.
         session_id: Option<fcp_core::LoginSessionId>,
+        /// The roles the user's groups give them, besides `role`
+        /// (`docs/USERS.md` §5).
+        group_roles: Vec<UserRole>,
     },
 }
 
@@ -70,7 +73,23 @@ impl AuthIdentity {
         match self {
             Self::StaticToken | Self::ApiToken { .. } => true,
             Self::Personal { .. } => false,
-            Self::Session { role, .. } => role != "end_user",
+            Self::Session {
+                role, group_roles, ..
+            } => role != "end_user" || group_roles.iter().any(|r| *r != UserRole::EndUser),
+        }
+    }
+
+    /// A signed-in user's roles: their own and their groups'.
+    pub fn session_roles(&self) -> Option<Vec<UserRole>> {
+        match self {
+            Self::Session {
+                role, group_roles, ..
+            } => {
+                let mut roles = vec![role.parse().unwrap_or(UserRole::EndUser)];
+                roles.extend(group_roles.iter().copied());
+                Some(roles)
+            }
+            _ => None,
         }
     }
 
@@ -152,9 +171,9 @@ pub fn check_permission(
         AuthIdentity::Personal { .. } => Err(crate::error::ApiError::Forbidden(
             "A personal token reaches only /me routes".into(),
         )),
-        AuthIdentity::Session { role, .. } => {
-            let user_role: UserRole = role.parse().unwrap_or(UserRole::EndUser);
-            if user_role.has_permission(perm, mode) {
+        AuthIdentity::Session { .. } => {
+            let roles = identity.session_roles().unwrap_or_default();
+            if fcp_core::permissions::roles_have_permission(&roles, perm, mode) {
                 Ok(())
             } else {
                 Err(crate::error::ApiError::Forbidden(
@@ -277,6 +296,7 @@ pub async fn validate_token(token: &str, config: &AuthConfig) -> Option<AuthIden
         .await?;
         let user = principal.user;
         return Some(AuthIdentity::Session {
+            group_roles: principal.group_roles,
             role: crate::v1::auth_session::role_to_string(&user.role),
             tenant_id: Some(user.tenant_id),
             user_id: Some(user.id),
@@ -395,6 +415,7 @@ async fn validate_api_token(
     let fcp_core::AuthenticatedApiToken {
         token,
         maker_role,
+        maker_group_roles,
         maker,
     } = fcp_core::authenticate_api_token(store.as_ref(), users, token).await?;
 
@@ -425,7 +446,17 @@ async fn validate_api_token(
         fcp_core::ApiTokenScope::Admin => Some(AuthIdentity::ApiToken {
             token_id: token.id.to_string(),
             tenant_id: token.tenant_id,
-            permissions: effective_permissions(&token.permissions, maker_role, config.mode),
+            permissions: effective_permissions(
+                &token.permissions,
+                maker_role
+                    .map(|own| {
+                        let mut roles = vec![own];
+                        roles.extend(maker_group_roles.iter().copied());
+                        roles
+                    })
+                    .as_deref(),
+                config.mode,
+            ),
         }),
     }
 }
@@ -435,14 +466,13 @@ async fn validate_api_token(
 /// them). A token without a maker keeps what it was given.
 pub fn effective_permissions(
     stored: &[String],
-    maker_role: Option<UserRole>,
+    maker_roles: Option<&[UserRole]>,
     mode: DeploymentMode,
 ) -> Vec<String> {
-    let Some(role) = maker_role else {
+    let Some(roles) = maker_roles else {
         return stored.to_vec();
     };
-    let allowed: Vec<&str> = role
-        .token_permissions(mode)
+    let allowed: Vec<&str> = fcp_core::permissions::roles_token_permissions(roles, mode)
         .iter()
         .map(|p| p.as_str())
         .collect();
@@ -894,21 +924,49 @@ mod tests {
     }
 
     #[test]
+    fn a_makers_groups_add_to_what_their_token_may_carry() {
+        let mode = DeploymentMode::ServiceProvider;
+        let stored = vec!["user_create".to_string(), "queue_manage".to_string()];
+        // Neither role alone holds both; together they do.
+        let both = [UserRole::TelecomAdmin, UserRole::UserAdmin];
+        assert_eq!(
+            effective_permissions(&stored, Some(&both[..]), mode),
+            stored
+        );
+        assert_eq!(
+            effective_permissions(&stored, Some(&[UserRole::TelecomAdmin][..]), mode),
+            vec!["queue_manage".to_string()]
+        );
+        let session = AuthIdentity::Session {
+            username: "u".into(),
+            role: "end_user".into(),
+            tenant_id: None,
+            user_id: None,
+            session_id: None,
+            group_roles: vec![UserRole::UserAdmin],
+        };
+        assert!(session.is_admin());
+        assert!(!session.is_platform_admin());
+        assert!(check_permission(&session, Permission::UserCreate, mode).is_ok());
+        assert!(check_permission(&session, Permission::QueueManage, mode).is_err());
+    }
+
+    #[test]
     fn a_demoted_maker_takes_the_token_down_with_them() {
         let mode = DeploymentMode::ServiceProvider;
         let stored = vec!["user_read".to_string(), "user_create".to_string()];
         assert_eq!(effective_permissions(&stored, None, mode), stored);
         assert_eq!(
-            effective_permissions(&stored, Some(UserRole::TenantAdmin), mode),
+            effective_permissions(&stored, Some(&[UserRole::TenantAdmin][..]), mode),
             stored
         );
         assert_eq!(
-            effective_permissions(&stored, Some(UserRole::ReadOnly), mode),
+            effective_permissions(&stored, Some(&[UserRole::ReadOnly][..]), mode),
             vec!["user_read".to_string()]
         );
         // A legacy full-access token with a maker is the maker's reach.
         let legacy = vec!["admin".to_string()];
-        let reach = effective_permissions(&legacy, Some(UserRole::ReadOnly), mode);
+        let reach = effective_permissions(&legacy, Some(&[UserRole::ReadOnly][..]), mode);
         assert!(reach.contains(&"user_read".to_string()));
         assert!(!reach.contains(&"user_create".to_string()));
     }

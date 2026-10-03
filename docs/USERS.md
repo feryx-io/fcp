@@ -1,8 +1,7 @@
 # Users
 
-A user's lifecycle, as it stands after phase 5b of
-`docs/IDENTITY_AND_DEVICES.md`. Later parts of phase 5 add groups (5c)
-and renaming (5d).
+A user's lifecycle, as it stands after phase 5c of
+`docs/IDENTITY_AND_DEVICES.md`. Renaming a user (5d) comes next.
 
 ## 1. One status
 
@@ -135,3 +134,59 @@ The purge writes a `user` entry to the deletion log with cause
   registrations and the mailbox.
 - **A mailbox outlives its line.** A line deleted on its own no longer
   takes the owner's mailbox and messages with it (migration 097).
+
+## 5. Groups
+
+A tenant's groups hold users. A group has a name (unique in the tenant),
+and optionally:
+
+- **a role** its members hold besides their own;
+- **an identity provider's group** it follows (`idp_group`);
+- **queues** that take their agents from it.
+
+`/groups` makes, changes and deletes them; `/groups/{id}/members` adds
+and removes members by username; `/users/{username}/groups` lists a
+user's. Only a tenant administrator makes and fills groups
+(`group_manage`); whoever reads users may look (`group_read`).
+
+### Roles from groups
+
+A user may do what their own role allows **and** what each of their
+groups' roles allows. The roles are not a ladder (a user admin manages
+users and a telecom admin does not; a telecom admin manages queues and a
+user admin does not), so someone in both groups may do both.
+
+- A group cannot give `super_admin`, nor `department_admin` (which needs
+  the member's department).
+- It takes effect at once, both ways: every request reads the user's
+  groups afresh, so removing someone from a group takes its role away on
+  their next request.
+- Where one role is shown (the sign-in answer, `/auth/me`, the events
+  server), it is the most privileged one held.
+- A token a user makes may carry what any of their roles' tokens may,
+  and loses what they lose.
+- The password policy and the second-factor requirement count group
+  roles: someone who is an administrator by a group is one.
+
+### Groups that follow an identity provider
+
+A group with `idp_group` set follows the group of that name at the
+tenant's identity providers. At every sign-in through one that carries a
+groups claim, the user is added to each following group the provider
+names and taken out of the rest. Groups without `idp_group` are the
+tenant's own; no sign-in touches them. See `docs/SSO.md` §2.
+
+### Queues from groups
+
+A queue's `agent_group_id` names a group whose members may log in to it
+with the agent login code (`*50`), besides the extensions in `agents`.
+Membership is asked at each login, so it follows the group as it is.
+Changing which group a queue names reaches a call manager when its
+queues are reloaded (`POST /queues/reload` or SIGHUP), as any change to a
+queue's settings does. Deleting a group leaves its queues with none.
+
+### Sites and purges
+
+Groups and memberships are part of a site's slice: a site's users hold
+their groups' roles there too, and a site's admin cannot change them. A
+purged user's memberships go with them.

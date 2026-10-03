@@ -102,6 +102,8 @@ pub struct QueueConfigResponse {
     /// The queue's hours and where a caller goes outside them (§3.5).
     pub schedule_id: Option<String>,
     pub closed_target: Option<String>,
+    /// A group whose members may log in to the queue besides `agents`.
+    pub agent_group_id: Option<String>,
     pub enabled: bool,
     #[serde(with = "crate::time::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
@@ -134,6 +136,7 @@ impl From<QueueConfigRecord> for QueueConfigResponse {
             timezone: c.timezone,
             schedule_id: c.schedule_id.map(|id| id.to_string()),
             closed_target: c.closed_target.map(|t| t.to_string()),
+            agent_group_id: c.agent_group_id.map(|id| id.to_string()),
             enabled: c.enabled,
             created_at: c.created_at,
             updated_at: c.updated_at,
@@ -175,6 +178,9 @@ pub struct CreateQueueConfigRequest {
     pub schedule_id: Option<String>,
     /// A call target; empty clears it.
     pub closed_target: Option<String>,
+    /// A group of the tenant whose members are agents too; empty clears it.
+    #[serde(default)]
+    pub agent_group_id: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -202,6 +208,9 @@ pub struct UpdateQueueConfigRequest {
     pub schedule_id: Option<String>,
     /// A call target; empty clears it.
     pub closed_target: Option<String>,
+    /// A group of the tenant whose members are agents too; empty clears it.
+    #[serde(default)]
+    pub agent_group_id: Option<String>,
     pub enabled: Option<bool>,
 }
 
@@ -349,6 +358,9 @@ pub async fn create_queue_config(
     if let Some(t) = req.closed_target {
         config.closed_target = crate::v1::line_bindings::optional_target("closed_target", &t)?;
     }
+    if let Some(id) = req.agent_group_id {
+        config.agent_group_id = tenant_group(&state, &config.tenant_id, &id).await?;
+    }
     if let Some(v) = req.enabled {
         config.enabled = v;
     }
@@ -449,6 +461,9 @@ pub async fn update_queue_config(
     if let Some(t) = req.closed_target {
         config.closed_target = crate::v1::line_bindings::optional_target("closed_target", &t)?;
     }
+    if let Some(id) = req.agent_group_id {
+        config.agent_group_id = tenant_group(&state, &config.tenant_id, &id).await?;
+    }
     if let Some(v) = req.enabled {
         config.enabled = v;
     }
@@ -505,4 +520,32 @@ pub async fn delete_queue_config(
         .map_err(|e| ApiError::Internal(format!("Failed to delete queue config: {}", e)))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// A group of the tenant, by id; empty is none.
+async fn tenant_group(
+    state: &ApiState,
+    tenant: &fcp_core::TenantId,
+    id: &str,
+) -> Result<Option<fcp_core::GroupId>, ApiError> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Ok(None);
+    }
+    let parsed: fcp_core::GroupId = id
+        .parse()
+        .map_err(|_| ApiError::BadRequest(format!("Invalid agent_group_id: {id}")))?;
+    let found = match state.storage.as_ref().and_then(|s| s.group_store()) {
+        Some(groups) => groups
+            .get_group(&parsed)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?,
+        None => None,
+    };
+    if !found.is_some_and(|g| g.tenant_id == *tenant) {
+        return Err(ApiError::BadRequest(format!(
+            "agent_group_id: no group {id} in the tenant"
+        )));
+    }
+    Ok(Some(parsed))
 }

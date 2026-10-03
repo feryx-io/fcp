@@ -380,6 +380,8 @@ pub fn parse_refresh_cookie(value: &str) -> Option<(LoginSessionId, String)> {
 #[derive(Debug, Clone)]
 pub struct SessionPrincipal {
     pub user: User,
+    /// The roles the user's groups give them now (`docs/USERS.md` §5).
+    pub group_roles: Vec<crate::UserRole>,
     /// `None` for a token made before sessions were rows.
     pub session: Option<LoginSessionId>,
 }
@@ -434,9 +436,18 @@ pub async fn authenticate_session(
     if !user_is_active(&user) {
         return None;
     }
+    let group_roles = users
+        .group_roles_of_user(&user.id)
+        .await
+        .unwrap_or_else(|e| {
+            // Fewer roles, never more, until the groups can be read.
+            tracing::warn!(user_id = %user.id, error = %e, "Could not read a user's groups");
+            Vec::new()
+        });
     Some(SessionPrincipal {
         session: claims.sid.as_deref().and_then(|s| s.parse().ok()),
         user,
+        group_roles,
     })
 }
 

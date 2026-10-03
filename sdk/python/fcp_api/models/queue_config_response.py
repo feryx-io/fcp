@@ -49,6 +49,7 @@ class QueueConfigResponse:
             moh_class (None | str | Unset):
             schedule_id (None | str | Unset): The queue's hours and where a caller goes outside them (§3.5).
             closed_target (None | str | Unset):
+            agent_group_id (None | str | Unset): A group whose members may log in to the queue besides `agents`.
      """
 
     id: str
@@ -74,6 +75,7 @@ class QueueConfigResponse:
     moh_class: None | str | Unset = UNSET
     schedule_id: None | str | Unset = UNSET
     closed_target: None | str | Unset = UNSET
+    agent_group_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -147,6 +149,12 @@ class QueueConfigResponse:
         else:
             closed_target = self.closed_target
 
+        agent_group_id: None | str | Unset
+        if isinstance(self.agent_group_id, Unset):
+            agent_group_id = UNSET
+        else:
+            agent_group_id = self.agent_group_id
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -179,6 +187,8 @@ class QueueConfigResponse:
             field_dict["schedule_id"] = schedule_id
         if closed_target is not UNSET:
             field_dict["closed_target"] = closed_target
+        if agent_group_id is not UNSET:
+            field_dict["agent_group_id"] = agent_group_id
 
         return field_dict
 
@@ -273,6 +283,16 @@ class QueueConfigResponse:
         closed_target = _parse_closed_target(d.pop("closed_target", UNSET))
 
 
+        def _parse_agent_group_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        agent_group_id = _parse_agent_group_id(d.pop("agent_group_id", UNSET))
+
+
         queue_config_response = cls(
             id=id,
             tenant_id=tenant_id,
@@ -297,6 +317,7 @@ class QueueConfigResponse:
             moh_class=moh_class,
             schedule_id=schedule_id,
             closed_target=closed_target,
+            agent_group_id=agent_group_id,
         )
 
 

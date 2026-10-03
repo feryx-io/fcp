@@ -68,7 +68,9 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
         .with_encryption_store(storage.clone() as Arc<dyn fcp_core::encryption::EncryptionStore>)
         .with_sip_trace_store(sip_trace_store as Arc<dyn fcp_core::sip_trace::SipTraceStore>)
         .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>)
-        .with_flow_trace_store(flow_trace_store as Arc<dyn fcp_core::flow_trace::FlowTraceStore>);
+        .with_flow_trace_store(flow_trace_store as Arc<dyn fcp_core::flow_trace::FlowTraceStore>)
+        // A queue's agents may be a group's members (docs/USERS.md §5).
+        .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>);
 
     info!(
         "PostgreSQL storage initialized successfully (with SIP trace + prompt + flow trace stores)"

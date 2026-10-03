@@ -16,7 +16,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { queues, queueConfigs, schedules } from '@/api/endpoints'
+import { queues, queueConfigs, schedules, groups } from '@/api/endpoints'
 import { formatDuration } from '@/lib/utils'
 import type { QueueStatsResponse, QueueConfigResponse, CreateQueueConfigRequest } from '@/types'
 
@@ -50,6 +50,7 @@ interface QueueFormData {
   enabled: boolean
   schedule_id: string
   closed_target: string
+  agent_group_id: string
 }
 
 const defaultFormValues: QueueFormData = {
@@ -72,6 +73,7 @@ const defaultFormValues: QueueFormData = {
   enabled: true,
   schedule_id: '',
   closed_target: '',
+  agent_group_id: '',
 }
 
 function configToForm(c: QueueConfigResponse): QueueFormData {
@@ -95,6 +97,7 @@ function configToForm(c: QueueConfigResponse): QueueFormData {
     enabled: c.enabled,
     schedule_id: c.schedule_id ?? '',
     closed_target: c.closed_target ?? '',
+    agent_group_id: c.agent_group_id ?? '',
   }
 }
 
@@ -119,6 +122,7 @@ function formToRequest(f: QueueFormData): CreateQueueConfigRequest {
     enabled: f.enabled,
     schedule_id: f.schedule_id,
     closed_target: f.closed_target,
+    agent_group_id: f.agent_group_id,
   }
 }
 
@@ -416,6 +420,7 @@ function QueueForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Queue' 
   submitLabel?: string
 }) {
   const { data: scheduleList = [] } = useQuery({ queryKey: ['schedules'], queryFn: schedules.list })
+  const { data: groupList = [] } = useQuery({ queryKey: ['groups'], queryFn: groups.list })
   const { register, handleSubmit, watch, setValue } = form
 
   return (
@@ -462,6 +467,22 @@ function QueueForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Queue' 
         <div>
           <Label htmlFor="agents">Agent Extensions (comma-separated)</Label>
           <Input id="agents" placeholder="e.g. 1001, 1002, 1003" {...register('agents')} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="agent_group_id">And the members of</Label>
+          <select
+            id="agent_group_id"
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+            {...register('agent_group_id')}
+          >
+            <option value="">No group</option>
+            {groupList.map((g) => (
+              <option key={g.id} value={g.id}>{g.name}</option>
+            ))}
+          </select>
+          <p className="text-xs text-muted-foreground">
+            A group's members may log in to the queue with the agent login code (*50).
+          </p>
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>

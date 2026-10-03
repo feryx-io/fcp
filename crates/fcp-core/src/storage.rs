@@ -767,6 +767,13 @@ pub trait CredentialStore: Send + Sync {
     }
 
     /// How many users a tenant has (its `max_users`).
+    /// The roles a user's groups give them (`docs/USERS.md` §5); none
+    /// where the backend keeps no groups.
+    async fn group_roles_of_user(&self, user_id: &crate::UserId) -> Result<Vec<crate::UserRole>> {
+        let _ = user_id;
+        Ok(Vec::new())
+    }
+
     async fn count_users_in_tenant(&self, tenant_id: &crate::TenantId) -> Result<u64> {
         Ok(self
             .list_users_in_tenant(tenant_id, &UserFilter::default())
@@ -2854,6 +2861,8 @@ pub struct AuthenticatedApiToken {
     /// The maker's role now, when the token names a maker and a user store
     /// was given; a token never does more than its maker could today.
     pub maker_role: Option<crate::UserRole>,
+    /// The roles the maker's groups give them now.
+    pub maker_group_roles: Vec<crate::UserRole>,
     /// The maker, by id and by their username now, when known.
     pub maker: Option<(crate::UserId, String)>,
 }
@@ -2882,6 +2891,7 @@ pub async fn authenticate_api_token(
         return None;
     }
     let mut maker_role = None;
+    let mut maker_group_roles = Vec::new();
     let mut maker = None;
     if let (false, Some(users)) = (token.user_id.is_empty(), users) {
         // The maker by id (`docs/IDENTITY_AND_DEVICES.md` phase 1); a token
@@ -2917,6 +2927,12 @@ pub async fn authenticate_api_token(
                     return None;
                 }
                 maker_role = Some(user.role);
+                maker_group_roles = users.group_roles_of_user(&user.id).await.unwrap_or_else(|e| {
+                    // Fewer roles, never more: the token does less until
+                    // the groups can be read.
+                    tracing::warn!(token_id = %token.id, error = %e, "Could not read the maker's groups");
+                    Vec::new()
+                });
                 maker = Some((user.id, user.username));
             }
             Ok(None) => {
@@ -2932,6 +2948,7 @@ pub async fn authenticate_api_token(
     Some(AuthenticatedApiToken {
         token,
         maker_role,
+        maker_group_roles,
         maker,
     })
 }
@@ -3502,6 +3519,7 @@ pub struct DynStorage {
     subject_data_store: Option<Arc<dyn crate::subject_request::SubjectDataStore>>,
     subject_erase_store: Option<Arc<dyn crate::subject_erasure::SubjectEraseStore>>,
     offboarding_store: Option<Arc<dyn crate::offboarding::OffboardingStore>>,
+    group_store: Option<Arc<dyn crate::group::GroupStore>>,
 }
 
 impl DynStorage {
@@ -3582,6 +3600,7 @@ impl DynStorage {
             subject_data_store: None,
             subject_erase_store: None,
             offboarding_store: None,
+            group_store: None,
             recording_store: None,
             call_recording_store: None,
         }
@@ -3666,6 +3685,7 @@ impl DynStorage {
             subject_data_store: None,
             subject_erase_store: None,
             offboarding_store: None,
+            group_store: None,
             recording_store: None,
             call_recording_store: None,
         }
@@ -3909,6 +3929,17 @@ impl DynStorage {
         self
     }
 
+    /// Attach the tenant's groups (`docs/USERS.md` §5).
+    pub fn with_group_store(mut self, store: Arc<dyn crate::group::GroupStore>) -> Self {
+        self.group_store = Some(store);
+        self
+    }
+
+    /// The tenant's groups, when attached.
+    pub fn group_store(&self) -> Option<&Arc<dyn crate::group::GroupStore>> {
+        self.group_store.as_ref()
+    }
+
     /// Where deprovisioned users are purged, when attached.
     pub fn offboarding_store(&self) -> Option<&Arc<dyn crate::offboarding::OffboardingStore>> {
         self.offboarding_store.as_ref()
@@ -3973,6 +4004,10 @@ impl CredentialStore for DynStorage {
 
     async fn count_users_in_tenant(&self, tenant_id: &crate::TenantId) -> Result<u64> {
         self.credential_store.count_users_in_tenant(tenant_id).await
+    }
+
+    async fn group_roles_of_user(&self, user_id: &crate::UserId) -> Result<Vec<crate::UserRole>> {
+        self.credential_store.group_roles_of_user(user_id).await
     }
 
     async fn put_user(&self, user: User) -> Result<()> {

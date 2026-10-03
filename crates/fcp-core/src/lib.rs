@@ -20,6 +20,7 @@ pub mod error;
 pub mod extension;
 pub mod flow_trace;
 pub mod geographic;
+pub mod group;
 pub mod hoteling;
 pub mod identifiers;
 pub mod identity;

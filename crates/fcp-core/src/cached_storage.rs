@@ -209,6 +209,10 @@ impl CredentialStore for CachedCredentialStore {
         self.inner.list_users_by_username(username).await
     }
 
+    async fn group_roles_of_user(&self, user_id: &crate::UserId) -> Result<Vec<crate::UserRole>> {
+        self.inner.group_roles_of_user(user_id).await
+    }
+
     async fn put_user(&self, user: User) -> Result<()> {
         let username = user.username.clone();
         self.inner.put_user(user).await?;

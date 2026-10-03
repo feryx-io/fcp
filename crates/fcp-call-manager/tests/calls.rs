@@ -1199,6 +1199,88 @@ extension = "7000"
     stack.finish().await;
 }
 
+/// The queue system's logged-in agents, by id.
+async fn logged_in_agents(stack: &Stack) -> Vec<String> {
+    stack.get("/agents").await["agents"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|a| a["agent_id"].as_str().map(String::from))
+        .collect()
+}
+
+/// A queue may take its agents from a group (docs/USERS.md §5): a member
+/// logs in with the feature code; someone outside the group is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_groups_member_logs_in_to_the_queue_that_takes_its_agents_from_it() {
+    use fcp_core::group::{Group, GroupMember, GroupStore};
+    use fcp_core::{CredentialStore, QueueConfigStore};
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let dana = stack.seed.user("dana", "dana-pw", "1004").await;
+    let eve = stack.seed.user("eve", "eve-pw", "1005").await;
+    let storage = stack.seed.storage();
+    let tenant = stack.seed.tenant_id;
+    let group = Group::new(tenant, "NOC");
+    storage.put_group(&group).await.unwrap();
+    let dana_id = storage
+        .get_user_in_tenant("dana", &tenant)
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    storage
+        .add_member(&GroupMember {
+            group_id: group.id,
+            user_id: dana_id,
+            tenant_id: tenant,
+            added_at: std::time::SystemTime::now(),
+        })
+        .await
+        .unwrap();
+    let mut queue = fcp_core::QueueConfigRecord::new("noc".into(), "7100".into(), tenant);
+    queue.agent_group_id = Some(group.id);
+    storage.put_queue_config(queue).await.unwrap();
+    let (code, reloaded) = stack.post("/queues/reload", "").await;
+    assert_eq!(code, 200, "{reloaded}");
+
+    // Eve is no member: refused.
+    let eve_phone = stack.phone(&eve).await;
+    assert_eq!(eve_phone.register().await.unwrap(), 200);
+    let refused = eve_phone.call("*50").await.unwrap();
+    assert_eq!(refused.failed(SOON).await, Some(404));
+    assert!(logged_in_agents(&stack).await.is_empty());
+
+    // Dana is: logged in to the queue.
+    let dana_phone = stack.phone(&dana).await;
+    assert_eq!(dana_phone.register().await.unwrap(), 200);
+    let _login = dana_phone.call("*50").await.unwrap();
+    let deadline = tokio::time::Instant::now() + SOON;
+    loop {
+        let now = logged_in_agents(&stack).await;
+        if now.iter().any(|a| a == "dana") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "dana never logged in: {now:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    stack.finish().await;
+}
+
 // ── Recording consent (docs/COMPLIANCE_FOLLOWUPS.md §8, §10) ───────────
 
 /// The prompt's tone: neither phone plays it, so hearing it is hearing the

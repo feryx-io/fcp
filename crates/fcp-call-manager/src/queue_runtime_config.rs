@@ -34,6 +34,7 @@ fn queue_config_from_record(record: &QueueConfigRecord) -> QueueConfig {
         announce_eta: false,
         retry_on_no_answer: record.retry_on_no_answer,
         agents: record.agents.clone(),
+        agent_group_id: record.agent_group_id.map(|id| id.to_string()),
         priority: record.priority.max(0) as u32,
         required_skills: record.required_skills.clone(),
         agent_skills: HashMap::new(),

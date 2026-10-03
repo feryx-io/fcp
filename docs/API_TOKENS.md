@@ -145,6 +145,16 @@ Who holds the new permissions:
 later, with single sign-on. Only `super_admin` and `tenant_admin` hold
 it: a provider's groups can make anyone a tenant admin.
 
+`group_read` and `group_manage` (`/groups`, `/users/{username}/groups`,
+`docs/USERS.md` §5) came with groups. `group_manage` is `super_admin`'s
+and `tenant_admin`'s alone: a group's role is its members' too.
+`group_read` is also held by `telecom_admin` (who picks a queue's group),
+`user_admin`, `department_admin` and `read_only`.
+
+A user's group roles count wherever their own role does: a session's
+permissions are what their own role and their groups' hold together,
+and a token they make may carry what any of those roles' tokens may.
+
 ## 4. What changed on upgrade
 
 - **Read-only and other limited roles.** Before this release, a

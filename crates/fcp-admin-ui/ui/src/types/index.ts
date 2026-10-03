@@ -652,4 +652,9 @@ export type Holiday = S['Holiday']
 
 export type Schedule = S['ScheduleResponse']
 
+/** A tenant's group (`docs/USERS.md` §5). */
+export type Group = S['GroupResponse']
+export type GroupRequest = S['GroupRequest']
+export type GroupMember = S['GroupMemberResponse']
+
 export type ScheduleRequest = S['ScheduleRequest']

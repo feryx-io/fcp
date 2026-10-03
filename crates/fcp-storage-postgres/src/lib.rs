@@ -36,6 +36,7 @@ mod deletion;
 pub mod emergency;
 pub mod encryption;
 pub mod flow_trace;
+mod group;
 mod holds;
 mod identity;
 pub mod login_session;
@@ -1176,6 +1177,10 @@ impl CredentialStore for PostgresStorage {
             .filter_map(|row| row_to_user(row).ok())
             .collect();
         self.open_users(users).await
+    }
+
+    async fn group_roles_of_user(&self, user_id: &UserId) -> Result<Vec<fcp_core::UserRole>> {
+        group::group_roles_of_user(self, user_id).await
     }
 
     async fn count_users_in_tenant(&self, tenant_id: &TenantId) -> Result<u64> {
@@ -5633,6 +5638,9 @@ fn row_to_queue_config(row: sqlx::postgres::PgRow) -> Result<QueueConfigRecord> 
             .ok()
             .flatten()
             .and_then(|t| fcp_core::CallTarget::parse(&t).ok()),
+        agent_group_id: row
+            .try_get::<Option<String>, _>("agent_group_id")?
+            .and_then(|id| id.parse().ok()),
         timezone: row
             .try_get::<String, _>("timezone")
             .unwrap_or_else(|_| "UTC".to_string()),
@@ -5675,8 +5683,8 @@ impl QueueConfigStore for PostgresStorage {
                     moh_class, announce_position, announce_interval_secs,
                     retry_on_no_answer, agents, priority, required_skills,
                     record_calls, callback_enabled, timezone, enabled,
-                    created_at, updated_at, schedule_id, closed_target)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+                    created_at, updated_at, schedule_id, closed_target, agent_group_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name, extension = EXCLUDED.extension,
                 strategy = EXCLUDED.strategy,
@@ -5696,6 +5704,7 @@ impl QueueConfigStore for PostgresStorage {
                 enabled = EXCLUDED.enabled,
                 schedule_id = EXCLUDED.schedule_id,
                 closed_target = EXCLUDED.closed_target,
+                agent_group_id = EXCLUDED.agent_group_id,
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(config.id.to_string())
@@ -5721,6 +5730,7 @@ impl QueueConfigStore for PostgresStorage {
         .bind(system_time_to_datetime(config.updated_at))
         .bind(config.schedule_id.map(|id| id.to_string()))
         .bind(config.closed_target.as_ref().map(|t| t.to_string()))
+        .bind(config.agent_group_id.map(|id| id.to_string()))
         .execute(self.writes())
         .await?;
         Ok(())
