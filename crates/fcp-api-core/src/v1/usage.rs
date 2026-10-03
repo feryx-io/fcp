@@ -330,18 +330,16 @@ pub async fn billing_summary(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list phone numbers: {}", e)))?;
 
-    let users = storage
-        .list_users()
+    let user_count = storage
+        .count_users_in_tenant(&tenant.0)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to list users: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to count users: {}", e)))?
+        as usize;
 
     let devices = storage
         .list_devices(&tenant.0)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list devices: {}", e)))?;
-
-    // Filter users to this tenant
-    let user_count = users.iter().filter(|u| u.tenant_id == tenant.0).count();
 
     let balance = storage
         .get_balance(&tenant.0)

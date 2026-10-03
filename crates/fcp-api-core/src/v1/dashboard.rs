@@ -59,11 +59,8 @@ pub async fn summary(
         let tenant_id = &tenant.0;
 
         // Users
-        if let Ok(users) = storage.list_users().await {
-            summary.total_users = users
-                .into_iter()
-                .filter(|user| user.tenant_id == *tenant_id)
-                .count();
+        if let Ok(count) = storage.count_users_in_tenant(tenant_id).await {
+            summary.total_users = count as usize;
         }
 
         // Extensions

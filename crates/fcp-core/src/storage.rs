@@ -377,6 +377,33 @@ fn default_tenant_id() -> crate::TenantId {
     crate::TenantId::nil()
 }
 
+/// Which of a tenant's users a listing wants.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserFilter {
+    /// A word in the username, display name or email (case aside).
+    pub search: Option<String>,
+    pub status: Option<AccountStatus>,
+}
+
+impl UserFilter {
+    pub fn matches(&self, user: &User) -> bool {
+        let status = self.status.is_none_or(|s| s == user.account_status);
+        let search = self.search.as_deref().is_none_or(|q| {
+            let q = q.to_lowercase();
+            user.username.to_lowercase().contains(&q)
+                || user
+                    .display_name
+                    .as_deref()
+                    .is_some_and(|d| d.to_lowercase().contains(&q))
+                || user
+                    .email
+                    .as_deref()
+                    .is_some_and(|e| e.to_lowercase().contains(&q))
+        });
+        status && search
+    }
+}
+
 /// Account status for user accounts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -409,6 +436,8 @@ impl std::str::FromStr for AccountStatus {
             "active" => Ok(Self::Active),
             "suspended" => Ok(Self::Suspended),
             "locked" => Ok(Self::Locked),
+            // What the admin UI and the CLI called a suspension.
+            "disabled" => Ok(Self::Suspended),
             _ => anyhow::bail!("Invalid account status: {}", s),
         }
     }
@@ -461,6 +490,32 @@ fn default_codecs() -> Vec<String> {
 }
 
 impl User {
+    /// Whether the user is suspended: refused everywhere — SIP, voicemail,
+    /// provisioning, hoteling, web sign-in and the API tokens they made
+    /// (`docs/IDENTITY_AND_DEVICES.md` phase 5). `enabled: false` is the
+    /// same thing, kept for one release.
+    pub fn is_suspended(&self) -> bool {
+        !self.enabled || self.account_status == AccountStatus::Suspended
+    }
+
+    /// Whether the user's phones and services work. A Locked user's do:
+    /// a lock is the web sign-in's guard against guessed passwords, and
+    /// anyone could otherwise take a person's phones offline by guessing
+    /// wrong five times.
+    pub fn may_use_services(&self) -> bool {
+        !self.is_suspended()
+    }
+
+    /// Make `enabled` and `account_status` say the same thing: a
+    /// suspension is both. `enabled` follows the status; a write that
+    /// clears `enabled` alone suspends.
+    pub fn normalize_status(&mut self) {
+        if !self.enabled && self.account_status != AccountStatus::Suspended {
+            self.account_status = AccountStatus::Suspended;
+        }
+        self.enabled = self.account_status != AccountStatus::Suspended;
+    }
+
     /// Check if user has a specific permission in the given deployment mode
     pub fn has_permission(
         &self,
@@ -659,6 +714,31 @@ pub trait CredentialStore: Send + Sync {
 
     /// List all users that share a username across tenants.
     async fn list_users_by_username(&self, username: &str) -> Result<Vec<User>>;
+
+    /// A tenant's users that match `filter`, by username. The default
+    /// filters every user in memory; the Postgres backend asks SQL.
+    async fn list_users_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+        filter: &UserFilter,
+    ) -> Result<Vec<User>> {
+        let mut users: Vec<User> = self
+            .list_users()
+            .await?
+            .into_iter()
+            .filter(|u| &u.tenant_id == tenant_id && filter.matches(u))
+            .collect();
+        users.sort_by(|a, b| a.username.cmp(&b.username));
+        Ok(users)
+    }
+
+    /// How many users a tenant has (its `max_users`).
+    async fn count_users_in_tenant(&self, tenant_id: &crate::TenantId) -> Result<u64> {
+        Ok(self
+            .list_users_in_tenant(tenant_id, &UserFilter::default())
+            .await?
+            .len() as u64)
+    }
 
     /// Create or update a user.
     async fn put_user(&self, user: User) -> Result<()>;
@@ -2798,7 +2878,7 @@ pub async fn authenticate_api_token(
         };
         match found {
             Ok(Some(user)) => {
-                if !user.enabled || user.account_status == AccountStatus::Suspended {
+                if user.is_suspended() {
                     tracing::debug!(token_id = %token.id, maker = %token.user_id, "API token refused: its maker is inactive");
                     return None;
                 }
@@ -3828,6 +3908,20 @@ impl CredentialStore for DynStorage {
 
     async fn list_users_by_username(&self, username: &str) -> Result<Vec<User>> {
         self.credential_store.list_users_by_username(username).await
+    }
+
+    async fn list_users_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+        filter: &UserFilter,
+    ) -> Result<Vec<User>> {
+        self.credential_store
+            .list_users_in_tenant(tenant_id, filter)
+            .await
+    }
+
+    async fn count_users_in_tenant(&self, tenant_id: &crate::TenantId) -> Result<u64> {
+        self.credential_store.count_users_in_tenant(tenant_id).await
     }
 
     async fn put_user(&self, user: User) -> Result<()> {

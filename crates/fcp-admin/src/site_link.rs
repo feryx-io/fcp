@@ -958,10 +958,11 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
     if let Some(t) = storage.get_tenant(tenant).await? {
         items.push(item("tenants", &t.id, &t)?);
     }
-    for u in storage.list_users().await? {
-        if u.tenant_id == *tenant {
-            items.push(item("users", &u.id, &u)?);
-        }
+    for u in storage
+        .list_users_in_tenant(tenant, &fcp_core::storage::UserFilter::default())
+        .await?
+    {
+        items.push(item("users", &u.id, &u)?);
     }
     for c in storage.list_calling_settings(tenant).await? {
         items.push(item("user_calling_settings", &c.user_id, &c)?);

@@ -2650,6 +2650,25 @@ impl FlowCallHandler {
                 .await
             {
                 Ok(Some(resolved_id)) => {
+                    // A suspended user's mailbox is closed to its PIN too
+                    // (docs/IDENTITY_AND_DEVICES.md phase 5).
+                    if let (Some(storage), Ok(Some(owner))) = (
+                        self.storage.as_ref(),
+                        voicemail_service
+                            .mailbox_owner(&tenant_id, &resolved_id)
+                            .await,
+                    ) {
+                        let suspended =
+                            fcp_core::CredentialStore::get_user_by_id(storage.as_ref(), &owner)
+                                .await
+                                .ok()
+                                .flatten()
+                                .is_some_and(|u| u.is_suspended());
+                        if suspended {
+                            info!(call_id = %call_id, mailbox = %resolved_id, "The mailbox's owner is suspended");
+                            break;
+                        }
+                    }
                     // Update target_mailbox to the resolved mailbox ID for subsequent operations
                     target_mailbox = resolved_id;
                     authenticated = true;
@@ -4732,7 +4751,7 @@ async fn hoteling_guest(
     use fcp_core::storage::CredentialStore;
     let user_id = crate::ring_plan::user_of(storage, tenant_id, extension).await?;
     let user = storage.get_user_by_id(&user_id).await.ok().flatten()?;
-    let hash = user.pin.clone().filter(|_| user.enabled)?;
+    let hash = user.pin.clone().filter(|_| user.may_use_services())?;
     // bcrypt: off the async workers.
     let pin = pin.to_string();
     let matches = tokio::task::spawn_blocking(move || {

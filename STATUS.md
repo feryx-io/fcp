@@ -1721,6 +1721,20 @@ Phase 4b done (v0.25.314): SAML finished.
 - Phase 4 is complete; phase 5 (a user's lifecycle, groups and rename)
   is next.
 
+Phase 5a done (v0.25.315): one status, and suspension that means it
+(`docs/USERS.md`).
+- A suspended user's phones, voicemail, provisioning, hoteling, sessions
+  and API tokens are all refused. Before, SIP read only `enabled`, so a
+  Suspended user could still register.
+- Suspending drops their registrations, ends their hoteling session and
+  publishes `user.disabled`.
+- Locked (the web lockout) no longer threatens phones.
+- An invalid status is refused. The UI's "Disabled" used to make a user
+  active.
+- `max_users` is enforced; users are listed and filtered in SQL;
+  `user.updated` names its changes.
+- Next, 5b: deprovisioning and the offboarding purge.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

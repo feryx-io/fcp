@@ -204,7 +204,7 @@ pub async fn auto_provision(
                 .get_user_by_id(owner_id)
                 .await
                 .map_err(|e| ApiError::Internal(e.to_string()))?
-                .filter(|owner| owner.tenant_id == device.tenant_id && owner.enabled)
+                .filter(|owner| owner.tenant_id == device.tenant_id && owner.may_use_services())
                 .ok_or_else(provisioning_not_found)?,
         ),
         None => None,
@@ -277,7 +277,9 @@ pub async fn auto_provision(
         (Some(session), _) => storage
             .get_user_by_id(&session.user_id)
             .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?,
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            // A suspended guest's session lends the phone nothing.
+            .filter(|guest| guest.may_use_services()),
         (None, Some(owner)) => Some(owner.clone()),
         (None, None) => None,
     };

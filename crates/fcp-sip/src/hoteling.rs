@@ -34,7 +34,9 @@ pub async fn credential(
     name: &str,
 ) -> Option<Credential> {
     if let Ok(Some(user)) = storage.get_user_in_tenant(name, tenant_id).await {
-        return user.enabled.then_some(Credential::User(Box::new(user)));
+        return user
+            .may_use_services()
+            .then_some(Credential::User(Box::new(user)));
     }
     match storage.get_device_by_sip_name(tenant_id, name).await {
         Ok(Some(device))
@@ -44,6 +46,18 @@ pub async fn credential(
                     .as_deref()
                     .is_some_and(|u| u.eq_ignore_ascii_case(name)) =>
         {
+            // A device whose owner is suspended goes quiet with them.
+            if let Some(owner) = &device.owner_user_id {
+                let suspended = storage
+                    .get_user_by_id(owner)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|u| u.is_suspended());
+                if suspended {
+                    return None;
+                }
+            }
             Some(Credential::Device(Box::new(device)))
         }
         _ => None,
@@ -152,7 +166,14 @@ pub async fn caller_user(storage: &DynStorage, tenant_id: &TenantId, name: &str)
         if device.enabled {
             let session = session_of(storage, &device).await;
             if let Some(user) = fcp_core::hoteling::effective_user(&device, session.as_ref()) {
-                return Some(user);
+                // A suspended guest or owner places no calls.
+                let suspended = storage
+                    .get_user_by_id(&user)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|u| u.is_suspended());
+                return (!suspended).then_some(user);
             }
         }
     }

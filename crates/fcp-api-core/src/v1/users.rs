@@ -244,7 +244,7 @@ pub struct UpdateDigestPasswordRequest {
     path = "/api/v1/users",
     tag = "users",
     operation_id = "users_list_users",
-    params(crate::page::PageQuery),
+    params(crate::page::PageQuery, UserListQuery),
     responses(
         (status = 200, description = "OK", body = crate::page::Page<UserResponse>),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
@@ -255,15 +255,19 @@ pub async fn list_users(
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+    axum::extract::Query(filter): axum::extract::Query<UserListQuery>,
 ) -> Result<Json<crate::page::Page<UserResponse>>, ApiError> {
     crate::auth::check_permission(&identity, Permission::UserRead, state.deployment_mode)?;
     let storage = require_storage!(state);
-    let users = storage
-        .list_users()
-        .await?
-        .into_iter()
-        .filter(|user| user.tenant_id == tenant.0)
-        .collect::<Vec<_>>();
+    let filter = fcp_core::storage::UserFilter {
+        search: filter.q.filter(|q| !q.trim().is_empty()),
+        status: filter
+            .status
+            .as_deref()
+            .map(parse_account_status)
+            .transpose()?,
+    };
+    let users = storage.list_users_in_tenant(&tenant.0, &filter).await?;
     let responses: Vec<UserResponse> = users.into_iter().map(UserResponse::from).collect();
     Ok(Json(crate::page::paginate(
         responses,
@@ -421,6 +425,8 @@ pub async fn create_user(
             )
         };
 
+    ensure_room_for_a_user(&state, &tenant.0).await?;
+
     // Check if user already exists
     if storage
         .get_user_in_tenant(&req.username, &tenant.0)
@@ -445,7 +451,7 @@ pub async fn create_user(
 
     // Parse account status
     let account_status = if let Some(status_str) = &req.account_status {
-        AccountStatus::from_str(status_str).unwrap_or(AccountStatus::Active)
+        parse_account_status(status_str)?
     } else {
         AccountStatus::Active
     };
@@ -585,15 +591,21 @@ pub async fn update_user(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
-    let was_active = fcp_core::session::user_is_active(&user);
+    let before = user.clone();
 
     // Update fields
     if let Some(display_name) = req.display_name {
         user.display_name = Some(display_name);
     }
-    if let Some(enabled) = req.enabled {
-        user.enabled = enabled;
+    // `enabled` is the suspension, said the old way (one release).
+    match req.enabled {
+        Some(false) => user.account_status = AccountStatus::Suspended,
+        Some(true) if user.account_status == AccountStatus::Suspended => {
+            user.account_status = AccountStatus::Active
+        }
+        _ => {}
     }
+    user.enabled = user.account_status != AccountStatus::Suspended;
     if let Some(role_str) = &req.role {
         let new_role = parse_user_role(Some(role_str.as_str()))?;
         let old_role = user.role;
@@ -675,9 +687,9 @@ pub async fn update_user(
         user.timezone = timezone;
     }
     if let Some(account_status_str) = req.account_status {
-        user.account_status =
-            AccountStatus::from_str(&account_status_str).unwrap_or(AccountStatus::Active);
+        user.account_status = parse_account_status(&account_status_str)?;
     }
+    user.normalize_status();
     if let Some(emergency_name) = req.emergency_contact_name {
         user.emergency_contact.name = Some(emergency_name);
     }
@@ -690,10 +702,9 @@ pub async fn update_user(
     // Save user
     require_storage!(state).put_user(user.clone()).await?;
 
-    // A user disabled, suspended or locked is signed out everywhere.
-    if was_active && !fcp_core::session::user_is_active(&user) {
-        crate::v1::auth_session::revoke_sessions(&state, &user.id, None, "account disabled").await;
-    }
+    // What the change of status does: signed out, phones dropped, and
+    // the world told.
+    status_changed(&state, &before, &user).await;
 
     // Publish user updated event
     let _ = state
@@ -702,7 +713,7 @@ pub async fn update_user(
             user_id: user.id.to_string(),
             username: user.username.clone(),
             tenant_id: user.tenant_id,
-            changed_fields: vec![], // TODO: track which fields changed
+            changed_fields: changed_fields(&before, &user),
             timestamp: std::time::SystemTime::now(),
         }))
         .await;
@@ -1017,12 +1028,35 @@ pub async fn unlock_user(
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
 
+    let before = user.clone();
     user.failed_login_attempts = 0;
     user.account_locked_until = None;
     user.account_status = AccountStatus::Active;
+    user.normalize_status();
     user.updated_at = std::time::SystemTime::now();
 
     storage.put_user(user.clone()).await?;
+    status_changed(&state, &before, &user).await;
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::User(UserEvent::Updated {
+            user_id: user.id.to_string(),
+            username: user.username.clone(),
+            tenant_id: user.tenant_id,
+            changed_fields: changed_fields(&before, &user),
+            timestamp: std::time::SystemTime::now(),
+        }))
+        .await;
+    // The call managers' credential caches hear of it.
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "user".to_string(),
+            entity_id: user.id.to_string(),
+            tenant_id: user.tenant_id,
+            timestamp: std::time::SystemTime::now(),
+        }))
+        .await;
 
     warn!(
         event = "account_unlocked",
@@ -1097,6 +1131,186 @@ pub async fn delete_user(
     );
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Refuse a new user past the tenant's `max_users`.
+pub(crate) async fn ensure_room_for_a_user(
+    state: &ApiState,
+    tenant_id: &fcp_core::TenantId,
+) -> Result<(), ApiError> {
+    use fcp_core::TenantStore;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
+    let Some(max) = storage
+        .get_tenant(tenant_id)
+        .await?
+        .and_then(|t| t.max_users)
+    else {
+        return Ok(());
+    };
+    if storage.count_users_in_tenant(tenant_id).await? >= u64::from(max) {
+        return Err(ApiError::Conflict(format!(
+            "The tenant has its {max} users (max_users)"
+        )));
+    }
+    Ok(())
+}
+
+/// What a users listing is narrowed by.
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct UserListQuery {
+    /// A word in the username, display name or email.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// `active`, `suspended` or `locked`.
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// An account status from a request: `active`, `suspended` or `locked`
+/// (`disabled`, the old word, is a suspension); anything else refused,
+/// where it used to become Active.
+pub(crate) fn parse_account_status(s: &str) -> Result<AccountStatus, ApiError> {
+    AccountStatus::from_str(s).map_err(|_| {
+        ApiError::BadRequest(format!(
+            "account_status must be active, suspended or locked, not '{s}'"
+        ))
+    })
+}
+
+/// The fields a change touched, by name (secrets named, never shown).
+pub(crate) fn changed_fields(before: &User, after: &User) -> Vec<String> {
+    let (Ok(serde_json::Value::Object(a)), Ok(serde_json::Value::Object(b))) =
+        (serde_json::to_value(before), serde_json::to_value(after))
+    else {
+        return Vec::new();
+    };
+    let mut changed: Vec<String> = b
+        .iter()
+        .filter(|(k, v)| k.as_str() != "updated_at" && a.get(*k) != Some(*v))
+        .map(|(k, _)| k.clone())
+        .collect();
+    changed.sort();
+    changed
+}
+
+/// What a change of a user's status does (`docs/IDENTITY_AND_DEVICES.md`
+/// phase 5). Suspended: every session ended, every registration of theirs
+/// dropped (their name, their extension, the devices they own), their
+/// hoteling session ended, `user.disabled` published. Resumed:
+/// `user.enabled`. Locked (the web lockout): signed out of the web only.
+pub(crate) async fn status_changed(state: &ApiState, before: &User, after: &User) {
+    let signed_out =
+        fcp_core::session::user_is_active(before) && !fcp_core::session::user_is_active(after);
+    if signed_out {
+        crate::v1::auth_session::revoke_sessions(
+            state,
+            &after.id,
+            None,
+            "account suspended or locked",
+        )
+        .await;
+    }
+    let now = std::time::SystemTime::now();
+    if !before.is_suspended() && after.is_suspended() {
+        if let Some(storage) = state.storage.as_ref() {
+            drop_registrations(state, storage, after).await;
+            end_hoteling(state, storage, after).await;
+        }
+        let _ = state
+            .event_bus
+            .publish(PlatformEvent::User(UserEvent::Disabled {
+                user_id: after.id.to_string(),
+                username: after.username.clone(),
+                tenant_id: after.tenant_id,
+                timestamp: now,
+            }))
+            .await;
+        info!(event = "user_suspended", username = %after.username, tenant_id = %after.tenant_id, "User suspended");
+    } else if before.is_suspended() && !after.is_suspended() {
+        let _ = state
+            .event_bus
+            .publish(PlatformEvent::User(UserEvent::Enabled {
+                user_id: after.id.to_string(),
+                username: after.username.clone(),
+                tenant_id: after.tenant_id,
+                timestamp: now,
+            }))
+            .await;
+        info!(event = "user_resumed", username = %after.username, tenant_id = %after.tenant_id, "User resumed");
+    }
+}
+
+/// Every registration a suspended user's phones hold: under their name,
+/// their extension, or the SIP name of a device they own.
+async fn drop_registrations(state: &ApiState, storage: &fcp_core::DynStorage, user: &User) {
+    use fcp_core::storage::{DeviceStore, RegistrationStore};
+    let mut names: Vec<String> = vec![user.username.to_lowercase()];
+    if let Some(ext) = user.extension.as_deref().filter(|e| !e.is_empty()) {
+        names.push(ext.to_lowercase());
+    }
+    if let Ok(devices) = storage.list_devices_by_user(&user.id).await {
+        names.extend(
+            devices
+                .into_iter()
+                .filter_map(|d| d.sip_username)
+                .map(|n| n.to_lowercase()),
+        );
+    }
+    let registrations = match storage
+        .get_all_registrations_in_tenant(&user.tenant_id)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(username = %user.username, error = %e, "Could not read registrations to drop");
+            return;
+        }
+    };
+    let mut aors: Vec<String> = registrations
+        .into_iter()
+        .map(|r| r.aor)
+        .filter(|aor| {
+            let user_part = aor
+                .trim_start_matches("sips:")
+                .trim_start_matches("sip:")
+                .split('@')
+                .next()
+                .unwrap_or_default()
+                .to_lowercase();
+            names.contains(&user_part)
+        })
+        .collect();
+    aors.sort();
+    aors.dedup();
+    for aor in aors {
+        match storage
+            .delete_all_registrations_in_tenant(&user.tenant_id, &aor)
+            .await
+        {
+            Ok(_) => {
+                crate::v1::registrations::announce_removed(state, user.tenant_id, &aor, "*").await;
+            }
+            Err(e) => warn!(aor, error = %e, "Could not drop a suspended user's registration"),
+        }
+    }
+}
+
+/// A suspended user's hoteling session, ended: the host phone goes back
+/// to its owner.
+async fn end_hoteling(state: &ApiState, storage: &fcp_core::DynStorage, user: &User) {
+    use fcp_core::HotelingStore;
+    if let Ok(Some(session)) = storage.hoteling_session_for_user(&user.id).await {
+        if let Err(e) =
+            crate::v1::hoteling::end_session(state, storage, &session, fcp_core::SessionEnd::Admin)
+                .await
+        {
+            warn!(username = %user.username, error = ?e, "Could not end a suspended user's hoteling session");
+        }
+    }
 }
 
 /// A user with no web password, as single sign-on creates one just in time

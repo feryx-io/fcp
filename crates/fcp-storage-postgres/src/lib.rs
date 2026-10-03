@@ -991,7 +991,9 @@ impl CredentialStore for PostgresStorage {
         }
     }
 
-    async fn put_user(&self, user: User) -> Result<()> {
+    async fn put_user(&self, mut user: User) -> Result<()> {
+        // `enabled` and the status say one thing (phase 5).
+        user.normalize_status();
         let id = user.id.to_string();
         let tenant_id = user.tenant_id.to_string();
         let role = serde_json::to_string(&user.role)?
@@ -1124,6 +1126,61 @@ impl CredentialStore for PostgresStorage {
 
         debug!(username = %username, tenant_id = %tenant_id, "User deleted");
         Ok(())
+    }
+
+    async fn list_users_in_tenant(
+        &self,
+        tenant_id: &TenantId,
+        filter: &fcp_core::storage::UserFilter,
+    ) -> Result<Vec<User>> {
+        let search = filter
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(|q| {
+                format!(
+                    "%{}%",
+                    q.to_lowercase()
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                )
+            });
+        let rows = sqlx::query(
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, sip_provisioning_password, display_name, tenant_id,
+                    role, department_id, enabled, created_at, updated_at, media_preferences,
+                    email, password_last_reset, phone_number, mobile_number, pin,
+                    extension, department, job_title, location, location_id, language, timezone,
+                    account_status, last_login, emergency_contact_json,
+                    primary_phone_number_id, voicemail_box_id, profile_picture,
+                    failed_login_attempts, account_locked_until
+             FROM users
+             WHERE tenant_id = $1
+               AND ($2::TEXT IS NULL OR account_status = $2)
+               AND ($3::TEXT IS NULL OR lower(username) LIKE $3
+                    OR lower(coalesce(display_name, '')) LIKE $3
+                    OR lower(coalesce(email, '')) LIKE $3)
+             ORDER BY username",
+        )
+        .bind(tenant_id.to_string())
+        .bind(filter.status.map(|s| s.to_string()))
+        .bind(search)
+        .fetch_all(self.reads())
+        .await?;
+        let users = rows
+            .into_iter()
+            .filter_map(|row| row_to_user(row).ok())
+            .collect();
+        self.open_users(users).await
+    }
+
+    async fn count_users_in_tenant(&self, tenant_id: &TenantId) -> Result<u64> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE tenant_id = $1")
+            .bind(tenant_id.to_string())
+            .fetch_one(self.reads())
+            .await?;
+        Ok(n as u64)
     }
 
     async fn list_users(&self) -> Result<Vec<User>> {
@@ -2966,7 +3023,7 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         .get::<Option<DateTime<Utc>>, _>("account_locked_until")
         .map(datetime_to_system_time);
 
-    Ok(User {
+    let mut user = User {
         id,
         username: row.get("username"),
         password: row.get("password_hash"),
@@ -3003,7 +3060,10 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         profile_picture: row.get("profile_picture"),
         failed_login_attempts,
         account_locked_until,
-    })
+    };
+    // A row from before phase 5 may disagree with itself.
+    user.normalize_status();
+    Ok(user)
 }
 
 /// Convert PostgreSQL row to Registration

@@ -453,11 +453,11 @@ pub async fn readiness(
         .as_ref()
         .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
     let users = storage
-        .list_users()
+        .list_users_in_tenant(&tenant.0, &fcp_core::storage::UserFilter::default())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .into_iter()
-        .filter(|u| u.tenant_id == tenant.0 && u.enabled);
+        .filter(|u| u.may_use_services());
 
     let config = match storage.emergency_store() {
         Some(store) => store

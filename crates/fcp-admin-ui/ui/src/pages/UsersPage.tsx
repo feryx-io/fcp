@@ -88,7 +88,6 @@ const statusBadgeVariant = (status: string) => {
     case 'active': return 'success' as const
     case 'suspended': return 'warning' as const
     case 'locked': return 'destructive' as const
-    case 'disabled': return 'destructive' as const
     default: return 'secondary' as const
   }
 }
@@ -573,8 +572,12 @@ function EditUserDialog({
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="active">Active</SelectItem>
+                  {/* Suspended: signed out, phones dropped, refused everywhere. */}
                   <SelectItem value="suspended">Suspended</SelectItem>
-                  <SelectItem value="disabled">Disabled</SelectItem>
+                  {/* Locked is set by failed sign-ins; Unlock clears it. */}
+                  {user?.account_status === 'locked' && (
+                    <SelectItem value="locked" disabled>Locked (failed sign-ins)</SelectItem>
+                  )}
                 </SelectContent>
               </Select>
             </div>

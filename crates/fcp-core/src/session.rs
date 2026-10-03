@@ -384,11 +384,9 @@ pub struct SessionPrincipal {
     pub session: Option<LoginSessionId>,
 }
 
-/// Whether a user may be signed in at all.
+/// Whether a user may be signed in at all: not suspended, not locked.
 pub fn user_is_active(user: &User) -> bool {
-    user.enabled
-        && user.account_status != AccountStatus::Locked
-        && user.account_status != AccountStatus::Suspended
+    !user.is_suspended() && user.account_status != AccountStatus::Locked
 }
 
 /// Who `token` is, if it is a live session's access token for an active

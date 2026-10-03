@@ -42,6 +42,7 @@ pub fn username_of(caller: &str) -> &str {
 /// The engine's view of a platform user: its id is the caller id it was
 /// asked for, its role is its one role, its department its one group.
 fn engine_user(id: &str, user: fcp_core::User) -> User {
+    let enabled = user.may_use_services();
     let mut roles = HashSet::new();
     roles.insert(
         serde_json::to_value(user.role)
@@ -60,7 +61,7 @@ fn engine_user(id: &str, user: fcp_core::User) -> User {
         roles,
         groups,
         endpoints: Vec::new(),
-        enabled: user.enabled,
+        enabled,
     }
 }
 
@@ -101,10 +102,9 @@ impl RoutingStore for DatabaseRoutingStore {
     async fn list_users(&self, tenant_id: &TenantId) -> Result<Vec<User>> {
         Ok(self
             .users
-            .list_users()
+            .list_users_in_tenant(tenant_id, &fcp_core::storage::UserFilter::default())
             .await?
             .into_iter()
-            .filter(|u| &u.tenant_id == tenant_id)
             .map(|u| {
                 let id = u.username.clone();
                 engine_user(&id, u)

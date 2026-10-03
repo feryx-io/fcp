@@ -685,6 +685,18 @@ impl VoicemailService {
         }
     }
 
+    /// The user a mailbox (by id or extension) belongs to.
+    pub async fn mailbox_owner(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        mailbox_id: &str,
+    ) -> Result<Option<fcp_core::UserId>> {
+        Ok(self
+            .resolve_mailbox(tenant_id, mailbox_id)
+            .await?
+            .map(|mb| mb.user_id))
+    }
+
     /// Saves a message by updating its status to Saved.
     ///
     /// This persists the updated message via the storage backend.
