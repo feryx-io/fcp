@@ -302,6 +302,151 @@ pub async fn saml_acs(
     }
 }
 
+/// What a SAML provider posts to ask for a logout (the HTTP-POST binding).
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct SamlLogoutPost {
+    #[serde(rename = "SAMLRequest")]
+    pub saml_request: String,
+    #[serde(rename = "RelayState", default)]
+    pub relay_state: Option<String>,
+}
+
+/// The SAML provider a logout names, enabled or not: a logout is honoured
+/// either way.
+async fn saml_provider(state: &ApiState, id: &str) -> Result<IdentityProvider, ApiError> {
+    let not_found = || ApiError::NotFound("No such identity provider".to_string());
+    let id: IdentityProviderId = id.parse().map_err(|_| not_found())?;
+    identity_store(state)?
+        .get_identity_provider(&id)
+        .await?
+        .filter(|p| p.kind == ProviderKind::Saml)
+        .ok_or_else(not_found)
+}
+
+/// End what a verified logout request names, and answer the provider.
+async fn saml_logout(
+    state: &ApiState,
+    sso: &SsoRuntime,
+    provider: &IdentityProvider,
+    asked: crate::saml::LogoutAsked,
+    relay_state: Option<&str>,
+) -> Result<Response, ApiError> {
+    let user = match &asked.name_id {
+        Some(name_id) => identity_store(state)?
+            .get_user_identity(&provider.id, name_id)
+            .await?
+            .map(|i| i.user_id),
+        None => None,
+    };
+    let mut ended = 0;
+    if user.is_some() || asked.session_index.is_some() {
+        if let Some(sessions) = state
+            .storage
+            .as_ref()
+            .and_then(|s| s.login_session_store().cloned())
+        {
+            ended = sessions
+                .revoke_idp_sessions(
+                    &provider.id.to_string(),
+                    user.as_ref(),
+                    asked.session_index.as_deref(),
+                    "signed out at the identity provider",
+                    SystemTime::now(),
+                )
+                .await?;
+        }
+    }
+    tracing::info!(provider = %provider.id, ended, "SAML single logout");
+    let endpoints = crate::saml::Endpoints::new(&sso.public_url, provider);
+    match crate::saml::logout_response(provider, &endpoints, &asked.request_id, relay_state) {
+        Ok(Some(url)) => Ok(no_store_redirect(&url)),
+        // A provider without a logout address of its own gets a page.
+        Ok(None) => Ok(no_store_page("Signed out.")),
+        Err(e) => Err(ApiError::ServiceUnavailable(e.to_string())),
+    }
+}
+
+fn no_store_redirect(url: &str) -> Response {
+    let mut response = Redirect::to(url).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn no_store_page(text: &'static str) -> Response {
+    let mut response = text.into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// GET /api/v1/auth/saml/{id}/slo — a SAML provider's logout request
+/// (HTTP-Redirect), its signature over the query string as it came.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/saml/{id}/slo",
+    tag = "auth_session",
+    operation_id = "auth_session_saml_slo",
+    params(("id" = String, Path, description = "The identity provider")),
+    responses(
+        (status = 303, description = "Back to the provider with FCP's signed LogoutResponse"),
+        (status = 200, description = "Signed out, where the provider has no logout address"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn saml_slo_redirect(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Result<Response, ApiError> {
+    let sso = sso(&state)?.clone();
+    let provider = saml_provider(&state, &id).await?;
+    let endpoints = crate::saml::Endpoints::new(&sso.public_url, &provider);
+    let query = query.unwrap_or_default();
+    let asked = crate::saml::logout_redirect(&provider, &endpoints, &query).map_err(|e| {
+        tracing::warn!(provider = %provider.id, error = %e, "A SAML logout request refused");
+        ApiError::BadRequest(e.to_string())
+    })?;
+    let relay = query
+        .split('&')
+        .find_map(|p| p.strip_prefix("RelayState="))
+        .and_then(|r| urlencoding::decode(r).ok().map(|r| r.into_owned()));
+    saml_logout(&state, &sso, &provider, asked, relay.as_deref()).await
+}
+
+/// POST /api/v1/auth/saml/{id}/slo — a SAML provider's logout request
+/// (HTTP-POST), read only as far as it is signed.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/saml/{id}/slo",
+    tag = "auth_session",
+    operation_id = "auth_session_saml_slo_post",
+    params(("id" = String, Path, description = "The identity provider")),
+    request_body(content = SamlLogoutPost, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 303, description = "Back to the provider with FCP's signed LogoutResponse"),
+        (status = 200, description = "Signed out, where the provider has no logout address"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn saml_slo_post(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    axum::Form(post): axum::Form<SamlLogoutPost>,
+) -> Result<Response, ApiError> {
+    let sso = sso(&state)?.clone();
+    let provider = saml_provider(&state, &id).await?;
+    let endpoints = crate::saml::Endpoints::new(&sso.public_url, &provider);
+    let asked =
+        crate::saml::logout_post(&provider, &endpoints, &post.saml_request).map_err(|e| {
+            tracing::warn!(provider = %provider.id, error = %e, "A SAML logout request refused");
+            ApiError::BadRequest(e.to_string())
+        })?;
+    saml_logout(&state, &sso, &provider, asked, post.relay_state.as_deref()).await
+}
+
 /// GET /api/v1/auth/saml/{id} — the service provider's metadata, for the
 /// identity provider's administrator to import. Its address is also the
 /// service provider's entity id.
@@ -890,6 +1035,13 @@ pub struct IdentityProviderResponse {
     /// metadata is served for the identity provider to import.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sp_entity_id: Option<String>,
+    /// SAML: FCP's single logout address (both bindings).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sp_logout_url: Option<String>,
+    /// SAML: whether FCP has its own key for this provider, to sign its
+    /// requests and be encrypted to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sp_key: Option<bool>,
     #[serde(with = "crate::time::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
@@ -929,7 +1081,9 @@ impl IdentityProviderResponse {
                         s.public_url, p.id
                     )
                 }),
+            sp_logout_url: saml.as_ref().map(|e| e.slo_url.clone()),
             sp_entity_id: saml.map(|e| e.entity_id),
+            sp_key: (p.kind == ProviderKind::Saml).then_some(p.client_secret.is_some()),
             created_at: p.created_at,
             updated_at: p.updated_at,
         }
@@ -994,6 +1148,30 @@ fn check(state: &ApiState, req: &IdentityProviderRequest) -> Result<(), ApiError
     }
 }
 
+/// A SAML provider's metadata fetched from its URL, where one is given,
+/// through the same guard as an OIDC issuer.
+async fn fetch_metadata(state: &ApiState, settings: &mut ProviderSettings) -> Result<(), ApiError> {
+    let Some(saml) = settings.saml.as_mut() else {
+        return Ok(());
+    };
+    let Some(url) = saml
+        .idp_metadata_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .map(str::to_string)
+    else {
+        return Ok(());
+    };
+    let fetched = match state.sso.as_ref() {
+        Some(sso) => sso.client.fetch_text(&url).await,
+        None => crate::oidc::OidcClient::new(false).fetch_text(&url).await,
+    };
+    saml.idp_metadata_xml =
+        fetched.map_err(|e| ApiError::BadRequest(format!("saml.idp_metadata_url: {e}")))?;
+    Ok(())
+}
+
 async fn tenant_provider(
     state: &ApiState,
     tenant: &fcp_core::TenantId,
@@ -1006,6 +1184,22 @@ async fn tenant_provider(
         .await?
         .filter(|p| &p.tenant_id == tenant)
         .ok_or_else(not_found)
+}
+
+/// Give a SAML provider a key of FCP's own: its private half the
+/// provider's sealed secret, its certificate in FCP's metadata. A build
+/// without SAML gives none (and signs nobody in through it).
+fn give_sp_key(provider: &mut IdentityProvider) -> Result<(), ApiError> {
+    let key = match crate::saml::generate_sp_key() {
+        Ok(key) => key,
+        Err(crate::saml::SamlError::Unavailable) => return Ok(()),
+        Err(e) => return Err(ApiError::Internal(e.to_string())),
+    };
+    if let Some(saml) = provider.settings.saml.as_mut() {
+        saml.sp_certificate = Some(key.certificate);
+        provider.client_secret = Some(key.private_key);
+    }
+    Ok(())
 }
 
 /// Refuse taking away the last provider of a tenant that keeps passwords
@@ -1124,9 +1318,18 @@ pub async fn create(
         Permission::IdentityProviderManage,
         state.deployment_mode,
     )?;
+    let mut req = req;
+    if let Some(saml) = req.settings.saml.as_mut() {
+        // The server makes FCP's key; a request's certificate is not taken.
+        saml.sp_certificate = None;
+    }
+    if req.kind == ProviderKind::Saml {
+        req.client_secret = None;
+    }
+    fetch_metadata(&state, &mut req.settings).await?;
     check(&state, &req)?;
     let now = SystemTime::now();
-    let provider = IdentityProvider {
+    let mut provider = IdentityProvider {
         id: IdentityProviderId::new(),
         tenant_id: tenant.0,
         name: req.name.trim().to_string(),
@@ -1137,6 +1340,9 @@ pub async fn create(
         created_at: now,
         updated_at: now,
     };
+    if provider.kind == ProviderKind::Saml {
+        give_sp_key(&mut provider)?;
+    }
     identity_store(&state)?
         .put_identity_provider(&provider)
         .await?;
@@ -1172,19 +1378,41 @@ pub async fn update(
         Permission::IdentityProviderManage,
         state.deployment_mode,
     )?;
+    let mut req = req;
+    fetch_metadata(&state, &mut req.settings).await?;
     check(&state, &req)?;
     let mut provider = tenant_provider(&state, &tenant.0, &id).await?;
     if provider.enabled && !req.enabled {
         ensure_a_way_in(&state, &tenant.0, &provider.id).await?;
     }
+    if req.kind != provider.kind {
+        return Err(ApiError::BadRequest(
+            "a provider's protocol cannot change; add another provider".to_string(),
+        ));
+    }
     provider.name = req.name.trim().to_string();
     provider.enabled = req.enabled;
-    provider.kind = req.kind;
+    let sp_certificate = provider
+        .settings
+        .saml
+        .as_ref()
+        .and_then(|s| s.sp_certificate.clone());
     provider.settings = req.settings;
-    match req.client_secret {
-        Some(s) if s.is_empty() => provider.client_secret = None,
-        Some(s) => provider.client_secret = Some(s),
-        None => {}
+    match provider.kind {
+        // FCP's own key for a SAML provider is the server's: kept.
+        ProviderKind::Saml => {
+            if let Some(saml) = provider.settings.saml.as_mut() {
+                saml.sp_certificate = sp_certificate;
+            }
+            if provider.client_secret.is_none() {
+                give_sp_key(&mut provider)?;
+            }
+        }
+        ProviderKind::Oidc => match req.client_secret {
+            Some(s) if s.is_empty() => provider.client_secret = None,
+            Some(s) => provider.client_secret = Some(s),
+            None => {}
+        },
     }
     provider.updated_at = SystemTime::now();
     identity_store(&state)?
@@ -1228,6 +1456,106 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// POST /api/v1/identity-providers/{id}/sp-key — a new key of FCP's own
+/// for a SAML provider. The provider must then import FCP's metadata
+/// again: until it does, it refuses what FCP signs with the new key.
+#[utoipa::path(
+    post,
+    path = "/api/v1/identity-providers/{id}/sp-key",
+    tag = "identity_providers",
+    operation_id = "identity_providers_rotate_sp_key",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "The provider, with FCP's new certificate", body = IdentityProviderResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn rotate_sp_key(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Path(id): Path<String>,
+) -> Result<Json<IdentityProviderResponse>, ApiError> {
+    crate::auth::check_permission(
+        &identity,
+        Permission::IdentityProviderManage,
+        state.deployment_mode,
+    )?;
+    let mut provider = tenant_provider(&state, &tenant.0, &id).await?;
+    if provider.kind != ProviderKind::Saml {
+        return Err(ApiError::BadRequest(
+            "only a SAML provider has a key of FCP's".into(),
+        ));
+    }
+    let key =
+        crate::saml::generate_sp_key().map_err(|e| ApiError::ServiceUnavailable(e.to_string()))?;
+    if let Some(saml) = provider.settings.saml.as_mut() {
+        saml.sp_certificate = Some(key.certificate);
+    }
+    provider.client_secret = Some(key.private_key);
+    provider.updated_at = SystemTime::now();
+    identity_store(&state)?
+        .put_identity_provider(&provider)
+        .await?;
+    tracing::info!(provider = %provider.id, by = %identity.actor(), "FCP's SAML key rotated");
+    Ok(Json(IdentityProviderResponse::from(&state, provider)))
+}
+
+/// POST /api/v1/identity-providers/{id}/refresh-metadata — fetch a SAML
+/// provider's metadata again from its URL: the certificate it signs with
+/// now, after it rotates one.
+#[utoipa::path(
+    post,
+    path = "/api/v1/identity-providers/{id}/refresh-metadata",
+    tag = "identity_providers",
+    operation_id = "identity_providers_refresh_metadata",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "The provider, its metadata fetched", body = IdentityProviderResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn refresh_metadata(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Path(id): Path<String>,
+) -> Result<Json<IdentityProviderResponse>, ApiError> {
+    crate::auth::check_permission(
+        &identity,
+        Permission::IdentityProviderManage,
+        state.deployment_mode,
+    )?;
+    let mut provider = tenant_provider(&state, &tenant.0, &id).await?;
+    let has_url = provider
+        .settings
+        .saml
+        .as_ref()
+        .and_then(|s| s.idp_metadata_url.as_deref())
+        .is_some_and(|u| !u.trim().is_empty());
+    if !has_url {
+        return Err(ApiError::BadRequest(
+            "the provider has no metadata URL to fetch".into(),
+        ));
+    }
+    fetch_metadata(&state, &mut provider.settings).await?;
+    let xml = provider
+        .settings
+        .saml
+        .as_ref()
+        .map(|s| s.idp_metadata_xml.clone())
+        .unwrap_or_default();
+    match crate::saml::summarize(&xml) {
+        Ok(_) | Err(crate::saml::SamlError::Unavailable) => {}
+        Err(e) => return Err(ApiError::BadRequest(e.to_string())),
+    }
+    provider.updated_at = SystemTime::now();
+    identity_store(&state)?
+        .put_identity_provider(&provider)
+        .await?;
+    Ok(Json(IdentityProviderResponse::from(&state, provider)))
+}
+
 /// What a provider's check found.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ProviderCheck {
@@ -1237,10 +1565,12 @@ pub struct ProviderCheck {
     /// Where people are sent to sign in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization_endpoint: Option<String>,
-    /// SAML: the provider's entity id, and how many certificates it signs
-    /// with.
+    /// SAML: the provider's entity id, its logout address, and how many
+    /// certificates it signs with.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idp_entity_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idp_logout_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signing_certificates: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1284,6 +1614,7 @@ pub async fn check_provider(
                 ok: true,
                 authorization_endpoint: Some(summary.sso_url),
                 idp_entity_id: Some(summary.entity_id),
+                idp_logout_url: summary.slo_url,
                 signing_certificates: Some(summary.signing_certificates),
                 error: None,
             },
@@ -1291,6 +1622,7 @@ pub async fn check_provider(
                 ok: false,
                 authorization_endpoint: None,
                 idp_entity_id: None,
+                idp_logout_url: None,
                 signing_certificates: None,
                 error: Some(e.to_string()),
             },
@@ -1303,6 +1635,7 @@ pub async fn check_provider(
                 ok: true,
                 authorization_endpoint: Some(d.authorization_endpoint),
                 idp_entity_id: None,
+                idp_logout_url: None,
                 signing_certificates: None,
                 error: None,
             },
@@ -1311,6 +1644,7 @@ pub async fn check_provider(
                     ok: false,
                     authorization_endpoint: None,
                     idp_entity_id: None,
+                    idp_logout_url: None,
                     signing_certificates: None,
                     error: Some(e.to_string()),
                 }

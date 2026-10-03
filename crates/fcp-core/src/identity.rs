@@ -133,8 +133,22 @@ pub struct RequiredClaim {
 #[serde(deny_unknown_fields)]
 pub struct SamlSettings {
     /// The provider's metadata XML, as it publishes it: its entity id, its
-    /// single sign-on address and the certificates it signs with.
+    /// single sign-on and logout addresses and the certificates it signs
+    /// with. Fetched from `idp_metadata_url` when that is set.
+    #[serde(default)]
     pub idp_metadata_xml: String,
+    /// Where the provider publishes its metadata: fetched when the
+    /// provider is saved and when it is refreshed, so a certificate the
+    /// provider rotates is picked up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idp_metadata_url: Option<String>,
+    /// FCP's own certificate for this provider (base64 DER), in its
+    /// metadata: what the provider checks FCP's signed requests and
+    /// logout answers with, and encrypts assertions to. Made by the
+    /// server — its private key is the provider's sealed secret — and
+    /// never taken from a request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sp_certificate: Option<String>,
     /// Take the email attribute as the person's own, for linking by
     /// email. SAML has no `email_verified`; turn this on only for a
     /// provider whose directory owns its users' addresses.
@@ -247,8 +261,16 @@ impl ProviderSettings {
                 }
             }
             ProviderKind::Saml => match &self.saml {
-                Some(s) if !s.idp_metadata_xml.trim().is_empty() => {}
-                _ => return Some("saml.idp_metadata_xml is required".to_string()),
+                Some(s)
+                    if !s.idp_metadata_xml.trim().is_empty()
+                        || s.idp_metadata_url
+                            .as_deref()
+                            .is_some_and(|u| !u.trim().is_empty()) => {}
+                _ => {
+                    return Some(
+                        "saml.idp_metadata_xml or saml.idp_metadata_url is required".to_string(),
+                    )
+                }
             },
         }
         if self

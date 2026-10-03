@@ -335,6 +335,7 @@ from .retention_run_response import RetentionRunResponse
 from .rotate_api_token_request import RotateApiTokenRequest
 from .rotate_webhook_secret_request import RotateWebhookSecretRequest
 from .routing_rule_response import RoutingRuleResponse
+from .saml_logout_post import SamlLogoutPost
 from .saml_post import SamlPost
 from .saml_settings import SamlSettings
 from .say_request import SayRequest
@@ -780,6 +781,7 @@ __all__ = (
     "RotateApiTokenRequest",
     "RotateWebhookSecretRequest",
     "RoutingRuleResponse",
+    "SamlLogoutPost",
     "SamlPost",
     "SamlSettings",
     "SayRequest",

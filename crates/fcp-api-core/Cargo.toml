@@ -51,6 +51,9 @@ url = "2"
 # SAML sign-in (docs/IDENTITY_AND_DEVICES.md phase 4), behind the `saml`
 # feature: it verifies XML signatures through the xmlsec C library.
 samael = { version = "0.0.22", optional = true }
+openssl = { version = "0.10", optional = true }
+flate2 = { version = "1", optional = true }
+quick-xml = { version = "0.41", optional = true }
 base64 = "0.22"
 
 # HTTP client (for proxying to events server)
@@ -70,7 +73,7 @@ async-trait = "0.1"
 [features]
 # SAML 2.0 sign-in through tenants' identity providers: needs libxmlsec1
 # (the images carry it; docs/SSO.md says how to build with it).
-saml = ["dep:samael"]
+saml = ["dep:samael", "dep:openssl", "dep:flate2", "dep:quick-xml"]
 
 [dev-dependencies]
 fcp-testkit = { path = "../fcp-testkit" }

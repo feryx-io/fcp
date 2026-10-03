@@ -198,6 +198,16 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
         "/identity-providers/:id/check",
         Needs(IdentityProviderManage),
     ),
+    (
+        POST,
+        "/identity-providers/:id/sp-key",
+        Needs(IdentityProviderManage),
+    ),
+    (
+        POST,
+        "/identity-providers/:id/refresh-metadata",
+        Needs(IdentityProviderManage),
+    ),
     (PUT, "/users/:username", Needs(UserUpdate)),
     (DELETE, "/users/:username", Needs(UserDelete)),
     (PUT, "/users/:username/password", Needs(UserSetPassword)),
