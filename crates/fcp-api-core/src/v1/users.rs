@@ -66,6 +66,11 @@ pub struct UserResponse {
     pub account_locked_until: Option<std::time::SystemTime>,
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
+    /// When the user was deleted; they are purged the tenant's
+    /// `offboarding.grace_days` later unless restored.
+    #[serde(default, with = "crate::time::rfc3339_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub deprovisioned_at: Option<std::time::SystemTime>,
 }
 
 impl From<User> for UserResponse {
@@ -102,6 +107,7 @@ impl From<User> for UserResponse {
             account_locked_until: user.account_locked_until,
             emergency_contact_name: user.emergency_contact.name,
             emergency_contact_phone: user.emergency_contact.phone,
+            deprovisioned_at: user.deprovisioned_at,
         }
     }
 }
@@ -451,7 +457,7 @@ pub async fn create_user(
 
     // Parse account status
     let account_status = if let Some(status_str) = &req.account_status {
-        parse_account_status(status_str)?
+        parse_settable_status(status_str)?
     } else {
         AccountStatus::Active
     };
@@ -518,6 +524,7 @@ pub async fn create_user(
         primary_phone_number_id: None,
         voicemail_box_id: None,
         profile_picture: None,
+        deprovisioned_at: None,
         failed_login_attempts: 0,
         account_locked_until: None,
     };
@@ -591,6 +598,7 @@ pub async fn update_user(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    refuse_deprovisioned(&user)?;
     let before = user.clone();
 
     // Update fields
@@ -687,7 +695,7 @@ pub async fn update_user(
         user.timezone = timezone;
     }
     if let Some(account_status_str) = req.account_status {
-        user.account_status = parse_account_status(&account_status_str)?;
+        user.account_status = parse_settable_status(&account_status_str)?;
     }
     user.normalize_status();
     if let Some(emergency_name) = req.emergency_contact_name {
@@ -1027,6 +1035,7 @@ pub async fn unlock_user(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    refuse_deprovisioned(&user)?;
 
     let before = user.clone();
     user.failed_login_attempts = 0;
@@ -1067,7 +1076,9 @@ pub async fn unlock_user(
     Ok(Json(UserResponse::from(user)))
 }
 
-/// Delete a user.
+/// Delete a user: they are suspended at once and purged when the tenant's
+/// grace period (`offboarding.grace_days`) runs out, unless restored
+/// (`docs/USERS.md` §4).
 ///
 /// DELETE /api/v1/users/:username
 #[utoipa::path(
@@ -1077,7 +1088,7 @@ pub async fn unlock_user(
     operation_id = "users_delete_user",
     params(("username" = String, Path)),
     responses(
-        (status = 204, description = "Done"),
+        (status = 204, description = "Deprovisioned; purged after the grace period"),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
     ),
 )]
@@ -1090,47 +1101,115 @@ pub async fn delete_user(
     crate::auth::check_permission(&identity, Permission::UserDelete, state.deployment_mode)?;
     validation::validate_username(&username)?;
 
-    // Get user before deletion for event data
     let storage = require_storage!(state);
     let user = storage
         .get_user_in_tenant(&username, &tenant.0)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    crate::offboarding::deprovision(&state, user, &identity.actor()).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
 
-    // Delete user
-    storage.delete_user_in_tenant(&username, &tenant.0).await?;
+/// Restore a deleted user before their purge: active again, with what
+/// they had.
+///
+/// POST /api/v1/users/:username/restore
+#[utoipa::path(
+    post,
+    path = "/api/v1/users/{username}/restore",
+    tag = "users",
+    operation_id = "users_restore_user",
+    params(("username" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = UserResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn restore_user(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Path(username): Path<String>,
+) -> Result<Json<UserResponse>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::UserDelete, state.deployment_mode)?;
+    validation::validate_username(&username)?;
 
-    // Publish user deleted event
-    let _ = state
-        .event_bus
-        .publish(PlatformEvent::User(UserEvent::Deleted {
+    let storage = require_storage!(state);
+    let user = storage
+        .get_user_in_tenant(&username, &tenant.0)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
+        .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    let user = crate::offboarding::restore(&state, user).await?;
+    Ok(Json(UserResponse::from(user)))
+}
+
+/// What a purge did.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PurgeResponse {
+    pub user_id: String,
+    pub username: String,
+    pub report: fcp_core::offboarding::PurgeReport,
+}
+
+/// Purge a deleted user now, without waiting for the grace period. A
+/// platform admin's.
+///
+/// POST /api/v1/users/:username/purge
+#[utoipa::path(
+    post,
+    path = "/api/v1/users/{username}/purge",
+    tag = "users",
+    operation_id = "users_purge_user",
+    params(("username" = String, Path)),
+    responses(
+        (status = 200, description = "Purged", body = PurgeResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn purge_user(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Path(username): Path<String>,
+) -> Result<Json<PurgeResponse>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::UserDelete, state.deployment_mode)?;
+    if !identity.is_platform_admin() {
+        return Err(ApiError::Forbidden(
+            "Purging a user before the grace period ends is a platform admin's".to_string(),
+        ));
+    }
+    validation::validate_username(&username)?;
+
+    let storage = require_storage!(state);
+    let user = storage
+        .get_user_in_tenant(&username, &tenant.0)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
+        .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    if !user.is_deprovisioned() {
+        return Err(ApiError::Conflict(format!(
+            "User '{username}' is not deleted; delete them first"
+        )));
+    }
+    match crate::offboarding::purge(&state, &user, None, &identity.actor()).await? {
+        fcp_core::offboarding::PurgeOutcome::Purged { user, report } => Ok(Json(PurgeResponse {
             user_id: user.id.to_string(),
             username: user.username.clone(),
-            tenant_id: user.tenant_id,
-            timestamp: std::time::SystemTime::now(),
-        }))
-        .await;
-
-    // Publish ConfigChanged event for cache invalidation
-    let _ = state
-        .event_bus
-        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
-            entity_type: "user".to_string(),
-            entity_id: user.id.to_string(),
-            tenant_id: user.tenant_id,
-            timestamp: std::time::SystemTime::now(),
-        }))
-        .await;
-
-    // Security audit log
-    warn!(
-        event = "user_deleted",
-        username = %username,
-        "User account deleted"
-    );
-
-    Ok(StatusCode::NO_CONTENT)
+            report,
+        })),
+        fcp_core::offboarding::PurgeOutcome::Gone => {
+            Err(ApiError::NotFound(format!("User '{username}' not found")))
+        }
+        fcp_core::offboarding::PurgeOutcome::ErasureOpen => Err(ApiError::Conflict(format!(
+            "An erasure request for '{username}' is open; it runs first"
+        ))),
+        fcp_core::offboarding::PurgeOutcome::NotDeprovisioned
+        | fcp_core::offboarding::PurgeOutcome::NotDue => Err(ApiError::Conflict(format!(
+            "User '{username}' is not deleted; delete them first"
+        ))),
+    }
 }
 
 /// Refuse a new user past the tenant's `max_users`.
@@ -1176,9 +1255,32 @@ pub struct UserListQuery {
 pub(crate) fn parse_account_status(s: &str) -> Result<AccountStatus, ApiError> {
     AccountStatus::from_str(s).map_err(|_| {
         ApiError::BadRequest(format!(
-            "account_status must be active, suspended or locked, not '{s}'"
+            "account_status must be active, suspended, locked or deprovisioned, not '{s}'"
         ))
     })
+}
+
+/// A status a create or an update may set: not `deprovisioned`, which only
+/// a delete sets and only a restore clears.
+pub(crate) fn parse_settable_status(s: &str) -> Result<AccountStatus, ApiError> {
+    match parse_account_status(s)? {
+        AccountStatus::Deprovisioned => Err(ApiError::BadRequest(
+            "account_status 'deprovisioned' is set by deleting the user".to_string(),
+        )),
+        status => Ok(status),
+    }
+}
+
+/// A deleted user waits for their purge or a restore; nothing else
+/// changes them.
+pub(crate) fn refuse_deprovisioned(user: &User) -> Result<(), ApiError> {
+    if user.is_deprovisioned() {
+        return Err(ApiError::Conflict(format!(
+            "User '{}' is deleted and waiting to be purged; restore them first",
+            user.username
+        )));
+    }
+    Ok(())
 }
 
 /// The fields a change touched, by name (secrets named, never shown).
@@ -1365,6 +1467,7 @@ pub(crate) fn user_without_password(
         primary_phone_number_id: None,
         voicemail_box_id: None,
         profile_picture: None,
+        deprovisioned_at: None,
         failed_login_attempts: 0,
         account_locked_until: None,
     })

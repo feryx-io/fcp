@@ -135,6 +135,11 @@ async fn a_snapshot_and_the_feed_reproduce_the_tenants_slice() {
         .admin_call("DELETE", "/api/v1/users/alice", true, None)
         .await;
     assert!(code == 200 || code == 204, "{gone}");
+    // Deleted, then purged without waiting for the grace period.
+    let (code, purged) = cloud
+        .admin_call("POST", "/api/v1/users/alice/purge", true, None)
+        .await;
+    assert_eq!(code, 200, "{purged}");
     let (code, changes) = get(format!("/link/v1/changes?since={cursor}&wait_secs=10")).await;
     assert_eq!(code, 200, "{changes}");
     let ops: Vec<&str> = changes["changes"]

@@ -250,10 +250,26 @@ async fn deletions_are_logged_attributed_and_their_files_reaped_within_their_ten
     assert!(db.pg.get_message(&recent.id).await.unwrap().is_some());
     let unattributed = message(&db, &mb, file(&root.path().join("vm/nobody.wav"), 1), 1).await;
     db.pg.delete_message(&unattributed.id).await.unwrap();
-    // The number goes, and with it the binding, the mailbox, the message.
+    // The number goes, and with it the binding; the mailbox outlives its
+    // line (migration 097), its message with it.
     deleting_as(
         Deleter::new(DeletionCause::Manual, "bob"),
         db.pg.delete_phone_number(&number.id),
+    )
+    .await
+    .unwrap();
+    let kept = db
+        .pg
+        .get_mailbox(&mb.id)
+        .await
+        .unwrap()
+        .expect("the mailbox");
+    assert_eq!(kept.line_binding_id, None);
+    assert!(db.pg.get_message(&recent.id).await.unwrap().is_some());
+    // The mailbox goes, and with it the message.
+    deleting_as(
+        Deleter::new(DeletionCause::Manual, "bob"),
+        db.pg.delete_mailbox(&mb.id),
     )
     .await
     .unwrap();
@@ -667,10 +683,12 @@ async fn a_hold_keeps_what_it_covers_from_every_deletion_until_released() {
         Some(hold.id.to_string())
     );
     assert_eq!(
-        violation(db.pg.delete_phone_number(&number.id).await.unwrap_err()),
+        violation(db.pg.delete_mailbox(&mb.id).await.unwrap_err()),
         Some(hold.id.to_string()),
-        "the number's cascade reaches a held message"
+        "the mailbox's cascade reaches a held message"
     );
+    // The number's no longer does: the mailbox outlives its line.
+    db.pg.delete_phone_number(&number.id).await.unwrap();
     assert!(db.pg.get_message(&from_subject.id).await.unwrap().is_some());
     let raw = sqlx::query("DELETE FROM cdrs WHERE call_id = $1")
         .bind(held_call.to_string())

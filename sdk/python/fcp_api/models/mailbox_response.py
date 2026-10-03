@@ -29,7 +29,6 @@ class MailboxResponse:
             id (str):
             tenant_id (str):
             user_id (str):
-            line_binding_id (str):
             extension (str):
             enabled (bool):
             max_message_duration (int):
@@ -40,6 +39,7 @@ class MailboxResponse:
             transcription_enabled (bool):
             created_at (datetime.datetime):
             updated_at (datetime.datetime):
+            line_binding_id (None | str | Unset):
             email_address (None | str | Unset):
             retention_days (int | None | Unset):
      """
@@ -47,7 +47,6 @@ class MailboxResponse:
     id: str
     tenant_id: str
     user_id: str
-    line_binding_id: str
     extension: str
     enabled: bool
     max_message_duration: int
@@ -58,6 +57,7 @@ class MailboxResponse:
     transcription_enabled: bool
     created_at: datetime.datetime
     updated_at: datetime.datetime
+    line_binding_id: None | str | Unset = UNSET
     email_address: None | str | Unset = UNSET
     retention_days: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -72,8 +72,6 @@ class MailboxResponse:
         tenant_id = self.tenant_id
 
         user_id = self.user_id
-
-        line_binding_id = self.line_binding_id
 
         extension = self.extension
 
@@ -95,6 +93,12 @@ class MailboxResponse:
 
         updated_at = self.updated_at.isoformat()
 
+        line_binding_id: None | str | Unset
+        if isinstance(self.line_binding_id, Unset):
+            line_binding_id = UNSET
+        else:
+            line_binding_id = self.line_binding_id
+
         email_address: None | str | Unset
         if isinstance(self.email_address, Unset):
             email_address = UNSET
@@ -114,7 +118,6 @@ class MailboxResponse:
             "id": id,
             "tenant_id": tenant_id,
             "user_id": user_id,
-            "line_binding_id": line_binding_id,
             "extension": extension,
             "enabled": enabled,
             "max_message_duration": max_message_duration,
@@ -126,6 +129,8 @@ class MailboxResponse:
             "created_at": created_at,
             "updated_at": updated_at,
         })
+        if line_binding_id is not UNSET:
+            field_dict["line_binding_id"] = line_binding_id
         if email_address is not UNSET:
             field_dict["email_address"] = email_address
         if retention_days is not UNSET:
@@ -143,8 +148,6 @@ class MailboxResponse:
         tenant_id = d.pop("tenant_id")
 
         user_id = d.pop("user_id")
-
-        line_binding_id = d.pop("line_binding_id")
 
         extension = d.pop("extension")
 
@@ -172,6 +175,16 @@ class MailboxResponse:
 
 
 
+        def _parse_line_binding_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        line_binding_id = _parse_line_binding_id(d.pop("line_binding_id", UNSET))
+
+
         def _parse_email_address(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -196,7 +209,6 @@ class MailboxResponse:
             id=id,
             tenant_id=tenant_id,
             user_id=user_id,
-            line_binding_id=line_binding_id,
             extension=extension,
             enabled=enabled,
             max_message_duration=max_message_duration,
@@ -207,6 +219,7 @@ class MailboxResponse:
             transcription_enabled=transcription_enabled,
             created_at=created_at,
             updated_at=updated_at,
+            line_binding_id=line_binding_id,
             email_address=email_address,
             retention_days=retention_days,
         )

@@ -42,15 +42,17 @@ impl SipMwiNotifier {
 #[async_trait::async_trait]
 impl fcp_core::MwiNotifier for SipMwiNotifier {
     async fn notify_mwi(&self, mwi_status: &MwiStatus) -> Result<()> {
-        // Step 1: Look up the line binding to find devices
+        // Step 1: Look up the line binding to find devices. A mailbox
+        // without a line (its user purged) lights no lamp.
+        let Some(line_binding_id) = mwi_status.line_binding_id.as_ref() else {
+            return Ok(());
+        };
         let line_binding = self
             .storage
-            .get_line_binding(&mwi_status.line_binding_id)
+            .get_line_binding(line_binding_id)
             .await
             .context("Failed to look up line binding for MWI")?
-            .ok_or_else(|| {
-                anyhow::anyhow!("Line binding not found: {}", mwi_status.line_binding_id)
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("Line binding not found: {line_binding_id}"))?;
 
         // Step 2: For each device, look up its SIP URI and find registered contacts
         let mut notified = 0u32;

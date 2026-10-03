@@ -354,12 +354,74 @@ format = "compact"
     .unwrap();
     assert_eq!(code, 403, "a synced provider is the cloud's: {text}");
 
+    // What only the site holds of Alice: a declared location and a queue
+    // seat, which no feed carries.
+    let site_pool = sqlx::PgPool::connect(site_db.url()).await.unwrap();
+    let alice_id: String = sqlx::query_scalar("SELECT id FROM users WHERE username = 'alice'")
+        .fetch_one(&site_pool)
+        .await
+        .unwrap();
+    for statement in [
+        "INSERT INTO declared_locations (tenant_id, user_id, address, expires_at)
+         SELECT tenant_id, id, '{}'::jsonb, now() + interval '1 day' FROM users WHERE id = $1",
+        "INSERT INTO queue_agents (tenant_id, agent_id, extension)
+         SELECT tenant_id, username, username FROM users WHERE id = $1",
+    ] {
+        sqlx::query(statement)
+            .bind(&alice_id)
+            .execute(&site_pool)
+            .await
+            .unwrap();
+    }
+
     // A user deleted in the cloud is gone at the site.
     let (code, gone) = cloud
         .admin_call("DELETE", "/api/v1/users/alice", true, None)
         .await;
     assert!(code == 200 || code == 204, "{gone}");
+    // Deleted, then purged without waiting for the grace period.
+    let (code, purged) = cloud
+        .admin_call("POST", "/api/v1/users/alice/purge", true, None)
+        .await;
+    assert_eq!(code, 200, "{purged}");
     registers_with("alice still registered after her deletion", &renewed, false).await;
+    // Purged at the site too: what the site alone held went with her.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE id = $1")
+            .bind(&alice_id)
+            .fetch_one(&site_pool)
+            .await
+            .unwrap();
+        if left == 0 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "alice was never purged at the site"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    for (what, sql, by) in [
+        (
+            "declared location",
+            "SELECT count(*) FROM declared_locations WHERE user_id = $1",
+            alice_id.as_str(),
+        ),
+        (
+            "queue seat",
+            "SELECT count(*) FROM queue_agents WHERE agent_id = $1",
+            "alice",
+        ),
+    ] {
+        let left: i64 = sqlx::query_scalar(sql)
+            .bind(by)
+            .fetch_one(&site_pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "alice's {what} outlived her at the site");
+    }
+    site_pool.close().await;
 
     let log = registrar.stop().await;
     assert!(!log.contains("panicked"), "the registrar panicked:\n{log}");

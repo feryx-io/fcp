@@ -7,6 +7,9 @@ type S = components['schemas']
 
 export type User = S['UserResponse']
 
+/** What purging a deleted user removed (`docs/USERS.md` §4). */
+export type PurgeResponse = S['PurgeResponse']
+
 export type UserRole =
   | 'super_admin'
   | 'tenant_admin'

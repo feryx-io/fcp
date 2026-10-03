@@ -1883,7 +1883,9 @@ export interface paths {
         put: operations["users_update_user"];
         post?: never;
         /**
-         * Delete a user.
+         * Delete a user: they are suspended at once and purged when the tenant's
+         *     grace period (`offboarding.grace_days`) runs out, unless restored
+         *     (`docs/USERS.md` §4).
          * @description DELETE /api/v1/users/:username
          */
         delete: operations["users_delete_user"];
@@ -1949,6 +1951,48 @@ export interface paths {
          *     Resets failed login attempts, clears lockout, and sets account status to Active.
          */
         post: operations["users_unlock_user"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{username}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore a deleted user before their purge: active again, with what
+         *     they had.
+         * @description POST /api/v1/users/:username/restore
+         */
+        post: operations["users_restore_user"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{username}/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Purge a deleted user now, without waiting for the grace period. A
+         *     platform admin's.
+         * @description POST /api/v1/users/:username/purge
+         */
+        post: operations["users_purge_user"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5631,6 +5675,7 @@ export interface components {
             /** @description Email domains whose people are this tenant's. */
             login_domains?: string[];
             sign_in?: components["schemas"]["TenantSignIn"] | null;
+            offboarding?: components["schemas"]["TenantOffboarding"] | null;
         };
         /** @description Credit or adjustment request. */
         CreateTransactionRequest: {
@@ -6560,7 +6605,7 @@ export interface components {
             id: string;
             tenant_id: string;
             user_id: string;
-            line_binding_id: string;
+            line_binding_id?: string | null;
             extension: string;
             enabled: boolean;
             /** Format: int32 */
@@ -7594,7 +7639,7 @@ export interface components {
                 id: string;
                 tenant_id: string;
                 user_id: string;
-                line_binding_id: string;
+                line_binding_id?: string | null;
                 extension: string;
                 enabled: boolean;
                 /** Format: int32 */
@@ -8399,6 +8444,8 @@ export interface components {
                 login_domains: string[];
                 /** @description How the tenant's people may sign in. */
                 sign_in: components["schemas"]["TenantSignIn"];
+                /** @description What happens to a deleted user (`docs/USERS.md` §4). */
+                offboarding: components["schemas"]["TenantOffboarding"];
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -8555,6 +8602,12 @@ export interface components {
                 account_locked_until?: string | null;
                 emergency_contact_name?: string | null;
                 emergency_contact_phone?: string | null;
+                /**
+                 * Format: date-time
+                 * @description When the user was deleted; they are purged the tenant's
+                 *     `offboarding.grace_days` later unless restored.
+                 */
+                deprovisioned_at?: string | null;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -9015,6 +9068,50 @@ export interface components {
              *     Entra's `tid`. A claim that is a list must contain the value.
              */
             required_claims?: components["schemas"]["RequiredClaim"][];
+        };
+        /** @description What a purge did, counted. */
+        PurgeReport: {
+            /** Format: int64 */
+            devices_unassigned: number;
+            /** Format: int64 */
+            lines_released: number;
+            /** Format: int64 */
+            extensions_released: number;
+            /** Format: int64 */
+            mailboxes_kept: number;
+            /** Format: int64 */
+            calling_settings_removed: number;
+            /** Format: int64 */
+            others_settings_changed: number;
+            /** Format: int64 */
+            api_tokens_removed: number;
+            /** Format: int64 */
+            hoteling_sessions_ended: number;
+            /** Format: int64 */
+            queue_memberships_removed: number;
+            /** Format: int64 */
+            declared_locations_removed: number;
+            /** Format: int64 */
+            meetings_moved: number;
+            /** Format: int64 */
+            meetings_unowned: number;
+            /** Format: int64 */
+            registrations_removed: number;
+            /** Format: int64 */
+            presence_removed: number;
+            /** Format: int64 */
+            files_queued: number;
+            /**
+             * @description Every registration address removed, for the call managers to
+             *     forget (`registration.unregistered`).
+             */
+            removed_aors?: string[];
+        };
+        /** @description What a purge did. */
+        PurgeResponse: {
+            user_id: string;
+            username: string;
+            report: components["schemas"]["PurgeReport"];
         };
         /** @description Queue config response. */
         QueueConfigResponse: {
@@ -9652,6 +9749,23 @@ export interface components {
         };
         /** @description A TenantId: `tenant-<uuid>`, or the bare UUID */
         TenantId: string;
+        /**
+         * @description What happens to a tenant's deleted user (`docs/USERS.md` §4): they are
+         *     suspended at once and purged `grace_days` later.
+         */
+        TenantOffboarding: {
+            /**
+             * Format: int32
+             * @description Days between a delete and the purge, so a mistake can be undone and
+             *     a mailbox collected. 0 purges at once.
+             */
+            grace_days?: number;
+            /**
+             * @description The username a purged user's meetings move to; without one they
+             *     are left without an owner.
+             */
+            meetings_owner?: string | null;
+        };
         /** @description Response for tenant API calls */
         TenantResponse: {
             id: string;
@@ -9693,6 +9807,8 @@ export interface components {
             login_domains: string[];
             /** @description How the tenant's people may sign in. */
             sign_in: components["schemas"]["TenantSignIn"];
+            /** @description What happens to a deleted user (`docs/USERS.md` §4). */
+            offboarding: components["schemas"]["TenantOffboarding"];
         };
         /** @description How a tenant's people may sign in (`docs/IDENTITY_AND_DEVICES.md` §2). */
         TenantSignIn: {
@@ -10381,6 +10497,7 @@ export interface components {
              */
             login_domains?: string[] | null;
             sign_in?: components["schemas"]["TenantSignIn"] | null;
+            offboarding?: components["schemas"]["TenantOffboarding"] | null;
         };
         /** @description Update trunk request. */
         UpdateTrunkRequest: {
@@ -10558,6 +10675,12 @@ export interface components {
             account_locked_until?: string | null;
             emergency_contact_name?: string | null;
             emergency_contact_phone?: string | null;
+            /**
+             * Format: date-time
+             * @description When the user was deleted; they are purged the tenant's
+             *     `offboarding.grace_days` later unless restored.
+             */
+            deprovisioned_at?: string | null;
         };
         ValidateAddressRequest: {
             address: components["schemas"]["E911AddressResponse"];
@@ -10670,7 +10793,7 @@ export interface components {
              * @description A name from `/api/v1/webhooks/event-types`, or `webhook.test`
              * @enum {string}
              */
-            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "user.created" | "user.updated" | "user.deleted" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
+            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
             /**
              * Format: date-time
              * @description When the event happened, RFC 3339.
@@ -15043,7 +15166,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Done */
+            /** @description Deprovisioned; purged after the grace period */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -15144,6 +15267,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UserResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    users_restore_user: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    users_purge_user: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Purged */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurgeResponse"];
                 };
             };
             /** @description An error */

@@ -5488,7 +5488,7 @@
         "tags": [
           "users"
         ],
-        "summary": "Delete a user.",
+        "summary": "Delete a user: they are suspended at once and purged when the tenant's\ngrace period (`offboarding.grace_days`) runs out, unless restored\n(`docs/USERS.md` §4).",
         "description": "DELETE /api/v1/users/:username",
         "operationId": "users_delete_user",
         "parameters": [
@@ -5503,7 +5503,7 @@
         ],
         "responses": {
           "204": {
-            "description": "Done"
+            "description": "Deprovisioned; purged after the grace period"
           },
           "default": {
             "description": "An error",
@@ -5631,6 +5631,90 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{username}/restore": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Restore a deleted user before their purge: active again, with what\nthey had.",
+        "description": "POST /api/v1/users/:username/restore",
+        "operationId": "users_restore_user",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{username}/purge": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Purge a deleted user now, without waiting for the grace period. A\nplatform admin's.",
+        "description": "POST /api/v1/users/:username/purge",
+        "operationId": "users_purge_user",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Purged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeResponse"
                 }
               }
             }
@@ -19057,6 +19141,17 @@
                 "type": "null"
               }
             ]
+          },
+          "offboarding": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantOffboarding",
+                "description": "The grace period before a deleted user is purged (a new tenant has\nno users to name as a meetings owner)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -21966,7 +22061,6 @@
           "id",
           "tenant_id",
           "user_id",
-          "line_binding_id",
           "extension",
           "enabled",
           "max_message_duration",
@@ -21989,7 +22083,10 @@
             "type": "string"
           },
           "line_binding_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "extension": {
             "type": "string"
@@ -25236,7 +25333,6 @@
                 "id",
                 "tenant_id",
                 "user_id",
-                "line_binding_id",
                 "extension",
                 "enabled",
                 "max_message_duration",
@@ -25259,7 +25355,10 @@
                   "type": "string"
                 },
                 "line_binding_id": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "extension": {
                   "type": "string"
@@ -27847,7 +27946,8 @@
                 "platform_trunk_fallback",
                 "calling",
                 "login_domains",
-                "sign_in"
+                "sign_in",
+                "offboarding"
               ],
               "properties": {
                 "id": {
@@ -27953,6 +28053,10 @@
                 "sign_in": {
                   "$ref": "#/components/schemas/TenantSignIn",
                   "description": "How the tenant's people may sign in."
+                },
+                "offboarding": {
+                  "$ref": "#/components/schemas/TenantOffboarding",
+                  "description": "What happens to a deleted user (`docs/USERS.md` §4)."
                 }
               }
             }
@@ -28472,6 +28576,14 @@
                     "string",
                     "null"
                   ]
+                },
+                "deprovisioned_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "When the user was deleted; they are purged the tenant's\n`offboarding.grace_days` later unless restored."
                 }
               }
             }
@@ -29789,6 +29901,131 @@
           }
         },
         "additionalProperties": false
+      },
+      "PurgeReport": {
+        "type": "object",
+        "description": "What a purge did, counted.",
+        "required": [
+          "devices_unassigned",
+          "lines_released",
+          "extensions_released",
+          "mailboxes_kept",
+          "calling_settings_removed",
+          "others_settings_changed",
+          "api_tokens_removed",
+          "hoteling_sessions_ended",
+          "queue_memberships_removed",
+          "declared_locations_removed",
+          "meetings_moved",
+          "meetings_unowned",
+          "registrations_removed",
+          "presence_removed",
+          "files_queued"
+        ],
+        "properties": {
+          "devices_unassigned": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "lines_released": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "extensions_released": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "mailboxes_kept": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "calling_settings_removed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "others_settings_changed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "api_tokens_removed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "hoteling_sessions_ended": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "queue_memberships_removed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "declared_locations_removed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "meetings_moved": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "meetings_unowned": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "registrations_removed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "presence_removed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "files_queued": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "removed_aors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every registration address removed, for the call managers to\nforget (`registration.unregistered`)."
+          }
+        }
+      },
+      "PurgeResponse": {
+        "type": "object",
+        "description": "What a purge did.",
+        "required": [
+          "user_id",
+          "username",
+          "report"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "report": {
+            "$ref": "#/components/schemas/PurgeReport"
+          }
+        }
       },
       "QueueConfigResponse": {
         "type": "object",
@@ -31761,6 +31998,25 @@
         "type": "string",
         "description": "A TenantId: `tenant-<uuid>`, or the bare UUID"
       },
+      "TenantOffboarding": {
+        "type": "object",
+        "description": "What happens to a tenant's deleted user (`docs/USERS.md` §4): they are\nsuspended at once and purged `grace_days` later.",
+        "properties": {
+          "grace_days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Days between a delete and the purge, so a mistake can be undone and\na mailbox collected. 0 purges at once.",
+            "minimum": 0
+          },
+          "meetings_owner": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The username a purged user's meetings move to; without one they\nare left without an owner."
+          }
+        }
+      },
       "TenantResponse": {
         "type": "object",
         "description": "Response for tenant API calls",
@@ -31774,7 +32030,8 @@
           "platform_trunk_fallback",
           "calling",
           "login_domains",
-          "sign_in"
+          "sign_in",
+          "offboarding"
         ],
         "properties": {
           "id": {
@@ -31880,6 +32137,10 @@
           "sign_in": {
             "$ref": "#/components/schemas/TenantSignIn",
             "description": "How the tenant's people may sign in."
+          },
+          "offboarding": {
+            "$ref": "#/components/schemas/TenantOffboarding",
+            "description": "What happens to a deleted user (`docs/USERS.md` §4)."
           }
         }
       },
@@ -34305,6 +34566,17 @@
                 "type": "null"
               }
             ]
+          },
+          "offboarding": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantOffboarding",
+                "description": "Replaces what happens to a deleted user."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -35038,6 +35310,14 @@
               "string",
               "null"
             ]
+          },
+          "deprovisioned_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the user was deleted; they are purged the tenant's\n`offboarding.grace_days` later unless restored."
           }
         }
       },
@@ -35395,6 +35675,8 @@
               "user.created",
               "user.updated",
               "user.deleted",
+              "user.deprovisioned",
+              "user.restored",
               "user.enabled",
               "user.disabled",
               "user.calling_changed",

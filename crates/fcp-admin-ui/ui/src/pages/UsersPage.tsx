@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, KeyRound, Phone, Trash2, LockOpen, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, KeyRound, Phone, Trash2, LockOpen, Undo2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -23,7 +23,7 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { users, locations, tenants } from '@/api/endpoints'
 import type { User, CreateUserRequest, Location } from '@/types'
-import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId, useIsPlatformAdmin, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 import { CallingDialog } from '@/components/CallingDialog'
 
 const createUserSchema = z.object({
@@ -88,11 +88,13 @@ const statusBadgeVariant = (status: string) => {
     case 'active': return 'success' as const
     case 'suspended': return 'warning' as const
     case 'locked': return 'destructive' as const
+    case 'deprovisioned': return 'secondary' as const
     default: return 'secondary' as const
   }
 }
 
 export function UsersPage() {
+  const isPlatformAdmin = useIsPlatformAdmin()
   const [createOpen, setCreateOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [editUser, setEditUser] = useState<User | null>(null)
@@ -175,6 +177,16 @@ export function UsersPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
   })
 
+  const restoreMutation = useMutation({
+    mutationFn: users.restore,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
+  })
+
+  const purgeMutation = useMutation({
+    mutationFn: users.purge,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
+  })
+
   const columns: ColumnDef<User>[] = [
     {
       accessorKey: 'username',
@@ -209,6 +221,11 @@ export function UsersPage() {
           {row.original.account_status === 'locked' && row.original.failed_login_attempts > 0 && (
             <span className="text-xs text-muted-foreground">
               ({row.original.failed_login_attempts} attempts)
+            </span>
+          )}
+          {row.original.account_status === 'deprovisioned' && row.original.deprovisioned_at && (
+            <span className="text-xs text-muted-foreground">
+              deleted {new Date(row.original.deprovisioned_at).toLocaleDateString()}
             </span>
           )}
         </div>
@@ -250,40 +267,64 @@ export function UsersPage() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => setEditUser(row.original)}>
-              <Pencil className="mr-2 h-4 w-4" />
-              Edit
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setPasswordUser(row.original)}>
-              <KeyRound className="mr-2 h-4 w-4" />
-              Change Password
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setCallingUser(row.original)}>
-              <Phone className="mr-2 h-4 w-4" />
-              Calling Settings
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setDigestUser(row.original)}>
-              <Phone className="mr-2 h-4 w-4" />
-              Set Digest Credentials
-            </DropdownMenuItem>
-            {row.original.account_status === 'locked' && (
-              <DropdownMenuItem onClick={() => unlockMutation.mutate(row.original.username)}>
-                <LockOpen className="mr-2 h-4 w-4" />
-                Unlock Account
-              </DropdownMenuItem>
+            {row.original.account_status === 'deprovisioned' ? (
+              <>
+                <DropdownMenuItem onClick={() => restoreMutation.mutate(row.original.username)}>
+                  <Undo2 className="mr-2 h-4 w-4" />
+                  Restore
+                </DropdownMenuItem>
+                {isPlatformAdmin && (
+                  <DropdownMenuItem
+                    className="text-destructive"
+                    onClick={() => {
+                      if (confirm(`Purge "${row.original.username}" now? Their lines, extension, settings and tokens go, and this cannot be undone.`)) {
+                        purgeMutation.mutate(row.original.username)
+                      }
+                    }}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Purge Now
+                  </DropdownMenuItem>
+                )}
+              </>
+            ) : (
+              <>
+                <DropdownMenuItem onClick={() => setEditUser(row.original)}>
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setPasswordUser(row.original)}>
+                  <KeyRound className="mr-2 h-4 w-4" />
+                  Change Password
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setCallingUser(row.original)}>
+                  <Phone className="mr-2 h-4 w-4" />
+                  Calling Settings
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setDigestUser(row.original)}>
+                  <Phone className="mr-2 h-4 w-4" />
+                  Set Digest Credentials
+                </DropdownMenuItem>
+                {row.original.account_status === 'locked' && (
+                  <DropdownMenuItem onClick={() => unlockMutation.mutate(row.original.username)}>
+                    <LockOpen className="mr-2 h-4 w-4" />
+                    Unlock Account
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-destructive"
+                  onClick={() => {
+                    if (confirm(`Delete user "${row.original.username}"? They are suspended now and purged when the tenant's grace period ends; until then they can be restored.`)) {
+                      deleteMutation.mutate(row.original.username)
+                    }
+                  }}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+              </>
             )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="text-destructive"
-              onClick={() => {
-                if (confirm(`Delete user "${row.original.username}"?`)) {
-                  deleteMutation.mutate(row.original.username)
-                }
-              }}
-            >
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete
-            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       ),

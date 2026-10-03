@@ -699,6 +699,13 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Deleted users purged when their tenant's grace period ends
+    // (docs/USERS.md §4), once an hour.
+    fcp_api_core::offboarding::spawn_sweep(
+        api_state.clone(),
+        format!("fcp-admin:{}", config.service.node_id),
+    );
+
     // Initialize cluster reader (optional — only when Redis is configured)
     let mut trunk_reports: Option<std::sync::Arc<dyn fcp_api_core::TrunkNodeReports>> = None;
     let mut rate_counter: Option<std::sync::Arc<dyn fcp_api_core::rate_limit::RateCounter>> = None;

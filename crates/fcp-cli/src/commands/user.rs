@@ -310,7 +310,11 @@ pub async fn handle(
                 .await
                 .context(format!("Failed to delete user '{}'", username))?;
 
-            println!("User '{}' deleted successfully", username);
+            println!(
+                "User '{}' deleted: suspended now, purged when the tenant's grace period ends \
+                 (POST /api/v1/users/{}/restore undoes it until then)",
+                username, username
+            );
         }
 
         UserCommands::Create {

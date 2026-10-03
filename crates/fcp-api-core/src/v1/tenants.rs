@@ -8,7 +8,7 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
-use fcp_core::{Tenant, TenantId, TenantStatus, TenantStore};
+use fcp_core::{CredentialStore, Tenant, TenantId, TenantStatus, TenantStore};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::SystemTime;
@@ -96,6 +96,8 @@ pub struct TenantResponse {
     pub login_domains: Vec<String>,
     /// How the tenant's people may sign in.
     pub sign_in: fcp_core::TenantSignIn,
+    /// What happens to a deleted user (`docs/USERS.md` §4).
+    pub offboarding: fcp_core::TenantOffboarding,
 }
 
 impl From<Tenant> for TenantResponse {
@@ -132,6 +134,7 @@ impl From<Tenant> for TenantResponse {
             calling: tenant.calling,
             login_domains: tenant.login_domains,
             sign_in: tenant.sign_in,
+            offboarding: tenant.offboarding,
         }
     }
 }
@@ -169,6 +172,10 @@ pub struct CreateTenantRequest {
     /// How the tenant's people may sign in.
     #[serde(default)]
     pub sign_in: Option<fcp_core::TenantSignIn>,
+    /// The grace period before a deleted user is purged (a new tenant has
+    /// no users to name as a meetings owner).
+    #[serde(default)]
+    pub offboarding: Option<fcp_core::TenantOffboarding>,
 }
 
 /// Request to update a tenant
@@ -199,6 +206,39 @@ pub struct UpdateTenantRequest {
     pub login_domains: Option<Vec<String>>,
     /// Replaces how the tenant's people may sign in.
     pub sign_in: Option<fcp_core::TenantSignIn>,
+    /// Replaces what happens to a deleted user.
+    pub offboarding: Option<fcp_core::TenantOffboarding>,
+}
+
+/// A tenant's offboarding as stored: the grace period within bounds, and
+/// a meetings owner who is one of the tenant's users, not deprovisioned.
+async fn normalize_offboarding(
+    storage: &fcp_core::DynStorage,
+    tenant_id: Option<&TenantId>,
+    mut offboarding: fcp_core::TenantOffboarding,
+) -> Result<fcp_core::TenantOffboarding, ApiError> {
+    if offboarding.grace_days > fcp_core::tenant::MAX_GRACE_DAYS {
+        return Err(ApiError::BadRequest(format!(
+            "offboarding.grace_days must be at most {}",
+            fcp_core::tenant::MAX_GRACE_DAYS
+        )));
+    }
+    offboarding.meetings_owner = offboarding
+        .meetings_owner
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
+    if let Some(owner) = &offboarding.meetings_owner {
+        let user = match tenant_id {
+            Some(tenant_id) => storage.get_user_in_tenant(owner, tenant_id).await?,
+            None => None,
+        };
+        if !user.is_some_and(|u| !u.is_deprovisioned()) {
+            return Err(ApiError::BadRequest(format!(
+                "offboarding.meetings_owner: '{owner}' is not one of the tenant's users"
+            )));
+        }
+    }
+    Ok(offboarding)
 }
 
 /// A tenant's calling defaults as stored: the country upper-cased, blanks
@@ -440,6 +480,8 @@ pub async fn create_tenant(
     let sign_in = req.sign_in.clone().unwrap_or_default();
     // A new tenant has no identity provider yet.
     check_sign_in(&sign_in, false)?;
+    let offboarding =
+        normalize_offboarding(storage, None, req.offboarding.clone().unwrap_or_default()).await?;
 
     let now = SystemTime::now();
     let status = if let Some(status_str) = &req.status {
@@ -483,6 +525,7 @@ pub async fn create_tenant(
         calling: normalize_calling(req.calling.unwrap_or_default())?,
         login_domains,
         sign_in,
+        offboarding,
     };
 
     storage.put_tenant(tenant.clone()).await?;
@@ -626,6 +669,10 @@ pub async fn update_tenant(
 
     if let Some(calling) = req.calling {
         tenant.calling = normalize_calling(calling)?;
+    }
+
+    if let Some(offboarding) = req.offboarding {
+        tenant.offboarding = normalize_offboarding(storage, Some(&tenant.id), offboarding).await?;
     }
 
     tenant.updated_at = SystemTime::now();

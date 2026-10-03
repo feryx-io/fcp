@@ -217,8 +217,10 @@ pub struct VoicemailMailbox {
     /// User ID that owns this mailbox
     pub user_id: UserId,
 
-    /// Line binding associated with this mailbox
-    pub line_binding_id: LineBindingId,
+    /// The line the mailbox answers for; none once the line is released
+    /// (a purged user's mailbox, kept until retention empties it, or a
+    /// line deleted on its own).
+    pub line_binding_id: Option<LineBindingId>,
 
     /// Extension/mailbox number
     pub extension: String,
@@ -276,7 +278,7 @@ impl VoicemailMailbox {
             id: uuid::Uuid::new_v4().to_string(),
             tenant_id,
             user_id,
-            line_binding_id,
+            line_binding_id: Some(line_binding_id),
             extension,
             pin,
             enabled: true,
@@ -402,8 +404,8 @@ pub struct MwiStatus {
     /// Mailbox ID
     pub mailbox_id: String,
 
-    /// Line binding ID
-    pub line_binding_id: LineBindingId,
+    /// Line binding ID, when the mailbox has a line
+    pub line_binding_id: Option<LineBindingId>,
 
     /// Number of new messages
     pub new_messages: u32,
@@ -420,7 +422,7 @@ pub struct MwiStatus {
 
 impl MwiStatus {
     /// Creates a new MWI status.
-    pub fn new(mailbox_id: String, line_binding_id: LineBindingId) -> Self {
+    pub fn new(mailbox_id: String, line_binding_id: Option<LineBindingId>) -> Self {
         Self {
             mailbox_id,
             line_binding_id,
@@ -551,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_mwi_status() {
-        let mut mwi = MwiStatus::new("mailbox-123".to_string(), LineBindingId::new());
+        let mut mwi = MwiStatus::new("mailbox-123".to_string(), Some(LineBindingId::new()));
 
         assert!(!mwi.has_messages());
 
@@ -878,7 +880,7 @@ mod tests {
 
     #[test]
     fn test_mwi_old_messages_only_not_flagged() {
-        let mut mwi = MwiStatus::new("mailbox-123".to_string(), LineBindingId::new());
+        let mut mwi = MwiStatus::new("mailbox-123".to_string(), Some(LineBindingId::new()));
         mwi.old_messages = 5;
         mwi.new_messages = 0;
         mwi.urgent_new_messages = 0;

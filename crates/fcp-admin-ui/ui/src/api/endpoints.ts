@@ -9,6 +9,7 @@ import type {
   TotpEnrollment,
   TotpStatus,
   User,
+  PurgeResponse,
   CreateUserRequest,
   UpdateUserRequest,
   Tenant,
@@ -174,6 +175,10 @@ export const users = {
     apiClient.delete<void>(`/users/${encodeURIComponent(username)}/digest-password`),
   unlock: (username: string) =>
     apiClient.post<User>(`/users/${encodeURIComponent(username)}/unlock`),
+  restore: (username: string) =>
+    apiClient.post<User>(`/users/${encodeURIComponent(username)}/restore`),
+  purge: (username: string) =>
+    apiClient.post<PurgeResponse>(`/users/${encodeURIComponent(username)}/purge`),
   getCalling: (username: string) =>
     apiClient.get<CallingSettings>(`/users/${encodeURIComponent(username)}/calling`),
   updateCalling: (username: string, data: UpdateCallingRequest) =>

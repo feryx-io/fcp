@@ -313,6 +313,8 @@ from .prompt_audio_upload import PromptAudioUpload
 from .prompt_response import PromptResponse
 from .provider_check import ProviderCheck
 from .provider_settings import ProviderSettings
+from .purge_report import PurgeReport
+from .purge_response import PurgeResponse
 from .queue_config_response import QueueConfigResponse
 from .queue_response import QueueResponse
 from .queue_stats_response import QueueStatsResponse
@@ -373,6 +375,7 @@ from .subscription_info import SubscriptionInfo
 from .supervise_request import SuperviseRequest
 from .synthesize_greeting_request import SynthesizeGreetingRequest
 from .tenant_calling import TenantCalling
+from .tenant_offboarding import TenantOffboarding
 from .tenant_response import TenantResponse
 from .tenant_sign_in import TenantSignIn
 from .test_webhook_request import TestWebhookRequest
@@ -759,6 +762,8 @@ __all__ = (
     "PromptResponse",
     "ProviderCheck",
     "ProviderSettings",
+    "PurgeReport",
+    "PurgeResponse",
     "QueueConfigResponse",
     "QueueResponse",
     "QueueStatsResponse",
@@ -819,6 +824,7 @@ __all__ = (
     "SuperviseRequest",
     "SynthesizeGreetingRequest",
     "TenantCalling",
+    "TenantOffboarding",
     "TenantResponse",
     "TenantSignIn",
     "TestWebhookRequest",

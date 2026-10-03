@@ -49,6 +49,8 @@ const editSchema = z.object({
   calling_timezone: z.string().optional(),
   calling_overrides: z.string().optional(),
   hoteling_session_hours: z.coerce.number().int().min(0).max(168).optional(),
+  grace_days: z.coerce.number().int().min(0).max(3650).optional(),
+  meetings_owner: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -224,6 +226,8 @@ export function TenantsPage() {
         .map((o) => `${o.prefix} ${o.class}`)
         .join('\n'),
       hoteling_session_hours: editItem.calling?.hoteling_session_hours ?? undefined,
+      grace_days: editItem.offboarding?.grace_days ?? 30,
+      meetings_owner: editItem.offboarding?.meetings_owner ?? '',
     })
   }
 
@@ -249,6 +253,8 @@ export function TenantsPage() {
       hoteling_session_hours,
       require_totp,
       password_login,
+      grace_days,
+      meetings_owner,
       ...rest
     } = data
     updateMutation.mutate({
@@ -268,6 +274,10 @@ export function TenantsPage() {
         sign_in: {
           password_login: password_login ?? 'allowed',
           require_totp: require_totp ?? 'none',
+        },
+        offboarding: {
+          grace_days: grace_days ?? 30,
+          meetings_owner: meetings_owner?.trim() || null,
         },
         // A login domain decides where a person's sign-in goes: only a
         // platform admin sets them (docs/IDENTITY_AND_DEVICES.md phase 2).
@@ -488,6 +498,20 @@ export function TenantsPage() {
               <p className="text-xs text-muted-foreground">
                 Whoever it is required of sets up an authenticator app at their
                 next password sign-in.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="e-grace_days">Days before a deleted user is purged</Label>
+                <Input id="e-grace_days" type="number" min={0} max={3650} {...editForm.register('grace_days')} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="e-meetings_owner">Their meetings go to</Label>
+                <Input id="e-meetings_owner" placeholder="username (or nobody)" {...editForm.register('meetings_owner')} />
+              </div>
+              <p className="col-span-2 text-xs text-muted-foreground">
+                A deleted user is suspended at once and can be restored until the
+                purge. 0 purges at once.
               </p>
             </div>
             <div className="grid grid-cols-2 gap-4">

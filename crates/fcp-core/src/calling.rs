@@ -419,6 +419,45 @@ fn default_true() -> bool {
 }
 
 impl CallingSettings {
+    /// Forget another user who is gone (`docs/USERS.md` §4): a forward to
+    /// them is cleared, a find-me step stops ringing them (and a step left
+    /// ringing nobody goes), and they are no longer an assistant. Whether
+    /// anything changed.
+    pub fn forget_user(&mut self, gone: &UserId) -> bool {
+        let target = CallTarget::User(*gone);
+        let mut changed = false;
+        for forward in [
+            &mut self.forward_all,
+            &mut self.forward_busy,
+            &mut self.forward_no_answer,
+            &mut self.forward_unreachable,
+            &mut self.after_hours_forward,
+        ] {
+            if forward.as_ref() == Some(&target) {
+                *forward = None;
+                changed = true;
+            }
+        }
+        if let Some(find_me) = &mut self.find_me {
+            let step_target = FindMeTarget::Target(target.clone());
+            for step in &mut find_me.steps {
+                let before = step.targets.len();
+                step.targets.retain(|t| *t != step_target);
+                changed |= step.targets.len() != before;
+            }
+            find_me.steps.retain(|step| !step.targets.is_empty());
+            if find_me.steps.is_empty() && find_me.enabled {
+                find_me.enabled = false;
+            }
+        }
+        if let Some(executive) = &mut self.executive {
+            let before = executive.assistants.len();
+            executive.assistants.retain(|a| a.user_id != *gone);
+            changed |= executive.assistants.len() != before;
+        }
+        changed
+    }
+
     /// The settings of a user who has never set any.
     pub fn defaults(tenant_id: TenantId, user_id: UserId) -> Self {
         Self {
@@ -568,6 +607,63 @@ pub trait CallingStore: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gone_user_is_forgotten_by_everyone_who_named_them() {
+        let me = UserId::new();
+        let gone = UserId::new();
+        let other = UserId::new();
+        let mut s = CallingSettings::defaults(TenantId::nil(), me);
+        s.forward_busy = Some(CallTarget::User(gone));
+        s.forward_all = Some(CallTarget::User(other));
+        s.find_me = Some(FindMe {
+            enabled: true,
+            steps: vec![
+                FindMeStep {
+                    targets: vec![FindMeTarget::Target(CallTarget::User(gone))],
+                    ring_secs: 20,
+                    confirm: false,
+                },
+                FindMeStep {
+                    targets: vec![
+                        FindMeTarget::Devices,
+                        FindMeTarget::Target(CallTarget::User(gone)),
+                    ],
+                    ring_secs: 20,
+                    confirm: false,
+                },
+            ],
+        });
+        s.executive = Some(Executive {
+            enabled: true,
+            assistants: vec![
+                Assistant {
+                    user_id: gone,
+                    opted_in: true,
+                },
+                Assistant {
+                    user_id: other,
+                    opted_in: true,
+                },
+            ],
+            ..Default::default()
+        });
+
+        assert!(s.forget_user(&gone));
+        assert_eq!(s.forward_busy, None);
+        assert_eq!(s.forward_all, Some(CallTarget::User(other)));
+        let find_me = s.find_me.as_ref().unwrap();
+        assert!(find_me.enabled);
+        assert_eq!(find_me.steps.len(), 1);
+        assert_eq!(find_me.steps[0].targets, vec![FindMeTarget::Devices]);
+        let assistants = &s.executive.as_ref().unwrap().assistants;
+        assert_eq!(assistants.len(), 1);
+        assert_eq!(assistants[0].user_id, other);
+        assert!(s.validate().is_ok());
+
+        // Nothing left to forget.
+        assert!(!s.forget_user(&gone));
+    }
 
     #[test]
     fn an_executive_screens_the_calls_its_filter_takes() {
