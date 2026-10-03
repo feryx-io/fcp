@@ -11449,3 +11449,217 @@ async fn a_saml_providers_metadata_is_fetched_from_its_url() {
     server.abort();
     app.finish().await;
 }
+
+// ---------------------------------------------------------------------------
+// A user's lifecycle (docs/IDENTITY_AND_DEVICES.md phase 5a)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_suspended_user_is_refused_everywhere_and_their_phones_go_quiet() {
+    let app = require_app!();
+    app.create_user_with_role("sam", "end_user").await;
+    app.create_user_with_role("kay", "end_user").await;
+    let realm = REALM;
+    app.seed_registration(
+        app.tenant_a,
+        &format!("sip:sam@{realm}"),
+        "sip:sam@10.0.0.5:5060",
+    )
+    .await;
+    app.seed_registration(
+        app.tenant_a,
+        &format!("sip:kay@{realm}"),
+        "sip:kay@10.0.0.6:5060",
+    )
+    .await;
+    let signed_in = app.login("sam", PASSWORD).await;
+    let cookie = refresh_cookie(&signed_in).unwrap();
+    let session = signed_in.json["token"].as_str().unwrap().to_string();
+    let token = app
+        .send_as(
+            &session,
+            Method::POST,
+            "/api/v1/me/api-tokens",
+            Some(json!({"name": "sam's script", "permissions": []})),
+        )
+        .await;
+    assert_eq!(token.status, StatusCode::CREATED, "{}", token.text);
+    let token = token.json["secret"].as_str().unwrap().to_string();
+
+    let mut events = fcp_events::EventSubscriber::subscribe(
+        app.event_bus.as_ref(),
+        fcp_events::EventFilter::new(),
+    )
+    .await
+    .unwrap();
+    let suspended = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/sam",
+            Some(json!({"account_status": "suspended"})),
+        )
+        .await;
+    assert_eq!(suspended.status, StatusCode::OK, "{}", suspended.text);
+    assert_eq!(
+        suspended.json["enabled"], false,
+        "enabled follows the status"
+    );
+
+    // Signed out, refused at sign-in, their token refused.
+    assert_eq!(
+        app.with_cookie(Method::POST, "/api/v1/auth/refresh", &cookie)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app.login("sam", PASSWORD).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        app.send_as(&token, Method::GET, "/api/v1/me/profile", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Their phones dropped; another's kept.
+    use fcp_core::storage::RegistrationStore;
+    let theirs = app
+        .storage
+        .get_registrations_in_tenant(&app.tenant_a, &format!("sip:sam@{realm}"))
+        .await
+        .unwrap();
+    assert!(theirs.is_empty(), "{theirs:?}");
+    let kays = app
+        .storage
+        .get_registrations_in_tenant(&app.tenant_a, &format!("sip:kay@{realm}"))
+        .await
+        .unwrap();
+    assert_eq!(kays.len(), 1);
+
+    // Announced: the registration gone, the user disabled, what changed.
+    let (mut unregistered, mut disabled, mut changed) = (false, false, Vec::new());
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = events.next().await {
+            match event {
+                PlatformEvent::Registration(fcp_events::RegistrationEvent::Unregistered {
+                    aor,
+                    ..
+                }) if aor.contains("sam@") => unregistered = true,
+                PlatformEvent::User(fcp_events::UserEvent::Disabled { username, .. })
+                    if username == "sam" =>
+                {
+                    disabled = true
+                }
+                PlatformEvent::User(fcp_events::UserEvent::Updated {
+                    username,
+                    changed_fields,
+                    ..
+                }) if username == "sam" => changed = changed_fields,
+                _ => {}
+            }
+            if unregistered && disabled && !changed.is_empty() {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(
+        unregistered && disabled,
+        "unregistered {unregistered}, disabled {disabled}"
+    );
+    assert!(
+        changed.contains(&"account_status".to_string()) && changed.contains(&"enabled".to_string()),
+        "{changed:?}"
+    );
+
+    // Resumed the old way, `enabled: true`: active, and signing in again.
+    let resumed = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/sam",
+            Some(json!({"enabled": true})),
+        )
+        .await;
+    assert_eq!(resumed.json["account_status"], "active", "{}", resumed.text);
+    assert_eq!(app.login("sam", PASSWORD).await.status, StatusCode::OK);
+
+    // A status that is none is refused, where it used to become active;
+    // the UI's old "disabled" is a suspension.
+    let bogus = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/kay",
+            Some(json!({"account_status": "bogus"})),
+        )
+        .await;
+    assert_eq!(bogus.status, StatusCode::BAD_REQUEST, "{}", bogus.text);
+    let disabled = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/kay",
+            Some(json!({"account_status": "disabled"})),
+        )
+        .await;
+    assert_eq!(
+        disabled.json["account_status"], "suspended",
+        "{}",
+        disabled.text
+    );
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn a_tenants_users_are_listed_filtered_and_capped() {
+    let app = require_app!();
+    for name in ["ann", "andy", "bob"] {
+        app.create_user_with_role(name, "end_user").await;
+    }
+    app.admin(
+        Method::PUT,
+        "/api/v1/users/bob",
+        Some(json!({"account_status": "suspended"})),
+    )
+    .await;
+
+    let names = |res: &Response| -> Vec<String> {
+        res.json
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["username"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let found = app.admin(Method::GET, "/api/v1/users?q=AN", None).await;
+    assert_eq!(names(&found), ["andy", "ann"], "{}", found.text);
+    let suspended = app
+        .admin(Method::GET, "/api/v1/users?status=suspended", None)
+        .await;
+    assert_eq!(names(&suspended), ["bob"], "{}", suspended.text);
+    let wrong = app
+        .admin(Method::GET, "/api/v1/users?status=gone", None)
+        .await;
+    assert_eq!(wrong.status, StatusCode::BAD_REQUEST);
+
+    // The tenant's max_users holds.
+    let all = app.admin(Method::GET, "/api/v1/users", None).await;
+    let count = all.body["total"].as_u64().unwrap();
+    app.admin(
+        Method::PUT,
+        &format!("/api/v1/tenants/{}", app.tenant_a),
+        Some(json!({"max_users": count})),
+    )
+    .await;
+    let over = app
+        .admin(
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({"username": "one-too-many", "password": PASSWORD})),
+        )
+        .await;
+    assert_eq!(over.status, StatusCode::CONFLICT, "{}", over.text);
+
+    app.finish().await;
+}

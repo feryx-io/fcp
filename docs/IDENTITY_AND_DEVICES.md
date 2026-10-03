@@ -527,6 +527,38 @@ Each phase is one PR based on main, with its admin UI and its docs.
    - `list_users` filtered in SQL; `user.updated` with its changed
      fields.
    - Sites: the purge reaches the site's rows through the journal.
+   - Split in four: 5a one status and what suspension does; 5b
+     deprovisioning and the purge; 5c groups; 5d rename (moved here from
+     phase 1).
+   - **5a done (v0.25.315)** (`docs/USERS.md`).
+     - `User::is_suspended` / `may_use_services`, and `normalize_status`
+       on every write and read (migration 096).
+     - The checks that read only `enabled`, and so let a Suspended user
+       in, now refuse one:
+       - SIP digest (registrar and presence);
+       - a device whose owner is suspended;
+       - the routing gate;
+       - hoteling login and the effective user;
+       - provisioning;
+       - the voicemail PIN, which checked no user at all.
+     - Locked stops only web sign-in.
+     - `status_changed` (shared with SCIM later): sessions revoked,
+       registrations dropped (by username, extension and owned devices'
+       SIP names) and announced, hoteling ended, `user.disabled` /
+       `user.enabled` (never sent before).
+     - An invalid `account_status` is 400 (it used to become Active,
+       which is how the UI's "Disabled" made a user active); `disabled`
+       is read as suspended.
+     - `user.updated` carries `changed_fields`. `unlock` announces itself
+       for the credential caches.
+     - `max_users` is enforced (409, and `tenant_full` for JIT).
+     - `CredentialStore::list_users_in_tenant` and `count_users_in_tenant`
+       are in SQL; `GET /users?q=&status=`; the callers that filtered all
+       users moved to them.
+     - Proved by `a_suspended_user_is_refused_everywhere_and_their_phones_go_quiet`,
+       `a_tenants_users_are_listed_filtered_and_capped` (`api_postgres.rs`)
+       and `a_suspended_users_phone_is_refused_and_a_locked_ones_is_not`
+       (`fcp-call-manager/tests/registrations.rs`, over SIP).
 6. **SCIM 2.0.**
    - `/scim/v2/{Users,Groups,ServiceProviderConfig,ResourceTypes,Schemas}`.
    - Filters, PATCH and ETags.

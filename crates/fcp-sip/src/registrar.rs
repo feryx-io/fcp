@@ -657,7 +657,9 @@ impl Ha1CredentialStore for CredentialStoreAdapter {
         };
 
         if let Ok(Some(user)) = self.store.get_user_in_tenant(username, &tenant_id).await {
-            if user.enabled {
+            // A suspended user's phones stop; a Locked one's (the web
+            // sign-in's lockout) do not.
+            if user.may_use_services() {
                 // Use pre-computed HA1 hash for SIP Digest authentication
                 // We pass the HA1 hash as the "password" - it will be used directly without re-hashing
                 // This is secure because we never store plaintext passwords

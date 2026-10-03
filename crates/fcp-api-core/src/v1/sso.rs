@@ -777,6 +777,12 @@ async fn resolve_user(
             {
                 return Err(refuse("username_taken"));
             }
+            if crate::v1::users::ensure_room_for_a_user(state, &provider.tenant_id)
+                .await
+                .is_err()
+            {
+                return Err(refuse("tenant_full"));
+            }
             let role = if provider.settings.group_roles.is_empty() {
                 UserRole::EndUser
             } else {

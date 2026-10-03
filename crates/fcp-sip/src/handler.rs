@@ -8845,7 +8845,7 @@ impl SipMessageHandler {
         if !on_trunk {
             match routing_service.caller(&caller, tenant_id).await? {
                 Some(user) if !user.enabled => {
-                    return Ok(RoutingVerdict::Refused("Caller is disabled".to_string()));
+                    return Ok(RoutingVerdict::Refused("Caller is suspended".to_string()));
                 }
                 Some(_) => {}
                 None => {

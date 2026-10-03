@@ -19,6 +19,8 @@ def _get_kwargs(
     *,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
+    q: str | Unset = UNSET,
+    status: str | Unset = UNSET,
 
 ) -> dict[str, Any]:
     
@@ -30,6 +32,10 @@ def _get_kwargs(
     params["limit"] = limit
 
     params["cursor"] = cursor
+
+    params["q"] = q
+
+    params["status"] = status
 
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
@@ -76,6 +82,8 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
+    q: str | Unset = UNSET,
+    status: str | Unset = UNSET,
 
 ) -> Response[ErrorResponse | PageUserResponse]:
     """ List all users.
@@ -85,6 +93,8 @@ def sync_detailed(
     Args:
         limit (int | Unset):
         cursor (str | Unset):
+        q (str | Unset):
+        status (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -98,6 +108,8 @@ def sync_detailed(
     kwargs = _get_kwargs(
         limit=limit,
 cursor=cursor,
+q=q,
+status=status,
 
     )
 
@@ -112,6 +124,8 @@ def sync(
     client: AuthenticatedClient | Client,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
+    q: str | Unset = UNSET,
+    status: str | Unset = UNSET,
 
 ) -> ErrorResponse | PageUserResponse | None:
     """ List all users.
@@ -121,6 +135,8 @@ def sync(
     Args:
         limit (int | Unset):
         cursor (str | Unset):
+        q (str | Unset):
+        status (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -135,6 +151,8 @@ def sync(
         client=client,
 limit=limit,
 cursor=cursor,
+q=q,
+status=status,
 
     ).parsed
 
@@ -143,6 +161,8 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
+    q: str | Unset = UNSET,
+    status: str | Unset = UNSET,
 
 ) -> Response[ErrorResponse | PageUserResponse]:
     """ List all users.
@@ -152,6 +172,8 @@ async def asyncio_detailed(
     Args:
         limit (int | Unset):
         cursor (str | Unset):
+        q (str | Unset):
+        status (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -165,6 +187,8 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         limit=limit,
 cursor=cursor,
+q=q,
+status=status,
 
     )
 
@@ -179,6 +203,8 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
+    q: str | Unset = UNSET,
+    status: str | Unset = UNSET,
 
 ) -> ErrorResponse | PageUserResponse | None:
     """ List all users.
@@ -188,6 +214,8 @@ async def asyncio(
     Args:
         limit (int | Unset):
         cursor (str | Unset):
+        q (str | Unset):
+        status (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -202,5 +230,7 @@ async def asyncio(
         client=client,
 limit=limit,
 cursor=cursor,
+q=q,
+status=status,
 
     )).parsed

@@ -14902,6 +14902,10 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string;
+                /** @description A word in the username, display name or email. */
+                q?: string;
+                /** @description `active`, `suspended` or `locked`. */
+                status?: string;
             };
             header?: never;
             path?: never;

@@ -368,3 +368,44 @@ async fn another_nodes_register_is_seen_when_its_event_arrives() {
     node_b.stop().await;
     db.drop_db().await;
 }
+
+/// A suspended user's phone is refused; a Locked user's — the web
+/// sign-in's lockout — keeps working (`docs/IDENTITY_AND_DEVICES.md`
+/// phase 5). Each status is set before the phone's first REGISTER, so the
+/// node's credential cache holds nothing older.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_suspended_users_phone_is_refused_and_a_locked_ones_is_not() {
+    use fcp_core::storage::CredentialStore;
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    let node = Node::start("e2e-suspended", db.url(), "", None).await;
+    let sus = seed.user("sus", "sus-pw", "1101").await;
+    let lok = seed.user("lok", "lok-pw", "1102").await;
+    for (name, status) in [
+        ("sus", fcp_core::AccountStatus::Suspended),
+        ("lok", fcp_core::AccountStatus::Locked),
+    ] {
+        let mut user = seed
+            .storage()
+            .get_user_in_tenant(name, &seed.tenant_id)
+            .await
+            .unwrap()
+            .unwrap();
+        user.account_status = status;
+        seed.storage().put_user(user).await.unwrap();
+    }
+
+    let refused = node.phone(&sus).await.register().await.unwrap();
+    assert_ne!(refused, 200, "a suspended user's phone registered");
+    assert_eq!(
+        node.phone(&lok).await.register().await.unwrap(),
+        200,
+        "a locked user's phone was refused"
+    );
+
+    node.stop().await;
+    db.drop_db().await;
+}

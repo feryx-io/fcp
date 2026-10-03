@@ -150,11 +150,10 @@ async fn tenant_visible_aors(
     }
 
     for user in storage
-        .list_users()
+        .list_users_in_tenant(tenant_id, &fcp_core::storage::UserFilter::default())
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list users: {e}")))?
         .into_iter()
-        .filter(|user| user.tenant_id == *tenant_id)
     {
         visible.insert(format!(
             "{}@{}",
