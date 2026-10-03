@@ -653,6 +653,172 @@
         }
       }
     },
+    "/api/v1/auth/saml/{id}/slo": {
+      "get": {
+        "tags": [
+          "auth_session"
+        ],
+        "summary": "GET /api/v1/auth/saml/{id}/slo — a SAML provider's logout request\n(HTTP-Redirect), its signature over the query string as it came.",
+        "operationId": "auth_session_saml_slo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The identity provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed out, where the provider has no logout address"
+          },
+          "303": {
+            "description": "Back to the provider with FCP's signed LogoutResponse"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "auth_session"
+        ],
+        "summary": "POST /api/v1/auth/saml/{id}/slo — a SAML provider's logout request\n(HTTP-POST), read only as far as it is signed.",
+        "operationId": "auth_session_saml_slo_post",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The identity provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/SamlLogoutPost"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed out, where the provider has no logout address"
+          },
+          "303": {
+            "description": "Back to the provider with FCP's signed LogoutResponse"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/identity-providers/{id}/sp-key": {
+      "post": {
+        "tags": [
+          "identity_providers"
+        ],
+        "summary": "POST /api/v1/identity-providers/{id}/sp-key — a new key of FCP's own\nfor a SAML provider. The provider must then import FCP's metadata\nagain: until it does, it refuses what FCP signs with the new key.",
+        "operationId": "identity_providers_rotate_sp_key",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The provider, with FCP's new certificate",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProviderResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/identity-providers/{id}/refresh-metadata": {
+      "post": {
+        "tags": [
+          "identity_providers"
+        ],
+        "summary": "POST /api/v1/identity-providers/{id}/refresh-metadata — fetch a SAML\nprovider's metadata again from its URL: the certificate it signs with\nnow, after it rotates one.",
+        "operationId": "identity_providers_refresh_metadata",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The provider, its metadata fetched",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProviderResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/identity-providers": {
       "get": {
         "tags": [
@@ -21221,6 +21387,20 @@
             ],
             "description": "SAML: this service provider's entity id, which is also where its\nmetadata is served for the identity provider to import."
           },
+          "sp_logout_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SAML: FCP's single logout address (both bindings)."
+          },
+          "sp_key": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "SAML: whether FCP has its own key for this provider, to sign its\nrequests and be encrypted to."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -24521,6 +24701,20 @@
                     "null"
                   ],
                   "description": "SAML: this service provider's entity id, which is also where its\nmetadata is served for the identity provider to import."
+                },
+                "sp_logout_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "SAML: FCP's single logout address (both bindings)."
+                },
+                "sp_key": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ],
+                  "description": "SAML: whether FCP has its own key for this provider, to sign its\nrequests and be encrypted to."
                 },
                 "created_at": {
                   "type": "string",
@@ -29493,7 +29687,13 @@
               "string",
               "null"
             ],
-            "description": "SAML: the provider's entity id, and how many certificates it signs\nwith."
+            "description": "SAML: the provider's entity id, its logout address, and how many\ncertificates it signs with."
+          },
+          "idp_logout_url": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "signing_certificates": {
             "type": [
@@ -30460,6 +30660,24 @@
           }
         }
       },
+      "SamlLogoutPost": {
+        "type": "object",
+        "description": "What a SAML provider posts to ask for a logout (the HTTP-POST binding).",
+        "required": [
+          "SAMLRequest"
+        ],
+        "properties": {
+          "SAMLRequest": {
+            "type": "string"
+          },
+          "RelayState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "SamlPost": {
         "type": "object",
         "description": "What a SAML provider posts back (the HTTP-POST binding).",
@@ -30481,13 +30699,24 @@
       "SamlSettings": {
         "type": "object",
         "description": "A SAML identity provider, from its metadata.",
-        "required": [
-          "idp_metadata_xml"
-        ],
         "properties": {
           "idp_metadata_xml": {
             "type": "string",
-            "description": "The provider's metadata XML, as it publishes it: its entity id, its\nsingle sign-on address and the certificates it signs with."
+            "description": "The provider's metadata XML, as it publishes it: its entity id, its\nsingle sign-on and logout addresses and the certificates it signs\nwith. Fetched from `idp_metadata_url` when that is set."
+          },
+          "idp_metadata_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the provider publishes its metadata: fetched when the\nprovider is saved and when it is refreshed, so a certificate the\nprovider rotates is picked up."
+          },
+          "sp_certificate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "FCP's own certificate for this provider (base64 DER), in its\nmetadata: what the provider checks FCP's signed requests and\nlogout answers with, and encrypts assertions to. Made by the\nserver — its private key is the provider's sealed secret — and\nnever taken from a request."
           },
           "trust_email": {
             "type": "boolean",

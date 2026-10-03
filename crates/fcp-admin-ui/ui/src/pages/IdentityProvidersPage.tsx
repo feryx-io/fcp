@@ -24,6 +24,7 @@ interface Form {
   name: string
   enabled: boolean
   metadata: string
+  metadata_url: string
   trust_email: boolean
   issuer: string
   client_id: string
@@ -41,7 +42,7 @@ interface Form {
 }
 
 const blank: Form = {
-  kind: 'oidc', metadata: '', trust_email: false,
+  kind: 'oidc', metadata: '', metadata_url: '', trust_email: false,
   name: '', enabled: true, issuer: '', client_id: '', client_secret: '', scopes: 'profile email',
   username_claim: 'preferred_username', email_claim: 'email', name_claim: 'name', groups_claim: 'groups',
   group_roles: '', jit: false, link_by_email: true, email_verified_claim: 'email_verified', required_claims: '',
@@ -51,7 +52,8 @@ function formOf(p: IdentityProvider): Form {
   const s = p.settings
   return {
     kind: p.kind === 'saml' ? 'saml' : 'oidc',
-    metadata: s.saml?.idp_metadata_xml ?? '', trust_email: s.saml?.trust_email ?? false,
+    metadata: s.saml?.idp_metadata_xml ?? '', metadata_url: s.saml?.idp_metadata_url ?? '',
+    trust_email: s.saml?.trust_email ?? false,
     name: p.name, enabled: p.enabled, issuer: s.issuer ?? '', client_id: s.client_id ?? '', client_secret: '',
     scopes: (s.scopes ?? []).join(' '),
     username_claim: s.claims?.username ?? 'preferred_username', email_claim: s.claims?.email ?? 'email',
@@ -92,7 +94,14 @@ function requestOf(f: Form, editing: boolean): IdentityProviderRequest {
     settings: {
       issuer: saml ? '' : f.issuer.trim(),
       client_id: saml ? '' : f.client_id.trim(),
-      saml: saml ? { idp_metadata_xml: f.metadata.trim(), trust_email: f.trust_email } : undefined,
+      saml: saml
+        ? {
+            // A URL wins: the server fetches the metadata from it.
+            idp_metadata_xml: f.metadata_url.trim() ? '' : f.metadata.trim(),
+            idp_metadata_url: f.metadata_url.trim() || undefined,
+            trust_email: f.trust_email,
+          }
+        : undefined,
       scopes: f.scopes.split(/\s+/).filter(Boolean),
       claims: { username: f.username_claim, email: f.email_claim, display_name: f.name_claim, groups: f.groups_claim },
       group_roles: parseGroupRoles(f.group_roles),
@@ -135,6 +144,17 @@ export function IdentityProvidersPage() {
     onSuccess: invalidate,
     onError: (e) => alert(errorText(e)),
   })
+  const act = async (p: IdentityProvider, what: 'key' | 'metadata') => {
+    if (what === 'key' && !confirm(`A new key for FCP: ${p.name} must import FCP's metadata again before sign-in works.`)) return
+    try {
+      if (what === 'key') await identityProviders.rotateSpKey(p.id)
+      else await identityProviders.refreshMetadata(p.id)
+      setChecks((c) => ({ ...c, [p.id]: what === 'key' ? 'FCP has a new key: give the provider its metadata again' : 'Metadata fetched' }))
+      invalidate()
+    } catch (e) {
+      setChecks((c) => ({ ...c, [p.id]: `Failed: ${errorText(e)}` }))
+    }
+  }
   const check = async (p: IdentityProvider) => {
     try {
       const r = await identityProviders.check(p.id)
@@ -204,6 +224,16 @@ export function IdentityProvidersPage() {
                     <a className="break-all font-mono underline" href={p.sp_entity_id} target="_blank" rel="noreferrer">{p.sp_entity_id}</a>
                   </div>
                   <div>Assertion consumer service: <span className="break-all font-mono">{p.redirect_uri}</span></div>
+                  {p.sp_logout_url && <div>Single logout: <span className="break-all font-mono">{p.sp_logout_url}</span></div>}
+                  {p.settings.saml?.idp_metadata_url && (
+                    <div>Metadata from <span className="break-all font-mono">{p.settings.saml.idp_metadata_url}</span></div>
+                  )}
+                  <div className="flex gap-2 pt-1">
+                    {p.settings.saml?.idp_metadata_url && (
+                      <Button size="sm" variant="outline" onClick={() => void act(p, 'metadata')}>Refresh metadata</Button>
+                    )}
+                    <Button size="sm" variant="outline" onClick={() => void act(p, 'key')}>New FCP key</Button>
+                  </div>
                 </>
               )
             ) : (
@@ -256,9 +286,14 @@ export function IdentityProvidersPage() {
             {form.kind === 'saml' ? (
               <>
                 <div className="space-y-1">
+                  <Label htmlFor="idp-metadata-url">Identity provider metadata URL</Label>
+                  <Input id="idp-metadata-url" placeholder="https://login.microsoftonline.com/…/federationmetadata.xml" {...field('metadata_url')} />
+                  <p className="text-xs text-muted-foreground">Fetched now and on refresh. Or paste the XML below.</p>
+                </div>
+                <div className="space-y-1">
                   <Label htmlFor="idp-metadata">Identity provider metadata (XML)</Label>
                   <textarea
-                    id="idp-metadata" rows={6} required placeholder="<md:EntityDescriptor …>"
+                    id="idp-metadata" rows={6} required={!form.metadata_url.trim()} placeholder="<md:EntityDescriptor …>"
                     className="flex w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
                     {...field('metadata')}
                   />

@@ -28,8 +28,9 @@ class ProviderCheck:
             ok (bool): OIDC: the discovery document and keys were fetched; SAML: the
                 metadata names a single sign-on address and a signing certificate.
             authorization_endpoint (None | str | Unset): Where people are sent to sign in.
-            idp_entity_id (None | str | Unset): SAML: the provider's entity id, and how many certificates it signs
-                with.
+            idp_entity_id (None | str | Unset): SAML: the provider's entity id, its logout address, and how many
+                certificates it signs with.
+            idp_logout_url (None | str | Unset):
             signing_certificates (int | None | Unset):
             error (None | str | Unset):
      """
@@ -37,6 +38,7 @@ class ProviderCheck:
     ok: bool
     authorization_endpoint: None | str | Unset = UNSET
     idp_entity_id: None | str | Unset = UNSET
+    idp_logout_url: None | str | Unset = UNSET
     signing_certificates: int | None | Unset = UNSET
     error: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -60,6 +62,12 @@ class ProviderCheck:
         else:
             idp_entity_id = self.idp_entity_id
 
+        idp_logout_url: None | str | Unset
+        if isinstance(self.idp_logout_url, Unset):
+            idp_logout_url = UNSET
+        else:
+            idp_logout_url = self.idp_logout_url
+
         signing_certificates: int | None | Unset
         if isinstance(self.signing_certificates, Unset):
             signing_certificates = UNSET
@@ -82,6 +90,8 @@ class ProviderCheck:
             field_dict["authorization_endpoint"] = authorization_endpoint
         if idp_entity_id is not UNSET:
             field_dict["idp_entity_id"] = idp_entity_id
+        if idp_logout_url is not UNSET:
+            field_dict["idp_logout_url"] = idp_logout_url
         if signing_certificates is not UNSET:
             field_dict["signing_certificates"] = signing_certificates
         if error is not UNSET:
@@ -116,6 +126,16 @@ class ProviderCheck:
         idp_entity_id = _parse_idp_entity_id(d.pop("idp_entity_id", UNSET))
 
 
+        def _parse_idp_logout_url(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        idp_logout_url = _parse_idp_logout_url(d.pop("idp_logout_url", UNSET))
+
+
         def _parse_signing_certificates(data: object) -> int | None | Unset:
             if data is None:
                 return data
@@ -140,6 +160,7 @@ class ProviderCheck:
             ok=ok,
             authorization_endpoint=authorization_endpoint,
             idp_entity_id=idp_entity_id,
+            idp_logout_url=idp_logout_url,
             signing_certificates=signing_certificates,
             error=error,
         )

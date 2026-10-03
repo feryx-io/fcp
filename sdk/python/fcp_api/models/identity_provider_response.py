@@ -43,6 +43,9 @@ class IdentityProviderResponse:
             backchannel_logout_uri (None | str | Unset): OIDC: the address to register as its back-channel logout URI.
             sp_entity_id (None | str | Unset): SAML: this service provider's entity id, which is also where its
                 metadata is served for the identity provider to import.
+            sp_logout_url (None | str | Unset): SAML: FCP's single logout address (both bindings).
+            sp_key (bool | None | Unset): SAML: whether FCP has its own key for this provider, to sign its
+                requests and be encrypted to.
      """
 
     id: str
@@ -57,6 +60,8 @@ class IdentityProviderResponse:
     redirect_uri: None | str | Unset = UNSET
     backchannel_logout_uri: None | str | Unset = UNSET
     sp_entity_id: None | str | Unset = UNSET
+    sp_logout_url: None | str | Unset = UNSET
+    sp_key: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -101,6 +106,18 @@ class IdentityProviderResponse:
         else:
             sp_entity_id = self.sp_entity_id
 
+        sp_logout_url: None | str | Unset
+        if isinstance(self.sp_logout_url, Unset):
+            sp_logout_url = UNSET
+        else:
+            sp_logout_url = self.sp_logout_url
+
+        sp_key: bool | None | Unset
+        if isinstance(self.sp_key, Unset):
+            sp_key = UNSET
+        else:
+            sp_key = self.sp_key
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -121,6 +138,10 @@ class IdentityProviderResponse:
             field_dict["backchannel_logout_uri"] = backchannel_logout_uri
         if sp_entity_id is not UNSET:
             field_dict["sp_entity_id"] = sp_entity_id
+        if sp_logout_url is not UNSET:
+            field_dict["sp_logout_url"] = sp_logout_url
+        if sp_key is not UNSET:
+            field_dict["sp_key"] = sp_key
 
         return field_dict
 
@@ -187,6 +208,26 @@ class IdentityProviderResponse:
         sp_entity_id = _parse_sp_entity_id(d.pop("sp_entity_id", UNSET))
 
 
+        def _parse_sp_logout_url(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        sp_logout_url = _parse_sp_logout_url(d.pop("sp_logout_url", UNSET))
+
+
+        def _parse_sp_key(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        sp_key = _parse_sp_key(d.pop("sp_key", UNSET))
+
+
         identity_provider_response = cls(
             id=id,
             tenant_id=tenant_id,
@@ -200,6 +241,8 @@ class IdentityProviderResponse:
             redirect_uri=redirect_uri,
             backchannel_logout_uri=backchannel_logout_uri,
             sp_entity_id=sp_entity_id,
+            sp_logout_url=sp_logout_url,
+            sp_key=sp_key,
         )
 
 

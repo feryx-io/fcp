@@ -279,18 +279,49 @@ A SAML provider is added like any other, with protocol **SAML 2.0**. It
 is described by its metadata, which every SAML provider publishes.
 
 - **The provider side.**
-  1. Paste the identity provider's metadata XML. It gives:
+  1. Give the identity provider's metadata: its URL, fetched through the
+     same guard as an OIDC issuer, or the XML pasted. It gives:
      - its entity id;
-     - its HTTP-Redirect sign-in address;
+     - its HTTP-Redirect sign-in and logout addresses;
      - the certificate it signs with.
 
      Metadata naming no signing certificate is refused: nothing could be
-     verified against it.
+     verified against it. **Refresh metadata** fetches it again, after
+     the provider rotates its certificate.
   2. The page then shows what to give the identity provider:
      - FCP's entity id, `<public_url>/api/v1/auth/saml/{id}`, which
-       serves FCP's metadata for import;
-     - its assertion consumer service, `…/{id}/acs` (HTTP-POST).
+       serves FCP's metadata for import (most providers take its URL);
+     - its assertion consumer service, `…/{id}/acs` (HTTP-POST);
+     - its single logout address, `…/{id}/slo`.
   3. **Check** reads the metadata as a sign-in would.
+- **FCP's key.** Each SAML provider gets a key of FCP's own when it is
+  made.
+  - Its private half is the provider's sealed secret, never shown. Its
+    certificate is in FCP's metadata.
+  - FCP signs its AuthnRequests and its logout answers with it, and a
+    provider may encrypt assertions to it.
+  - **New FCP key** replaces it. The provider must then import FCP's
+    metadata again; until it does, it refuses FCP's signed requests.
+- **Encrypted assertions** are decrypted with FCP's key (AES-128-CBC or
+  AES-128-GCM, the key wrapped with RSA-OAEP or RSA 1.5).
+  - The response around them must be signed: what is inside an
+    encryption cannot be checked for a signature before it is decrypted,
+    so FCP takes only a signed response.
+  - Set the provider to sign the response, not only the assertion, if it
+    encrypts.
+- **Single logout.** A provider that signs someone out tells FCP at
+  `…/{id}/slo`, by HTTP-Redirect or HTTP-POST.
+  - **Checks:**
+    - the request is signed by the provider's certificate, verified over
+      the query string exactly as it came for HTTP-Redirect (RSA, SHA-256
+      and up), or read only as far as it is signed for HTTP-POST;
+    - it is the provider's;
+    - it is for FCP's address;
+    - it was issued within five minutes.
+  - **What ends:** the sessions it names, by `SessionIndex` (the session
+    the assertion opened) or by the person (`NameID`).
+  - **The answer:** FCP sends the browser back to the provider's logout
+    address with a `LogoutResponse` signed with its key.
 - **Attributes.** The username, email, name and groups settings name
   SAML attributes, by their `Name` or `FriendlyName`. `NameID` means the
   subject itself, so a username can be the NameID.
@@ -319,16 +350,80 @@ is described by its metadata, which every SAML provider publishes.
   `bad_state`: there is no sign-in of this browser for it to answer.
 - **The session** that follows has `method: "saml"`. Sites, the password
   policy and identities work as for OpenID Connect.
+- **At a site**, FCP's key travels with the provider like a client
+  secret. The site is a service provider of its own, with its own
+  `public_url` entity id, which the identity provider must know as a
+  second application.
+
+### SAML: Entra ID
+
+1. **Entra admin center → Enterprise applications → New application →
+   Create your own application** (*non-gallery*), then **Single sign-on
+   → SAML**.
+2. **Basic SAML Configuration:**
+   - Identifier (Entity ID): FCP's entity id;
+   - Reply URL: the assertion consumer service;
+   - Logout URL: FCP's single logout address.
+3. **Attributes & Claims:**
+   - Unique User Identifier (NameID): `user.objectid`, format
+     *Persistent*.
+   - Keep the email and name claims, and map them by their full URIs,
+     e.g. `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress`.
+   - Add a group claim for roles by group, emitted as object IDs.
+4. **SAML Certificates:**
+   - signing option *Sign SAML response and assertion*;
+   - copy the *App Federation Metadata Url* into FCP's metadata URL.
+5. **In FCP:** username `NameID` or the UPN claim
+   (`http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name`). Trust
+   the email attribute only if the tenant's addresses are its directory's
+   own.
+
+### SAML: Okta
+
+1. **Applications → Create App Integration → SAML 2.0.**
+2. **SAML settings:**
+   - Single sign-on URL: the assertion consumer service, *Use this for
+     Recipient URL and Destination URL* ticked;
+   - Audience URI (SP Entity ID): FCP's entity id;
+   - Name ID format: *Persistent*;
+   - Application username: *Okta username* or *Email*.
+3. **Statements:**
+   - Attribute statements: `email` → `user.email`, `name` →
+     `user.displayName`.
+   - Group attribute statement: `groups`, with a filter, for roles by
+     group.
+4. **Logout:** under *Show advanced settings*, enable *single logout*.
+   Set the SP issuer to FCP's entity id and the logout URL to FCP's
+   single logout address, and upload FCP's certificate, taken from its
+   metadata.
+5. **In FCP:** the *Metadata URL* from the app's *Sign On* tab, and
+   attribute names `email`, `name`, `groups`.
+
+### SAML: Google Workspace
+
+1. **Admin console → Apps → Web and mobile apps → Add app → Add custom
+   SAML app.**
+2. **Google IdP information:** download the metadata, and paste it into
+   FCP. Google publishes no metadata URL per app.
+3. **Service provider details:**
+   - ACS URL: the assertion consumer service;
+   - Entity ID: FCP's entity id;
+   - *Signed response* ticked;
+   - Name ID format *PERSISTENT* or *EMAIL*, from *Basic Information →
+     Primary email*.
+4. **Attribute mapping:** primary email → `email`, first and last name
+   as wanted. *Group membership* sends the chosen groups as `groups`,
+   for roles by group.
+5. Turn the app on for the organisational units that should sign in.
+   Google sends no single logout.
 
 ## 9. Not yet
 
 - **Logging out at the provider.** Signing out of FCP ends the FCP
   session only; it does not send the browser to the provider's
   end-session endpoint.
-- **SAML, still to come** (phase 4b):
-  - single logout;
-  - metadata fetched from the provider's URL;
-  - encrypted assertions and signed AuthnRequests, which need FCP's own
-    signing key;
-  - the SAML guides for Entra ID, Okta and Google.
+- **SAML logout started from FCP.** Signing out of FCP does not send a
+  LogoutRequest to the provider; only the provider's logout reaches FCP.
+- **SAML metadata refreshed by itself.** It is fetched again on
+  **Refresh metadata**, not on a schedule.
 - **SCIM provisioning** is phase 6.

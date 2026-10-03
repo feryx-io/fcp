@@ -10689,6 +10689,8 @@ mod saml {
 
     const IDP_ENTITY: &str = "https://idp.acme.test/saml";
     const IDP_SSO: &str = "https://idp.acme.test/sso";
+    pub(super) const IDP_SLO: &str = "https://idp.acme.test/slo";
+    const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
     /// A SAML identity provider: its key, and the metadata naming its
     /// certificate.
@@ -10721,8 +10723,117 @@ mod saml {
             r#"<md:KeyDescriptor use="signing"><ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>{c}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>"#
         )).unwrap_or_default();
         format!(
-            r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{IDP_ENTITY}"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">{key}<md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="{IDP_SSO}"/></md:IDPSSODescriptor></md:EntityDescriptor>"#
+            r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{IDP_ENTITY}"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">{key}<md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="{IDP_SLO}"/><md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="{IDP_SSO}"/></md:IDPSSODescriptor></md:EntityDescriptor>"#
         )
+    }
+
+    /// An enveloped signature for xmlsec to fill, over the element `id`.
+    fn signature_template(id: &str) -> String {
+        format!(
+            r##"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI="#{id}"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue></ds:Signature>"##
+        )
+    }
+
+    /// `assertion` encrypted to the certificate (XML Encryption: AES-128-CBC,
+    /// its key wrapped with RSA-OAEP), as a provider encrypts one.
+    fn encrypted(assertion: &str, cert_b64: &str) -> String {
+        use openssl::rand::rand_bytes;
+        let cert = openssl::x509::X509::from_der(&B64.decode(cert_b64).unwrap()).unwrap();
+        let rsa = cert.public_key().unwrap().rsa().unwrap();
+        let (mut key, mut iv) = ([0u8; 16], [0u8; 16]);
+        rand_bytes(&mut key).unwrap();
+        rand_bytes(&mut iv).unwrap();
+        let body = openssl::symm::encrypt(
+            openssl::symm::Cipher::aes_128_cbc(),
+            &key,
+            Some(&iv),
+            assertion.as_bytes(),
+        )
+        .unwrap();
+        let mut wrapped = vec![0u8; rsa.size() as usize];
+        let n = rsa
+            .public_encrypt(&key, &mut wrapped, openssl::rsa::Padding::PKCS1_OAEP)
+            .unwrap();
+        wrapped.truncate(n);
+        let cipher = B64.encode([iv.to_vec(), body].concat());
+        let wrapped = B64.encode(wrapped);
+        format!(
+            r##"<saml:EncryptedAssertion><xenc:EncryptedData xmlns:xenc="http://www.w3.org/2001/04/xmlenc#" Type="http://www.w3.org/2001/04/xmlenc#Element"><xenc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/><ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><xenc:EncryptedKey><xenc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p"/><xenc:CipherData><xenc:CipherValue>{wrapped}</xenc:CipherValue></xenc:CipherData></xenc:EncryptedKey></ds:KeyInfo><xenc:CipherData><xenc:CipherValue>{cipher}</xenc:CipherValue></xenc:CipherData></xenc:EncryptedData></saml:EncryptedAssertion>"##
+        )
+    }
+
+    impl SamlIdp {
+        /// A LogoutRequest from this provider, as XML; signed for POST.
+        fn logout_xml(
+            &self,
+            slo: &str,
+            name_id: Option<&str>,
+            session: Option<&str>,
+            signed: bool,
+        ) -> String {
+            let id = format!("_l{}", Uuid::new_v4().simple());
+            let at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+            let name_id = name_id
+                .map(|n| format!(r#"<saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">{n}</saml:NameID>"#))
+                .unwrap_or_default();
+            let session = session
+                .map(|s| format!("<samlp:SessionIndex>{s}</samlp:SessionIndex>"))
+                .unwrap_or_default();
+            let signature = if signed {
+                signature_template(&id)
+            } else {
+                String::new()
+            };
+            let xml = format!(
+                r##"<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{id}" Version="2.0" IssueInstant="{at}" Destination="{slo}"><saml:Issuer>{IDP_ENTITY}</saml:Issuer>{signature}{name_id}{session}</samlp:LogoutRequest>"##
+            );
+            if signed {
+                Crypto::sign_xml(xml.as_bytes(), &self.key_der).unwrap()
+            } else {
+                xml
+            }
+        }
+
+        /// A logout request's query string, signed as the HTTP-Redirect
+        /// binding signs it.
+        pub fn logout_query(
+            &self,
+            slo: &str,
+            name_id: Option<&str>,
+            session: Option<&str>,
+        ) -> String {
+            use std::io::Write;
+            let xml = self.logout_xml(slo, name_id, session, false);
+            let mut deflated = Vec::new();
+            {
+                let mut encoder = flate2::write::DeflateEncoder::new(
+                    &mut deflated,
+                    flate2::Compression::default(),
+                );
+                encoder.write_all(xml.as_bytes()).unwrap();
+            }
+            let request = urlencoding::encode(&B64.encode(deflated)).into_owned();
+            let sig_alg = urlencoding::encode("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256")
+                .into_owned();
+            let signed = format!("SAMLRequest={request}&RelayState=rs-1&SigAlg={sig_alg}");
+            let key = openssl::pkey::PKey::private_key_from_der(&self.key_der).unwrap();
+            let mut signer =
+                openssl::sign::Signer::new(openssl::hash::MessageDigest::sha256(), &key).unwrap();
+            signer.update(signed.as_bytes()).unwrap();
+            let signature =
+                urlencoding::encode(&B64.encode(signer.sign_to_vec().unwrap())).into_owned();
+            format!("{signed}&Signature={signature}")
+        }
+
+        /// A signed logout request for the HTTP-POST binding (base64).
+        pub fn logout_post(
+            &self,
+            slo: &str,
+            name_id: Option<&str>,
+            session: Option<&str>,
+        ) -> String {
+            B64.encode(self.logout_xml(slo, name_id, session, true))
+        }
     }
 
     /// What a response says; each test changes what it is about.
@@ -10734,6 +10845,9 @@ mod saml {
         pub name_id_format: String,
         pub assertion_id: String,
         pub attributes: Vec<(&'static str, Vec<String>)>,
+        pub session_index: String,
+        /// FCP's certificate (base64 DER) to encrypt the assertion to.
+        pub encrypt_to: Option<String>,
     }
 
     impl Assertion {
@@ -10746,6 +10860,8 @@ mod saml {
                 name_id_format: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent".to_string(),
                 assertion_id: format!("_a{}", Uuid::new_v4().simple()),
                 attributes: Vec::new(),
+                session_index: "idp-session-1".to_string(),
+                encrypt_to: None,
             }
         }
 
@@ -10769,14 +10885,25 @@ mod saml {
                     format!(r#"<saml:Attribute Name="{name}">{values}</saml:Attribute>"#)
                 })
                 .collect();
-            format!(
-                r##"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{response_id}" Version="2.0" IssueInstant="{issued}" Destination="{acs}" InResponseTo="{req}"><saml:Issuer>{IDP_ENTITY}</saml:Issuer><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI="#{response_id}"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue></ds:Signature><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status><saml:Assertion ID="{aid}" Version="2.0" IssueInstant="{issued}"><saml:Issuer>{IDP_ENTITY}</saml:Issuer><saml:Subject><saml:NameID Format="{format}">{name_id}</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData NotOnOrAfter="{until}" Recipient="{acs}" InResponseTo="{req}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="{before}" NotOnOrAfter="{until}"><saml:AudienceRestriction><saml:Audience>{audience}</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant="{issued}" SessionIndex="idp-session-1"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:Password</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement><saml:AttributeStatement>{attributes}</saml:AttributeStatement></saml:Assertion></samlp:Response>"##,
+            let assertion = format!(
+                r##"<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{aid}" Version="2.0" IssueInstant="{issued}"><saml:Issuer>{IDP_ENTITY}</saml:Issuer><saml:Subject><saml:NameID Format="{format}">{name_id}</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData NotOnOrAfter="{until}" Recipient="{acs}" InResponseTo="{req}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="{before}" NotOnOrAfter="{until}"><saml:AudienceRestriction><saml:Audience>{audience}</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant="{issued}" SessionIndex="{session}"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:Password</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement><saml:AttributeStatement>{attributes}</saml:AttributeStatement></saml:Assertion>"##,
                 acs = self.acs,
                 req = self.request_id,
                 aid = self.assertion_id,
                 format = self.name_id_format,
                 name_id = self.name_id,
                 audience = self.sp_entity,
+                session = self.session_index,
+            );
+            let assertion = match &self.encrypt_to {
+                Some(cert) => encrypted(&assertion, cert),
+                None => assertion,
+            };
+            format!(
+                r##"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{response_id}" Version="2.0" IssueInstant="{issued}" Destination="{acs}" InResponseTo="{req}"><saml:Issuer>{IDP_ENTITY}</saml:Issuer>{signature}<samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status>{assertion}</samlp:Response>"##,
+                acs = self.acs,
+                req = self.request_id,
+                signature = signature_template(&response_id),
             )
         }
 
@@ -11068,5 +11195,257 @@ async fn a_saml_response_is_taken_only_signed_for_us_and_once() {
         .await;
     assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
 
+    app.finish().await;
+}
+
+#[cfg(feature = "saml")]
+#[tokio::test]
+async fn fcp_signs_its_saml_requests_and_ends_sessions_the_provider_logs_out() {
+    use saml::{Assertion, SamlIdp, IDP_SLO};
+    let app = require_app!();
+    let idp = SamlIdp::new();
+    let (provider, entity) = app.make_saml_provider(&idp, json!({"jit": true})).await;
+    let shown = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/identity-providers/{provider}"),
+            None,
+        )
+        .await;
+    assert_eq!(shown.json["sp_key"], true, "{}", shown.text);
+    assert_eq!(shown.json["sp_logout_url"], format!("{entity}/slo"));
+    let sp_cert = shown.json["settings"]["saml"]["sp_certificate"]
+        .as_str()
+        .expect("FCP's certificate")
+        .to_string();
+
+    // FCP's metadata names its key, its logout and its signed requests.
+    let metadata = app
+        .send(
+            Method::GET,
+            &format!("/api/v1/auth/saml/{provider}"),
+            &[],
+            None,
+        )
+        .await;
+    assert!(metadata.text.contains(&sp_cert), "{}", metadata.text);
+    assert!(
+        metadata.text.contains(&format!("{entity}/slo")),
+        "{}",
+        metadata.text
+    );
+    assert!(
+        metadata.text.contains(r#"AuthnRequestsSigned="true""#),
+        "{}",
+        metadata.text
+    );
+
+    // Its requests are signed with that key.
+    let res = app
+        .send(
+            Method::GET,
+            &format!("/api/v1/auth/sso/{provider}/start"),
+            &[],
+            None,
+        )
+        .await;
+    let to = location(&res);
+    assert!(
+        query_param(&to, "SigAlg").is_some() && query_param(&to, "Signature").is_some(),
+        "{to}"
+    );
+    let verifier = samael::crypto::UrlVerifier::from_x509(&samael::crypto::CertificateDer::from(
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &sp_cert).unwrap(),
+    ))
+    .unwrap();
+    assert!(verifier
+        .verify_signed_request_url(&to.parse().unwrap())
+        .unwrap());
+
+    // Two sign-ins as two of the provider's sessions; the second's
+    // assertion encrypted to FCP's certificate.
+    let mut cookies = Vec::new();
+    for (session, encrypt) in [("idp-session-1", false), ("idp-session-2", true)] {
+        let (request_id, relay, cookie) = app.saml_start(&provider).await;
+        let mut said = Assertion::new(&request_id, &entity, "lena@acme.test");
+        said.session_index = session.to_string();
+        if encrypt {
+            said.encrypt_to = Some(sp_cert.clone());
+        }
+        let landing = app
+            .saml_post(&provider, &said.signed_by(&idp), &relay, &cookie)
+            .await;
+        let signed_in = app.sso_exchange(&landing).await;
+        assert_eq!(
+            signed_in.status,
+            StatusCode::OK,
+            "{session}: {landing} {}",
+            signed_in.text
+        );
+        cookies.push(refresh_cookie(&signed_in).unwrap());
+    }
+    let refreshes = |cookie: String| {
+        let app = &app;
+        async move {
+            app.with_cookie(Method::POST, "/api/v1/auth/refresh", &cookie)
+                .await
+                .status
+        }
+    };
+
+    // A forged logout request ends nothing.
+    let mut forged = idp.logout_query(&format!("{entity}/slo"), None, Some("idp-session-1"));
+    forged = forged.replace("RelayState=rs-1", "RelayState=rs-2");
+    let refused = app
+        .send(
+            Method::GET,
+            &format!("/api/v1/auth/saml/{provider}/slo?{forged}"),
+            &[],
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    let other_idp = SamlIdp::new();
+    let foreign = other_idp.logout_query(&format!("{entity}/slo"), None, Some("idp-session-1"));
+    let refused = app
+        .send(
+            Method::GET,
+            &format!("/api/v1/auth/saml/{provider}/slo?{foreign}"),
+            &[],
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    assert_eq!(refreshes(cookies[0].clone()).await, StatusCode::OK);
+
+    // HTTP-Redirect: the provider's session 1 ends, and FCP answers it,
+    // signed.
+    let query = idp.logout_query(&format!("{entity}/slo"), None, Some("idp-session-1"));
+    let answered = app
+        .send(
+            Method::GET,
+            &format!("/api/v1/auth/saml/{provider}/slo?{query}"),
+            &[],
+            None,
+        )
+        .await;
+    assert_eq!(answered.status, StatusCode::SEE_OTHER, "{}", answered.text);
+    let back = location(&answered);
+    assert!(back.starts_with(IDP_SLO), "{back}");
+    assert_eq!(query_param(&back, "RelayState").as_deref(), Some("rs-1"));
+    assert!(
+        verifier
+            .verify_signed_response_url(&back.parse().unwrap())
+            .unwrap(),
+        "{back}"
+    );
+    assert_eq!(
+        refreshes(cookies[0].clone()).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(refreshes(cookies[1].clone()).await, StatusCode::OK);
+
+    // HTTP-POST, by the person: every session of theirs ends.
+    let body = format!(
+        "SAMLRequest={}",
+        urlencoding::encode(&idp.logout_post(
+            &format!("{entity}/slo"),
+            Some("lena@acme.test"),
+            None
+        ))
+    );
+    let posted = app
+        .send_raw(
+            "unused",
+            Method::POST,
+            &format!("/api/v1/auth/saml/{provider}/slo"),
+            "application/x-www-form-urlencoded",
+            body.into_bytes(),
+        )
+        .await;
+    assert_eq!(posted.status, StatusCode::SEE_OTHER, "{}", posted.text);
+    assert_eq!(
+        refreshes(cookies[1].clone()).await,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // A new key for FCP: its certificate changes.
+    let rotated = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/identity-providers/{provider}/sp-key"),
+            None,
+        )
+        .await;
+    assert_eq!(rotated.status, StatusCode::OK, "{}", rotated.text);
+    assert_ne!(
+        rotated.json["settings"]["saml"]["sp_certificate"],
+        sp_cert.as_str()
+    );
+
+    app.finish().await;
+}
+
+#[cfg(feature = "saml")]
+#[tokio::test]
+async fn a_saml_providers_metadata_is_fetched_from_its_url() {
+    use saml::SamlIdp;
+    let app = require_app!();
+    let idp = SamlIdp::new();
+    let served = std::sync::Arc::new(std::sync::Mutex::new(idp.metadata.clone()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/metadata", listener.local_addr().unwrap());
+    let body = served.clone();
+    let server = tokio::spawn(async move {
+        let app = axum::Router::new().route(
+            "/metadata",
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move { body.lock().unwrap().clone() }
+            }),
+        );
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/identity-providers",
+            Some(json!({"name": "Acme SAML", "kind": "saml", "settings": {"saml": {"idp_metadata_url": url}}})),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    assert!(made.json["settings"]["saml"]["idp_metadata_xml"]
+        .as_str()
+        .unwrap()
+        .contains("EntityDescriptor"));
+    let provider = made.json["id"].as_str().unwrap().to_string();
+    let checked = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/identity-providers/{provider}/check"),
+            None,
+        )
+        .await;
+    assert_eq!(checked.json["ok"], true, "{}", checked.text);
+    assert_eq!(checked.json["idp_logout_url"], saml::IDP_SLO);
+
+    // The provider rotates its certificate; a refresh picks it up.
+    let rotated = SamlIdp::new();
+    *served.lock().unwrap() = rotated.metadata.clone();
+    let refreshed = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/identity-providers/{provider}/refresh-metadata"),
+            None,
+        )
+        .await;
+    assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.text);
+    assert_eq!(
+        refreshed.json["settings"]["saml"]["idp_metadata_xml"],
+        rotated.metadata.as_str()
+    );
+
+    server.abort();
     app.finish().await;
 }

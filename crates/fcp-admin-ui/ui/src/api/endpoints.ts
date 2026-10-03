@@ -668,6 +668,11 @@ export const identityProviders = {
     apiClient.put<IdentityProvider>(`/identity-providers/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/identity-providers/${encodeURIComponent(id)}`),
   check: (id: string) => apiClient.post<ProviderCheck>(`/identity-providers/${encodeURIComponent(id)}/check`, {}),
+  /** SAML: a new key of FCP's own; the provider must import FCP's metadata again. */
+  rotateSpKey: (id: string) => apiClient.post<IdentityProvider>(`/identity-providers/${encodeURIComponent(id)}/sp-key`, {}),
+  /** SAML: fetch the provider's metadata again from its URL. */
+  refreshMetadata: (id: string) =>
+    apiClient.post<IdentityProvider>(`/identity-providers/${encodeURIComponent(id)}/refresh-metadata`, {}),
 }
 
 export const webhooks = {

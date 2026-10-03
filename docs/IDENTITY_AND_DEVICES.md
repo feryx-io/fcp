@@ -488,6 +488,33 @@ Each phase is one PR based on main, with its admin UI and its docs.
      - The tests sign real responses with xmlsec: a sign-in, then
        unsigned, tampered, wrong-key, wrong-audience, transient,
        unsolicited, wrong-cookie and replayed responses all refused.
+   - **4b done (v0.25.314)** (`docs/SSO.md` §8).
+     - FCP's own key per SAML provider:
+       - generated with the provider; the private half is the sealed
+         `client_secret` and the certificate is `saml.sp_certificate`,
+         taken from no request;
+       - `POST …/sp-key` rotates it;
+       - AuthnRequests and LogoutResponses are signed with it, and
+         FCP's metadata names it and its logout.
+     - Encrypted assertions: samael decrypts them with that key, inside
+       a signed response. A test encrypts with AES-128-CBC and
+       RSA-OAEP.
+     - Single logout (`/auth/saml/{id}/slo`):
+       - HTTP-Redirect verified over the raw query, not samael's
+         verifier, which re-encodes and panics on a missing or
+         non-SHA-256 `SigAlg`;
+       - HTTP-POST reduced to its signed parts;
+       - the issuer, destination and freshness checked;
+       - `NameID` and `SessionIndex` read directly, since samael maps
+         `SessionIndex` as an attribute;
+       - sessions ended by the provider's session or the person, and a
+         signed LogoutResponse sent back.
+     - Metadata by URL: `saml.idp_metadata_url`, fetched through the
+       guard on save and on `POST …/refresh-metadata`.
+     - SAML guides for Entra ID, Okta and Google Workspace.
+     - Not done: logout started from FCP, and refreshing metadata on a
+       schedule.
+     - Phase 4 is complete.
 5. **A user's lifecycle.**
    - One status: Active, Suspended, Deprovisioned. `enabled` is read
      from it and kept for one release.

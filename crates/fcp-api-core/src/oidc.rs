@@ -181,6 +181,32 @@ impl OidcClient {
         Ok(url)
     }
 
+    /// A document at `url` as text, fetched through the guard: a SAML
+    /// provider's metadata. At most a megabyte.
+    pub async fn fetch_text(&self, url: &str) -> Result<String, OidcError> {
+        self.check_url(url).map_err(OidcError::Provider)?;
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| OidcError::Provider(format!("{url}: {e}")))?;
+        if !response.status().is_success() {
+            return Err(OidcError::Provider(format!("{url}: {}", response.status())));
+        }
+        let body = response
+            .bytes()
+            .await
+            .map_err(|e| OidcError::Provider(format!("{url}: {e}")))?;
+        if body.len() > 1 << 20 {
+            return Err(OidcError::Provider(format!(
+                "{url}: larger than a megabyte"
+            )));
+        }
+        String::from_utf8(body.to_vec())
+            .map_err(|_| OidcError::Provider(format!("{url}: not text")))
+    }
+
     async fn get_json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, OidcError> {
         self.check_url(url).map_err(OidcError::Provider)?;
         let response = self

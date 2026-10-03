@@ -89,6 +89,10 @@ pub fn pre_auth_router(enable_signup: bool) -> Router<ApiState> {
         // SAML sign-in (phase 4)
         .route("/auth/saml/:id", get(sso::saml_metadata))
         .route("/auth/saml/:id/acs", post(sso::saml_acs))
+        .route(
+            "/auth/saml/:id/slo",
+            get(sso::saml_slo_redirect).post(sso::saml_slo_post),
+        )
         .route("/auth/refresh", post(auth_session::refresh))
         .route("/auth/logout", post(auth_session::logout))
         .route(
@@ -359,6 +363,11 @@ pub fn router() -> Router<ApiState> {
             get(sso::get).put(sso::update).delete(sso::delete),
         )
         .route("/identity-providers/:id/check", post(sso::check_provider))
+        .route("/identity-providers/:id/sp-key", post(sso::rotate_sp_key))
+        .route(
+            "/identity-providers/:id/refresh-metadata",
+            post(sso::refresh_metadata),
+        )
         .route(
             "/users/:username",
             get(users::get_user)

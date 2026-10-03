@@ -1710,6 +1710,17 @@ Phase 4a done (v0.25.313): SAML sign-in.
 - Next, 4b: single logout, metadata by URL, encrypted assertions, and
   the SAML guides.
 
+Phase 4b done (v0.25.314): SAML finished.
+- A provider's single logout ends the FCP sessions it names, and FCP
+  answers it signed.
+- FCP signs its requests with a key of its own per provider (rotatable),
+  and takes assertions encrypted to it.
+- A provider's metadata can be fetched from its URL and refreshed.
+- `docs/SSO.md` has SAML guides for Entra ID, Okta and Google
+  Workspace.
+- Phase 4 is complete; phase 5 (a user's lifecycle, groups and rename)
+  is next.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

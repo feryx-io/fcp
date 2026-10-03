@@ -308,6 +308,72 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/saml/{id}/slo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/auth/saml/{id}/slo — a SAML provider's logout request
+         *     (HTTP-Redirect), its signature over the query string as it came.
+         */
+        get: operations["auth_session_saml_slo"];
+        put?: never;
+        /**
+         * POST /api/v1/auth/saml/{id}/slo — a SAML provider's logout request
+         *     (HTTP-POST), read only as far as it is signed.
+         */
+        post: operations["auth_session_saml_slo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/identity-providers/{id}/sp-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/identity-providers/{id}/sp-key — a new key of FCP's own
+         *     for a SAML provider. The provider must then import FCP's metadata
+         *     again: until it does, it refuses what FCP signs with the new key.
+         */
+        post: operations["identity_providers_rotate_sp_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/identity-providers/{id}/refresh-metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/identity-providers/{id}/refresh-metadata — fetch a SAML
+         *     provider's metadata again from its URL: the certificate it signs with
+         *     now, after it rotates one.
+         */
+        post: operations["identity_providers_refresh_metadata"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/identity-providers": {
         parameters: {
             query?: never;
@@ -6302,6 +6368,13 @@ export interface components {
              *     metadata is served for the identity provider to import.
              */
             sp_entity_id?: string | null;
+            /** @description SAML: FCP's single logout address (both bindings). */
+            sp_logout_url?: string | null;
+            /**
+             * @description SAML: whether FCP has its own key for this provider, to sign its
+             *     requests and be encrypted to.
+             */
+            sp_key?: boolean | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -7359,6 +7432,13 @@ export interface components {
                  *     metadata is served for the identity provider to import.
                  */
                 sp_entity_id?: string | null;
+                /** @description SAML: FCP's single logout address (both bindings). */
+                sp_logout_url?: string | null;
+                /**
+                 * @description SAML: whether FCP has its own key for this provider, to sign its
+                 *     requests and be encrypted to.
+                 */
+                sp_key?: boolean | null;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -8886,10 +8966,11 @@ export interface components {
             /** @description Where people are sent to sign in. */
             authorization_endpoint?: string | null;
             /**
-             * @description SAML: the provider's entity id, and how many certificates it signs
-             *     with.
+             * @description SAML: the provider's entity id, its logout address, and how many
+             *     certificates it signs with.
              */
             idp_entity_id?: string | null;
+            idp_logout_url?: string | null;
             signing_certificates?: number | null;
             error?: string | null;
         };
@@ -9212,6 +9293,11 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description What a SAML provider posts to ask for a logout (the HTTP-POST binding). */
+        SamlLogoutPost: {
+            SAMLRequest: string;
+            RelayState?: string | null;
+        };
         /** @description What a SAML provider posts back (the HTTP-POST binding). */
         SamlPost: {
             SAMLResponse: string;
@@ -9221,9 +9307,24 @@ export interface components {
         SamlSettings: {
             /**
              * @description The provider's metadata XML, as it publishes it: its entity id, its
-             *     single sign-on address and the certificates it signs with.
+             *     single sign-on and logout addresses and the certificates it signs
+             *     with. Fetched from `idp_metadata_url` when that is set.
              */
-            idp_metadata_xml: string;
+            idp_metadata_xml?: string;
+            /**
+             * @description Where the provider publishes its metadata: fetched when the
+             *     provider is saved and when it is refreshed, so a certificate the
+             *     provider rotates is picked up.
+             */
+            idp_metadata_url?: string | null;
+            /**
+             * @description FCP's own certificate for this provider (base64 DER), in its
+             *     metadata: what the provider checks FCP's signed requests and
+             *     logout answers with, and encrypts assertions to. Made by the
+             *     server — its private key is the provider's sealed secret — and
+             *     never taken from a request.
+             */
+            sp_certificate?: string | null;
             /**
              * @description Take the email attribute as the person's own, for linking by
              *     email. SAML has no `email_verified`; turn this on only for a
@@ -11229,6 +11330,146 @@ export interface operations {
                 };
                 content: {
                     "application/samlmetadata+xml": string;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_session_saml_slo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The identity provider */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out, where the provider has no logout address */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Back to the provider with FCP's signed LogoutResponse */
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_session_saml_slo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The identity provider */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": components["schemas"]["SamlLogoutPost"];
+            };
+        };
+        responses: {
+            /** @description Signed out, where the provider has no logout address */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Back to the provider with FCP's signed LogoutResponse */
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    identity_providers_rotate_sp_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The provider, with FCP's new certificate */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityProviderResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    identity_providers_refresh_metadata: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The provider, its metadata fetched */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityProviderResponse"];
                 };
             };
             /** @description An error */
