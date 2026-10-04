@@ -429,6 +429,7 @@ async fn main() -> Result<()> {
         rate_limit: config.api.rate_limit.clone(),
         session: config.api.session.clone(),
         sso: config.api.sso.clone(),
+        provisioning: config.api.provisioning.clone(),
     };
     let realm = "fcp.local".to_string();
     let default_tenant_id = config.service.default_tenant_id;

@@ -13444,3 +13444,354 @@ async fn a_phone_fetches_its_files_from_the_tenants_url_as_its_vendor_names_them
 
     app.finish().await;
 }
+
+// ---------------------------------------------------------------------------
+// Provisioning: templates by model, pending phones, import (phase 7b)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_pending_phone_is_claimed_and_gets_the_template_for_its_model() {
+    let app = require_app!();
+    app.create_user("dave", Some("Sip-Secret-456")).await;
+    let key = app
+        .admin(Method::POST, "/api/v1/provisioning/key", None)
+        .await
+        .json["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let template = |name: &'static str,
+                    vendor: &'static str,
+                    pattern: Option<&'static str>,
+                    body: &'static str| {
+        let app = &app;
+        async move {
+            app.admin(
+                Method::POST,
+                "/api/v1/config-templates",
+                Some(
+                    json!({"name": name, "vendor": vendor, "model_pattern": pattern,
+                            "template_body": body}),
+                ),
+            )
+            .await
+        }
+    };
+    // Two Yealink templates by model, and the T5's uses Jinja.
+    for (name, pattern, body) in [
+        ("t4", "T4*", "t4 {{ sip_username }}\n"),
+        (
+            "t5",
+            "T5*",
+            "{% for a in accounts %}account.{{ a.index }}.user_name = {{ a.user_name }}\n{% endfor %}\
+             {% for k in line_keys %}linekey.{{ k.index }} = {{ k.kind }}:{{ k.value }}:{{ k.label }}\n{% endfor %}\
+             transport={{ sip_transport }}:{{ sip_port }} tz={{ timezone }}\n\
+             url={{ provisioning_url }}\nlegacy=${sip_username}\n",
+        ),
+    ] {
+        let made = template(name, "yealink", Some(pattern), body).await;
+        assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    }
+    // A template that does not parse is refused, naming the line.
+    let broken = template("broken", "yealink", None, "a\n{% for x in accounts %}\n").await;
+    assert_eq!(broken.status, StatusCode::BAD_REQUEST);
+    assert!(broken.text.contains("line"), "{}", broken.text);
+
+    let fetch = |file: String, ua: &'static str| {
+        let app = &app;
+        let key = key.clone();
+        async move {
+            app.send(
+                Method::GET,
+                &format!("/provision/{key}/{file}"),
+                &[("x-forwarded-proto", "https"), ("user-agent", ua)],
+                None,
+            )
+            .await
+        }
+    };
+    const T54W: &str = "Yealink SIP-T54W 96.86.0.70 80:5e:c0:d1:e2:f3";
+
+    // A phone out of its box asks: nobody has its MAC, so it waits.
+    for _ in 0..2 {
+        let res = fetch("805ec0d1e2f3.cfg".into(), T54W).await;
+        assert_eq!(res.status, StatusCode::NOT_FOUND);
+    }
+    let pending = app
+        .admin(Method::GET, "/api/v1/provisioning/pending", None)
+        .await;
+    assert_eq!(pending.status, StatusCode::OK, "{}", pending.text);
+    let rows = pending.json.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["mac_address"], "805ec0d1e2f3");
+    assert_eq!(rows[0]["vendor"], "yealink");
+    assert_eq!(rows[0]["model"], "T54W");
+    assert_eq!(rows[0]["firmware"], "96.86.0.70");
+    assert_eq!(rows[0]["fetches"], 2);
+
+    // Claimed in one step, for dave.
+    let claimed = app
+        .admin(
+            Method::POST,
+            "/api/v1/provisioning/pending/80:5E:C0:D1:E2:F3/claim",
+            Some(json!({"owner_username": "dave"})),
+        )
+        .await;
+    assert_eq!(claimed.status, StatusCode::CREATED, "{}", claimed.text);
+    let device_id = claimed.json["id"].as_str().unwrap().to_string();
+    assert_eq!(claimed.json["vendor"], "yealink");
+    assert_eq!(claimed.json["model"], "T54W");
+    assert_eq!(claimed.json["firmware_version"], "96.86.0.70");
+    assert_eq!(claimed.json["name"], "Yealink T54W 805ec0d1e2f3");
+    assert!(claimed.json["provisioning_token"].is_string(), "shown once");
+    let again = app
+        .admin(
+            Method::POST,
+            "/api/v1/provisioning/pending/805ec0d1e2f3/claim",
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND, "no longer pending");
+
+    // Its keys.
+    let bad = app
+        .patch_device(
+            &device_id,
+            json!({"line_keys": [{"kind": "blf", "value": " "}]}),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+    let keyed = app
+        .patch_device(
+            &device_id,
+            json!({"line_keys": [{"kind": "blf", "value": "202", "label": "Bob"},
+                                 {"kind": "park", "value": "701"}]}),
+        )
+        .await;
+    assert_eq!(keyed.status, StatusCode::OK, "{}", keyed.text);
+    assert_eq!(keyed.json["line_keys"][1]["kind"], "park");
+
+    // Now it gets the T5 template, rendered.
+    let served = fetch("805ec0d1e2f3.cfg".into(), T54W).await;
+    assert_eq!(served.status, StatusCode::OK, "{}", served.text);
+    for want in [
+        "account.1.user_name = dave\n",
+        "linekey.1 = blf:202:Bob\n",
+        "linekey.2 = park:701:701\n",
+        "transport=udp:5060 tz=UTC\n",
+        &format!("url={SSO_PUBLIC_URL}/provision/{key}/\n"),
+        "legacy=dave\n",
+    ] {
+        assert!(served.text.contains(want), "{want:?} in\n{}", served.text);
+    }
+    // The same preview, for an administrator; and an unsaved body.
+    let preview = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/devices/{device_id}/render"),
+            None,
+        )
+        .await;
+    assert_eq!(preview.status, StatusCode::OK, "{}", preview.text);
+    assert_eq!(preview.json["config_template_name"], "t5");
+    assert!(preview.json["content"]
+        .as_str()
+        .unwrap()
+        .contains("linekey.1 = blf:202:Bob"));
+    let tried = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/devices/{device_id}/render"),
+            Some(json!({"template_body": "{{ sip_server }} {{ model }} {{ vendor }}"})),
+        )
+        .await;
+    assert_eq!(tried.status, StatusCode::OK, "{}", tried.text);
+    assert_eq!(tried.json["content"], format!("{REALM} T54W yealink"));
+    let failing = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/devices/{device_id}/render"),
+            Some(json!({"template_body": "{{ model|no_such_filter }}"})),
+        )
+        .await;
+    assert_eq!(failing.status, StatusCode::BAD_REQUEST, "{}", failing.text);
+
+    // A T4 phone the admin made by hand gets the T4 one.
+    let t46 = app
+        .admin(
+            Method::POST,
+            "/api/v1/devices",
+            Some(json!({"name": "T46", "device_type": "desk_phone", "mac_address": "00:15:65:00:00:46",
+                        "model": "T46U", "owner_user_id": claimed.json["owner_user_id"]})),
+        )
+        .await;
+    assert_eq!(t46.status, StatusCode::CREATED, "{}", t46.text);
+    assert_eq!(t46.json["vendor"], "yealink", "from the MAC's prefix");
+    let res = fetch("001565000046.cfg".into(), "Yealink SIP-T46U 108.86.0.45").await;
+    assert_eq!(res.text, "t4 dave\n");
+
+    // Dismissed, a pending phone is gone until it asks again.
+    fetch("0c383e000001.cfg".into(), "Fanvil X4U 2.12.1").await;
+    let gone = app
+        .admin(
+            Method::DELETE,
+            "/api/v1/provisioning/pending/0c383e000001",
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT);
+    let twice = app
+        .admin(
+            Method::DELETE,
+            "/api/v1/provisioning/pending/0c383e000001",
+            None,
+        )
+        .await;
+    assert_eq!(twice.status, StatusCode::NOT_FOUND);
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn phones_are_imported_all_or_none_and_xml_values_are_escaped() {
+    let app = require_app!();
+    app.create_user("erin", Some("Sip-Secret-789")).await;
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/config-templates",
+            Some(json!({"name": "vvx", "vendor": "polycom", "model_pattern": "VVX*",
+                        "template_body": "<x name=\"{{ device_name }}\" user=\"{{ sip_username }}\" raw=\"{{ '<b/>'|safe }}\"/>\n"})),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+
+    // One bad row and nothing is made; every fault named.
+    let refused = app
+        .admin(
+            Method::POST,
+            "/api/v1/devices/import",
+            Some(json!({"devices": [
+                {"mac_address": "0004f2aaaa01", "name": "Lab & Co", "model": "VVX 450"},
+                {"mac_address": "nope"},
+                {"mac_address": "00:04:F2:AA:AA:01"},
+                {"mac_address": "0004f2aaaa03", "owner_username": "nobody"},
+            ]})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    for want in ["row 2", "row 3", "twice", "row 4", "nobody"] {
+        assert!(refused.text.contains(want), "{want} in {}", refused.text);
+    }
+    let none = app.admin(Method::GET, "/api/v1/devices", None).await;
+    assert_eq!(none.json.as_array().unwrap().len(), 0, "{}", none.text);
+
+    let imported = app
+        .admin(
+            Method::POST,
+            "/api/v1/devices/import",
+            Some(json!({"devices": [
+                {"mac_address": "0004f2aaaa01", "name": "Lab & Co", "model": "VVX 450"},
+                {"mac_address": "00-04-f2-aa-aa-02", "owner_username": "erin", "model": "VVX 250"},
+            ]})),
+        )
+        .await;
+    assert_eq!(imported.status, StatusCode::CREATED, "{}", imported.text);
+    let created = imported.json["created"].as_array().unwrap();
+    assert_eq!(created.len(), 2);
+    assert!(created
+        .iter()
+        .all(|d| d["vendor"] == "polycom" && d["provisioning_token"].is_string()));
+    assert_eq!(created[1]["mac_address"], "0004f2aaaa02");
+    let erins = created[1]["id"].as_str().unwrap();
+    let labs = created[0]["id"].as_str().unwrap();
+    let dup = app
+        .admin(
+            Method::POST,
+            "/api/v1/devices/import",
+            Some(json!({"devices": [{"mac_address": "0004f2aaaa02"}]})),
+        )
+        .await;
+    assert_eq!(dup.status, StatusCode::BAD_REQUEST, "{}", dup.text);
+
+    // XML vendors' values are escaped; `|safe` is not.
+    let lab = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/devices/{labs}/render"),
+            None,
+        )
+        .await;
+    assert_eq!(lab.status, StatusCode::OK, "{}", lab.text);
+    assert_eq!(
+        lab.json["content"],
+        "<x name=\"Lab &amp; Co\" user=\"\" raw=\"<b/>\"/>\n"
+    );
+    let erin = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/devices/{erins}/render"),
+            None,
+        )
+        .await;
+    assert!(erin.json["content"]
+        .as_str()
+        .unwrap()
+        .contains("user=\"erin\""));
+
+    // A body tried against the sample values.
+    let sample = app
+        .admin(
+            Method::POST,
+            "/api/v1/config-templates/preview",
+            Some(json!({"template_body": "{{ owner_display_name }}|{{ accounts|length }}", "vendor": "polycom"})),
+        )
+        .await;
+    assert_eq!(sample.status, StatusCode::OK, "{}", sample.text);
+    assert_eq!(sample.json["content"], "Alice O&apos;Neil &amp; Co|2");
+    assert!(sample.json["context"]["line_keys"].is_array());
+
+    // Every vendor has a starter, and each renders for a real device.
+    let library = app
+        .admin(Method::GET, "/api/v1/config-templates/library", None)
+        .await;
+    let vendors: Vec<&str> = library
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["vendor"].as_str())
+        .collect();
+    for v in [
+        "yealink",
+        "polycom",
+        "grandstream",
+        "cisco",
+        "fanvil",
+        "snom",
+    ] {
+        assert!(vendors.contains(&v), "{v} in {vendors:?}");
+    }
+    let starter = app
+        .admin(
+            Method::POST,
+            "/api/v1/config-templates/library/polycom",
+            None,
+        )
+        .await;
+    assert_eq!(starter.status, StatusCode::CREATED, "{}", starter.text);
+    let rendered = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/devices/{erins}/render"),
+            Some(json!({"config_template_id": starter.json["id"]})),
+        )
+        .await;
+    assert_eq!(rendered.status, StatusCode::OK, "{}", rendered.text);
+    assert!(rendered.json["content"]
+        .as_str()
+        .unwrap()
+        .contains("reg.1.address=\"erin\""));
+
+    app.finish().await;
+}

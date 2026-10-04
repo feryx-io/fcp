@@ -26,6 +26,7 @@ from .cdr_response import CdrResponse
 from .change_expired_password_request import ChangeExpiredPasswordRequest
 from .change_password_request import ChangePasswordRequest
 from .civic_elements import CivicElements
+from .claim_device_request import ClaimDeviceRequest
 from .claim_mapping import ClaimMapping
 from .class_of_service_request import ClassOfServiceRequest
 from .class_of_service_response import ClassOfServiceResponse
@@ -138,11 +139,16 @@ from .hold_response_held_type_0 import HoldResponseHeldType0
 from .holiday import Holiday
 from .identity_provider_request import IdentityProviderRequest
 from .identity_provider_response import IdentityProviderResponse
+from .import_device_row import ImportDeviceRow
+from .import_devices_request import ImportDevicesRequest
+from .import_devices_response import ImportDevicesResponse
 from .join_role import JoinRole
 from .join_token_response import JoinTokenResponse
 from .lcr_route_response import LcrRouteResponse
 from .library_template_response import LibraryTemplateResponse
 from .line_binding_response import LineBindingResponse
+from .line_key import LineKey
+from .line_key_kind import LineKeyKind
 from .list_cdrs_response import ListCdrsResponse
 from .location_response import LocationResponse
 from .location_validation_response import LocationValidationResponse
@@ -253,6 +259,8 @@ from .page_notification_response import PageNotificationResponse
 from .page_notification_response_data_item import PageNotificationResponseDataItem
 from .page_number_usage_response import PageNumberUsageResponse
 from .page_number_usage_response_data_item import PageNumberUsageResponseDataItem
+from .page_pending_device_response import PagePendingDeviceResponse
+from .page_pending_device_response_data_item import PagePendingDeviceResponseDataItem
 from .page_phone_number_response import PagePhoneNumberResponse
 from .page_phone_number_response_data_item import PagePhoneNumberResponseDataItem
 from .page_presence_response import PagePresenceResponse
@@ -309,6 +317,7 @@ from .page_webhook_event_type_data_item import PageWebhookEventTypeDataItem
 from .page_webhook_response import PageWebhookResponse
 from .page_webhook_response_data_item import PageWebhookResponseDataItem
 from .password_login import PasswordLogin
+from .pending_device_response import PendingDeviceResponse
 from .phone_number_response import PhoneNumberResponse
 from .place_hold_request import PlaceHoldRequest
 from .play_request import PlayRequest
@@ -319,6 +328,9 @@ from .presence_auth_policy_event_block import PresenceAuthPolicyEventBlock
 from .presence_detail_response import PresenceDetailResponse
 from .presence_response import PresenceResponse
 from .presence_stats_response import PresenceStatsResponse
+from .preview_template_request import PreviewTemplateRequest
+from .preview_template_response import PreviewTemplateResponse
+from .preview_template_response_context import PreviewTemplateResponseContext
 from .profile_response import ProfileResponse
 from .prompt_audio_upload import PromptAudioUpload
 from .prompt_response import PromptResponse
@@ -342,6 +354,8 @@ from .redirect_request import RedirectRequest
 from .reencrypt_report import ReencryptReport
 from .registration_response import RegistrationResponse
 from .release_hold_request import ReleaseHoldRequest
+from .render_device_request import RenderDeviceRequest
+from .rendered_config_response import RenderedConfigResponse
 from .require_totp import RequireTotp
 from .required_claim import RequiredClaim
 from .resource_counts import ResourceCounts
@@ -488,6 +502,7 @@ __all__ = (
     "ChangeExpiredPasswordRequest",
     "ChangePasswordRequest",
     "CivicElements",
+    "ClaimDeviceRequest",
     "ClaimMapping",
     "ClassifyResponse",
     "ClassOfServiceRequest",
@@ -600,11 +615,16 @@ __all__ = (
     "Holiday",
     "IdentityProviderRequest",
     "IdentityProviderResponse",
+    "ImportDeviceRow",
+    "ImportDevicesRequest",
+    "ImportDevicesResponse",
     "JoinRole",
     "JoinTokenResponse",
     "LcrRouteResponse",
     "LibraryTemplateResponse",
     "LineBindingResponse",
+    "LineKey",
+    "LineKeyKind",
     "ListCdrsResponse",
     "LocationResponse",
     "LocationValidationResponse",
@@ -715,6 +735,8 @@ __all__ = (
     "PageNotificationResponseDataItem",
     "PageNumberUsageResponse",
     "PageNumberUsageResponseDataItem",
+    "PagePendingDeviceResponse",
+    "PagePendingDeviceResponseDataItem",
     "PagePhoneNumberResponse",
     "PagePhoneNumberResponseDataItem",
     "PagePresenceResponse",
@@ -771,6 +793,7 @@ __all__ = (
     "PageWebhookResponse",
     "PageWebhookResponseDataItem",
     "PasswordLogin",
+    "PendingDeviceResponse",
     "PhoneNumberResponse",
     "PlaceHoldRequest",
     "PlayRequest",
@@ -781,6 +804,9 @@ __all__ = (
     "PresenceDetailResponse",
     "PresenceResponse",
     "PresenceStatsResponse",
+    "PreviewTemplateRequest",
+    "PreviewTemplateResponse",
+    "PreviewTemplateResponseContext",
     "ProfileResponse",
     "PromptAudioUpload",
     "PromptResponse",
@@ -804,6 +830,8 @@ __all__ = (
     "ReencryptReport",
     "RegistrationResponse",
     "ReleaseHoldRequest",
+    "RenderDeviceRequest",
+    "RenderedConfigResponse",
     "RequiredClaim",
     "RequireTotp",
     "ResourceCounts",

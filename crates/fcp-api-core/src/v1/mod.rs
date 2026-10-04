@@ -588,8 +588,25 @@ pub fn router() -> Router<ApiState> {
         // Provisioning that phones can use (docs/PROVISIONING.md)
         .route("/devices/:id/fetches", get(provisioning::device_fetches))
         .route(
+            "/devices/:id/render",
+            axum::routing::post(devices::render_device),
+        )
+        .route(
+            "/devices/import",
+            axum::routing::post(devices::import_devices),
+        )
+        .route(
             "/provisioning/key",
             get(provisioning::get_key).post(provisioning::rotate_key),
+        )
+        .route("/provisioning/pending", get(devices::list_pending))
+        .route(
+            "/provisioning/pending/:mac",
+            axum::routing::delete(devices::dismiss_pending),
+        )
+        .route(
+            "/provisioning/pending/:mac/claim",
+            axum::routing::post(devices::claim_pending),
         )
         // Hoteling sessions (docs/ENTERPRISE_CALLING.md §3.8)
         .route("/hoteling/sessions", get(hoteling::list_sessions))
@@ -606,6 +623,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/config-templates/library",
             get(config_templates::list_template_library),
+        )
+        .route(
+            "/config-templates/preview",
+            axum::routing::post(config_templates::preview_template),
         )
         .route(
             "/config-templates/library/:vendor",

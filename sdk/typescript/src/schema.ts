@@ -4272,6 +4272,129 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/devices/{id}/render": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/devices/:id/render — the device's configuration as its
+         *     phone would get it now (credentials included), from its template or
+         *     the one given.
+         */
+        post: operations["provisioning_render_device"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/devices/import — phones by MAC, each checked before any is
+         *     made: all are made, or none and every row's fault is named.
+         */
+        post: operations["devices_import_devices"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/provisioning/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/provisioning/pending — phones waiting to be claimed, the
+         *     most recently seen first.
+         */
+        get: operations["provisioning_list_pending"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/provisioning/pending/{mac}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/provisioning/pending/:mac/claim — make the pending phone a
+         *     device in one step: its vendor and model as it gave them, an owner, a
+         *     template if one is named.
+         */
+        post: operations["provisioning_claim_pending"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/provisioning/pending/{mac}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /api/v1/provisioning/pending/:mac — forget a pending phone; it
+         *     comes back if it fetches again.
+         */
+        delete: operations["provisioning_dismiss_pending"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/config-templates/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/config-templates/preview — a body rendered against sample
+         *     values: every variable a template has, filled in, so an author sees
+         *     the output and the errors before saving.
+         */
+        post: operations["config_templates_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/groups": {
         parameters: {
             query?: never;
@@ -5248,6 +5371,19 @@ export interface components {
             /** @description `NAM`: the name of the place (`Example HQ`). */
             name?: string | null;
         };
+        /** @description What a claimed or imported phone becomes. */
+        ClaimDeviceRequest: {
+            /** @description Unset: its vendor, model and MAC. */
+            name?: string | null;
+            /** @description Unset: `desk_phone`. */
+            device_type?: string | null;
+            /** @description Its owner, by id or by username. */
+            owner_user_id?: string | null;
+            owner_username?: string | null;
+            /** @description Unset: picked by vendor and model when the phone fetches. */
+            config_template_id?: string | null;
+            location_id?: string | null;
+        };
         /** @description Which claims become the user's names. */
         ClaimMapping: {
             /**
@@ -5531,11 +5667,19 @@ export interface components {
             hoteling_host?: boolean | null;
             mac_address?: string | null;
             model?: string | null;
+            /**
+             * @description The phone's vendor (`docs/PROVISIONING.md` §5); unset, read from
+             *     the MAC where its prefix is a vendor's.
+             */
+            vendor?: string | null;
             sip_uri?: string | null;
             /** Format: int32 */
             max_lines?: number | null;
             supports_video?: boolean | null;
             supports_blf?: boolean | null;
+            /** @description The keys programmed on the phone. */
+            line_keys?: components["schemas"]["LineKey"][] | null;
+            config_template_id?: string | null;
             location?: string | null;
             location_id?: string | null;
             e911_override?: components["schemas"]["E911AddressResponse"] | null;
@@ -6030,6 +6174,11 @@ export interface components {
             device_type: string;
             mac_address?: string | null;
             model?: string | null;
+            /**
+             * @description `yealink`, `polycom`, `grandstream`, `cisco`, `fanvil` or `snom`:
+             *     with the model, it picks the template when the device names none.
+             */
+            vendor?: string | null;
             firmware_version?: string | null;
             tenant_id: string;
             owner_user_id?: string | null;
@@ -6052,6 +6201,8 @@ export interface components {
             supports_video: boolean;
             supports_blf: boolean;
             codec_support: string[];
+            /** @description The keys programmed on the phone, in order. */
+            line_keys: components["schemas"]["LineKey"][];
             location?: string | null;
             location_id?: string | null;
             e911_override?: components["schemas"]["E911AddressResponse"] | null;
@@ -6609,6 +6760,30 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description One phone to import. */
+        ImportDeviceRow: {
+            mac_address: string;
+            name?: string | null;
+            model?: string | null;
+            /** @description Unset: read from the MAC's prefix where it is a vendor's. */
+            vendor?: string | null;
+            device_type?: string | null;
+            owner_user_id?: string | null;
+            owner_username?: string | null;
+            config_template_id?: string | null;
+            location_id?: string | null;
+        };
+        /** @description Phones by MAC, all made or none. */
+        ImportDevicesRequest: {
+            devices: components["schemas"]["ImportDeviceRow"][];
+        };
+        /**
+         * @description What an import made: each device with its provisioning token, shown
+         *     this once.
+         */
+        ImportDevicesResponse: {
+            created: components["schemas"]["DeviceResponse"][];
+        };
         /**
          * @description The role a token admits its holder in.
          * @enum {string}
@@ -6688,6 +6863,18 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description A key programmed on a phone. */
+        LineKey: {
+            kind: components["schemas"]["LineKeyKind"];
+            /** @description What it watches or dials: an extension, a number, a park slot. */
+            value: string;
+            label?: string | null;
+        };
+        /**
+         * @description What a key does.
+         * @enum {string}
+         */
+        LineKeyKind: "blf" | "speed_dial" | "park";
         /**
          * @description A page of CDRs: the list envelope (`crate::page`), whose cursor is the
          *     CDR store's own keyset cursor, and whose total may be an estimate.
@@ -7381,6 +7568,11 @@ export interface components {
                 device_type: string;
                 mac_address?: string | null;
                 model?: string | null;
+                /**
+                 * @description `yealink`, `polycom`, `grandstream`, `cisco`, `fanvil` or `snom`:
+                 *     with the model, it picks the template when the device names none.
+                 */
+                vendor?: string | null;
                 firmware_version?: string | null;
                 tenant_id: string;
                 owner_user_id?: string | null;
@@ -7403,6 +7595,8 @@ export interface components {
                 supports_video: boolean;
                 supports_blf: boolean;
                 codec_support: string[];
+                /** @description The keys programmed on the phone, in order. */
+                line_keys: components["schemas"]["LineKey"][];
                 location?: string | null;
                 location_id?: string | null;
                 e911_override?: components["schemas"]["E911AddressResponse"] | null;
@@ -8091,6 +8285,30 @@ export interface components {
                 inbound_calls: number;
                 /** Format: int64 */
                 outbound_calls: number;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_PendingDeviceResponse: {
+            data: {
+                mac_address: string;
+                /** Format: date-time */
+                first_seen: string;
+                /** Format: date-time */
+                last_seen: string;
+                address?: string | null;
+                user_agent?: string | null;
+                vendor?: string | null;
+                model?: string | null;
+                firmware?: string | null;
+                /** Format: int32 */
+                fetches: number;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -9042,6 +9260,21 @@ export interface components {
          * @enum {string}
          */
         PasswordLogin: "allowed" | "admins_only" | "disabled";
+        /** @description A phone that fetched with a MAC no device has. */
+        PendingDeviceResponse: {
+            mac_address: string;
+            /** Format: date-time */
+            first_seen: string;
+            /** Format: date-time */
+            last_seen: string;
+            address?: string | null;
+            user_agent?: string | null;
+            vendor?: string | null;
+            model?: string | null;
+            firmware?: string | null;
+            /** Format: int32 */
+            fetches: number;
+        };
         /** @description Phone number response. */
         PhoneNumberResponse: {
             id: string;
@@ -9222,6 +9455,18 @@ export interface components {
         PresenceStatsResponse: {
             total_presentities: number;
             total_watchers: number;
+        };
+        /** @description A template body to try against sample values. */
+        PreviewTemplateRequest: {
+            template_body: string;
+            /** @description Unset: `generic` (no XML escaping). */
+            vendor?: string | null;
+        };
+        /** @description A body rendered against sample values. */
+        PreviewTemplateResponse: {
+            content: string;
+            /** @description The values it was rendered with (`docs/PROVISIONING.md` §5). */
+            context: Record<string, never>;
         };
         /** @description Profile response (limited fields for end users). */
         ProfileResponse: {
@@ -9585,6 +9830,22 @@ export interface components {
         };
         ReleaseHoldRequest: {
             reason: string;
+        };
+        /** @description A template to try, in place of the device's. */
+        RenderDeviceRequest: {
+            /** @description One of the tenant's templates. */
+            config_template_id?: string | null;
+            /** @description A body not yet saved, rendered as `vendor`'s. */
+            template_body?: string | null;
+            vendor?: string | null;
+        };
+        /** @description A rendered configuration. */
+        RenderedConfigResponse: {
+            /** @description The template it came from, when it is a saved one. */
+            config_template_id?: string | null;
+            config_template_name?: string | null;
+            vendor: string;
+            content: string;
         };
         /**
          * @description Who must add a one-time code to a password sign-in.
@@ -10434,12 +10695,16 @@ export interface components {
             hoteling_host?: boolean | null;
             mac_address?: string | null;
             model?: string | null;
+            /** @description The phone's vendor; an empty string clears it. */
+            vendor?: string | null;
             firmware_version?: string | null;
             sip_uri?: string | null;
             /** Format: int32 */
             max_lines?: number | null;
             supports_video?: boolean | null;
             supports_blf?: boolean | null;
+            /** @description The keys programmed on the phone, replacing what it had. */
+            line_keys?: components["schemas"]["LineKey"][] | null;
             location?: string | null;
             location_id?: string | null;
             e911_override?: components["schemas"]["E911AddressResponse"] | null;
@@ -21543,6 +21808,203 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_DeviceFetchResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_render_device: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenderDeviceRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderedConfigResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    devices_import_devices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportDevicesRequest"];
+            };
+        };
+        responses: {
+            /** @description Made */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportDevicesResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_list_pending: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_PendingDeviceResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_claim_pending: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mac: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClaimDeviceRequest"];
+            };
+        };
+        responses: {
+            /** @description The device, with its provisioning token shown once */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_dismiss_pending: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mac: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    config_templates_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewTemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewTemplateResponse"];
                 };
             };
             /** @description An error */

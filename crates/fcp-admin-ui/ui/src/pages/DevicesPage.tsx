@@ -20,7 +20,28 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { devices, emergency, locations, tenants, users } from '@/api/endpoints'
 import type { AddressValidation, Device, CreateDeviceRequest, UpdateDeviceRequest } from '@/types'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
-import { ProvisioningUrlCard, DeviceFetchesDialog } from '@/components/ProvisioningUrl'
+import { ProvisioningUrlCard, DeviceFetchesDialog, PendingPhonesCard, DeviceConfigDialog } from '@/components/ProvisioningUrl'
+import type { LineKey } from '@/types'
+
+/** The vendors a phone can be (docs/PROVISIONING.md §5). */
+const VENDORS = ['yealink', 'polycom', 'grandstream', 'cisco', 'fanvil', 'snom']
+const NO_VENDOR = '__none__'
+
+/** Line keys as text, one per line: `kind, value, label`. */
+function lineKeysToText(keys: LineKey[] | undefined): string {
+  return (keys ?? []).map((k) => [k.kind, k.value, k.label ?? ''].join(', ').replace(/, $/, '')).join('\n')
+}
+
+function textToLineKeys(text: string): LineKey[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [kind, value, ...label] = line.split(',').map((p) => p.trim())
+      return { kind: kind as LineKey['kind'], value: value ?? '', label: label.join(', ') || undefined }
+    })
+}
 
 const createSchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -28,6 +49,7 @@ const createSchema = z.object({
   sip_uri: z.string().optional(),
   mac_address: z.string().optional(),
   model: z.string().optional(),
+  vendor: z.string().optional(),
   location: z.string().optional(),
   location_id: z.string().optional(),
   tenant_id: z.string().optional(),
@@ -38,6 +60,9 @@ const editSchema = z.object({
   sip_uri: z.string().optional(),
   mac_address: z.string().optional(),
   model: z.string().optional(),
+  vendor: z.string().optional(),
+  // One per line: `blf, 202, Bob` (docs/PROVISIONING.md §5).
+  line_keys: z.string().optional(),
   firmware_version: z.string().optional(),
   location: z.string().optional(),
   location_id: z.string().optional(),
@@ -104,6 +129,7 @@ function credentialChange(
 
 export function DevicesPage() {
   const [fetchesOf, setFetchesOf] = useState<Device | null>(null)
+  const [configOf, setConfigOf] = useState<Device | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [editItem, setEditItem] = useState<Device | null>(null)
@@ -334,6 +360,10 @@ export function DevicesPage() {
               <RefreshCw className="mr-2 h-4 w-4" />
               Provisioning fetches
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setConfigOf(row.original)}>
+              <FileUp className="mr-2 h-4 w-4" />
+              Configuration
+            </DropdownMenuItem>
             {row.original.e911_override && (
               <DropdownMenuItem
                 onClick={() =>
@@ -393,6 +423,8 @@ export function DevicesPage() {
       sip_uri: editItem.sip_uri || '',
       mac_address: editItem.mac_address || '',
       model: editItem.model || '',
+      vendor: editItem.vendor ?? '',
+      line_keys: lineKeysToText(editItem.line_keys),
       firmware_version: editItem.firmware_version || '',
       location: editItem.location || '',
       location_id: editItem.location_id || '',
@@ -425,6 +457,7 @@ export function DevicesPage() {
       sip_uri: data.sip_uri || undefined,
       mac_address: data.mac_address || undefined,
       model: data.model || undefined,
+      vendor: data.vendor || undefined,
       location: data.location || undefined,
       location_id: data.location_id || undefined,
       tenant_id: data.tenant_id || undefined,
@@ -440,6 +473,8 @@ export function DevicesPage() {
         sip_uri: data.sip_uri || undefined,
         mac_address: data.mac_address || undefined,
         model: data.model || undefined,
+        vendor: data.vendor ?? '',
+        line_keys: textToLineKeys(data.line_keys ?? ''),
         firmware_version: data.firmware_version || undefined,
         location: data.location || undefined,
         location_id: data.location_id || undefined,
@@ -495,6 +530,14 @@ export function DevicesPage() {
       </div>
 
       <ProvisioningUrlCard />
+      <PendingPhonesCard
+        onClaimed={(device) => {
+          if (device.provisioning_token) {
+            setShowToken(false)
+            setRevealedToken({ token: device.provisioning_token, deviceName: device.name, context: 'created' })
+          }
+        }}
+      />
 
       {isLoading ? (
         <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>
@@ -503,6 +546,7 @@ export function DevicesPage() {
       )}
 
       <DeviceFetchesDialog device={fetchesOf} onClose={() => setFetchesOf(null)} />
+      <DeviceConfigDialog device={configOf} onClose={() => setConfigOf(null)} />
 
       {/* Create Dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
@@ -549,6 +593,16 @@ export function DevicesPage() {
                 <Label htmlFor="c-model">Model</Label>
                 <Input id="c-model" {...createForm.register('model')} />
               </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Vendor</Label>
+              <Select onValueChange={(v) => createForm.setValue('vendor', v === NO_VENDOR ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="From the MAC, where it can tell" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_VENDOR}>From the MAC, where it can tell</SelectItem>
+                  {VENDORS.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="c-location">Location</Label>
@@ -607,6 +661,32 @@ export function DevicesPage() {
                 <Label htmlFor="e-model">Model</Label>
                 <Input id="e-model" {...editForm.register('model')} />
               </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Vendor</Label>
+              <Select
+                key={`vendor-${editItem?.id}`}
+                defaultValue={editItem?.vendor || NO_VENDOR}
+                onValueChange={(v) => editForm.setValue('vendor', v === NO_VENDOR ? '' : v)}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_VENDOR}>Not set</SelectItem>
+                  {VENDORS.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">With the model, picks the template when the device names none.</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="e-line_keys">Line keys</Label>
+              <textarea
+                id="e-line_keys"
+                rows={3}
+                placeholder={'blf, 202, Bob\nspeed_dial, +15551230000, Lobby\npark, 701'}
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                {...editForm.register('line_keys')}
+              />
+              <p className="text-xs text-muted-foreground">One per line: blf, speed_dial or park; then the extension or number; then a label.</p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="e-firmware_version">Firmware Version</Label>

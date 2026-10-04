@@ -535,6 +535,12 @@ pub struct ApiConfig {
     /// issuer may be a private address (phase 3).
     #[serde(default)]
     pub sso: fcp_core::ApiSsoConfig,
+
+    /// `[api.provisioning]`: what provisioned phones are told — the SIP
+    /// server, port and transport, the time server, the public address
+    /// (`docs/PROVISIONING.md` §5).
+    #[serde(default)]
+    pub provisioning: fcp_core::ApiProvisioningConfig,
 }
 
 fn default_bind_address() -> SocketAddr {
@@ -559,6 +565,7 @@ impl Default for ApiConfig {
             rate_limit: fcp_core::ApiRateLimitConfig::default(),
             session: fcp_core::ApiSessionConfig::default(),
             sso: fcp_core::ApiSsoConfig::default(),
+            provisioning: fcp_core::ApiProvisioningConfig::default(),
         }
     }
 }
@@ -779,6 +786,11 @@ pub fn validate_config(config: &AdminConfig) -> Result<()> {
         .validate(config.api.auth_token.as_deref())
         .map_err(anyhow::Error::msg)?;
     config.api.sso.validate().map_err(anyhow::Error::msg)?;
+    config
+        .api
+        .provisioning
+        .validate()
+        .map_err(anyhow::Error::msg)?;
     if let Some(cloud) = &config.api.managed_by {
         let cloud = cloud.trim();
         if !(cloud.starts_with("https://") || cloud.starts_with("http://")) {

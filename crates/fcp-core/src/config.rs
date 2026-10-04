@@ -813,6 +813,104 @@ pub struct ApiConfig {
     /// Single sign-on through tenants' identity providers (phase 3).
     #[serde(default)]
     pub sso: ApiSsoConfig,
+
+    /// What provisioned phones are told (phase 7).
+    #[serde(default)]
+    pub provisioning: ApiProvisioningConfig,
+}
+
+/// `[api.provisioning]`: what provisioned phones are told — where they
+/// register and how, their time server, and the URL they fetch from
+/// (`docs/PROVISIONING.md` §5).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiProvisioningConfig {
+    /// The address phones register to, e.g. `sip.example.com`; unset,
+    /// the SIP realm.
+    #[serde(default)]
+    pub sip_server: Option<String>,
+    /// Its port; unset, 5061 for TLS and 5060 otherwise.
+    #[serde(default)]
+    pub sip_port: Option<u16>,
+    /// `udp` (the default), `tcp` or `tls`.
+    #[serde(default)]
+    pub sip_transport: Option<String>,
+    /// The time server phones use; unset, `pool.ntp.org`.
+    #[serde(default)]
+    pub ntp_server: Option<String>,
+    /// Where phones reach this admin, e.g. `https://pbx.example.com`, for
+    /// the `provisioning_url` a template can hand them; unset,
+    /// `[api.sso] public_url`, then the address the request came to.
+    #[serde(default)]
+    pub public_url: Option<String>,
+}
+
+impl ApiProvisioningConfig {
+    /// `udp`, `tcp` or `tls`.
+    pub fn transport(&self) -> &str {
+        self.sip_transport
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .unwrap_or("udp")
+    }
+
+    pub fn port(&self) -> u16 {
+        self.sip_port.unwrap_or(if self.transport() == "tls" {
+            5061
+        } else {
+            5060
+        })
+    }
+
+    pub fn ntp_server(&self) -> &str {
+        self.ntp_server
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or("pool.ntp.org")
+    }
+
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let transport = self
+            .sip_transport
+            .as_deref()
+            .map(|t| t.trim().to_ascii_lowercase());
+        if let Some(t) = &transport {
+            if !matches!(t.as_str(), "udp" | "tcp" | "tls") {
+                return Err(format!(
+                    "api.provisioning.sip_transport `{t}` must be udp, tcp or tls"
+                ));
+            }
+        }
+        if self
+            .sip_transport
+            .as_deref()
+            .is_some_and(|t| t != t.trim().to_ascii_lowercase())
+        {
+            return Err("api.provisioning.sip_transport must be lower case".to_string());
+        }
+        for (key, value) in [
+            ("sip_server", &self.sip_server),
+            ("ntp_server", &self.ntp_server),
+            ("public_url", &self.public_url),
+        ] {
+            if let Some(v) = value {
+                if v.chars().any(|c| c.is_control() || c.is_whitespace()) {
+                    return Err(format!("api.provisioning.{key} must be one word"));
+                }
+            }
+        }
+        if let Some(url) = &self.public_url {
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                return Err("api.provisioning.public_url must be an http(s):// address".to_string());
+            }
+        }
+        if self.sip_port == Some(0) {
+            return Err("api.provisioning.sip_port must not be 0".to_string());
+        }
+        Ok(())
+    }
 }
 
 /// `[api.sso]`: sign-in through a tenant's identity provider
@@ -991,6 +1089,7 @@ impl Default for ApiConfig {
             rate_limit: ApiRateLimitConfig::default(),
             session: ApiSessionConfig::default(),
             sso: ApiSsoConfig::default(),
+            provisioning: ApiProvisioningConfig::default(),
         }
     }
 }
@@ -1036,6 +1135,7 @@ impl ApiConfig {
             );
         }
         self.session.validate(self.auth_token.as_deref())?;
+        self.provisioning.validate()?;
         Ok(())
     }
 }

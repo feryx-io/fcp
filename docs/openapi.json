@@ -14259,6 +14259,274 @@
         }
       }
     },
+    "/api/v1/devices/{id}/render": {
+      "post": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "POST /api/v1/devices/:id/render — the device's configuration as its\nphone would get it now (credentials included), from its template or\nthe one given.",
+        "operationId": "provisioning_render_device",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderDeviceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderedConfigResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/import": {
+      "post": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "POST /api/v1/devices/import — phones by MAC, each checked before any is\nmade: all are made, or none and every row's fault is named.",
+        "operationId": "devices_import_devices",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportDevicesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Made",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportDevicesResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/provisioning/pending": {
+      "get": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "GET /api/v1/provisioning/pending — phones waiting to be claimed, the\nmost recently seen first.",
+        "operationId": "provisioning_list_pending",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PendingDeviceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/provisioning/pending/{mac}/claim": {
+      "post": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "POST /api/v1/provisioning/pending/:mac/claim — make the pending phone a\ndevice in one step: its vendor and model as it gave them, an owner, a\ntemplate if one is named.",
+        "operationId": "provisioning_claim_pending",
+        "parameters": [
+          {
+            "name": "mac",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimDeviceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The device, with its provisioning token shown once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/provisioning/pending/{mac}": {
+      "delete": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "DELETE /api/v1/provisioning/pending/:mac — forget a pending phone; it\ncomes back if it fetches again.",
+        "operationId": "provisioning_dismiss_pending",
+        "parameters": [
+          {
+            "name": "mac",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/config-templates/preview": {
+      "post": {
+        "tags": [
+          "config_templates"
+        ],
+        "summary": "POST /api/v1/config-templates/preview — a body rendered against sample\nvalues: every variable a template has, filled in, so an author sees\nthe output and the errors before saving.",
+        "operationId": "config_templates_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewTemplateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewTemplateResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/groups": {
       "get": {
         "tags": [
@@ -17727,6 +17995,52 @@
           }
         }
       },
+      "ClaimDeviceRequest": {
+        "type": "object",
+        "description": "What a claimed or imported phone becomes.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unset: its vendor, model and MAC."
+          },
+          "device_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unset: `desk_phone`."
+          },
+          "owner_user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its owner, by id or by username."
+          },
+          "owner_username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "config_template_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unset: picked by vendor and model when the phone fetches."
+          },
+          "location_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "ClaimMapping": {
         "type": "object",
         "description": "Which claims become the user's names.",
@@ -18531,6 +18845,13 @@
               "null"
             ]
           },
+          "vendor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The phone's vendor (`docs/PROVISIONING.md` §5); unset, read from\nthe MAC where its prefix is a vendor's."
+          },
           "sip_uri": {
             "type": [
               "string",
@@ -18554,6 +18875,22 @@
           "supports_blf": {
             "type": [
               "boolean",
+              "null"
+            ]
+          },
+          "line_keys": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/LineKey"
+            },
+            "description": "The keys programmed on the phone."
+          },
+          "config_template_id": {
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -20468,6 +20805,7 @@
           "supports_video",
           "supports_blf",
           "codec_support",
+          "line_keys",
           "has_provisioning_token",
           "enabled",
           "created_at",
@@ -20494,6 +20832,13 @@
               "string",
               "null"
             ]
+          },
+          "vendor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`yealink`, `polycom`, `grandstream`, `cisco`, `fanvil` or `snom`:\nwith the model, it picks the template when the device names none."
           },
           "firmware_version": {
             "type": [
@@ -20568,6 +20913,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "line_keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LineKey"
+            },
+            "description": "The keys programmed on the phone, in order."
           },
           "location": {
             "type": [
@@ -22201,6 +22553,97 @@
           }
         }
       },
+      "ImportDeviceRow": {
+        "type": "object",
+        "description": "One phone to import.",
+        "required": [
+          "mac_address"
+        ],
+        "properties": {
+          "mac_address": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vendor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unset: read from the MAC's prefix where it is a vendor's."
+          },
+          "device_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "owner_user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "owner_username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "config_template_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ImportDevicesRequest": {
+        "type": "object",
+        "description": "Phones by MAC, all made or none.",
+        "required": [
+          "devices"
+        ],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportDeviceRow"
+            }
+          }
+        }
+      },
+      "ImportDevicesResponse": {
+        "type": "object",
+        "description": "What an import made: each device with its provisioning token, shown\nthis once.",
+        "required": [
+          "created"
+        ],
+        "properties": {
+          "created": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceResponse"
+            }
+          }
+        }
+      },
       "JoinRole": {
         "type": "string",
         "description": "The role a token admits its holder in.",
@@ -22433,6 +22876,38 @@
             "format": "date-time"
           }
         }
+      },
+      "LineKey": {
+        "type": "object",
+        "description": "A key programmed on a phone.",
+        "required": [
+          "kind",
+          "value"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/LineKeyKind"
+          },
+          "value": {
+            "type": "string",
+            "description": "What it watches or dials: an extension, a number, a park slot."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LineKeyKind": {
+        "type": "string",
+        "description": "What a key does.",
+        "enum": [
+          "blf",
+          "speed_dial",
+          "park"
+        ]
       },
       "ListCdrsResponse": {
         "type": "object",
@@ -24543,6 +25018,7 @@
                 "supports_video",
                 "supports_blf",
                 "codec_support",
+                "line_keys",
                 "has_provisioning_token",
                 "enabled",
                 "created_at",
@@ -24569,6 +25045,13 @@
                     "string",
                     "null"
                   ]
+                },
+                "vendor": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "`yealink`, `polycom`, `grandstream`, `cisco`, `fanvil` or `snom`:\nwith the model, it picks the template when the device names none."
                 },
                 "firmware_version": {
                   "type": [
@@ -24643,6 +25126,13 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "line_keys": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LineKey"
+                  },
+                  "description": "The keys programmed on the phone, in order."
                 },
                 "location": {
                   "type": [
@@ -26911,6 +27401,92 @@
                 "outbound_calls": {
                   "type": "integer",
                   "format": "int64",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_PendingDeviceResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A phone that fetched with a MAC no device has.",
+              "required": [
+                "mac_address",
+                "first_seen",
+                "last_seen",
+                "fetches"
+              ],
+              "properties": {
+                "mac_address": {
+                  "type": "string"
+                },
+                "first_seen": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "last_seen": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "address": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "user_agent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "vendor": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "firmware": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "fetches": {
+                  "type": "integer",
+                  "format": "int32",
                   "minimum": 0
                 }
               }
@@ -30018,6 +30594,64 @@
           "disabled"
         ]
       },
+      "PendingDeviceResponse": {
+        "type": "object",
+        "description": "A phone that fetched with a MAC no device has.",
+        "required": [
+          "mac_address",
+          "first_seen",
+          "last_seen",
+          "fetches"
+        ],
+        "properties": {
+          "mac_address": {
+            "type": "string"
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vendor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "firmware": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fetches": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "PhoneNumberResponse": {
         "type": "object",
         "description": "Phone number response.",
@@ -30515,6 +31149,42 @@
           "total_watchers": {
             "type": "integer",
             "minimum": 0
+          }
+        }
+      },
+      "PreviewTemplateRequest": {
+        "type": "object",
+        "description": "A template body to try against sample values.",
+        "required": [
+          "template_body"
+        ],
+        "properties": {
+          "template_body": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unset: `generic` (no XML escaping)."
+          }
+        }
+      },
+      "PreviewTemplateResponse": {
+        "type": "object",
+        "description": "A body rendered against sample values.",
+        "required": [
+          "content",
+          "context"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "context": {
+            "type": "object",
+            "description": "The values it was rendered with (`docs/PROVISIONING.md` §5)."
           }
         }
       },
@@ -31592,6 +32262,61 @@
         ],
         "properties": {
           "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "RenderDeviceRequest": {
+        "type": "object",
+        "description": "A template to try, in place of the device's.",
+        "properties": {
+          "config_template_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One of the tenant's templates."
+          },
+          "template_body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A body not yet saved, rendered as `vendor`'s."
+          },
+          "vendor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RenderedConfigResponse": {
+        "type": "object",
+        "description": "A rendered configuration.",
+        "required": [
+          "vendor",
+          "content"
+        ],
+        "properties": {
+          "config_template_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The template it came from, when it is a saved one."
+          },
+          "config_template_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "content": {
             "type": "string"
           }
         }
@@ -33946,6 +34671,13 @@
               "null"
             ]
           },
+          "vendor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The phone's vendor; an empty string clears it."
+          },
           "firmware_version": {
             "type": [
               "string",
@@ -33977,6 +34709,16 @@
               "boolean",
               "null"
             ]
+          },
+          "line_keys": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/LineKey"
+            },
+            "description": "The keys programmed on the phone, replacing what it had."
           },
           "location": {
             "type": [

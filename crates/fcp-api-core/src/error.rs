@@ -86,6 +86,20 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    /// What the error says.
+    pub fn message(&self) -> &str {
+        match self {
+            ApiError::NotFound(msg)
+            | ApiError::BadRequest(msg)
+            | ApiError::Unauthorized(msg)
+            | ApiError::Forbidden(msg)
+            | ApiError::Internal(msg)
+            | ApiError::Conflict(msg)
+            | ApiError::Gone(msg)
+            | ApiError::ServiceUnavailable(msg) => msg,
+        }
+    }
+
     /// The status this error answers with.
     pub fn status(&self) -> StatusCode {
         match self {

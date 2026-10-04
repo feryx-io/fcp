@@ -144,6 +144,9 @@ pub struct ApiState {
     /// (detected via the `X-Forwarded-Proto` header set by a reverse proxy).
     pub provisioning_require_https: bool,
 
+    /// What provisioned phones are told (`[api.provisioning]`).
+    pub provisioning: fcp_core::ApiProvisioningConfig,
+
     /// Trunk health monitoring map (populated by background health probe task).
     pub trunk_health: Option<crate::trunk_health::TrunkHealthMap>,
     /// Where the view each node has of its trunks is read from
@@ -257,6 +260,7 @@ impl ApiState {
             session_access_ttl: fcp_core::session::DEFAULT_ACCESS_TTL,
             provisioning_auth_token: None,
             provisioning_require_https: true,
+            provisioning: fcp_core::ApiProvisioningConfig::default(),
             trunk_health: None,
             trunk_reports: None,
             route_previewer: None,
@@ -371,6 +375,12 @@ impl ApiState {
     /// Set the shared token required for device auto-provisioning requests.
     pub fn with_provisioning_auth_token(mut self, token: Option<String>) -> Self {
         self.provisioning_auth_token = token;
+        self
+    }
+
+    /// What provisioned phones are told.
+    pub fn with_provisioning_config(mut self, config: fcp_core::ApiProvisioningConfig) -> Self {
+        self.provisioning = config;
         self
     }
 

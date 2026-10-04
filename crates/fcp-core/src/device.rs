@@ -32,6 +32,11 @@ pub struct Device {
     /// Device model (e.g., "Cisco 8861", "Zoiper 5", "WebRTC")
     pub model: Option<String>,
 
+    /// The phone's vendor, which with its model picks its template when
+    /// it names none (`docs/PROVISIONING.md` §5).
+    #[serde(default)]
+    pub vendor: Option<crate::config_template::PhoneVendor>,
+
     /// Firmware version
     pub firmware_version: Option<String>,
 
@@ -89,6 +94,11 @@ pub struct Device {
     /// Supported audio codecs
     pub codec_support: Vec<AudioCodec>,
 
+    /// The keys programmed on the phone, in order (`line_keys` in its
+    /// template).
+    #[serde(default)]
+    pub line_keys: Vec<LineKey>,
+
     // ===== Location & E911 =====
     /// Physical location description
     pub location: Option<String>,
@@ -142,6 +152,7 @@ impl Device {
             device_type,
             mac_address: None,
             model: None,
+            vendor: None,
             firmware_version: None,
             tenant_id,
             owner_user_id: None,
@@ -158,6 +169,7 @@ impl Device {
             supports_video: false,
             supports_blf: false,
             codec_support: vec![AudioCodec::Pcmu, AudioCodec::Pcma],
+            line_keys: Vec::new(),
             location: None,
             location_id: None,
             e911_override: None,
@@ -248,6 +260,7 @@ impl fmt::Debug for Device {
             .field("device_type", &self.device_type)
             .field("mac_address", &self.mac_address)
             .field("model", &self.model)
+            .field("vendor", &self.vendor)
             .field("firmware_version", &self.firmware_version)
             .field("tenant_id", &self.tenant_id)
             .field("owner_user_id", &self.owner_user_id)
@@ -260,6 +273,7 @@ impl fmt::Debug for Device {
             .field("supports_video", &self.supports_video)
             .field("supports_blf", &self.supports_blf)
             .field("codec_support", &self.codec_support)
+            .field("line_keys", &self.line_keys)
             .field("location", &self.location)
             .field("location_id", &self.location_id)
             .field("e911_override", &self.e911_override)
@@ -274,6 +288,68 @@ impl fmt::Debug for Device {
             .field("updated_at", &self.updated_at)
             .finish()
     }
+}
+
+/// A key programmed on a phone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct LineKey {
+    pub kind: LineKeyKind,
+    /// What it watches or dials: an extension, a number, a park slot.
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// What a key does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum LineKeyKind {
+    /// Busy lamp field: shows whether the extension is on a call, and
+    /// calls or picks it up.
+    Blf,
+    SpeedDial,
+    /// A park slot: shows whether a call is parked there.
+    Park,
+}
+
+impl LineKeyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Blf => "blf",
+            Self::SpeedDial => "speed_dial",
+            Self::Park => "park",
+        }
+    }
+}
+
+/// The most keys a device may have.
+pub const MAX_LINE_KEYS: usize = 100;
+
+/// Refuse keys a phone's configuration could not carry.
+pub fn validate_line_keys(keys: &[LineKey]) -> Result<(), String> {
+    if keys.len() > MAX_LINE_KEYS {
+        return Err(format!("a device has at most {MAX_LINE_KEYS} line keys"));
+    }
+    for (i, key) in keys.iter().enumerate() {
+        let n = i + 1;
+        let value = key.value.trim();
+        if value.is_empty() || value.len() > 128 {
+            return Err(format!("line key {n}: value must be 1 to 128 characters"));
+        }
+        let label = key.label.as_deref().unwrap_or("");
+        if label.len() > 64 {
+            return Err(format!("line key {n}: label must be at most 64 characters"));
+        }
+        if [value, label]
+            .iter()
+            .any(|s| s.chars().any(char::is_control))
+        {
+            return Err(format!("line key {n}: no control characters"));
+        }
+    }
+    Ok(())
 }
 
 /// Type of device endpoint.

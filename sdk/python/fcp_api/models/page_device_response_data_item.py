@@ -14,6 +14,7 @@ import datetime
 
 if TYPE_CHECKING:
   from ..models.e911_address_response import E911AddressResponse
+  from ..models.line_key import LineKey
 
 
 
@@ -39,12 +40,15 @@ class PageDeviceResponseDataItem:
             supports_video (bool):
             supports_blf (bool):
             codec_support (list[str]):
+            line_keys (list[LineKey]): The keys programmed on the phone, in order.
             has_provisioning_token (bool):
             enabled (bool):
             created_at (datetime.datetime):
             updated_at (datetime.datetime):
             mac_address (None | str | Unset):
             model (None | str | Unset):
+            vendor (None | str | Unset): `yealink`, `polycom`, `grandstream`, `cisco`, `fanvil` or `snom`:
+                with the model, it picks the template when the device names none.
             firmware_version (None | str | Unset):
             owner_user_id (None | str | Unset):
             sip_username (None | str | Unset): The username of the device's own credentials; the password and its
@@ -74,12 +78,14 @@ class PageDeviceResponseDataItem:
     supports_video: bool
     supports_blf: bool
     codec_support: list[str]
+    line_keys: list[LineKey]
     has_provisioning_token: bool
     enabled: bool
     created_at: datetime.datetime
     updated_at: datetime.datetime
     mac_address: None | str | Unset = UNSET
     model: None | str | Unset = UNSET
+    vendor: None | str | Unset = UNSET
     firmware_version: None | str | Unset = UNSET
     owner_user_id: None | str | Unset = UNSET
     sip_username: None | str | Unset = UNSET
@@ -102,6 +108,7 @@ class PageDeviceResponseDataItem:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.e911_address_response import E911AddressResponse # noqa: PLC0415
+        from ..models.line_key import LineKey # noqa: PLC0415
         id = self.id
 
         name = self.name
@@ -126,6 +133,13 @@ class PageDeviceResponseDataItem:
 
 
 
+        line_keys = []
+        for line_keys_item_data in self.line_keys:
+            line_keys_item = line_keys_item_data.to_dict()
+            line_keys.append(line_keys_item)
+
+
+
         has_provisioning_token = self.has_provisioning_token
 
         enabled = self.enabled
@@ -145,6 +159,12 @@ class PageDeviceResponseDataItem:
             model = UNSET
         else:
             model = self.model
+
+        vendor: None | str | Unset
+        if isinstance(self.vendor, Unset):
+            vendor = UNSET
+        else:
+            vendor = self.vendor
 
         firmware_version: None | str | Unset
         if isinstance(self.firmware_version, Unset):
@@ -249,6 +269,7 @@ class PageDeviceResponseDataItem:
             "supports_video": supports_video,
             "supports_blf": supports_blf,
             "codec_support": codec_support,
+            "line_keys": line_keys,
             "has_provisioning_token": has_provisioning_token,
             "enabled": enabled,
             "created_at": created_at,
@@ -258,6 +279,8 @@ class PageDeviceResponseDataItem:
             field_dict["mac_address"] = mac_address
         if model is not UNSET:
             field_dict["model"] = model
+        if vendor is not UNSET:
+            field_dict["vendor"] = vendor
         if firmware_version is not UNSET:
             field_dict["firmware_version"] = firmware_version
         if owner_user_id is not UNSET:
@@ -294,6 +317,7 @@ class PageDeviceResponseDataItem:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.e911_address_response import E911AddressResponse # noqa: PLC0415
+        from ..models.line_key import LineKey # noqa: PLC0415
         d = dict(src_dict)
         id = d.pop("id")
 
@@ -316,6 +340,16 @@ class PageDeviceResponseDataItem:
         supports_blf = d.pop("supports_blf")
 
         codec_support = cast(list[str], d.pop("codec_support"))
+
+
+        line_keys = []
+        _line_keys = d.pop("line_keys")
+        for line_keys_item_data in (_line_keys):
+            line_keys_item = LineKey.from_dict(line_keys_item_data)
+
+
+
+            line_keys.append(line_keys_item)
 
 
         has_provisioning_token = d.pop("has_provisioning_token")
@@ -350,6 +384,16 @@ class PageDeviceResponseDataItem:
             return cast(None | str | Unset, data)
 
         model = _parse_model(d.pop("model", UNSET))
+
+
+        def _parse_vendor(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        vendor = _parse_vendor(d.pop("vendor", UNSET))
 
 
         def _parse_firmware_version(data: object) -> None | str | Unset:
@@ -524,12 +568,14 @@ class PageDeviceResponseDataItem:
             supports_video=supports_video,
             supports_blf=supports_blf,
             codec_support=codec_support,
+            line_keys=line_keys,
             has_provisioning_token=has_provisioning_token,
             enabled=enabled,
             created_at=created_at,
             updated_at=updated_at,
             mac_address=mac_address,
             model=model,
+            vendor=vendor,
             firmware_version=firmware_version,
             owner_user_id=owner_user_id,
             sip_username=sip_username,

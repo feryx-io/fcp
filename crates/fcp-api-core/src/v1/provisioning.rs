@@ -9,20 +9,10 @@ use axum::{
 use fcp_core::storage::{DeviceStore, LineBindingStore, PhoneNumberStore};
 use fcp_core::{CredentialStore, Device, HotelingStore};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 
 const PROVISIONING_NOT_FOUND: &str = "Provisioning config not found";
 const PROVISIONING_TOKEN_HEADER: &str = "x-fcp-provisioning-token";
 const DEVICE_PROVISIONING_TOKEN_HEADER: &str = "x-fcp-device-provisioning-token";
-
-/// Simple template engine -- replaces ${variable} placeholders.
-fn render_template(template_body: &str, vars: &HashMap<String, String>) -> String {
-    let mut result = template_body.to_string();
-    for (key, value) in vars {
-        result = result.replace(&format!("${{{}}}", key), value);
-    }
-    result
-}
 
 fn provisioning_not_found() -> ApiError {
     ApiError::NotFound(PROVISIONING_NOT_FOUND.to_string())
@@ -164,7 +154,17 @@ pub async fn auto_provision(
     // but wrong per-device token" by response timing.
     authorize_device_provisioning_token(&device, &headers)?;
 
-    let config = render_device(&state, storage, &device, normalized_mac).await?;
+    let base = public_base(&state, &headers);
+    let config = render_device(
+        &state,
+        storage,
+        &device,
+        normalized_mac,
+        &fcp_core::provisioning::PhoneIdentity::default(),
+        base.as_deref(),
+        None,
+    )
+    .await?;
 
     // Return as text (could be XML, INI, etc. depending on vendor)
     Ok((
@@ -180,45 +180,135 @@ pub async fn auto_provision(
     ))
 }
 
-/// A device's configuration, rendered from its template: refused (as not
-/// found) when the device is disabled or has none.
-pub(crate) async fn render_device(
+/// Where phones reach this admin: `[api.provisioning] public_url`, else
+/// `[api.sso] public_url`, else the host the request came to, over HTTPS.
+pub(crate) fn public_base(state: &ApiState, headers: &HeaderMap) -> Option<String> {
+    let configured = state
+        .provisioning
+        .public_url
+        .as_deref()
+        .map(|u| u.trim().trim_end_matches('/').to_string())
+        .filter(|u| !u.is_empty());
+    if configured.is_some() {
+        return configured;
+    }
+    if let Some(sso) = state.sso.as_ref() {
+        return Some(sso.public_url.trim_end_matches('/').to_string());
+    }
+    let host = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get(header::HOST))
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.split(',').next())
+        .map(str::trim)
+        .filter(|h| {
+            !h.is_empty()
+                && h.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))
+        })?;
+    Some(format!("https://{host}"))
+}
+
+/// The template a device gets: the one it names, else one picked by its
+/// vendor and model (`docs/PROVISIONING.md` §5). `None` when there is none.
+pub(crate) async fn choose_template(
+    storage: &fcp_core::DynStorage,
+    device: &Device,
+    hint: &fcp_core::provisioning::PhoneIdentity,
+) -> Result<Option<fcp_core::config_template::ConfigTemplate>, ApiError> {
+    let template_store = storage
+        .config_template_store()
+        .ok_or_else(|| ApiError::Internal("Config template store not configured".into()))?;
+    if let Some(id) = device.config_template_id.as_deref() {
+        let Ok(id) = id.parse::<fcp_core::ConfigTemplateId>() else {
+            return Ok(None);
+        };
+        return Ok(template_store
+            .get_config_template(&id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .filter(|t| t.tenant_id == device.tenant_id));
+    }
+    let templates = template_store
+        .list_config_templates(&device.tenant_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let vendor = device.vendor.or(hint.vendor).or_else(|| {
+        device
+            .mac_address
+            .as_deref()
+            .and_then(fcp_core::provisioning::vendor_of_mac)
+    });
+    let model = device.model.as_deref().or(hint.model.as_deref());
+    Ok(fcp_core::config_template::pick_template(&templates, vendor, model).cloned())
+}
+
+/// Everything a device's template is rendered with. Refused (as not
+/// found) when the device is disabled or its owner may not use services.
+pub(crate) async fn device_context(
     state: &ApiState,
     storage: &fcp_core::DynStorage,
     device: &Device,
     normalized_mac: String,
-) -> Result<String, ApiError> {
+    hint: &fcp_core::provisioning::PhoneIdentity,
+    base: Option<&str>,
+    key: Option<&str>,
+) -> Result<fcp_core::config_template::TemplateContext, ApiError> {
+    use fcp_core::config_template::{TemplateAccount, TemplateContext, TemplateLineKey};
+    use fcp_core::TenantStore;
     if !device.enabled {
         return Err(provisioning_not_found());
     }
+    let internal = |e: anyhow::Error| ApiError::Internal(e.to_string());
+    let config = &state.provisioning;
+    let mut c = TemplateContext {
+        mac_address: normalized_mac,
+        device_name: device.name.clone(),
+        vendor: device
+            .vendor
+            .or(hint.vendor)
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        model: device
+            .model
+            .clone()
+            .or_else(|| hint.model.clone())
+            .unwrap_or_default(),
+        firmware_version: device
+            .firmware_version
+            .clone()
+            .or_else(|| hint.firmware.clone())
+            .unwrap_or_default(),
+        sip_server: config
+            .sip_server
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| state.realm.clone()),
+        sip_port: config.port(),
+        sip_transport: config.transport().to_string(),
+        ntp_server: config.ntp_server().to_string(),
+        ..Default::default()
+    };
 
-    // Find the config template
-    let template_id = device
-        .config_template_id
-        .as_ref()
-        .ok_or_else(provisioning_not_found)?;
-
-    let template_id = template_id
-        .parse::<fcp_core::ConfigTemplateId>()
-        .map_err(|_| provisioning_not_found())?;
-
-    let template_store = storage
-        .config_template_store()
-        .ok_or_else(|| ApiError::Internal("Config template store not configured".into()))?;
-
-    let template = template_store
-        .get_config_template(&template_id)
+    let tenant = storage
+        .get_tenant(&device.tenant_id)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(provisioning_not_found)?;
-    if template.tenant_id != device.tenant_id {
-        return Err(provisioning_not_found());
+        .map_err(internal)?;
+    c.set_timezone(tenant.as_ref().and_then(|t| t.calling.timezone.as_deref()));
+    let key = match key {
+        Some(k) => Some(k.to_string()),
+        None => match storage.provisioning_store() {
+            Some(store) => store
+                .get_provisioning_key(&device.tenant_id)
+                .await
+                .map_err(internal)?
+                .map(|k| k.key),
+            None => None,
+        },
+    };
+    if let (Some(base), Some(key)) = (base, key) {
+        c.provisioning_url = format!("{base}/provision/{key}/");
     }
-
-    // Build variable map
-    let mut vars = HashMap::new();
-    vars.insert("mac_address".to_string(), normalized_mac);
-    vars.insert("device_name".to_string(), device.name.clone());
 
     // The owner, when the device has one: its credentials unless the
     // device has its own (`docs/ENTERPRISE_CALLING.md` §3.8).
@@ -227,7 +317,7 @@ pub(crate) async fn render_device(
             storage
                 .get_user_by_id(owner_id)
                 .await
-                .map_err(|e| ApiError::Internal(e.to_string()))?
+                .map_err(internal)?
                 .filter(|owner| owner.tenant_id == device.tenant_id && owner.may_use_services())
                 .ok_or_else(provisioning_not_found)?,
         ),
@@ -239,57 +329,35 @@ pub(crate) async fn render_device(
             .aor_user()
             .map(str::to_string)
             .unwrap_or_else(|| auth_username.clone());
-        let sip_uri = device
+        c.sip_uri = device
             .sip_uri
             .clone()
             .unwrap_or_else(|| format!("sip:{}@{}", account, state.realm));
-        vars.insert("sip_uri".to_string(), sip_uri);
-        vars.insert("sip_username".to_string(), account);
-        vars.insert("sip_auth_username".to_string(), auth_username.clone());
-        vars.insert("sip_auth_ha1_hash".to_string(), ha1.clone());
-        if let Some(ref sip_password) = device.sip_provisioning_password {
-            vars.insert("sip_password".to_string(), sip_password.clone());
-            vars.insert(
-                "sip_provisioning_password".to_string(),
-                sip_password.clone(),
-            );
-        }
+        c.sip_username = account;
+        c.sip_auth_username = auth_username.clone();
+        c.sip_auth_ha1_hash = ha1.clone();
+        c.sip_password = device.sip_provisioning_password.clone().unwrap_or_default();
     } else if let Some(ref owner) = owner {
-        let sip_ha1_hash = owner
+        c.sip_auth_ha1_hash = owner
             .sip_ha1_hash
             .clone()
             .ok_or_else(provisioning_not_found)?;
-        let sip_uri = device
+        c.sip_uri = device
             .sip_uri
             .clone()
             .unwrap_or_else(|| format!("sip:{}@{}", owner.sip_name(), state.realm));
-
-        vars.insert("sip_uri".to_string(), sip_uri);
         // The phone's account is the owner's SIP name, which a rename
-        // keeps: the HA1 below is computed over it.
-        vars.insert("sip_username".to_string(), owner.sip_name().to_string());
-        vars.insert(
-            "sip_auth_username".to_string(),
-            owner.sip_name().to_string(),
-        );
-        vars.insert("sip_auth_ha1_hash".to_string(), sip_ha1_hash);
-        if let Some(ref sip_password) = owner.sip_provisioning_password {
-            vars.insert("sip_password".to_string(), sip_password.clone());
-            vars.insert(
-                "sip_provisioning_password".to_string(),
-                sip_password.clone(),
-            );
-        }
+        // keeps: the HA1 is computed over it.
+        c.sip_username = owner.sip_name().to_string();
+        c.sip_auth_username = owner.sip_name().to_string();
+        c.sip_password = owner.sip_provisioning_password.clone().unwrap_or_default();
     }
+    c.sip_provisioning_password = c.sip_password.clone();
     if let Some(ref owner) = owner {
-        vars.insert("owner_username".to_string(), owner.username.clone());
-        if let Some(ref display_name) = owner.display_name {
-            vars.insert("owner_display_name".to_string(), display_name.clone());
-        }
-        if let Some(ref email) = owner.email {
-            vars.insert("owner_email".to_string(), email.clone());
-        }
-        vars.insert("owner_user_id".to_string(), owner.id.to_string());
+        c.owner_username = owner.username.clone();
+        c.owner_display_name = owner.display_name.clone().unwrap_or_default();
+        c.owner_email = owner.email.clone().unwrap_or_default();
+        c.owner_user_id = owner.id.to_string();
     }
 
     // Who the phone is for now: its hoteling guest, else its owner, so a
@@ -298,7 +366,7 @@ pub(crate) async fn render_device(
         storage
             .hoteling_session_for_device(&device.id)
             .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .map_err(internal)?
     } else {
         None
     };
@@ -306,75 +374,133 @@ pub(crate) async fn render_device(
         (Some(session), _) => storage
             .get_user_by_id(&session.user_id)
             .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .map_err(internal)?
             // A suspended guest's session lends the phone nothing.
             .filter(|guest| guest.may_use_services()),
         (None, Some(owner)) => Some(owner.clone()),
         (None, None) => None,
     };
     if let Some(user) = effective {
-        vars.insert("effective_user_username".to_string(), user.username.clone());
-        vars.insert(
-            "effective_user_display_name".to_string(),
-            user.display_name
-                .clone()
-                .unwrap_or_else(|| user.username.clone()),
-        );
-        if let Some(extension) = user.extension {
-            vars.insert("effective_user_extension".to_string(), extension);
-        }
-        vars.insert("effective_user_id".to_string(), user.id.to_string());
+        c.effective_user_username = user.username.clone();
+        c.effective_user_display_name = user
+            .display_name
+            .clone()
+            .unwrap_or_else(|| user.username.clone());
+        c.effective_user_extension = user.extension.clone().unwrap_or_default();
+        c.effective_user_id = user.id.to_string();
     }
-    vars.insert("hoteling_guest".to_string(), session.is_some().to_string());
+    c.hoteling_guest = session.is_some();
+
+    if !c.sip_username.is_empty() {
+        c.accounts.push(TemplateAccount {
+            index: 1,
+            label: if c.effective_user_extension.is_empty() {
+                device.name.clone()
+            } else {
+                c.effective_user_extension.clone()
+            },
+            display_name: if c.effective_user_display_name.is_empty() {
+                c.sip_username.clone()
+            } else {
+                c.effective_user_display_name.clone()
+            },
+            user_name: c.sip_username.clone(),
+            auth_name: c.sip_auth_username.clone(),
+            password: c.sip_password.clone(),
+            shared: false,
+            appearances: 0,
+        });
+    }
 
     // A shared line the device is on renders as its second account
     // (`docs/ENTERPRISE_CALLING.md` §3.9): the line's number as the
     // address, the device's credentials, the line's appearances as keys.
-    // A device on none gets the account turned off, so a template never
-    // shows a placeholder.
+    // A device on none gets the account turned off.
     let shared = storage
         .list_line_bindings_by_device(&device.id)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .map_err(internal)?
         .into_iter()
         .find(|b| b.shared && b.tenant_id == device.tenant_id);
     let shared_number = match &shared {
         Some(binding) => storage
             .get_phone_number(&binding.phone_number_id)
             .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .map_err(internal)?
             .map(|n| n.e164),
         None => None,
     };
     match (shared, shared_number) {
         (Some(binding), Some(number)) => {
-            vars.insert("shared_line_enabled".to_string(), "1".to_string());
-            vars.insert("shared_line_yes_no".to_string(), "Yes".to_string());
-            vars.insert("shared_line_number".to_string(), number);
-            vars.insert(
-                "shared_line_appearances".to_string(),
-                binding.max_appearances.to_string(),
-            );
+            c.shared_line_enabled = 1;
+            c.shared_line_yes_no = "Yes".to_string();
+            c.shared_line_number = number.clone();
+            c.shared_line_appearances = binding.max_appearances.into();
+            if !c.sip_username.is_empty() {
+                c.accounts.push(TemplateAccount {
+                    index: c.accounts.len() as u32 + 1,
+                    label: number.clone(),
+                    display_name: number.clone(),
+                    user_name: number,
+                    auth_name: c.sip_auth_username.clone(),
+                    password: c.sip_password.clone(),
+                    shared: true,
+                    appearances: binding.max_appearances.into(),
+                });
+            }
         }
         _ => {
-            vars.insert("shared_line_enabled".to_string(), "0".to_string());
-            vars.insert("shared_line_yes_no".to_string(), "No".to_string());
-            vars.insert("shared_line_number".to_string(), String::new());
-            vars.insert("shared_line_appearances".to_string(), "0".to_string());
+            c.shared_line_enabled = 0;
+            c.shared_line_yes_no = "No".to_string();
+            c.shared_line_appearances = 0;
         }
     }
 
-    // Add SIP server info
-    vars.insert("sip_server".to_string(), state.realm.clone());
-    vars.insert("sip_port".to_string(), "5060".to_string());
+    c.line_keys = device
+        .line_keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| TemplateLineKey {
+            index: i as u32 + 1,
+            kind: k.kind.as_str().to_string(),
+            value: k.value.clone(),
+            label: k.label.clone().unwrap_or_else(|| k.value.clone()),
+        })
+        .collect();
+    Ok(c)
+}
 
-    if let Some(ref model) = device.model {
-        vars.insert("model".to_string(), model.clone());
+/// A device's configuration, rendered from its template: refused (as not
+/// found) when the device is disabled, has no template, or its template
+/// fails.
+pub(crate) async fn render_device(
+    state: &ApiState,
+    storage: &fcp_core::DynStorage,
+    device: &Device,
+    normalized_mac: String,
+    hint: &fcp_core::provisioning::PhoneIdentity,
+    base: Option<&str>,
+    key: Option<&str>,
+) -> Result<String, ApiError> {
+    if !device.enabled {
+        return Err(provisioning_not_found());
     }
-
-    // Render template
-    let config = render_template(&template.template_body, &vars);
-    Ok(config)
+    let template = choose_template(storage, device, hint)
+        .await?
+        .ok_or_else(provisioning_not_found)?;
+    let context = device_context(state, storage, device, normalized_mac, hint, base, key).await?;
+    match fcp_core::config_template::render(&template.template_body, template.vendor, &context) {
+        Ok(body) => Ok(body),
+        Err(e) => {
+            tracing::warn!(
+                device_id = %device.id,
+                template = %template.name,
+                error = %e,
+                "A device's template failed to render"
+            );
+            Err(provisioning_not_found())
+        }
+    }
 }
 
 // ---- The tenant's provisioning URL (`docs/PROVISIONING.md`, phase 7a) ----
@@ -445,6 +571,7 @@ pub async fn serve_file(
         &file,
         fcp_core::provisioning::is_polycom(user_agent.as_deref()),
     );
+    let base = public_base(&state, &headers);
     let mut fetch = fcp_core::provisioning::DeviceFetch {
         tenant_id,
         device_id: None,
@@ -471,8 +598,38 @@ pub async fn serve_file(
             Some(RequestedFile::Device { mac, kind }) => (mac, kind, false),
         };
         fetch.mac_address = Some(mac.clone());
+        let hint = fcp_core::provisioning::PhoneIdentity::of_request(
+            &file,
+            user_agent.as_deref(),
+            Some(&mac),
+        );
         let device = match storage.get_device_by_mac_address(&mac).await {
             Ok(Some(d)) if d.tenant_id == tenant_id => d,
+            // No device has the MAC: a phone to be claimed, if it fetches
+            // from where the tenant's phones may (`docs/PROVISIONING.md` §6).
+            Ok(None) => {
+                let ip = address.as_deref().and_then(|a| a.parse().ok());
+                if !settings.allows(ip) {
+                    return Fetched::Refused("unknown_device", StatusCode::NOT_FOUND);
+                }
+                let now = std::time::SystemTime::now();
+                let pending = fcp_core::provisioning::PendingDevice {
+                    tenant_id,
+                    mac_address: mac.clone(),
+                    first_seen: now,
+                    last_seen: now,
+                    address: address.clone(),
+                    user_agent: user_agent.clone(),
+                    vendor: hint.vendor,
+                    model: hint.model.clone(),
+                    firmware: hint.firmware.clone(),
+                    fetches: 1,
+                };
+                if let Err(e) = store.note_pending_device(&pending).await {
+                    tracing::warn!(error = %e, "Could not note a pending phone");
+                }
+                return Fetched::Refused("pending", StatusCode::NOT_FOUND);
+            }
             _ => return Fetched::Refused("unknown_device", StatusCode::NOT_FOUND),
         };
         fetch.device_id = Some(device.id);
@@ -502,7 +659,17 @@ pub async fn serve_file(
             }
             return Fetched::Served(polycom_master(&mac), kind.content_type());
         }
-        match render_device(&state, storage, &device, mac).await {
+        match render_device(
+            &state,
+            storage,
+            &device,
+            mac,
+            &hint,
+            base.as_deref(),
+            Some(&key),
+        )
+        .await
+        {
             Ok(body) => Fetched::Served(body, kind.content_type()),
             Err(_) => Fetched::Refused("not_served", StatusCode::NOT_FOUND),
         }
@@ -730,31 +897,6 @@ pub async fn device_fetches(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_render_template() {
-        let template = "server=${sip_server}\nuser=${sip_username}\nmac=${mac_address}";
-        let mut vars = HashMap::new();
-        vars.insert("sip_server".to_string(), "pbx.example.com".to_string());
-        vars.insert("sip_username".to_string(), "alice".to_string());
-        vars.insert("mac_address".to_string(), "001122334455".to_string());
-
-        let result = render_template(template, &vars);
-        assert_eq!(
-            result,
-            "server=pbx.example.com\nuser=alice\nmac=001122334455"
-        );
-    }
-
-    #[test]
-    fn test_render_template_missing_vars_left_as_is() {
-        let template = "server=${sip_server}\npassword=${password}";
-        let mut vars = HashMap::new();
-        vars.insert("sip_server".to_string(), "pbx.example.com".to_string());
-
-        let result = render_template(template, &vars);
-        assert_eq!(result, "server=pbx.example.com\npassword=${password}");
-    }
 
     #[test]
     fn test_request_is_https() {
