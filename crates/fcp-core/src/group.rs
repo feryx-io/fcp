@@ -35,6 +35,10 @@ pub struct Group {
     /// sign-in through one adds the user to this group or takes them out.
     #[serde(default)]
     pub idp_group: Option<String>,
+    /// The tenant's SCIM provisioner's id for the group (`externalId`,
+    /// `docs/SCIM.md`).
+    #[serde(default)]
+    pub scim_external_id: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -50,6 +54,7 @@ impl Group {
             description: None,
             role: None,
             idp_group: None,
+            scim_external_id: None,
             created_at: now,
             updated_at: now,
         }

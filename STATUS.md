@@ -1780,6 +1780,13 @@ Phase 6a done (v0.25.319): SCIM users (`docs/SCIM.md`).
   only those.
 - Next, 6b: SCIM groups and the provider guides.
 
+Phase 6b done (v0.25.320): SCIM groups (`docs/SCIM.md`).
+- `/scim/v2/Groups`: a provisioner makes groups, fills and empties them
+  the way Entra ID and Okta send it, and can give a group a role.
+- Setup guides for Entra ID and Okta.
+- Phase 6 (SCIM 2.0) is complete; phase 7, provisioning that phones can
+  use, is next.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

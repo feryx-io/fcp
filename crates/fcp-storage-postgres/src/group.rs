@@ -11,7 +11,7 @@ use sqlx::Row;
 use crate::{datetime_to_system_time, system_time_to_datetime, PostgresStorage};
 
 const GROUP_COLS: &str =
-    "g.id, g.tenant_id, g.name, g.description, g.role, g.idp_group, g.created_at, g.updated_at";
+    "g.id, g.tenant_id, g.name, g.description, g.role, g.idp_group, g.scim_external_id, g.created_at, g.updated_at";
 
 fn role_to_str(role: UserRole) -> String {
     serde_json::to_value(role)
@@ -30,6 +30,7 @@ fn row_to_group(row: &sqlx::postgres::PgRow) -> anyhow::Result<Group> {
             .try_get::<Option<String>, _>("role")?
             .and_then(|r| UserRole::from_str(&r).ok()),
         idp_group: row.try_get("idp_group")?,
+        scim_external_id: row.try_get("scim_external_id")?,
         created_at: datetime_to_system_time(row.try_get::<DateTime<Utc>, _>("created_at")?),
         updated_at: datetime_to_system_time(row.try_get::<DateTime<Utc>, _>("updated_at")?),
     })
@@ -81,13 +82,14 @@ impl GroupStore for PostgresStorage {
         }
         sqlx::query(
             "INSERT INTO groups (id, tenant_id, name, description, role, idp_group,
-                                 created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                                 created_at, updated_at, scim_external_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
                  role = EXCLUDED.role,
                  idp_group = EXCLUDED.idp_group,
+                 scim_external_id = EXCLUDED.scim_external_id,
                  updated_at = EXCLUDED.updated_at",
         )
         .bind(group.id.to_string())
@@ -98,6 +100,7 @@ impl GroupStore for PostgresStorage {
         .bind(&group.idp_group)
         .bind(system_time_to_datetime(group.created_at))
         .bind(system_time_to_datetime(group.updated_at))
+        .bind(&group.scim_external_id)
         .execute(self.writes())
         .await?;
         Ok(())

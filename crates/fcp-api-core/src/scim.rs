@@ -33,6 +33,9 @@ pub const USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:User";
 pub const ENTERPRISE_SCHEMA: &str = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
 /// FCP's own attributes of a user: extension, role, location.
 pub const FCP_USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:extension:fcp:2.0:User";
+pub const GROUP_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:Group";
+/// FCP's own attribute of a group: the role its members hold.
+pub const FCP_GROUP_SCHEMA: &str = "urn:ietf:params:scim:schemas:extension:fcp:2.0:Group";
 const LIST_SCHEMA: &str = "urn:ietf:params:scim:api:messages:2.0:ListResponse";
 const PATCH_SCHEMA: &str = "urn:ietf:params:scim:api:messages:2.0:PatchOp";
 const ERROR_SCHEMA: &str = "urn:ietf:params:scim:api:messages:2.0:Error";
@@ -50,6 +53,14 @@ pub fn router() -> Router<ApiState> {
                 .put(replace_user)
                 .patch(patch_user)
                 .delete(delete_user),
+        )
+        .route("/Groups", get(list_groups).post(create_group))
+        .route(
+            "/Groups/:id",
+            get(get_group)
+                .put(replace_group)
+                .patch(patch_group)
+                .delete(delete_group),
         )
         .route("/ServiceProviderConfig", get(service_provider_config))
         .route("/ResourceTypes", get(resource_types))
@@ -572,6 +583,8 @@ struct ListQuery {
     filter: Option<String>,
     start_index: Option<usize>,
     count: Option<usize>,
+    /// `members`, as Entra ID asks for a group without them.
+    excluded_attributes: Option<String>,
 }
 
 /// One `attribute eq "value"` comparison, the filters provisioners send.
@@ -817,6 +830,20 @@ pub fn apply_patch(doc: &mut Value, patch: &Value) -> Result<(), ScimError> {
                 }
             }
             ("add" | "replace", Some(path)) => set_path(doc, path, value, &kind)?,
+            // Entra ID removes members as a value list on the path.
+            ("remove", Some(path)) if value.is_array() => {
+                let gone: Vec<Value> = value
+                    .as_array()
+                    .expect("an array")
+                    .iter()
+                    .filter_map(|v| v.get("value").cloned())
+                    .collect();
+                let (urn, attr) = split_path(path);
+                let map = container(doc, urn)?;
+                if let Some(Value::Array(list)) = map.get_mut(attr) {
+                    list.retain(|i| !i.get("value").is_some_and(|v| gone.contains(v)));
+                }
+            }
             ("remove", Some(path)) => remove_path(doc, path)?,
             ("remove", None) => {
                 return Err(ScimError::bad("noTarget", "A remove names its path"));
@@ -839,7 +866,7 @@ fn split_path(path: &str) -> (Option<&str>, &str) {
     // last colon.
     if path.starts_with("urn:") {
         if let Some((urn, attr)) = path.rsplit_once(':') {
-            if urn == ENTERPRISE_SCHEMA || urn == FCP_USER_SCHEMA {
+            if urn == ENTERPRISE_SCHEMA || urn == FCP_USER_SCHEMA || urn == FCP_GROUP_SCHEMA {
                 return (Some(urn), attr);
             }
         }
@@ -1007,6 +1034,407 @@ fn parse_value_path(path: &str) -> Option<(&str, (String, String), Option<&str>)
     Some((attr, (fattr, fvalue), sub))
 }
 
+// ---- Groups ----
+
+fn group_version(group: &fcp_core::group::Group) -> String {
+    format!("W/\"{}\"", millis(group.updated_at))
+}
+
+/// A group as a SCIM resource; its members unless left out.
+async fn group_resource(
+    storage: &fcp_core::DynStorage,
+    group: &fcp_core::group::Group,
+    with_members: bool,
+) -> Result<Value, ScimError> {
+    let mut r = json!({
+        "schemas": [GROUP_SCHEMA, FCP_GROUP_SCHEMA],
+        "id": group.id.to_string(),
+        "displayName": group.name,
+        "meta": {
+            "resourceType": "Group",
+            "created": rfc3339(group.created_at),
+            "lastModified": rfc3339(group.updated_at),
+            "location": format!("/scim/v2/Groups/{}", group.id),
+            "version": group_version(group),
+        },
+        FCP_GROUP_SCHEMA: {},
+    });
+    if let Some(id) = &group.scim_external_id {
+        r["externalId"] = json!(id);
+    }
+    if let Some(role) = group.role {
+        r[FCP_GROUP_SCHEMA]["role"] = json!(role_str(role));
+    }
+    if with_members {
+        let store = groups(storage)?;
+        let mut members = Vec::new();
+        for m in store.list_members(&group.id).await? {
+            if let Some(user) = storage.get_user_by_id(&m.user_id).await? {
+                members.push(json!({
+                    "value": user.id.to_string(),
+                    "display": user.username,
+                    "$ref": format!("/scim/v2/Users/{}", user.id),
+                }));
+            }
+        }
+        r["members"] = Value::Array(members);
+    }
+    Ok(r)
+}
+
+fn groups(
+    storage: &fcp_core::DynStorage,
+) -> Result<&std::sync::Arc<dyn fcp_core::group::GroupStore>, ScimError> {
+    storage.group_store().ok_or_else(|| {
+        ScimError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            None,
+            "Groups are not kept here",
+        )
+    })
+}
+
+async fn found_group(
+    storage: &fcp_core::DynStorage,
+    tenant: &fcp_core::TenantId,
+    id: &str,
+) -> Result<fcp_core::group::Group, ScimError> {
+    let gone = || ScimError::not_found(format!("Group {id} not found"));
+    let group_id: fcp_core::GroupId = id.parse().map_err(|_| gone())?;
+    groups(storage)?
+        .get_group(&group_id)
+        .await?
+        .filter(|g| g.tenant_id == *tenant)
+        .ok_or_else(gone)
+}
+
+fn check_group_if_match(
+    headers: &HeaderMap,
+    group: &fcp_core::group::Group,
+) -> Result<(), ScimError> {
+    let Some(wanted) = headers.get(header::IF_MATCH).and_then(|v| v.to_str().ok()) else {
+        return Ok(());
+    };
+    let current = group_version(group);
+    if wanted
+        .split(',')
+        .map(str::trim)
+        .any(|w| w == "*" || w.trim_start_matches("W/") == current.trim_start_matches("W/"))
+    {
+        Ok(())
+    } else {
+        Err(ScimError::new(
+            StatusCode::PRECONDITION_FAILED,
+            None,
+            format!("The group has changed; its version is {current}"),
+        ))
+    }
+}
+
+async fn group_response(
+    storage: &fcp_core::DynStorage,
+    status: StatusCode,
+    group: &fcp_core::group::Group,
+) -> ScimResult {
+    let mut response = scim_json(
+        status,
+        &group_resource(storage, group, true).await?,
+        Some(&group_version(group)),
+    );
+    if status == StatusCode::CREATED {
+        if let Ok(location) = HeaderValue::from_str(&format!("/scim/v2/Groups/{}", group.id)) {
+            response.headers_mut().insert(header::LOCATION, location);
+        }
+    }
+    Ok(response)
+}
+
+/// What a group document says: its name, the provisioner's id, its role
+/// when FCP's extension is sent, and its members (users of the tenant).
+struct DescribedGroup {
+    name: String,
+    external_id: Option<String>,
+    role: Option<Option<UserRole>>,
+    members: Vec<UserId>,
+}
+
+async fn describe_group(
+    storage: &fcp_core::DynStorage,
+    tenant: &fcp_core::TenantId,
+    r: &Value,
+) -> Result<DescribedGroup, ScimError> {
+    let name = str_of(r.get("displayName"))
+        .ok_or_else(|| ScimError::bad("invalidValue", "displayName is required"))?;
+    let role =
+        match r.get(FCP_GROUP_SCHEMA) {
+            None | Some(Value::Null) => None,
+            Some(ext) => Some(match str_of(ext.get("role")) {
+                None => None,
+                Some(role) => Some(UserRole::from_str(&role).map_err(|_| {
+                    ScimError::bad("invalidValue", format!("Unknown role '{role}'"))
+                })?),
+            }),
+        };
+    let mut members = Vec::new();
+    if let Some(list) = r.get("members").and_then(Value::as_array) {
+        for m in list {
+            let Some(id) = str_of(m.get("value")) else {
+                continue;
+            };
+            let user = match id.parse::<UserId>() {
+                Ok(user_id) => storage.get_user_by_id(&user_id).await?,
+                Err(_) => None,
+            }
+            .filter(|u| u.tenant_id == *tenant && !u.is_deprovisioned())
+            .ok_or_else(|| {
+                ScimError::bad("invalidValue", format!("No user {id} to be a member"))
+            })?;
+            if !members.contains(&user.id) {
+                members.push(user.id);
+            }
+        }
+    }
+    Ok(DescribedGroup {
+        name,
+        external_id: str_of(r.get("externalId")),
+        role,
+        members,
+    })
+}
+
+/// Make the group's members exactly `wanted`, announcing each change.
+async fn set_members(
+    state: &ApiState,
+    storage: &fcp_core::DynStorage,
+    group: &fcp_core::group::Group,
+    wanted: &[UserId],
+) -> Result<(), ScimError> {
+    let store = groups(storage)?;
+    let now: Vec<UserId> = store
+        .list_members(&group.id)
+        .await?
+        .into_iter()
+        .map(|m| m.user_id)
+        .collect();
+    for user_id in wanted.iter().filter(|u| !now.contains(u)) {
+        store
+            .add_member(&fcp_core::group::GroupMember {
+                group_id: group.id,
+                user_id: *user_id,
+                tenant_id: group.tenant_id,
+                added_at: SystemTime::now(),
+            })
+            .await?;
+        if let Some(user) = storage.get_user_by_id(user_id).await? {
+            crate::v1::groups::membership_changed(state, &user).await;
+        }
+    }
+    for user_id in now.iter().filter(|u| !wanted.contains(u)) {
+        store.remove_member(&group.id, user_id).await?;
+        if let Some(user) = storage.get_user_by_id(user_id).await? {
+            crate::v1::groups::membership_changed(state, &user).await;
+        }
+    }
+    Ok(())
+}
+
+/// Write a group document over `group` (or a new one): checked, stored,
+/// its members set.
+async fn write_group(
+    state: &ApiState,
+    storage: &fcp_core::DynStorage,
+    mut group: fcp_core::group::Group,
+    doc: &Value,
+) -> Result<fcp_core::group::Group, ScimError> {
+    let d = describe_group(storage, &group.tenant_id, doc).await?;
+    let store = groups(storage)?;
+    let siblings = store.list_groups(&group.tenant_id).await?;
+    if siblings
+        .iter()
+        .any(|g| g.id != group.id && g.name.eq_ignore_ascii_case(d.name.trim()))
+    {
+        return Err(ScimError::uniqueness(format!(
+            "displayName '{}' is taken",
+            d.name
+        )));
+    }
+    if let Some(ext) = &d.external_id {
+        if siblings
+            .iter()
+            .any(|g| g.id != group.id && g.scim_external_id.as_deref() == Some(ext))
+        {
+            return Err(ScimError::uniqueness(format!(
+                "externalId '{ext}' is another group's"
+            )));
+        }
+    }
+    group.name = d.name;
+    group.scim_external_id = d.external_id;
+    if let Some(role) = d.role {
+        group.role = role;
+    }
+    group.updated_at = SystemTime::now();
+    let group = group
+        .normalized()
+        .map_err(|e| ScimError::bad("invalidValue", e))?;
+    store.put_group(&group).await?;
+    set_members(state, storage, &group, &d.members).await?;
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "group".to_string(),
+            entity_id: group.id.to_string(),
+            tenant_id: group.tenant_id,
+            timestamp: SystemTime::now(),
+        }))
+        .await;
+    Ok(group)
+}
+
+/// POST /scim/v2/Groups
+async fn create_group(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    body: Bytes,
+) -> ScimResult {
+    let tenant = provisioner(&state, &identity, &tenant)?;
+    let storage = storage(&state)?;
+    let doc = parse_body(&body)?;
+    let group = write_group(
+        &state,
+        storage,
+        fcp_core::group::Group::new(tenant, String::new()),
+        &doc,
+    )
+    .await?;
+    tracing::info!(event = "scim_group_created", group = %group.name, tenant_id = %tenant, "Group provisioned by SCIM");
+    group_response(storage, StatusCode::CREATED, &group).await
+}
+
+/// GET /scim/v2/Groups/:id
+async fn get_group(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    Path(id): Path<String>,
+    Query(q): Query<ListQuery>,
+) -> ScimResult {
+    let tenant = provisioner(&state, &identity, &tenant)?;
+    let storage = storage(&state)?;
+    let group = found_group(storage, &tenant, &id).await?;
+    let with_members = !excludes_members(&q);
+    Ok(scim_json(
+        StatusCode::OK,
+        &group_resource(storage, &group, with_members).await?,
+        Some(&group_version(&group)),
+    ))
+}
+
+fn excludes_members(q: &ListQuery) -> bool {
+    q.excluded_attributes.as_deref().is_some_and(|a| {
+        a.split(',')
+            .any(|x| x.trim().eq_ignore_ascii_case("members"))
+    })
+}
+
+/// GET /scim/v2/Groups
+async fn list_groups(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    Query(q): Query<ListQuery>,
+) -> ScimResult {
+    let tenant = provisioner(&state, &identity, &tenant)?;
+    let storage = storage(&state)?;
+    let filter = q.filter.as_deref().map(parse_filter).transpose()?;
+    let with_members = !excludes_members(&q);
+    let mut resources = Vec::new();
+    for g in groups(storage)?.list_groups(&tenant).await? {
+        let keep = match &filter {
+            None => true,
+            Some(Filter::DisplayName(v)) => g.name.eq_ignore_ascii_case(v),
+            Some(Filter::ExternalId(v)) => g.scim_external_id.as_deref() == Some(v.as_str()),
+            Some(Filter::Id(v)) => g.id.to_string() == *v,
+            Some(_) => {
+                return Err(ScimError::bad(
+                    "invalidFilter",
+                    "Groups are filtered by displayName, externalId or id",
+                ))
+            }
+        };
+        if keep {
+            resources.push(group_resource(storage, &g, with_members).await?);
+        }
+    }
+    Ok(list_response(resources, &q))
+}
+
+/// PUT /scim/v2/Groups/:id
+async fn replace_group(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ScimResult {
+    let tenant = provisioner(&state, &identity, &tenant)?;
+    let storage = storage(&state)?;
+    let group = found_group(storage, &tenant, &id).await?;
+    check_group_if_match(&headers, &group)?;
+    let group = write_group(&state, storage, group, &parse_body(&body)?).await?;
+    group_response(storage, StatusCode::OK, &group).await
+}
+
+/// PATCH /scim/v2/Groups/:id — members added and removed the way Entra ID
+/// and Okta send them, or the name.
+async fn patch_group(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ScimResult {
+    let tenant = provisioner(&state, &identity, &tenant)?;
+    let storage = storage(&state)?;
+    let group = found_group(storage, &tenant, &id).await?;
+    check_group_if_match(&headers, &group)?;
+    let mut doc = group_resource(storage, &group, true).await?;
+    apply_patch(&mut doc, &parse_body(&body)?)?;
+    let group = write_group(&state, storage, group, &doc).await?;
+    group_response(storage, StatusCode::OK, &group).await
+}
+
+/// DELETE /scim/v2/Groups/:id — the group goes; its members keep their
+/// own roles.
+async fn delete_group(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> ScimResult {
+    let tenant = provisioner(&state, &identity, &tenant)?;
+    let storage = storage(&state)?;
+    let group = found_group(storage, &tenant, &id).await?;
+    check_group_if_match(&headers, &group)?;
+    let members: Vec<UserId> = groups(storage)?
+        .list_members(&group.id)
+        .await?
+        .into_iter()
+        .map(|m| m.user_id)
+        .collect();
+    groups(storage)?.delete_group(&group.id).await?;
+    for user_id in members {
+        if let Some(user) = storage.get_user_by_id(&user_id).await? {
+            crate::v1::groups::membership_changed(&state, &user).await;
+        }
+    }
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 // ---- Discovery ----
 
 async fn service_provider_config() -> Response {
@@ -1046,7 +1474,16 @@ async fn resource_types() -> Response {
         ],
         "meta": { "resourceType": "ResourceType", "location": "/scim/v2/ResourceTypes/User" },
     });
-    list_response(vec![user], &ListQuery::default())
+    let group = json!({
+        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
+        "id": "Group",
+        "name": "Group",
+        "endpoint": "/Groups",
+        "schema": GROUP_SCHEMA,
+        "schemaExtensions": [{ "schema": FCP_GROUP_SCHEMA, "required": false }],
+        "meta": { "resourceType": "ResourceType", "location": "/scim/v2/ResourceTypes/Group" },
+    });
+    list_response(vec![user, group], &ListQuery::default())
 }
 
 fn attribute(name: &str, kind: &str, multi: bool, required: bool) -> Value {
@@ -1097,7 +1534,22 @@ async fn schemas() -> Response {
             }),
         ],
     });
-    let resources = [user, enterprise, fcp]
+    let group = json!({
+        "id": GROUP_SCHEMA,
+        "name": "Group",
+        "attributes": [
+            attribute("displayName", "string", false, true),
+            attribute("externalId", "string", false, false),
+            attribute("members", "complex", true, false),
+        ],
+    });
+    let fcp_group = json!({
+        "id": FCP_GROUP_SCHEMA,
+        "name": "FcpGroup",
+        "description": "FCP's own attribute of a group",
+        "attributes": [attribute("role", "string", false, false)],
+    });
+    let resources = [user, enterprise, fcp, group, fcp_group]
         .into_iter()
         .map(|mut s| {
             s["schemas"] = json!(["urn:ietf:params:scim:schemas:core:2.0:Schema"]);
