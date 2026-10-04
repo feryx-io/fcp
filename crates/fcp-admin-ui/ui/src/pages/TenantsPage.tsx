@@ -43,6 +43,7 @@ const editSchema = z.object({
   sip_domains: z.string().optional(),
   login_domains: z.string().optional(),
   require_totp: z.enum(['none', 'admins', 'everyone']).optional(),
+  scim: z.boolean().optional(),
   password_login: z.enum(['allowed', 'admins_only', 'disabled']).optional(),
   platform_trunk_fallback: z.boolean().optional(),
   calling_country: z.string().optional(),
@@ -218,6 +219,7 @@ export function TenantsPage() {
       sip_domains: (editItem.sip_domains ?? []).join('\n'),
       login_domains: (editItem.login_domains ?? []).join('\n'),
       require_totp: editItem.sign_in?.require_totp ?? 'none',
+      scim: editItem.sign_in?.scim ?? false,
       password_login: editItem.sign_in?.password_login ?? 'allowed',
       platform_trunk_fallback: editItem.platform_trunk_fallback ?? true,
       calling_country: editItem.calling?.country ?? '',
@@ -253,6 +255,7 @@ export function TenantsPage() {
       hoteling_session_hours,
       require_totp,
       password_login,
+      scim,
       grace_days,
       meetings_owner,
       ...rest
@@ -274,6 +277,7 @@ export function TenantsPage() {
         sign_in: {
           password_login: password_login ?? 'allowed',
           require_totp: require_totp ?? 'none',
+          scim: scim ?? false,
         },
         offboarding: {
           grace_days: grace_days ?? 30,
@@ -499,6 +503,20 @@ export function TenantsPage() {
                 Whoever it is required of sets up an authenticator app at their
                 next password sign-in.
               </p>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label htmlFor="e-scim">Users come from SCIM</Label>
+                <p className="text-xs text-muted-foreground">
+                  Single sign-on then makes nobody on first sign-in, and signs in only the users the
+                  tenant's provisioner made (an API token holding SCIM provisioning).
+                </p>
+              </div>
+              <Switch
+                id="e-scim"
+                checked={editForm.watch('scim') ?? false}
+                onCheckedChange={(v) => editForm.setValue('scim', v)}
+              />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">

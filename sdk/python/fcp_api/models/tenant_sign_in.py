@@ -28,10 +28,14 @@ class TenantSignIn:
         Attributes:
             password_login (PasswordLogin | Unset): Who may sign in with a password.
             require_totp (RequireTotp | Unset): Who must add a one-time code to a password sign-in.
+            scim (bool | Unset): The tenant's users come from its SCIM provisioner (`docs/SCIM.md`):
+                single sign-on makes nobody just in time and signs in only users
+                SCIM made.
      """
 
     password_login: PasswordLogin | Unset = UNSET
     require_totp: RequireTotp | Unset = UNSET
+    scim: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -49,6 +53,8 @@ class TenantSignIn:
             require_totp = self.require_totp.value
 
 
+        scim = self.scim
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -58,6 +64,8 @@ class TenantSignIn:
             field_dict["password_login"] = password_login
         if require_totp is not UNSET:
             field_dict["require_totp"] = require_totp
+        if scim is not UNSET:
+            field_dict["scim"] = scim
 
         return field_dict
 
@@ -86,9 +94,12 @@ class TenantSignIn:
 
 
 
+        scim = d.pop("scim", UNSET)
+
         tenant_sign_in = cls(
             password_login=password_login,
             require_totp=require_totp,
+            scim=scim,
         )
 
 

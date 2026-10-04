@@ -12585,3 +12585,412 @@ async fn a_renamed_user_keeps_their_sip_name_their_sessions_and_what_they_had() 
 
     app.finish().await;
 }
+
+// ---------------------------------------------------------------------------
+// SCIM 2.0 (docs/IDENTITY_AND_DEVICES.md phase 6, docs/SCIM.md)
+// ---------------------------------------------------------------------------
+
+impl App {
+    /// An API token holding `scim_provision`, as a tenant admin gives a
+    /// provisioner.
+    async fn scim_token(&self) -> String {
+        let made = self
+            .admin(
+                Method::POST,
+                "/api/v1/api-tokens",
+                Some(json!({"name": "provisioner", "permissions": ["scim_provision"]})),
+            )
+            .await;
+        assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+        made.json["secret"].as_str().unwrap().to_string()
+    }
+}
+
+fn scim_user_id(res: &Response) -> String {
+    res.json["id"].as_str().unwrap_or_default().to_string()
+}
+
+#[tokio::test]
+async fn entra_id_provisions_updates_and_removes_a_user() {
+    let app = require_app!();
+    let token = app.scim_token().await;
+    let scim = |method: Method, path: String, body: Option<Value>| {
+        let (app, token) = (&app, token.clone());
+        async move { app.send_as(&token, method, &path, body).await }
+    };
+
+    // Discovery.
+    let config = scim(Method::GET, "/scim/v2/ServiceProviderConfig".into(), None).await;
+    assert_eq!(config.status, StatusCode::OK, "{}", config.text);
+    assert_eq!(config.json["patch"]["supported"], true);
+    assert_eq!(
+        config.headers.get(header::CONTENT_TYPE).unwrap(),
+        "application/scim+json"
+    );
+    let types = scim(Method::GET, "/scim/v2/ResourceTypes".into(), None).await;
+    assert_eq!(
+        types.json["Resources"][0]["endpoint"], "/Users",
+        "{}",
+        types.text
+    );
+
+    // Entra ID asks first whether the user is there, then makes them.
+    let user_name = "Test_User_ab6490ee-1e48-479e-a20b-2d77186b5dd1";
+    let none = scim(
+        Method::GET,
+        format!("/scim/v2/Users?filter=userName%20eq%20%22{user_name}%22"),
+        None,
+    )
+    .await;
+    assert_eq!(none.json["totalResults"], 0, "{}", none.text);
+    let made = scim(
+        Method::POST,
+        "/scim/v2/Users".into(),
+        Some(json!({
+            "schemas": [
+                "urn:ietf:params:scim:schemas:core:2.0:User",
+                "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"
+            ],
+            "externalId": "0a21f0f2-8d2a-4f8e-bf98-7363c4aed4ef",
+            "userName": user_name,
+            "active": true,
+            "emails": [{"primary": true, "type": "work",
+                        "value": "Test_User_fd0ea19b@testuser.com"}],
+            "meta": {"resourceType": "User"},
+            "name": {"formatted": "givenName familyName",
+                     "familyName": "familyName", "givenName": "givenName"},
+            "roles": []
+        })),
+    )
+    .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let id = scim_user_id(&made);
+    assert!(id.starts_with("user-"), "{id}");
+    assert_eq!(made.json["active"], true);
+    assert!(made.headers.get(header::ETAG).is_some());
+    assert!(made.headers.get(header::LOCATION).is_some());
+    let again = scim(
+        Method::POST,
+        "/scim/v2/Users".into(),
+        Some(json!({"schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"], "userName": user_name})),
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.text);
+    assert_eq!(again.json["scimType"], "uniqueness");
+
+    // The user is FCP's: an end user who may not sign in with a password.
+    let fcp = app
+        .admin(Method::GET, &format!("/api/v1/users/{user_name}"), None)
+        .await;
+    assert_eq!(fcp.json["role"], "end_user", "{}", fcp.text);
+    assert_eq!(fcp.json["email"], "Test_User_fd0ea19b@testuser.com");
+    assert_eq!(fcp.json["display_name"], "givenName familyName");
+
+    // Found by externalId; PATCHes in Entra ID's shape.
+    let by_external = scim(
+        Method::GET,
+        "/scim/v2/Users?filter=externalId%20eq%20%220a21f0f2-8d2a-4f8e-bf98-7363c4aed4ef%22".into(),
+        None,
+    )
+    .await;
+    assert_eq!(by_external.json["Resources"][0]["id"], id.as_str());
+    let patched = scim(
+        Method::PATCH,
+        format!("/scim/v2/Users/{id}"),
+        Some(json!({
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+            "Operations": [
+                {"op": "Replace", "path": "emails[type eq \"work\"].value", "value": "updatedEmail@microsoft.com"},
+                {"op": "Replace", "path": "name.familyName", "value": "updatedFamilyName"},
+                {"op": "Add", "path": "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:department", "value": "Sales"},
+                {"op": "Add", "path": "title", "value": "Engineer"}
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.text);
+    assert_eq!(
+        patched.json["emails"][0]["value"],
+        "updatedEmail@microsoft.com"
+    );
+    assert_eq!(
+        patched.json["name"]["formatted"],
+        "givenName updatedFamilyName"
+    );
+    assert_eq!(
+        patched.json["urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"]["department"],
+        "Sales"
+    );
+
+    // A stale version is refused.
+    let stale = app
+        .send(
+            Method::PATCH,
+            &format!("/scim/v2/Users/{id}"),
+            &[
+                ("authorization", &format!("Bearer {token}")),
+                ("if-match", "W/\"1\""),
+            ],
+            Some(
+                json!({"schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                        "Operations": [{"op": "Replace", "path": "title", "value": "x"}]}),
+            ),
+        )
+        .await;
+    assert_eq!(
+        stale.status,
+        StatusCode::PRECONDITION_FAILED,
+        "{}",
+        stale.text
+    );
+
+    // Disabled ("False", as Entra ID sends it), renamed, enabled.
+    let disabled = scim(
+        Method::PATCH,
+        format!("/scim/v2/Users/{id}"),
+        Some(
+            json!({"schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                    "Operations": [{"op": "Replace", "path": "active", "value": "False"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(disabled.json["active"], false, "{}", disabled.text);
+    let fcp = app
+        .admin(Method::GET, &format!("/api/v1/users/{user_name}"), None)
+        .await;
+    assert_eq!(fcp.json["account_status"], "suspended");
+    let renamed = scim(
+        Method::PATCH,
+        format!("/scim/v2/Users/{id}"),
+        Some(
+            json!({"schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+            "Operations": [
+                {"op": "Replace", "path": "userName", "value": "renamed.user@testuser.com"},
+                {"op": "Replace", "path": "active", "value": "True"}
+            ]}),
+        ),
+    )
+    .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.text);
+    assert_eq!(renamed.json["userName"], "renamed.user@testuser.com");
+    assert_eq!(renamed.json["active"], true);
+    assert_eq!(
+        renamed.json["urn:ietf:params:scim:schemas:extension:fcp:2.0:User"]["sipUsername"],
+        user_name,
+        "the phones keep their name"
+    );
+
+    // Removed: deprovisioned, and gone to SCIM.
+    let removed = scim(Method::DELETE, format!("/scim/v2/Users/{id}"), None).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
+    let gone = scim(Method::GET, format!("/scim/v2/Users/{id}"), None).await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    assert_eq!(gone.json["status"], "404");
+    let fcp = app
+        .admin(Method::GET, "/api/v1/users/renamed.user@testuser.com", None)
+        .await;
+    assert_eq!(fcp.json["account_status"], "deprovisioned");
+
+    // A token without scim_provision is refused.
+    let reader = app
+        .admin(
+            Method::POST,
+            "/api/v1/api-tokens",
+            Some(json!({"name": "reader", "permissions": ["user_read"]})),
+        )
+        .await;
+    let reader = reader.json["secret"].as_str().unwrap().to_string();
+    let refused = app
+        .send_as(&reader, Method::GET, "/scim/v2/Users", None)
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn okta_provisions_replaces_and_deactivates_a_user() {
+    let app = require_app!();
+    let token = app.scim_token().await;
+    let scim = |method: Method, path: String, body: Option<Value>| {
+        let (app, token) = (&app, token.clone());
+        async move { app.send_as(&token, method, &path, body).await }
+    };
+    let lookup = scim(
+        Method::GET,
+        "/scim/v2/Users?filter=userName%20eq%20%22jane@acme.test%22&startIndex=1&count=100".into(),
+        None,
+    )
+    .await;
+    assert_eq!(lookup.json["totalResults"], 0, "{}", lookup.text);
+
+    // Okta's create carries a password, which FCP does not take: the
+    // person signs in through the provider, and their SIP password is
+    // generated.
+    let made = scim(
+        Method::POST,
+        "/scim/v2/Users".into(),
+        Some(json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+            "userName": "jane@acme.test",
+            "name": {"givenName": "Jane", "familyName": "Doe"},
+            "emails": [{"primary": true, "value": "jane@acme.test", "type": "work"}],
+            "displayName": "Jane Doe",
+            "locale": "en-US",
+            "externalId": "00ujl29u0le5T6Aj10h7",
+            "groups": [],
+            "password": "1mz050nq",
+            "active": true,
+            "urn:ietf:params:scim:schemas:extension:fcp:2.0:User": {"extension": "2201", "role": "read_only"}
+        })),
+    )
+    .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let id = scim_user_id(&made);
+    assert_eq!(
+        app.login("jane@acme.test", "1mz050nq").await.status,
+        StatusCode::UNAUTHORIZED,
+        "the provisioner's password is not a web password"
+    );
+    let fcp = app
+        .admin(Method::GET, "/api/v1/users/jane@acme.test", None)
+        .await;
+    assert_eq!(fcp.json["extension"], "2201", "{}", fcp.text);
+    assert_eq!(fcp.json["role"], "read_only");
+
+    // Okta replaces the whole user on an update.
+    let mut replaced = made.json.clone();
+    replaced["name"] = json!({"givenName": "Jane", "familyName": "Smith"});
+    replaced["displayName"] = json!("Jane Smith");
+    let put = scim(Method::PUT, format!("/scim/v2/Users/{id}"), Some(replaced)).await;
+    assert_eq!(put.status, StatusCode::OK, "{}", put.text);
+    assert_eq!(put.json["displayName"], "Jane Smith");
+    assert_eq!(
+        put.json["urn:ietf:params:scim:schemas:extension:fcp:2.0:User"]["extension"],
+        "2201"
+    );
+
+    // Deactivated and reactivated, as Okta does: a value object.
+    for active in [false, true] {
+        let res = scim(
+            Method::PATCH,
+            format!("/scim/v2/Users/{id}"),
+            Some(
+                json!({"schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                        "Operations": [{"op": "replace", "value": {"active": active}}]}),
+            ),
+        )
+        .await;
+        assert_eq!(res.json["active"], active, "{}", res.text);
+    }
+
+    // Paging.
+    for n in 0..3 {
+        scim(
+            Method::POST,
+            "/scim/v2/Users".into(),
+            Some(
+                json!({"schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+                        "userName": format!("paged{n}@acme.test")}),
+            ),
+        )
+        .await;
+    }
+    let page = scim(
+        Method::GET,
+        "/scim/v2/Users?startIndex=2&count=2".into(),
+        None,
+    )
+    .await;
+    assert_eq!(page.json["startIndex"], 2, "{}", page.text);
+    assert_eq!(page.json["itemsPerPage"], 2);
+    assert!(page.json["totalResults"].as_u64().unwrap() >= 4);
+    let bad = scim(
+        Method::GET,
+        "/scim/v2/Users?filter=title%20sw%20%22x%22".into(),
+        None,
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    assert_eq!(bad.json["scimType"], "invalidFilter");
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn a_tenant_whose_users_come_from_scim_signs_in_only_those() {
+    let app = require_app!();
+    let idp = StandInIdp::start(IDP_CLIENT, Some(IDP_SECRET))
+        .await
+        .unwrap();
+    app.admin(
+        Method::PUT,
+        &format!("/api/v1/tenants/{}", app.tenant_a),
+        Some(json!({"login_domains": ["acme.test"],
+                    "sign_in": {"password_login": "allowed", "require_totp": "none", "scim": true}})),
+    )
+    .await;
+    let provider = app
+        .make_provider(&idp, json!({"jit": true, "link_by_email": true}))
+        .await;
+    let error = |landing: &str| query_param(landing, "sso_error").unwrap_or_default();
+
+    // Made by hand, not by SCIM: refused.
+    app.admin(
+        Method::POST,
+        "/api/v1/users",
+        Some(json!({"username": "manual", "email": "manual@acme.test"})),
+    )
+    .await;
+    let landing = app
+        .sso_landing(
+            &idp,
+            &provider,
+            json!({"sub": "m", "email": "manual@acme.test", "email_verified": true}),
+        )
+        .await;
+    assert_eq!(error(&landing), "not_provisioned");
+
+    // A stranger: not made just in time.
+    let landing = app
+        .sso_landing(
+            &idp,
+            &provider,
+            json!({"sub": "s", "email": "stranger@acme.test", "email_verified": true,
+                   "preferred_username": "stranger@acme.test"}),
+        )
+        .await;
+    assert_eq!(error(&landing), "not_provisioned");
+
+    // Made by SCIM: signs in.
+    let token = app.scim_token().await;
+    let made = app
+        .send_as(
+            &token,
+            Method::POST,
+            "/scim/v2/Users",
+            Some(
+                json!({"schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+                        "userName": "sara", "emails": [{"value": "sara@acme.test"}]}),
+            ),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let landing = app
+        .sso_landing(
+            &idp,
+            &provider,
+            json!({"sub": "sa", "email": "sara@acme.test", "email_verified": true}),
+        )
+        .await;
+    let signed_in = app.sso_exchange(&landing).await;
+    assert_eq!(
+        signed_in.status,
+        StatusCode::OK,
+        "{landing} {}",
+        signed_in.text
+    );
+    assert_eq!(signed_in.json["user"]["username"], "sara");
+
+    app.finish().await;
+}

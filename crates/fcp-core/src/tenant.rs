@@ -207,6 +207,11 @@ pub struct TenantSignIn {
     /// Who must add a one-time code to a password (phase 2b).
     #[serde(default)]
     pub require_totp: RequireTotp,
+    /// The tenant's users come from its SCIM provisioner (`docs/SCIM.md`):
+    /// single sign-on makes nobody just in time and signs in only users
+    /// SCIM made.
+    #[serde(default)]
+    pub scim: bool,
 }
 
 /// Who must add a one-time code to a password sign-in.

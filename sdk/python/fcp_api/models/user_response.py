@@ -39,6 +39,7 @@ class UserResponse:
             failed_login_attempts (int):
             sip_username (str): The name the user's phones register and authenticate as: their
                 username, or the one they had before a rename (`docs/USERS.md` §6).
+            scim_managed (bool): Made by the tenant's SCIM provisioner (`docs/SCIM.md`).
             display_name (None | str | Unset):
             department_id (None | str | Unset):
             email (None | str | Unset):
@@ -70,6 +71,7 @@ class UserResponse:
     account_status: str
     failed_login_attempts: int
     sip_username: str
+    scim_managed: bool
     display_name: None | str | Unset = UNSET
     department_id: None | str | Unset = UNSET
     email: None | str | Unset = UNSET
@@ -116,6 +118,8 @@ class UserResponse:
         failed_login_attempts = self.failed_login_attempts
 
         sip_username = self.sip_username
+
+        scim_managed = self.scim_managed
 
         display_name: None | str | Unset
         if isinstance(self.display_name, Unset):
@@ -237,6 +241,7 @@ class UserResponse:
             "account_status": account_status,
             "failed_login_attempts": failed_login_attempts,
             "sip_username": sip_username,
+            "scim_managed": scim_managed,
         })
         if display_name is not UNSET:
             field_dict["display_name"] = display_name
@@ -307,6 +312,8 @@ class UserResponse:
         failed_login_attempts = d.pop("failed_login_attempts")
 
         sip_username = d.pop("sip_username")
+
+        scim_managed = d.pop("scim_managed")
 
         def _parse_display_name(data: object) -> None | str | Unset:
             if data is None:
@@ -521,6 +528,7 @@ class UserResponse:
             account_status=account_status,
             failed_login_attempts=failed_login_attempts,
             sip_username=sip_username,
+            scim_managed=scim_managed,
             display_name=display_name,
             department_id=department_id,
             email=email,

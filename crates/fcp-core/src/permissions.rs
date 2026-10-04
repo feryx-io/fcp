@@ -245,6 +245,10 @@ pub enum Permission {
     /// Making groups, their roles and their members: a group's role is
     /// its members' too, so this is the tenant administrator's.
     GroupManage,
+    /// The tenant's SCIM provisioner (`docs/SCIM.md`): users and groups
+    /// made, changed and removed through `/scim/v2`. A tenant admin's, to
+    /// put on the provisioner's token.
+    ScimProvision,
 }
 
 impl FromStr for Permission {
@@ -317,6 +321,7 @@ impl FromStr for Permission {
             "identity_provider_manage" => Ok(Self::IdentityProviderManage),
             "group_read" => Ok(Self::GroupRead),
             "group_manage" => Ok(Self::GroupManage),
+            "scim_provision" => Ok(Self::ScimProvision),
             other => Err(format!("unknown permission: {}", other)),
         }
     }
@@ -390,6 +395,7 @@ impl Permission {
         Self::IdentityProviderManage,
         Self::GroupRead,
         Self::GroupManage,
+        Self::ScimProvision,
     ];
 
     /// The area a permission belongs to, for grouping it in a picker.
@@ -440,6 +446,7 @@ impl Permission {
             Self::WebhookManage => "Webhooks",
             Self::IdentityProviderManage => "Single sign-on",
             Self::GroupRead | Self::GroupManage => "Groups",
+            Self::ScimProvision => "SCIM provisioning",
         }
     }
 
@@ -511,6 +518,7 @@ impl Permission {
             Self::IdentityProviderManage => "identity_provider_manage",
             Self::GroupRead => "group_read",
             Self::GroupManage => "group_manage",
+            Self::ScimProvision => "scim_provision",
         }
     }
 
@@ -582,6 +590,7 @@ impl Permission {
             Self::IdentityProviderManage => "Manage Identity Providers",
             Self::GroupRead => "View Groups",
             Self::GroupManage => "Manage Groups",
+            Self::ScimProvision => "Provision Users (SCIM)",
         }
     }
 }
@@ -667,6 +676,11 @@ impl UserRole {
             (TenantAdmin, GroupRead | GroupManage, _) => true,
             (TelecomAdmin | UserAdmin | DepartmentAdmin | ReadOnly, GroupRead, _) => true,
             (_, GroupRead | GroupManage, _) => false,
+
+            // The provisioner makes users, admins among them, and fills
+            // groups: the tenant administrator's to grant.
+            (TenantAdmin, ScimProvision, _) => true,
+            (_, ScimProvision, _) => false,
 
             // A tenant's routing rules are its call policy — barring premium
             // numbers, sending international calls to a trunk group — and

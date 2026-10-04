@@ -1772,6 +1772,14 @@ Phase 5d done (v0.25.318): renaming a user (`docs/USERS.md` §6).
 - A rename reaches sites.
 - Phase 5 (a user's lifecycle) is complete; phase 6, SCIM 2.0, is next.
 
+Phase 6a done (v0.25.319): SCIM users (`docs/SCIM.md`).
+- A tenant's identity provider makes, changes, suspends, renames and
+  removes users at `/scim/v2/Users` with a `scim_provision` token, as Entra
+  ID and Okta send their requests.
+- A tenant can say its users come from SCIM: single sign-on then signs in
+  only those.
+- Next, 6b: SCIM groups and the provider guides.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

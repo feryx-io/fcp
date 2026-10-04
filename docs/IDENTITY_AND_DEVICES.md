@@ -657,6 +657,32 @@ Each phase is one PR based on main, with its admin UI and its docs.
    - Proved by a SCIM test suite run against the binary: create, rename,
      deactivate, reactivate, delete and group membership, as Entra ID and
      Okta send them.
+   - Split in two: 6a users (with discovery, the permission and the
+     tenant's switch); 6b groups and the provider guides.
+   - **6a done (v0.25.319)** (`docs/SCIM.md`).
+     - `fcp_api_core::scim` at `/scim/v2`, behind the bearer layer with the
+       audit and rate limits: `Users` (create, read, list with one-`eq`
+       filters and paging, replace, patch, delete),
+       `ServiceProviderConfig`, `ResourceTypes`, `Schemas`; SCIM errors and
+       `application/scim+json`.
+     - A PATCH is applied to the user's SCIM document and taken as a
+       replace, so Entra ID's path operations and Okta's value objects mean
+       the same; `"True"`/`"False"` taken as booleans; a part of the name
+       splits the display name.
+     - ETags from `updated_at`; `If-Match` answered `412`.
+     - `scim_provision` (tenant admin); refused at a site.
+     - `users.scim_managed`, `users.scim_external_id` (migration 100,
+       unique per tenant); `UserFilter` gained exact username, external id
+       and email, and leaving out the deprovisioned, in SQL.
+     - Q5: `sign_in.scim` — no just-in-time creation, and single sign-on
+       only for users SCIM made (`not_provisioned` otherwise).
+     - A delete deprovisions (`docs/USERS.md` §4); `userName` renames (§6);
+       `active` suspends and resumes (§2).
+     - Proved by `entra_id_provisions_updates_and_removes_a_user`,
+       `okta_provisions_replaces_and_deactivates_a_user` and
+       `a_tenant_whose_users_come_from_scim_signs_in_only_those`
+       (`api_postgres.rs`), with Entra ID's and Okta's own request bodies,
+       and the patch and filter unit tests in `fcp_api_core::scim`.
 7. **Provisioning that phones can use.**
    - The tenant provisioning key and URL; vendor file names and content
      types; optional device HTTP credentials.
