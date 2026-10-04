@@ -51,6 +51,8 @@ const editSchema = z.object({
   calling_overrides: z.string().optional(),
   hoteling_session_hours: z.coerce.number().int().min(0).max(168).optional(),
   grace_days: z.coerce.number().int().min(0).max(3650).optional(),
+  require_device_credentials: z.boolean().optional(),
+  provisioning_networks: z.string().optional(),
   meetings_owner: z.string().optional(),
 })
 
@@ -229,6 +231,8 @@ export function TenantsPage() {
         .join('\n'),
       hoteling_session_hours: editItem.calling?.hoteling_session_hours ?? undefined,
       grace_days: editItem.offboarding?.grace_days ?? 30,
+      require_device_credentials: editItem.provisioning?.require_device_credentials ?? false,
+      provisioning_networks: (editItem.provisioning?.networks ?? []).join('\n'),
       meetings_owner: editItem.offboarding?.meetings_owner ?? '',
     })
   }
@@ -258,6 +262,8 @@ export function TenantsPage() {
       scim,
       grace_days,
       meetings_owner,
+      require_device_credentials,
+      provisioning_networks,
       ...rest
     } = data
     updateMutation.mutate({
@@ -278,6 +284,10 @@ export function TenantsPage() {
           password_login: password_login ?? 'allowed',
           require_totp: require_totp ?? 'none',
           scim: scim ?? false,
+        },
+        provisioning: {
+          require_device_credentials: require_device_credentials ?? false,
+          networks: (provisioning_networks ?? '').split(/[\s,]+/).map((n) => n.trim()).filter(Boolean),
         },
         offboarding: {
           grace_days: grace_days ?? 30,
@@ -517,6 +527,30 @@ export function TenantsPage() {
                 checked={editForm.watch('scim') ?? false}
                 onCheckedChange={(v) => editForm.setValue('scim', v)}
               />
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label htmlFor="e-require_device_credentials">Phones give their own credentials</Label>
+                <p className="text-xs text-muted-foreground">
+                  Besides the provisioning URL, each phone must send HTTP credentials whose password is its
+                  device&apos;s provisioning token.
+                </p>
+              </div>
+              <Switch
+                id="e-require_device_credentials"
+                checked={editForm.watch('require_device_credentials') ?? false}
+                onCheckedChange={(v) => editForm.setValue('require_device_credentials', v)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="e-provisioning_networks">Phones fetch from (networks)</Label>
+              <textarea
+                id="e-provisioning_networks"
+                className="flex min-h-[60px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                placeholder={'10.20.0.0/16\n203.0.113.7'}
+                {...editForm.register('provisioning_networks')}
+              />
+              <p className="text-xs text-muted-foreground">One per line; empty is anywhere.</p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">

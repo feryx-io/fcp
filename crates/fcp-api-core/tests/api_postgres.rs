@@ -212,7 +212,10 @@ impl App {
                     .with_offboarding_store(
                         Arc::clone(&storage) as Arc<dyn fcp_core::offboarding::OffboardingStore>
                     )
-                    .with_group_store(Arc::clone(&storage) as Arc<dyn fcp_core::group::GroupStore>),
+                    .with_group_store(Arc::clone(&storage) as Arc<dyn fcp_core::group::GroupStore>)
+                    .with_provisioning_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::provisioning::ProvisioningStore>
+                    ),
             );
         let dir = tempfile::Builder::new()
             .prefix("fcp-api-test-")
@@ -13215,6 +13218,229 @@ async fn entra_id_and_okta_provision_groups_and_their_members() {
         "{}",
         types.text
     );
+
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Provisioning that phones can use (docs/IDENTITY_AND_DEVICES.md phase 7a)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_phone_fetches_its_files_from_the_tenants_url_as_its_vendor_names_them() {
+    use base64::Engine;
+    let app = require_app!();
+    let owner = app.create_user("carol", Some("Sip-Secret-123")).await;
+    let (device_id, token) = app
+        .create_phone("Carol's phone", "AA:BB:CC:DD:EE:07", Some(&owner))
+        .await;
+    let template = app.create_template(app.tenant_a, TEMPLATE).await;
+    app.patch_device(&device_id, json!({ "config_template_id": template }))
+        .await;
+
+    // The tenant's URL: none until made.
+    assert_eq!(
+        app.admin(Method::GET, "/api/v1/provisioning/key", None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let made = app
+        .admin(Method::POST, "/api/v1/provisioning/key", None)
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let key = made.json["key"].as_str().unwrap().to_string();
+    assert_eq!(made.json["path"], format!("/provision/{key}/"));
+    let shown = app
+        .admin(Method::GET, "/api/v1/provisioning/key", None)
+        .await;
+    assert_eq!(shown.json["key"], key.as_str(), "shown again");
+
+    let fetch = |key: String, file: &'static str, extra: Vec<(&'static str, String)>| {
+        let app = &app;
+        async move {
+            let mut headers: Vec<(&str, String)> = vec![("x-forwarded-proto", "https".into())];
+            headers.extend(extra);
+            let headers: Vec<(&str, &str)> =
+                headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            app.send(
+                Method::GET,
+                &format!("/provision/{key}/{file}"),
+                &headers,
+                None,
+            )
+            .await
+        }
+    };
+
+    // Each vendor's name for the phone's file, with its content type.
+    for (file, content_type) in [
+        ("aabbccddee07.cfg", "text/plain"),
+        ("cfgaabbccddee07.xml", "application/xml"),
+        ("SEPAABBCCDDEE07.cnf.xml", "application/xml"),
+        ("spaaabbccddee07.xml", "application/xml"),
+        ("snomD785-AABBCCDDEE07.htm", "text/html"),
+        ("aabbccddee07", "text/plain"),
+    ] {
+        let res = fetch(key.clone(), file, vec![]).await;
+        assert_eq!(res.status, StatusCode::OK, "{file}: {}", res.text);
+        assert!(
+            res.header("content-type")
+                .is_some_and(|ct| ct.starts_with(content_type)),
+            "{file}: {:?}",
+            res.header("content-type")
+        );
+        assert!(
+            res.text.contains("account.1.user_name=carol"),
+            "{file}: {}",
+            res.text
+        );
+        assert_eq!(
+            res.header("cache-control"),
+            Some("no-store, no-cache, max-age=0")
+        );
+    }
+
+    // A Polycom asks for a master file first, which names its own.
+    let polycom = vec![(
+        "user-agent",
+        "FileTransport PolycomVVX-VVX_450-UA/6.4.0.4006".to_string(),
+    )];
+    let master = fetch(key.clone(), "aabbccddee07.cfg", polycom.clone()).await;
+    assert_eq!(master.status, StatusCode::OK, "{}", master.text);
+    assert!(
+        master
+            .text
+            .contains("CONFIG_FILES=\"aabbccddee07-fcp.cfg\""),
+        "{}",
+        master.text
+    );
+    let own = fetch(key.clone(), "aabbccddee07-fcp.cfg", polycom).await;
+    assert!(
+        own.text.contains("account.1.user_name=carol"),
+        "{}",
+        own.text
+    );
+
+    // What is not served: a vendor's common file, another MAC, another
+    // key, plain HTTP.
+    for (key, file) in [
+        (key.clone(), "y000000000096.cfg"),
+        (key.clone(), "001122334455.cfg"),
+        (key.clone(), "../../etc/passwd"),
+        ("0".repeat(32), "aabbccddee07.cfg"),
+    ] {
+        let res = fetch(key, file, vec![]).await;
+        assert_eq!(res.status, StatusCode::NOT_FOUND, "{file}");
+    }
+    let plain = app
+        .send(
+            Method::GET,
+            &format!("/provision/{key}/aabbccddee07.cfg"),
+            &[],
+            None,
+        )
+        .await;
+    assert_eq!(plain.status, StatusCode::NOT_FOUND, "HTTPS only");
+
+    // The tenant wants each phone's own credentials: the provisioning
+    // token, as the Basic password; and its networks only.
+    let set = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"provisioning": {"require_device_credentials": true,
+                                         "networks": ["10.9.0.0/16"]}})),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let basic = |password: &str| {
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("aabbccddee07:{password}"))
+        )
+    };
+    let inside = ("x-forwarded-for", "10.9.4.20".to_string());
+    let asked = fetch(key.clone(), "aabbccddee07.cfg", vec![inside.clone()]).await;
+    assert_eq!(asked.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        asked.header("www-authenticate"),
+        Some("Basic realm=\"FCP provisioning\"")
+    );
+    let wrong = fetch(
+        key.clone(),
+        "aabbccddee07.cfg",
+        vec![inside.clone(), ("authorization", basic("nope"))],
+    )
+    .await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+    let right = fetch(
+        key.clone(),
+        "aabbccddee07.cfg",
+        vec![inside.clone(), ("authorization", basic(&token))],
+    )
+    .await;
+    assert_eq!(right.status, StatusCode::OK, "{}", right.text);
+    let outside = fetch(
+        key.clone(),
+        "aabbccddee07.cfg",
+        vec![
+            ("x-forwarded-for", "192.0.2.1".to_string()),
+            ("authorization", basic(&token)),
+        ],
+    )
+    .await;
+    assert_eq!(outside.status, StatusCode::NOT_FOUND, "another network");
+
+    // A new key: the old URL is dead.
+    let rotated = app
+        .admin(Method::POST, "/api/v1/provisioning/key", None)
+        .await;
+    let new_key = rotated.json["key"].as_str().unwrap().to_string();
+    assert_ne!(new_key, key);
+    let old = fetch(
+        key.clone(),
+        "aabbccddee07.cfg",
+        vec![inside.clone(), ("authorization", basic(&token))],
+    )
+    .await;
+    assert_eq!(old.status, StatusCode::NOT_FOUND);
+    let new = fetch(
+        new_key,
+        "aabbccddee07.cfg",
+        vec![inside, ("authorization", basic(&token))],
+    )
+    .await;
+    assert_eq!(new.status, StatusCode::OK);
+
+    // Every fetch is on the device.
+    let fetches = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/devices/{device_id}/fetches"),
+            None,
+        )
+        .await;
+    assert_eq!(fetches.status, StatusCode::OK, "{}", fetches.text);
+    let outcomes: Vec<&str> = fetches
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["outcome"].as_str().unwrap())
+        .collect();
+    assert_eq!(outcomes[0], "served", "{outcomes:?}");
+    for want in ["served", "unauthorized", "network_refused"] {
+        assert!(outcomes.contains(&want), "{want} in {outcomes:?}");
+    }
+    assert!(fetches
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["user_agent"]
+            .as_str()
+            .is_some_and(|ua| ua.contains("Polycom"))));
 
     app.finish().await;
 }

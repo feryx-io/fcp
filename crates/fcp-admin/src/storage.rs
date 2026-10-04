@@ -93,7 +93,10 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
             storage.clone() as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>
         )
         .with_offboarding_store(storage.clone() as Arc<dyn fcp_core::offboarding::OffboardingStore>)
-        .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>);
+        .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>)
+        .with_provisioning_store(
+            storage.clone() as Arc<dyn fcp_core::provisioning::ProvisioningStore>
+        );
 
     info!("PostgreSQL storage initialized successfully (with SIP trace, API token, prompt, flow trace, and config template stores)");
     Ok(StorageResult {

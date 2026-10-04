@@ -14158,6 +14158,107 @@
         }
       }
     },
+    "/api/v1/provisioning/key": {
+      "get": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "GET /api/v1/provisioning/key",
+        "operationId": "provisioning_get_key",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisioningKeyResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "POST /api/v1/provisioning/key — a new key: the old URL stops working.",
+        "operationId": "provisioning_rotate_key",
+        "responses": {
+          "201": {
+            "description": "Made",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisioningKeyResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{id}/fetches": {
+      "get": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "GET /api/v1/devices/:id/fetches — the device's provisioning fetches,\nnewest first.",
+        "operationId": "provisioning_device_fetches",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_DeviceFetchResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/groups": {
       "get": {
         "tags": [
@@ -19565,6 +19666,17 @@
                 "type": "null"
               }
             ]
+          },
+          "provisioning": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantProvisioning",
+                "description": "How the tenant's phones fetch their configuration."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -20304,6 +20416,40 @@
           },
           "enabled": {
             "type": "boolean"
+          }
+        }
+      },
+      "DeviceFetchResponse": {
+        "type": "object",
+        "description": "One fetch of a device's file.",
+        "required": [
+          "file",
+          "at",
+          "outcome"
+        ],
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`served`, `unauthorized`, `not_served` (disabled, or no template)…"
           }
         }
       },
@@ -24289,6 +24435,68 @@
                 "deleted_at": {
                   "type": "string",
                   "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_DeviceFetchResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One fetch of a device's file.",
+              "required": [
+                "file",
+                "at",
+                "outcome"
+              ],
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "address": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "user_agent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "outcome": {
+                  "type": "string",
+                  "description": "`served`, `unauthorized`, `not_served` (disabled, or no template)…"
                 }
               }
             }
@@ -28627,7 +28835,8 @@
                 "calling",
                 "login_domains",
                 "sign_in",
-                "offboarding"
+                "offboarding",
+                "provisioning"
               ],
               "properties": {
                 "id": {
@@ -28737,6 +28946,10 @@
                 "offboarding": {
                   "$ref": "#/components/schemas/TenantOffboarding",
                   "description": "What happens to a deleted user (`docs/USERS.md` §4)."
+                },
+                "provisioning": {
+                  "$ref": "#/components/schemas/TenantProvisioning",
+                  "description": "How the tenant's phones fetch their configuration\n(`docs/PROVISIONING.md` §3)."
                 }
               }
             }
@@ -30591,6 +30804,36 @@
           }
         },
         "additionalProperties": false
+      },
+      "ProvisioningKeyResponse": {
+        "type": "object",
+        "description": "The tenant's provisioning URL.",
+        "required": [
+          "key",
+          "path",
+          "created_at"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The secret in the URL's path; anyone with it may fetch the tenant's\nphones' files (by MAC), so it is shown to administrators only."
+          },
+          "path": {
+            "type": "string",
+            "description": "The path phones fetch under: `/provision/<key>/`."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The whole URL, when the admin knows its public address\n(`[api.sso] public_url`)."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
       },
       "PurgeReport": {
         "type": "object",
@@ -32714,6 +32957,23 @@
           }
         }
       },
+      "TenantProvisioning": {
+        "type": "object",
+        "description": "A tenant's provisioning settings (`docs/PROVISIONING.md` §3).",
+        "properties": {
+          "require_device_credentials": {
+            "type": "boolean",
+            "description": "A phone must also give its own HTTP credentials: Basic, with the\ndevice's provisioning token as the password."
+          },
+          "networks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Where phones may fetch from (CIDRs); empty is anywhere."
+          }
+        }
+      },
       "TenantResponse": {
         "type": "object",
         "description": "Response for tenant API calls",
@@ -32728,7 +32988,8 @@
           "calling",
           "login_domains",
           "sign_in",
-          "offboarding"
+          "offboarding",
+          "provisioning"
         ],
         "properties": {
           "id": {
@@ -32838,6 +33099,10 @@
           "offboarding": {
             "$ref": "#/components/schemas/TenantOffboarding",
             "description": "What happens to a deleted user (`docs/USERS.md` §4)."
+          },
+          "provisioning": {
+            "$ref": "#/components/schemas/TenantProvisioning",
+            "description": "How the tenant's phones fetch their configuration\n(`docs/PROVISIONING.md` §3)."
           }
         }
       },
@@ -35280,6 +35545,17 @@
               {
                 "$ref": "#/components/schemas/TenantOffboarding",
                 "description": "Replaces what happens to a deleted user."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provisioning": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantProvisioning",
+                "description": "Replaces how the tenant's phones fetch their configuration."
               },
               {
                 "type": "null"

@@ -20,6 +20,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { devices, emergency, locations, tenants, users } from '@/api/endpoints'
 import type { AddressValidation, Device, CreateDeviceRequest, UpdateDeviceRequest } from '@/types'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
+import { ProvisioningUrlCard, DeviceFetchesDialog } from '@/components/ProvisioningUrl'
 
 const createSchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -102,6 +103,7 @@ function credentialChange(
 }
 
 export function DevicesPage() {
+  const [fetchesOf, setFetchesOf] = useState<Device | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [editItem, setEditItem] = useState<Device | null>(null)
@@ -328,6 +330,10 @@ export function DevicesPage() {
               <Pencil className="mr-2 h-4 w-4" />
               Edit
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setFetchesOf(row.original)}>
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Provisioning fetches
+            </DropdownMenuItem>
             {row.original.e911_override && (
               <DropdownMenuItem
                 onClick={() =>
@@ -488,11 +494,15 @@ export function DevicesPage() {
         </div>
       </div>
 
+      <ProvisioningUrlCard />
+
       {isLoading ? (
         <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>
       ) : (
         <DataTable columns={columns} data={items} searchKey="name" searchPlaceholder="Search devices..." />
       )}
+
+      <DeviceFetchesDialog device={fetchesOf} onClose={() => setFetchesOf(null)} />
 
       {/* Create Dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

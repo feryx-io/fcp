@@ -74,7 +74,10 @@ pub async fn open_site(database_url: &str, max_connections: u32) -> Result<SiteS
         )
         .with_identity_store(storage.clone() as Arc<dyn fcp_core::identity::IdentityStore>)
         .with_offboarding_store(storage.clone() as Arc<dyn fcp_core::offboarding::OffboardingStore>)
-        .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>);
+        .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>)
+        .with_provisioning_store(
+            storage.clone() as Arc<dyn fcp_core::provisioning::ProvisioningStore>
+        );
     Ok(SiteStores {
         storage: Arc::new(dyn_storage),
         flows: storage as Arc<dyn FlowStore>,

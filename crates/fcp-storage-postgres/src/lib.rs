@@ -42,6 +42,7 @@ mod identity;
 pub mod login_session;
 mod offboarding;
 pub mod prompt;
+mod provisioning;
 pub mod recording;
 pub mod sip_trace;
 mod subject_erase;
@@ -1522,7 +1523,8 @@ impl RegistrationStore for PostgresStorage {
 const TENANT_SELECT_COLS: &str = "id, name, description, status, contact_email, contact_phone,
     max_users, max_phone_numbers, max_concurrent_calls, billing_id,
     created_at, updated_at, trial_expires_at, metadata, sip_domains,
-    platform_trunk_fallback, calling_json, login_domains, sign_in_json, offboarding_json";
+    platform_trunk_fallback, calling_json, login_domains, sign_in_json, offboarding_json,
+    provisioning_json";
 
 #[async_trait]
 impl TenantStore for PostgresStorage {
@@ -1644,9 +1646,9 @@ impl TenantStore for PostgresStorage {
                 max_users, max_phone_numbers, max_concurrent_calls, billing_id,
                 created_at, updated_at, trial_expires_at, metadata, sip_domains,
                 platform_trunk_fallback, data, calling_json, login_domains, sign_in_json,
-                offboarding_json
+                offboarding_json, provisioning_json
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17, $18, $19, $20)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17, $18, $19, $20, $21)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
@@ -1665,7 +1667,8 @@ impl TenantStore for PostgresStorage {
                  calling_json = EXCLUDED.calling_json,
                  login_domains = EXCLUDED.login_domains,
                  sign_in_json = EXCLUDED.sign_in_json,
-                 offboarding_json = EXCLUDED.offboarding_json",
+                 offboarding_json = EXCLUDED.offboarding_json,
+                 provisioning_json = EXCLUDED.provisioning_json",
         )
         .bind(&id)
         .bind(&tenant.name)
@@ -1687,6 +1690,7 @@ impl TenantStore for PostgresStorage {
         .bind(&login_domains)
         .bind(serde_json::to_value(&tenant.sign_in)?)
         .bind(serde_json::to_value(&tenant.offboarding)?)
+        .bind(serde_json::to_value(&tenant.provisioning)?)
         .execute(self.writes())
         .await?;
 
@@ -1755,6 +1759,8 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
         sign_in: serde_json::from_value(row.get("sign_in_json")).context("a tenant's sign-in")?,
         offboarding: serde_json::from_value(row.get("offboarding_json"))
             .context("a tenant's offboarding")?,
+        provisioning: serde_json::from_value(row.get("provisioning_json"))
+            .context("a tenant's provisioning")?,
     })
 }
 

@@ -1787,6 +1787,16 @@ Phase 6b done (v0.25.320): SCIM groups (`docs/SCIM.md`).
 - Phase 6 (SCIM 2.0) is complete; phase 7, provisioning that phones can
   use, is next.
 
+Phase 7a done (v0.25.321): the tenant's provisioning URL
+(`docs/PROVISIONING.md`).
+- Each tenant has a key in its URL (`/provision/<key>/`), shown to its
+  admins and replaceable; phones fetch their files by their vendor's
+  names (Yealink, Polycom, Grandstream, Cisco, Fanvil, Snom).
+- Optionally each phone's own credentials, and the tenant's networks only.
+- Every fetch is recorded on the device.
+- Next, 7b: templates picked by model, resync, pending devices, the
+  end-to-end proof.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

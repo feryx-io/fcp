@@ -1,5 +1,5 @@
 import type { components } from '@/api/schema'
-import { apiClient } from './client'
+import { apiClient, ApiRequestError } from './client'
 import type {
   DiscoverResponse,
   IdentityProvider,
@@ -12,6 +12,8 @@ import type {
   Group,
   GroupRequest,
   GroupMember,
+  ProvisioningKey,
+  DeviceFetch,
   PurgeResponse,
   CreateUserRequest,
   UpdateUserRequest,
@@ -221,6 +223,21 @@ export const devices = {
   update: (id: string, data: UpdateDeviceRequest) =>
     apiClient.patch<Device>(`/devices/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/devices/${encodeURIComponent(id)}`),
+  fetches: (id: string) =>
+    apiClient.getAll<DeviceFetch>(`/devices/${encodeURIComponent(id)}/fetches`),
+}
+
+export const provisioning = {
+  /** The tenant's URL, or `null` before one is made. */
+  getKey: async (): Promise<ProvisioningKey | null> => {
+    try {
+      return await apiClient.get<ProvisioningKey>('/provisioning/key')
+    } catch (e) {
+      if (e instanceof ApiRequestError && e.status === 404) return null
+      throw e
+    }
+  },
+  rotateKey: () => apiClient.post<ProvisioningKey>('/provisioning/key'),
 }
 
 // Hoteling sessions (docs/ENTERPRISE_CALLING.md §3.8)
