@@ -585,6 +585,12 @@ pub fn router() -> Router<ApiState> {
                 .patch(devices::update_device)
                 .delete(devices::delete_device),
         )
+        // Provisioning that phones can use (docs/PROVISIONING.md)
+        .route("/devices/:id/fetches", get(provisioning::device_fetches))
+        .route(
+            "/provisioning/key",
+            get(provisioning::get_key).post(provisioning::rotate_key),
+        )
         // Hoteling sessions (docs/ENTERPRISE_CALLING.md §3.8)
         .route("/hoteling/sessions", get(hoteling::list_sessions))
         .route(

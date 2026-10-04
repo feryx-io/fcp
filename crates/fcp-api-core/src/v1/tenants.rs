@@ -98,6 +98,9 @@ pub struct TenantResponse {
     pub sign_in: fcp_core::TenantSignIn,
     /// What happens to a deleted user (`docs/USERS.md` §4).
     pub offboarding: fcp_core::TenantOffboarding,
+    /// How the tenant's phones fetch their configuration
+    /// (`docs/PROVISIONING.md` §3).
+    pub provisioning: fcp_core::provisioning::TenantProvisioning,
 }
 
 impl From<Tenant> for TenantResponse {
@@ -135,6 +138,7 @@ impl From<Tenant> for TenantResponse {
             login_domains: tenant.login_domains,
             sign_in: tenant.sign_in,
             offboarding: tenant.offboarding,
+            provisioning: tenant.provisioning,
         }
     }
 }
@@ -176,6 +180,9 @@ pub struct CreateTenantRequest {
     /// no users to name as a meetings owner).
     #[serde(default)]
     pub offboarding: Option<fcp_core::TenantOffboarding>,
+    /// How the tenant's phones fetch their configuration.
+    #[serde(default)]
+    pub provisioning: Option<fcp_core::provisioning::TenantProvisioning>,
 }
 
 /// Request to update a tenant
@@ -208,6 +215,8 @@ pub struct UpdateTenantRequest {
     pub sign_in: Option<fcp_core::TenantSignIn>,
     /// Replaces what happens to a deleted user.
     pub offboarding: Option<fcp_core::TenantOffboarding>,
+    /// Replaces how the tenant's phones fetch their configuration.
+    pub provisioning: Option<fcp_core::provisioning::TenantProvisioning>,
 }
 
 /// A tenant's offboarding as stored: the grace period within bounds, and
@@ -526,6 +535,12 @@ pub async fn create_tenant(
         login_domains,
         sign_in,
         offboarding,
+        provisioning: req
+            .provisioning
+            .clone()
+            .unwrap_or_default()
+            .normalized()
+            .map_err(|e| ApiError::BadRequest(format!("provisioning: {e}")))?,
     };
 
     storage.put_tenant(tenant.clone()).await?;
@@ -673,6 +688,12 @@ pub async fn update_tenant(
 
     if let Some(offboarding) = req.offboarding {
         tenant.offboarding = normalize_offboarding(storage, Some(&tenant.id), offboarding).await?;
+    }
+
+    if let Some(provisioning) = req.provisioning {
+        tenant.provisioning = provisioning
+            .normalized()
+            .map_err(|e| ApiError::BadRequest(format!("provisioning: {e}")))?;
     }
 
     tenant.updated_at = SystemTime::now();

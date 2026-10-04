@@ -300,6 +300,12 @@ pub fn create_router_with(
         v1::pre_auth_router(enable_signup).layer(audit_layer),
     ));
     router = router.merge(Router::new().nest("/api/v1", v1::ws_router()));
+    // A tenant's phones fetch their files by the key in the path
+    // (`docs/PROVISIONING.md`): no bearer token, which a phone cannot send.
+    router = router.merge(Router::new().route(
+        "/provision/:key/:file",
+        axum::routing::get(v1::provisioning::serve_file),
+    ));
     // `/api/v1/health` says `ok` and a version and nothing else; it is
     // what a load balancer or the API gateway probes, and a probe carries
     // no token (`docs/DEPLOYMENT_GAPS.md` §1.4).

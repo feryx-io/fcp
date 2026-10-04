@@ -15,6 +15,7 @@ import datetime
 if TYPE_CHECKING:
   from ..models.tenant_calling import TenantCalling
   from ..models.tenant_offboarding import TenantOffboarding
+  from ..models.tenant_provisioning import TenantProvisioning
   from ..models.tenant_sign_in import TenantSignIn
 
 
@@ -49,6 +50,7 @@ class UpdateTenantRequest:
                 set: a domain decides where a person's sign-in goes.
             sign_in (None | TenantSignIn | Unset):
             offboarding (None | TenantOffboarding | Unset):
+            provisioning (None | TenantProvisioning | Unset):
      """
 
     name: None | str | Unset = UNSET
@@ -68,6 +70,7 @@ class UpdateTenantRequest:
     login_domains: list[str] | None | Unset = UNSET
     sign_in: None | TenantSignIn | Unset = UNSET
     offboarding: None | TenantOffboarding | Unset = UNSET
+    provisioning: None | TenantProvisioning | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -77,6 +80,7 @@ class UpdateTenantRequest:
     def to_dict(self) -> dict[str, Any]:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
+        from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
         name: None | str | Unset
         if isinstance(self.name, Unset):
@@ -196,6 +200,14 @@ class UpdateTenantRequest:
         else:
             offboarding = self.offboarding
 
+        provisioning: dict[str, Any] | None | Unset
+        if isinstance(self.provisioning, Unset):
+            provisioning = UNSET
+        elif isinstance(self.provisioning, TenantProvisioning):
+            provisioning = self.provisioning.to_dict()
+        else:
+            provisioning = self.provisioning
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -235,6 +247,8 @@ class UpdateTenantRequest:
             field_dict["sign_in"] = sign_in
         if offboarding is not UNSET:
             field_dict["offboarding"] = offboarding
+        if provisioning is not UNSET:
+            field_dict["provisioning"] = provisioning
 
         return field_dict
 
@@ -244,6 +258,7 @@ class UpdateTenantRequest:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
+        from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
         d = dict(src_dict)
         def _parse_name(data: object) -> None | str | Unset:
@@ -472,6 +487,26 @@ class UpdateTenantRequest:
         offboarding = _parse_offboarding(d.pop("offboarding", UNSET))
 
 
+        def _parse_provisioning(data: object) -> None | TenantProvisioning | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                provisioning_type_0 = TenantProvisioning.from_dict(data)
+
+
+
+                return provisioning_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TenantProvisioning | Unset, data)
+
+        provisioning = _parse_provisioning(d.pop("provisioning", UNSET))
+
+
         update_tenant_request = cls(
             name=name,
             description=description,
@@ -490,6 +525,7 @@ class UpdateTenantRequest:
             login_domains=login_domains,
             sign_in=sign_in,
             offboarding=offboarding,
+            provisioning=provisioning,
         )
 
 

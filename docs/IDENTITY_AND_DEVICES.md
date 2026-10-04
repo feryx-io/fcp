@@ -709,6 +709,26 @@ Each phase is one PR based on main, with its admin UI and its docs.
    - The old header-token route kept for one release.
    - Proved by the testkit phone fetching its files as each vendor names
      them, then registering with what it got.
+   - Split in two: 7a the tenant's URL (key, vendor file names, device
+     credentials, networks, the fetch log); 7b templates by model with
+     `minijinja`, starters, MAC import, pending devices and claim, resync,
+     the registration on the device, and the end-to-end proof.
+   - **7a done (v0.25.321)** (`docs/PROVISIONING.md`).
+     - `fcp_core::provisioning`: the key (128 bits, sealed at rest and found
+       by its SHA-256, migration 102 `provisioning_keys` on the re-encrypt
+       list), `parse_file` for each vendor's names, Polycom's master file,
+       `TenantProvisioning` (`require_device_credentials`, `networks`),
+       `DeviceFetch` and `ProvisioningStore`.
+     - `GET /provision/{key}/{file}` outside the bearer layer, HTTPS only,
+       every refusal a 404 (or a 401 asking for Basic credentials: the
+       device's provisioning token); `render_device` shared with the old
+       route, which stays for one release.
+     - `/api/v1/provisioning/key` (read and replace) and
+       `/devices/{id}/fetches`; the Devices page's URL card and fetch log;
+       the Tenants page's settings.
+     - Proved by
+       `a_phone_fetches_its_files_from_the_tenants_url_as_its_vendor_names_them`
+       (`api_postgres.rs`) and the file-name unit tests.
 8. **Zero-touch.**
    - A redirection-service connector trait. Connectors for Yealink RPS
      and Poly ZTP first, then Grandstream GDMS and Fanvil FDPS (Q9).

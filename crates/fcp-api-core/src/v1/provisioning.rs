@@ -4,7 +4,7 @@ use crate::{error::ApiError, state::ApiState};
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use fcp_core::storage::{DeviceStore, LineBindingStore, PhoneNumberStore};
 use fcp_core::{CredentialStore, Device, HotelingStore};
@@ -164,6 +164,30 @@ pub async fn auto_provision(
     // but wrong per-device token" by response timing.
     authorize_device_provisioning_token(&device, &headers)?;
 
+    let config = render_device(&state, storage, &device, normalized_mac).await?;
+
+    // Return as text (could be XML, INI, etc. depending on vendor)
+    Ok((
+        StatusCode::OK,
+        [
+            ("content-type", "text/plain; charset=utf-8"),
+            ("cache-control", "no-store, no-cache, max-age=0"),
+            ("pragma", "no-cache"),
+            ("expires", "0"),
+            ("x-content-type-options", "nosniff"),
+        ],
+        config,
+    ))
+}
+
+/// A device's configuration, rendered from its template: refused (as not
+/// found) when the device is disabled or has none.
+pub(crate) async fn render_device(
+    state: &ApiState,
+    storage: &fcp_core::DynStorage,
+    device: &Device,
+    normalized_mac: String,
+) -> Result<String, ApiError> {
     if !device.enabled {
         return Err(provisioning_not_found());
     }
@@ -350,19 +374,357 @@ pub async fn auto_provision(
 
     // Render template
     let config = render_template(&template.template_body, &vars);
+    Ok(config)
+}
 
-    // Return as text (could be XML, INI, etc. depending on vendor)
-    Ok((
-        StatusCode::OK,
-        [
-            ("content-type", "text/plain; charset=utf-8"),
-            ("cache-control", "no-store, no-cache, max-age=0"),
-            ("pragma", "no-cache"),
-            ("expires", "0"),
-            ("x-content-type-options", "nosniff"),
-        ],
-        config,
-    ))
+// ---- The tenant's provisioning URL (`docs/PROVISIONING.md`, phase 7a) ----
+
+const DEVICE_CREDENTIALS_REALM: &str = "Basic realm=\"FCP provisioning\"";
+
+fn provisioning_store(
+    storage: &fcp_core::DynStorage,
+) -> Result<&std::sync::Arc<dyn fcp_core::provisioning::ProvisioningStore>, ApiError> {
+    storage
+        .provisioning_store()
+        .ok_or_else(|| ApiError::NotFound("Provisioning is not available here".to_string()))
+}
+
+/// The password of a request's HTTP Basic credentials.
+fn basic_password(headers: &HeaderMap) -> Option<String> {
+    use base64::Engine;
+    let value = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    let (scheme, encoded) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .ok()?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    decoded.split_once(':').map(|(_, p)| p.to_string())
+}
+
+/// What a fetch was refused as, or served.
+enum Fetched {
+    Served(String, &'static str),
+    Refused(&'static str, StatusCode),
+}
+
+/// GET /provision/:key/:file — a phone's file, as its vendor names it,
+/// from the tenant whose key is in the path (`docs/PROVISIONING.md` §2).
+pub async fn serve_file(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path((key, file)): Path<(String, String)>,
+) -> Response {
+    use fcp_core::provisioning::{parse_file, polycom_master, FileKind, RequestedFile};
+    use fcp_core::TenantStore;
+    let not_found = || provisioning_not_found().into_response();
+    if state.provisioning_require_https && !request_is_https(&headers) {
+        return not_found();
+    }
+    let Some(storage) = state.storage.as_deref() else {
+        return not_found();
+    };
+    let Ok(store) = provisioning_store(storage) else {
+        return not_found();
+    };
+    let tenant_id = match store.tenant_for_provisioning_key(&key).await {
+        Ok(Some(t)) => t,
+        _ => return not_found(),
+    };
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    let address = crate::audit::source_ip(&headers);
+    let requested = parse_file(
+        &file,
+        fcp_core::provisioning::is_polycom(user_agent.as_deref()),
+    );
+    let mut fetch = fcp_core::provisioning::DeviceFetch {
+        tenant_id,
+        device_id: None,
+        mac_address: None,
+        file: file.chars().take(200).collect(),
+        at: std::time::SystemTime::now(),
+        address: address.clone(),
+        user_agent: user_agent.clone(),
+        outcome: String::new(),
+    };
+
+    let outcome: Fetched = async {
+        let settings = match storage.get_tenant(&tenant_id).await {
+            Ok(Some(t)) => t.provisioning,
+            _ => return Fetched::Refused("unknown_tenant", StatusCode::NOT_FOUND),
+        };
+        let (mac, kind, master) = match requested {
+            None => return Fetched::Refused("not_a_device_file", StatusCode::NOT_FOUND),
+            // Nothing every phone of a vendor shares: each has its own.
+            Some(RequestedFile::Common) => {
+                return Fetched::Refused("common", StatusCode::NOT_FOUND)
+            }
+            Some(RequestedFile::PolycomMaster { mac }) => (mac, FileKind::Xml, true),
+            Some(RequestedFile::Device { mac, kind }) => (mac, kind, false),
+        };
+        fetch.mac_address = Some(mac.clone());
+        let device = match storage.get_device_by_mac_address(&mac).await {
+            Ok(Some(d)) if d.tenant_id == tenant_id => d,
+            _ => return Fetched::Refused("unknown_device", StatusCode::NOT_FOUND),
+        };
+        fetch.device_id = Some(device.id);
+        // Its networks only, when the tenant names them: refused on the
+        // device's own log, so a phone that cannot fetch can be told why.
+        let ip = address.as_deref().and_then(|a| a.parse().ok());
+        if !settings.allows(ip) {
+            return Fetched::Refused("network_refused", StatusCode::NOT_FOUND);
+        }
+        // A device's own credentials: its provisioning token as the Basic
+        // password, wanted when the tenant says so or the phone sends them.
+        let presented = basic_password(&headers);
+        if settings.require_device_credentials || presented.is_some() {
+            let ok = match (presented, device.provisioning_token_hash.as_deref()) {
+                (Some(p), Some(expected)) => {
+                    fcp_core::secret::constant_time_eq(hash_token(&p), expected)
+                }
+                _ => false,
+            };
+            if !ok {
+                return Fetched::Refused("unauthorized", StatusCode::UNAUTHORIZED);
+            }
+        }
+        if master {
+            if !device.enabled {
+                return Fetched::Refused("not_served", StatusCode::NOT_FOUND);
+            }
+            return Fetched::Served(polycom_master(&mac), kind.content_type());
+        }
+        match render_device(&state, storage, &device, mac).await {
+            Ok(body) => Fetched::Served(body, kind.content_type()),
+            Err(_) => Fetched::Refused("not_served", StatusCode::NOT_FOUND),
+        }
+    }
+    .await;
+
+    let response = match outcome {
+        Fetched::Served(body, content_type) => {
+            fetch.outcome = "served".to_string();
+            (
+                StatusCode::OK,
+                [
+                    ("content-type", content_type),
+                    ("cache-control", "no-store, no-cache, max-age=0"),
+                    ("pragma", "no-cache"),
+                    ("expires", "0"),
+                    ("x-content-type-options", "nosniff"),
+                ],
+                body,
+            )
+                .into_response()
+        }
+        Fetched::Refused(why, StatusCode::UNAUTHORIZED) => {
+            fetch.outcome = why.to_string();
+            (
+                StatusCode::UNAUTHORIZED,
+                [("www-authenticate", DEVICE_CREDENTIALS_REALM)],
+                "",
+            )
+                .into_response()
+        }
+        Fetched::Refused(why, _) => {
+            fetch.outcome = why.to_string();
+            not_found()
+        }
+    };
+    // Every phone ask for its vendor's common file: not worth a row.
+    if fetch.outcome != "common" {
+        if let Err(e) = store.record_fetch(&fetch).await {
+            tracing::warn!(error = %e, "Could not record a provisioning fetch");
+        }
+    }
+    tracing::info!(
+        tenant_id = %tenant_id,
+        file = %fetch.file,
+        outcome = %fetch.outcome,
+        "Provisioning fetch"
+    );
+    response
+}
+
+/// The tenant's provisioning URL.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct ProvisioningKeyResponse {
+    /// The secret in the URL's path; anyone with it may fetch the tenant's
+    /// phones' files (by MAC), so it is shown to administrators only.
+    pub key: String,
+    /// The path phones fetch under: `/provision/<key>/`.
+    pub path: String,
+    /// The whole URL, when the admin knows its public address
+    /// (`[api.sso] public_url`).
+    pub url: Option<String>,
+    #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
+    pub created_at: std::time::SystemTime,
+}
+
+fn key_response(
+    state: &ApiState,
+    key: fcp_core::provisioning::ProvisioningKey,
+) -> ProvisioningKeyResponse {
+    let path = format!("/provision/{}/", key.key);
+    ProvisioningKeyResponse {
+        url: state
+            .sso
+            .as_ref()
+            .map(|s| format!("{}{path}", s.public_url)),
+        path,
+        key: key.key,
+        created_at: key.created_at,
+    }
+}
+
+/// GET /api/v1/provisioning/key
+#[utoipa::path(
+    get,
+    path = "/api/v1/provisioning/key",
+    tag = "provisioning",
+    operation_id = "provisioning_get_key",
+    responses(
+        (status = 200, description = "OK", body = ProvisioningKeyResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn get_key(
+    State(state): State<ApiState>,
+    axum::Extension(identity): axum::Extension<crate::auth::AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+) -> Result<axum::Json<ProvisioningKeyResponse>, ApiError> {
+    crate::auth::check_permission(
+        &identity,
+        fcp_core::permissions::Permission::DeviceUpdate,
+        state.deployment_mode,
+    )?;
+    let storage = state
+        .storage
+        .as_deref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".into()))?;
+    let key = provisioning_store(storage)?
+        .get_provisioning_key(&tenant.0)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("The tenant has no provisioning key yet".to_string()))?;
+    Ok(axum::Json(key_response(&state, key)))
+}
+
+/// POST /api/v1/provisioning/key — a new key: the old URL stops working.
+#[utoipa::path(
+    post,
+    path = "/api/v1/provisioning/key",
+    tag = "provisioning",
+    operation_id = "provisioning_rotate_key",
+    responses(
+        (status = 201, description = "Made", body = ProvisioningKeyResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn rotate_key(
+    State(state): State<ApiState>,
+    axum::Extension(identity): axum::Extension<crate::auth::AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(
+        &identity,
+        fcp_core::permissions::Permission::DeviceUpdate,
+        state.deployment_mode,
+    )?;
+    let storage = state
+        .storage
+        .as_deref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".into()))?;
+    let key = fcp_core::provisioning::ProvisioningKey::generate(tenant.0);
+    provisioning_store(storage)?
+        .put_provisioning_key(&key)
+        .await?;
+    tracing::warn!(event = "provisioning_key_rotated", tenant_id = %tenant.0, "Provisioning key made");
+    Ok((StatusCode::CREATED, axum::Json(key_response(&state, key))))
+}
+
+/// One fetch of a device's file.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct DeviceFetchResponse {
+    pub file: String,
+    #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
+    pub at: std::time::SystemTime,
+    pub address: Option<String>,
+    pub user_agent: Option<String>,
+    /// `served`, `unauthorized`, `not_served` (disabled, or no template)…
+    pub outcome: String,
+}
+
+/// GET /api/v1/devices/:id/fetches — the device's provisioning fetches,
+/// newest first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/devices/{id}/fetches",
+    tag = "provisioning",
+    operation_id = "provisioning_device_fetches",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<DeviceFetchResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn device_fetches(
+    State(state): State<ApiState>,
+    axum::Extension(identity): axum::Extension<crate::auth::AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(
+        &identity,
+        fcp_core::permissions::Permission::DeviceRead,
+        state.deployment_mode,
+    )?;
+    let storage = state
+        .storage
+        .as_deref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".into()))?;
+    let device_id: fcp_core::DeviceId = id
+        .parse()
+        .map_err(|_| ApiError::BadRequest(format!("Invalid device ID: {id}")))?;
+    let device = storage
+        .get_device(&device_id)
+        .await?
+        .filter(|d| d.tenant_id == tenant.0)
+        .ok_or_else(|| ApiError::NotFound(format!("Device {id} not found")))?;
+    let fetches: Vec<DeviceFetchResponse> = provisioning_store(storage)?
+        .device_fetches(&tenant.0, &device.id, 100)
+        .await?
+        .into_iter()
+        .map(|f| DeviceFetchResponse {
+            file: f.file,
+            at: f.at,
+            address: f.address,
+            user_agent: f.user_agent,
+            outcome: f.outcome,
+        })
+        .collect();
+    Ok(axum::Json(crate::page::paginate(
+        fetches,
+        &crate::page::PageQuery::default(),
+        crate::page::Order::Descending,
+        |f| {
+            format!(
+                "{:020}",
+                f.at.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_micros()
+            )
+        },
+    )?))
 }
 
 #[cfg(test)]

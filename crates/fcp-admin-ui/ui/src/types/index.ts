@@ -654,6 +654,10 @@ export type Schedule = S['ScheduleResponse']
 
 /** A tenant's group (`docs/USERS.md` §5). */
 export type Group = S['GroupResponse']
+
+/** The tenant's provisioning URL (`docs/PROVISIONING.md`). */
+export type ProvisioningKey = S['ProvisioningKeyResponse']
+export type DeviceFetch = S['DeviceFetchResponse']
 export type GroupRequest = S['GroupRequest']
 export type GroupMember = S['GroupMemberResponse']
 

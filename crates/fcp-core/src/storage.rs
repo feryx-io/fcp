@@ -3595,6 +3595,7 @@ pub struct DynStorage {
     subject_erase_store: Option<Arc<dyn crate::subject_erasure::SubjectEraseStore>>,
     offboarding_store: Option<Arc<dyn crate::offboarding::OffboardingStore>>,
     group_store: Option<Arc<dyn crate::group::GroupStore>>,
+    provisioning_store: Option<Arc<dyn crate::provisioning::ProvisioningStore>>,
 }
 
 impl DynStorage {
@@ -3676,6 +3677,7 @@ impl DynStorage {
             subject_erase_store: None,
             offboarding_store: None,
             group_store: None,
+            provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
         }
@@ -3761,6 +3763,7 @@ impl DynStorage {
             subject_erase_store: None,
             offboarding_store: None,
             group_store: None,
+            provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
         }
@@ -4008,6 +4011,20 @@ impl DynStorage {
     pub fn with_group_store(mut self, store: Arc<dyn crate::group::GroupStore>) -> Self {
         self.group_store = Some(store);
         self
+    }
+
+    /// Attach provisioning keys and the fetch log (`docs/PROVISIONING.md`).
+    pub fn with_provisioning_store(
+        mut self,
+        store: Arc<dyn crate::provisioning::ProvisioningStore>,
+    ) -> Self {
+        self.provisioning_store = Some(store);
+        self
+    }
+
+    /// Provisioning keys and the fetch log, when attached.
+    pub fn provisioning_store(&self) -> Option<&Arc<dyn crate::provisioning::ProvisioningStore>> {
+        self.provisioning_store.as_ref()
     }
 
     /// The tenant's groups, when attached.

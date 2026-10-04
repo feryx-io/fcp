@@ -155,6 +155,11 @@ pub struct Tenant {
     /// What happens to a deleted user (`docs/USERS.md` §4).
     #[serde(default)]
     pub offboarding: TenantOffboarding,
+
+    /// How the tenant's phones fetch their configuration
+    /// (`docs/PROVISIONING.md` §3).
+    #[serde(default)]
+    pub provisioning: crate::provisioning::TenantProvisioning,
 }
 
 /// What happens to a tenant's deleted user (`docs/USERS.md` §4): they are
@@ -393,6 +398,7 @@ impl Tenant {
             login_domains: Vec::new(),
             sign_in: TenantSignIn::default(),
             offboarding: TenantOffboarding::default(),
+            provisioning: Default::default(),
         }
     }
 

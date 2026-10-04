@@ -4234,6 +4234,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/provisioning/key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/provisioning/key */
+        get: operations["provisioning_get_key"];
+        put?: never;
+        /** POST /api/v1/provisioning/key — a new key: the old URL stops working. */
+        post: operations["provisioning_rotate_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/{id}/fetches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/devices/:id/fetches — the device's provisioning fetches,
+         *     newest first.
+         */
+        get: operations["provisioning_device_fetches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/groups": {
         parameters: {
             query?: never;
@@ -5771,6 +5809,7 @@ export interface components {
             login_domains?: string[];
             sign_in?: components["schemas"]["TenantSignIn"] | null;
             offboarding?: components["schemas"]["TenantOffboarding"] | null;
+            provisioning?: components["schemas"]["TenantProvisioning"] | null;
         };
         /** @description Credit or adjustment request. */
         CreateTransactionRequest: {
@@ -5973,6 +6012,16 @@ export interface components {
             line_appearance: number;
             shared_line: boolean;
             enabled: boolean;
+        };
+        /** @description One fetch of a device's file. */
+        DeviceFetchResponse: {
+            file: string;
+            /** Format: date-time */
+            at: string;
+            address?: string | null;
+            user_agent?: string | null;
+            /** @description `served`, `unauthorized`, `not_served` (disabled, or no template)… */
+            outcome: string;
         };
         /** @description Device response. */
         DeviceResponse: {
@@ -7306,6 +7355,25 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_DeviceFetchResponse: {
+            data: {
+                file: string;
+                /** Format: date-time */
+                at: string;
+                address?: string | null;
+                user_agent?: string | null;
+                /** @description `served`, `unauthorized`, `not_served` (disabled, or no template)… */
+                outcome: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_DeviceResponse: {
             data: {
                 id: string;
@@ -8626,6 +8694,11 @@ export interface components {
                 sign_in: components["schemas"]["TenantSignIn"];
                 /** @description What happens to a deleted user (`docs/USERS.md` §4). */
                 offboarding: components["schemas"]["TenantOffboarding"];
+                /**
+                 * @description How the tenant's phones fetch their configuration
+                 *     (`docs/PROVISIONING.md` §3).
+                 */
+                provisioning: components["schemas"]["TenantProvisioning"];
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -9255,6 +9328,23 @@ export interface components {
              *     Entra's `tid`. A claim that is a list must contain the value.
              */
             required_claims?: components["schemas"]["RequiredClaim"][];
+        };
+        /** @description The tenant's provisioning URL. */
+        ProvisioningKeyResponse: {
+            /**
+             * @description The secret in the URL's path; anyone with it may fetch the tenant's
+             *     phones' files (by MAC), so it is shown to administrators only.
+             */
+            key: string;
+            /** @description The path phones fetch under: `/provision/<key>/`. */
+            path: string;
+            /**
+             * @description The whole URL, when the admin knows its public address
+             *     (`[api.sso] public_url`).
+             */
+            url?: string | null;
+            /** Format: date-time */
+            created_at: string;
         };
         /** @description What a purge did, counted. */
         PurgeReport: {
@@ -9955,6 +10045,16 @@ export interface components {
              */
             meetings_owner?: string | null;
         };
+        /** @description A tenant's provisioning settings (`docs/PROVISIONING.md` §3). */
+        TenantProvisioning: {
+            /**
+             * @description A phone must also give its own HTTP credentials: Basic, with the
+             *     device's provisioning token as the password.
+             */
+            require_device_credentials?: boolean;
+            /** @description Where phones may fetch from (CIDRs); empty is anywhere. */
+            networks?: string[];
+        };
         /** @description Response for tenant API calls */
         TenantResponse: {
             id: string;
@@ -9998,6 +10098,11 @@ export interface components {
             sign_in: components["schemas"]["TenantSignIn"];
             /** @description What happens to a deleted user (`docs/USERS.md` §4). */
             offboarding: components["schemas"]["TenantOffboarding"];
+            /**
+             * @description How the tenant's phones fetch their configuration
+             *     (`docs/PROVISIONING.md` §3).
+             */
+            provisioning: components["schemas"]["TenantProvisioning"];
         };
         /** @description How a tenant's people may sign in (`docs/IDENTITY_AND_DEVICES.md` §2). */
         TenantSignIn: {
@@ -10695,6 +10800,7 @@ export interface components {
             login_domains?: string[] | null;
             sign_in?: components["schemas"]["TenantSignIn"] | null;
             offboarding?: components["schemas"]["TenantOffboarding"] | null;
+            provisioning?: components["schemas"]["TenantProvisioning"] | null;
         };
         /** @description Update trunk request. */
         UpdateTrunkRequest: {
@@ -21349,6 +21455,95 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_get_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProvisioningKeyResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_rotate_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Made */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProvisioningKeyResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_device_fetches: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_DeviceFetchResponse"];
+                };
             };
             /** @description An error */
             default: {
