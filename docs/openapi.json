@@ -29126,7 +29126,8 @@
                 "timezone",
                 "account_status",
                 "failed_login_attempts",
-                "sip_username"
+                "sip_username",
+                "scim_managed"
               ],
               "properties": {
                 "id": {
@@ -29261,6 +29262,10 @@
                 "sip_username": {
                   "type": "string",
                   "description": "The name the user's phones register and authenticate as: their\nusername, or the one they had before a rename (`docs/USERS.md` §6)."
+                },
+                "scim_managed": {
+                  "type": "boolean",
+                  "description": "Made by the tenant's SCIM provisioner (`docs/SCIM.md`)."
                 },
                 "deprovisioned_at": {
                   "type": [
@@ -32847,6 +32852,10 @@
           "require_totp": {
             "$ref": "#/components/schemas/RequireTotp",
             "description": "Who must add a one-time code to a password (phase 2b)."
+          },
+          "scim": {
+            "type": "boolean",
+            "description": "The tenant's users come from its SCIM provisioner (`docs/SCIM.md`):\nsingle sign-on makes nobody just in time and signs in only users\nSCIM made."
           }
         }
       },
@@ -35886,7 +35895,8 @@
           "timezone",
           "account_status",
           "failed_login_attempts",
-          "sip_username"
+          "sip_username",
+          "scim_managed"
         ],
         "properties": {
           "id": {
@@ -36021,6 +36031,10 @@
           "sip_username": {
             "type": "string",
             "description": "The name the user's phones register and authenticate as: their\nusername, or the one they had before a rename (`docs/USERS.md` §6)."
+          },
+          "scim_managed": {
+            "type": "boolean",
+            "description": "Made by the tenant's SCIM provisioner (`docs/SCIM.md`)."
           },
           "deprovisioned_at": {
             "type": [

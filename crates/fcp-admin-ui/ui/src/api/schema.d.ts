@@ -8787,6 +8787,8 @@ export interface components {
                  *     username, or the one they had before a rename (`docs/USERS.md` §6).
                  */
                 sip_username: string;
+                /** @description Made by the tenant's SCIM provisioner (`docs/SCIM.md`). */
+                scim_managed: boolean;
                 /**
                  * Format: date-time
                  * @description When the user was deleted; they are purged the tenant's
@@ -10003,6 +10005,12 @@ export interface components {
             password_login?: components["schemas"]["PasswordLogin"];
             /** @description Who must add a one-time code to a password (phase 2b). */
             require_totp?: components["schemas"]["RequireTotp"];
+            /**
+             * @description The tenant's users come from its SCIM provisioner (`docs/SCIM.md`):
+             *     single sign-on makes nobody just in time and signs in only users
+             *     SCIM made.
+             */
+            scim?: boolean;
         };
         /** @description A test delivery. */
         TestWebhookRequest: {
@@ -10874,6 +10882,8 @@ export interface components {
              *     username, or the one they had before a rename (`docs/USERS.md` §6).
              */
             sip_username: string;
+            /** @description Made by the tenant's SCIM provisioner (`docs/SCIM.md`). */
+            scim_managed: boolean;
             /**
              * Format: date-time
              * @description When the user was deleted; they are purged the tenant's

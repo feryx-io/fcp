@@ -22,6 +22,7 @@ pub mod page;
 pub mod rate_limit;
 pub mod route_permissions;
 pub mod saml;
+pub mod scim;
 pub mod shape;
 pub mod site_files;
 pub mod state;
@@ -204,6 +205,18 @@ pub fn create_router_with(
                     managed::refuse_synced_writes,
                 )),
         );
+
+    // SCIM 2.0 (`docs/SCIM.md`): the tenant's provisioner, by an API token
+    // holding `scim_provision`; behind the bearer layer like the API.
+    router = router.nest(
+        "/scim/v2",
+        scim::router()
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                rate_limit::enforce,
+            ))
+            .layer(audit_layer.clone()),
+    );
 
     // Sign-in sessions (`docs/IDENTITY_AND_DEVICES.md` phase 1): signed
     // with `[api.session] signing_key`, else a key derived from the static

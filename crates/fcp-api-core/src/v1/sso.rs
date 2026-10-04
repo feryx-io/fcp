@@ -761,9 +761,23 @@ async fn resolve_user(
         .as_deref()
         .map(|g| provider.settings.role_for(g).unwrap_or(UserRole::EndUser));
 
+    // A tenant whose users come from SCIM (`docs/SCIM.md`): nobody is made
+    // here, and only those SCIM made sign in.
+    let scim = {
+        use fcp_core::TenantStore;
+        storage
+            .get_tenant(&provider.tenant_id)
+            .await
+            .map_err(|_| refuse("internal"))?
+            .is_some_and(|t| t.sign_in.scim)
+    };
+    if scim && user.as_ref().is_some_and(|u| !u.scim_managed) {
+        return Err(refuse("not_provisioned"));
+    }
+
     let mut user = match user {
         Some(user) => user,
-        None if provider.settings.jit && !at_site => {
+        None if provider.settings.jit && !at_site && !scim => {
             let username = username_claim
                 .as_deref()
                 .and_then(jit_username)

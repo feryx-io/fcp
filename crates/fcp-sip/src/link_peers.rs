@@ -221,6 +221,8 @@ impl SiteAccounts {
             profile_picture: None,
             deprovisioned_at: None,
             sip_username: None,
+            scim_managed: false,
+            scim_external_id: None,
             failed_login_attempts: 0,
             account_locked_until: None,
         })

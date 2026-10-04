@@ -271,6 +271,15 @@ pub struct User {
     #[serde(default)]
     pub sip_username: Option<String>,
 
+    /// Made by the tenant's SCIM provisioner (`docs/SCIM.md`): when the
+    /// tenant's users come from SCIM, only these sign in by single sign-on.
+    #[serde(default)]
+    pub scim_managed: bool,
+
+    /// The provisioner's own id for the user (SCIM `externalId`).
+    #[serde(default)]
+    pub scim_external_id: Option<String>,
+
     /// Display name (optional)
     pub display_name: Option<String>,
 
@@ -395,6 +404,14 @@ pub struct UserFilter {
     /// A word in the username, display name or email (case aside).
     pub search: Option<String>,
     pub status: Option<AccountStatus>,
+    /// Exactly this username, case aside (SCIM `userName eq`).
+    pub username: Option<String>,
+    /// Exactly this SCIM `externalId`.
+    pub external_id: Option<String>,
+    /// Exactly this email, case aside.
+    pub email: Option<String>,
+    /// Leave out deleted users waiting for their purge.
+    pub exclude_deprovisioned: bool,
 }
 
 impl UserFilter {
@@ -412,7 +429,19 @@ impl UserFilter {
                     .as_deref()
                     .is_some_and(|e| e.to_lowercase().contains(&q))
         });
-        status && search
+        let eq = |want: &Option<String>, have: Option<&str>| {
+            want.as_deref()
+                .is_none_or(|w| have.is_some_and(|h| h.eq_ignore_ascii_case(w)))
+        };
+        status
+            && search
+            && eq(&self.username, Some(&user.username))
+            && self
+                .external_id
+                .as_deref()
+                .is_none_or(|w| user.scim_external_id.as_deref() == Some(w))
+            && eq(&self.email, user.email.as_deref())
+            && !(self.exclude_deprovisioned && user.is_deprovisioned())
     }
 }
 
@@ -5477,6 +5506,8 @@ mod tests {
             profile_picture: None,
             deprovisioned_at: None,
             sip_username: None,
+            scim_managed: false,
+            scim_external_id: None,
             failed_login_attempts: 0,
             account_locked_until: None,
         };

@@ -69,6 +69,8 @@ pub struct UserResponse {
     /// The name the user's phones register and authenticate as: their
     /// username, or the one they had before a rename (`docs/USERS.md` §6).
     pub sip_username: String,
+    /// Made by the tenant's SCIM provisioner (`docs/SCIM.md`).
+    pub scim_managed: bool,
     /// When the user was deleted; they are purged the tenant's
     /// `offboarding.grace_days` later unless restored.
     #[serde(default, with = "crate::time::rfc3339_opt")]
@@ -112,6 +114,7 @@ impl From<User> for UserResponse {
             emergency_contact_name: user.emergency_contact.name,
             emergency_contact_phone: user.emergency_contact.phone,
             sip_username,
+            scim_managed: user.scim_managed,
             deprovisioned_at: user.deprovisioned_at,
         }
     }
@@ -281,6 +284,7 @@ pub async fn list_users(
             .as_deref()
             .map(parse_account_status)
             .transpose()?,
+        ..Default::default()
     };
     let users = storage.list_users_in_tenant(&tenant.0, &filter).await?;
     let responses: Vec<UserResponse> = users.into_iter().map(UserResponse::from).collect();
@@ -532,6 +536,8 @@ pub async fn create_user(
         profile_picture: None,
         deprovisioned_at: None,
         sip_username: None,
+        scim_managed: false,
+        scim_external_id: None,
         failed_login_attempts: 0,
         account_locked_until: None,
     };
@@ -1564,6 +1570,8 @@ pub(crate) fn user_without_password(
         profile_picture: None,
         deprovisioned_at: None,
         sip_username: None,
+        scim_managed: false,
+        scim_external_id: None,
         failed_login_attempts: 0,
         account_locked_until: None,
     })
