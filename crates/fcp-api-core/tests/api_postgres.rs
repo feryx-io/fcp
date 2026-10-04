@@ -12994,3 +12994,227 @@ async fn a_tenant_whose_users_come_from_scim_signs_in_only_those() {
 
     app.finish().await;
 }
+
+#[tokio::test]
+async fn entra_id_and_okta_provision_groups_and_their_members() {
+    let app = require_app!();
+    let token = app.scim_token().await;
+    let scim = |method: Method, path: String, body: Option<Value>| {
+        let (app, token) = (&app, token.clone());
+        async move { app.send_as(&token, method, &path, body).await }
+    };
+    let make_user = |name: &'static str| {
+        let scim = &scim;
+        async move {
+            let res = scim(
+                Method::POST,
+                "/scim/v2/Users".into(),
+                Some(
+                    json!({"schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+                            "userName": name}),
+                ),
+            )
+            .await;
+            assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+            scim_user_id(&res)
+        }
+    };
+    let ana = make_user("ana").await;
+    let bo = make_user("bo").await;
+    let patch = |ops: Value| json!({"schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"], "Operations": ops});
+    let member_ids = |res: &Response| -> Vec<String> {
+        let mut ids: Vec<String> = res.json["members"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|m| m["value"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    };
+
+    // ── Entra ID: an empty group, looked up without members, then filled
+    // and emptied one PATCH at a time.
+    let made = scim(
+        Method::POST,
+        "/scim/v2/Groups".into(),
+        Some(json!({
+            "externalId": "8aa1a0c0-c4c3-4bc0-b4a5-2ef676900159",
+            "displayName": "Group1936FD6D",
+            "meta": {"resourceType": "Group"},
+            "members": [],
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"]
+        })),
+    )
+    .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let entra_group = made.json["id"].as_str().unwrap().to_string();
+    assert!(entra_group.starts_with("grp-"), "{entra_group}");
+    let found = scim(
+        Method::GET,
+        "/scim/v2/Groups?excludedAttributes=members&filter=displayName%20eq%20%22Group1936FD6D%22"
+            .into(),
+        None,
+    )
+    .await;
+    assert_eq!(found.json["totalResults"], 1, "{}", found.text);
+    assert!(found.json["Resources"][0].get("members").is_none());
+    let added = scim(
+        Method::PATCH,
+        format!("/scim/v2/Groups/{entra_group}"),
+        Some(patch(json!([{"op": "Add", "path": "members",
+                           "value": [{"value": ana}, {"value": bo}]}]))),
+    )
+    .await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.text);
+    let mut both = vec![ana.clone(), bo.clone()];
+    both.sort();
+    assert_eq!(member_ids(&added), both);
+    let removed = scim(
+        Method::PATCH,
+        format!("/scim/v2/Groups/{entra_group}"),
+        Some(patch(
+            json!([{"op": "Remove", "path": "members", "value": [{"value": ana}]}]),
+        )),
+    )
+    .await;
+    assert_eq!(member_ids(&removed), vec![bo.clone()], "{}", removed.text);
+    let renamed = scim(
+        Method::PATCH,
+        format!("/scim/v2/Groups/{entra_group}"),
+        Some(patch(
+            json!([{"op": "Replace", "path": "displayName", "value": "Renamed Group"}]),
+        )),
+    )
+    .await;
+    assert_eq!(
+        renamed.json["displayName"], "Renamed Group",
+        "{}",
+        renamed.text
+    );
+    assert_eq!(member_ids(&renamed), vec![bo.clone()]);
+    let stranger = scim(
+        Method::PATCH,
+        format!("/scim/v2/Groups/{entra_group}"),
+        Some(patch(json!([{"op": "Add", "path": "members",
+                           "value": [{"value": "user-00000000-0000-0000-0000-000000000000"}]}]))),
+    )
+    .await;
+    assert_eq!(
+        stranger.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        stranger.text
+    );
+
+    // ── Okta: a group made with its members; one removed by a filtered
+    // path, the name replaced by a value object, then the whole group.
+    let made = scim(
+        Method::POST,
+        "/scim/v2/Groups".into(),
+        Some(json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+            "displayName": "Test SCIMv2",
+            "members": [{"value": ana, "display": "ana"}, {"value": bo, "display": "bo"}]
+        })),
+    )
+    .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let okta_group = made.json["id"].as_str().unwrap().to_string();
+    assert_eq!(member_ids(&made), both);
+    let dup = scim(
+        Method::POST,
+        "/scim/v2/Groups".into(),
+        Some(
+            json!({"schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+                    "displayName": "test scimv2"}),
+        ),
+    )
+    .await;
+    assert_eq!(dup.json["scimType"], "uniqueness", "{}", dup.text);
+    let removed = scim(
+        Method::PATCH,
+        format!("/scim/v2/Groups/{okta_group}"),
+        Some(patch(
+            json!([{"op": "remove", "path": format!("members[value eq \"{bo}\"]")}]),
+        )),
+    )
+    .await;
+    assert_eq!(member_ids(&removed), vec![ana.clone()], "{}", removed.text);
+    let renamed = scim(
+        Method::PATCH,
+        format!("/scim/v2/Groups/{okta_group}"),
+        Some(patch(json!([{"op": "replace",
+                           "value": {"id": okta_group, "displayName": "Okta Renamed"}}]))),
+    )
+    .await;
+    assert_eq!(
+        renamed.json["displayName"], "Okta Renamed",
+        "{}",
+        renamed.text
+    );
+    let put = scim(
+        Method::PUT,
+        format!("/scim/v2/Groups/{okta_group}"),
+        Some(
+            json!({"schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+                    "displayName": "Okta Renamed", "members": [{"value": bo}]}),
+        ),
+    )
+    .await;
+    assert_eq!(member_ids(&put), vec![bo.clone()], "{}", put.text);
+
+    // A role carried on FCP's extension is the members' too.
+    let role = scim(
+        Method::PATCH,
+        format!("/scim/v2/Groups/{okta_group}"),
+        Some(patch(json!([{"op": "add",
+                           "path": "urn:ietf:params:scim:schemas:extension:fcp:2.0:Group:role",
+                           "value": "user_admin"}]))),
+    )
+    .await;
+    assert_eq!(
+        role.json["urn:ietf:params:scim:schemas:extension:fcp:2.0:Group"]["role"], "user_admin",
+        "{}",
+        role.text
+    );
+    let groups_of_bo = app
+        .admin(Method::GET, "/api/v1/users/bo/groups", None)
+        .await;
+    assert_eq!(
+        groups_of_bo.json.as_array().unwrap().len(),
+        2,
+        "{}",
+        groups_of_bo.text
+    );
+
+    // Deleted: gone to SCIM and to FCP; its members are not.
+    let gone = scim(
+        Method::DELETE,
+        format!("/scim/v2/Groups/{okta_group}"),
+        None,
+    )
+    .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        scim(Method::GET, format!("/scim/v2/Groups/{okta_group}"), None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        app.admin(Method::GET, "/api/v1/users/bo", None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let types = scim(Method::GET, "/scim/v2/ResourceTypes".into(), None).await;
+    assert_eq!(
+        types.json["Resources"][1]["endpoint"], "/Groups",
+        "{}",
+        types.text
+    );
+
+    app.finish().await;
+}

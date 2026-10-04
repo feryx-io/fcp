@@ -683,6 +683,19 @@ Each phase is one PR based on main, with its admin UI and its docs.
        `a_tenant_whose_users_come_from_scim_signs_in_only_those`
        (`api_postgres.rs`), with Entra ID's and Okta's own request bodies,
        and the patch and filter unit tests in `fcp_api_core::scim`.
+   - **6b done (v0.25.320)** (`docs/SCIM.md` §4, §6).
+     - `/scim/v2/Groups` (create, read, list with `displayName`/
+       `externalId`/`id` filters and `excludedAttributes=members`, replace,
+       patch, delete) over 5c's groups; `groups.scim_external_id`
+       (migration 101).
+     - Members by user id, set exactly by a replace and changed by a
+       patch: Entra ID's `add`/`remove` with value lists, Okta's filtered
+       `members[value eq "…"]` and value objects; each change announced.
+     - The group's role on FCP's group extension.
+     - Setup guides for Entra ID and Okta, written from their documentation.
+     - Proved by `entra_id_and_okta_provision_groups_and_their_members`
+       (`api_postgres.rs`).
+     - Phase 6 is complete.
 7. **Provisioning that phones can use.**
    - The tenant provisioning key and URL; vendor file names and content
      types; optional device HTTP credentials.
