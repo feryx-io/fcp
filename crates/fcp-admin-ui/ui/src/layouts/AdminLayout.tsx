@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable, CalendarClock, ShieldCheck, BedDouble, Webhook, KeyRound,
+  LayoutDashboard, Users, UsersRound, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable, CalendarClock, ShieldCheck, BedDouble, Webhook, KeyRound,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -29,6 +29,7 @@ const navItems: NavItem[] = [
   { label: 'Dashboard', href: '/admin', icon: LayoutDashboard },
   // Management
   { label: 'Users', href: '/admin/users', icon: Users, section: 'Management' },
+  { label: 'Groups', href: '/admin/groups', icon: UsersRound, section: 'Management' },
   { label: 'Extensions', href: '/admin/extensions', icon: Phone, section: 'Management' },
   { label: 'Devices', href: '/admin/devices', icon: MonitorSmartphone, section: 'Management' },
   { label: 'Phone Numbers', href: '/admin/phone-numbers', icon: Phone, section: 'Management' },

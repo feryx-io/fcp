@@ -1042,6 +1042,15 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
             items.push(item("user_identities", &i.row_id(), &i)?);
         }
     }
+    // After the users: a group's members name them (docs/USERS.md §5).
+    if let Some(groups) = storage.group_store() {
+        for g in groups.list_groups(tenant).await? {
+            items.push(item("groups", &g.id, &g)?);
+        }
+        for m in groups.list_tenant_members(tenant).await? {
+            items.push(item("group_members", &m.row_id(), &m)?);
+        }
+    }
     Ok(items)
 }
 
@@ -1183,6 +1192,19 @@ async fn object_now(
         ) {
             (Some(store), Some((provider, subject))) => {
                 same_tenant!(store.get_user_identity(&provider, &subject).await?)
+            }
+            _ => None,
+        },
+        "groups" => match (storage.group_store(), id.parse()) {
+            (Some(store), Ok(id)) => same_tenant!(store.get_group(&id).await?),
+            _ => None,
+        },
+        "group_members" => match (
+            storage.group_store(),
+            fcp_core::group::GroupMember::parse_row_id(id),
+        ) {
+            (Some(store), Some((group, user))) => {
+                same_tenant!(store.get_member(&group, &user).await?)
             }
             _ => None,
         },

@@ -1,5 +1,6 @@
 """ Contains all the data models used in inputs/outputs """
 
+from .add_member_request import AddMemberRequest
 from .agent_login_request import AgentLoginRequest
 from .agent_response import AgentResponse
 from .api_token_response import ApiTokenResponse
@@ -126,6 +127,9 @@ from .flow_trace_response import FlowTraceResponse
 from .grantable_permission import GrantablePermission
 from .greeting_response import GreetingResponse
 from .greeting_upload import GreetingUpload
+from .group_member_response import GroupMemberResponse
+from .group_request import GroupRequest
+from .group_response import GroupResponse
 from .group_role import GroupRole
 from .hold_request import HoldRequest
 from .hold_response import HoldResponse
@@ -211,6 +215,10 @@ from .page_grantable_permission import PageGrantablePermission
 from .page_grantable_permission_data_item import PageGrantablePermissionDataItem
 from .page_greeting_response import PageGreetingResponse
 from .page_greeting_response_data_item import PageGreetingResponseDataItem
+from .page_group_member_response import PageGroupMemberResponse
+from .page_group_member_response_data_item import PageGroupMemberResponseDataItem
+from .page_group_response import PageGroupResponse
+from .page_group_response_data_item import PageGroupResponseDataItem
 from .page_hold_response import PageHoldResponse
 from .page_hold_response_data_item import PageHoldResponseDataItem
 from .page_hold_response_data_item_held_type_0 import PageHoldResponseDataItemHeldType0
@@ -449,6 +457,7 @@ from .webhook_with_secret import WebhookWithSecret
 from .weekly_window import WeeklyWindow
 
 __all__ = (
+    "AddMemberRequest",
     "AgentLoginRequest",
     "AgentResponse",
     "ApiTokenResponse",
@@ -575,6 +584,9 @@ __all__ = (
     "GrantablePermission",
     "GreetingResponse",
     "GreetingUpload",
+    "GroupMemberResponse",
+    "GroupRequest",
+    "GroupResponse",
     "GroupRole",
     "HoldRequest",
     "HoldResponse",
@@ -660,6 +672,10 @@ __all__ = (
     "PageGrantablePermissionDataItem",
     "PageGreetingResponse",
     "PageGreetingResponseDataItem",
+    "PageGroupMemberResponse",
+    "PageGroupMemberResponseDataItem",
+    "PageGroupResponse",
+    "PageGroupResponseDataItem",
     "PageHoldResponse",
     "PageHoldResponseDataItem",
     "PageHoldResponseDataItemHeldType0",

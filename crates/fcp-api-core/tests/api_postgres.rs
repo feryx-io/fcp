@@ -211,7 +211,8 @@ impl App {
                         as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>)
                     .with_offboarding_store(
                         Arc::clone(&storage) as Arc<dyn fcp_core::offboarding::OffboardingStore>
-                    ),
+                    )
+                    .with_group_store(Arc::clone(&storage) as Arc<dyn fcp_core::group::GroupStore>),
             );
         let dir = tempfile::Builder::new()
             .prefix("fcp-api-test-")
@@ -12129,6 +12130,283 @@ async fn a_tenant_without_a_grace_period_purges_at_once_and_a_platform_admin_may
             .status,
         StatusCode::NOT_FOUND
     );
+
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Groups (docs/IDENTITY_AND_DEVICES.md phase 5c)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_groups_role_is_its_members_too_and_roles_add_up() {
+    let app = require_app!();
+    app.create_user_with_role("gina", "end_user").await;
+    app.create_user_with_role("rita", "read_only").await;
+    let gina = app.login("gina", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let rita = app.login("rita", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let users = |token: String| {
+        let app = &app;
+        async move {
+            app.send_as(&token, Method::GET, "/api/v1/users", None)
+                .await
+                .status
+        }
+    };
+    assert_eq!(users(gina.clone()).await, StatusCode::FORBIDDEN);
+
+    // Only the tenant's administrator makes groups, and no group makes a
+    // platform admin.
+    let refused = app
+        .send_as(
+            &rita,
+            Method::POST,
+            "/api/v1/groups",
+            Some(json!({"name": "Sneaky", "role": "tenant_admin"})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    for (body, status) in [
+        (
+            json!({"name": "Root", "role": "super_admin"}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"name": "Dept", "role": "department_admin"}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (json!({"name": "  "}), StatusCode::BAD_REQUEST),
+    ] {
+        let res = app.admin(Method::POST, "/api/v1/groups", Some(body)).await;
+        assert_eq!(res.status, status, "{}", res.text);
+    }
+    let helpdesk = app
+        .admin(
+            Method::POST,
+            "/api/v1/groups",
+            Some(json!({"name": "Helpdesk", "role": "user_admin", "description": "first line"})),
+        )
+        .await;
+    assert_eq!(helpdesk.status, StatusCode::CREATED, "{}", helpdesk.text);
+    let helpdesk_id = helpdesk.json["id"].as_str().unwrap().to_string();
+    assert!(helpdesk_id.starts_with("grp-"), "{helpdesk_id}");
+    let twin = app
+        .admin(
+            Method::POST,
+            "/api/v1/groups",
+            Some(json!({"name": "HELPDESK"})),
+        )
+        .await;
+    assert_eq!(twin.status, StatusCode::CONFLICT, "{}", twin.text);
+    let telecom = app
+        .admin(
+            Method::POST,
+            "/api/v1/groups",
+            Some(json!({"name": "Telecom", "role": "telecom_admin"})),
+        )
+        .await;
+    let telecom_id = telecom.json["id"].as_str().unwrap().to_string();
+
+    // In the group, Gina holds its role at once; out of it, at once not.
+    let added = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/groups/{helpdesk_id}/members"),
+            Some(json!({"username": "gina"})),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::NO_CONTENT, "{}", added.text);
+    assert_eq!(users(gina.clone()).await, StatusCode::OK);
+    let me = app
+        .send_as(&gina, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(me.json["role"], "user_admin", "{}", me.text);
+    let members = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/groups/{helpdesk_id}/members"),
+            None,
+        )
+        .await;
+    assert_eq!(members.json[0]["username"], "gina", "{}", members.text);
+    let listed = app.admin(Method::GET, "/api/v1/groups", None).await;
+    let helpdesk_listed = listed
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["name"] == "Helpdesk")
+        .cloned()
+        .unwrap();
+    assert_eq!(helpdesk_listed["member_count"], 1, "{}", listed.text);
+    assert_eq!(helpdesk_listed["role"], "user_admin");
+
+    // Two groups: what each role holds, together. A user admin manages
+    // users and a telecom admin queues; "the highest" would lose one.
+    app.admin(
+        Method::POST,
+        &format!("/api/v1/groups/{telecom_id}/members"),
+        Some(json!({"username": "gina"})),
+    )
+    .await;
+    let made = app
+        .send_as(
+            &gina,
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({"username": "newbie", "password": PASSWORD})),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let queues = app
+        .send_as(&gina, Method::GET, "/api/v1/queue-configs", None)
+        .await;
+    assert_eq!(queues.status, StatusCode::OK, "{}", queues.text);
+    let theirs = app
+        .admin(Method::GET, "/api/v1/users/gina/groups", None)
+        .await;
+    assert_eq!(theirs.json.as_array().unwrap().len(), 2, "{}", theirs.text);
+
+    let removed = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/groups/{helpdesk_id}/members/gina"),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let refused = app
+        .send_as(
+            &gina,
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({"username": "newbie2", "password": PASSWORD})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+
+    // A queue takes its agents from a group; the group gone, from nobody.
+    let queue = app
+        .admin(
+            Method::POST,
+            "/api/v1/queue-configs",
+            Some(json!({"name": "noc", "extension": "7101", "agent_group_id": telecom_id})),
+        )
+        .await;
+    assert_eq!(queue.status, StatusCode::CREATED, "{}", queue.text);
+    assert_eq!(queue.json["agent_group_id"], telecom_id.as_str());
+    let bogus = app
+        .admin(
+            Method::POST,
+            "/api/v1/queue-configs",
+            Some(json!({"name": "bad", "extension": "7102", "agent_group_id": "grp-00000000-0000-0000-0000-000000000000"})),
+        )
+        .await;
+    assert_eq!(bogus.status, StatusCode::BAD_REQUEST, "{}", bogus.text);
+    let gone = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/groups/{telecom_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT);
+    let queue_id = queue.json["id"].as_str().unwrap();
+    let queue = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/queue-configs/{queue_id}"),
+            None,
+        )
+        .await;
+    assert!(queue.json["agent_group_id"].is_null(), "{}", queue.text);
+    assert_eq!(users(gina.clone()).await, StatusCode::FORBIDDEN);
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn groups_that_follow_the_identity_provider_are_set_at_every_sign_in() {
+    let app = require_app!();
+    let idp = StandInIdp::start(IDP_CLIENT, Some(IDP_SECRET))
+        .await
+        .unwrap();
+    app.admin(
+        Method::PUT,
+        &format!("/api/v1/tenants/{}", app.tenant_a),
+        Some(json!({"login_domains": ["acme.test"]})),
+    )
+    .await;
+    let provider = app.make_provider(&idp, json!({"jit": true})).await;
+    let following = app
+        .admin(
+            Method::POST,
+            "/api/v1/groups",
+            Some(json!({"name": "Ops", "role": "telecom_admin", "idp_group": "ops"})),
+        )
+        .await;
+    let following_id = following.json["id"].as_str().unwrap().to_string();
+    let own = app
+        .admin(
+            Method::POST,
+            "/api/v1/groups",
+            Some(json!({"name": "Floor 3"})),
+        )
+        .await;
+    let own_id = own.json["id"].as_str().unwrap().to_string();
+    let count = |id: String| {
+        let app = &app;
+        async move {
+            app.admin(Method::GET, &format!("/api/v1/groups/{id}"), None)
+                .await
+                .json["member_count"]
+                .as_u64()
+                .unwrap()
+        }
+    };
+
+    // Sam signs in in the provider's "ops": he is in Ops, and holds its role.
+    let sam = json!({
+        "sub": "sam-1", "email": "sam@acme.test", "email_verified": true,
+        "preferred_username": "sam@acme.test", "groups": ["ops", "staff"],
+    });
+    let landing = app.sso_landing(&idp, &provider, sam.clone()).await;
+    let signed_in = app.sso_exchange(&landing).await;
+    assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.text);
+    assert_eq!(
+        signed_in.json["user"]["role"], "telecom_admin",
+        "{}",
+        signed_in.text
+    );
+    assert_eq!(count(following_id.clone()).await, 1);
+
+    // An admin puts him on Floor 3 too: the tenant's own group, which no
+    // sign-in touches.
+    app.admin(
+        Method::POST,
+        &format!("/api/v1/groups/{own_id}/members"),
+        Some(json!({"username": "sam"})),
+    )
+    .await;
+
+    // Out of "ops" at the provider: out of Ops at the next sign-in.
+    let mut moved = sam.clone();
+    moved["groups"] = json!(["staff"]);
+    let landing = app.sso_landing(&idp, &provider, moved).await;
+    let signed_in = app.sso_exchange(&landing).await;
+    assert_eq!(
+        signed_in.json["user"]["role"], "end_user",
+        "{}",
+        signed_in.text
+    );
+    assert_eq!(count(following_id).await, 0);
+    assert_eq!(count(own_id).await, 1);
 
     app.finish().await;
 }

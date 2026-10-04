@@ -9,6 +9,9 @@ import type {
   TotpEnrollment,
   TotpStatus,
   User,
+  Group,
+  GroupRequest,
+  GroupMember,
   PurgeResponse,
   CreateUserRequest,
   UpdateUserRequest,
@@ -537,6 +540,22 @@ export const schedules = {
   update: (id: string, data: ScheduleRequest) =>
     apiClient.put<Schedule>(`/schedules/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/schedules/${encodeURIComponent(id)}`),
+}
+
+export const groups = {
+  list: () => apiClient.getAll<Group>('/groups'),
+  create: (data: GroupRequest) => apiClient.post<Group>('/groups', data),
+  update: (id: string, data: GroupRequest) =>
+    apiClient.put<Group>(`/groups/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/groups/${encodeURIComponent(id)}`),
+  members: (id: string) =>
+    apiClient.getAll<GroupMember>(`/groups/${encodeURIComponent(id)}/members`),
+  addMember: (id: string, username: string) =>
+    apiClient.post<void>(`/groups/${encodeURIComponent(id)}/members`, { username }),
+  removeMember: (id: string, username: string) =>
+    apiClient.delete<void>(
+      `/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(username)}`,
+    ),
 }
 
 export const classesOfService = {

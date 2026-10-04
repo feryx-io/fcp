@@ -908,9 +908,16 @@ async fn validate_session_token(auth: &EventsAuthState, token: &str) -> Option<A
         )
         .await?;
         let user = principal.user;
+        // The most privileged of their own role and their groups'
+        // (`docs/USERS.md` §5): operator access asks only whether any is
+        // an administrator's.
+        let role = fcp_core::UserRole::most_privileged(
+            std::iter::once(user.role).chain(principal.group_roles),
+        )
+        .unwrap_or(user.role);
         return Some(AuthPrincipal::Session {
             _username: user.username,
-            role: serde_json::to_value(user.role)
+            role: serde_json::to_value(role)
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_string))
                 .unwrap_or_default(),

@@ -4234,6 +4234,95 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/groups */
+        get: operations["groups_list_groups"];
+        put?: never;
+        /** POST /api/v1/groups */
+        post: operations["groups_create_group"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/groups/:id */
+        get: operations["groups_get_group"];
+        /** PUT /api/v1/groups/:id */
+        put: operations["groups_update_group"];
+        post?: never;
+        /** DELETE /api/v1/groups/:id */
+        delete: operations["groups_delete_group"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/groups/:id/members */
+        get: operations["groups_list_members"];
+        put?: never;
+        /** POST /api/v1/groups/:id/members */
+        post: operations["groups_add_member"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{id}/members/{username}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/v1/groups/:id/members/:username */
+        delete: operations["groups_remove_member"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{username}/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/users/:username/groups */
+        get: operations["groups_list_user_groups"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/schedules": {
         parameters: {
             query?: never;
@@ -4768,6 +4857,10 @@ export interface webhooks {
 }
 export interface components {
     schemas: {
+        /** @description Who to add. */
+        AddMemberRequest: {
+            username: string;
+        };
         /** @description Agent login request body. */
         AgentLoginRequest: {
             agent_id: string;
@@ -5610,6 +5703,8 @@ export interface components {
             schedule_id?: string | null;
             /** @description A call target; empty clears it. */
             closed_target?: string | null;
+            /** @description A group of the tenant whose members are agents too; empty clears it. */
+            agent_group_id?: string | null;
             enabled?: boolean | null;
         };
         /** @description Create rate plan request. */
@@ -6322,6 +6417,46 @@ export interface components {
              * @description The recording: a WAV file.
              */
             audio: string;
+        };
+        /** @description A member as the API answers it. */
+        GroupMemberResponse: {
+            user_id: string;
+            username: string;
+            display_name?: string | null;
+            account_status: string;
+            /** Format: date-time */
+            added_at: string;
+        };
+        /** @description What a group is written as. */
+        GroupRequest: {
+            name: string;
+            description?: string | null;
+            /**
+             * @description A role its members hold besides their own: not `super_admin`, nor
+             *     `department_admin` (which needs a department).
+             */
+            role?: string | null;
+            /**
+             * @description A group at the tenant's identity providers: a sign-in through one
+             *     sets the user's membership from the groups the provider names.
+             */
+            idp_group?: string | null;
+        };
+        /** @description A group as the API answers it. */
+        GroupResponse: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            description?: string | null;
+            /** @description The role the group's members hold besides their own. */
+            role?: string | null;
+            /** @description The group of this name at the tenant's identity providers. */
+            idp_group?: string | null;
+            member_count: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
         };
         /** @description A provider group, and the role its members get. */
         GroupRole: {
@@ -7414,6 +7549,49 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_GroupMemberResponse: {
+            data: {
+                user_id: string;
+                username: string;
+                display_name?: string | null;
+                account_status: string;
+                /** Format: date-time */
+                added_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_GroupResponse: {
+            data: {
+                id: string;
+                tenant_id: string;
+                name: string;
+                description?: string | null;
+                /** @description The role the group's members hold besides their own. */
+                role?: string | null;
+                /** @description The group of this name at the tenant's identity providers. */
+                idp_group?: string | null;
+                member_count: number;
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                updated_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_HoldResponse: {
             data: {
                 id: string;
@@ -7980,6 +8158,8 @@ export interface components {
                 /** @description The queue's hours and where a caller goes outside them (§3.5). */
                 schedule_id?: string | null;
                 closed_target?: string | null;
+                /** @description A group whose members may log in to the queue besides `agents`. */
+                agent_group_id?: string | null;
                 enabled: boolean;
                 /** Format: date-time */
                 created_at: string;
@@ -9140,6 +9320,8 @@ export interface components {
             /** @description The queue's hours and where a caller goes outside them (§3.5). */
             schedule_id?: string | null;
             closed_target?: string | null;
+            /** @description A group whose members may log in to the queue besides `agents`. */
+            agent_group_id?: string | null;
             enabled: boolean;
             /** Format: date-time */
             created_at: string;
@@ -10433,6 +10615,8 @@ export interface components {
             schedule_id?: string | null;
             /** @description A call target; empty clears it. */
             closed_target?: string | null;
+            /** @description A group of the tenant whose members are agents too; empty clears it. */
+            agent_group_id?: string | null;
             enabled?: boolean | null;
         };
         /** @description Update rate plan request (partial). */
@@ -21140,6 +21324,294 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    groups_list_groups: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_GroupResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    groups_create_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    groups_get_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    groups_update_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    groups_delete_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted; queues that took agents from it take none */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    groups_list_members: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_GroupMemberResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    groups_add_member: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddMemberRequest"];
+            };
+        };
+        responses: {
+            /** @description A member (already, or now) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    groups_remove_member: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Not a member (now) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    groups_list_user_groups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_GroupResponse"];
+                };
             };
             /** @description An error */
             default: {

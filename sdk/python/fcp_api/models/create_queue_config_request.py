@@ -43,6 +43,7 @@ class CreateQueueConfigRequest:
             timezone (None | str | Unset):
             schedule_id (None | str | Unset): A schedule of the tenant; empty clears it.
             closed_target (None | str | Unset): A call target; empty clears it.
+            agent_group_id (None | str | Unset): A group of the tenant whose members are agents too; empty clears it.
             enabled (bool | None | Unset):
      """
 
@@ -64,6 +65,7 @@ class CreateQueueConfigRequest:
     timezone: None | str | Unset = UNSET
     schedule_id: None | str | Unset = UNSET
     closed_target: None | str | Unset = UNSET
+    agent_group_id: None | str | Unset = UNSET
     enabled: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -180,6 +182,12 @@ class CreateQueueConfigRequest:
         else:
             closed_target = self.closed_target
 
+        agent_group_id: None | str | Unset
+        if isinstance(self.agent_group_id, Unset):
+            agent_group_id = UNSET
+        else:
+            agent_group_id = self.agent_group_id
+
         enabled: bool | None | Unset
         if isinstance(self.enabled, Unset):
             enabled = UNSET
@@ -225,6 +233,8 @@ class CreateQueueConfigRequest:
             field_dict["schedule_id"] = schedule_id
         if closed_target is not UNSET:
             field_dict["closed_target"] = closed_target
+        if agent_group_id is not UNSET:
+            field_dict["agent_group_id"] = agent_group_id
         if enabled is not UNSET:
             field_dict["enabled"] = enabled
 
@@ -415,6 +425,16 @@ class CreateQueueConfigRequest:
         closed_target = _parse_closed_target(d.pop("closed_target", UNSET))
 
 
+        def _parse_agent_group_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        agent_group_id = _parse_agent_group_id(d.pop("agent_group_id", UNSET))
+
+
         def _parse_enabled(data: object) -> bool | None | Unset:
             if data is None:
                 return data
@@ -444,6 +464,7 @@ class CreateQueueConfigRequest:
             timezone=timezone,
             schedule_id=schedule_id,
             closed_target=closed_target,
+            agent_group_id=agent_group_id,
             enabled=enabled,
         )
 

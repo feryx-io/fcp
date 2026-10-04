@@ -153,10 +153,10 @@ fn token_store(state: &ApiState) -> Result<Arc<dyn ApiTokenStore>, ApiError> {
 fn grantable(identity: &AuthIdentity, mode: DeploymentMode) -> Vec<Permission> {
     match identity {
         AuthIdentity::StaticToken => UserRole::TenantAdmin.token_permissions(mode),
-        AuthIdentity::Session { role, .. } => role
-            .parse::<UserRole>()
-            .unwrap_or(UserRole::EndUser)
-            .token_permissions(mode),
+        AuthIdentity::Session { .. } => fcp_core::permissions::roles_token_permissions(
+            &identity.session_roles().unwrap_or_default(),
+            mode,
+        ),
         AuthIdentity::ApiToken { permissions, .. } => {
             let full = permissions.iter().any(|p| p == "admin" || p == "*");
             UserRole::TenantAdmin

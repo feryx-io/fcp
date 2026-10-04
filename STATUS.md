@@ -1752,6 +1752,18 @@ every store (`docs/USERS.md` §4).
   when the cloud's delete reaches it.
 - Next, 5c: groups.
 
+Phase 5c done (v0.25.317): groups (`docs/USERS.md` §5).
+- A tenant's groups hold users; a group may carry a role its members
+  hold besides their own. Roles add up: someone in two groups may do what
+  either allows (the design's "highest wins" would have lost one, since
+  the roles are not a ladder).
+- Membership changes take effect on the next request.
+- A group may follow an identity provider's group: every sign-in through
+  it sets the user's membership.
+- A queue may take its agents from a group (`*50` login).
+- Groups sync to sites; a Groups page in the admin UI.
+- Next, 5d: renaming a user.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

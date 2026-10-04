@@ -195,6 +195,38 @@ pub struct QueueCallHandler {
 }
 
 impl QueueCallHandler {
+    /// The groups (by id) of the user an agent's extension names — their
+    /// username, else the extension on their record — if they may work.
+    async fn groups_of_extension(&self, extension: &str, tenant_id: &TenantId) -> Vec<String> {
+        use fcp_core::CredentialStore;
+        let Some(groups) = self.storage.group_store() else {
+            return Vec::new();
+        };
+        let user = match self.storage.get_user_in_tenant(extension, tenant_id).await {
+            Ok(Some(user)) => Some(user),
+            _ => self
+                .storage
+                .list_users_in_tenant(tenant_id, &Default::default())
+                .await
+                .ok()
+                .and_then(|users| {
+                    users
+                        .into_iter()
+                        .find(|u| u.extension.as_deref() == Some(extension))
+                }),
+        };
+        let Some(user) = user.filter(|u| u.may_use_services()) else {
+            return Vec::new();
+        };
+        match groups.groups_of_user(&user.id).await {
+            Ok(groups) => groups.into_iter().map(|g| g.id.to_string()).collect(),
+            Err(e) => {
+                warn!(extension, error = %e, "Could not read an agent's groups");
+                Vec::new()
+            }
+        }
+    }
+
     /// Speech for recording announcements when a tenant's prompt has no
     /// audio (`docs/COMPLIANCE_FOLLOWUPS.md` §8.2).
     pub fn with_tts_service(mut self, tts: Option<Arc<fcp_media::TtsService>>) -> Self {
@@ -2454,10 +2486,23 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
     async fn agent_login(&self, extension: &str, tenant_id: &TenantId) -> Result<()> {
         // Find which queues this extension belongs to from config
         let config = self.queue_manager.get_system_config();
+        // A queue may take its agents from a group (docs/USERS.md §5): the
+        // caller's groups, asked only when some queue has one.
+        let groups = if config.queues.values().any(|qc| qc.agent_group_id.is_some()) {
+            self.groups_of_extension(extension, tenant_id).await
+        } else {
+            Vec::new()
+        };
         let queue_names: Vec<String> = config
             .queues
             .iter()
-            .filter(|(_, qc)| qc.agents.contains(&extension.to_string()))
+            .filter(|(_, qc)| {
+                qc.agents.contains(&extension.to_string())
+                    || qc
+                        .agent_group_id
+                        .as_ref()
+                        .is_some_and(|g| groups.contains(g))
+            })
             .map(|(name, _)| name.clone())
             .collect();
 

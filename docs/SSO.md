@@ -91,6 +91,14 @@ How a sign-in becomes a user:
     end user.
   - If the groups claim is missing altogether, the role is left alone.
   - No provider grants `super_admin`.
+- **Groups that follow the provider's.** A tenant's group with
+  `idp_group` set (`docs/USERS.md` §5) is filled from the same claim:
+  at every sign-in that carries it, the user is added to each such group
+  the provider names and taken out of the rest. The group's role is then
+  theirs besides their own, with the other groups' roles. Groups without
+  `idp_group` are the tenant's own and no sign-in touches them. This is
+  the way to give roles by group from now on; roles by group on the
+  provider still work.
 - **A platform super admin never signs in through a tenant's provider.**
   It is refused as `super_admin`. A tenant admin configures the provider,
   and a provider that could assert a super admin's email would make them

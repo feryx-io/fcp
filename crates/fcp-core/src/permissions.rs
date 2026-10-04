@@ -240,6 +240,11 @@ pub enum Permission {
     /// The tenant's identity providers: who signs in through what, and
     /// the roles their groups give (docs/IDENTITY_AND_DEVICES.md phase 3).
     IdentityProviderManage,
+    /// The tenant's groups and who is in them (`docs/USERS.md` §5).
+    GroupRead,
+    /// Making groups, their roles and their members: a group's role is
+    /// its members' too, so this is the tenant administrator's.
+    GroupManage,
 }
 
 impl FromStr for Permission {
@@ -310,6 +315,8 @@ impl FromStr for Permission {
             "extension_manage" => Ok(Self::ExtensionManage),
             "webhook_manage" => Ok(Self::WebhookManage),
             "identity_provider_manage" => Ok(Self::IdentityProviderManage),
+            "group_read" => Ok(Self::GroupRead),
+            "group_manage" => Ok(Self::GroupManage),
             other => Err(format!("unknown permission: {}", other)),
         }
     }
@@ -381,6 +388,8 @@ impl Permission {
         Self::ExtensionManage,
         Self::WebhookManage,
         Self::IdentityProviderManage,
+        Self::GroupRead,
+        Self::GroupManage,
     ];
 
     /// The area a permission belongs to, for grouping it in a picker.
@@ -430,6 +439,7 @@ impl Permission {
             Self::ExtensionRead | Self::ExtensionManage => "Extensions",
             Self::WebhookManage => "Webhooks",
             Self::IdentityProviderManage => "Single sign-on",
+            Self::GroupRead | Self::GroupManage => "Groups",
         }
     }
 
@@ -499,6 +509,8 @@ impl Permission {
             Self::ExtensionManage => "extension_manage",
             Self::WebhookManage => "webhook_manage",
             Self::IdentityProviderManage => "identity_provider_manage",
+            Self::GroupRead => "group_read",
+            Self::GroupManage => "group_manage",
         }
     }
 
@@ -568,6 +580,8 @@ impl Permission {
             Self::ExtensionManage => "Manage Extensions",
             Self::WebhookManage => "Manage Webhooks",
             Self::IdentityProviderManage => "Manage Identity Providers",
+            Self::GroupRead => "View Groups",
+            Self::GroupManage => "Manage Groups",
         }
     }
 }
@@ -646,6 +660,13 @@ impl UserRole {
             // make anyone a tenant admin.
             (TenantAdmin, IdentityProviderManage, _) => true,
             (_, IdentityProviderManage, _) => false,
+
+            // Groups give their members a role, so making them and filling
+            // them is the tenant administrator's; whoever reads users, or
+            // picks a queue's group, may see them.
+            (TenantAdmin, GroupRead | GroupManage, _) => true,
+            (TelecomAdmin | UserAdmin | DepartmentAdmin | ReadOnly, GroupRead, _) => true,
+            (_, GroupRead | GroupManage, _) => false,
 
             // A tenant's routing rules are its call policy — barring premium
             // numbers, sending international calls to a trunk group — and
@@ -853,6 +874,44 @@ impl UserRole {
             .filter(|p| self.has_permission(*p, mode))
             .collect()
     }
+
+    /// Whether a group may carry this role (`docs/USERS.md` §5): not the
+    /// platform's own, and not a department admin's, which needs the
+    /// member's department.
+    pub fn may_be_given_by_a_group(&self) -> bool {
+        !matches!(self, UserRole::SuperAdmin | UserRole::DepartmentAdmin)
+    }
+
+    /// The most privileged of `roles`, for showing one: the roles are not
+    /// a ladder (a user admin manages users, a telecom admin does not),
+    /// so a decision asks [`roles_have_permission`] instead.
+    pub fn most_privileged(roles: impl IntoIterator<Item = UserRole>) -> Option<UserRole> {
+        roles.into_iter().min()
+    }
+}
+
+/// Whether any of `roles` holds `permission`: a user's own role and their
+/// groups' together hold what each holds (`docs/USERS.md` §5).
+pub fn roles_have_permission(
+    roles: &[UserRole],
+    permission: Permission,
+    mode: DeploymentMode,
+) -> bool {
+    roles.iter().any(|r| r.has_permission(permission, mode))
+}
+
+/// What an API token made by someone holding `roles` may carry: what any
+/// of them may.
+pub fn roles_token_permissions(roles: &[UserRole], mode: DeploymentMode) -> Vec<Permission> {
+    Permission::ALL
+        .iter()
+        .copied()
+        .filter(|p| {
+            roles.iter().any(|r| {
+                r.has_permission(*p, mode) && UserRole::TenantAdmin.has_permission(*p, mode)
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

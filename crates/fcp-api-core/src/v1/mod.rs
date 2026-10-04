@@ -22,6 +22,7 @@ pub mod events;
 pub mod extensions;
 pub mod flow_traces;
 pub mod flows;
+pub mod groups;
 pub mod hoteling;
 pub mod join_tokens;
 pub mod lcr_routes;
@@ -352,6 +353,26 @@ pub fn router() -> Router<ApiState> {
         .route("/users/by-id/:id", get(users::get_user_by_id))
         .route("/users/:username/totp", delete(totp::reset_totp))
         .route("/users/:username/identities", get(sso::list_identities))
+        .route("/users/:username/groups", get(groups::list_user_groups))
+        // A tenant's groups (docs/USERS.md §5).
+        .route(
+            "/groups",
+            get(groups::list_groups).post(groups::create_group),
+        )
+        .route(
+            "/groups/:id",
+            get(groups::get_group)
+                .put(groups::update_group)
+                .delete(groups::delete_group),
+        )
+        .route(
+            "/groups/:id/members",
+            get(groups::list_members).post(groups::add_member),
+        )
+        .route(
+            "/groups/:id/members/:username",
+            delete(groups::remove_member),
+        )
         .route(
             "/users/:username/identities/:provider_id",
             delete(sso::unlink_identity),

@@ -593,6 +593,38 @@ Each phase is one PR based on main, with its admin UI and its docs.
        `a_tenant_without_a_grace_period_purges_at_once_and_a_platform_admin_may_early`
        (`api_postgres.rs`) and the site half of
        `fcp-link/tests/apply.rs`.
+   - **5c done (v0.25.317)** (`docs/USERS.md` §5).
+     - `groups` and `group_members` (migration 098; the membership's
+       journal id is `group:user`), `fcp_core::group` (`Group`,
+       `GroupMember`, `GroupStore`), journaled and synced to sites, a
+       membership going with its user.
+     - **Deviation from Q7: roles add up instead of "the highest wins".**
+       The roles are not a ladder (a user admin manages users and a
+       telecom admin does not; a telecom admin manages queues and a user
+       admin does not), so taking the highest would cost a member of both
+       groups one of them. A user's permissions are what their own role
+       and each group's role hold (`roles_have_permission`); the most
+       privileged is what is shown. A group gives neither `super_admin`
+       nor `department_admin`.
+     - Group roles are read with the user at every request
+       (`CredentialStore::group_roles_of_user`, carried by
+       `SessionPrincipal` and `AuthIdentity::Session`), so membership
+       changes take effect at once; API tokens' makers, the events
+       server, the password policy and the TOTP requirement count them.
+     - `group_read` and `group_manage` (tenant admin alone); `/groups`,
+       `/groups/{id}/members`, `/users/{username}/groups`; the admin UI's
+       Groups page.
+     - `idp_group`: a sign-in through a provider sets the user's
+       membership of the groups that follow the provider's (roles by
+       group on a provider still work).
+     - A queue's `agent_group_id`: the group's members may log in with
+       `*50`, asked at each login.
+     - Proved by `a_groups_role_is_its_members_too_and_roles_add_up`,
+       `groups_that_follow_the_identity_provider_are_set_at_every_sign_in`
+       (`api_postgres.rs`),
+       `a_groups_member_logs_in_to_the_queue_that_takes_its_agents_from_it`
+       (`fcp-call-manager/tests/calls.rs`, over SIP) and the groups half of
+       `fcp-link/tests/apply.rs`.
 6. **SCIM 2.0.**
    - `/scim/v2/{Users,Groups,ServiceProviderConfig,ResourceTypes,Schemas}`.
    - Filters, PATCH and ETags.

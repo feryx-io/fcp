@@ -843,6 +843,13 @@ async fn resolve_user(
                 .map_err(|_| refuse("internal"))?;
         }
     }
+    // The tenant's groups that follow the provider's (docs/USERS.md §5):
+    // the user's membership is the provider's word, when it says.
+    if let (Some(groups), false) = (groups.as_deref(), at_site) {
+        crate::v1::groups::follow_idp_groups(state, &user, groups)
+            .await
+            .map_err(|_| refuse("internal"))?;
+    }
 
     store
         .put_user_identity(&UserIdentity {

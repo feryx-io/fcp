@@ -73,9 +73,8 @@ pub async fn open_site(database_url: &str, max_connections: u32) -> Result<SiteS
             storage.clone() as Arc<dyn fcp_core::storage::ConfigTemplateStore>
         )
         .with_identity_store(storage.clone() as Arc<dyn fcp_core::identity::IdentityStore>)
-        .with_offboarding_store(
-            storage.clone() as Arc<dyn fcp_core::offboarding::OffboardingStore>
-        );
+        .with_offboarding_store(storage.clone() as Arc<dyn fcp_core::offboarding::OffboardingStore>)
+        .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>);
     Ok(SiteStores {
         storage: Arc::new(dyn_storage),
         flows: storage as Arc<dyn FlowStore>,
@@ -396,6 +395,16 @@ impl Syncer {
                 let identity: fcp_core::identity::UserIdentity = parse!();
                 store.put_user_identity(&identity).await?
             }
+            "groups" => {
+                let store = storage.group_store().context("no group store")?;
+                let group: fcp_core::group::Group = parse!();
+                store.put_group(&group).await?
+            }
+            "group_members" => {
+                let store = storage.group_store().context("no group store")?;
+                let member: fcp_core::group::GroupMember = parse!();
+                store.add_member(&member).await?;
+            }
             "rate_plans" => {
                 #[derive(Deserialize)]
                 struct PlanWithRates {
@@ -537,6 +546,19 @@ impl Syncer {
                 match fcp_core::identity::UserIdentity::parse_row_id(id) {
                     Some((provider, subject)) => {
                         store.delete_user_identity(&provider, &subject).await?;
+                    }
+                    None => warn!(table, id, "An id the link cannot parse; skipped"),
+                }
+            }
+            "groups" => {
+                let store = storage.group_store().context("no group store")?;
+                store.delete_group(&id!()).await?;
+            }
+            "group_members" => {
+                let store = storage.group_store().context("no group store")?;
+                match fcp_core::group::GroupMember::parse_row_id(id) {
+                    Some((group, user)) => {
+                        store.remove_member(&group, &user).await?;
                     }
                     None => warn!(table, id, "An id the link cannot parse; skipped"),
                 }

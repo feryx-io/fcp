@@ -158,6 +158,11 @@ pub struct QueueConfig {
     #[serde(default)]
     pub agents: Vec<String>,
 
+    /// A group of the tenant whose members may log in to this queue
+    /// besides `agents` (`docs/USERS.md` §5); a database queue's only.
+    #[serde(default)]
+    pub agent_group_id: Option<String>,
+
     /// Queue priority when an agent is a member of multiple queues.
     /// Lower values = higher priority.
     #[serde(default)]

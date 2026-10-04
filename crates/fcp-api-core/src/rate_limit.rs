@@ -282,6 +282,7 @@ mod tests {
             tenant_id: None,
             user_id: None,
             session_id: None,
+            group_roles: Vec::new(),
         };
         assert!(stand(&limiter, &session).await.is_none());
     }

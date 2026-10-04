@@ -110,6 +110,11 @@ pub struct QueueConfigRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_target: Option<crate::CallTarget>,
 
+    /// A group whose members are the queue's agents besides `agents`
+    /// (`docs/USERS.md` §5): any of them may log in to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_group_id: Option<crate::GroupId>,
+
     /// Created timestamp
     pub created_at: SystemTime,
 
@@ -143,6 +148,7 @@ impl QueueConfigRecord {
             enabled: true,
             schedule_id: None,
             closed_target: None,
+            agent_group_id: None,
             created_at: now,
             updated_at: now,
         }

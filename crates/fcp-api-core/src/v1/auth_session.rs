@@ -44,6 +44,32 @@ pub fn role_to_string(role: &UserRole) -> String {
         .unwrap_or_else(|| format!("{:?}", role).to_lowercase())
 }
 
+/// A user's roles now: their own and their groups' (`docs/USERS.md` §5).
+pub(crate) async fn roles_of(state: &ApiState, user: &fcp_core::User) -> Vec<UserRole> {
+    let mut roles = vec![user.role];
+    if let Some(storage) = state.storage.as_ref() {
+        match storage.group_roles_of_user(&user.id).await {
+            Ok(more) => roles.extend(more),
+            Err(e) => {
+                tracing::warn!(user_id = %user.id, error = %e, "Could not read a user's groups")
+            }
+        }
+    }
+    roles
+}
+
+/// The role to show for `user`: the most privileged they hold.
+async fn shown_role(state: &ApiState, user: &fcp_core::User) -> String {
+    display_role(&roles_of(state, user).await)
+}
+
+/// The role to show for someone holding `roles` (their own and their
+/// groups'): the most privileged. Decisions ask each role instead
+/// (`fcp_core::permissions::roles_have_permission`).
+pub fn display_role(roles: &[UserRole]) -> String {
+    role_to_string(&UserRole::most_privileged(roles.iter().copied()).unwrap_or_default())
+}
+
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct LoginRequest {
     pub username: String,
@@ -418,11 +444,16 @@ pub(crate) async fn begin_session(
 }
 
 /// A sign-in's answer: the body, and the cookie when there is one.
-fn signed_in(issued: Issued, user: &fcp_core::User, password_expired: bool) -> Response {
+fn signed_in(
+    issued: Issued,
+    user: &fcp_core::User,
+    role: String,
+    password_expired: bool,
+) -> Response {
     let body = Json(LoginResponse {
         token: Some(issued.token),
         expires_in: Some(issued.expires_in),
-        user: auth_user(user),
+        user: auth_user(user, role),
         password_expired: password_expired.then_some(true),
         mfa_required: None,
         mfa_token: None,
@@ -435,10 +466,10 @@ fn signed_in(issued: Issued, user: &fcp_core::User, password_expired: bool) -> R
     response
 }
 
-fn auth_user(user: &fcp_core::User) -> AuthUserResponse {
+fn auth_user(user: &fcp_core::User, role: String) -> AuthUserResponse {
     AuthUserResponse {
         username: user.username.clone(),
-        role: role_to_string(&user.role),
+        role,
         tenant_id: user.tenant_id.to_string(),
         display_name: user.display_name.clone(),
     }
@@ -503,11 +534,16 @@ fn totp_store(state: &ApiState) -> Result<std::sync::Arc<dyn fcp_core::totp::Tot
 }
 
 /// A second step wanted: the ticket, and no session yet.
-fn challenge(state: &ApiState, user: &fcp_core::User, purpose: &str) -> Result<Response, ApiError> {
+fn challenge(
+    state: &ApiState,
+    user: &fcp_core::User,
+    role: String,
+    purpose: &str,
+) -> Result<Response, ApiError> {
     Ok(Json(LoginResponse {
         token: None,
         expires_in: Some(MFA_TICKET_SECS),
-        user: auth_user(user),
+        user: auth_user(user, role),
         password_expired: None,
         mfa_required: Some(purpose.to_string()),
         mfa_token: Some(mfa_ticket(state, user, purpose)?),
@@ -531,7 +567,7 @@ async fn after_password(
             .map_err(|e| ApiError::Internal(e.to_string()))?
             .is_some_and(|t| t.is_confirmed());
         if enrolled {
-            return challenge(state, &user, MFA_TOTP);
+            return challenge(state, &user, shown_role(state, &user).await, MFA_TOTP);
         }
         let required = state
             .storage
@@ -540,9 +576,11 @@ async fn after_password(
             .get_tenant(&user.tenant_id)
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?
-            .is_some_and(|t| t.sign_in.require_totp.applies(&user.role));
+            .map(|t| t.sign_in.require_totp);
+        let roles = roles_of(state, &user).await;
+        let required = required.is_some_and(|r| roles.iter().any(|role| r.applies(role)));
         if required {
-            return challenge(state, &user, MFA_ENROLL);
+            return challenge(state, &user, display_role(&roles), MFA_ENROLL);
         }
     }
     complete_sign_in(state, headers, user, session::method::PASSWORD, None).await
@@ -592,13 +630,14 @@ pub(crate) async fn complete_sign_in_through(
         );
     }
     tracing::info!(username = %user.username, tenant_id = %user.tenant_id, method, "Login successful");
+    let role = shown_role(state, &user).await;
     if recovery_codes.is_none() {
-        return Ok(signed_in(issued, &user, false));
+        return Ok(signed_in(issued, &user, role, false));
     }
     let mut response = Json(LoginResponse {
         token: Some(issued.token),
         expires_in: Some(issued.expires_in),
-        user: auth_user(&user),
+        user: auth_user(&user, role),
         password_expired: None,
         mfa_required: None,
         mfa_token: None,
@@ -1111,7 +1150,11 @@ async fn sign_in(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .map(|t| t.sign_in.password_login)
         .unwrap_or_default();
-    if !policy_login.permits(&user.role) {
+    if !roles_of(state, &user)
+        .await
+        .iter()
+        .any(|role| policy_login.permits(role))
+    {
         return Err(refused(
             state,
             headers,
@@ -1146,7 +1189,7 @@ async fn sign_in(
         return Ok(Json(LoginResponse {
             token: None,
             expires_in: None,
-            user: auth_user(&user),
+            user: auth_user(&user, shown_role(state, &user).await),
             password_expired: Some(true),
             mfa_required: None,
             mfa_token: None,
@@ -1311,7 +1354,8 @@ async fn renew(state: &ApiState, headers: &HeaderMap) -> Result<Response, ApiErr
         }),
         session: Some(id),
     };
-    Ok(signed_in(issued, &user, false))
+    let role = shown_role(state, &user).await;
+    Ok(signed_in(issued, &user, role, false))
 }
 
 /// POST /api/v1/auth/change-expired-password
@@ -1543,16 +1587,20 @@ impl axum::extract::FromRequestParts<ApiState> for Me {
                     personal: true,
                 }))
             }
-            Some(AuthIdentity::Session {
-                username,
-                role,
-                tenant_id: Some(tenant_id),
-                user_id,
-                session_id,
-            }) => {
+            Some(
+                identity @ AuthIdentity::Session {
+                    username,
+                    tenant_id: Some(tenant_id),
+                    user_id,
+                    session_id,
+                    ..
+                },
+            ) => {
                 return Ok(Me(Claims {
                     sub: username.clone(),
-                    role: role.clone(),
+                    // The most privileged of their own role and their
+                    // groups', to show; decisions ask each.
+                    role: display_role(&identity.session_roles().unwrap_or_default()),
                     tenant_id: tenant_id.to_string(),
                     display_name: None,
                     exp: 0,
@@ -1560,7 +1608,7 @@ impl axum::extract::FromRequestParts<ApiState> for Me {
                     user_id: user_id.map(|id| id.to_string()),
                     sid: session_id.map(|id| id.to_string()),
                     personal: false,
-                }))
+                }));
             }
             _ => {}
         }
@@ -1582,9 +1630,11 @@ impl axum::extract::FromRequestParts<ApiState> for Me {
         .await
         .ok_or_else(|| ApiError::Unauthorized("Invalid or expired session".to_string()))?;
         let user = principal.user;
+        let mut roles = vec![user.role];
+        roles.extend(principal.group_roles);
         Ok(Me(Claims {
             sub: user.username,
-            role: role_to_string(&user.role),
+            role: display_role(&roles),
             tenant_id: user.tenant_id.to_string(),
             display_name: user.display_name,
             exp: 0,

@@ -42,6 +42,7 @@ pub const SYNCED_RESOURCES: &[&str] = &[
     "schedules",
     "classes-of-service",
     "identity-providers",
+    "groups",
 ];
 
 /// Whether `path` (relative to the v1 root, no leading slash) is a synced

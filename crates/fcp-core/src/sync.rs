@@ -40,6 +40,10 @@ pub const SYNC_TABLES: &[&str] = &[
     // key, and the identities its users have at them.
     "identity_providers",
     "user_identities",
+    // Groups and who is in them (docs/USERS.md §5): the roles a site's
+    // users hold, and a queue's agents.
+    "groups",
+    "group_members",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

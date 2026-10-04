@@ -361,6 +361,57 @@ format = "compact"
         .fetch_one(&site_pool)
         .await
         .unwrap();
+    // A group made in the cloud, with Alice in it, reaches the site — its
+    // role is hers there too — and the site's admin may not change it.
+    let (code, group) = cloud
+        .admin_call(
+            "POST",
+            "/api/v1/groups",
+            true,
+            Some(&serde_json::json!({"name": "Front desk", "role": "user_admin"}).to_string()),
+        )
+        .await;
+    assert_eq!(code, 201, "{group}");
+    let group_id = group["id"].as_str().unwrap().to_string();
+    let (code, added) = cloud
+        .admin_call(
+            "POST",
+            &format!("/api/v1/groups/{group_id}/members"),
+            true,
+            Some(&serde_json::json!({"username": "alice"}).to_string()),
+        )
+        .await;
+    assert_eq!(code, 204, "{added}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let role: Option<String> = sqlx::query_scalar(
+            "SELECT g.role FROM groups g JOIN group_members m ON m.group_id = g.id
+             WHERE m.user_id = $1",
+        )
+        .bind(&alice_id)
+        .fetch_optional(&site_pool)
+        .await
+        .unwrap()
+        .flatten();
+        if role.as_deref() == Some("user_admin") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the group never reached the site"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let (code, text) = http_request(
+        "POST",
+        &loopback(site_admin_http, "/api/v1/groups"),
+        &site_headers,
+        Some(&serde_json::json!({"name": "Local"}).to_string()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 403, "groups are the cloud's: {text}");
+
     for statement in [
         "INSERT INTO declared_locations (tenant_id, user_id, address, expires_at)
          SELECT tenant_id, id, '{}'::jsonb, now() + interval '1 day' FROM users WHERE id = $1",
@@ -412,6 +463,11 @@ format = "compact"
             "queue seat",
             "SELECT count(*) FROM queue_agents WHERE agent_id = $1",
             "alice",
+        ),
+        (
+            "group membership",
+            "SELECT count(*) FROM group_members WHERE user_id = $1",
+            alice_id.as_str(),
         ),
     ] {
         let left: i64 = sqlx::query_scalar(sql)

@@ -125,6 +125,8 @@ define_id!(HotelingSessionId, "hotel");
 define_id!(LoginSessionId, "login");
 // A tenant's identity provider (docs/IDENTITY_AND_DEVICES.md phase 3).
 define_id!(IdentityProviderId, "idp");
+// A tenant's group of users (docs/USERS.md §5).
+define_id!(GroupId, "grp");
 
 /// SIP Call-ID header value (not our internal CallId).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

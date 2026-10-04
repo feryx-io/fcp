@@ -79,11 +79,19 @@ fn store(state: &ApiState) -> Result<std::sync::Arc<dyn fcp_core::totp::TotpStor
 }
 
 async fn required_of(state: &ApiState, user: &fcp_core::User) -> Result<bool, ApiError> {
-    Ok(require_storage(state)?
+    let Some(required) = require_storage(state)?
         .get_tenant(&user.tenant_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .is_some_and(|t| t.sign_in.require_totp.applies(&user.role)))
+        .map(|t| t.sign_in.require_totp)
+    else {
+        return Ok(false);
+    };
+    // A group's role counts: an administrator by a group is one.
+    Ok(crate::v1::auth_session::roles_of(state, user)
+        .await
+        .iter()
+        .any(|role| required.applies(role)))
 }
 
 /// A code for the user's confirmed second factor, spent.
