@@ -4,7 +4,9 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use fcp_core::provisioning::{hash_key, DeviceFetch, ProvisioningKey, ProvisioningStore};
+use fcp_core::provisioning::{
+    hash_key, DeviceFetch, PendingDevice, ProvisioningKey, ProvisioningStore, PENDING_KEPT,
+};
 use fcp_core::{DeviceId, TenantId};
 use sqlx::Row;
 
@@ -128,4 +130,119 @@ impl ProvisioningStore for PostgresStorage {
             })
             .collect()
     }
+
+    async fn note_pending_device(&self, p: &PendingDevice) -> anyhow::Result<()> {
+        let tenant = p.tenant_id.to_string();
+        sqlx::query(
+            "INSERT INTO pending_devices
+                 (tenant_id, mac_address, first_seen, last_seen, address, user_agent,
+                  vendor, model, firmware, fetches)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
+             ON CONFLICT (tenant_id, mac_address) DO UPDATE SET
+                 last_seen = EXCLUDED.last_seen,
+                 address = EXCLUDED.address,
+                 user_agent = EXCLUDED.user_agent,
+                 vendor = COALESCE(EXCLUDED.vendor, pending_devices.vendor),
+                 model = COALESCE(EXCLUDED.model, pending_devices.model),
+                 firmware = COALESCE(EXCLUDED.firmware, pending_devices.firmware),
+                 fetches = pending_devices.fetches + 1",
+        )
+        .bind(&tenant)
+        .bind(&p.mac_address)
+        .bind(system_time_to_datetime(p.first_seen))
+        .bind(system_time_to_datetime(p.last_seen))
+        .bind(&p.address)
+        .bind(&p.user_agent)
+        .bind(p.vendor.map(|v| v.to_string()))
+        .bind(&p.model)
+        .bind(&p.firmware)
+        .execute(self.writes())
+        .await?;
+        sqlx::query(
+            "DELETE FROM pending_devices
+             WHERE tenant_id = $1 AND mac_address NOT IN (
+                 SELECT mac_address FROM pending_devices WHERE tenant_id = $1
+                 ORDER BY last_seen DESC LIMIT $2)",
+        )
+        .bind(&tenant)
+        .bind(PENDING_KEPT as i64)
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn list_pending_devices(
+        &self,
+        tenant_id: &TenantId,
+    ) -> anyhow::Result<Vec<PendingDevice>> {
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            pending_columns!(),
+            " FROM pending_devices WHERE tenant_id = $1 ORDER BY last_seen DESC"
+        ))
+        .bind(tenant_id.to_string())
+        .fetch_all(self.reads())
+        .await?;
+        rows.into_iter()
+            .map(|r| row_to_pending(tenant_id, r))
+            .collect()
+    }
+
+    async fn get_pending_device(
+        &self,
+        tenant_id: &TenantId,
+        mac_address: &str,
+    ) -> anyhow::Result<Option<PendingDevice>> {
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            pending_columns!(),
+            " FROM pending_devices WHERE tenant_id = $1 AND mac_address = $2"
+        ))
+        .bind(tenant_id.to_string())
+        .bind(mac_address)
+        .fetch_optional(self.writes())
+        .await?;
+        row.map(|r| row_to_pending(tenant_id, r)).transpose()
+    }
+
+    async fn remove_pending_device(
+        &self,
+        tenant_id: &TenantId,
+        mac_address: &str,
+    ) -> anyhow::Result<bool> {
+        let done =
+            sqlx::query("DELETE FROM pending_devices WHERE tenant_id = $1 AND mac_address = $2")
+                .bind(tenant_id.to_string())
+                .bind(mac_address)
+                .execute(self.writes())
+                .await?;
+        Ok(done.rows_affected() > 0)
+    }
+}
+
+macro_rules! pending_columns {
+    () => {
+        "mac_address, first_seen, last_seen, address, user_agent, vendor, model, firmware, fetches"
+    };
+}
+use pending_columns;
+
+fn row_to_pending(
+    tenant_id: &TenantId,
+    row: sqlx::postgres::PgRow,
+) -> anyhow::Result<PendingDevice> {
+    Ok(PendingDevice {
+        tenant_id: *tenant_id,
+        mac_address: row.try_get("mac_address")?,
+        first_seen: datetime_to_system_time(row.try_get::<DateTime<Utc>, _>("first_seen")?),
+        last_seen: datetime_to_system_time(row.try_get::<DateTime<Utc>, _>("last_seen")?),
+        address: row.try_get("address")?,
+        user_agent: row.try_get("user_agent")?,
+        vendor: row
+            .try_get::<Option<String>, _>("vendor")?
+            .and_then(|v| v.parse().ok()),
+        model: row.try_get("model")?,
+        firmware: row.try_get("firmware")?,
+        fetches: row.try_get::<i32, _>("fetches")?.max(0) as u32,
+    })
 }

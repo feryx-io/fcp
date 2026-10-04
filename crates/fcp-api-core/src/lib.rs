@@ -227,7 +227,8 @@ pub fn create_router_with(
     state = state.with_sso_config(&api_config.sso);
     state = state
         .with_provisioning_auth_token(api_config.provisioning_auth_token.clone())
-        .with_provisioning_require_https(api_config.provisioning_require_https);
+        .with_provisioning_require_https(api_config.provisioning_require_https)
+        .with_provisioning_config(api_config.provisioning.clone());
 
     // Conditionally apply bearer token authentication middleware
     if api_config.auth_enabled {

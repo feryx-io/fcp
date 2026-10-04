@@ -1797,6 +1797,20 @@ Phase 7a done (v0.25.321): the tenant's provisioning URL
 - Next, 7b: templates picked by model, resync, pending devices, the
   end-to-end proof.
 
+Phase 7b done (v0.25.322): templates, pending phones, import
+(`docs/PROVISIONING.md` §5–§7).
+- Templates are Jinja (minijinja), with `${name}` still read and values
+  escaped for XML vendors; one is picked by the phone's vendor and model
+  when its device names none; new variables (transport, time zone, NTP,
+  the provisioning URL, accounts, line keys) from `[api.provisioning]`
+  and the tenant; Fanvil and Snom starters; a Phone templates page with a
+  preview against sample values, and a device's configuration shown.
+- A phone that fetches with a MAC no device has waits as pending, and is
+  claimed in one step; phones are imported by MAC, all or none.
+- Devices have a vendor and line keys.
+- Next, 7c: resync, the registration on the device, the end-to-end proof,
+  and the old route removed.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

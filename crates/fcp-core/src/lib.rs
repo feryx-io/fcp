@@ -74,15 +74,15 @@ pub use crate::calling::{
 };
 pub use crate::codec::{AudioCodec, Codec, CodecPreferences, VideoCodec};
 pub use crate::config::{
-    ApiConfig, ApiRateLimitConfig, ApiSessionConfig, ApiSsoConfig, FcpConfig, LogFormat,
-    NodeConfig, ObservabilityConfig, RegistrarConfig, StorageBackend, StorageConfig,
-    TransportConfig,
+    ApiConfig, ApiProvisioningConfig, ApiRateLimitConfig, ApiSessionConfig, ApiSsoConfig,
+    FcpConfig, LogFormat, NodeConfig, ObservabilityConfig, RegistrarConfig, StorageBackend,
+    StorageConfig, TransportConfig,
 };
 pub use crate::config_store::{
     get_config_with_tenant_fallback, load_or_seed_config, spawn_config_poll_loop, AuditEntry,
     ConfigEntry, ConfigStore, ConfigWatcher,
 };
-pub use crate::device::{Device, DeviceType, RegistrationState};
+pub use crate::device::{Device, DeviceType, LineKey, LineKeyKind, RegistrationState};
 pub use crate::encryption::{EncryptionStatus, EncryptionStore, ReencryptReport};
 pub use crate::error::{
     DialogError, Error, MediaError, ParseError, Result, StorageError, TransactionError,

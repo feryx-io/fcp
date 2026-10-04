@@ -104,6 +104,12 @@ what phones fetch their configuration with) must be at least 32
 characters and differ from `auth_token`; `provisioning_require_https`
 defaults to true, so on plain HTTP set it false.
 
+**What phones are told** (`[api.provisioning]`): `sip_server` (the
+address they register to; unset, the SIP realm, `fcp.local` on the
+admin, which no phone can reach), `sip_port`, `sip_transport` (`udp`,
+`tcp` or `tls`), `ntp_server` and `public_url` (`docs/PROVISIONING.md`
+§5). Set `sip_server` before provisioning a real phone.
+
 **An unknown key is refused.** Every configuration section refuses a
 key it does not have, naming it, so a typo or a key from an old
 version stops the node rather than being silently ignored.

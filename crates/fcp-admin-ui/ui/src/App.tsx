@@ -27,6 +27,7 @@ const RoutingPage = lazy(() => import('@/pages/RoutingPage').then((m) => ({ defa
 const HotelingPage = lazy(() => import('@/pages/HotelingPage').then((m) => ({ default: m.HotelingPage })))
 const ClassesOfServicePage = lazy(() => import('@/pages/ClassesOfServicePage').then((m) => ({ default: m.ClassesOfServicePage })))
 const GroupsPage = lazy(() => import('@/pages/GroupsPage').then((m) => ({ default: m.GroupsPage })))
+const TemplatesPage = lazy(() => import('@/pages/TemplatesPage').then((m) => ({ default: m.TemplatesPage })))
 const SchedulesPage = lazy(() => import('@/pages/SchedulesPage').then((m) => ({ default: m.SchedulesPage })))
 const LcrRoutesPage = lazy(() => import('@/pages/LcrRoutesPage').then((m) => ({ default: m.LcrRoutesPage })))
 const FlowsPage = lazy(() => import('@/pages/FlowsPage').then((m) => ({ default: m.FlowsPage })))
@@ -144,6 +145,7 @@ export function App() {
               <Route path="routing" element={<Suspense fallback={<PageLoader />}><RoutingPage /></Suspense>} />
               <Route path="schedules" element={<Suspense fallback={<PageLoader />}><SchedulesPage /></Suspense>} />
               <Route path="groups" element={<Suspense fallback={<PageLoader />}><GroupsPage /></Suspense>} />
+              <Route path="templates" element={<Suspense fallback={<PageLoader />}><TemplatesPage /></Suspense>} />
               <Route path="classes-of-service" element={<Suspense fallback={<PageLoader />}><ClassesOfServicePage /></Suspense>} />
               <Route path="hoteling" element={<Suspense fallback={<PageLoader />}><HotelingPage /></Suspense>} />
               <Route path="lcr" element={<Suspense fallback={<PageLoader />}><LcrRoutesPage /></Suspense>} />

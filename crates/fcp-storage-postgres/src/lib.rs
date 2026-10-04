@@ -3945,7 +3945,8 @@ macro_rules! device_columns {
          sip_uri, registration_state, last_registration, last_ip_address, user_agent,
          max_lines, supports_video, supports_blf, codec_support,
          location, location_id, e911_override_json, e911_trust_location, provisioning_url,
-         config_template_id, provisioning_token_hash, enabled, created_at, updated_at"
+         config_template_id, provisioning_token_hash, enabled, created_at, updated_at,
+         vendor, line_keys_json"
     };
 }
 
@@ -4047,6 +4048,7 @@ impl DeviceStore for PostgresStorage {
         let sip_ha1_hash = self.seal_opt(device.sip_ha1_hash.as_deref())?;
         let sip_provisioning_password =
             self.seal_opt(device.sip_provisioning_password.as_deref())?;
+        let line_keys_json = serde_json::to_value(&device.line_keys)?;
 
         sqlx::query(
             "INSERT INTO devices (
@@ -4055,9 +4057,9 @@ impl DeviceStore for PostgresStorage {
                 sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                 max_lines, supports_video, supports_blf, codec_support,
                 location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
-                created_at, updated_at
+                created_at, updated_at, vendor, line_keys_json
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  mac_address = EXCLUDED.mac_address,
@@ -4085,7 +4087,9 @@ impl DeviceStore for PostgresStorage {
                  config_template_id = EXCLUDED.config_template_id,
                  provisioning_token_hash = EXCLUDED.provisioning_token_hash,
                  enabled = EXCLUDED.enabled,
-                 updated_at = EXCLUDED.updated_at",
+                 updated_at = EXCLUDED.updated_at,
+                 vendor = EXCLUDED.vendor,
+                 line_keys_json = EXCLUDED.line_keys_json",
         )
         .bind(&id)
         .bind(&device.name)
@@ -4118,6 +4122,8 @@ impl DeviceStore for PostgresStorage {
         .bind(device.enabled)
         .bind(created_at)
         .bind(updated_at)
+        .bind(device.vendor.map(|v| v.to_string()))
+        .bind(&line_keys_json)
         .execute(self.writes())
         .await
         .map_err(map_device_write_error)?;
@@ -4853,6 +4859,9 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
         device_type,
         mac_address: row.get("mac_address"),
         model: row.get("model"),
+        vendor: row
+            .get::<Option<String>, _>("vendor")
+            .and_then(|v| v.parse().ok()),
         firmware_version: row.get("firmware_version"),
         tenant_id,
         owner_user_id,
@@ -4869,6 +4878,10 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
         supports_video: row.get::<bool, _>("supports_video"),
         supports_blf: row.get::<bool, _>("supports_blf"),
         codec_support,
+        line_keys: row
+            .get::<Option<serde_json::Value>, _>("line_keys_json")
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
         location: row.get("location"),
         location_id: row
             .get::<Option<String>, _>("location_id")

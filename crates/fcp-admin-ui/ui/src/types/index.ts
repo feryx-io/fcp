@@ -658,6 +658,17 @@ export type Group = S['GroupResponse']
 /** The tenant's provisioning URL (`docs/PROVISIONING.md`). */
 export type ProvisioningKey = S['ProvisioningKeyResponse']
 export type DeviceFetch = S['DeviceFetchResponse']
+/** A phone waiting to be claimed (`docs/PROVISIONING.md` §6). */
+export type PendingDevice = S['PendingDeviceResponse']
+export type ClaimDeviceRequest = S['ClaimDeviceRequest']
+export type LineKey = S['LineKey']
+export type RenderedConfig = S['RenderedConfigResponse']
+export type RenderDeviceRequest = S['RenderDeviceRequest']
+export type ConfigTemplate = S['ConfigTemplateResponse']
+export type CreateConfigTemplateRequest = S['CreateConfigTemplateRequest']
+export type UpdateConfigTemplateRequest = S['UpdateConfigTemplateRequest']
+export type LibraryTemplate = S['LibraryTemplateResponse']
+export type PreviewTemplateResponse = S['PreviewTemplateResponse']
 export type GroupRequest = S['GroupRequest']
 export type GroupMember = S['GroupMemberResponse']
 

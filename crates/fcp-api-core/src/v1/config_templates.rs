@@ -33,6 +33,17 @@ fn require_template_store(
         .ok_or_else(|| ApiError::Internal("Config template store not configured".to_string()))
 }
 
+fn non_empty(s: String) -> Option<String> {
+    let s = s.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// A body whose syntax is refused names the line (`docs/PROVISIONING.md` §5).
+fn checked_body(body: &str) -> Result<(), ApiError> {
+    fcp_core::config_template::check_template(body)
+        .map_err(|e| ApiError::BadRequest(format!("template_body: {e}")))
+}
+
 /// Config template response.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ConfigTemplateResponse {
@@ -192,6 +203,7 @@ pub async fn create_config_template(
         .vendor
         .parse()
         .map_err(|e: String| ApiError::BadRequest(e))?;
+    checked_body(&req.template_body)?;
 
     let now = SystemTime::now();
     let template = ConfigTemplate {
@@ -199,7 +211,7 @@ pub async fn create_config_template(
         tenant_id: tenant.0,
         name: req.name,
         vendor,
-        model_pattern: req.model_pattern,
+        model_pattern: req.model_pattern.and_then(non_empty),
         template_body: req.template_body,
         description: req.description,
         created_at: now,
@@ -270,10 +282,12 @@ pub async fn update_config_template(
             .parse()
             .map_err(|e: String| ApiError::BadRequest(e))?;
     }
-    if req.model_pattern.is_some() {
-        template.model_pattern = req.model_pattern;
+    if let Some(pattern) = req.model_pattern {
+        // Empty is any model.
+        template.model_pattern = non_empty(pattern);
     }
     if let Some(body) = req.template_body {
+        checked_body(&body)?;
         template.template_body = body;
     }
     if req.description.is_some() {
@@ -460,4 +474,55 @@ pub async fn instantiate_library_template(
         StatusCode::CREATED,
         Json(ConfigTemplateResponse::from(template)),
     ))
+}
+
+/// A template body to try against sample values.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct PreviewTemplateRequest {
+    pub template_body: String,
+    /// Unset: `generic` (no XML escaping).
+    pub vendor: Option<String>,
+}
+
+/// A body rendered against sample values.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PreviewTemplateResponse {
+    pub content: String,
+    /// The values it was rendered with (`docs/PROVISIONING.md` §5).
+    #[schema(value_type = Object)]
+    pub context: serde_json::Value,
+}
+
+/// POST /api/v1/config-templates/preview — a body rendered against sample
+/// values: every variable a template has, filled in, so an author sees
+/// the output and the errors before saving.
+#[utoipa::path(
+    post,
+    path = "/api/v1/config-templates/preview",
+    tag = "config_templates",
+    operation_id = "config_templates_preview",
+    request_body = PreviewTemplateRequest,
+    responses(
+        (status = 200, description = "OK", body = PreviewTemplateResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn preview_template(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    Json(req): Json<PreviewTemplateRequest>,
+) -> Result<Json<PreviewTemplateResponse>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::DeviceRead, state.deployment_mode)?;
+    let vendor: PhoneVendor = match req.vendor.as_deref().map(str::trim) {
+        Some(v) if !v.is_empty() => v.parse().map_err(|e: String| ApiError::BadRequest(e))?,
+        _ => PhoneVendor::Generic,
+    };
+    let mut context = fcp_core::config_template::TemplateContext::sample();
+    context.vendor = vendor.to_string();
+    let content = fcp_core::config_template::render(&req.template_body, vendor, &context)
+        .map_err(|e| ApiError::BadRequest(format!("The template fails: {e}")))?;
+    Ok(Json(PreviewTemplateResponse {
+        content,
+        context: serde_json::to_value(&context).map_err(|e| ApiError::Internal(e.to_string()))?,
+    }))
 }

@@ -729,6 +729,32 @@ Each phase is one PR based on main, with its admin UI and its docs.
      - Proved by
        `a_phone_fetches_its_files_from_the_tenants_url_as_its_vendor_names_them`
        (`api_postgres.rs`) and the file-name unit tests.
+   - 7b split again: **7b** templates by model, starters, pending phones
+     and claim, MAC import; **7c** resync, the registration on the device,
+     the end-to-end proof, the old route removed.
+   - **7b done (v0.25.322)** (`docs/PROVISIONING.md` §5–§7).
+     - `fcp_core::config_template`: `render` over minijinja (Q12), older
+       `${name}` rewritten to `{{ name }}`, XML escaping by vendor, a fuel
+       budget, `check_template` on save; `TemplateContext` with every
+       variable (transport, time zone and offsets, NTP, the provisioning
+       URL, `accounts`, `line_keys`); `pick_template` by vendor and
+       `model_matches` glob; Fanvil and Snom vendors and starters, the four
+       older starters rewritten in Jinja.
+     - `fcp_core::provisioning`: `identify` (each vendor's User-Agent),
+       `vendor_of_mac`, `vendor_of_file`, `PhoneIdentity::of_request`;
+       `PendingDevice` and the store's pending methods.
+     - Devices' `vendor` and `line_keys` (migration 103, with
+       `pending_devices`); `[api.provisioning]` (`sip_server`, `sip_port`,
+       `sip_transport`, `ntp_server`, `public_url`) — the admin's realm
+       was `fcp.local`, so phones were told an unreachable server.
+     - Routes: `/provisioning/pending` (list, claim, dismiss),
+       `/devices/import`, `/devices/{id}/render`,
+       `/config-templates/preview`; the Phone templates page, the Devices
+       page's pending card, configuration dialog, vendor and line keys.
+     - Proved by
+       `a_pending_phone_is_claimed_and_gets_the_template_for_its_model` and
+       `phones_are_imported_all_or_none_and_xml_values_are_escaped`
+       (`api_postgres.rs`) and the template and identity unit tests.
 8. **Zero-touch.**
    - A redirection-service connector trait. Connectors for Yealink RPS
      and Poly ZTP first, then Grandstream GDMS and Fanvil FDPS (Q9).

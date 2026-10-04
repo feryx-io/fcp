@@ -13,6 +13,7 @@ from typing import cast
 
 if TYPE_CHECKING:
   from ..models.e911_address_response import E911AddressResponse
+  from ..models.line_key import LineKey
 
 
 
@@ -36,11 +37,13 @@ class UpdateDeviceRequest:
             hoteling_host (bool | None | Unset):
             mac_address (None | str | Unset):
             model (None | str | Unset):
+            vendor (None | str | Unset): The phone's vendor; an empty string clears it.
             firmware_version (None | str | Unset):
             sip_uri (None | str | Unset):
             max_lines (int | None | Unset):
             supports_video (bool | None | Unset):
             supports_blf (bool | None | Unset):
+            line_keys (list[LineKey] | None | Unset): The keys programmed on the phone, replacing what it had.
             location (None | str | Unset):
             location_id (None | str | Unset):
             e911_override (E911AddressResponse | None | Unset):
@@ -60,11 +63,13 @@ class UpdateDeviceRequest:
     hoteling_host: bool | None | Unset = UNSET
     mac_address: None | str | Unset = UNSET
     model: None | str | Unset = UNSET
+    vendor: None | str | Unset = UNSET
     firmware_version: None | str | Unset = UNSET
     sip_uri: None | str | Unset = UNSET
     max_lines: int | None | Unset = UNSET
     supports_video: bool | None | Unset = UNSET
     supports_blf: bool | None | Unset = UNSET
+    line_keys: list[LineKey] | None | Unset = UNSET
     location: None | str | Unset = UNSET
     location_id: None | str | Unset = UNSET
     e911_override: E911AddressResponse | None | Unset = UNSET
@@ -81,6 +86,7 @@ class UpdateDeviceRequest:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.e911_address_response import E911AddressResponse # noqa: PLC0415
+        from ..models.line_key import LineKey # noqa: PLC0415
         name: None | str | Unset
         if isinstance(self.name, Unset):
             name = UNSET
@@ -123,6 +129,12 @@ class UpdateDeviceRequest:
         else:
             model = self.model
 
+        vendor: None | str | Unset
+        if isinstance(self.vendor, Unset):
+            vendor = UNSET
+        else:
+            vendor = self.vendor
+
         firmware_version: None | str | Unset
         if isinstance(self.firmware_version, Unset):
             firmware_version = UNSET
@@ -152,6 +164,19 @@ class UpdateDeviceRequest:
             supports_blf = UNSET
         else:
             supports_blf = self.supports_blf
+
+        line_keys: list[dict[str, Any]] | None | Unset
+        if isinstance(self.line_keys, Unset):
+            line_keys = UNSET
+        elif isinstance(self.line_keys, list):
+            line_keys = []
+            for line_keys_type_0_item_data in self.line_keys:
+                line_keys_type_0_item = line_keys_type_0_item_data.to_dict()
+                line_keys.append(line_keys_type_0_item)
+
+
+        else:
+            line_keys = self.line_keys
 
         location: None | str | Unset
         if isinstance(self.location, Unset):
@@ -222,6 +247,8 @@ class UpdateDeviceRequest:
             field_dict["mac_address"] = mac_address
         if model is not UNSET:
             field_dict["model"] = model
+        if vendor is not UNSET:
+            field_dict["vendor"] = vendor
         if firmware_version is not UNSET:
             field_dict["firmware_version"] = firmware_version
         if sip_uri is not UNSET:
@@ -232,6 +259,8 @@ class UpdateDeviceRequest:
             field_dict["supports_video"] = supports_video
         if supports_blf is not UNSET:
             field_dict["supports_blf"] = supports_blf
+        if line_keys is not UNSET:
+            field_dict["line_keys"] = line_keys
         if location is not UNSET:
             field_dict["location"] = location
         if location_id is not UNSET:
@@ -256,6 +285,7 @@ class UpdateDeviceRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.e911_address_response import E911AddressResponse # noqa: PLC0415
+        from ..models.line_key import LineKey # noqa: PLC0415
         d = dict(src_dict)
         def _parse_name(data: object) -> None | str | Unset:
             if data is None:
@@ -327,6 +357,16 @@ class UpdateDeviceRequest:
         model = _parse_model(d.pop("model", UNSET))
 
 
+        def _parse_vendor(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        vendor = _parse_vendor(d.pop("vendor", UNSET))
+
+
         def _parse_firmware_version(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -375,6 +415,31 @@ class UpdateDeviceRequest:
             return cast(bool | None | Unset, data)
 
         supports_blf = _parse_supports_blf(d.pop("supports_blf", UNSET))
+
+
+        def _parse_line_keys(data: object) -> list[LineKey] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                line_keys_type_0 = []
+                _line_keys_type_0 = data
+                for line_keys_type_0_item_data in (_line_keys_type_0):
+                    line_keys_type_0_item = LineKey.from_dict(line_keys_type_0_item_data)
+
+
+
+                    line_keys_type_0.append(line_keys_type_0_item)
+
+                return line_keys_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[LineKey] | None | Unset, data)
+
+        line_keys = _parse_line_keys(d.pop("line_keys", UNSET))
 
 
         def _parse_location(data: object) -> None | str | Unset:
@@ -475,11 +540,13 @@ class UpdateDeviceRequest:
             hoteling_host=hoteling_host,
             mac_address=mac_address,
             model=model,
+            vendor=vendor,
             firmware_version=firmware_version,
             sip_uri=sip_uri,
             max_lines=max_lines,
             supports_video=supports_video,
             supports_blf=supports_blf,
+            line_keys=line_keys,
             location=location,
             location_id=location_id,
             e911_override=e911_override,

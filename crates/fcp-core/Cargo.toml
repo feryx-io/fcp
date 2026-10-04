@@ -37,6 +37,7 @@ tracing = "0.1"
 uuid = { workspace = true }
 rust_decimal = { workspace = true }
 quick-xml = "0.41"
+minijinja = { version = "2.24", features = ["fuel"] }
 ipnetwork = { version = "0.20", features = ["serde"] }
 
 utoipa = { version = "6", optional = true, features = ["preserve_order", "chrono"] }

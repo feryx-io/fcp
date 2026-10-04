@@ -14,6 +14,15 @@ import type {
   GroupMember,
   ProvisioningKey,
   DeviceFetch,
+  PendingDevice,
+  ClaimDeviceRequest,
+  RenderedConfig,
+  RenderDeviceRequest,
+  ConfigTemplate,
+  CreateConfigTemplateRequest,
+  UpdateConfigTemplateRequest,
+  LibraryTemplate,
+  PreviewTemplateResponse,
   PurgeResponse,
   CreateUserRequest,
   UpdateUserRequest,
@@ -225,6 +234,25 @@ export const devices = {
   delete: (id: string) => apiClient.delete<void>(`/devices/${encodeURIComponent(id)}`),
   fetches: (id: string) =>
     apiClient.getAll<DeviceFetch>(`/devices/${encodeURIComponent(id)}/fetches`),
+  /** The configuration the phone would get now, or from the template given. */
+  render: (id: string, data: RenderDeviceRequest = {}) =>
+    apiClient.post<RenderedConfig>(`/devices/${encodeURIComponent(id)}/render`, data),
+}
+
+// Provisioning templates (docs/PROVISIONING.md §5)
+export const configTemplates = {
+  list: () => apiClient.getAll<ConfigTemplate>('/config-templates'),
+  create: (data: CreateConfigTemplateRequest) =>
+    apiClient.post<ConfigTemplate>('/config-templates', data),
+  update: (id: string, data: UpdateConfigTemplateRequest) =>
+    apiClient.patch<ConfigTemplate>(`/config-templates/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/config-templates/${encodeURIComponent(id)}`),
+  library: () => apiClient.getAll<LibraryTemplate>('/config-templates/library'),
+  fromLibrary: (vendor: string) =>
+    apiClient.post<ConfigTemplate>(`/config-templates/library/${encodeURIComponent(vendor)}`),
+  /** A body rendered against sample values. */
+  preview: (template_body: string, vendor?: string) =>
+    apiClient.post<PreviewTemplateResponse>('/config-templates/preview', { template_body, vendor }),
 }
 
 export const provisioning = {
@@ -238,6 +266,12 @@ export const provisioning = {
     }
   },
   rotateKey: () => apiClient.post<ProvisioningKey>('/provisioning/key'),
+  /** Phones that fetched with a MAC no device has (§6). */
+  pending: () => apiClient.getAll<PendingDevice>('/provisioning/pending'),
+  claim: (mac: string, data: ClaimDeviceRequest) =>
+    apiClient.post<Device>(`/provisioning/pending/${encodeURIComponent(mac)}/claim`, data),
+  dismiss: (mac: string) =>
+    apiClient.delete<void>(`/provisioning/pending/${encodeURIComponent(mac)}`),
 }
 
 // Hoteling sessions (docs/ENTERPRISE_CALLING.md §3.8)
