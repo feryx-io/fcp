@@ -202,7 +202,11 @@ impl QueueCallHandler {
         let Some(groups) = self.storage.group_store() else {
             return Vec::new();
         };
-        let user = match self.storage.get_user_in_tenant(extension, tenant_id).await {
+        let user = match self
+            .storage
+            .get_user_by_sip_name(extension, tenant_id)
+            .await
+        {
             Ok(Some(user)) => Some(user),
             _ => self
                 .storage

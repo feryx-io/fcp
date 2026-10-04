@@ -265,6 +265,12 @@ pub struct User {
     #[serde(default)]
     pub sip_provisioning_password: Option<String>,
 
+    /// The name the user's phones register and authenticate as, when it
+    /// is not their username (`docs/USERS.md` §6): a rename keeps it, since
+    /// the SIP digest (HA1) is computed over it. `None` is the username.
+    #[serde(default)]
+    pub sip_username: Option<String>,
+
     /// Display name (optional)
     pub display_name: Option<String>,
 
@@ -514,6 +520,13 @@ impl User {
             )
     }
 
+    /// The name the user's phones register and authenticate as: their
+    /// SIP name, kept across renames, else their username. Every SIP
+    /// lookup and every SIP address built for the user uses it.
+    pub fn sip_name(&self) -> &str {
+        self.sip_username.as_deref().unwrap_or(&self.username)
+    }
+
     /// Whether the user is deleted and waiting for their purge.
     pub fn is_deprovisioned(&self) -> bool {
         self.account_status == AccountStatus::Deprovisioned
@@ -748,6 +761,39 @@ pub trait CredentialStore: Send + Sync {
 
     /// List all users that share a username across tenants.
     async fn list_users_by_username(&self, username: &str) -> Result<Vec<User>>;
+
+    /// The user whose phones register as `name` in a tenant
+    /// (`User::sip_name`): what every SIP-side lookup asks. The default is
+    /// the username, for a backend without SIP names.
+    async fn get_user_by_sip_name(
+        &self,
+        name: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<User>> {
+        self.get_user_in_tenant(name, tenant_id).await
+    }
+
+    /// Every tenant's user whose phones register as `name`.
+    async fn list_users_by_sip_name(&self, name: &str) -> Result<Vec<User>> {
+        self.list_users_by_username(name).await
+    }
+
+    /// Rename a user (`docs/USERS.md` §6): their username becomes
+    /// `new_username`; their SIP name stays what it was. What else names
+    /// them by username (meetings, legacy token makers) follows. The
+    /// default rewrites the user under the new name and removes the old.
+    async fn rename_user(&self, user: &User, new_username: &str) -> Result<User> {
+        let mut renamed = user.clone();
+        if renamed.sip_username.is_none() {
+            renamed.sip_username = Some(user.username.clone());
+        }
+        renamed.username = new_username.to_string();
+        renamed.updated_at = SystemTime::now();
+        self.delete_user_in_tenant(&user.username, &user.tenant_id)
+            .await?;
+        self.put_user(renamed.clone()).await?;
+        Ok(renamed)
+    }
 
     /// A tenant's users that match `filter`, by username. The default
     /// filters every user in memory; the Postgres backend asks SQL.
@@ -3992,6 +4038,24 @@ impl CredentialStore for DynStorage {
         self.credential_store.list_users_by_username(username).await
     }
 
+    async fn get_user_by_sip_name(
+        &self,
+        name: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<User>> {
+        self.credential_store
+            .get_user_by_sip_name(name, tenant_id)
+            .await
+    }
+
+    async fn list_users_by_sip_name(&self, name: &str) -> Result<Vec<User>> {
+        self.credential_store.list_users_by_sip_name(name).await
+    }
+
+    async fn rename_user(&self, user: &User, new_username: &str) -> Result<User> {
+        self.credential_store.rename_user(user, new_username).await
+    }
+
     async fn list_users_in_tenant(
         &self,
         tenant_id: &crate::TenantId,
@@ -5412,6 +5476,7 @@ mod tests {
             voicemail_box_id: None,
             profile_picture: None,
             deprovisioned_at: None,
+            sip_username: None,
             failed_login_attempts: 0,
             account_locked_until: None,
         };

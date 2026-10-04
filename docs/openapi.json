@@ -29125,7 +29125,8 @@
                 "language",
                 "timezone",
                 "account_status",
-                "failed_login_attempts"
+                "failed_login_attempts",
+                "sip_username"
               ],
               "properties": {
                 "id": {
@@ -29256,6 +29257,10 @@
                     "string",
                     "null"
                   ]
+                },
+                "sip_username": {
+                  "type": "string",
+                  "description": "The name the user's phones register and authenticate as: their\nusername, or the one they had before a rename (`docs/USERS.md` §6)."
                 },
                 "deprovisioned_at": {
                   "type": [
@@ -35520,6 +35525,13 @@
         "type": "object",
         "description": "Update user request.",
         "properties": {
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A new username: the user is renamed (`docs/USERS.md` §6). Their\nphones keep registering under their SIP name, which stays."
+          },
           "display_name": {
             "type": [
               "string",
@@ -35873,7 +35885,8 @@
           "language",
           "timezone",
           "account_status",
-          "failed_login_attempts"
+          "failed_login_attempts",
+          "sip_username"
         ],
         "properties": {
           "id": {
@@ -36004,6 +36017,10 @@
               "string",
               "null"
             ]
+          },
+          "sip_username": {
+            "type": "string",
+            "description": "The name the user's phones register and authenticate as: their\nusername, or the one they had before a rename (`docs/USERS.md` §6)."
           },
           "deprovisioned_at": {
             "type": [
@@ -36371,6 +36388,7 @@
               "user.deleted",
               "user.deprovisioned",
               "user.restored",
+              "user.renamed",
               "user.enabled",
               "user.disabled",
               "user.calling_changed",

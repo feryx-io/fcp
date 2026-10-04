@@ -1523,7 +1523,7 @@ pub async fn change_expired_password(
     user.password = password_hash;
     if user.digest_password.is_none() {
         user.sip_ha1_hash = Some(password::compute_ha1(
-            &req.username,
+            user.sip_name(),
             &state.realm,
             &req.new_password,
         ));

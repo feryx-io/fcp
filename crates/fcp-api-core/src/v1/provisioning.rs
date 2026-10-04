@@ -238,11 +238,16 @@ pub async fn auto_provision(
         let sip_uri = device
             .sip_uri
             .clone()
-            .unwrap_or_else(|| format!("sip:{}@{}", owner.username, state.realm));
+            .unwrap_or_else(|| format!("sip:{}@{}", owner.sip_name(), state.realm));
 
         vars.insert("sip_uri".to_string(), sip_uri);
-        vars.insert("sip_username".to_string(), owner.username.clone());
-        vars.insert("sip_auth_username".to_string(), owner.username.clone());
+        // The phone's account is the owner's SIP name, which a rename
+        // keeps: the HA1 below is computed over it.
+        vars.insert("sip_username".to_string(), owner.sip_name().to_string());
+        vars.insert(
+            "sip_auth_username".to_string(),
+            owner.sip_name().to_string(),
+        );
         vars.insert("sip_auth_ha1_hash".to_string(), sip_ha1_hash);
         if let Some(ref sip_password) = owner.sip_provisioning_password {
             vars.insert("sip_password".to_string(), sip_password.clone());

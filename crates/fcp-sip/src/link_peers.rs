@@ -220,6 +220,7 @@ impl SiteAccounts {
             voicemail_box_id: None,
             profile_picture: None,
             deprovisioned_at: None,
+            sip_username: None,
             failed_login_attempts: 0,
             account_locked_until: None,
         })

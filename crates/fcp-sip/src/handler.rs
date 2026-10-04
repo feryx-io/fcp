@@ -4045,7 +4045,7 @@ impl SipMessageHandler {
         let mut dialled_user: Option<fcp_core::storage::User> = None;
         let mut dialled_number: Option<fcp_core::PhoneNumber> = None;
         if let Some(to_user) = header_user("To") {
-            if let Ok(Some(user)) = storage.get_user_in_tenant(&to_user, &tenant).await {
+            if let Ok(Some(user)) = storage.get_user_by_sip_name(&to_user, &tenant).await {
                 dialled_user = Some(user);
             } else if let Ok(Some(extension)) =
                 storage.get_extension_by_number(&tenant, &to_user).await
@@ -13850,7 +13850,10 @@ impl SipMessageHandler {
                         None => None,
                     };
                     match user {
-                        Some(user) => user.extension.unwrap_or(user.username),
+                        Some(user) => user
+                            .extension
+                            .clone()
+                            .unwrap_or_else(|| user.sip_name().to_string()),
                         None => sip_username.clone(),
                     }
                 }
@@ -15374,7 +15377,11 @@ impl SipMessageHandler {
             fcp_core::CallTarget::User(user_id) => {
                 let storage = self.storage.as_ref()?;
                 match storage.get_user_by_id(user_id).await {
-                    Ok(Some(user)) => Some(user.extension.unwrap_or(user.username)),
+                    Ok(Some(user)) => Some(
+                        user.extension
+                            .clone()
+                            .unwrap_or_else(|| user.sip_name().to_string()),
+                    ),
                     Ok(None) => {
                         warn!(user_id = %user_id, "Forward target user not found");
                         None
@@ -15590,7 +15597,7 @@ impl SipMessageHandler {
                     .flatten()
                     .and_then(|t| t.sip_domains.into_iter().next())
                     .unwrap_or_else(|| host.clone());
-                format!("sip:{}@{domain}", executive_user.username)
+                format!("sip:{}@{domain}", executive_user.sip_name())
             }
         };
         // The executive sees the pushed party calling.

@@ -336,7 +336,8 @@ pub async fn create_mailbox(
         tenant.0,
         user_id,
         line_binding_id,
-        user.username.clone(),
+        // The mailbox answers the user's phones' name (`docs/USERS.md` §6).
+        user.sip_name().to_string(),
         req.pin,
     );
 
@@ -364,7 +365,7 @@ pub async fn create_mailbox(
             fcp_events::VoicemailEvent::MailboxCreated {
                 mailbox_id: mailbox.id.clone(),
                 user_id: req.user_id.clone(),
-                extension: user.username.clone(),
+                extension: user.sip_name().to_string(),
                 tenant_id: tenant.0.to_string(),
                 timestamp: SystemTime::now(),
             },

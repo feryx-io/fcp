@@ -1764,6 +1764,14 @@ Phase 5c done (v0.25.317): groups (`docs/USERS.md` §5).
 - Groups sync to sites; a Groups page in the admin UI.
 - Next, 5d: renaming a user.
 
+Phase 5d done (v0.25.318): renaming a user (`docs/USERS.md` §6).
+- `PUT /users/{username}` with a new `username`. The user keeps their id,
+  sessions, groups, devices and everything else.
+- Their phones keep their SIP name (a digest is a hash over it), so they
+  register, call and are reached as before.
+- A rename reaches sites.
+- Phase 5 (a user's lifecycle) is complete; phase 6, SCIM 2.0, is next.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

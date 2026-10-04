@@ -774,6 +774,9 @@ async fn resolve_user(
                 .await
                 .map_err(|_| refuse("internal"))?
                 .is_some()
+                || crate::v1::users::sip_name_taken(storage, &provider.tenant_id, &username, None)
+                    .await
+                    .map_err(|_| refuse("internal"))?
             {
                 return Err(refuse("username_taken"));
             }

@@ -602,10 +602,10 @@ async fn main() -> Result<()> {
                     // Register by owner's SIP username (primary identifier)
                     if let Ok(Some(user)) = dyn_storage.get_user_by_id(&mb.user_id).await {
                         flow_handler
-                            .add_route(user.username.clone(), flow_id.clone())
+                            .add_route(user.sip_name().to_string(), flow_id.clone())
                             .await;
                         // Also register by mailbox extension if different from username
-                        if mb.extension != user.username {
+                        if mb.extension != user.sip_name() {
                             flow_handler
                                 .add_route(mb.extension.clone(), flow_id.clone())
                                 .await;
@@ -1577,9 +1577,9 @@ async fn handle_mailbox_created(
     // Register by owner's SIP username
     if let Ok(Some(user)) = storage.get_user_by_id(&mb.user_id).await {
         flow_handler
-            .add_route(user.username.clone(), flow_id.clone())
+            .add_route(user.sip_name().to_string(), flow_id.clone())
             .await;
-        if mb.extension != user.username {
+        if mb.extension != user.sip_name() {
             flow_handler
                 .add_route(mb.extension.clone(), flow_id.clone())
                 .await;

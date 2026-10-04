@@ -129,7 +129,7 @@ async fn resolve_tenant_for_inputs(
         .or_else(|| aor.and_then(extract_username_from_aor));
 
     if let (Some(store), Some(username)) = (credential_store, username) {
-        let users = store.list_users_by_username(&username).await?;
+        let users = store.list_users_by_sip_name(&username).await?;
         match users.len() {
             1 => return Ok(users[0].tenant_id),
             0 => {}
@@ -656,7 +656,7 @@ impl Ha1CredentialStore for CredentialStoreAdapter {
             }
         };
 
-        if let Ok(Some(user)) = self.store.get_user_in_tenant(username, &tenant_id).await {
+        if let Ok(Some(user)) = self.store.get_user_by_sip_name(username, &tenant_id).await {
             // A suspended user's phones stop; a Locked one's (the web
             // sign-in's lockout) do not.
             if user.may_use_services() {
@@ -1899,7 +1899,7 @@ impl FcpRegistrar {
                 }
             };
 
-            match cred_store.get_user_in_tenant(&username, &tenant_id).await {
+            match cred_store.get_user_by_sip_name(&username, &tenant_id).await {
                 Ok(Some(user)) => {
                     debug!(
                         aor = %aor,
@@ -2213,6 +2213,7 @@ mod tests {
             voicemail_box_id: None,
             profile_picture: None,
             deprovisioned_at: None,
+            sip_username: None,
             account_status: fcp_core::AccountStatus::Active,
             failed_login_attempts: 0,
             account_locked_until: None,
@@ -2926,6 +2927,7 @@ mod tests {
             voicemail_box_id: None,
             profile_picture: None,
             deprovisioned_at: None,
+            sip_username: None,
             account_status: fcp_core::AccountStatus::Active,
             failed_login_attempts: 0,
             account_locked_until: None,
