@@ -341,13 +341,13 @@ async fn apply_sip_credentials(
                     ));
                 }
                 if storage
-                    .get_user_in_tenant(&username, &device.tenant_id)
+                    .get_user_by_sip_name(&username, &device.tenant_id)
                     .await
                     .map_err(|e| ApiError::Internal(format!("Failed to check users: {}", e)))?
                     .is_some()
                 {
                     return Err(ApiError::Conflict(format!(
-                        "sip_username `{username}` is a user's username"
+                        "sip_username `{username}` is a user's SIP name"
                     )));
                 }
                 if storage

@@ -1074,7 +1074,13 @@ impl FlowCallHandler {
                                                                     {
                                                                         Ok(Some(u)) => at(u
                                                                             .extension
-                                                                            .unwrap_or(u.username)),
+                                                                            .clone()
+                                                                            .unwrap_or_else(
+                                                                                || {
+                                                                                    u.sip_name()
+                                                                                        .to_string()
+                                                                                },
+                                                                            )),
                                                                         _ => None,
                                                                     }
                                                                 }

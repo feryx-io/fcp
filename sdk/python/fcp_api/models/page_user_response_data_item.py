@@ -37,6 +37,8 @@ class PageUserResponseDataItem:
             timezone (str):
             account_status (str):
             failed_login_attempts (int):
+            sip_username (str): The name the user's phones register and authenticate as: their
+                username, or the one they had before a rename (`docs/USERS.md` §6).
             display_name (None | str | Unset):
             department_id (None | str | Unset):
             email (None | str | Unset):
@@ -67,6 +69,7 @@ class PageUserResponseDataItem:
     timezone: str
     account_status: str
     failed_login_attempts: int
+    sip_username: str
     display_name: None | str | Unset = UNSET
     department_id: None | str | Unset = UNSET
     email: None | str | Unset = UNSET
@@ -111,6 +114,8 @@ class PageUserResponseDataItem:
         account_status = self.account_status
 
         failed_login_attempts = self.failed_login_attempts
+
+        sip_username = self.sip_username
 
         display_name: None | str | Unset
         if isinstance(self.display_name, Unset):
@@ -231,6 +236,7 @@ class PageUserResponseDataItem:
             "timezone": timezone,
             "account_status": account_status,
             "failed_login_attempts": failed_login_attempts,
+            "sip_username": sip_username,
         })
         if display_name is not UNSET:
             field_dict["display_name"] = display_name
@@ -299,6 +305,8 @@ class PageUserResponseDataItem:
         account_status = d.pop("account_status")
 
         failed_login_attempts = d.pop("failed_login_attempts")
+
+        sip_username = d.pop("sip_username")
 
         def _parse_display_name(data: object) -> None | str | Unset:
             if data is None:
@@ -512,6 +520,7 @@ class PageUserResponseDataItem:
             timezone=timezone,
             account_status=account_status,
             failed_login_attempts=failed_login_attempts,
+            sip_username=sip_username,
             display_name=display_name,
             department_id=department_id,
             email=email,

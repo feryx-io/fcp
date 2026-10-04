@@ -33,7 +33,7 @@ pub async fn credential(
     tenant_id: &TenantId,
     name: &str,
 ) -> Option<Credential> {
-    if let Ok(Some(user)) = storage.get_user_in_tenant(name, tenant_id).await {
+    if let Ok(Some(user)) = storage.get_user_by_sip_name(name, tenant_id).await {
         return user
             .may_use_services()
             .then_some(Credential::User(Box::new(user)));

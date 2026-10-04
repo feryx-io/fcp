@@ -345,7 +345,14 @@ pub async fn registrations_at_users_aor(
             return Vec::new();
         }
     };
-    registrations_at_name(storage, registrar, tenant_id, &user.username, invite_domain).await
+    registrations_at_name(
+        storage,
+        registrar,
+        tenant_id,
+        user.sip_name(),
+        invite_domain,
+    )
+    .await
 }
 
 /// The registrations at `sip:<name>@<domain>` for the first of the
@@ -395,7 +402,7 @@ pub async fn user_of(storage: &DynStorage, tenant_id: &TenantId, dialed: &str) -
             return Some(user_id);
         }
     }
-    match storage.get_user_in_tenant(dialed, tenant_id).await {
+    match storage.get_user_by_sip_name(dialed, tenant_id).await {
         Ok(Some(user)) => Some(user.id),
         _ => None,
     }

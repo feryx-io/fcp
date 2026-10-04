@@ -123,6 +123,7 @@ class WebhookEventEventType(StrEnum):
     USER_DEPROVISIONED = "user.deprovisioned"
     USER_DISABLED = "user.disabled"
     USER_ENABLED = "user.enabled"
+    USER_RENAMED = "user.renamed"
     USER_RESTORED = "user.restored"
     USER_SIGNED_IN = "user.signed_in"
     USER_SIGN_IN_FAILED = "user.sign_in_failed"

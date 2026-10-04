@@ -66,6 +66,9 @@ pub struct UserResponse {
     pub account_locked_until: Option<std::time::SystemTime>,
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
+    /// The name the user's phones register and authenticate as: their
+    /// username, or the one they had before a rename (`docs/USERS.md` §6).
+    pub sip_username: String,
     /// When the user was deleted; they are purged the tenant's
     /// `offboarding.grace_days` later unless restored.
     #[serde(default, with = "crate::time::rfc3339_opt")]
@@ -79,6 +82,7 @@ impl From<User> for UserResponse {
         let role_str = serde_json::to_string(&user.role)
             .map(|s| s.trim_matches('"').to_string())
             .unwrap_or_else(|_| "end_user".to_string());
+        let sip_username = user.sip_name().to_string();
         Self {
             id: user.id.to_string(),
             username: user.username,
@@ -107,6 +111,7 @@ impl From<User> for UserResponse {
             account_locked_until: user.account_locked_until,
             emergency_contact_name: user.emergency_contact.name,
             emergency_contact_phone: user.emergency_contact.phone,
+            sip_username,
             deprovisioned_at: user.deprovisioned_at,
         }
     }
@@ -202,6 +207,10 @@ fn parse_user_role(role_str: Option<&str>) -> Result<UserRole, ApiError> {
 /// Update user request.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateUserRequest {
+    /// A new username: the user is renamed (`docs/USERS.md` §6). Their
+    /// phones keep registering under their SIP name, which stays.
+    #[serde(default)]
+    pub username: Option<String>,
     pub display_name: Option<String>,
     pub enabled: Option<bool>,
     pub role: Option<String>,
@@ -376,13 +385,7 @@ pub async fn create_user(
     let storage = require_storage!(state);
 
     validation::validate_username(&req.username)?;
-    // A user is named by id (`user-<uuid>`) where a token or session records
-    // them; a username of that shape could be mistaken for one.
-    if req.username.starts_with("user-") && req.username.parse::<fcp_core::UserId>().is_ok() {
-        return Err(ApiError::BadRequest(
-            "A username cannot have the form of a user id (user-<uuid>)".to_string(),
-        ));
-    }
+    refuse_id_shaped(&req.username)?;
     validation::validate_display_name(&req.display_name)?;
     if let Some(ref web_password) = req.password {
         validation::reject_crlf("password", web_password)?;
@@ -433,11 +436,14 @@ pub async fn create_user(
 
     ensure_room_for_a_user(&state, &tenant.0).await?;
 
-    // Check if user already exists
+    // Check if user already exists, or their phones' name is taken: a
+    // renamed user keeps theirs (`docs/USERS.md` §6), and a device may have
+    // its own.
     if storage
         .get_user_in_tenant(&req.username, &tenant.0)
         .await?
         .is_some()
+        || sip_name_taken(storage, &tenant.0, &req.username, None).await?
     {
         // Use generic error message to avoid user enumeration
         return Err(ApiError::Conflict(
@@ -525,6 +531,7 @@ pub async fn create_user(
         voicemail_box_id: None,
         profile_picture: None,
         deprovisioned_at: None,
+        sip_username: None,
         failed_login_attempts: 0,
         account_locked_until: None,
     };
@@ -600,6 +607,11 @@ pub async fn update_user(
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
     refuse_deprovisioned(&user)?;
     let before = user.clone();
+
+    // A new username first: the rest is written to the user as renamed.
+    if let Some(new_username) = req.username.as_deref().filter(|n| *n != user.username) {
+        user = rename(&state, storage, &user, new_username).await?;
+    }
 
     // Update fields
     if let Some(display_name) = req.display_name {
@@ -794,7 +806,7 @@ pub async fn update_password(
     user.password = password_hash;
     if user.digest_password.is_none() {
         user.sip_ha1_hash = Some(password::compute_ha1(
-            &username,
+            user.sip_name(),
             &state.realm,
             &req.password,
         ));
@@ -885,7 +897,8 @@ pub async fn update_digest_password(
         .map_err(|e| ApiError::Internal(format!("Failed to hash digest password: {}", e)))?;
 
     // Compute SIP HA1 hash from digest password (NOT main password) - legacy compatibility
-    let sip_ha1_hash = password::compute_ha1(&username, &state.realm, &req.digest_password);
+    // Over the SIP name, which a rename keeps (`docs/USERS.md` §6).
+    let sip_ha1_hash = password::compute_ha1(user.sip_name(), &state.realm, &req.digest_password);
 
     // Update digest password and HA1 hash. Optionally retain the plaintext SIP
     // password only for device auto-provisioning templates.
@@ -1212,6 +1225,88 @@ pub async fn purge_user(
     }
 }
 
+/// A user is named by id (`user-<uuid>`) where a token or session records
+/// them; a username of that shape could be mistaken for one.
+pub(crate) fn refuse_id_shaped(username: &str) -> Result<(), ApiError> {
+    if username.starts_with("user-") && username.parse::<fcp_core::UserId>().is_ok() {
+        return Err(ApiError::BadRequest(
+            "A username cannot have the form of a user id (user-<uuid>)".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Rename `user` to `new_username` (`docs/USERS.md` §6): checked, then
+/// renamed in the store with what names them by username; announced as
+/// `user.renamed`. Their SIP name stays.
+pub(crate) async fn rename(
+    state: &ApiState,
+    storage: &fcp_core::DynStorage,
+    user: &User,
+    new_username: &str,
+) -> Result<User, ApiError> {
+    validation::validate_username(new_username)?;
+    refuse_id_shaped(new_username)?;
+    if storage
+        .get_user_in_tenant(new_username, &user.tenant_id)
+        .await?
+        .is_some_and(|u| u.id != user.id)
+        || sip_name_taken(storage, &user.tenant_id, new_username, Some(&user.id)).await?
+    {
+        return Err(ApiError::Conflict(format!(
+            "The username '{new_username}' is taken"
+        )));
+    }
+    let renamed = storage.rename_user(user, new_username).await?;
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::User(UserEvent::Renamed {
+            user_id: renamed.id.to_string(),
+            old_username: user.username.clone(),
+            username: renamed.username.clone(),
+            tenant_id: renamed.tenant_id,
+            timestamp: std::time::SystemTime::now(),
+        }))
+        .await;
+    warn!(
+        event = "user_renamed",
+        from = %user.username,
+        to = %renamed.username,
+        tenant_id = %renamed.tenant_id,
+        "User renamed"
+    );
+    Ok(renamed)
+}
+
+/// Whether `name` is already some phone's SIP name in the tenant: another
+/// user's (than `except`), or a device's own.
+pub(crate) async fn sip_name_taken(
+    storage: &fcp_core::DynStorage,
+    tenant: &fcp_core::TenantId,
+    name: &str,
+    except: Option<&fcp_core::UserId>,
+) -> Result<bool, ApiError> {
+    use fcp_core::storage::DeviceStore;
+    if storage
+        .get_user_by_sip_name(name, tenant)
+        .await?
+        .is_some_and(|u| Some(&u.id) != except)
+    {
+        return Ok(true);
+    }
+    // A device that authenticates as itself; one on its owner's account
+    // (its URI naming the owner) takes no name of its own.
+    Ok(storage
+        .get_device_by_sip_name(tenant, name)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .is_some_and(|d| {
+            d.sip_username
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+        }))
+}
+
 /// Refuse a new user past the tenant's `max_users`.
 pub(crate) async fn ensure_room_for_a_user(
     state: &ApiState,
@@ -1350,7 +1445,7 @@ pub(crate) async fn status_changed(state: &ApiState, before: &User, after: &User
 /// their extension, or the SIP name of a device they own.
 async fn drop_registrations(state: &ApiState, storage: &fcp_core::DynStorage, user: &User) {
     use fcp_core::storage::{DeviceStore, RegistrationStore};
-    let mut names: Vec<String> = vec![user.username.to_lowercase()];
+    let mut names: Vec<String> = vec![user.username.to_lowercase(), user.sip_name().to_lowercase()];
     if let Some(ext) = user.extension.as_deref().filter(|e| !e.is_empty()) {
         names.push(ext.to_lowercase());
     }
@@ -1468,6 +1563,7 @@ pub(crate) fn user_without_password(
         voicemail_box_id: None,
         profile_picture: None,
         deprovisioned_at: None,
+        sip_username: None,
         failed_login_attempts: 0,
         account_locked_until: None,
     })

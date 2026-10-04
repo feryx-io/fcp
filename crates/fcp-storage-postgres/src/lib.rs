@@ -873,7 +873,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username
              FROM users
              WHERE username = $1",
         )
@@ -903,7 +903,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username
              FROM users
              WHERE username = $1 AND tenant_id = $2",
         )
@@ -926,7 +926,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username
              FROM users
              WHERE username = $1
              ORDER BY tenant_id",
@@ -956,7 +956,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username
              FROM users
              WHERE tenant_id = $1 AND LOWER(email) = LOWER($2)",
         )
@@ -979,7 +979,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username
              FROM users
              WHERE id = $1",
         )
@@ -1016,6 +1016,19 @@ impl CredentialStore for PostgresStorage {
         let sip_ha1_hash = self.seal_opt(user.sip_ha1_hash.as_deref())?;
         let sip_provisioning_password = self.seal_opt(user.sip_provisioning_password.as_deref())?;
 
+        // A user is their id: one stored under another name is renamed in
+        // place first (`docs/USERS.md` §6), so the write below finds it — a
+        // rename from the API, or one arriving at a site through its link.
+        let mut tx = self.writes().begin().await?;
+        sqlx::query(
+            "UPDATE users SET username = $2
+             WHERE id = $1 AND tenant_id = $3 AND username <> $2",
+        )
+        .bind(&id)
+        .bind(&user.username)
+        .bind(&tenant_id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query(
             "INSERT INTO users (
                 id, username, password_hash, digest_password, sip_ha1_hash, sip_provisioning_password, display_name, tenant_id,
@@ -1024,9 +1037,9 @@ impl CredentialStore for PostgresStorage {
                 extension, department, job_title, location, location_id, language, timezone,
                 account_status, last_login, emergency_contact_json,
                 primary_phone_number_id, voicemail_box_id, profile_picture,
-                failed_login_attempts, account_locked_until, deprovisioned_at
+                failed_login_attempts, account_locked_until, deprovisioned_at, sip_username
              )
-	             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
+	             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
 	             ON CONFLICT(username, tenant_id) DO UPDATE SET
 	                 password_hash = EXCLUDED.password_hash,
 	                 digest_password = EXCLUDED.digest_password,
@@ -1058,7 +1071,8 @@ impl CredentialStore for PostgresStorage {
                  profile_picture = EXCLUDED.profile_picture,
                  failed_login_attempts = EXCLUDED.failed_login_attempts,
                  account_locked_until = EXCLUDED.account_locked_until,
-                 deprovisioned_at = EXCLUDED.deprovisioned_at",
+                 deprovisioned_at = EXCLUDED.deprovisioned_at,
+                 sip_username = EXCLUDED.sip_username",
         )
         .bind(&id)
         .bind(&user.username)
@@ -1095,8 +1109,10 @@ impl CredentialStore for PostgresStorage {
         .bind(user.failed_login_attempts)
         .bind(account_locked_until)
         .bind(user.deprovisioned_at.map(system_time_to_datetime))
-        .execute(self.writes())
+        .bind(&user.sip_username)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
 
         debug!(username = %user.username, "User stored");
         Ok(())
@@ -1158,7 +1174,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username
              FROM users
              WHERE tenant_id = $1
                AND ($2::TEXT IS NULL OR account_status = $2)
@@ -1177,6 +1193,73 @@ impl CredentialStore for PostgresStorage {
             .filter_map(|row| row_to_user(row).ok())
             .collect();
         self.open_users(users).await
+    }
+
+    async fn get_user_by_sip_name(&self, name: &str, tenant_id: &TenantId) -> Result<Option<User>> {
+        let row = sqlx::query(
+            "SELECT * FROM users
+             WHERE tenant_id = $1 AND COALESCE(sip_username, username) = $2",
+        )
+        .bind(tenant_id.to_string())
+        .bind(name)
+        .fetch_optional(self.reads())
+        .await?;
+        match row {
+            Some(row) => Ok(Some(self.open_user(row_to_user(row)?).await?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_users_by_sip_name(&self, name: &str) -> Result<Vec<User>> {
+        let rows = sqlx::query("SELECT * FROM users WHERE COALESCE(sip_username, username) = $1")
+            .bind(name)
+            .fetch_all(self.reads())
+            .await?;
+        let users = rows
+            .into_iter()
+            .map(row_to_user)
+            .collect::<Result<Vec<_>>>()?;
+        self.open_users(users).await
+    }
+
+    async fn rename_user(&self, user: &User, new_username: &str) -> Result<User> {
+        let tenant = user.tenant_id.to_string();
+        let id = user.id.to_string();
+        let mut tx = self.writes().begin().await?;
+        // The SIP name stays: the phones' digest is computed over it.
+        sqlx::query(
+            "UPDATE users SET username = $3,
+                    sip_username = COALESCE(sip_username, username),
+                    updated_at = now()
+             WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(&tenant)
+        .bind(&id)
+        .bind(new_username)
+        .execute(&mut *tx)
+        .await?;
+        // What names the user by username follows them.
+        sqlx::query(
+            "UPDATE conference_meetings SET owner_id = $3, updated_at = now()
+             WHERE tenant_id = $1 AND owner_id = $2",
+        )
+        .bind(&tenant)
+        .bind(&user.username)
+        .bind(new_username)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE api_tokens SET user_id = $3 WHERE tenant_id = $1 AND user_id = $2")
+            .bind(&tenant)
+            .bind(&user.username)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        let row = sqlx::query("SELECT * FROM users WHERE id = $1")
+            .bind(&id)
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        self.open_user(row_to_user(row)?).await
     }
 
     async fn group_roles_of_user(&self, user_id: &UserId) -> Result<Vec<fcp_core::UserRole>> {
@@ -1199,7 +1282,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username
              FROM users
              ORDER BY username",
         )
@@ -3076,6 +3159,7 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         deprovisioned_at: row
             .get::<Option<DateTime<Utc>>, _>("deprovisioned_at")
             .map(datetime_to_system_time),
+        sip_username: row.get("sip_username"),
     };
     // A row from before phase 5 may disagree with itself.
     user.normalize_status();

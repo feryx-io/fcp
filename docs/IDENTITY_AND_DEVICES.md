@@ -625,6 +625,31 @@ Each phase is one PR based on main, with its admin UI and its docs.
        `a_groups_member_logs_in_to_the_queue_that_takes_its_agents_from_it`
        (`fcp-call-manager/tests/calls.rs`, over SIP) and the groups half of
        `fcp-link/tests/apply.rs`.
+   - **5d done (v0.25.318)** (`docs/USERS.md` §6).
+     - The SIP identity is separate from the login name: `users.sip_username`
+       (migration 099, one per name in a tenant), `User::sip_name()`, the
+       username until a rename and the old username after.
+     - Every SIP-side lookup by name asks `CredentialStore::get_user_by_sip_name`
+       / `list_users_by_sip_name` (registrar digest and tenant resolution,
+       hoteling, ring plans, routing's caller, emergency, the recording
+       decision, queue agents), and every SIP address built for a user uses
+       the SIP name (the user's own AOR fallback, executive and forward
+       targets, provisioning's account, the voicemail server's routes, new
+       mailboxes); HA1 is computed over it on every password change.
+     - `PUT /users/{username}` with `username` renames
+       (`CredentialStore::rename_user`: one transaction with meetings and
+       legacy token makers); `user.renamed`; the new name checked against
+       usernames, SIP names and devices' own names.
+     - `put_user` renames in place by id first, so a rename reaches a site
+       through its link (the upsert on `(username, tenant_id)` would have
+       collided with the unique id).
+     - Not done: changing the SIP name itself.
+     - Proved by `a_renamed_user_keeps_their_sip_name_their_sessions_and_what_they_had`
+       (`api_postgres.rs`),
+       `a_renamed_users_phone_registers_calls_and_is_reached_as_before`
+       (`fcp-call-manager/tests/calls.rs`, over SIP) and the rename half
+       of `fcp-link/tests/apply.rs`.
+     - Phase 5 is complete.
 6. **SCIM 2.0.**
    - `/scim/v2/{Users,Groups,ServiceProviderConfig,ResourceTypes,Schemas}`.
    - Filters, PATCH and ETags.

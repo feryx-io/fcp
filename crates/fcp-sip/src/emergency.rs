@@ -222,7 +222,7 @@ pub async fn detect(
         None
     } else {
         storage
-            .get_user_in_tenant(username, tenant_id)
+            .get_user_by_sip_name(username, tenant_id)
             .await
             .ok()
             .flatten()

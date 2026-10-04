@@ -213,6 +213,33 @@ impl CredentialStore for CachedCredentialStore {
         self.inner.group_roles_of_user(user_id).await
     }
 
+    async fn get_user_by_sip_name(
+        &self,
+        name: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<User>> {
+        // Most users' SIP name is their username: the cached lookup, then
+        // the store's own for a renamed user.
+        if let Some(user) = self.get_user_in_tenant(name, tenant_id).await? {
+            if user.sip_name() == name {
+                return Ok(Some(user));
+            }
+        }
+        self.inner.get_user_by_sip_name(name, tenant_id).await
+    }
+
+    async fn list_users_by_sip_name(&self, name: &str) -> Result<Vec<User>> {
+        self.inner.list_users_by_sip_name(name).await
+    }
+
+    async fn rename_user(&self, user: &User, new_username: &str) -> Result<User> {
+        let renamed = self.inner.rename_user(user, new_username).await?;
+        // Both names: the old would answer with the user as they were.
+        self.evict(&user.username);
+        self.evict(new_username);
+        Ok(renamed)
+    }
+
     async fn put_user(&self, user: User) -> Result<()> {
         let username = user.username.clone();
         self.inner.put_user(user).await?;

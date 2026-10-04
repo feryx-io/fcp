@@ -740,6 +740,16 @@ pub enum UserEvent {
         timestamp: SystemTime,
     },
 
+    /// A user renamed (`docs/USERS.md` §6); their SIP name is unchanged.
+    Renamed {
+        user_id: String,
+        old_username: String,
+        username: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// A deprovisioned user restored within the grace period.
     Restored {
         user_id: String,
@@ -1724,6 +1734,7 @@ impl PlatformEvent {
         "user.deleted",
         "user.deprovisioned",
         "user.restored",
+        "user.renamed",
         "user.enabled",
         "user.disabled",
         "user.calling_changed",
@@ -1875,6 +1886,7 @@ impl PlatformEvent {
                 UserEvent::Deleted { .. } => "user.deleted",
                 UserEvent::Deprovisioned { .. } => "user.deprovisioned",
                 UserEvent::Restored { .. } => "user.restored",
+                UserEvent::Renamed { .. } => "user.renamed",
                 UserEvent::Enabled { .. } => "user.enabled",
                 UserEvent::Disabled { .. } => "user.disabled",
                 UserEvent::CallingChanged { .. } => "user.calling_changed",
@@ -2008,6 +2020,7 @@ impl PlatformEvent {
                 | UserEvent::Deleted { tenant_id, .. }
                 | UserEvent::Deprovisioned { tenant_id, .. }
                 | UserEvent::Restored { tenant_id, .. }
+                | UserEvent::Renamed { tenant_id, .. }
                 | UserEvent::Enabled { tenant_id, .. }
                 | UserEvent::Disabled { tenant_id, .. }
                 | UserEvent::CallingChanged { tenant_id, .. }
@@ -2181,6 +2194,7 @@ impl UserEvent {
             | UserEvent::Deleted { timestamp, .. }
             | UserEvent::Deprovisioned { timestamp, .. }
             | UserEvent::Restored { timestamp, .. }
+            | UserEvent::Renamed { timestamp, .. }
             | UserEvent::Enabled { timestamp, .. }
             | UserEvent::Disabled { timestamp, .. }
             | UserEvent::CallingChanged { timestamp, .. }

@@ -219,8 +219,9 @@ pub async fn change_password(
 
     user.password = password_hash;
     if user.digest_password.is_none() {
+        // Over the SIP name, which a rename keeps (`docs/USERS.md` §6).
         user.sip_ha1_hash = Some(password::compute_ha1(
-            &claims.sub,
+            user.sip_name(),
             &state.realm,
             &body.new_password,
         ));

@@ -1,7 +1,8 @@
 # Users
 
-A user's lifecycle, as it stands after phase 5c of
-`docs/IDENTITY_AND_DEVICES.md`. Renaming a user (5d) comes next.
+A user's lifecycle, as it stands after phase 5 of
+`docs/IDENTITY_AND_DEVICES.md` (5a status, 5b deletion, 5c groups, 5d
+renaming).
 
 ## 1. One status
 
@@ -190,3 +191,39 @@ queue's settings does. Deleting a group leaves its queues with none.
 Groups and memberships are part of a site's slice: a site's users hold
 their groups' roles there too, and a site's admin cannot change them. A
 purged user's memberships go with them.
+
+## 6. Renaming a user
+
+`PUT /users/{username}` with a new `username` renames the user. SCIM's
+renames (phase 6) come through the same door.
+
+- **They are the same user.** Everything that names them by id is theirs
+  still: sign-in sessions, API tokens, groups, devices, lines, extensions,
+  calling settings, hoteling, their mailbox. Their sessions from before
+  carry on.
+- **They sign in by the new name** (or by email, as before).
+- **Their phones keep their SIP name.** A phone's digest password is a
+  hash over the name it registers as, which FCP cannot recompute without
+  the password. So a user has a SIP name (`sip_username` in the API), which
+  is their username until a rename and the old username after it. Their
+  phones register, call and are called exactly as before; their
+  registrations, voicemail box, presence and queue seats, all named by it,
+  carry on untouched. Provisioning gives phones the SIP name.
+- **What named them by username follows them**: meetings they own, and API
+  tokens recorded under their name (rewritten to their id).
+- `user.renamed` is published with the old and the new name, and
+  `user.updated` names `username` and `sip_username` among its changes.
+
+The SIP name belongs to them while they exist:
+
+- no new user may be created with it, nor anyone renamed to it, nor a
+  device given it as its own SIP name;
+- they may be renamed back to it.
+
+A new SIP password (`PUT /users/{username}/password` when the web
+password is the SIP one, or `/digest-password`) is hashed over the SIP
+name. There is no way yet to change the SIP name itself: it would move
+their registrations, mailbox and presence, and needs their phones
+re-provisioned.
+
+A rename reaches sites with the user's row, matched by id.

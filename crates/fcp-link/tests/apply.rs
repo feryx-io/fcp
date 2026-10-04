@@ -425,14 +425,45 @@ format = "compact"
             .unwrap();
     }
 
+    // A user renamed in the cloud is renamed at the site (the row is
+    // matched by its id), and her phone, keeping its SIP name, registers
+    // there as before.
+    let (code, renamed) = cloud
+        .admin_call(
+            "PUT",
+            "/api/v1/users/alice",
+            true,
+            Some(&serde_json::json!({"username": "alice.w"}).to_string()),
+        )
+        .await;
+    assert_eq!(code, 200, "{renamed}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let at_site: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT username, sip_username FROM users WHERE id = $1")
+                .bind(&alice_id)
+                .fetch_optional(&site_pool)
+                .await
+                .unwrap();
+        if at_site == Some(("alice.w".to_string(), Some("alice".to_string()))) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the rename never reached the site: {at_site:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    registers_with("alice's phone after her rename", &renewed, true).await;
+
     // A user deleted in the cloud is gone at the site.
     let (code, gone) = cloud
-        .admin_call("DELETE", "/api/v1/users/alice", true, None)
+        .admin_call("DELETE", "/api/v1/users/alice.w", true, None)
         .await;
     assert!(code == 200 || code == 204, "{gone}");
     // Deleted, then purged without waiting for the grace period.
     let (code, purged) = cloud
-        .admin_call("POST", "/api/v1/users/alice/purge", true, None)
+        .admin_call("POST", "/api/v1/users/alice.w/purge", true, None)
         .await;
     assert_eq!(code, 200, "{purged}");
     registers_with("alice still registered after her deletion", &renewed, false).await;

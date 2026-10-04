@@ -12410,3 +12410,178 @@ async fn groups_that_follow_the_identity_provider_are_set_at_every_sign_in() {
 
     app.finish().await;
 }
+
+// ---------------------------------------------------------------------------
+// Renaming a user (docs/IDENTITY_AND_DEVICES.md phase 5d)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_renamed_user_keeps_their_sip_name_their_sessions_and_what_they_had() {
+    use fcp_core::storage::password::compute_ha1;
+    use fcp_core::CredentialStore;
+    let app = require_app!();
+    let pool = app.storage.pool().clone();
+    let tenant = app.tenant_a.to_string();
+    app.create_user_with_role("ann", "end_user").await;
+    app.create_user_with_role("ben", "end_user").await;
+    let session = app.login("ann", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let group = app
+        .admin(
+            Method::POST,
+            "/api/v1/groups",
+            Some(json!({"name": "Sales"})),
+        )
+        .await;
+    let group_id = group.json["id"].as_str().unwrap().to_string();
+    app.admin(
+        Method::POST,
+        &format!("/api/v1/groups/{group_id}/members"),
+        Some(json!({"username": "ann"})),
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO conference_meetings (id, tenant_id, room_number, name, owner_id)
+         VALUES ('meeting-ann', $1, '9101', 'Ann''s room', 'ann')",
+    )
+    .bind(&tenant)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut events = fcp_events::EventSubscriber::subscribe(
+        app.event_bus.as_ref(),
+        fcp_events::EventFilter::new(),
+    )
+    .await
+    .unwrap();
+
+    // Ann marries: her login changes; her phones' name does not.
+    let renamed = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/ann",
+            Some(json!({"username": "ann.lee", "display_name": "Ann Lee"})),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.text);
+    assert_eq!(renamed.json["username"], "ann.lee");
+    assert_eq!(renamed.json["sip_username"], "ann");
+    assert_eq!(renamed.json["display_name"], "Ann Lee");
+    assert_eq!(
+        app.admin(Method::GET, "/api/v1/users/ann", None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let renamed_event = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = events.next().await {
+            if let PlatformEvent::User(fcp_events::UserEvent::Renamed {
+                old_username,
+                username,
+                ..
+            }) = event
+            {
+                return (old_username, username);
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .expect("user.renamed");
+    assert_eq!(renamed_event, ("ann".to_string(), "ann.lee".to_string()));
+
+    // She signs in by her new name; her session from before is hers still.
+    assert_eq!(app.login("ann.lee", PASSWORD).await.status, StatusCode::OK);
+    assert_ne!(app.login("ann", PASSWORD).await.status, StatusCode::OK);
+    let me = app
+        .send_as(&session, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(me.json["username"], "ann.lee", "{}", me.text);
+
+    // What she had is hers: her group, her meeting.
+    let groups = app
+        .admin(Method::GET, "/api/v1/users/ann.lee/groups", None)
+        .await;
+    assert_eq!(groups.json[0]["name"], "Sales", "{}", groups.text);
+    let owner: String =
+        sqlx::query_scalar("SELECT owner_id FROM conference_meetings WHERE id = 'meeting-ann'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(owner, "ann.lee");
+
+    // Her phones' name is hers: nobody may take "ann", as a username or
+    // by a rename; a new password's digest is over it.
+    let taken = app
+        .admin(
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({"username": "ann", "password": PASSWORD})),
+        )
+        .await;
+    assert_eq!(taken.status, StatusCode::CONFLICT, "{}", taken.text);
+    let taken = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/ben",
+            Some(json!({"username": "ann"})),
+        )
+        .await;
+    assert_eq!(taken.status, StatusCode::CONFLICT, "{}", taken.text);
+    let id_shaped = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/ben",
+            Some(json!({"username": format!("{}", fcp_core::UserId::new())})),
+        )
+        .await;
+    assert_eq!(
+        id_shaped.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        id_shaped.text
+    );
+    let changed = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/ann.lee/password",
+            Some(json!({"password": "Another-Passw0rd!"})),
+        )
+        .await;
+    assert!(changed.status.is_success(), "{}", changed.text);
+    let stored = app
+        .storage
+        .get_user_in_tenant("ann.lee", &app.tenant_a)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.sip_ha1_hash.as_deref(),
+        Some(compute_ha1("ann", REALM, "Another-Passw0rd!").as_str()),
+        "the digest is over the SIP name"
+    );
+    assert_eq!(
+        app.storage
+            .get_user_by_sip_name("ann", &app.tenant_a)
+            .await
+            .unwrap()
+            .map(|u| u.username),
+        Some("ann.lee".to_string())
+    );
+
+    // Back to her old name: hers to take.
+    let back = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/ann.lee",
+            Some(json!({"username": "ann"})),
+        )
+        .await;
+    assert_eq!(back.status, StatusCode::OK, "{}", back.text);
+    assert_eq!(back.json["username"], "ann");
+    assert_eq!(back.json["sip_username"], "ann");
+
+    app.finish().await;
+}

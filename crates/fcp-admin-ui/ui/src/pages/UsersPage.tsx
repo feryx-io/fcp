@@ -39,6 +39,7 @@ const createUserSchema = z.object({
 })
 
 const editUserSchema = z.object({
+  username: z.string().min(1, 'Username is required').optional(),
   display_name: z.string().optional(),
   email: z.string().email().optional().or(z.literal('')),
   role: z.string().optional(),
@@ -547,6 +548,7 @@ function EditUserDialog({
   if (user && user.username !== lastUser) {
     setLastUser(user.username)
     reset({
+      username: user.username,
       display_name: user.display_name || '',
       email: user.email || '',
       role: user.role || '',
@@ -564,6 +566,8 @@ function EditUserDialog({
       username: user.username,
       data: {
         ...data,
+        // A rename only when it changed (docs/USERS.md §6).
+        username: data.username && data.username !== user.username ? data.username : undefined,
         email: data.email || undefined,
         display_name: data.display_name || undefined,
         extension: data.extension || undefined,
@@ -582,6 +586,15 @@ function EditUserDialog({
           <DialogDescription>Update user account details.</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="edit-username">Username</Label>
+            <Input id="edit-username" {...register('username')} />
+            {errors.username && <p className="text-sm text-destructive">{errors.username.message}</p>}
+            <p className="text-xs text-muted-foreground">
+              Renaming changes how they sign in. Their phones keep registering as{' '}
+              <span className="font-mono">{user?.sip_username}</span>.
+            </p>
+          </div>
           <div className="space-y-2">
             <Label htmlFor="edit-display_name">Display Name</Label>
             <Input id="edit-display_name" {...register('display_name')} />

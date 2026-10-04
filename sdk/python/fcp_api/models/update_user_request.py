@@ -25,6 +25,8 @@ class UpdateUserRequest:
     """ Update user request.
 
         Attributes:
+            username (None | str | Unset): A new username: the user is renamed (`docs/USERS.md` §6). Their
+                phones keep registering under their SIP name, which stays.
             display_name (None | str | Unset):
             enabled (bool | None | Unset):
             role (None | str | Unset):
@@ -45,6 +47,7 @@ class UpdateUserRequest:
             emergency_contact_phone (None | str | Unset):
      """
 
+    username: None | str | Unset = UNSET
     display_name: None | str | Unset = UNSET
     enabled: bool | None | Unset = UNSET
     role: None | str | Unset = UNSET
@@ -70,6 +73,12 @@ class UpdateUserRequest:
 
 
     def to_dict(self) -> dict[str, Any]:
+        username: None | str | Unset
+        if isinstance(self.username, Unset):
+            username = UNSET
+        else:
+            username = self.username
+
         display_name: None | str | Unset
         if isinstance(self.display_name, Unset):
             display_name = UNSET
@@ -183,6 +192,8 @@ class UpdateUserRequest:
         field_dict.update(self.additional_properties)
         field_dict.update({
         })
+        if username is not UNSET:
+            field_dict["username"] = username
         if display_name is not UNSET:
             field_dict["display_name"] = display_name
         if enabled is not UNSET:
@@ -227,6 +238,16 @@ class UpdateUserRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
+        def _parse_username(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        username = _parse_username(d.pop("username", UNSET))
+
+
         def _parse_display_name(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -408,6 +429,7 @@ class UpdateUserRequest:
 
 
         update_user_request = cls(
+            username=username,
             display_name=display_name,
             enabled=enabled,
             role=role,

@@ -64,7 +64,8 @@ impl OffboardingStore for PostgresStorage {
 
         // The names the user's phones register under: theirs, their
         // extension's, and their devices'.
-        let mut names: Vec<String> = vec![user.username.to_lowercase()];
+        let mut names: Vec<String> =
+            vec![user.username.to_lowercase(), user.sip_name().to_lowercase()];
         if let Some(ext) = user.extension.as_deref().filter(|e| !e.is_empty()) {
             names.push(ext.to_lowercase());
         }

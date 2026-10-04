@@ -80,7 +80,7 @@ impl RoutingStore for DatabaseRoutingStore {
     /// ([`RoutingStore::get_user`]).
     async fn find_user(&self, user_id: &str) -> Result<Option<User>> {
         let username = username_of(user_id);
-        let mut found = self.users.list_users_by_username(username).await?;
+        let mut found = self.users.list_users_by_sip_name(username).await?;
         match found.len() {
             0 => Ok(None),
             1 => Ok(Some(engine_user(user_id, found.remove(0)))),
@@ -94,7 +94,7 @@ impl RoutingStore for DatabaseRoutingStore {
         let username = username_of(user_id);
         Ok(self
             .users
-            .get_user_in_tenant(username, tenant_id)
+            .get_user_by_sip_name(username, tenant_id)
             .await?
             .map(|u| engine_user(user_id, u)))
     }
@@ -171,6 +171,7 @@ mod tests {
             voicemail_box_id: None,
             profile_picture: None,
             deprovisioned_at: None,
+            sip_username: None,
             failed_login_attempts: 0,
             account_locked_until: None,
         }

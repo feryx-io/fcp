@@ -1199,6 +1199,64 @@ extension = "7000"
     stack.finish().await;
 }
 
+/// A renamed user's phone keeps its SIP name (docs/USERS.md §6): it
+/// registers with the credentials it had, calls out as before, and is
+/// reached by its extension.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_renamed_users_phone_registers_calls_and_is_reached_as_before() {
+    use fcp_core::CredentialStore;
+    let Some(stack) = Stack::start().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let storage = stack.seed.storage();
+    let user = storage
+        .get_user_in_tenant("alice", &stack.seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let renamed = storage.rename_user(&user, "alice.smith").await.unwrap();
+    assert_eq!(renamed.username, "alice.smith");
+    assert_eq!(renamed.sip_name(), "alice");
+
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(
+        alice_phone.register().await.unwrap(),
+        200,
+        "the renamed user's phone registers with what it had"
+    );
+    alice_phone.auto_answer(true);
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    bob_phone.auto_answer(true);
+
+    let out = alice_phone.call("1002").await.unwrap();
+    if let Err(e) = out.answered(SOON).await {
+        stack
+            .fail(
+                &format!("the renamed user's call was not answered: {e}"),
+                &alice_phone,
+            )
+            .await;
+    }
+    out.hangup().await.unwrap();
+    for dialed in ["1001"] {
+        let call = bob_phone.call(dialed).await.unwrap();
+        if let Err(e) = call.answered(SOON).await {
+            stack
+                .fail(
+                    &format!("{dialed} did not reach the renamed user: {e}"),
+                    &bob_phone,
+                )
+                .await;
+        }
+        call.hangup().await.unwrap();
+    }
+    stack.finish().await;
+}
+
 /// The queue system's logged-in agents, by id.
 async fn logged_in_agents(stack: &Stack) -> Vec<String> {
     stack.get("/agents").await["agents"]
