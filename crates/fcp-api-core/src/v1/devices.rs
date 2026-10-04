@@ -227,22 +227,12 @@ fn generate_provisioning_token() -> String {
     )
 }
 
-fn validate_device_provisioning_token(state: &ApiState, token: &str) -> Result<String, ApiError> {
+fn validate_device_provisioning_token(token: &str) -> Result<String, ApiError> {
     validation::reject_crlf("provisioning_token", token)?;
     let token = token.trim();
     if token.len() < 32 {
         return Err(ApiError::BadRequest(
             "provisioning_token must be at least 32 characters".to_string(),
-        ));
-    }
-    if state
-        .provisioning_auth_token
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|shared_token| shared_token == token)
-    {
-        return Err(ApiError::BadRequest(
-            "provisioning_token must be distinct from api.provisioning_auth_token".to_string(),
         ));
     }
     Ok(token.to_string())
@@ -622,6 +612,7 @@ pub async fn list_devices(
                 }
             }
         }
+        confirm_registration(&mut resp, &live_regs, now);
         resp
     }).collect();
 
@@ -632,6 +623,47 @@ pub async fn list_devices(
         crate::page::Order::Ascending,
         |r| format!("{}/{}", r.name, r.id),
     )?))
+}
+
+/// A device the registrar wrote as registered (`docs/PROVISIONING.md` §8)
+/// is shown so only while a live registration is its: one whose
+/// User-Agent carries its MAC, or whose contact is its last address. A
+/// phone that went away without unregistering is shown `expired`.
+fn confirm_registration(
+    resp: &mut DeviceResponse,
+    live: &[fcp_core::storage::Registration],
+    now: SystemTime,
+) {
+    if resp.registration_state != "registered" {
+        return;
+    }
+    let mac = resp
+        .mac_address
+        .as_deref()
+        .and_then(fcp_core::provisioning::mac_of);
+    let mine = live.iter().filter(|r| r.expires_at > now).find(|r| {
+        let by_mac = mac.as_ref().is_some_and(|m| {
+            r.user_agent.as_deref().is_some_and(|ua| {
+                ua.to_ascii_lowercase()
+                    .replace([':', '-'], "")
+                    .contains(m.as_str())
+            })
+        });
+        let by_address = resp
+            .last_ip_address
+            .as_deref()
+            .is_some_and(|a| extract_ip_from_contact(&r.contact) == a);
+        by_mac || by_address
+    });
+    match mine {
+        Some(r) => {
+            resp.last_ip_address = Some(extract_ip_from_contact(&r.contact));
+            if r.user_agent.is_some() {
+                resp.user_agent = r.user_agent.clone();
+            }
+        }
+        None => resp.registration_state = "expired".to_string(),
+    }
 }
 
 /// Extract IP:port from a SIP contact URI like "<sip:alice@192.168.1.80:5060;transport=tcp>"
@@ -680,7 +712,15 @@ pub async fn get_device(
         .ok_or_else(|| ApiError::NotFound(format!("Device {} not found", id)))
         .and_then(|device| ensure_device_in_tenant(device, &tenant.0, &id))?;
 
-    Ok(Json(device.into()))
+    let mut response = DeviceResponse::from(device);
+    if response.registration_state == "registered" {
+        let live = storage
+            .get_all_registrations_in_tenant(&tenant.0)
+            .await
+            .unwrap_or_default();
+        confirm_registration(&mut response, &live, SystemTime::now());
+    }
+    Ok(Json(response))
 }
 
 /// Create device.
@@ -750,7 +790,7 @@ pub async fn create_device(
     let generated_provisioning_token =
         match req.provisioning_token.and_then(normalize_optional_string) {
             Some(token) => {
-                let token = validate_device_provisioning_token(&state, &token)?;
+                let token = validate_device_provisioning_token(&token)?;
                 device.provisioning_token_hash = Some(hash_provisioning_token(&token));
                 None
             }
@@ -985,7 +1025,7 @@ pub async fn update_device(
     if let Some(provisioning_token) = req.provisioning_token {
         device.provisioning_token_hash =
             if let Some(token) = normalize_optional_string(provisioning_token) {
-                let token = validate_device_provisioning_token(&state, &token)?;
+                let token = validate_device_provisioning_token(&token)?;
                 Some(hash_provisioning_token(&token))
             } else {
                 None
@@ -1645,5 +1685,76 @@ pub async fn render_device(
         config_template_name: template.map(|t| t.name),
         vendor: vendor.to_string(),
         content,
+    }))
+}
+
+/// What a resync did.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ResyncResponse {
+    pub device_id: String,
+    /// The phone's registered contacts sent the NOTIFY: 0 when it is not
+    /// registered.
+    pub sent: u64,
+}
+
+/// Ask a call manager to resync one device: what it sent.
+pub(crate) async fn resync_one(state: &ApiState, device: &Device) -> Result<u64, ApiError> {
+    let supervisor = state.call_supervisor.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("no call manager can be reached".to_string())
+    })?;
+    let (status, body) = supervisor
+        .resync_device(device.tenant_id, &device.id.to_string())
+        .await
+        .map_err(ApiError::ServiceUnavailable)?;
+    match status {
+        200..=299 => Ok(body["sent"].as_u64().unwrap_or(0)),
+        404 => Err(ApiError::NotFound(format!(
+            "Device {} not found",
+            device.id
+        ))),
+        _ => Err(ApiError::ServiceUnavailable(
+            body["error"]
+                .as_str()
+                .unwrap_or("the call manager could not resync the phone")
+                .to_string(),
+        )),
+    }
+}
+
+/// POST /api/v1/devices/:id/resync — tell the phone to fetch its
+/// configuration again, with its vendor's NOTIFY (`docs/PROVISIONING.md`
+/// §8), sent by a call manager to each contact it is registered from.
+#[utoipa::path(
+    post,
+    path = "/api/v1/devices/{id}/resync",
+    tag = "provisioning",
+    operation_id = "provisioning_resync_device",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = ResyncResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn resync_device(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Path(id): Path<String>,
+) -> Result<Json<ResyncResponse>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::DeviceUpdate, state.deployment_mode)?;
+    let storage = require_storage!(state);
+    let id = DeviceId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid device ID: {}", e)))?;
+    let device = storage
+        .get_device(&id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get device: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Device {} not found", id)))
+        .and_then(|device| ensure_device_in_tenant(device, &tenant.0, &id))?;
+    let sent = resync_one(&state, &device).await?;
+    info!(device_id = %device.id, sent, "Resynced a phone");
+    Ok(Json(ResyncResponse {
+        device_id: device.id.to_string(),
+        sent,
     }))
 }

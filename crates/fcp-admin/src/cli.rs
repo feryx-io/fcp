@@ -78,15 +78,6 @@ pub struct Cli {
     )]
     pub session_signing_key: Option<String>,
 
-    /// Device auto-provisioning token
-    #[arg(
-        long = "provisioning-auth-token",
-        value_name = "TOKEN",
-        help = "Shared token accepted only by the device provisioning endpoint",
-        env = "FCP_ADMIN_PROVISIONING_AUTH_TOKEN"
-    )]
-    pub provisioning_auth_token: Option<String>,
-
     /// Disable the HTTPS requirement for the provisioning endpoint
     #[arg(
         long = "provisioning-no-https",

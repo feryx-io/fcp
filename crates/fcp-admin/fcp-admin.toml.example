@@ -24,12 +24,8 @@ auth_enabled = true
 # You can also set this via environment variable: FCP_ADMIN_AUTH_TOKEN
 auth_token = "change-this-to-a-secure-random-token"
 
-# Device auto-provisioning token.
-# IMPORTANT: This must be a different strong token from auth_token because it
-# may be embedded in phone bootstrap URLs or vendor provisioning profiles.
-# You can also set this via environment variable:
-# FCP_ADMIN_PROVISIONING_AUTH_TOKEN
-# provisioning_auth_token = "change-this-to-a-different-secure-random-token"
+# Phones fetch their configuration from each tenant's provisioning URL
+# (docs/PROVISIONING.md); what they are told is [api.provisioning] below.
 
 # Require HTTPS for the provisioning endpoint.  Provisioning responses may
 # contain SIP digest credentials (HA1 hashes).  Defaults to true; set to false
@@ -39,6 +35,16 @@ auth_token = "change-this-to-a-secure-random-token"
 # Keep anonymous tenant signup disabled unless this deployment explicitly offers
 # public self-service onboarding.
 # allow_public_signup = false
+
+# What provisioned phones are told (docs/PROVISIONING.md §5): where they
+# register (unset, the realm `fcp.local`, which no phone can reach), how,
+# their time server, and the address they reach this admin at.
+# [api.provisioning]
+# sip_server = "sip.example.com"
+# sip_port = 5061
+# sip_transport = "tls"
+# ntp_server = "pool.ntp.org"
+# public_url = "https://pbx.example.com"
 
 [storage]
 # PostgreSQL is the one backend. Migrations run at startup.

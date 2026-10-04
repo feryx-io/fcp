@@ -67,7 +67,7 @@ docker compose up -d --build             # or: FCP_IMAGE_TAG=nightly, pull, up -
 | `FCP_CLOUD_ADMIN_URL` | The cloud's admin, named when the site's admin refuses a write. |
 | `FCP_LINK_ENROLLMENT_TOKEN` | The token, until the link has enrolled; blank it after. |
 | `POSTGRES_PASSWORD` | The site's database. |
-| `FCP_ADMIN_AUTH_TOKEN`, `FCP_ADMIN_PROVISIONING_AUTH_TOKEN` | The site admin's operator token, and the token phones fetch their configuration with. |
+| `FCP_ADMIN_AUTH_TOKEN` | The site admin's operator token. Phones fetch from the site's provisioning URL (`docs/PROVISIONING.md`). |
 | `FCP_CALL_MANAGER_API_TOKEN` | The call manager's operator routes. |
 | `FCP_IMAGE_TAG` | `local` builds the images here; `nightly` or a commit sha pulls the cloud's. |
 
@@ -129,8 +129,9 @@ For TLS the phone trusts the site's own CA:
 docker run --rm -v site_fcp-certs:/certs:ro alpine:3.20 cat /certs/ca.crt
 ```
 
-Provisioning is served by the site's admin on `18080` with the
-provisioning token, from the templates the cloud synced.
+Provisioning is served by the site's admin on `18080`, under the site's
+own provisioning URL (`/provision/<key>/`, made on the site's Devices
+page), from the templates the cloud synced (`docs/PROVISIONING.md`).
 
 Calls between the site's phones stay on the site. A call to a number the
 tenant does not own, or to a user who is registered in the cloud and

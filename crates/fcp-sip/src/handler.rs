@@ -1224,6 +1224,18 @@ impl SipMessageHandler {
         self
     }
 
+    /// Tell a device's phone to fetch its configuration again
+    /// (`docs/PROVISIONING.md` §8): how many of its contacts were sent the
+    /// NOTIFY, or `None` when this node cannot send one.
+    pub async fn resync_device(&self, device: &fcp_core::Device) -> Option<usize> {
+        let (Some(uac), Some(registrar), Some(storage)) =
+            (&self.uac, &self.registrar, &self.storage)
+        else {
+            return None;
+        };
+        Some(crate::device_sync::resync_device(uac, registrar, storage, device).await)
+    }
+
     /// Log users in and out of host phones (`*88`, `*89`).
     pub fn with_hoteling(mut self, hoteling: Arc<crate::hoteling::Hoteling>) -> Self {
         self.hoteling = Some(hoteling);

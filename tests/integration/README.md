@@ -50,16 +50,17 @@ Nothing runnable lives in this directory yet; cross-service tests (API + SIP
 
 ## Known coverage gaps
 
-### Device auto-provisioning (`GET /api/v1/provisioning/:mac_address`)
+### Device provisioning (`GET /provision/:key/:file`)
 
-Covered by `crates/fcp-api-core/tests/api_postgres.rs`:
+Covered by `crates/fcp-api-core/tests/api_postgres.rs` (`docs/PROVISIONING.md`):
 
-1. Missing / invalid shared provisioning token, the admin API token used in
-   its place, and plain-HTTP requests all return the uniform 404.
-2. Unknown MAC, wrong or missing per-device token, disabled device, and a
-   device without a template return the same 404 with a byte-identical body.
-   Response *timing* is not asserted (too noisy for CI); the ordering that
-   makes the cases indistinguishable is locked in by the handler's structure.
+1. Plain HTTP, another tenant's key, an unknown MAC, a disabled device and a
+   device without a template return the same 404 with a byte-identical body;
+   wrong device credentials answer 401 asking for them again; the old
+   `/api/v1/provisioning/:mac_address` route is gone.
+2. Each vendor's file names, Polycom's master file, device credentials,
+   networks and the fetch log; templates picked by vendor and model, pending
+   phones claimed, imports all or none.
 3. MAC normalization collision (`AA:BB:CC:DD:EE:FF` vs `aa-bb-cc-dd-ee-ff`)
    rejects with 409 at the API layer; the DB-level unique index is covered by
    the storage suite.
@@ -68,6 +69,10 @@ Covered by `crates/fcp-api-core/tests/api_postgres.rs`:
 5. Successful provisioning returns `Cache-Control: no-store` and renders the
    owner's credentials, including the HA1 read back through the sealed
    column.
+
+A phone fetching its file, registering with what it got, and being told
+to resync is proved against the binaries in
+`crates/fcp-admin/tests/provisioning.rs`.
 
 Still uncovered: TTS synthesis endpoints (they need a TTS provider) and
 phone-number porting (no API exists yet; only the `PortingStore` model).

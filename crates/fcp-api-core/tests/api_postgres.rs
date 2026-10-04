@@ -53,7 +53,6 @@ use uuid::Uuid;
 
 const ADMIN_TOKEN: &str = "test-admin-token";
 const CONFERENCE_TOKEN: &str = "test-conference-server-token";
-const PROVISIONING_TOKEN: &str = "test-provisioning-shared-token";
 const REALM: &str = "pbx.example.com";
 
 // ─── Harness ─────────────────────────────────────────────────────────────
@@ -303,7 +302,6 @@ impl App {
         let api_config = ApiConfig {
             auth_enabled: true,
             auth_token: Some(ADMIN_TOKEN.to_string()),
-            provisioning_auth_token: Some(PROVISIONING_TOKEN.to_string()),
             provisioning_require_https: true,
             // A stand-in identity provider listens on loopback.
             sso: fcp_core::ApiSsoConfig {
@@ -754,19 +752,42 @@ impl App {
         .await
     }
 
-    /// Provisioning request as a phone would send it (HTTPS via proxy header,
-    /// shared token, optional per-device token).
+    /// The tenant's provisioning key, made on first use.
+    async fn provisioning_key(&self) -> String {
+        let shown = self
+            .admin(Method::GET, "/api/v1/provisioning/key", None)
+            .await;
+        let key = if shown.status == StatusCode::OK {
+            shown
+        } else {
+            self.admin(Method::POST, "/api/v1/provisioning/key", None)
+                .await
+        };
+        key.json["key"]
+            .as_str()
+            .expect("provisioning key")
+            .to_string()
+    }
+
+    /// Provisioning request as a phone would send it: HTTPS via the proxy
+    /// header, the tenant's URL, and its device credentials (Basic, the
+    /// device's provisioning token) when it has them.
     async fn provision(&self, mac: &str, device_token: Option<&str>) -> Response {
-        let mut headers = vec![
-            ("x-forwarded-proto", "https"),
-            ("x-fcp-provisioning-token", PROVISIONING_TOKEN),
-        ];
-        if let Some(token) = device_token {
-            headers.push(("x-fcp-device-provisioning-token", token));
+        use base64::Engine;
+        let key = self.provisioning_key().await;
+        let basic = device_token.map(|t| {
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(format!("phone:{t}"))
+            )
+        });
+        let mut headers = vec![("x-forwarded-proto", "https")];
+        if let Some(basic) = basic.as_deref() {
+            headers.push(("authorization", basic));
         }
         self.send(
             Method::GET,
-            &format!("/api/v1/provisioning/{mac}"),
+            &format!("/provision/{key}/{mac}"),
             &headers,
             None,
         )
@@ -1571,74 +1592,52 @@ async fn provisioning_failures_are_indistinguishable_404s() {
 
     let mut failures: Vec<(&str, Response)> = Vec::new();
 
-    // Shared-token gate (runs before any storage lookup).
-    failures.push((
-        "no shared token",
-        app.send(
-            Method::GET,
-            "/api/v1/provisioning/aabbccddee05",
-            &[
-                ("x-forwarded-proto", "https"),
-                ("x-fcp-device-provisioning-token", &token),
-            ],
-            None,
-        )
-        .await,
-    ));
-    failures.push((
-        "wrong shared token",
-        app.send(
-            Method::GET,
-            "/api/v1/provisioning/aabbccddee05",
-            &[
-                ("x-forwarded-proto", "https"),
-                ("x-fcp-provisioning-token", "wrong-shared-token"),
-                ("x-fcp-device-provisioning-token", &token),
-            ],
-            None,
-        )
-        .await,
-    ));
-    // The admin API token must not double as the provisioning token.
-    failures.push((
-        "admin token as shared token",
-        app.send(
-            Method::GET,
-            "/api/v1/provisioning/aabbccddee05",
-            &[
-                ("x-forwarded-proto", "https"),
-                (AUTH_HEADER, BEARER),
-                ("x-fcp-device-provisioning-token", &token),
-            ],
-            None,
-        )
-        .await,
-    ));
+    let key = app.provisioning_key().await;
     failures.push((
         "plain http",
         app.send(
             Method::GET,
-            "/api/v1/provisioning/aabbccddee05",
-            &[
-                ("x-fcp-provisioning-token", PROVISIONING_TOKEN),
-                ("x-fcp-device-provisioning-token", &token),
-            ],
+            &format!("/provision/{key}/aabbccddee05"),
+            &[],
             None,
         )
         .await,
     ));
+    failures.push((
+        "another key",
+        app.send(
+            Method::GET,
+            &format!("/provision/{}/aabbccddee05", "0".repeat(32)),
+            &[("x-forwarded-proto", "https")],
+            None,
+        )
+        .await,
+    ));
+    // The old route, with the deployment's token, is gone.
+    let old = app
+        .send(
+            Method::GET,
+            "/api/v1/provisioning/aabbccddee05",
+            &[
+                ("x-forwarded-proto", "https"),
+                ("x-fcp-provisioning-token", "test-provisioning-shared-token"),
+                ("x-fcp-device-provisioning-token", &token),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(old.status, StatusCode::NOT_FOUND, "{}", old.text);
 
     // Device-level checks.
     failures.push((
         "unknown MAC",
         app.provision("001122334455", Some(&token)).await,
     ));
-    failures.push((
-        "wrong device token",
-        app.provision("aabbccddee05", Some("fcp_prov_not_the_right_token_at_all"))
-            .await,
-    ));
-    failures.push(("no device token", app.provision("aabbccddee05", None).await));
+    // Credentials a phone sends are checked: wrong ones are asked again.
+    let wrong = app
+        .provision("aabbccddee05", Some("fcp_prov_not_the_right_token_at_all"))
+        .await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED, "{}", wrong.text);
 
     // Disabled device with otherwise correct credentials.
     let disabled = app.patch_device(&id, json!({ "enabled": false })).await;
@@ -13791,7 +13790,7 @@ async fn phones_are_imported_all_or_none_and_xml_values_are_escaped() {
     assert!(rendered.json["content"]
         .as_str()
         .unwrap()
-        .contains("reg.1.address=\"erin\""));
+        .contains("reg.1.address=\"erin@"));
 
     app.finish().await;
 }

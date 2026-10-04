@@ -10,7 +10,7 @@ node_id = "site-admin-01"
 [api]
 bind_address = "0.0.0.0:8080"
 # A non-loopback bind needs auth_enabled and a token: FCP_ADMIN_AUTH_TOKEN
-# and FCP_ADMIN_PROVISIONING_AUTH_TOKEN come from .env.
+# comes from .env.
 auth_enabled = true
 # This admin is a site of a cloud: a write to anything the link keeps in
 # sync — the tenant, users, devices, numbers, routes, trunks, flows and

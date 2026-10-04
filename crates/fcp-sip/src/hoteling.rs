@@ -378,37 +378,19 @@ impl Hoteling {
         }
     }
 
-    /// `NOTIFY Event: check-sync` to the phone, so a phone that
-    /// re-provisions shows who it now belongs to. Sent from a task of its
-    /// own: a phone that never answers must not hold anyone up.
+    /// The phone's resync NOTIFY (`check-sync`, in its vendor's variant),
+    /// so a phone that re-provisions shows who it now belongs to. Each is
+    /// sent from a task of its own: a phone that never answers must not
+    /// hold anyone up.
     pub async fn check_sync(&self, device_id: &DeviceId) {
-        let Some(uac) = self.uac.clone() else { return };
+        let (Some(uac), Some(registrar)) = (&self.uac, &self.registrar) else {
+            return;
+        };
         let device = match self.storage.get_device(device_id).await {
             Ok(Some(device)) => device,
             _ => return,
         };
-        for contact in self.contacts(&device).await {
-            let uac = Arc::clone(&uac);
-            tokio::spawn(async move {
-                match uac
-                    .send_unsolicited_notify_with_state(
-                        &contact,
-                        "check-sync",
-                        "application/simple-message-summary",
-                        "",
-                        "terminated",
-                    )
-                    .await
-                {
-                    Ok(r) => {
-                        debug!(contact = %contact.as_str(), code = r.code(), "check-sync NOTIFY answered")
-                    }
-                    Err(e) => {
-                        debug!(contact = %contact.as_str(), error = %e, "check-sync NOTIFY failed")
-                    }
-                }
-            });
-        }
+        crate::device_sync::resync_device(uac, registrar, &self.storage, &device).await;
     }
 
     /// The guest's message-waiting state, to the host.

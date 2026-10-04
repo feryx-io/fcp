@@ -87,6 +87,18 @@ pub trait CallSupervisor: Send + Sync {
         call_id: &str,
         request: SupervisionRequest,
     ) -> std::result::Result<(u16, serde_json::Value), String>;
+
+    /// Tell a device's phone to fetch its configuration again
+    /// (`docs/PROVISIONING.md` §8), through a node that can send SIP: the
+    /// node's status and body (`{"sent": n}`), or why no node could.
+    async fn resync_device(
+        &self,
+        tenant: fcp_core::TenantId,
+        device_id: &str,
+    ) -> std::result::Result<(u16, serde_json::Value), String> {
+        let _ = (tenant, device_id);
+        Err("no call manager can resync a phone".to_string())
+    }
 }
 
 /// What a route preview asks about.
@@ -226,7 +238,6 @@ pub fn create_router_with(
     // `[api.sso] public_url`.
     state = state.with_sso_config(&api_config.sso);
     state = state
-        .with_provisioning_auth_token(api_config.provisioning_auth_token.clone())
         .with_provisioning_require_https(api_config.provisioning_require_https)
         .with_provisioning_config(api_config.provisioning.clone());
 

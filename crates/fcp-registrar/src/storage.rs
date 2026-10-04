@@ -34,7 +34,13 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
     info!("PostgreSQL storage initialized successfully");
     let storage = Arc::new(storage);
     Ok(StorageResult {
-        dyn_storage: Arc::new(DynStorage::from_all_in_one(storage.clone())),
+        // A registration is matched to the device that fetched from its
+        // address (docs/PROVISIONING.md §8).
+        dyn_storage: Arc::new(
+            DynStorage::from_all_in_one(storage.clone()).with_provisioning_store(
+                storage.clone() as Arc<dyn fcp_core::provisioning::ProvisioningStore>
+            ),
+        ),
         replica: fcp_storage_postgres::ReplicaHealth::of(storage),
     })
 }

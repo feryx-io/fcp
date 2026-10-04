@@ -70,7 +70,12 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
         .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>)
         .with_flow_trace_store(flow_trace_store as Arc<dyn fcp_core::flow_trace::FlowTraceStore>)
         // A queue's agents may be a group's members (docs/USERS.md §5).
-        .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>);
+        .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>)
+        // A registration is matched to the device that fetched from its
+        // address (docs/PROVISIONING.md §8).
+        .with_provisioning_store(
+            storage.clone() as Arc<dyn fcp_core::provisioning::ProvisioningStore>
+        );
 
     info!(
         "PostgreSQL storage initialized successfully (with SIP trace + prompt + flow trace stores)"

@@ -9,12 +9,13 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error_response import ErrorResponse
+from ...models.resync_response import ResyncResponse
 from typing import cast
 
 
 
 def _get_kwargs(
-    mac_address: str,
+    id: str,
 
 ) -> dict[str, Any]:
     
@@ -24,8 +25,8 @@ def _get_kwargs(
     
 
     _kwargs: dict[str, Any] = {
-        "method": "get",
-        "url": "/api/v1/provisioning/{mac_address}".format(mac_address=quote(str(mac_address), safe=""),),
+        "method": "post",
+        "url": "/api/v1/devices/{id}/resync".format(id=quote(str(id), safe=""),),
     }
 
 
@@ -33,9 +34,12 @@ def _get_kwargs(
 
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> ErrorResponse | str:
+def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> ErrorResponse | ResyncResponse:
     if response.status_code == 200:
-        response_200 = response.text
+        response_200 = ResyncResponse.from_dict(response.json())
+
+
+
         return response_200
 
     response_default = ErrorResponse.from_dict(response.json())
@@ -46,7 +50,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
 
 
 
-def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Response[ErrorResponse | str]:
+def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Response[ErrorResponse | ResyncResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -56,35 +60,29 @@ def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Res
 
 
 def sync_detailed(
-    mac_address: str,
+    id: str,
     *,
     client: AuthenticatedClient | Client,
 
-) -> Response[ErrorResponse | str]:
-    """ GET /provisioning/:mac_address -- Auto-provision a phone by MAC address.
-
-     Phones must present both:
-    - `Authorization: Bearer <token>`
-    - or `X-FCP-Provisioning-Token: <token>`
-    - and `X-FCP-Device-Provisioning-Token: <per-device-token>`
-
-    Unknown or unauthorized devices all return the same 404 to avoid turning
-    this endpoint into an enumeration surface.
+) -> Response[ErrorResponse | ResyncResponse]:
+    """ POST /api/v1/devices/:id/resync — tell the phone to fetch its
+    configuration again, with its vendor's NOTIFY (`docs/PROVISIONING.md`
+    §8), sent by a call manager to each contact it is registered from.
 
     Args:
-        mac_address (str):
+        id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | str]
+        Response[ErrorResponse | ResyncResponse]
      """
 
 
     kwargs = _get_kwargs(
-        mac_address=mac_address,
+        id=id,
 
     )
 
@@ -95,69 +93,57 @@ def sync_detailed(
     return _build_response(client=client, response=response)
 
 def sync(
-    mac_address: str,
+    id: str,
     *,
     client: AuthenticatedClient | Client,
 
-) -> ErrorResponse | str | None:
-    """ GET /provisioning/:mac_address -- Auto-provision a phone by MAC address.
-
-     Phones must present both:
-    - `Authorization: Bearer <token>`
-    - or `X-FCP-Provisioning-Token: <token>`
-    - and `X-FCP-Device-Provisioning-Token: <per-device-token>`
-
-    Unknown or unauthorized devices all return the same 404 to avoid turning
-    this endpoint into an enumeration surface.
+) -> ErrorResponse | ResyncResponse | None:
+    """ POST /api/v1/devices/:id/resync — tell the phone to fetch its
+    configuration again, with its vendor's NOTIFY (`docs/PROVISIONING.md`
+    §8), sent by a call manager to each contact it is registered from.
 
     Args:
-        mac_address (str):
+        id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | str
+        ErrorResponse | ResyncResponse
      """
 
 
     return sync_detailed(
-        mac_address=mac_address,
+        id=id,
 client=client,
 
     ).parsed
 
 async def asyncio_detailed(
-    mac_address: str,
+    id: str,
     *,
     client: AuthenticatedClient | Client,
 
-) -> Response[ErrorResponse | str]:
-    """ GET /provisioning/:mac_address -- Auto-provision a phone by MAC address.
-
-     Phones must present both:
-    - `Authorization: Bearer <token>`
-    - or `X-FCP-Provisioning-Token: <token>`
-    - and `X-FCP-Device-Provisioning-Token: <per-device-token>`
-
-    Unknown or unauthorized devices all return the same 404 to avoid turning
-    this endpoint into an enumeration surface.
+) -> Response[ErrorResponse | ResyncResponse]:
+    """ POST /api/v1/devices/:id/resync — tell the phone to fetch its
+    configuration again, with its vendor's NOTIFY (`docs/PROVISIONING.md`
+    §8), sent by a call manager to each contact it is registered from.
 
     Args:
-        mac_address (str):
+        id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | str]
+        Response[ErrorResponse | ResyncResponse]
      """
 
 
     kwargs = _get_kwargs(
-        mac_address=mac_address,
+        id=id,
 
     )
 
@@ -168,35 +154,29 @@ async def asyncio_detailed(
     return _build_response(client=client, response=response)
 
 async def asyncio(
-    mac_address: str,
+    id: str,
     *,
     client: AuthenticatedClient | Client,
 
-) -> ErrorResponse | str | None:
-    """ GET /provisioning/:mac_address -- Auto-provision a phone by MAC address.
-
-     Phones must present both:
-    - `Authorization: Bearer <token>`
-    - or `X-FCP-Provisioning-Token: <token>`
-    - and `X-FCP-Device-Provisioning-Token: <per-device-token>`
-
-    Unknown or unauthorized devices all return the same 404 to avoid turning
-    this endpoint into an enumeration surface.
+) -> ErrorResponse | ResyncResponse | None:
+    """ POST /api/v1/devices/:id/resync — tell the phone to fetch its
+    configuration again, with its vendor's NOTIFY (`docs/PROVISIONING.md`
+    §8), sent by a call manager to each contact it is registered from.
 
     Args:
-        mac_address (str):
+        id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | str
+        ErrorResponse | ResyncResponse
      """
 
 
     return (await asyncio_detailed(
-        mac_address=mac_address,
+        id=id,
 client=client,
 
     )).parsed

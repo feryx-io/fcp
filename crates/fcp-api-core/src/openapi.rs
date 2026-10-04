@@ -55,7 +55,6 @@ use utoipa::{Modify, OpenApi};
         crate::v1::sso::unlink_identity,        crate::v1::auth_session::login,
         crate::v1::auth_session::logout,
         crate::v1::auth_session::change_expired_password,
-        crate::v1::provisioning::auto_provision,
         crate::v1::signup::signup,
         crate::v1::events::event_stream_websocket,
         crate::v1::auth_session::me,
@@ -342,6 +341,8 @@ use utoipa::{Modify, OpenApi};
         crate::v1::provisioning::rotate_key,
         crate::v1::provisioning::device_fetches,
         crate::v1::devices::render_device,
+        crate::v1::devices::resync_device,
+        crate::v1::config_templates::resync_template,
         crate::v1::devices::import_devices,
         crate::v1::devices::list_pending,
         crate::v1::devices::claim_pending,
@@ -575,7 +576,6 @@ mod tests {
             ("POST", "/auth/logout"),
             ("POST", "/auth/change-expired-password"),
             ("POST", "/auth/signup"),
-            ("GET", "/provisioning/:mac_address"),
             ("GET", "/events"),
         ] {
             bound.insert((method.to_string(), format!("/api/v1{path}")));

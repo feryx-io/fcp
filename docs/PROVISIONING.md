@@ -1,9 +1,10 @@
 # Provisioning phones
 
-How a tenant's phones fetch their configuration from FCP. This is phase 7
-of `docs/IDENTITY_AND_DEVICES.md`: 7a is the URL and how it is guarded;
-7b the templates, picked by model, pending phones and import; 7c resync,
-the registration on the device and the end-to-end proof.
+How a tenant's phones fetch their configuration from FCP, and how FCP
+keeps them in step. This is phase 7 of `docs/IDENTITY_AND_DEVICES.md`: 7a
+the URL and how it is guarded; 7b the templates, picked by model, pending
+phones and import; 7c the registration on the device, resync, and the old
+route removed.
 
 ## 1. The tenant's provisioning URL
 
@@ -133,7 +134,8 @@ Every one is always there, empty when it does not apply.
 | Variable | What |
 |---|---|
 | `mac_address`, `device_name`, `vendor`, `model`, `firmware_version` | The device (the request's vendor, model and firmware where the device has none). |
-| `sip_server`, `sip_port`, `sip_transport` | Where and how the phone registers: `[api.provisioning]` (below). `sip_transport` is `udp`, `tcp` or `tls`. |
+| `sip_domain` | The domain the phone registers in: the tenant's first SIP domain (`sip_domains`), else `sip_server`. It is how the registrar knows the phone's tenant, so a phone must register in it. |
+| `sip_server`, `sip_port`, `sip_transport` | Where the phone sends, and how: `[api.provisioning]` (below). The starters make it the outbound proxy when it is not `sip_domain`. `sip_transport` is `udp`, `tcp` or `tls`. |
 | `sip_uri`, `sip_username`, `sip_auth_username`, `sip_password`, `sip_auth_ha1_hash` | The first account: the device's own credentials, else its owner's. `sip_provisioning_password` is `sip_password`, for older templates. |
 | `owner_username`, `owner_display_name`, `owner_email`, `owner_user_id` | The owner. |
 | `effective_user_username`, `effective_user_display_name`, `effective_user_extension`, `effective_user_id`, `hoteling_guest` | Who the phone is for now: a hoteling guest, else the owner. |
@@ -173,12 +175,12 @@ tenant's templates:
 
 | Starter | Pattern | Writes |
 |---|---|---|
-| `yealink-starter` | `T*` | accounts with transport and SRTP on TLS, the shared line, time zone and NTP, `static.auto_provision.server.url`, line keys after the accounts' |
-| `polycom-starter` | `VVX*` | lines with transport, the shared line, SNTP, BLF as `attendant.resourceList` |
-| `grandstream-starter` | `G*` | accounts 1 and 2, transport, NTP (line-key P-values differ by model and are left out) |
-| `cisco-starter` | `SPA*` | lines with transport, the shared line, NTP and time zone, `Profile_Rule`, extended functions |
-| `fanvil-starter` | any | lines and DSS keys (check them against the model's guide) |
-| `snom-starter` | `D*` | identities with transport, the shared line, NTP, `setting_server`, function keys |
+| `yealink-starter` | `T*` | accounts in the tenant's domain through the outbound proxy, transport and SRTP on TLS, the shared line, time zone and NTP, `static.auto_provision.server.url`, line keys after the accounts' |
+| `polycom-starter` | `VVX*` | lines as `user@domain` with transport, the shared line, SNTP, BLF as `attendant.resourceList` |
+| `grandstream-starter` | `G*` | accounts 1 and 2 with the domain and outbound proxy, transport, NTP (line-key P-values differ by model and are left out) |
+| `cisco-starter` | `SPA*` | lines with the domain and outbound proxy, transport, the shared line, NTP and time zone, `Profile_Rule`, extended functions |
+| `fanvil-starter` | any | lines with the domain and DSS keys (check them against the model's guide) |
+| `snom-starter` | `D*` | identities in the domain through the outbound proxy, the shared line, NTP, `setting_server`, function keys |
 
 They are starters: copy one, then edit it for the deployment.
 
@@ -188,7 +190,7 @@ On the admin:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `sip_server` | the SIP realm | The address phones register to. The admin's realm is `fcp.local`, which no phone can reach: set this. |
+| `sip_server` | the SIP realm | The address phones send to. The admin's realm is `fcp.local`, which no phone can reach: set this. |
 | `sip_port` | 5061 for TLS, else 5060 | |
 | `sip_transport` | `udp` | `udp`, `tcp` or `tls`. |
 | `ntp_server` | `pool.ntp.org` | |
@@ -249,9 +251,68 @@ The Devices page's *Bulk Import* reads a CSV in the browser and makes the
 devices one at a time, updating those that exist when asked; the import
 route is for scripts that want all or none.
 
-## 8. The old route
+## 8. Keeping phones in step
 
-`GET /api/v1/provisioning/{mac}` with the deployment's
-`x-fcp-provisioning-token` (and the device's
-`x-fcp-device-provisioning-token`) still works, rendered as in §5, and is
-removed in 7c, the next release.
+### The registration on the device
+
+When a phone registers, the call manager (or registrar) that takes the
+REGISTER writes it on its device: `registration_state`, `last_registration`,
+`last_ip_address` (the contact's host and port) and `user_agent`, and from
+the User-Agent the `firmware_version` it runs, and the `vendor` and `model`
+where the device has none. A de-REGISTER writes `unregistered`.
+
+The device is the one whose own credentials the phone used; else the one
+whose MAC its REGISTER's User-Agent carries; else, among the devices of
+the user it registered as, the one whose last registration or last served
+provisioning fetch came from the REGISTER's source address (a desk phone
+registering with its owner's credentials: most phones' REGISTER names no
+MAC, while their fetch does, and the fetch log keeps its address); else
+the one whose SIP URI is the name it registered as; else that user's only
+device. A phone matching none is written on no device. Behind one NAT,
+two phones of the same user share an address and neither is matched by
+it.
+
+An unchanged registration is written again at most every ten minutes. The
+device views check what is written against the live registrations: a
+device written as registered that has no live registration carrying its MAC
+or from its last address is shown `expired` (a phone that went away without
+unregistering).
+
+### Resync
+
+- `POST /api/v1/devices/{id}/resync` (`device_update`, or *Tell it to
+  fetch again* on a device's menu) tells the phone to fetch its
+  configuration again. `sent` is how many of its registered contacts were
+  told: 0 when it is not registered.
+- `POST /api/v1/config-templates/{id}/resync` (`device_update`, or the
+  button on a template) does it for every enabled device the template is
+  rendered for, named or picked: `devices` and `sent`.
+
+The admin has no SIP of its own: it asks a call manager (`[call_manager]
+url`, else each healthy one in the cluster in turn) at the node's
+`POST /devices/{id}/resync`, which sends each contact an unsolicited
+`NOTIFY` with the vendor's event:
+
+| Vendor | `Event` |
+|---|---|
+| Yealink, Polycom, Snom | `check-sync;reboot=false` |
+| Cisco | `resync` |
+| Grandstream, Fanvil, unknown | `check-sync` |
+
+The contacts are those registered under the device's SIP URI or own
+credentials; else, among its owner's, the one whose User-Agent carries its
+MAC or registered from its last address (or the owner's only one, when the
+device is the owner's only phone). A phone must accept the NOTIFY (most
+take it only from their registrar's address). A phone over TCP or TLS is
+reached through whichever call manager answers, which opens its own
+connection where it holds none.
+
+## 9. The old route
+
+`GET /api/v1/provisioning/{mac}`, with the deployment's
+`x-fcp-provisioning-token` and the device's
+`x-fcp-device-provisioning-token`, is removed (v0.25.323): phones fetch
+from the tenant's URL. `[api] provisioning_auth_token` is read by nothing;
+it is still accepted, with a warning at startup, and a later release
+refuses it. The `--provisioning-auth-token` flag and
+`FCP_ADMIN_PROVISIONING_AUTH_TOKEN` are gone.

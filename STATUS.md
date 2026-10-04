@@ -1811,6 +1811,19 @@ Phase 7b done (v0.25.322): templates, pending phones, import
 - Next, 7c: resync, the registration on the device, the end-to-end proof,
   and the old route removed.
 
+Phase 7c done (v0.25.323): phones kept in step (`docs/PROVISIONING.md`
+§8–§9).
+- A phone's registration is written on its device — state, address,
+  User-Agent, model and firmware — found by its credentials, MAC or the
+  address it fetched from.
+- Resync per device and per template, with each vendor's NOTIFY, sent
+  by a call manager.
+- Templates register phones in the tenant's SIP domain.
+- The old provisioning route is removed.
+- Proved end to end: a phone fetches its file, registers with it, and is
+  told to fetch again. Phase 7 is complete; phase 8, zero-touch
+  redirection, is next.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

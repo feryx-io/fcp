@@ -99,9 +99,8 @@ admin UI's live views work (`docs/API_TOKENS.md` §7).
 admin. Tenants' identity providers send people back there. Unset, nobody
 signs in through a provider (`docs/SSO.md`).
 
-**The admin's provisioning token** (`[api] provisioning_auth_token`,
-what phones fetch their configuration with) must be at least 32
-characters and differ from `auth_token`; `provisioning_require_https`
+**Provisioning** is served under each tenant's URL
+(`/provision/<key>/`, `docs/PROVISIONING.md`); `provisioning_require_https`
 defaults to true, so on plain HTTP set it false.
 
 **What phones are told** (`[api.provisioning]`): `sip_server` (the

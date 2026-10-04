@@ -99,10 +99,6 @@ pub fn pre_auth_router(enable_signup: bool) -> Router<ApiState> {
         .route(
             "/auth/change-expired-password",
             post(auth_session::change_expired_password),
-        )
-        .route(
-            "/provisioning/:mac_address",
-            get(provisioning::auto_provision),
         );
 
     if enable_signup {
@@ -592,6 +588,10 @@ pub fn router() -> Router<ApiState> {
             axum::routing::post(devices::render_device),
         )
         .route(
+            "/devices/:id/resync",
+            axum::routing::post(devices::resync_device),
+        )
+        .route(
             "/devices/import",
             axum::routing::post(devices::import_devices),
         )
@@ -627,6 +627,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/config-templates/preview",
             axum::routing::post(config_templates::preview_template),
+        )
+        .route(
+            "/config-templates/:id/resync",
+            axum::routing::post(config_templates::resync_template),
         )
         .route(
             "/config-templates/library/:vendor",

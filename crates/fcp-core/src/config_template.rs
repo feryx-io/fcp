@@ -173,7 +173,11 @@ pub struct TemplateContext {
     pub model: String,
     pub firmware_version: String,
 
-    /// Where the phone registers, and how (`[api.provisioning]`).
+    /// The domain the phone registers in, which names its tenant: the
+    /// tenant's first SIP domain, else `sip_server`.
+    pub sip_domain: String,
+    /// Where the phone sends to, and how (`[api.provisioning]`): the
+    /// outbound proxy when it is not `sip_domain`.
     pub sip_server: String,
     pub sip_port: u16,
     /// `udp`, `tcp` or `tls`.
@@ -281,10 +285,11 @@ impl TemplateContext {
             vendor: "yealink".into(),
             model: "T54W".into(),
             firmware_version: "96.86.0.70".into(),
+            sip_domain: "acme.example.com".into(),
             sip_server: "pbx.example.com".into(),
             sip_port: 5061,
             sip_transport: "tls".into(),
-            sip_uri: "sip:alice@pbx.example.com".into(),
+            sip_uri: "sip:alice@acme.example.com".into(),
             sip_username: "alice".into(),
             sip_auth_username: "alice".into(),
             sip_auth_ha1_hash: "0".repeat(32),
@@ -512,9 +517,14 @@ account.{{ account.index }}.display_name = {{ account.display_name }}
 account.{{ account.index }}.user_name = {{ account.user_name }}
 account.{{ account.index }}.auth_name = {{ account.auth_name }}
 account.{{ account.index }}.password = {{ account.password }}
-account.{{ account.index }}.sip_server.1.address = {{ sip_server }}
+account.{{ account.index }}.sip_server.1.address = {{ sip_domain }}
 account.{{ account.index }}.sip_server.1.port = {{ sip_port }}
 account.{{ account.index }}.sip_server.1.transport_type = {{ transport }}
+{% if sip_server != sip_domain %}
+account.{{ account.index }}.outbound_proxy_enable = 1
+account.{{ account.index }}.outbound_proxy.1.address = {{ sip_server }}
+account.{{ account.index }}.outbound_proxy.1.port = {{ sip_port }}
+{% endif %}
 {% if sip_transport == "tls" %}
 account.{{ account.index }}.srtp_encryption = 1
 {% endif %}
@@ -548,7 +558,7 @@ linekey.{{ n }}.label = {{ key.label }}
 <PHONE_CONFIG>
   <ALL
 {% for account in accounts %}
-    reg.{{ account.index }}.address="{{ account.user_name }}"
+    reg.{{ account.index }}.address="{{ account.user_name }}@{{ sip_domain }}"
     reg.{{ account.index }}.displayName="{{ account.display_name }}"
     reg.{{ account.index }}.label="{{ account.label }}"
     reg.{{ account.index }}.auth.userId="{{ account.auth_name }}"
@@ -579,7 +589,9 @@ linekey.{{ n }}.label = {{ key.label }}
     <!-- Account 1 -->
     <P271>1</P271>
     <P270>{{ device_name }}</P270>
-    <P47>{{ sip_server }}:{{ sip_port }}</P47>
+    <!-- SIP server (the tenant's domain) and outbound proxy -->
+    <P47>{{ sip_domain }}</P47>
+    <P48>{{ sip_server }}:{{ sip_port }}</P48>
     <P35>{{ sip_username }}</P35>
     <P36>{{ sip_auth_username }}</P36>
     <P34>{{ sip_password }}</P34>
@@ -593,7 +605,8 @@ linekey.{{ n }}.label = {{ key.label }}
          SIP settings: its P-value differs between models. -->
     <P401>{{ shared_line_enabled }}</P401>
     <P417>{{ shared_line_number }}</P417>
-    <P402>{{ sip_server }}:{{ sip_port }}</P402>
+    <P402>{{ sip_domain }}</P402>
+    <P403>{{ sip_server }}:{{ sip_port }}</P403>
     <P404>{{ shared_line_number }}</P404>
     <P405>{{ sip_auth_username }}</P405>
     <P406>{{ sip_password }}</P406>
@@ -612,7 +625,9 @@ linekey.{{ n }}.label = {{ key.label }}
   <Use_Auth_ID_{{ account.index }}_ ua="na">Yes</Use_Auth_ID_{{ account.index }}_>
   <Auth_ID_{{ account.index }}_ ua="na">{{ account.auth_name }}</Auth_ID_{{ account.index }}_>
   <Password_{{ account.index }}_ ua="na">{{ account.password }}</Password_{{ account.index }}_>
-  <Proxy_{{ account.index }}_ ua="na">{{ sip_server }}:{{ sip_port }}</Proxy_{{ account.index }}_>
+  <Proxy_{{ account.index }}_ ua="na">{{ sip_domain }}</Proxy_{{ account.index }}_>
+  <Outbound_Proxy_{{ account.index }}_ ua="na">{{ sip_server }}:{{ sip_port }}</Outbound_Proxy_{{ account.index }}_>
+  <Use_Outbound_Proxy_{{ account.index }}_ ua="na">{{ "Yes" if sip_server != sip_domain else "No" }}</Use_Outbound_Proxy_{{ account.index }}_>
   <SIP_Transport_{{ account.index }}_ ua="na">{{ sip_transport|upper }}</SIP_Transport_{{ account.index }}_>
   <Register_{{ account.index }}_ ua="na">Yes</Register_{{ account.index }}_>
 {% if account.shared %}
@@ -626,7 +641,7 @@ linekey.{{ n }}.label = {{ key.label }}
   <Profile_Rule ua="na">{{ provisioning_url }}spa$MA.xml</Profile_Rule>
 {% endif %}
 {% for key in line_keys %}
-  <Extended_Function_{{ key.index }}_ ua="na">fnc={{ {"blf": "blf+sd+cp", "speed_dial": "sd", "park": "prk"}[key.kind] }};sub={{ key.value }}@{{ sip_server }};nme={{ key.label }}</Extended_Function_{{ key.index }}_>
+  <Extended_Function_{{ key.index }}_ ua="na">fnc={{ {"blf": "blf+sd+cp", "speed_dial": "sd", "park": "prk"}[key.kind] }};sub={{ key.value }}@{{ sip_domain }};nme={{ key.label }}</Extended_Function_{{ key.index }}_>
 {% endfor %}
 </flat-profile>
 "#;
@@ -641,6 +656,7 @@ linekey.{{ n }}.label = {{ key.label }}
 SIP{{ account.index }} Phone Number       :{{ account.user_name }}
 SIP{{ account.index }} Display Name       :{{ account.display_name }}
 SIP{{ account.index }} Register Addr      :{{ sip_server }}
+SIP{{ account.index }} Domain Realm       :{{ sip_domain }}
 SIP{{ account.index }} Register Port      :{{ sip_port }}
 SIP{{ account.index }} Register User      :{{ account.auth_name }}
 SIP{{ account.index }} Register Pswd      :{{ account.password }}
@@ -667,7 +683,8 @@ Fkey{{ key.index }} Title                 :{{ key.label }}
     <user_name idx="{{ account.index }}" perm="">{{ account.user_name }}</user_name>
     <user_pname idx="{{ account.index }}" perm="">{{ account.auth_name }}</user_pname>
     <user_pass idx="{{ account.index }}" perm="">{{ account.password }}</user_pass>
-    <user_host idx="{{ account.index }}" perm="">{{ sip_server }}:{{ sip_port }};transport={{ sip_transport }}</user_host>
+    <user_host idx="{{ account.index }}" perm="">{{ sip_domain }}</user_host>
+    <user_outbound idx="{{ account.index }}" perm="">{{ sip_server }}:{{ sip_port }};transport={{ sip_transport }}</user_outbound>
 {% if account.shared %}
     <user_shared_line idx="{{ account.index }}" perm="">on</user_shared_line>
 {% endif %}
@@ -679,7 +696,7 @@ Fkey{{ key.index }} Title                 :{{ key.label }}
   </phone-settings>
   <functionKeys>
 {% for key in line_keys %}
-    <fkey idx="{{ key.index - 1 }}" context="active" label="{{ key.label }}" perm="">{{ {"blf": "blf <sip:", "speed_dial": "speed ", "park": "speed "}[key.kind] }}{{ key.value }}{% if key.kind == "blf" %}@{{ sip_server }}>{% endif %}</fkey>
+    <fkey idx="{{ key.index - 1 }}" context="active" label="{{ key.label }}" perm="">{{ {"blf": "blf <sip:", "speed_dial": "speed ", "park": "speed "}[key.kind] }}{{ key.value }}{% if key.kind == "blf" %}@{{ sip_domain }}>{% endif %}</fkey>
 {% endfor %}
   </functionKeys>
 </settings>
@@ -892,6 +909,11 @@ mod tests {
                 t.name
             );
             assert!(out.contains("pbx.example.com"), "{}: {out}", t.name);
+            assert!(
+                out.contains("acme.example.com"),
+                "{}: the tenant's domain\n{out}",
+                t.name
+            );
             if t.vendor.is_xml() {
                 let mut reader = quick_xml::Reader::from_str(&out);
                 loop {
@@ -923,6 +945,8 @@ mod tests {
         for want in [
             "account.1.user_name = alice\n",
             "account.1.sip_server.1.transport_type = 2\n",
+            "account.1.sip_server.1.address = acme.example.com\n",
+            "account.1.outbound_proxy.1.address = pbx.example.com\n",
             "account.2.shared_line = 1\n",
             "local_time.time_zone = ",
             "linekey.3.type = 16\n",
