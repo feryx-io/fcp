@@ -25,6 +25,9 @@ redis_url = "redis://redis:6379"
 # What the link may send up or remove at the cloud's request: the call
 # manager's recordings and voicemail, its data volume mounted read-only.
 file_roots = ["/var/lib/fcp/call-manager"]
+# The firmware the tenant's targets name, fetched from the cloud and kept
+# where the site's admin serves it (docs/PROVISIONING.md §11).
+firmware_dir = "/var/lib/fcp/firmware"
 
 [health]
 bind_address = "0.0.0.0:8096"

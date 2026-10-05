@@ -43,6 +43,9 @@ pub const SYNCED_RESOURCES: &[&str] = &[
     "classes-of-service",
     "identity-providers",
     "groups",
+    // A tenant's firmware targets, and the platform's images, are the
+    // cloud's (docs/PROVISIONING.md §11).
+    "firmware",
 ];
 
 /// Whether `path` (relative to the v1 root, no leading slash) is a synced

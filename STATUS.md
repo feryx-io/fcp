@@ -1850,6 +1850,12 @@ Phase 9b done (v0.25.326): firmware images in an S3-compatible bucket
 serve the same images; uploads confirmed by size and hash, fetches
 streamed from the bucket. Next, 9c: sites caching the cloud's images.
 
+Phase 9c done (v0.25.327): firmware at sites (`docs/PROVISIONING.md` §11).
+A tenant's targets sync to its sites with their images' records; each
+site's link fetches the images over the link, checked by hash, and the
+site's admin serves them to its phones. Phase 9 is complete, and with it
+the identity-and-devices project (8b deferred: no vendor APIs).
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

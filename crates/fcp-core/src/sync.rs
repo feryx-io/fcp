@@ -43,6 +43,9 @@ pub const SYNC_TABLES: &[&str] = &[
     // Groups and who is in them (docs/USERS.md §5): the roles a site's
     // users hold, and a queue's agents.
     "groups",
+    // Firmware targets, each carrying its image (docs/PROVISIONING.md §11);
+    // the link fetches the images themselves.
+    "firmware_targets",
     "group_members",
 ];
 

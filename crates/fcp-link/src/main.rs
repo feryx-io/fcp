@@ -14,6 +14,7 @@
 mod cli;
 mod config;
 mod events;
+mod firmware;
 mod link;
 mod requests;
 mod ship;

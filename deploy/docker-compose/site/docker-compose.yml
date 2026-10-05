@@ -91,6 +91,9 @@ services:
       - ./configs/fcp-admin.toml:/app/fcp-admin.toml:ro
       - fcp-certs:/var/lib/fcp/certs:ro
       - admin-data:/app/data
+      # The firmware the link fetches from the cloud, served to the site's
+      # phones (docs/PROVISIONING.md §11).
+      - site-firmware:/var/lib/fcp/firmware:ro
     environment:
       RUST_LOG: info
       FCP_ADMIN_LOG_FORMAT: pretty
@@ -178,6 +181,7 @@ services:
       - fcp-certs:/var/lib/fcp/certs:ro
       - link-data:/app/data
       - call-manager-data:/var/lib/fcp/call-manager:ro
+      - site-firmware:/var/lib/fcp/firmware
     environment:
       RUST_LOG: info
       FCP_LINK_LOG_FORMAT: pretty
@@ -207,6 +211,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  site-firmware:
   postgres-data:
   redis-data:
   fcp-certs:

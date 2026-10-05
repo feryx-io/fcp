@@ -149,6 +149,12 @@ pub struct SiteConfig {
     /// the tenant's webhooks fire there.
     #[serde(default = "default_true")]
     pub forward_events: bool,
+    /// Where the firmware images the tenant's targets name are kept, fetched
+    /// from the cloud: the site admin's `[api.firmware] directory`
+    /// (`docs/PROVISIONING.md` §11). Unset, the site's phones get no
+    /// firmware.
+    #[serde(default)]
+    pub firmware_dir: Option<String>,
 }
 
 fn default_heartbeat_ttl_secs() -> u64 {
@@ -173,6 +179,7 @@ impl Default for SiteConfig {
             ship_batch: default_ship_batch(),
             file_roots: Vec::new(),
             forward_events: true,
+            firmware_dir: None,
         }
     }
 }

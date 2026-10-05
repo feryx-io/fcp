@@ -529,6 +529,25 @@ async fn main() -> Result<()> {
 
     // The link: what sites enroll to and heartbeat at
     // (docs/HYBRID_CONTROL_PLANE.md phase 1), when configured.
+    // Firmware images: in a bucket ([api.firmware.s3]) or a directory
+    // ([api.firmware] directory); the link serves them to sites too.
+    let firmware_files: Option<Arc<dyn fcp_api_core::firmware_files::FirmwareFiles>> = match (
+        &config.api.firmware.s3,
+        config.api.firmware.directory.as_deref(),
+    ) {
+        (Some(s3), _) => {
+            let files = firmware_s3::S3Files::new(s3)?;
+            info!(
+                location = %fcp_api_core::firmware_files::FirmwareFiles::location(&files),
+                "Firmware images in a bucket"
+            );
+            Some(Arc::new(files))
+        }
+        (None, Some(dir)) => Some(Arc::new(fcp_api_core::firmware_files::DirectoryFiles::new(
+            dir,
+        ))),
+        (None, None) => None,
+    };
     let link_state = if config.link.enabled {
         site_link::ensure_crypto_provider();
         let ca = site_link::LinkCa::load_or_create(&site_link::ca_dir(&config.link))
@@ -571,6 +590,7 @@ async fn main() -> Result<()> {
             processor: Some(Arc::new(processor)),
             ingest,
             requests: Arc::clone(&site_requests),
+            firmware: firmware_files.clone(),
         })
     } else {
         info!("Sites cannot enroll here ([link] enabled is false)");
@@ -621,14 +641,9 @@ async fn main() -> Result<()> {
     .with_e911_validator(e911_validator)
     .with_webhook_dispatcher(Some(webhook_dispatcher));
 
-    // Firmware images in a bucket (docs/PROVISIONING.md §11); without one,
-    // [api.firmware] directory is the store.
-    let api_state = match &config.api.firmware.s3 {
-        Some(s3) => {
-            let files = firmware_s3::S3Files::new(s3)?;
-            info!(location = %fcp_api_core::firmware_files::FirmwareFiles::location(&files), "Firmware images in a bucket");
-            api_state.with_firmware_files(Arc::new(files))
-        }
+    // The firmware store, the API's and the link's (docs/PROVISIONING.md §11).
+    let api_state = match &firmware_files {
+        Some(files) => api_state.with_firmware_files(Arc::clone(files)),
         None => api_state,
     };
 

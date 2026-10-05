@@ -182,7 +182,7 @@ retry (up to 35 s after a refusal).
 
 ## 6. Keeping it
 
-Everything the site holds is in six volumes of the project `site`
+Everything the site holds is in seven volumes of the project `site`
 (`docker volume ls --filter label=com.docker.compose.project=site`):
 
 | Volume | Holds | Re-derivable? |
@@ -193,6 +193,7 @@ Everything the site holds is in six volumes of the project `site`
 | `admin-data` | Exports. | Mostly. |
 | `link-data` | The link's key, certificate and the site's secret from enrollment; the sync and ship cursors. | With a new enrollment token from the cloud. |
 | `redis-data` | Registrations, the event stream. | Yes. |
+| `site-firmware` | The firmware images the tenant's targets name, fetched from the cloud by the link (`docs/PROVISIONING.md` §11). | Yes: the link fetches them again. |
 
 The cloud stack's scripts keep a site the way they keep the cloud
 (`docs/BACKUP_AND_RESTORE.md`), pointed at this project:

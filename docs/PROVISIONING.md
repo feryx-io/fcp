@@ -518,5 +518,24 @@ that took the REGISTER says `device.firmware_behind` (the tenant, the
 device, what it runs, what its target installs), once each time what it
 runs changes; a tenant's webhooks can take it.
 
-A site's phones fetch firmware from the site; fetching images from the
-cloud over the link and caching them there comes in 9c.
+### At a site
+
+A site's phones fetch firmware from the site's admin, as they fetch
+everything else (Q11):
+
+- The tenant's targets reach the site with the rest of its configuration,
+  each carrying its image's record. A site's admin refuses firmware
+  writes: targets and images are the cloud's.
+- The site's link fetches each targeted image over the link
+  (`GET /link/v1/firmware/<image>`, under the site's mutual TLS, only an
+  image its tenant targets) into `[site] firmware_dir`, checks it against
+  the image's SHA-256 and moves it into place; it looks again whenever a
+  target arrives and every five minutes, so a cut link catches up when it
+  comes back.
+- The site's admin serves them from that directory, its
+  `[api.firmware] directory`, under the site's own provisioning URL.
+- A target gone at the cloud takes the image's record and file off the
+  site once no other target names it.
+
+In the site compose project the directory is the `site-firmware` volume,
+written by the link and read by the admin.

@@ -184,6 +184,10 @@ pub struct CloudOptions<'a> {
     /// Put the link's connection to the cloud through a proxy the test can
     /// cut (`Cloud::link_cut`), as a network between a site and its cloud.
     pub cut_able: bool,
+    /// The cloud admin's firmware directory, and the site's cache the link
+    /// fills from it (`docs/PROVISIONING.md` §11).
+    pub cloud_firmware_dir: Option<String>,
+    pub site_firmware_dir: Option<String>,
 }
 
 /// As [`cloud_with_site_at`], with everything a cloud may be started with.
@@ -195,6 +199,10 @@ pub async fn cloud_with_site_opts(opts: CloudOptions<'_>) -> Option<Cloud> {
     };
     let events_section = match &opts.events_server_url {
         Some(url) => format!("[events]\nserver_url = \"{url}\"\nauth_token = \"{EVENTS_TOKEN}\"\n"),
+        None => String::new(),
+    };
+    let firmware_section = match &opts.cloud_firmware_dir {
+        Some(d) => format!("\n[api.firmware]\ndirectory = \"{d}\"\n"),
         None => String::new(),
     };
     let db = TestDatabase::create().await?;
@@ -222,7 +230,7 @@ node_id = "link-test-admin"
 bind_address = "127.0.0.1:{http}"
 auth_enabled = true
 auth_token = "{ADMIN_TOKEN}"
-
+{firmware_section}
 [storage]
 database_url = "{db}"
 
@@ -283,6 +291,9 @@ format = "compact"
     }
     if let Some(url) = &opts.site_redis_url {
         site_section.push_str(&format!("redis_url = \"{url}\"\nheartbeat_ttl_secs = 5\n"));
+    }
+    if let Some(d) = &opts.site_firmware_dir {
+        site_section.push_str(&format!("firmware_dir = \"{d}\"\n"));
     }
     if !opts.site_file_roots.is_empty() {
         let roots: Vec<String> = opts

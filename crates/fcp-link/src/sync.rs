@@ -141,6 +141,8 @@ pub struct Syncer {
     state: Mutex<SiteSync>,
     /// Puts and deletes applied since start, for the status page.
     applied: Mutex<u64>,
+    /// The site's firmware cache, nudged when a target arrives or goes.
+    firmware: Option<Arc<crate::firmware::FirmwareCache>>,
 }
 
 fn secs(t: SystemTime) -> u64 {
@@ -188,7 +190,14 @@ impl Syncer {
                 error: None,
             }),
             applied: Mutex::new(0),
+            firmware: None,
         })
+    }
+
+    /// Keep the site's firmware cache in step with the targets applied.
+    pub fn with_firmware(mut self, cache: Arc<crate::firmware::FirmwareCache>) -> Self {
+        self.firmware = Some(cache);
+        self
     }
 
     pub fn state(&self) -> SiteSync {
@@ -403,6 +412,18 @@ impl Syncer {
                 let group: fcp_core::group::Group = parse!();
                 store.put_group(&group).await?
             }
+            "firmware_targets" => {
+                let store = storage
+                    .provisioning_store()
+                    .context("no provisioning store")?;
+                let synced: fcp_core::firmware::SyncedFirmwareTarget = parse!();
+                // The image first: the target names it.
+                store.put_firmware_image(&synced.image).await?;
+                store.put_firmware_target(&synced.target).await?;
+                if let Some(cache) = &self.firmware {
+                    cache.nudge();
+                }
+            }
             "group_members" => {
                 let store = storage.group_store().context("no group store")?;
                 let member: fcp_core::group::GroupMember = parse!();
@@ -556,6 +577,35 @@ impl Syncer {
             "groups" => {
                 let store = storage.group_store().context("no group store")?;
                 store.delete_group(&id!()).await?;
+            }
+            "firmware_targets" => {
+                let store = storage
+                    .provisioning_store()
+                    .context("no provisioning store")?;
+                let Ok(target_id) = id.parse::<uuid::Uuid>() else {
+                    warn!(table, id, "An id the link cannot parse; skipped");
+                    return Ok(());
+                };
+                let image = store
+                    .list_firmware_targets(&self.tenant)
+                    .await?
+                    .into_iter()
+                    .find(|t| t.id == target_id)
+                    .map(|t| t.image_id);
+                store
+                    .delete_firmware_target(&self.tenant, &target_id)
+                    .await?;
+                // An image no target names any more goes, with its file.
+                if let Some(image_id) = image {
+                    if store.firmware_image_targets(&image_id).await? == 0 {
+                        if let Some(image) = store.get_firmware_image(&image_id).await? {
+                            store.delete_firmware_image(&image_id).await?;
+                            if let Some(cache) = &self.firmware {
+                                cache.forget(&image).await;
+                            }
+                        }
+                    }
+                }
             }
             "group_members" => {
                 let store = storage.group_store().context("no group store")?;

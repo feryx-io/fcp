@@ -876,6 +876,23 @@ Each phase is one PR based on main, with its admin UI and its docs.
        `reads_an_object_back_and_deletes_it` (`fcp-cdr/tests/s3.rs`),
        against Garage locally; both skip without `FCP_TEST_S3_*`, as CI
        runs them.
+   - **9c done (v0.25.327)** (`docs/PROVISIONING.md` §11, Q11) — phase 9
+     complete.
+     - `firmware_targets` journaled (migration 106) and synced as
+       `SyncedFirmwareTarget` (the target and its image); the site's link
+       puts the image then the target, and on a delete removes an image
+       no target names, with its file.
+     - `GET /link/v1/firmware/<image>` on the cloud's mutual-TLS listener
+       streams an image the site's tenant targets, from the admin's
+       firmware store (directory or bucket).
+     - `fcp_link::firmware::FirmwareCache`: each targeted image fetched
+       into `[site] firmware_dir`, checked by SHA-256, on a nudge from
+       the sync and every five minutes; the site's admin serves it as its
+       `[api.firmware] directory`; firmware writes refused at a site
+       (`managed`).
+     - The site compose project's `site-firmware` volume.
+     - Proved by `a_targeted_image_reaches_the_site_and_its_phones`
+       (`fcp-link/tests/firmware.rs`).
 
 ## 4. What this does not do
 
