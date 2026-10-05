@@ -1886,6 +1886,15 @@ rotated with reuse detection, lasting the tenant's
 granting needs a sign-in from the last ten minutes
 (`docs/APP_SIGN_IN.md`). The device per install is F1b.
 
+The softphone (designed 2026-10-05, `docs/SOFTPHONE.md`): Anvil
+(`thevoiceguy/anvil`) as FCP's own client, desktop first: the app as a
+device with SIP credentials of its own, OAuth 2.0 for native apps (PKCE,
+loopback redirect) with rotated app sessions, `/me/softphone`, tenant
+branding on Anvil's `BRANDING.md` contract, `/me/calls`, `/me/directory`
+and `/me/events`; Anvil caught up to today's stacks with registration that
+lasts, MWI, BLF, transfer, park and SRTP, proved against FCP's nightly
+images. Phases A0–A5 (anvil) and F1–F4 (fcp); questions open.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
