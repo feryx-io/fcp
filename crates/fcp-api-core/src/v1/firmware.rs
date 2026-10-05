@@ -4,7 +4,6 @@
 
 use crate::{auth::AuthIdentity, error::ApiError, state::ApiState};
 use axum::{
-    body::Body,
     extract::{Multipart, Path, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
@@ -40,24 +39,31 @@ fn store(
         .ok_or_else(|| ApiError::NotFound("Provisioning is not available here".to_string()))
 }
 
-/// Where images are kept, when the admin keeps them.
-fn directory(state: &ApiState) -> Result<PathBuf, ApiError> {
+/// The images' store, when firmware is kept here.
+fn files(
+    state: &ApiState,
+) -> Result<&std::sync::Arc<dyn crate::firmware_files::FirmwareFiles>, ApiError> {
+    state.firmware_files.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable(
+            "Firmware is not kept here: set [api.firmware] directory or [api.firmware.s3]"
+                .to_string(),
+        )
+    })
+}
+
+/// Where an upload is written while it arrives.
+fn staging(state: &ApiState) -> PathBuf {
     state
         .firmware
         .directory
         .as_deref()
         .map(PathBuf::from)
-        .ok_or_else(|| {
-            ApiError::ServiceUnavailable(
-                "Firmware is not kept here: set [api.firmware] directory".to_string(),
-            )
-        })
+        .unwrap_or_else(std::env::temp_dir)
 }
 
-/// An image's file on disk.
-pub(crate) fn image_path(dir: &std::path::Path, image: &FirmwareImage) -> PathBuf {
-    dir.join(image.id.simple().to_string())
-        .join(&image.file_name)
+/// An image's key in the store: `<image>/<file>`.
+pub(crate) fn image_key(image: &FirmwareImage) -> String {
+    format!("{}/{}", image.id.simple(), image.file_name)
 }
 
 /// An image's id as the API shows it: `fw-<uuid>`.
@@ -172,10 +178,11 @@ pub async fn upload_image(
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(&identity, Permission::SystemConfig, state.deployment_mode)?;
     platform_admin(&identity)?;
-    let dir = directory(&state)?;
+    let files = files(&state)?;
     let store = store(storage(&state)?)?;
     let id = uuid::Uuid::new_v4();
-    let image_dir = dir.join(id.simple().to_string());
+    let stage_dir = staging(&state);
+    let staged = stage_dir.join(format!(".upload-{}", id.simple()));
     let max = state.firmware.max_image_mb * 1024 * 1024;
     let (mut vendor, mut version, mut models, mut notes) = (None, None, Vec::new(), None);
     let mut file: Option<(String, u64, String)> = None;
@@ -195,11 +202,10 @@ pub async fn upload_image(
                         "`{file_name}` is not a file name an image can be served under"
                     )));
                 }
-                tokio::fs::create_dir_all(&image_dir)
+                tokio::fs::create_dir_all(&stage_dir)
                     .await
                     .map_err(|e| ApiError::Internal(format!("Cannot write images: {e}")))?;
-                let path = image_dir.join(&file_name);
-                let mut out = tokio::fs::File::create(&path)
+                let mut out = tokio::fs::File::create(&staged)
                     .await
                     .map_err(|e| ApiError::Internal(format!("Cannot write the image: {e}")))?;
                 let (mut size, mut hash) = (0u64, Sha256::new());
@@ -249,7 +255,7 @@ pub async fn upload_image(
     }
     .await;
     let cleanup = || async {
-        let _ = tokio::fs::remove_dir_all(&image_dir).await;
+        let _ = tokio::fs::remove_file(&staged).await;
     };
     if let Err(e) = outcome {
         cleanup().await;
@@ -292,8 +298,13 @@ pub async fn upload_image(
         notes,
         uploaded_at: SystemTime::now(),
     };
+    let stored = files
+        .put(&image_key(&image), &staged, image.size, &image.sha256)
+        .await;
+    cleanup().await;
+    stored.map_err(|e| ApiError::ServiceUnavailable(format!("The image was not stored: {e}")))?;
     if let Err(e) = store.put_firmware_image(&image).await {
-        cleanup().await;
+        let _ = files.delete(&image_key(&image)).await;
         return Err(e.into());
     }
     info!(image_id = %image.id, vendor = %image.vendor, version = %image.version, size, "Firmware image uploaded");
@@ -340,8 +351,10 @@ pub async fn delete_image(
         )));
     }
     store.delete_firmware_image(&id).await?;
-    if let Ok(dir) = directory(&state) {
-        let _ = tokio::fs::remove_dir_all(dir.join(image.id.simple().to_string())).await;
+    if let Ok(files) = files(&state) {
+        if let Err(e) = files.delete(&image_key(&image)).await {
+            tracing::warn!(image_id = %id, error = %e, "A removed image's file was left behind");
+        }
     }
     info!(image_id = %id, "Firmware image removed");
     Ok(StatusCode::NO_CONTENT)
@@ -717,15 +730,20 @@ pub(crate) async fn serve_image(
     if image.file_name != file {
         return None;
     }
-    let path = image_path(&directory(state).ok()?, &image);
-    let f = tokio::fs::File::open(&path).await.ok()?;
-    let body = Body::from_stream(tokio_util::io::ReaderStream::new(f));
+    let (size, body) = match files(state).ok()?.open(&image_key(&image)).await {
+        Ok(Some(found)) => found,
+        Ok(None) => return None,
+        Err(e) => {
+            tracing::warn!(image_id = %image.id, error = %e, "An image could not be read");
+            return None;
+        }
+    };
     Some(
         (
             StatusCode::OK,
             [
                 (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-                (header::CONTENT_LENGTH, image.size.to_string()),
+                (header::CONTENT_LENGTH, size.to_string()),
                 (header::CACHE_CONTROL, "no-store".to_string()),
             ],
             body,

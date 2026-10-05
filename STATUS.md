@@ -1845,6 +1845,11 @@ Phase 9a done (v0.25.325): firmware (`docs/PROVISIONING.md` §11).
   `device.firmware_behind` when a phone registers behind.
 - Next, 9b: images in S3, and sites caching the cloud's images.
 
+Phase 9b done (v0.25.326): firmware images in an S3-compatible bucket
+(`[api.firmware.s3]`, `docs/PROVISIONING.md` §11), so several admins
+serve the same images; uploads confirmed by size and hash, fetches
+streamed from the bucket. Next, 9c: sites caching the cloud's images.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

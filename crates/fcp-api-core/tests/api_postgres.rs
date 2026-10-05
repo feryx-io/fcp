@@ -143,6 +143,7 @@ impl App {
             firmware: fcp_core::ApiFirmwareConfig {
                 directory: Some(dir.to_string_lossy().into_owned()),
                 max_image_mb: 1,
+                s3: None,
             },
             ..test_api_config()
         };

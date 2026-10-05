@@ -57,6 +57,13 @@ auth_token = "change-this-to-a-secure-random-token"
 # [api.firmware]
 # directory = "/var/lib/fcp/firmware"
 # max_image_mb = 1024
+# Or in an S3-compatible bucket, the directory then only staging uploads:
+# [api.firmware.s3]
+# bucket = "fcp-firmware"
+# region = "us-east-1"
+# endpoint = "https://s3.example.net"
+# path_style = true
+# prefix = "firmware/"
 
 [storage]
 # PostgreSQL is the one backend. Migrations run at startup.
