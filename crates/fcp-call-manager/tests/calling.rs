@@ -2900,16 +2900,25 @@ async fn the_api_transfers_a_call_and_redirects_it_into_a_flow() {
     let traces = fcp_storage_postgres::flow_trace::PostgresFlowTraceStore::new(
         stack.seed.storage().pool().clone(),
     );
-    let ran = fcp_core::flow_trace::FlowTraceStore::query_flow_traces(
-        &traces,
-        &fcp_core::flow_trace::FlowTraceQuery {
-            flow_id: Some("goodbye".to_string()),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap()
-    .0;
+    // The trace is written as the flow runs, after the call it ran on may
+    // have ended: wait for its last node rather than read it once.
+    let mut ran = Vec::new();
+    for _ in 0..50 {
+        ran = fcp_core::flow_trace::FlowTraceStore::query_flow_traces(
+            &traces,
+            &fcp_core::flow_trace::FlowTraceQuery {
+                flow_id: Some("goodbye".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .0;
+        if ran.iter().any(|t| t.node_id.as_deref() == Some("noted")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert!(
         ran.iter().any(|t| t.node_id.as_deref() == Some("noted")),
         "{ran:?}"
