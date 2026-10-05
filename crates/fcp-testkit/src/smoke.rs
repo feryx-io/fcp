@@ -24,19 +24,28 @@ use tokio_rustls::TlsConnector;
 /// Pick a loopback port that is currently free for both TCP and UDP, so the
 /// same number can serve a SIP `udp_bind`/`tcp_bind` pair.
 ///
-/// The port is released before returning, so a concurrent process could in
-/// principle grab it first. Smoke tests run one service per test binary, so
-/// the window is small enough in practice.
+/// The port is released before returning, so another process could in
+/// principle take it first; it is picked outside the range the OS takes
+/// source ports from, which is where that happened.
 pub fn free_port() -> u16 {
     // The OS may hand the same ephemeral port to two binds a moment apart
     // once the first is released, and a stack takes several ports before
     // any binary binds them (its SIP and HTTP ports once came out equal);
     // so a port is never given out twice by one test process.
     static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
-    for _ in 0..256 {
-        let tcp = TcpListener::bind("127.0.0.1:0").expect("bind loopback tcp");
-        let port = tcp.local_addr().unwrap().port();
-        if UdpSocket::bind(("127.0.0.1", port)).is_err() {
+    // Below the OS's ephemeral range (32768–60999 on Linux), where every
+    // outbound connection takes its source port: a port picked there
+    // could be a child's connection by the time the service binds it
+    // (a call manager's health port once answered with another's TLS).
+    // Above the call manager's default RTP range (10000–20000), and below
+    // the RTP pairs the media helpers pick (30000 and up).
+    const LOW: u16 = 20001;
+    const SPAN: u16 = 29999 - LOW;
+    for _ in 0..512 {
+        let port = LOW + (uuid::Uuid::new_v4().as_u128() % SPAN as u128) as u16;
+        if TcpListener::bind(("127.0.0.1", port)).is_err()
+            || UdpSocket::bind(("127.0.0.1", port)).is_err()
+        {
             continue;
         }
         let mut given = GIVEN.lock().unwrap_or_else(|e| e.into_inner());
@@ -46,7 +55,7 @@ pub fn free_port() -> u16 {
         given.push(port);
         return port;
     }
-    panic!("no fresh port free for both TCP and UDP after 256 attempts");
+    panic!("no fresh port free for both TCP and UDP after 512 attempts");
 }
 
 /// Builder for one smoke run of a service binary.
