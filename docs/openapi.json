@@ -34531,7 +34531,8 @@
           "version",
           "uptime_seconds",
           "users_count",
-          "active_registrations_count"
+          "active_registrations_count",
+          "sip_realm"
         ],
         "properties": {
           "status": {
@@ -34552,6 +34553,10 @@
           "active_registrations_count": {
             "type": "integer",
             "minimum": 0
+          },
+          "sip_realm": {
+            "type": "string",
+            "description": "The realm SIP digest hashes are computed in: the registrars' own\nmust say the same (`[sip] realm`)."
           }
         }
       },

@@ -23,6 +23,11 @@ managed_by = "${FCP_CLOUD_ADMIN_URL}"
 # link into the site-firmware volume (docs/PROVISIONING.md §11).
 directory = "/var/lib/fcp/firmware"
 
+[sip]
+# The realm digest hashes are computed in: the call manager's and the
+# registrar's [registrar] realm, which must say the same.
+realm = "fcp.local"
+
 [storage]
 # Overridden by FCP_ADMIN_DATABASE_URL (the password is in .env).
 database_url = "postgresql://fcp:change-me@postgres:5432/fcp"

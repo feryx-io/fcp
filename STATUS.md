@@ -1856,6 +1856,15 @@ site's link fetches the images over the link, checked by hash, and the
 site's admin serves them to its phones. Phase 9 is complete, and with it
 the identity-and-devices project (8b deferred: no vendor APIs).
 
+The admin's SIP realm (v0.25.329): the admin computed every SIP digest
+hash in a hard-coded `fcp.local`, so a deployment whose registrars used
+another realm refused every password the admin set. It now uses `[sip]
+realm`, else the call managers' realm from the operational configuration,
+else `fcp.local`; warns when its own differs from theirs; shows it as
+`sip_realm` on `/api/v1/status`; and on a change makes every hash whose
+SIP password is kept again at startup, naming the rest
+(`docs/SINGLE-NODE-SETUP.md`).
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

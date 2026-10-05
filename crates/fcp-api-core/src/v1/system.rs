@@ -30,6 +30,9 @@ pub struct StatusResponse {
     pub uptime_seconds: u64,
     pub users_count: usize,
     pub active_registrations_count: usize,
+    /// The realm SIP digest hashes are computed in: the registrars' own
+    /// must say the same (`[sip] realm`).
+    pub sip_realm: String,
 }
 
 /// Health check endpoint.
@@ -97,6 +100,7 @@ async fn status_with_scope(
         uptime_seconds: state.start_time.elapsed().as_secs(),
         users_count,
         active_registrations_count,
+        sip_realm: state.realm.clone(),
     }))
 }
 

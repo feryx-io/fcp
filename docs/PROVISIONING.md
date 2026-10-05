@@ -193,7 +193,7 @@ On the admin:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `sip_server` | the SIP realm | The address phones send to. The admin's realm is `fcp.local`, which no phone can reach: set this. |
+| `sip_server` | the SIP realm | The address phones send to. The realm (`[sip] realm`, `docs/SINGLE-NODE-SETUP.md`) is seldom an address phones reach: set this. |
 | `sip_port` | 5061 for TLS, else 5060 | |
 | `sip_transport` | `udp` | `udp`, `tcp` or `tls`. |
 | `ntp_server` | `pool.ntp.org` | |

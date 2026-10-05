@@ -103,11 +103,26 @@ signs in through a provider (`docs/SSO.md`).
 (`/provision/<key>/`, `docs/PROVISIONING.md`); `provisioning_require_https`
 defaults to true, so on plain HTTP set it false.
 
+**One SIP realm.** A user's or device's SIP password is kept as a
+digest hash, `MD5(name:realm:password)`, which opens only in the realm it
+was made in. The admin makes it in `[sip] realm`; unset, in the call
+managers' `[registrar] realm` (read from the operational configuration
+they keep in the database), else `fcp.local`. Every call manager and
+registrar must challenge in the same realm (`/api/v1/status` shows the
+admin's as `sip_realm`, and the admin warns at startup when its `[sip]
+realm` differs from the call managers'). When the realm changes, the
+admin makes every hash whose SIP password is kept (for provisioning)
+again at its next start and logs the ones it cannot — a hash made from a
+password that is not kept, such as a login password — whose SIP passwords
+must be set again. Setting `[sip] realm` explicitly avoids an admin that
+starts before any call manager falling back to `fcp.local` until its next
+restart.
+
 **What phones are told** (`[api.provisioning]`): `sip_server` (the
-address they register to; unset, the SIP realm, `fcp.local` on the
-admin, which no phone can reach), `sip_port`, `sip_transport` (`udp`,
-`tcp` or `tls`), `ntp_server` and `public_url` (`docs/PROVISIONING.md`
-§5). Set `sip_server` before provisioning a real phone.
+address they register to; unset, the SIP realm, which is seldom an
+address phones can reach), `sip_port`, `sip_transport` (`udp`, `tcp` or
+`tls`), `ntp_server` and `public_url` (`docs/PROVISIONING.md` §5). Set
+`sip_server` before provisioning a real phone.
 
 **An unknown key is refused.** Every configuration section refuses a
 key it does not have, naming it, so a typo or a key from an old

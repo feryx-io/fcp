@@ -65,6 +65,15 @@ auth_token = "change-this-to-a-secure-random-token"
 # path_style = true
 # prefix = "firmware/"
 
+
+# The realm the call managers and registrars challenge with ([registrar]
+# realm): digest hashes are computed in it, so it must say the same.
+# Unset, the call managers' realm from the operational configuration,
+# else "fcp.local". On a change, every hash whose password is kept is made
+# again at startup; the rest are logged, to have their passwords set again.
+# [sip]
+# realm = "pbx.example.com"
+
 [storage]
 # PostgreSQL is the one backend. Migrations run at startup.
 database_url = "postgresql://fcp_user:password@localhost:5432/fcp"
