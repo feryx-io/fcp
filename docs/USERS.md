@@ -227,3 +227,14 @@ their registrations, mailbox and presence, and needs their phones
 re-provisioned.
 
 A rename reaches sites with the user's row, matched by id.
+
+## 7. A user's extension
+
+A user's `extension` (`POST`/`PUT /api/v1/users`, or SCIM's FCP extension)
+is the extension that dials them: routing reads the extensions table, and
+the API keeps a row there for the number the user has — made with the user,
+moved when the number changes, removed when it is cleared (an empty
+string). A number that already dials something else (another user, a
+number, a device, a service) is refused with 409, a malformed one with
+400, before anything is saved. Before v0.25.354 the field was a label only,
+and an extension had to be made separately (`/api/v1/extensions`).

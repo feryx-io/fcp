@@ -545,6 +545,13 @@ async fn create_user(
         role,
     )?;
     apply(&mut user, &d);
+    crate::v1::users::check_user_extension(
+        storage,
+        &user.tenant_id,
+        &user.id,
+        user.extension.as_deref(),
+    )
+    .await?;
     user.scim_managed = true;
     if !d.active {
         user.account_status = AccountStatus::Suspended;
@@ -552,6 +559,7 @@ async fn create_user(
     }
     user.normalize_status();
     storage.put_user(user.clone()).await?;
+    crate::v1::users::sync_user_extension(storage, &user, None).await?;
     let _ = state
         .event_bus
         .publish(PlatformEvent::User(UserEvent::Created {
@@ -719,6 +727,13 @@ async fn replace_with(
         user = crate::v1::users::rename(state, storage, &user, &d.username).await?;
     }
     apply(&mut user, &d);
+    crate::v1::users::check_user_extension(
+        storage,
+        &user.tenant_id,
+        &user.id,
+        user.extension.as_deref(),
+    )
+    .await?;
     match (d.active, user.is_suspended()) {
         (false, false) => {
             user.account_status = AccountStatus::Suspended;
@@ -733,6 +748,7 @@ async fn replace_with(
     user.normalize_status();
     user.updated_at = SystemTime::now();
     storage.put_user(user.clone()).await?;
+    crate::v1::users::sync_user_extension(storage, &user, before.extension.as_deref()).await?;
     announce_change(state, &before, &user).await;
     Ok(user)
 }

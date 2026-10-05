@@ -1924,6 +1924,12 @@ libopus, and `supported_codec_registry` holds only the codecs a build can
 transcode, so a build without Opus no longer accepts it. Found by Anvil's
 first calls through FCP (`docs/SOFTPHONE.md`).
 
+A user's extension dials them (v0.25.354): the `extension` the API or SCIM
+set on a user was a label, and routing — which reads the extensions table —
+never dialled it. The API now keeps an extension row for it (made, moved,
+removed with the field; 409 for a number that dials something else). Found
+by Anvil's first calls through FCP (`docs/USERS.md`).
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

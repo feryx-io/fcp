@@ -482,7 +482,7 @@ pub async fn create_user(
     let role = parse_user_role(req.role.as_deref())?;
 
     // Create user
-    let user = User {
+    let mut user = User {
         id: fcp_core::UserId::new(),
         username: req.username.clone(),
         password: password_hash,
@@ -541,8 +541,19 @@ pub async fn create_user(
         failed_login_attempts: 0,
         account_locked_until: None,
     };
+    if user.extension.as_deref() == Some("") {
+        user.extension = None;
+    }
+    check_user_extension(
+        storage,
+        &user.tenant_id,
+        &user.id,
+        user.extension.as_deref(),
+    )
+    .await?;
 
     storage.put_user(user.clone()).await?;
+    sync_user_extension(storage, &user, None).await?;
 
     // Publish user created event
     let _ = state
@@ -673,7 +684,9 @@ pub async fn update_user(
         user.pin = Some(pin_hash);
     }
     if let Some(extension) = req.extension {
-        user.extension = Some(extension);
+        // Empty clears it.
+        user.extension = Some(extension).filter(|e| !e.is_empty());
+        check_user_extension(storage, &tenant.0, &user.id, user.extension.as_deref()).await?;
     }
     if let Some(department) = req.department {
         user.department = Some(department);
@@ -727,6 +740,7 @@ pub async fn update_user(
 
     // Save user
     require_storage!(state).put_user(user.clone()).await?;
+    sync_user_extension(require_storage!(state), &user, before.extension.as_deref()).await?;
 
     // What the change of status does: signed out, phones dropped, and
     // the world told.
@@ -1588,4 +1602,62 @@ fn generated_sip_password() -> String {
         "Aa1-{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     )
+}
+
+/// Whether `number` may be a user's extension: a valid number, free or
+/// already theirs. Routing dials what the extensions table holds, not the
+/// user's `extension` field, so the two are kept together
+/// ([`sync_user_extension`]).
+pub(crate) async fn check_user_extension(
+    storage: &fcp_core::DynStorage,
+    tenant: &fcp_core::TenantId,
+    user_id: &fcp_core::UserId,
+    number: Option<&str>,
+) -> Result<(), ApiError> {
+    use fcp_core::storage::ExtensionStore;
+    let Some(number) = number.filter(|n| !n.is_empty()) else {
+        return Ok(());
+    };
+    fcp_core::Extension::validate_extension_number(number)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid extension: {e}")))?;
+    if let Some(existing) = storage.get_extension_by_number(tenant, number).await? {
+        if existing.target != fcp_core::ExtensionTarget::User(*user_id) {
+            return Err(ApiError::Conflict(format!(
+                "Extension {number} already dials something else"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Keep the extension that dials a user with their `extension` field: a
+/// row for the number they have now, none left for the number they had.
+pub(crate) async fn sync_user_extension(
+    storage: &fcp_core::DynStorage,
+    user: &User,
+    previous: Option<&str>,
+) -> Result<(), ApiError> {
+    use fcp_core::storage::ExtensionStore;
+    let now = user.extension.as_deref().filter(|n| !n.is_empty());
+    let mine = fcp_core::ExtensionTarget::User(user.id);
+    if let Some(previous) = previous.filter(|p| !p.is_empty() && Some(*p) != now) {
+        if let Some(old) = storage
+            .get_extension_by_number(&user.tenant_id, previous)
+            .await?
+            .filter(|e| e.target == mine)
+        {
+            storage.delete_extension(&old.id).await?;
+        }
+    }
+    if let Some(number) = now {
+        let existing = storage
+            .get_extension_by_number(&user.tenant_id, number)
+            .await?;
+        if existing.is_none() {
+            let extension = fcp_core::Extension::new(number.to_string(), mine, user.tenant_id)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid extension: {e}")))?;
+            storage.put_extension(extension).await?;
+        }
+    }
+    Ok(())
 }
