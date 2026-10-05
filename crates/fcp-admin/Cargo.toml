@@ -92,4 +92,5 @@ dashmap = "6"
 
 [dev-dependencies]
 fcp-testkit = { path = "../fcp-testkit" }
+redis = { version = "0.27", features = ["tokio-comp"] }
 tower = { version = "0.5", features = ["util"] }

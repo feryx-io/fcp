@@ -442,6 +442,31 @@ impl SipUserAgentClient {
             .await
     }
 
+    /// [`send_unsolicited_notify_with_state`](Self::send_unsolicited_notify_with_state)
+    /// down the RFC 5626 flow a phone registered over (TCP or TLS behind
+    /// NAT), which only the node holding it can send down.
+    pub async fn send_unsolicited_notify_with_state_via_flow(
+        &self,
+        target: &sip_core::SipUri,
+        event: &str,
+        content_type: &str,
+        body: &str,
+        subscription_state: &str,
+        flow_stream: tokio::sync::mpsc::Sender<bytes::Bytes>,
+        peer_addr: std::net::SocketAddr,
+    ) -> Result<sip_core::Response> {
+        self.inner
+            .send_unsolicited_notify_with_state_via_flow(
+                target,
+                event,
+                content_type,
+                body,
+                subscription_state,
+                Flow::new(flow_stream, peer_addr),
+            )
+            .await
+    }
+
     fn log_outbound(&self, method: &str, dialog_id: Option<&sip_dialog::DialogId>) {
         if let Some(dir) = &self.transcript_dir {
             if let Some(did) = dialog_id {

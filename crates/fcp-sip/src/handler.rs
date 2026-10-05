@@ -1227,13 +1227,27 @@ impl SipMessageHandler {
     /// Tell a device's phone to fetch its configuration again
     /// (`docs/PROVISIONING.md` §8): how many of its contacts were sent the
     /// NOTIFY, or `None` when this node cannot send one.
-    pub async fn resync_device(&self, device: &fcp_core::Device) -> Option<usize> {
+    ///
+    /// `flowless`: also send to contacts with no flow (one node of the
+    /// cluster does); contacts on a flow this node holds are sent to down
+    /// it, the rest left to the nodes holding them.
+    pub async fn resync_device(&self, device: &fcp_core::Device, flowless: bool) -> Option<usize> {
         let (Some(uac), Some(registrar), Some(storage)) =
             (&self.uac, &self.registrar, &self.storage)
         else {
             return None;
         };
-        Some(crate::device_sync::resync_device(uac, registrar, storage, device).await)
+        Some(
+            crate::device_sync::resync_device(
+                uac,
+                registrar,
+                storage,
+                device,
+                Some(&self.flow_registry),
+                flowless,
+            )
+            .await,
+        )
     }
 
     /// Log users in and out of host phones (`*88`, `*89`).

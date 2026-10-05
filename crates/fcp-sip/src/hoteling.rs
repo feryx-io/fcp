@@ -390,7 +390,7 @@ impl Hoteling {
             Ok(Some(device)) => device,
             _ => return,
         };
-        crate::device_sync::resync_device(uac, registrar, &self.storage, &device).await;
+        crate::device_sync::resync_device(uac, registrar, &self.storage, &device, None, true).await;
     }
 
     /// The guest's message-waiting state, to the host.

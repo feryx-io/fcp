@@ -291,10 +291,10 @@ unregistering).
   button on a template) does it for every enabled device the template is
   rendered for, named or picked: `devices` and `sent`.
 
-The admin has no SIP of its own: it asks a call manager (`[call_manager]
-url`, else each healthy one in the cluster in turn) at the node's
-`POST /devices/{id}/resync`, which sends each contact an unsolicited
-`NOTIFY` with the vendor's event:
+The admin has no SIP of its own: it asks the call managers
+(`[call_manager] url`, else every one in the cluster not offline) at the
+node's `POST /devices/{id}/resync`, which sends each contact an
+unsolicited `NOTIFY` with the vendor's event:
 
 | Vendor | `Event` |
 |---|---|
@@ -306,9 +306,13 @@ The contacts are those registered under the device's SIP URI or own
 credentials; else, among its owner's, the one whose User-Agent carries its
 MAC or registered from its last address (or the owner's only one, when the
 device is the owner's only phone). A phone must accept the NOTIFY (most
-take it only from their registrar's address). A phone over TCP or TLS is
-reached through whichever call manager answers, which opens its own
-connection where it holds none.
+take it only from their registrar's address). A phone registered over TLS
+(an RFC 5626 flow, which is how a phone behind NAT is reached) is sent to
+only by the node holding its connection, down that connection: each node
+sends down the flows it holds and skips the others'. A contact with no
+flow is sent to by the first node that answers (the admin's request says
+`flowless: true` to that one and `false` to the rest; a node asked
+directly without it sends to them). `sent` adds up what the nodes sent.
 
 ## 9. The old route
 
