@@ -149,6 +149,9 @@ pub struct ApiState {
     /// Where firmware images are kept (`[api.firmware]`).
     pub firmware: fcp_core::ApiFirmwareConfig,
 
+    /// The images' store: the directory's, or a bucket the admin wires in.
+    pub firmware_files: Option<Arc<dyn crate::firmware_files::FirmwareFiles>>,
+
     /// Trunk health monitoring map (populated by background health probe task).
     pub trunk_health: Option<crate::trunk_health::TrunkHealthMap>,
     /// Where the view each node has of its trunks is read from
@@ -264,6 +267,7 @@ impl ApiState {
             provisioning: fcp_core::ApiProvisioningConfig::default(),
             redirection: fcp_core::ApiRedirectionConfig::default(),
             firmware: fcp_core::ApiFirmwareConfig::default(),
+            firmware_files: None,
             trunk_health: None,
             trunk_reports: None,
             route_previewer: None,
@@ -375,9 +379,25 @@ impl ApiState {
         self
     }
 
-    /// Where firmware images are kept.
+    /// Where firmware images are kept. Without a store already given (a
+    /// bucket), a directory set here is the store.
     pub fn with_firmware_config(mut self, config: fcp_core::ApiFirmwareConfig) -> Self {
+        if self.firmware_files.is_none() && config.s3.is_none() {
+            if let Some(dir) = config.directory.as_deref() {
+                self.firmware_files =
+                    Some(Arc::new(crate::firmware_files::DirectoryFiles::new(dir)));
+            }
+        }
         self.firmware = config;
+        self
+    }
+
+    /// The images' store: a bucket (`fcp-admin` builds it).
+    pub fn with_firmware_files(
+        mut self,
+        files: Arc<dyn crate::firmware_files::FirmwareFiles>,
+    ) -> Self {
+        self.firmware_files = Some(files);
         self
     }
 

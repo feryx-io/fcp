@@ -298,6 +298,39 @@ impl S3Target {
         }
     }
 
+    /// The object at `key`, its body to be streamed from the response, or
+    /// `None` when there is none. The body may take as long as it takes:
+    /// only connecting and the store's first answer are bounded.
+    pub async fn get(&self, key: &str) -> Result<Option<reqwest::Response>, ArchiveError> {
+        self.retrying("GET", || async {
+            let response = self
+                .request(Method::GET, key, &[], Vec::new(), EMPTY_SHA256)?
+                .timeout(Duration::from_secs(6 * 3600))
+                .send()
+                .await?;
+            if response.status() == StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            Self::check(response).await.map(Some)
+        })
+        .await
+    }
+
+    /// Remove the object at `key`; one that is not there is no error.
+    pub async fn delete(&self, key: &str) -> Result<(), ArchiveError> {
+        self.retrying("DELETE", || async {
+            let response = self
+                .request(Method::DELETE, key, &[], Vec::new(), EMPTY_SHA256)?
+                .send()
+                .await?;
+            if response.status() == StatusCode::NOT_FOUND {
+                return Ok(());
+            }
+            Self::check(response).await.map(|_| ())
+        })
+        .await
+    }
+
     fn object_headers(&self, object: &ObjectInfo) -> Vec<(String, String)> {
         let mut headers = vec![
             ("content-type".into(), "application/gzip".into()),

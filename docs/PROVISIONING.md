@@ -437,9 +437,41 @@ them and chooses its own targets (Q10). One copy serves everyone.
 - `DELETE /api/v1/firmware/{id}` (platform administrator) removes one no
   tenant targets (409 while one does), with its file.
 - They are kept in `[api.firmware] directory` on the admin
-  (`/app/data/firmware` in the compose stack, in `admin-data`), at most
-  `max_image_mb` (1024) each. Unset, nothing can be uploaded. A proxy in
-  front must let the upload through (the compose stack's allows 1.1 GB).
+  (`/app/data/firmware` in the compose stack, in `admin-data`), or in an
+  S3-compatible bucket (below), at most `max_image_mb` (1024) each.
+  Neither set, nothing can be uploaded. A proxy in front must let the
+  upload through (the compose stack's allows 1.1 GB).
+
+### Images in a bucket
+
+With several admins, or to keep large files off the admin's disk, the
+images go in a bucket of any store that speaks S3 with SigV4 (AWS, MinIO,
+Garage, Ceph, R2):
+
+```toml
+[api.firmware]
+max_image_mb = 1024
+# Where an upload is staged before it goes up; the system's temporary
+# directory when unset.
+directory = "/var/lib/fcp/firmware-staging"
+
+[api.firmware.s3]
+bucket = "fcp-firmware"
+region = "eu-west-1"
+# endpoint = "https://s3.example.net"   # unset: AWS's regional endpoint
+# path_style = true                      # most self-hosted stores
+# access_key_id / secret_access_key / session_token: unset, AWS_* from
+# the environment
+prefix = "firmware/"                     # keys are <prefix><image>/<file>
+```
+
+An upload arrives on local disk, goes up with its SHA-256 signed (the
+store refuses a body that is not the one sent) and is confirmed by size
+and hash before the image is listed. A phone's fetch is streamed from the
+bucket through the admin, so the phone needs no access to it; a removal
+deletes the object. The credentials are masked wherever the configuration
+is printed. The S3 client is the CDR archive's (`docs/CDR_PIPELINE.md`
+§13).
 
 ### Targets
 
@@ -487,5 +519,4 @@ device, what it runs, what its target installs), once each time what it
 runs changes; a tenant's webhooks can take it.
 
 A site's phones fetch firmware from the site; fetching images from the
-cloud over the link and caching them there, and keeping images in an S3
-bucket, come in 9b.
+cloud over the link and caching them there comes in 9c.

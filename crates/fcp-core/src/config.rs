@@ -819,16 +819,72 @@ pub struct ApiConfig {
     pub firmware: ApiFirmwareConfig,
 }
 
-/// `[api.firmware]`: where uploaded firmware images are kept, and how
-/// large one may be (`docs/PROVISIONING.md` §11). Unset, firmware cannot
-/// be uploaded.
+/// `[api.firmware]`: where uploaded firmware images are kept — a
+/// directory, or an S3-compatible bucket (`[api.firmware.s3]`) — and how
+/// large one may be (`docs/PROVISIONING.md` §11). Neither set, firmware
+/// cannot be uploaded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiFirmwareConfig {
+    /// The images, when they are kept on this admin's disk; with a bucket,
+    /// where an upload is staged before it goes up (the system's temporary
+    /// directory when unset).
     #[serde(default)]
     pub directory: Option<String>,
     #[serde(default = "default_max_image_mb")]
     pub max_image_mb: u64,
+    /// The images in a bucket instead: every admin of the deployment then
+    /// serves the same ones.
+    #[serde(default)]
+    pub s3: Option<FirmwareS3Config>,
+}
+
+/// `[api.firmware.s3]`: the bucket images are kept in. Any store that
+/// speaks S3 with SigV4 (AWS, MinIO, Garage, Ceph, R2).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirmwareS3Config {
+    pub bucket: String,
+    #[serde(default = "default_s3_region")]
+    pub region: String,
+    /// The store's base URL; AWS's regional endpoint when unset.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Address the bucket in the path rather than the host name; most
+    /// self-hosted stores want this.
+    #[serde(default)]
+    pub path_style: bool,
+    /// Unset, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
+    /// `AWS_SESSION_TOKEN` from the environment.
+    #[serde(default)]
+    pub access_key_id: Option<String>,
+    #[serde(default)]
+    pub secret_access_key: Option<String>,
+    #[serde(default)]
+    pub session_token: Option<String>,
+    /// Keys are `<prefix><image>/<file>`.
+    #[serde(default = "default_firmware_prefix")]
+    pub prefix: String,
+}
+
+impl std::fmt::Debug for FirmwareS3Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FirmwareS3Config")
+            .field("bucket", &self.bucket)
+            .field("region", &self.region)
+            .field("endpoint", &self.endpoint)
+            .field("path_style", &self.path_style)
+            .field("prefix", &self.prefix)
+            .finish_non_exhaustive()
+    }
+}
+
+fn default_s3_region() -> String {
+    "us-east-1".to_string()
+}
+
+fn default_firmware_prefix() -> String {
+    "firmware/".to_string()
 }
 
 fn default_max_image_mb() -> u64 {
@@ -840,6 +896,7 @@ impl Default for ApiFirmwareConfig {
         Self {
             directory: None,
             max_image_mb: default_max_image_mb(),
+            s3: None,
         }
     }
 }
@@ -855,6 +912,18 @@ impl ApiFirmwareConfig {
             .is_some_and(|d| d.trim().is_empty())
         {
             return Err("api.firmware.directory must not be empty".to_string());
+        }
+        if let Some(s3) = &self.s3 {
+            if s3.bucket.trim().is_empty() {
+                return Err("api.firmware.s3.bucket must be set".to_string());
+            }
+            if s3
+                .endpoint
+                .as_deref()
+                .is_some_and(|e| !(e.starts_with("https://") || e.starts_with("http://")))
+            {
+                return Err("api.firmware.s3.endpoint must be an http(s):// address".to_string());
+            }
         }
         Ok(())
     }

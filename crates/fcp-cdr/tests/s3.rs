@@ -128,3 +128,25 @@ async fn a_wrong_secret_is_refused_without_retrying_forever() {
     assert!(error.to_string().contains("403"), "{error}");
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }
+
+#[tokio::test]
+async fn reads_an_object_back_and_deletes_it() {
+    let config = require_s3!();
+    let target = S3Target::new(config).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let key = format!("test/{}/firmware.rom", uuid::Uuid::new_v4());
+    let file = dir.path().join("object");
+    let data = noise(300 * 1024, 7);
+    let info = object(&file, &data, 0).await;
+
+    assert!(target.get(&key).await.unwrap().is_none(), "not there yet");
+    target.put(&key, &file, &info).await.unwrap();
+    let response = target.get(&key).await.unwrap().expect("there now");
+    assert_eq!(response.content_length(), Some(data.len() as u64));
+    assert_eq!(response.bytes().await.unwrap().as_ref(), data.as_slice());
+
+    target.delete(&key).await.unwrap();
+    assert!(target.get(&key).await.unwrap().is_none(), "gone");
+    // Deleting what is not there is no error.
+    target.delete(&key).await.unwrap();
+}

@@ -46,6 +46,7 @@ mod call_supervision;
 mod cli;
 mod cluster_api;
 mod config;
+mod firmware_s3;
 mod route_preview;
 mod site_files;
 mod site_link;
@@ -619,6 +620,17 @@ async fn main() -> Result<()> {
     ))
     .with_e911_validator(e911_validator)
     .with_webhook_dispatcher(Some(webhook_dispatcher));
+
+    // Firmware images in a bucket (docs/PROVISIONING.md §11); without one,
+    // [api.firmware] directory is the store.
+    let api_state = match &config.api.firmware.s3 {
+        Some(s3) => {
+            let files = firmware_s3::S3Files::new(s3)?;
+            info!(location = %fcp_api_core::firmware_files::FirmwareFiles::location(&files), "Firmware images in a bucket");
+            api_state.with_firmware_files(Arc::new(files))
+        }
+        None => api_state,
+    };
 
     // Set security policy from config
     let api_state = api_state.with_security_policy(fcp_api_core::SecurityPolicy {

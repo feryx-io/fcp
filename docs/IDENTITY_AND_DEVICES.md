@@ -861,6 +861,21 @@ Each phase is one PR based on main, with its admin UI and its docs.
      - Proved by
        `firmware_is_uploaded_once_targeted_per_tenant_piloted_and_served`
        (`api_postgres.rs`) and the target and status unit tests.
+   - 9b split again: **9b** images in a bucket; **9c** a site fetching the
+     cloud's images over the link and caching them (Q11).
+   - **9b done (v0.25.326)** (`docs/PROVISIONING.md` §11).
+     - `fcp_api_core::firmware_files::FirmwareFiles` (put, open, delete)
+       with `DirectoryFiles`; `fcp-admin`'s `S3Files` over the CDR
+       archive's `S3Target`, which gained `get` (streamed, its own
+       deadline) and `delete`; `[api.firmware.s3]`.
+     - An upload staged locally, put with its SHA-256 signed and confirmed
+       by size and hash before the image is listed; fetches streamed from
+       the bucket through the admin; removal deletes the object.
+     - Proved by `an_image_lives_in_the_bucket_and_is_served_from_it`
+       (`fcp-admin/tests/firmware_s3.rs`) and
+       `reads_an_object_back_and_deletes_it` (`fcp-cdr/tests/s3.rs`),
+       against Garage locally; both skip without `FCP_TEST_S3_*`, as CI
+       runs them.
 
 ## 4. What this does not do
 

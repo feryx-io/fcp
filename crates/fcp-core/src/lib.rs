@@ -76,8 +76,8 @@ pub use crate::calling::{
 pub use crate::codec::{AudioCodec, Codec, CodecPreferences, VideoCodec};
 pub use crate::config::{
     ApiConfig, ApiFirmwareConfig, ApiProvisioningConfig, ApiRateLimitConfig, ApiRedirectionConfig,
-    ApiSessionConfig, ApiSsoConfig, FcpConfig, LogFormat, NodeConfig, ObservabilityConfig,
-    RegistrarConfig, StorageBackend, StorageConfig, TransportConfig,
+    ApiSessionConfig, ApiSsoConfig, FcpConfig, FirmwareS3Config, LogFormat, NodeConfig,
+    ObservabilityConfig, RegistrarConfig, StorageBackend, StorageConfig, TransportConfig,
 };
 pub use crate::config_store::{
     get_config_with_tenant_fallback, load_or_seed_config, spawn_config_poll_loop, AuditEntry,
