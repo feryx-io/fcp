@@ -16,7 +16,7 @@ use crate::config_template::{model_matches, PhoneVendor};
 use crate::{DeviceId, TenantId};
 
 /// An uploaded image, every tenant's to use.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirmwareImage {
     pub id: uuid::Uuid,
     pub vendor: PhoneVendor,
@@ -56,7 +56,7 @@ pub enum RolloutStage {
 }
 
 /// A tenant's choice: these phones run this image.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirmwareTarget {
     pub id: uuid::Uuid,
     pub tenant_id: TenantId,
@@ -68,6 +68,15 @@ pub struct FirmwareTarget {
     /// The devices that get it while the stage is `pilot`.
     pub pilot_devices: Vec<DeviceId>,
     pub updated_at: SystemTime,
+}
+
+/// A target as the link carries it to a site, with the image it names:
+/// images are the platform's, and a site holds those its tenant targets
+/// (`docs/PROVISIONING.md` §11).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncedFirmwareTarget {
+    pub target: FirmwareTarget,
+    pub image: FirmwareImage,
 }
 
 /// The target a phone is pointed at: its vendor's whose pattern names its

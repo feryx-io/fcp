@@ -19,9 +19,9 @@ auth_enabled = true
 managed_by = "${FCP_CLOUD_ADMIN_URL}"
 
 [api.firmware]
-# Firmware images the platform administrator uploads (docs/PROVISIONING.md
-# §11), in admin-data with the rest of the admin's files.
-directory = "/app/data/firmware"
+# The firmware the tenant's targets name, fetched from the cloud by the
+# link into the site-firmware volume (docs/PROVISIONING.md §11).
+directory = "/var/lib/fcp/firmware"
 
 [storage]
 # Overridden by FCP_ADMIN_DATABASE_URL (the password is in .env).

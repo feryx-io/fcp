@@ -370,6 +370,7 @@ impl Link {
                 return;
             }
         };
+        let secret_for_firmware = secret.clone();
         match Syncer::new(
             stores.clone(),
             client,
@@ -381,6 +382,31 @@ impl Link {
             self.config.site.feed_wait_secs,
         ) {
             Ok(syncer) => {
+                // The site's firmware, fetched for the targets it holds
+                // (docs/PROVISIONING.md §11).
+                let syncer = match (
+                    &self.config.site.firmware_dir,
+                    self.client_with(true, Duration::from_secs(6 * 3600)),
+                ) {
+                    (Some(dir), Ok(download)) => {
+                        let cache = Arc::new(crate::firmware::FirmwareCache::new(
+                            download,
+                            &self.config.link.link_url,
+                            secret_for_firmware,
+                            tenant,
+                            Arc::clone(&stores.storage),
+                            dir,
+                        ));
+                        let run = Arc::clone(&cache);
+                        tokio::spawn(async move { run.run().await });
+                        syncer.with_firmware(cache)
+                    }
+                    (Some(_), Err(e)) => {
+                        warn!(error = %e, "No client for the site's firmware");
+                        syncer
+                    }
+                    (None, _) => syncer,
+                };
                 let syncer = Arc::new(syncer);
                 let run = Arc::clone(&syncer);
                 tokio::spawn(async move { run.run().await });

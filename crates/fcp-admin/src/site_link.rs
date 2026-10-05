@@ -153,6 +153,9 @@ pub struct LinkState {
     pub ingest: Option<crate::site_files::IngestPublisher>,
     /// What the cloud asks of sites, and their answers.
     pub requests: Arc<crate::site_files::SiteRequests>,
+    /// Firmware images, which a site's link fetches for the targets it
+    /// holds (`docs/PROVISIONING.md` §11).
+    pub firmware: Option<Arc<dyn fcp_api_core::firmware_files::FirmwareFiles>>,
 }
 
 /// `POST /link/v1/enroll`.
@@ -513,6 +516,7 @@ pub fn link_router(state: LinkState) -> Router {
         .route("/link/v1/events", post(events))
         .route("/link/v1/requests", get(requests))
         .route("/link/v1/requests/:id", post(request_result))
+        .route("/link/v1/firmware/:image", get(firmware_image))
         // A file a site sends up is one body; a recording may be large.
         .layer(axum::extract::DefaultBodyLimit::max(SITE_UPLOAD_LIMIT))
         .layer(Extension(state))
@@ -1042,6 +1046,10 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
             items.push(item("user_identities", &i.row_id(), &i)?);
         }
     }
+    // Firmware targets, each with its image (docs/PROVISIONING.md §11).
+    for synced in synced_firmware_targets(storage, tenant).await? {
+        items.push(item("firmware_targets", &synced.target.id, &synced)?);
+    }
     // After the users: a group's members name them (docs/USERS.md §5).
     if let Some(groups) = storage.group_store() {
         for g in groups.list_groups(tenant).await? {
@@ -1195,6 +1203,15 @@ async fn object_now(
             }
             _ => None,
         },
+        "firmware_targets" => match id.parse::<uuid::Uuid>() {
+            Ok(id) => synced_firmware_targets(storage, tenant)
+                .await?
+                .into_iter()
+                .find(|s| s.target.id == id)
+                .map(|s| serde_json::to_value(&s))
+                .transpose()?,
+            Err(_) => None,
+        },
         "groups" => match (storage.group_store(), id.parse()) {
             (Some(store), Ok(id)) => same_tenant!(store.get_group(&id).await?),
             _ => None,
@@ -1210,6 +1227,66 @@ async fn object_now(
         },
         _ => None,
     })
+}
+
+/// A tenant's firmware targets, each with the image it names.
+async fn synced_firmware_targets(
+    storage: &DynStorage,
+    tenant: &TenantId,
+) -> Result<Vec<fcp_core::firmware::SyncedFirmwareTarget>> {
+    let Some(store) = storage.provisioning_store() else {
+        return Ok(Vec::new());
+    };
+    let mut synced = Vec::new();
+    for target in store.list_firmware_targets(tenant).await? {
+        if let Some(image) = store.get_firmware_image(&target.image_id).await? {
+            synced.push(fcp_core::firmware::SyncedFirmwareTarget { target, image });
+        }
+    }
+    Ok(synced)
+}
+
+/// `GET /link/v1/firmware/:image` — an image the site's tenant targets,
+/// streamed to the site's link, which caches it for the site's phones.
+async fn firmware_image(
+    Extension(state): Extension<LinkState>,
+    headers: HeaderMap,
+    axum::extract::Path(image): axum::extract::Path<String>,
+) -> Result<Response, LinkError> {
+    let site = site_of(&state, &headers).await?;
+    let not_found = || {
+        LinkError(
+            StatusCode::NOT_FOUND,
+            "No such image for this site".to_string(),
+        )
+    };
+    let id = uuid::Uuid::parse_str(&image).map_err(|_| not_found())?;
+    let synced = synced_firmware_targets(&state.storage, &site.tenant_id).await?;
+    let image = synced
+        .into_iter()
+        .map(|s| s.image)
+        .find(|i| i.id == id)
+        .ok_or_else(not_found)?;
+    let files = state.firmware.as_ref().ok_or_else(not_found)?;
+    let key = format!("{}/{}", image.id.simple(), image.file_name);
+    let (size, body) = files
+        .open(&key)
+        .await
+        .map_err(|e| LinkError(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(not_found)?;
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CONTENT_LENGTH, size.to_string()),
+            (
+                header::HeaderName::from_static("x-fcp-sha256"),
+                image.sha256,
+            ),
+        ],
+        body,
+    )
+        .into_response())
 }
 
 async fn snapshot(
