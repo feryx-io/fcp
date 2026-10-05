@@ -169,6 +169,14 @@ pub(crate) async fn device_context(
     if let (Some(base), Some(key)) = (base, key) {
         c.provisioning_url = format!("{base}/provision/{key}/");
     }
+    // The firmware the phone is pointed at, under the tenant's URL (§11).
+    if !c.provisioning_url.is_empty() {
+        if let Some(image) = crate::v1::firmware::image_for(storage, device).await? {
+            c.firmware_directory = format!("{}firmware/{}/", c.provisioning_url, image.id.simple());
+            c.firmware_url = format!("{}{}", c.firmware_directory, image.file_name);
+            c.firmware_target_version = image.version;
+        }
+    }
 
     // The owner, when the device has one: its credentials unless the
     // device has its own (`docs/ENTERPRISE_CALLING.md` §3.8).
@@ -520,7 +528,21 @@ pub async fn serve_file(
             if !device.enabled {
                 return Fetched::Refused("not_served", StatusCode::NOT_FOUND);
             }
-            return Fetched::Served(polycom_master(&mac), kind.content_type());
+            // The image the phone is pointed at, as its application (§11).
+            let firmware = match crate::v1::firmware::image_for(storage, &device).await {
+                Ok(Some(image)) => base.as_deref().map(|b| {
+                    format!(
+                        "{b}/provision/{key}/firmware/{}/{}",
+                        image.id.simple(),
+                        image.file_name
+                    )
+                }),
+                _ => None,
+            };
+            return Fetched::Served(
+                polycom_master(&mac, firmware.as_deref()),
+                kind.content_type(),
+            );
         }
         match render_device(
             &state,
@@ -582,6 +604,65 @@ pub async fn serve_file(
         "Provisioning fetch"
     );
     response
+}
+
+/// GET /provision/:key/firmware/:image/:file — a firmware image the
+/// tenant targets (`docs/PROVISIONING.md` §11), under the same guards as
+/// its phones' files.
+pub async fn serve_firmware(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path((key, image, file)): Path<(String, String, String)>,
+) -> Response {
+    use fcp_core::TenantStore;
+    let not_found = || provisioning_not_found().into_response();
+    if state.provisioning_require_https && !request_is_https(&headers) {
+        return not_found();
+    }
+    let Some(storage) = state.storage.as_deref() else {
+        return not_found();
+    };
+    let Ok(store) = provisioning_store(storage) else {
+        return not_found();
+    };
+    let tenant_id = match store.tenant_for_provisioning_key(&key).await {
+        Ok(Some(t)) => t,
+        _ => return not_found(),
+    };
+    let address = crate::audit::source_ip(&headers);
+    let settings = match storage.get_tenant(&tenant_id).await {
+        Ok(Some(t)) => t.provisioning,
+        Ok(None) => Default::default(),
+        Err(_) => return not_found(),
+    };
+    let ip = address.as_deref().and_then(|a| a.parse().ok());
+    let served = if settings.allows(ip) {
+        crate::v1::firmware::serve_image(&state, tenant_id, &image, &file).await
+    } else {
+        None
+    };
+    let fetch = fcp_core::provisioning::DeviceFetch {
+        tenant_id,
+        device_id: None,
+        mac_address: None,
+        file: format!("firmware/{}", file.chars().take(190).collect::<String>()),
+        at: std::time::SystemTime::now(),
+        address,
+        user_agent: headers
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from),
+        outcome: if served.is_some() {
+            "served"
+        } else {
+            "not_served"
+        }
+        .to_string(),
+    };
+    if let Err(e) = store.record_fetch(&fetch).await {
+        tracing::warn!(error = %e, "Could not record a firmware fetch");
+    }
+    served.unwrap_or_else(not_found)
 }
 
 /// The tenant's provisioning URL.

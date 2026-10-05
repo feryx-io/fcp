@@ -5,7 +5,7 @@ them in step, and how a phone out of its box finds FCP. This is phases 7
 and 8 of `docs/IDENTITY_AND_DEVICES.md`: 7a the URL and how it is guarded;
 7b the templates, picked by model, pending phones and import; 7c the
 registration on the device, resync, and the old route removed; 8a
-zero-touch through Yealink RPS and Poly ZTP, and DHCP.
+zero-touch through Yealink RPS and Poly ZTP, and DHCP; 9a firmware.
 
 ## 1. The tenant's provisioning URL
 
@@ -144,6 +144,7 @@ Every one is always there, empty when it does not apply.
 | `shared_line_enabled` (1/0), `shared_line_yes_no`, `shared_line_number`, `shared_line_appearances` | The shared line the device is on (`docs/ENTERPRISE_CALLING.md` §3.9). |
 | `accounts` | The phone's accounts in order, each with `index`, `label`, `display_name`, `user_name`, `auth_name`, `password`, `shared`, `appearances`: its own, then a shared line's. |
 | `line_keys` | The device's keys, each with `index` (from 1), `kind` (`blf`, `speed_dial`, `park`), `value`, `label`. |
+| `firmware_url`, `firmware_directory`, `firmware_target_version` | The firmware image the phone is pointed at (§11): its URL under the tenant's, the URL of its directory (for phones that ask for their own file name there), and its version. Empty without a target. |
 | `timezone`, `utc_offset`, `utc_offset_hhmm`, `utc_offset_minutes` | The tenant's `calling.timezone` (UTC when unset) and its offset now: `-5`, `+5:30`; `-05:00`; `-300`. |
 | `ntp_server` | `[api.provisioning] ntp_server`, `pool.ntp.org` by default. |
 | `provisioning_url` | The tenant's URL (`https://…/provision/<key>/`), so a template can tell the phone to keep fetching from it. |
@@ -336,8 +337,10 @@ the tenant's phones of that vendor:
 | Yealink RPS (`yealink_rps`) | the MAC, with the tenant's URL as its own server (`uniqueServerUrl`) and the device's name as the remark | yes: the device's provisioning token as the password, the MAC as the username |
 | Poly ZTP (`poly_ztp`) | the MAC, associated with a profile under the tenant's Reference ID | no |
 
-Grandstream GDMS and Fanvil FDPS come next (8b), behind the same
-interface.
+Grandstream GDMS and Fanvil FDPS are not connected: neither publishes the
+API a connector needs (GDMS's guide stops short of redirecting a device,
+and FDPS has none). Point their consoles at the tenant's URL by hand, or
+use DHCP (below).
 
 **When.** A device with a MAC whose vendor (`vendor`, else the MAC's
 prefix) has an account that is on is registered when it is made, claimed
@@ -415,3 +418,74 @@ Where a network's DHCP server can be set, it can hand phones the URL:
 A URL in DHCP is seen by everything on the network, and the key is in it:
 use it on networks the tenant trusts, and list them in its `networks`
 (§3).
+
+## 11. Firmware
+
+The platform administrator uploads vendors' images; every tenant sees
+them and chooses its own targets (Q10). One copy serves everyone.
+
+### Images
+
+- `POST /api/v1/firmware` (multipart: `vendor`, `version`, `models`,
+  `notes`, `file`), the platform administrator's only (`system_config`
+  and a platform session or the static token). `version` is what the
+  phones report in their User-Agent (`96.86.0.80`); `models` are patterns,
+  comma-separated, empty for any of the vendor's; the file keeps the name
+  the vendor ships it under, which is the name it is served by. Its size
+  and SHA-256 are kept.
+- `GET /api/v1/firmware` (`device_read`) lists them.
+- `DELETE /api/v1/firmware/{id}` (platform administrator) removes one no
+  tenant targets (409 while one does), with its file.
+- They are kept in `[api.firmware] directory` on the admin
+  (`/app/data/firmware` in the compose stack, in `admin-data`), at most
+  `max_image_mb` (1024) each. Unset, nothing can be uploaded. A proxy in
+  front must let the upload through (the compose stack's allows 1.1 GB).
+
+### Targets
+
+A target says: these phones of the tenant run this image.
+
+| Route | Permission |
+|---|---|
+| `GET /api/v1/firmware/targets` | `device_read`: each target with the phones it is for and how many run its version (`current`), another (`behind`) or have not said (`unknown`) |
+| `POST /api/v1/firmware/targets` | `device_update`: `vendor`, `model_pattern` (empty for every model), `image_id` (the vendor's), `stage`, `pilot_devices` |
+| `PUT /api/v1/firmware/targets/{id}` | `device_update`: another image, the pilot set, `stage: all` to roll out |
+| `DELETE /api/v1/firmware/targets/{id}` | `device_update`: phones keep what they run; their files stop naming an image |
+
+A phone's target is its vendor's whose pattern names its model most
+closely, one with no pattern last. While a target's `stage` is `pilot`
+(the default), only its `pilot_devices` are pointed at the image; the
+rest of its phones are pointed at none until it is `all`.
+
+### What the phone is told
+
+A phone with a target gets `firmware_url` in its template (§5); the
+starters write it as each vendor reads it:
+
+| Starter | |
+|---|---|
+| Yealink | `static.firmware.url` |
+| Polycom | `upgrade.custom.server.url`, and the master file's `APP_FILE_PATH` |
+| Grandstream | `P192` (the image's directory, which the phone asks for its own file name in) with `P212 = 2` (HTTPS) |
+| Cisco | `<Upgrade_Rule>` |
+| Fanvil, Snom | not written: add it per the model's guide |
+
+The image is served at `/provision/<key>/firmware/<image>/<file>`, under
+the same guards as the phones' files (HTTPS, the tenant's networks), to
+the tenant whose key it is while one of its targets names the image.
+Each fetch is in the fetch log as `firmware/<file>`.
+
+### Who is behind
+
+What each phone runs comes from its User-Agent, written on its device
+when it registers (§8). The device views show `firmware_target_version`
+and `firmware_status` (`current`, `behind`, `unknown`); the Devices page
+shows them, and the Firmware page each target's counts. When a phone
+registers running another version than its target installs, the node
+that took the REGISTER says `device.firmware_behind` (the tenant, the
+device, what it runs, what its target installs), once each time what it
+runs changes; a tenant's webhooks can take it.
+
+A site's phones fetch firmware from the site; fetching images from the
+cloud over the link and caching them there, and keeping images in an S3
+bucket, come in 9b.

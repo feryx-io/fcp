@@ -1373,6 +1373,9 @@ fn process_event_for_state(
                 SystemEvent::ConfigChanged { .. } => {
                     // Config changes are handled by call-manager nodes via cache invalidation
                 }
+                SystemEvent::DeviceFirmwareBehind { .. } => {
+                    // Delivered to the tenant's webhooks and live views.
+                }
                 SystemEvent::NodeJoined { node_id, .. } => {
                     info!(node_id = %node_id, "Node joined cluster");
                     node_registry.register_or_update(node_id, Some(NodeType::CallManager));

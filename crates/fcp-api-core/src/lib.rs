@@ -241,7 +241,8 @@ pub fn create_router_with(
     state = state
         .with_provisioning_require_https(api_config.provisioning_require_https)
         .with_provisioning_config(api_config.provisioning.clone())
-        .with_redirection_config(api_config.redirection.clone());
+        .with_redirection_config(api_config.redirection.clone())
+        .with_firmware_config(api_config.firmware.clone());
 
     // Conditionally apply bearer token authentication middleware
     if api_config.auth_enabled {
@@ -316,10 +317,18 @@ pub fn create_router_with(
     router = router.merge(Router::new().nest("/api/v1", v1::ws_router()));
     // A tenant's phones fetch their files by the key in the path
     // (`docs/PROVISIONING.md`): no bearer token, which a phone cannot send.
-    router = router.merge(Router::new().route(
-        "/provision/:key/:file",
-        axum::routing::get(v1::provisioning::serve_file),
-    ));
+    router = router.merge(
+        Router::new()
+            .route(
+                "/provision/:key/:file",
+                axum::routing::get(v1::provisioning::serve_file),
+            )
+            // Its firmware, where its tenant targets an image (§11).
+            .route(
+                "/provision/:key/firmware/:image/:file",
+                axum::routing::get(v1::provisioning::serve_firmware),
+            ),
+    );
     // `/api/v1/health` says `ok` and a version and nothing else; it is
     // what a load balancer or the API gateway probes, and a probe carries
     // no token (`docs/DEPLOYMENT_GAPS.md` §1.4).

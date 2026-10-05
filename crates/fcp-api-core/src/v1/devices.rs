@@ -41,6 +41,11 @@ pub struct DeviceResponse {
     /// with the model, it picks the template when the device names none.
     pub vendor: Option<String>,
     pub firmware_version: Option<String>,
+    /// The version its tenant's firmware target points it at
+    /// (`docs/PROVISIONING.md` §11), and whether it runs it: `current`,
+    /// `behind`, `unknown` (it has not said). Unset without a target.
+    pub firmware_target_version: Option<String>,
+    pub firmware_status: Option<fcp_core::firmware::FirmwareStatus>,
     pub tenant_id: String,
     pub owner_user_id: Option<String>,
     /// The username of the device's own credentials; the password and its
@@ -97,6 +102,8 @@ impl From<Device> for DeviceResponse {
             model: device.model,
             vendor: device.vendor.map(|v| v.to_string()),
             firmware_version: device.firmware_version,
+            firmware_target_version: None,
+            firmware_status: None,
             tenant_id: device.tenant_id.to_string(),
             owner_user_id: device.owner_user_id.map(|id| id.to_string()),
             has_sip_credentials,
@@ -550,8 +557,14 @@ pub async fn list_devices(
         }
     }
 
+    let (targets, images) = firmware_lists(storage, &tenant_id).await;
     let response: Vec<DeviceResponse> = devices.into_iter().map(|d| {
+        let firmware = crate::v1::firmware::status_of(&d, &targets, &images);
         let mut resp = DeviceResponse::from(d);
+        if let Some((version, status)) = firmware {
+            resp.firmware_target_version = Some(version);
+            resp.firmware_status = Some(status);
+        }
         // Enrich with live registration data
         if let Some(ref sip_uri) = resp.sip_uri {
             let normalized = sip_uri.trim_start_matches("sip:")
@@ -720,7 +733,13 @@ pub async fn get_device(
         .ok_or_else(|| ApiError::NotFound(format!("Device {} not found", id)))
         .and_then(|device| ensure_device_in_tenant(device, &tenant.0, &id))?;
 
+    let (targets, images) = firmware_lists(storage, &tenant.0).await;
+    let firmware = crate::v1::firmware::status_of(&device, &targets, &images);
     let mut response = DeviceResponse::from(device);
+    if let Some((version, status)) = firmware {
+        response.firmware_target_version = Some(version);
+        response.firmware_status = Some(status);
+    }
     if response.registration_state == "registered" {
         let live = storage
             .get_all_registrations_in_tenant(&tenant.0)
@@ -1151,6 +1170,31 @@ pub async fn delete_device(
     crate::v1::redirection::device_removed(&state, &device);
     info!("Deleted device {}", id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The tenant's firmware targets and the images they name, for the device
+/// views; empty where firmware is not kept.
+async fn firmware_lists(
+    storage: &fcp_core::DynStorage,
+    tenant: &TenantId,
+) -> (
+    Vec<fcp_core::firmware::FirmwareTarget>,
+    Vec<fcp_core::firmware::FirmwareImage>,
+) {
+    let Some(store) = storage.provisioning_store() else {
+        return (Vec::new(), Vec::new());
+    };
+    let targets = store
+        .list_firmware_targets(tenant)
+        .await
+        .unwrap_or_default();
+    if targets.is_empty() {
+        return (targets, Vec::new());
+    }
+    (
+        targets,
+        store.list_firmware_images().await.unwrap_or_default(),
+    )
 }
 
 /// A device with a MAC is no longer a pending phone.

@@ -20,6 +20,7 @@ pub mod emergency_networks;
 pub mod encryption;
 pub mod events;
 pub mod extensions;
+pub mod firmware;
 pub mod flow_traces;
 pub mod flows;
 pub mod groups;
@@ -601,6 +602,26 @@ pub fn router() -> Router<ApiState> {
             get(provisioning::get_key).post(provisioning::rotate_key),
         )
         .route("/provisioning/pending", get(devices::list_pending))
+        // Firmware (docs/PROVISIONING.md §11): images streamed in, so the
+        // body limit is the handler's ([api.firmware] max_image_mb).
+        .route(
+            "/firmware",
+            get(firmware::list_images)
+                .post(firmware::upload_image)
+                .layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/firmware/:id",
+            axum::routing::delete(firmware::delete_image),
+        )
+        .route(
+            "/firmware/targets",
+            get(firmware::list_targets).post(firmware::create_target),
+        )
+        .route(
+            "/firmware/targets/:id",
+            axum::routing::put(firmware::update_target).delete(firmware::delete_target),
+        )
         // Zero-touch (docs/PROVISIONING.md §10)
         .route("/provisioning/redirection", get(redirection::list_accounts))
         .route(

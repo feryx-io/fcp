@@ -45,6 +45,7 @@ wherever it backs up.
 | | `[recording] prompts_dir` | `/var/lib/fcp/media/prompts` | the same (`media-prompts`) |
 | `fcp-voicemail` | `[voicemail] recordings_dir`, `greetings_dir` | `/var/fcp/voicemail/…` | `/var/lib/fcp/voicemail/…` (`voicemail-data`) |
 | `fcp-admin` | `[compliance] exports_dir` | `/var/lib/fcp/exports` | `/app/data/exports` (`admin-data`) |
+| | `[api.firmware] directory` | unset (no uploads) | `/app/data/firmware` (`admin-data`): uploaded firmware images, re-derivable by uploading them again, but the rows in `firmware_images` name them |
 | `fcp-tts` | `[tts] cache_dir` | `/tmp/fcp/tts_cache` | `/var/lib/fcp/tts_cache` (`tts-cache`; a cache) |
 | every binary that opens Postgres | `FCP_MASTER_KEY_FILE` | unset (encryption off) | `/var/lib/fcp/certs/master.key` (`fcp-certs`) |
 

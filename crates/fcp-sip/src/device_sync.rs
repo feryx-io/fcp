@@ -153,13 +153,70 @@ const REWRITE_AFTER: Duration = Duration::from_secs(10 * 60);
 pub struct DeviceRegistrations {
     storage: Arc<DynStorage>,
     written: DashMap<DeviceId, (Instant, RegistrationState, Option<String>, Option<String>)>,
+    /// `device.firmware_behind` (`docs/PROVISIONING.md` §11), and what each
+    /// device was last said to run behind its target.
+    events: Option<Arc<dyn fcp_events::EventPublisher>>,
+    behind: DashMap<DeviceId, String>,
 }
 
 impl DeviceRegistrations {
-    pub fn new(storage: Arc<DynStorage>) -> Self {
+    pub fn new(
+        storage: Arc<DynStorage>,
+        events: Option<Arc<dyn fcp_events::EventPublisher>>,
+    ) -> Self {
         Self {
             storage,
             written: DashMap::new(),
+            events,
+            behind: DashMap::new(),
+        }
+    }
+
+    /// Say `device.firmware_behind` when a phone runs another version than
+    /// its target installs, once for each version it reports.
+    async fn firmware_check(&self, device: &Device, running: &str, model: Option<&str>) {
+        let (Some(events), Some(store)) = (&self.events, self.storage.provisioning_store()) else {
+            return;
+        };
+        let Ok(targets) = store.list_firmware_targets(&device.tenant_id).await else {
+            return;
+        };
+        let vendor = device.vendor.or_else(|| {
+            device
+                .mac_address
+                .as_deref()
+                .and_then(fcp_core::provisioning::vendor_of_mac)
+        });
+        let model = device.model.as_deref().or(model);
+        let Some(target) = fcp_core::firmware::target_for(&targets, vendor, model, &device.id)
+        else {
+            self.behind.remove(&device.id);
+            return;
+        };
+        let Ok(Some(image)) = store.get_firmware_image(&target.image_id).await else {
+            return;
+        };
+        if fcp_core::firmware::FirmwareStatus::of(Some(running), &image.version)
+            != fcp_core::firmware::FirmwareStatus::Behind
+        {
+            self.behind.remove(&device.id);
+            return;
+        }
+        if self.behind.get(&device.id).is_some_and(|r| *r == running) {
+            return;
+        }
+        self.behind.insert(device.id, running.to_string());
+        let event =
+            fcp_events::PlatformEvent::System(fcp_events::SystemEvent::DeviceFirmwareBehind {
+                tenant_id: device.tenant_id,
+                device_id: device.id.to_string(),
+                device_name: device.name.clone(),
+                running: running.to_string(),
+                target: image.version.clone(),
+                timestamp: SystemTime::now(),
+            });
+        if let Err(e) = events.publish(event).await {
+            debug!(error = %e, "Could not say a device's firmware is behind");
         }
     }
 
@@ -247,6 +304,10 @@ impl DeviceRegistrations {
                 debug!(device_id = %device.id, ?state, "Wrote a registration on its device");
                 self.written
                     .insert(device.id, (Instant::now(), state, address, user_agent));
+                if let (true, Some(running)) = (registered, update.firmware.as_deref()) {
+                    self.firmware_check(&device, running, update.model.as_deref())
+                        .await;
+                }
             }
             Err(e) => {
                 warn!(device_id = %device.id, error = %e, "Could not write a registration on its device")

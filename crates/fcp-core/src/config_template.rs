@@ -222,6 +222,14 @@ pub struct TemplateContext {
     /// can be told to keep fetching from it; empty when unknown.
     pub provisioning_url: String,
 
+    /// The firmware image the phone is pointed at (`docs/PROVISIONING.md`
+    /// §11): its URL, the URL of the directory it is in (for phones that
+    /// ask for their own file name there), and its version. Empty when no
+    /// target is the phone's.
+    pub firmware_url: String,
+    pub firmware_directory: String,
+    pub firmware_target_version: String,
+
     /// The phone's accounts in order: its own, then a shared line's.
     pub accounts: Vec<TemplateAccount>,
     /// The device's line keys, numbered from 1.
@@ -311,6 +319,9 @@ impl TemplateContext {
             ntp_server: "pool.ntp.org".into(),
             provisioning_url: "https://pbx.example.com/provision/0123456789abcdef0123456789abcdef/"
                 .into(),
+            firmware_url: "https://pbx.example.com/provision/0123456789abcdef0123456789abcdef/firmware/8c1f/T54W-96.86.0.80.rom".into(),
+            firmware_directory: "https://pbx.example.com/provision/0123456789abcdef0123456789abcdef/firmware/8c1f/".into(),
+            firmware_target_version: "96.86.0.80".into(),
             accounts: vec![],
             line_keys: vec![
                 TemplateLineKey {
@@ -542,6 +553,9 @@ local_time.ntp_server1 = {{ ntp_server }}
 {% if provisioning_url %}
 static.auto_provision.server.url = {{ provisioning_url }}
 {% endif %}
+{% if firmware_url %}
+static.firmware.url = {{ firmware_url }}
+{% endif %}
 
 # Line keys after the accounts' own.
 {% for key in line_keys %}
@@ -571,6 +585,9 @@ linekey.{{ n }}.label = {{ key.label }}
     reg.{{ account.index }}.lineKeys="{{ account.appearances }}"
 {% endif %}
 {% endfor %}
+{% if firmware_url %}
+    upgrade.custom.server.url="{{ firmware_url }}"
+{% endif %}
     tcpIpApp.sntp.address="{{ ntp_server }}"
     tcpIpApp.sntp.gmtOffset="{{ utc_offset_minutes * 60 }}"
 {% for key in line_keys %}
@@ -600,6 +617,11 @@ linekey.{{ n }}.label = {{ key.label }}
     <P130>{{ {"udp": 0, "tcp": 1, "tls": 2}[sip_transport] }}</P130>
     <!-- NTP server -->
     <P30>{{ ntp_server }}</P30>
+{% if firmware_directory %}
+    <!-- Firmware: over HTTPS, from the image's directory -->
+    <P212>2</P212>
+    <P192>{{ firmware_directory|replace("https://", "")|replace("http://", "") }}</P192>
+{% endif %}
     <!-- Account 2: the shared line the device is on, if any. Turn on
          "Shared Call Appearance" (BroadSoft SCA) for it in the account's
          SIP settings: its P-value differs between models. -->
@@ -639,6 +661,9 @@ linekey.{{ n }}.label = {{ key.label }}
   <Time_Zone ua="na">GMT{{ utc_offset_hhmm }}</Time_Zone>
 {% if provisioning_url %}
   <Profile_Rule ua="na">{{ provisioning_url }}spa$MA.xml</Profile_Rule>
+{% endif %}
+{% if firmware_url %}
+  <Upgrade_Rule ua="na">{{ firmware_url }}</Upgrade_Rule>
 {% endif %}
 {% for key in line_keys %}
   <Extended_Function_{{ key.index }}_ ua="na">fnc={{ {"blf": "blf+sd+cp", "speed_dial": "sd", "park": "prk"}[key.kind] }};sub={{ key.value }}@{{ sip_domain }};nme={{ key.label }}</Extended_Function_{{ key.index }}_>
@@ -953,6 +978,7 @@ mod tests {
             "linekey.3.value = 202\n",
             "linekey.5.type = 10\n",
             "static.auto_provision.server.url = https://pbx.example.com/provision/",
+            "static.firmware.url = https://pbx.example.com/provision/",
         ] {
             assert!(out.contains(want), "{want:?} in\n{out}");
         }

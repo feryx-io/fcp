@@ -1832,7 +1832,18 @@ Phase 8a done (v0.25.324): zero-touch (`docs/PROVISIONING.md` §10).
 - DHCP options 66 and 160 documented.
 - Tested against stand-ins of both vendors' APIs; the real services are
   to be checked by whoever has an account.
-- Next, 8b: Grandstream GDMS and Fanvil FDPS.
+- 8b, Grandstream GDMS and Fanvil FDPS, deferred: neither publishes the
+  API a connector needs. Their phones use DHCP 66/160 or the vendor's
+  console by hand. Phase 9, firmware, is next.
+
+Phase 9a done (v0.25.325): firmware (`docs/PROVISIONING.md` §11).
+- The platform administrator uploads vendors' images; a tenant points a
+  vendor's models at one, for a pilot set first, then every phone; the
+  phones' files name it and it is served under the tenant's URL.
+- What each phone runs, from its User-Agent, against its target: current,
+  behind or unknown on the device and the Firmware page, and
+  `device.firmware_behind` when a phone registers behind.
+- Next, 9b: images in S3, and sites caching the cloud's images.
 
 ## Historical documents
 

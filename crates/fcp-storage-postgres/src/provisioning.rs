@@ -368,6 +368,158 @@ impl ProvisioningStore for PostgresStorage {
             .await?;
         Ok(())
     }
+
+    async fn put_firmware_image(
+        &self,
+        image: &fcp_core::firmware::FirmwareImage,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO firmware_images
+                 (id, vendor, models, version, file_name, size, sha256, notes, uploaded_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (id) DO UPDATE SET
+                 models = EXCLUDED.models,
+                 version = EXCLUDED.version,
+                 notes = EXCLUDED.notes",
+        )
+        .bind(image.id.to_string())
+        .bind(image.vendor.to_string())
+        .bind(serde_json::to_value(&image.models)?)
+        .bind(&image.version)
+        .bind(&image.file_name)
+        .bind(image.size as i64)
+        .bind(&image.sha256)
+        .bind(&image.notes)
+        .bind(system_time_to_datetime(image.uploaded_at))
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn get_firmware_image(
+        &self,
+        id: &uuid::Uuid,
+    ) -> anyhow::Result<Option<fcp_core::firmware::FirmwareImage>> {
+        let row = sqlx::query(
+            "SELECT id, vendor, models, version, file_name, size, sha256, notes, uploaded_at
+             FROM firmware_images WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(self.reads())
+        .await?;
+        row.map(row_to_image).transpose()
+    }
+
+    async fn list_firmware_images(&self) -> anyhow::Result<Vec<fcp_core::firmware::FirmwareImage>> {
+        let rows = sqlx::query(
+            "SELECT id, vendor, models, version, file_name, size, sha256, notes, uploaded_at
+             FROM firmware_images ORDER BY vendor, uploaded_at DESC",
+        )
+        .fetch_all(self.reads())
+        .await?;
+        rows.into_iter().map(row_to_image).collect()
+    }
+
+    async fn delete_firmware_image(&self, id: &uuid::Uuid) -> anyhow::Result<bool> {
+        let done = sqlx::query("DELETE FROM firmware_images WHERE id = $1")
+            .bind(id.to_string())
+            .execute(self.writes())
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn firmware_image_targets(&self, id: &uuid::Uuid) -> anyhow::Result<u64> {
+        let n: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM firmware_targets WHERE image_id = $1")
+                .bind(id.to_string())
+                .fetch_one(self.writes())
+                .await?;
+        Ok(n.max(0) as u64)
+    }
+
+    async fn list_firmware_targets(
+        &self,
+        tenant_id: &TenantId,
+    ) -> anyhow::Result<Vec<fcp_core::firmware::FirmwareTarget>> {
+        let rows = sqlx::query(
+            "SELECT id, vendor, model_pattern, image_id, stage, pilot_devices, updated_at
+             FROM firmware_targets WHERE tenant_id = $1 ORDER BY vendor, model_pattern",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(self.reads())
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let pilot: Vec<String> =
+                    serde_json::from_value(row.try_get("pilot_devices")?).unwrap_or_default();
+                Ok(fcp_core::firmware::FirmwareTarget {
+                    id: row.try_get::<String, _>("id")?.parse()?,
+                    tenant_id: *tenant_id,
+                    vendor: row
+                        .try_get::<String, _>("vendor")?
+                        .parse()
+                        .map_err(anyhow::Error::msg)?,
+                    model_pattern: row.try_get("model_pattern")?,
+                    image_id: row.try_get::<String, _>("image_id")?.parse()?,
+                    stage: match row.try_get::<String, _>("stage")?.as_str() {
+                        "all" => fcp_core::firmware::RolloutStage::All,
+                        _ => fcp_core::firmware::RolloutStage::Pilot,
+                    },
+                    pilot_devices: pilot.iter().filter_map(|d| d.parse().ok()).collect(),
+                    updated_at: datetime_to_system_time(
+                        row.try_get::<DateTime<Utc>, _>("updated_at")?,
+                    ),
+                })
+            })
+            .collect()
+    }
+
+    async fn put_firmware_target(
+        &self,
+        t: &fcp_core::firmware::FirmwareTarget,
+    ) -> anyhow::Result<()> {
+        let pilot: Vec<String> = t.pilot_devices.iter().map(|d| d.to_string()).collect();
+        sqlx::query(
+            "INSERT INTO firmware_targets
+                 (id, tenant_id, vendor, model_pattern, image_id, stage, pilot_devices, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (id) DO UPDATE SET
+                 vendor = EXCLUDED.vendor,
+                 model_pattern = EXCLUDED.model_pattern,
+                 image_id = EXCLUDED.image_id,
+                 stage = EXCLUDED.stage,
+                 pilot_devices = EXCLUDED.pilot_devices,
+                 updated_at = EXCLUDED.updated_at
+             WHERE firmware_targets.tenant_id = EXCLUDED.tenant_id",
+        )
+        .bind(t.id.to_string())
+        .bind(t.tenant_id.to_string())
+        .bind(t.vendor.to_string())
+        .bind(&t.model_pattern)
+        .bind(t.image_id.to_string())
+        .bind(match t.stage {
+            fcp_core::firmware::RolloutStage::All => "all",
+            fcp_core::firmware::RolloutStage::Pilot => "pilot",
+        })
+        .bind(serde_json::to_value(pilot)?)
+        .bind(system_time_to_datetime(t.updated_at))
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_firmware_target(
+        &self,
+        tenant_id: &TenantId,
+        id: &uuid::Uuid,
+    ) -> anyhow::Result<bool> {
+        let done = sqlx::query("DELETE FROM firmware_targets WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_id.to_string())
+            .bind(id.to_string())
+            .execute(self.writes())
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
 }
 
 impl PostgresStorage {
@@ -419,5 +571,22 @@ fn row_to_pending(
         model: row.try_get("model")?,
         firmware: row.try_get("firmware")?,
         fetches: row.try_get::<i32, _>("fetches")?.max(0) as u32,
+    })
+}
+
+fn row_to_image(row: sqlx::postgres::PgRow) -> anyhow::Result<fcp_core::firmware::FirmwareImage> {
+    Ok(fcp_core::firmware::FirmwareImage {
+        id: row.try_get::<String, _>("id")?.parse()?,
+        vendor: row
+            .try_get::<String, _>("vendor")?
+            .parse()
+            .map_err(anyhow::Error::msg)?,
+        models: serde_json::from_value(row.try_get("models")?).unwrap_or_default(),
+        version: row.try_get("version")?,
+        file_name: row.try_get("file_name")?,
+        size: row.try_get::<i64, _>("size")?.max(0) as u64,
+        sha256: row.try_get("sha256")?,
+        notes: row.try_get("notes")?,
+        uploaded_at: datetime_to_system_time(row.try_get::<DateTime<Utc>, _>("uploaded_at")?),
     })
 }

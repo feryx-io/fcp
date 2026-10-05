@@ -26,6 +26,9 @@ import type {
   RedirectionAccount,
   PutRedirectionAccountRequest,
   DeviceRedirection,
+  FirmwareImage,
+  FirmwareTarget,
+  FirmwareTargetRequest,
   PurgeResponse,
   CreateUserRequest,
   UpdateUserRequest,
@@ -243,6 +246,27 @@ export const devices = {
   /** Tell the phone to fetch its configuration again (§8). */
   resync: (id: string) =>
     apiClient.post<{ device_id: string; sent: number }>(`/devices/${encodeURIComponent(id)}/resync`),
+}
+
+// Firmware (docs/PROVISIONING.md §11)
+export const firmware = {
+  images: () => apiClient.getAll<FirmwareImage>('/firmware'),
+  /** The platform administrator's. */
+  upload: (data: { vendor: string; version: string; models: string; notes: string; file: File }) => {
+    const form = new FormData()
+    form.append('vendor', data.vendor)
+    form.append('version', data.version)
+    form.append('models', data.models)
+    if (data.notes) form.append('notes', data.notes)
+    form.append('file', data.file, data.file.name)
+    return apiClient.uploadForm<FirmwareImage>('/firmware', form)
+  },
+  deleteImage: (id: string) => apiClient.delete<void>(`/firmware/${encodeURIComponent(id)}`),
+  targets: () => apiClient.getAll<FirmwareTarget>('/firmware/targets'),
+  createTarget: (data: FirmwareTargetRequest) => apiClient.post<FirmwareTarget>('/firmware/targets', data),
+  updateTarget: (id: string, data: FirmwareTargetRequest) =>
+    apiClient.put<FirmwareTarget>(`/firmware/targets/${encodeURIComponent(id)}`, data),
+  deleteTarget: (id: string) => apiClient.delete<void>(`/firmware/targets/${encodeURIComponent(id)}`),
 }
 
 // Provisioning templates (docs/PROVISIONING.md §5)

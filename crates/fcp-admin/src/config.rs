@@ -545,6 +545,11 @@ pub struct ApiConfig {
     /// (`docs/PROVISIONING.md` §10); the vendors' own by default.
     #[serde(default)]
     pub redirection: fcp_core::ApiRedirectionConfig,
+
+    /// `[api.firmware]`: where uploaded firmware images are kept and how
+    /// large one may be (`docs/PROVISIONING.md` §11); unset, none can be.
+    #[serde(default)]
+    pub firmware: fcp_core::ApiFirmwareConfig,
 }
 
 fn default_bind_address() -> SocketAddr {
@@ -571,6 +576,7 @@ impl Default for ApiConfig {
             sso: fcp_core::ApiSsoConfig::default(),
             provisioning: fcp_core::ApiProvisioningConfig::default(),
             redirection: fcp_core::ApiRedirectionConfig::default(),
+            firmware: fcp_core::ApiFirmwareConfig::default(),
         }
     }
 }
@@ -801,6 +807,7 @@ pub fn validate_config(config: &AdminConfig) -> Result<()> {
         .redirection
         .validate()
         .map_err(anyhow::Error::msg)?;
+    config.api.firmware.validate().map_err(anyhow::Error::msg)?;
     if let Some(cloud) = &config.api.managed_by {
         let cloud = cloud.trim();
         if !(cloud.starts_with("https://") || cloud.starts_with("http://")) {

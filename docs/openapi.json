@@ -14268,6 +14268,282 @@
         }
       }
     },
+    "/api/v1/firmware": {
+      "get": {
+        "tags": [
+          "firmware"
+        ],
+        "summary": "GET /api/v1/firmware — every uploaded image.",
+        "operationId": "firmware_list_images",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_FirmwareImageResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "firmware"
+        ],
+        "summary": "POST /api/v1/firmware — upload an image (multipart: `vendor`,\n`version`, `models` (comma-separated patterns), `notes`, and `file`,\nwhose name is the one it is served under). The platform\nadministrator's.",
+        "operationId": "firmware_upload_image",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Made",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FirmwareImageResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/firmware/{id}": {
+      "delete": {
+        "tags": [
+          "firmware"
+        ],
+        "summary": "DELETE /api/v1/firmware/:id — remove an image no tenant targets. The\nplatform administrator's.",
+        "operationId": "firmware_delete_image",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/firmware/targets": {
+      "get": {
+        "tags": [
+          "firmware"
+        ],
+        "summary": "GET /api/v1/firmware/targets — the tenant's targets, each with how many\nof its phones run its version.",
+        "operationId": "firmware_list_targets",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_FirmwareTargetResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "firmware"
+        ],
+        "summary": "POST /api/v1/firmware/targets",
+        "operationId": "firmware_create_target",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FirmwareTargetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Made",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FirmwareTargetResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/firmware/targets/{id}": {
+      "put": {
+        "tags": [
+          "firmware"
+        ],
+        "summary": "PUT /api/v1/firmware/targets/:id — change a target: another image, the\npilot set, or `all` to roll it out.",
+        "operationId": "firmware_update_target",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FirmwareTargetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FirmwareTargetResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "firmware"
+        ],
+        "summary": "DELETE /api/v1/firmware/targets/:id — phones keep what they run; their\ntemplates stop naming an image.",
+        "operationId": "firmware_delete_target",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/provisioning/redirection": {
       "get": {
         "tags": [
@@ -21198,6 +21474,23 @@
               "null"
             ]
           },
+          "firmware_target_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version its tenant's firmware target points it at\n(`docs/PROVISIONING.md` §11), and whether it runs it: `current`,\n`behind`, `unknown` (it has not said). Unset without a target."
+          },
+          "firmware_status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FirmwareStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "tenant_id": {
             "type": "string"
           },
@@ -22301,6 +22594,180 @@
       "FindMeTarget": {
         "type": "string",
         "description": "Who a find-me step rings: `devices`, or a target (`number:+…`, `ext:…`, `user:…`, a SIP URI)"
+      },
+      "FirmwareImageResponse": {
+        "type": "object",
+        "description": "An uploaded image.",
+        "required": [
+          "id",
+          "vendor",
+          "models",
+          "version",
+          "file_name",
+          "size",
+          "sha256",
+          "uploaded_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "version": {
+            "type": "string"
+          },
+          "file_name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uploaded_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "FirmwareStatus": {
+        "type": "string",
+        "description": "Where a phone stands against its target.",
+        "enum": [
+          "current",
+          "behind",
+          "unknown"
+        ]
+      },
+      "FirmwareTargetRequest": {
+        "type": "object",
+        "description": "A target, made or changed.",
+        "required": [
+          "vendor",
+          "image_id"
+        ],
+        "properties": {
+          "vendor": {
+            "type": "string"
+          },
+          "model_pattern": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unset: every model of the vendor."
+          },
+          "image_id": {
+            "type": "string"
+          },
+          "stage": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RolloutStage",
+                "description": "Unset: `pilot`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pilot_devices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "FirmwareTargetResponse": {
+        "type": "object",
+        "description": "A tenant's target.",
+        "required": [
+          "id",
+          "vendor",
+          "image_id",
+          "stage",
+          "pilot_devices",
+          "devices",
+          "current",
+          "behind",
+          "unknown",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "model_pattern": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "$ref": "#/components/schemas/RolloutStage"
+          },
+          "pilot_devices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "devices": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The tenant's phones it is for (stage aside), and where they stand.",
+            "minimum": 0
+          },
+          "current": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "behind": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "unknown": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
       },
       "FlowResponse": {
         "type": "object",
@@ -25411,6 +25878,23 @@
                     "null"
                   ]
                 },
+                "firmware_target_version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The version its tenant's firmware target points it at\n(`docs/PROVISIONING.md` §11), and whether it runs it: `current`,\n`behind`, `unknown` (it has not said). Unset without a target."
+                },
+                "firmware_status": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/FirmwareStatus"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "tenant_id": {
                   "type": "string"
                 },
@@ -25870,6 +26354,187 @@
                 "created_at": {
                   "type": "string",
                   "format": "date-time"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_FirmwareImageResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "An uploaded image.",
+              "required": [
+                "id",
+                "vendor",
+                "models",
+                "version",
+                "file_name",
+                "size",
+                "sha256",
+                "uploaded_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "vendor": {
+                  "type": "string"
+                },
+                "models": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "version": {
+                  "type": "string"
+                },
+                "file_name": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "sha256": {
+                  "type": "string"
+                },
+                "notes": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "uploaded_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_FirmwareTargetResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A tenant's target.",
+              "required": [
+                "id",
+                "vendor",
+                "image_id",
+                "stage",
+                "pilot_devices",
+                "devices",
+                "current",
+                "behind",
+                "unknown",
+                "updated_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "vendor": {
+                  "type": "string"
+                },
+                "model_pattern": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "image_id": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "stage": {
+                  "$ref": "#/components/schemas/RolloutStage"
+                },
+                "pilot_devices": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "devices": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "The tenant's phones it is for (stage aside), and where they stand.",
+                  "minimum": 0
+                },
+                "current": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "behind": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "unknown": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
                 },
                 "updated_at": {
                   "type": "string",
@@ -33046,6 +33711,14 @@
           }
         }
       },
+      "RolloutStage": {
+        "type": "string",
+        "description": "How far a target has rolled out.",
+        "enum": [
+          "pilot",
+          "all"
+        ]
+      },
       "RotateApiTokenRequest": {
         "type": "object",
         "description": "Request body for rotating a token's secret.",
@@ -38041,6 +38714,7 @@
               "system.cluster_view_changed",
               "system.version_skew",
               "system.site_link_changed",
+              "device.firmware_behind",
               "user.created",
               "user.updated",
               "user.deleted",

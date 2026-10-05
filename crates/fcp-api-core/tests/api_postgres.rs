@@ -137,6 +137,19 @@ impl App {
         self
     }
 
+    /// The app keeping firmware images in `dir` (`docs/PROVISIONING.md` §11).
+    fn with_firmware(mut self, dir: &std::path::Path) -> Self {
+        let api_config = ApiConfig {
+            firmware: fcp_core::ApiFirmwareConfig {
+                directory: Some(dir.to_string_lossy().into_owned()),
+                max_image_mb: 1,
+            },
+            ..test_api_config()
+        };
+        self.router = create_router(self.state.clone(), &api_config);
+        self
+    }
+
     /// An app whose live conference endpoints proxy to `conference_url`.
     async fn with_conference_server(conference_url: &str) -> Option<Self> {
         Self::build(DeploymentMode::default(), Some(conference_url.to_string())).await
@@ -14077,6 +14090,286 @@ async fn a_phone_is_registered_with_its_vendors_service_and_removed_with_its_dev
         (Some(1), Some(1)),
         "{}",
         synced.text
+    );
+
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Firmware (docs/IDENTITY_AND_DEVICES.md phase 9)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn firmware_is_uploaded_once_targeted_per_tenant_piloted_and_served() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let app = require_app!().with_firmware(dir.path());
+    let key = app.provisioning_key().await;
+    let owner = app.create_user("gus", Some("Sip-Secret-654")).await;
+    let starter = app
+        .admin(
+            Method::POST,
+            "/api/v1/config-templates/library/yealink",
+            None,
+        )
+        .await;
+    let template = starter.json["id"].as_str().unwrap().to_string();
+    let (pilot, _) = app
+        .create_phone("Gus's desk", "80:5E:C0:00:0F:01", Some(&owner))
+        .await;
+    let (other, _) = app
+        .create_phone("Lobby", "80:5E:C0:00:0F:02", Some(&owner))
+        .await;
+    for id in [&pilot, &other] {
+        app.patch_device(id, json!({ "config_template_id": template }))
+            .await;
+    }
+    let config_of = |mac: &'static str| {
+        let app = &app;
+        let key = key.clone();
+        async move {
+            app.send(
+                Method::GET,
+                &format!("/provision/{key}/{mac}.cfg"),
+                &[("x-forwarded-proto", "https")],
+                None,
+            )
+            .await
+            .text
+        }
+    };
+
+    // The platform administrator uploads an image; nobody else may.
+    let bytes: Vec<u8> = b"FCP test firmware image ".repeat(400);
+    let upload =
+        |token: &'static str, file: &'static str, version: &'static str, bytes: Vec<u8>| {
+            let app = &app;
+            async move {
+                app.send_multipart(
+                    token,
+                    "/api/v1/firmware",
+                    &[
+                        ("vendor", None, b"yealink".as_slice()),
+                        ("version", None, version.as_bytes()),
+                        ("models", None, b"T5*, T4*".as_slice()),
+                        (
+                            "file",
+                            Some((file, "application/octet-stream")),
+                            bytes.as_slice(),
+                        ),
+                    ],
+                )
+                .await
+            }
+        };
+    let made = upload(
+        ADMIN_TOKEN,
+        "T54W-96.86.0.80.rom",
+        "96.86.0.80",
+        bytes.clone(),
+    )
+    .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let image = made.json["id"].as_str().unwrap().to_string();
+    assert_eq!(made.json["size"], bytes.len());
+    assert_eq!(made.json["sha256"], format!("{:x}", Sha256::digest(&bytes)));
+    assert_eq!(made.json["models"], json!(["T5*", "T4*"]));
+    let bad_name = upload(ADMIN_TOKEN, "..evil", "1.0", bytes.clone()).await;
+    assert_eq!(
+        bad_name.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        bad_name.text
+    );
+    let too_big = upload(ADMIN_TOKEN, "big.rom", "1.0", vec![0u8; 1024 * 1024 + 1]).await;
+    assert_eq!(too_big.status, StatusCode::BAD_REQUEST, "{}", too_big.text);
+    app.create_user_with_role("tina", "tenant_admin").await;
+    let tina = app.login("tina", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let refused = app
+        .send_multipart(
+            &tina,
+            "/api/v1/firmware",
+            &[
+                ("vendor", None, b"yealink".as_slice()),
+                ("version", None, b"9".as_slice()),
+                (
+                    "file",
+                    Some(("x.rom", "application/octet-stream")),
+                    b"x".as_slice(),
+                ),
+            ],
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let other_image = upload(
+        ADMIN_TOKEN,
+        "T54W-96.86.0.90.rom",
+        "96.86.0.90",
+        b"newer".to_vec(),
+    )
+    .await;
+    let other_image = other_image.json["id"].as_str().unwrap().to_string();
+    let listed = app.admin(Method::GET, "/api/v1/firmware", None).await;
+    assert_eq!(listed.json.as_array().unwrap().len(), 2, "{}", listed.text);
+
+    // No target: the phones are told of no firmware.
+    assert!(!config_of("805ec0000f01")
+        .await
+        .contains("static.firmware.url"));
+
+    // Piloted on one phone.
+    let target = app
+        .admin(
+            Method::POST,
+            "/api/v1/firmware/targets",
+            Some(
+                json!({"vendor": "yealink", "model_pattern": "T5*", "image_id": image,
+                        "stage": "pilot", "pilot_devices": [pilot]}),
+            ),
+        )
+        .await;
+    assert_eq!(target.status, StatusCode::CREATED, "{}", target.text);
+    let target_id = target.json["id"].as_str().unwrap().to_string();
+    assert_eq!(target.json["version"], "96.86.0.80");
+    assert_eq!(
+        (
+            target.json["devices"].as_u64(),
+            target.json["unknown"].as_u64()
+        ),
+        (Some(2), Some(2)),
+        "{}",
+        target.text
+    );
+    let wrong_vendor = app
+        .admin(
+            Method::POST,
+            "/api/v1/firmware/targets",
+            Some(json!({"vendor": "polycom", "image_id": image})),
+        )
+        .await;
+    assert_eq!(
+        wrong_vendor.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        wrong_vendor.text
+    );
+    let url = format!(
+        "{SSO_PUBLIC_URL}/provision/{key}/firmware/{}/T54W-96.86.0.80.rom",
+        image.trim_start_matches("fw-").replace('-', "")
+    );
+    let pilot_config = config_of("805ec0000f01").await;
+    assert!(
+        pilot_config.contains(&format!("static.firmware.url = {url}")),
+        "{pilot_config}"
+    );
+    assert!(
+        !config_of("805ec0000f02")
+            .await
+            .contains("static.firmware.url"),
+        "not in the pilot"
+    );
+
+    // The image is served under the tenant's URL, and only it.
+    let path = url.trim_start_matches(SSO_PUBLIC_URL).to_string();
+    let fetched = app
+        .send(Method::GET, &path, &[("x-forwarded-proto", "https")], None)
+        .await;
+    assert_eq!(fetched.status, StatusCode::OK);
+    assert_eq!(fetched.bytes, bytes, "the image as uploaded");
+    for wrong in [
+        path.replace("T54W-96.86.0.80.rom", "other.rom"),
+        format!(
+            "/provision/{key}/firmware/{}/T54W-96.86.0.90.rom",
+            other_image.trim_start_matches("fw-").replace('-', "")
+        ),
+        format!(
+            "/provision/{}/firmware/{}/T54W-96.86.0.80.rom",
+            "0".repeat(32),
+            image.trim_start_matches("fw-").replace('-', "")
+        ),
+    ] {
+        let res = app
+            .send(Method::GET, &wrong, &[("x-forwarded-proto", "https")], None)
+            .await;
+        assert_eq!(res.status, StatusCode::NOT_FOUND, "{wrong}");
+    }
+
+    // Rolled out to every phone.
+    let all = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/firmware/targets/{target_id}"),
+            Some(
+                json!({"vendor": "yealink", "model_pattern": "T5*", "image_id": image,
+                        "stage": "all"}),
+            ),
+        )
+        .await;
+    assert_eq!(all.status, StatusCode::OK, "{}", all.text);
+    assert!(config_of("805ec0000f02")
+        .await
+        .contains("static.firmware.url"));
+
+    // Who is behind: what each phone runs against the target.
+    app.patch_device(&pilot, json!({"firmware_version": "96.86.0.80"}))
+        .await;
+    app.patch_device(&other, json!({"firmware_version": "96.85.0.5"}))
+        .await;
+    let behind = app
+        .admin(Method::GET, &format!("/api/v1/devices/{other}"), None)
+        .await;
+    assert_eq!(behind.json["firmware_status"], "behind", "{}", behind.text);
+    assert_eq!(behind.json["firmware_target_version"], "96.86.0.80");
+    let targets = app
+        .admin(Method::GET, "/api/v1/firmware/targets", None)
+        .await;
+    let row = &targets.json.as_array().unwrap()[0];
+    assert_eq!(
+        (
+            row["current"].as_u64(),
+            row["behind"].as_u64(),
+            row["unknown"].as_u64()
+        ),
+        (Some(1), Some(1), Some(0)),
+        "{}",
+        targets.text
+    );
+    let devices = app.admin(Method::GET, "/api/v1/devices", None).await;
+    assert!(devices
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["firmware_status"] == "current"));
+
+    // An image a tenant targets stays; untargeted, it goes with its file.
+    let kept = app
+        .admin(Method::DELETE, &format!("/api/v1/firmware/{image}"), None)
+        .await;
+    assert_eq!(kept.status, StatusCode::CONFLICT, "{}", kept.text);
+    let untarget = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/firmware/targets/{target_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(untarget.status, StatusCode::NO_CONTENT);
+    assert!(!config_of("805ec0000f01")
+        .await
+        .contains("static.firmware.url"));
+    let gone = app
+        .admin(Method::DELETE, &format!("/api/v1/firmware/{image}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+    assert!(
+        !dir.path()
+            .join(image.trim_start_matches("fw-").replace('-', ""))
+            .exists(),
+        "the file goes too"
     );
 
     app.finish().await;

@@ -673,6 +673,10 @@ export type PreviewTemplateResponse = S['PreviewTemplateResponse']
 export type RedirectionAccount = S['RedirectionAccountResponse']
 export type PutRedirectionAccountRequest = S['PutRedirectionAccountRequest']
 export type DeviceRedirection = S['DeviceRedirectionResponse']
+/** Managed firmware (`docs/PROVISIONING.md` §11). */
+export type FirmwareImage = S['FirmwareImageResponse']
+export type FirmwareTarget = S['FirmwareTargetResponse']
+export type FirmwareTargetRequest = S['FirmwareTargetRequest']
 export type GroupRequest = S['GroupRequest']
 export type GroupMember = S['GroupMemberResponse']
 
