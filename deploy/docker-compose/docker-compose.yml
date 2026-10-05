@@ -678,6 +678,10 @@ configs:
         server {
           listen 8444 ssl;
           listen [::]:8444 ssl;
+          # Uploads: prompts (50 MB) and firmware images ([api.firmware]
+          # max_image_mb, 1 GB by default), streamed through.
+          client_max_body_size 1100m;
+          proxy_request_buffering off;
           location / { proxy_pass http://fcp-admin:8080; }
         }
         server {

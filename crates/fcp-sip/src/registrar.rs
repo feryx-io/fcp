@@ -839,6 +839,7 @@ impl FcpRegistrar {
     pub fn with_identity(mut self, identity: Arc<fcp_core::DynStorage>) -> Self {
         self.device_registrations = Some(Arc::new(crate::device_sync::DeviceRegistrations::new(
             Arc::clone(&identity),
+            self.event_publisher.clone(),
         )));
         self.identity = Some(identity);
         self.refresh_authenticator();

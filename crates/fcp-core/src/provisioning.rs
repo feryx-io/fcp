@@ -144,6 +144,36 @@ pub trait ProvisioningStore: Send + Sync {
     ) -> anyhow::Result<Option<DeviceRedirection>>;
     async fn put_device_redirection(&self, record: &DeviceRedirection) -> anyhow::Result<()>;
     async fn delete_device_redirection(&self, device_id: &DeviceId) -> anyhow::Result<()>;
+
+    /// Firmware images (`docs/PROVISIONING.md` §11): the platform's, every
+    /// tenant's to use.
+    async fn put_firmware_image(
+        &self,
+        image: &crate::firmware::FirmwareImage,
+    ) -> anyhow::Result<()>;
+    async fn get_firmware_image(
+        &self,
+        id: &uuid::Uuid,
+    ) -> anyhow::Result<Option<crate::firmware::FirmwareImage>>;
+    async fn list_firmware_images(&self) -> anyhow::Result<Vec<crate::firmware::FirmwareImage>>;
+    /// Remove an image no tenant targets; whether there was one.
+    async fn delete_firmware_image(&self, id: &uuid::Uuid) -> anyhow::Result<bool>;
+    /// How many targets, across tenants, name an image.
+    async fn firmware_image_targets(&self, id: &uuid::Uuid) -> anyhow::Result<u64>;
+    /// A tenant's targets.
+    async fn list_firmware_targets(
+        &self,
+        tenant_id: &TenantId,
+    ) -> anyhow::Result<Vec<crate::firmware::FirmwareTarget>>;
+    async fn put_firmware_target(
+        &self,
+        target: &crate::firmware::FirmwareTarget,
+    ) -> anyhow::Result<()>;
+    async fn delete_firmware_target(
+        &self,
+        tenant_id: &TenantId,
+        id: &uuid::Uuid,
+    ) -> anyhow::Result<bool>;
 }
 
 // ---- Zero-touch: vendors' redirection services (§10) ----
@@ -431,12 +461,17 @@ pub fn parse_file(name: &str, polycom: bool) -> Option<RequestedFile> {
     })
 }
 
-/// Polycom's master file for a MAC: the device's own file, and the
-/// directories it may write to left empty.
-pub fn polycom_master(mac: &str) -> String {
+/// Polycom's master file for a MAC: the device's own file, the firmware
+/// (`APP_FILE_PATH`) it is pointed at if any, and the directories it may
+/// write to left empty.
+pub fn polycom_master(mac: &str, firmware: Option<&str>) -> String {
+    let app = firmware
+        .unwrap_or("")
+        .replace('&', "&amp;")
+        .replace('"', "&quot;");
     format!(
         "<?xml version=\"1.0\" standalone=\"yes\"?>\n\
-         <APPLICATION APP_FILE_PATH=\"\" CONFIG_FILES=\"{mac}{POLYCOM_DEVICE_SUFFIX}\" \
+         <APPLICATION APP_FILE_PATH=\"{app}\" CONFIG_FILES=\"{mac}{POLYCOM_DEVICE_SUFFIX}\" \
          MISC_FILES=\"\" LOG_FILE_DIRECTORY=\"\" OVERRIDES_DIRECTORY=\"\" \
          CONTACTS_DIRECTORY=\"\" LICENSE_DIRECTORY=\"\" USER_PROFILES_DIRECTORY=\"\" \
          CALL_LISTS_DIRECTORY=\"\" COREFILE_DIRECTORY=\"\"/>\n"

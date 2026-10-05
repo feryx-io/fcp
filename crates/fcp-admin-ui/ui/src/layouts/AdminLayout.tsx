@@ -33,6 +33,7 @@ const navItems: NavItem[] = [
   { label: 'Extensions', href: '/admin/extensions', icon: Phone, section: 'Management' },
   { label: 'Devices', href: '/admin/devices', icon: MonitorSmartphone, section: 'Management' },
   { label: 'Phone templates', href: '/admin/templates', icon: FileText, section: 'Management' },
+  { label: 'Firmware', href: '/admin/firmware', icon: Disc, section: 'Management' },
   { label: 'Phone Numbers', href: '/admin/phone-numbers', icon: Phone, section: 'Management' },
   { label: 'Line Bindings', href: '/admin/line-bindings', icon: Link2, section: 'Management' },
   { label: 'Tenants', href: '/admin/tenants', icon: Building2, section: 'Management' },

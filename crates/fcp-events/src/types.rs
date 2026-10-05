@@ -662,6 +662,21 @@ pub enum SystemEvent {
         timestamp: SystemTime,
     },
 
+    /// A phone registered running another firmware than its tenant's
+    /// target points it at (`docs/PROVISIONING.md` §11): said once each
+    /// time what it runs changes, by the node that took the REGISTER.
+    DeviceFirmwareBehind {
+        tenant_id: TenantId,
+        device_id: String,
+        device_name: String,
+        /// What it runs, from its User-Agent.
+        running: String,
+        /// What its target installs.
+        target: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// The set of releases the cluster's nodes run changed while there
     /// is, or was, more than one (`docs/BACKUP_AND_RESTORE.md` §5): the
     /// first node of an upgrade started, or the last old one stopped.
@@ -1729,6 +1744,7 @@ impl PlatformEvent {
         "system.cluster_view_changed",
         "system.version_skew",
         "system.site_link_changed",
+        "device.firmware_behind",
         "user.created",
         "user.updated",
         "user.deleted",
@@ -1879,6 +1895,7 @@ impl PlatformEvent {
                 SystemEvent::ClusterViewChanged { .. } => "system.cluster_view_changed",
                 SystemEvent::VersionSkew { .. } => "system.version_skew",
                 SystemEvent::SiteLinkChanged { .. } => "system.site_link_changed",
+                SystemEvent::DeviceFirmwareBehind { .. } => "device.firmware_behind",
             },
             PlatformEvent::User(e) => match e {
                 UserEvent::Created { .. } => "user.created",
@@ -2094,7 +2111,8 @@ impl PlatformEvent {
                 | PresenceEvent::AppearanceChanged { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::System(e) => match e {
-                SystemEvent::ConfigChanged { tenant_id, .. } => Some(tenant_id),
+                SystemEvent::ConfigChanged { tenant_id, .. }
+                | SystemEvent::DeviceFirmwareBehind { tenant_id, .. } => Some(tenant_id),
                 SystemEvent::Started { .. }
                 | SystemEvent::Stopping { .. }
                 | SystemEvent::HealthCheck { .. }
@@ -2355,7 +2373,8 @@ impl SystemEvent {
             | SystemEvent::NodeLeft { timestamp, .. }
             | SystemEvent::ClusterViewChanged { timestamp, .. }
             | SystemEvent::VersionSkew { timestamp, .. }
-            | SystemEvent::SiteLinkChanged { timestamp, .. } => *timestamp,
+            | SystemEvent::SiteLinkChanged { timestamp, .. }
+            | SystemEvent::DeviceFirmwareBehind { timestamp, .. } => *timestamp,
         }
     }
 }

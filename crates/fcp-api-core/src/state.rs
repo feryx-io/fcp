@@ -146,6 +146,9 @@ pub struct ApiState {
     /// Where vendors' redirection services answer (`[api.redirection]`).
     pub redirection: fcp_core::ApiRedirectionConfig,
 
+    /// Where firmware images are kept (`[api.firmware]`).
+    pub firmware: fcp_core::ApiFirmwareConfig,
+
     /// Trunk health monitoring map (populated by background health probe task).
     pub trunk_health: Option<crate::trunk_health::TrunkHealthMap>,
     /// Where the view each node has of its trunks is read from
@@ -260,6 +263,7 @@ impl ApiState {
             provisioning_require_https: true,
             provisioning: fcp_core::ApiProvisioningConfig::default(),
             redirection: fcp_core::ApiRedirectionConfig::default(),
+            firmware: fcp_core::ApiFirmwareConfig::default(),
             trunk_health: None,
             trunk_reports: None,
             route_previewer: None,
@@ -368,6 +372,12 @@ impl ApiState {
     /// Set the auth config for WebSocket first-message authentication.
     pub fn with_auth_config(mut self, config: crate::auth::AuthConfig) -> Self {
         self.auth_config = Some(config);
+        self
+    }
+
+    /// Where firmware images are kept.
+    pub fn with_firmware_config(mut self, config: fcp_core::ApiFirmwareConfig) -> Self {
+        self.firmware = config;
         self
     }
 

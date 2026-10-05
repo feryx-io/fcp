@@ -292,6 +292,23 @@ export function DevicesPage() {
       cell: ({ row }) => row.original.model || '-',
     },
     {
+      id: 'firmware',
+      header: 'Firmware',
+      cell: ({ row }) => {
+        const d = row.original
+        if (!d.firmware_version && !d.firmware_status) return '-'
+        return (
+          <span className="whitespace-nowrap">
+            <span className="font-mono text-xs">{d.firmware_version ?? '?'}</span>{' '}
+            {d.firmware_status === 'behind' && (
+              <Badge variant="destructive" title={`Target ${d.firmware_target_version}`}>behind</Badge>
+            )}
+            {d.firmware_status === 'current' && <Badge variant="success">current</Badge>}
+          </span>
+        )
+      },
+    },
+    {
       accessorKey: 'sip_uri',
       header: 'SIP URI',
       cell: ({ row }) => row.original.sip_uri ? (

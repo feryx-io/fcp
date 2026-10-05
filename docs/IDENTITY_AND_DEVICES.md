@@ -820,6 +820,14 @@ Each phase is one PR based on main, with its admin UI and its docs.
        (`api_postgres.rs`) against `fcp_testkit::redirection`'s stand-ins
        (RPS checking each signature); not yet run against the real
        services (Q9).
+   - **8b deferred (2026-10-05).** Neither remaining vendor publishes what
+     a connector needs: Grandstream's GDMS API guide covers sign-in, sites
+     and adding a device (which wants the serial number on its box), not
+     assigning it to an RPS profile or removing it, and the full reference
+     (`doc.grandstream.dev`) does not load; Fanvil publishes no FDPS API.
+     Their phones find FCP by DHCP (options 66/160) or by the vendor's
+     console pointed at the tenant's URL by hand, until a vendor's
+     documentation or an account to read it from arrives.
 9. **Firmware.**
    - The image store (directory or S3, like recordings) and upload
      (Q10); serving under the provisioning URL.
@@ -827,6 +835,32 @@ Each phase is one PR based on main, with its admin UI and its docs.
    - The template's `firmware_url`.
    - Compliance from the parsed User-Agent; `device.firmware_behind`.
    - The admin UI's Firmware page.
+   - Split in two: **9a** images in a directory, upload, targets with a
+     pilot stage, serving, `firmware_url`, compliance and
+     `device.firmware_behind`, the Firmware page; **9b** images in an S3
+     bucket, and a site fetching the cloud's images over the link and
+     caching them (Q11).
+   - **9a done (v0.25.325)** (`docs/PROVISIONING.md` §11).
+     - `fcp_core::firmware`: `FirmwareImage` (vendor, model patterns,
+       version, file, size, SHA-256), `FirmwareTarget` with a
+       `RolloutStage` and pilot devices, `target_for`, `FirmwareStatus`;
+       `firmware_images` and `firmware_targets` (migration 105).
+     - `fcp_api_core::v1::firmware`: upload streamed to `[api.firmware]
+       directory` with the size limit and a hash, the platform
+       administrator's (Q10); targets per tenant with counts of current,
+       behind and unknown; `/provision/<key>/firmware/<image>/<file>`
+       under the provisioning guards; `firmware_url`,
+       `firmware_directory`, `firmware_target_version` in templates and
+       Polycom's master file; the starters' firmware lines; the device
+       views' `firmware_status`.
+     - `device.firmware_behind`, said by the registration writer once per
+       version a phone reports behind its target.
+     - The Firmware page and the Devices page's Firmware column; the
+       compose stack keeps images in `admin-data` and its proxy takes
+       large uploads.
+     - Proved by
+       `firmware_is_uploaded_once_targeted_per_tenant_piloted_and_served`
+       (`api_postgres.rs`) and the target and status unit tests.
 
 ## 4. What this does not do
 

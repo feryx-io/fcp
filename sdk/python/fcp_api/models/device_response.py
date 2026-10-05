@@ -8,6 +8,7 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..models.firmware_status import FirmwareStatus
 from ..types import UNSET, Unset
 from typing import cast
 import datetime
@@ -50,6 +51,10 @@ class DeviceResponse:
             vendor (None | str | Unset): `yealink`, `polycom`, `grandstream`, `cisco`, `fanvil` or `snom`:
                 with the model, it picks the template when the device names none.
             firmware_version (None | str | Unset):
+            firmware_target_version (None | str | Unset): The version its tenant's firmware target points it at
+                (`docs/PROVISIONING.md` §11), and whether it runs it: `current`,
+                `behind`, `unknown` (it has not said). Unset without a target.
+            firmware_status (FirmwareStatus | None | Unset):
             owner_user_id (None | str | Unset):
             sip_username (None | str | Unset): The username of the device's own credentials; the password and its
                 hash are never returned (`docs/ENTERPRISE_CALLING.md` §3.8).
@@ -87,6 +92,8 @@ class DeviceResponse:
     model: None | str | Unset = UNSET
     vendor: None | str | Unset = UNSET
     firmware_version: None | str | Unset = UNSET
+    firmware_target_version: None | str | Unset = UNSET
+    firmware_status: FirmwareStatus | None | Unset = UNSET
     owner_user_id: None | str | Unset = UNSET
     sip_username: None | str | Unset = UNSET
     sip_uri: None | str | Unset = UNSET
@@ -171,6 +178,20 @@ class DeviceResponse:
             firmware_version = UNSET
         else:
             firmware_version = self.firmware_version
+
+        firmware_target_version: None | str | Unset
+        if isinstance(self.firmware_target_version, Unset):
+            firmware_target_version = UNSET
+        else:
+            firmware_target_version = self.firmware_target_version
+
+        firmware_status: None | str | Unset
+        if isinstance(self.firmware_status, Unset):
+            firmware_status = UNSET
+        elif isinstance(self.firmware_status, FirmwareStatus):
+            firmware_status = self.firmware_status.value
+        else:
+            firmware_status = self.firmware_status
 
         owner_user_id: None | str | Unset
         if isinstance(self.owner_user_id, Unset):
@@ -283,6 +304,10 @@ class DeviceResponse:
             field_dict["vendor"] = vendor
         if firmware_version is not UNSET:
             field_dict["firmware_version"] = firmware_version
+        if firmware_target_version is not UNSET:
+            field_dict["firmware_target_version"] = firmware_target_version
+        if firmware_status is not UNSET:
+            field_dict["firmware_status"] = firmware_status
         if owner_user_id is not UNSET:
             field_dict["owner_user_id"] = owner_user_id
         if sip_username is not UNSET:
@@ -404,6 +429,36 @@ class DeviceResponse:
             return cast(None | str | Unset, data)
 
         firmware_version = _parse_firmware_version(d.pop("firmware_version", UNSET))
+
+
+        def _parse_firmware_target_version(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        firmware_target_version = _parse_firmware_target_version(d.pop("firmware_target_version", UNSET))
+
+
+        def _parse_firmware_status(data: object) -> FirmwareStatus | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                firmware_status_type_0 = FirmwareStatus(data)
+
+
+
+                return firmware_status_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(FirmwareStatus | None | Unset, data)
+
+        firmware_status = _parse_firmware_status(d.pop("firmware_status", UNSET))
 
 
         def _parse_owner_user_id(data: object) -> None | str | Unset:
@@ -577,6 +632,8 @@ class DeviceResponse:
             model=model,
             vendor=vendor,
             firmware_version=firmware_version,
+            firmware_target_version=firmware_target_version,
+            firmware_status=firmware_status,
             owner_user_id=owner_user_id,
             sip_username=sip_username,
             sip_uri=sip_uri,

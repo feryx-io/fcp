@@ -125,6 +125,10 @@ from .extension_target_response_type_3_type import ExtensionTargetResponseType3T
 from .file_subject_request import FileSubjectRequest
 from .find_me import FindMe
 from .find_me_step import FindMeStep
+from .firmware_image_response import FirmwareImageResponse
+from .firmware_status import FirmwareStatus
+from .firmware_target_request import FirmwareTargetRequest
+from .firmware_target_response import FirmwareTargetResponse
 from .flow_response import FlowResponse
 from .flow_trace_response import FlowTraceResponse
 from .grantable_permission import GrantablePermission
@@ -217,6 +221,10 @@ from .page_emergency_call_response import PageEmergencyCallResponse
 from .page_emergency_call_response_data_item import PageEmergencyCallResponseDataItem
 from .page_extension_response import PageExtensionResponse
 from .page_extension_response_data_item import PageExtensionResponseDataItem
+from .page_firmware_image_response import PageFirmwareImageResponse
+from .page_firmware_image_response_data_item import PageFirmwareImageResponseDataItem
+from .page_firmware_target_response import PageFirmwareTargetResponse
+from .page_firmware_target_response_data_item import PageFirmwareTargetResponseDataItem
 from .page_flow_response import PageFlowResponse
 from .page_flow_response_data_item import PageFlowResponseDataItem
 from .page_flow_trace_response import PageFlowTraceResponse
@@ -370,6 +378,7 @@ from .required_claim import RequiredClaim
 from .resource_counts import ResourceCounts
 from .resync_response import ResyncResponse
 from .retention_run_response import RetentionRunResponse
+from .rollout_stage import RolloutStage
 from .rotate_api_token_request import RotateApiTokenRequest
 from .rotate_webhook_secret_request import RotateWebhookSecretRequest
 from .routing_rule_response import RoutingRuleResponse
@@ -612,6 +621,10 @@ __all__ = (
     "FileSubjectRequest",
     "FindMe",
     "FindMeStep",
+    "FirmwareImageResponse",
+    "FirmwareStatus",
+    "FirmwareTargetRequest",
+    "FirmwareTargetResponse",
     "FlowResponse",
     "FlowTraceResponse",
     "GrantablePermission",
@@ -704,6 +717,10 @@ __all__ = (
     "PageEmergencyCallResponseDataItem",
     "PageExtensionResponse",
     "PageExtensionResponseDataItem",
+    "PageFirmwareImageResponse",
+    "PageFirmwareImageResponseDataItem",
+    "PageFirmwareTargetResponse",
+    "PageFirmwareTargetResponseDataItem",
     "PageFlowResponse",
     "PageFlowResponseDataItem",
     "PageFlowTraceResponse",
@@ -857,6 +874,7 @@ __all__ = (
     "ResourceCounts",
     "ResyncResponse",
     "RetentionRunResponse",
+    "RolloutStage",
     "RotateApiTokenRequest",
     "RotateWebhookSecretRequest",
     "RoutingRuleResponse",

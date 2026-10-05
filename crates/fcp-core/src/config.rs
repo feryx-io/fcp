@@ -813,6 +813,51 @@ pub struct ApiConfig {
     /// Where vendors' redirection services are reached (phase 8).
     #[serde(default)]
     pub redirection: ApiRedirectionConfig,
+
+    /// Where firmware images are kept (phase 9).
+    #[serde(default)]
+    pub firmware: ApiFirmwareConfig,
+}
+
+/// `[api.firmware]`: where uploaded firmware images are kept, and how
+/// large one may be (`docs/PROVISIONING.md` §11). Unset, firmware cannot
+/// be uploaded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiFirmwareConfig {
+    #[serde(default)]
+    pub directory: Option<String>,
+    #[serde(default = "default_max_image_mb")]
+    pub max_image_mb: u64,
+}
+
+fn default_max_image_mb() -> u64 {
+    1024
+}
+
+impl Default for ApiFirmwareConfig {
+    fn default() -> Self {
+        Self {
+            directory: None,
+            max_image_mb: default_max_image_mb(),
+        }
+    }
+}
+
+impl ApiFirmwareConfig {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.max_image_mb == 0 || self.max_image_mb > 16 * 1024 {
+            return Err("api.firmware.max_image_mb must be 1 to 16384".to_string());
+        }
+        if self
+            .directory
+            .as_deref()
+            .is_some_and(|d| d.trim().is_empty())
+        {
+            return Err("api.firmware.directory must not be empty".to_string());
+        }
+        Ok(())
+    }
 }
 
 /// `[api.redirection]`: where vendors' redirection services answer
@@ -1134,6 +1179,7 @@ impl Default for ApiConfig {
             sso: ApiSsoConfig::default(),
             provisioning: ApiProvisioningConfig::default(),
             redirection: ApiRedirectionConfig::default(),
+            firmware: ApiFirmwareConfig::default(),
         }
     }
 }
@@ -1160,6 +1206,7 @@ impl ApiConfig {
         self.session.validate(self.auth_token.as_deref())?;
         self.provisioning.validate()?;
         self.redirection.validate()?;
+        self.firmware.validate()?;
         Ok(())
     }
 }

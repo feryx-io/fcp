@@ -363,6 +363,13 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/provisioning/key", Needs(DeviceUpdate)),
     (POST, "/provisioning/key", Needs(DeviceUpdate)),
     (GET, "/provisioning/pending", Needs(DeviceRead)),
+    (GET, "/firmware", Needs(DeviceRead)),
+    (POST, "/firmware", Needs(SystemConfig)),
+    (DELETE, "/firmware/:id", Needs(SystemConfig)),
+    (GET, "/firmware/targets", Needs(DeviceRead)),
+    (POST, "/firmware/targets", Needs(DeviceUpdate)),
+    (PUT, "/firmware/targets/:id", Needs(DeviceUpdate)),
+    (DELETE, "/firmware/targets/:id", Needs(DeviceUpdate)),
     (GET, "/provisioning/redirection", Needs(DeviceRead)),
     (
         PUT,

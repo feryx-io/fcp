@@ -52,6 +52,12 @@ auth_token = "change-this-to-a-secure-random-token"
 # yealink_rps_url = "https://api-dm.yealink.com:8443"
 # poly_ztp_url = "https://ztpconsole.polycom.com/inboundservlet/GenericServlet"
 
+# Where firmware images the platform administrator uploads are kept, and
+# how large one may be (docs/PROVISIONING.md §11); unset, none can be.
+# [api.firmware]
+# directory = "/var/lib/fcp/firmware"
+# max_image_mb = 1024
+
 [storage]
 # PostgreSQL is the one backend. Migrations run at startup.
 database_url = "postgresql://fcp_user:password@localhost:5432/fcp"
