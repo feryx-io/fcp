@@ -118,6 +118,142 @@ pub trait ProvisioningStore: Send + Sync {
         tenant_id: &TenantId,
         mac_address: &str,
     ) -> anyhow::Result<bool>;
+
+    /// A tenant's account with a vendor's redirection service
+    /// (`docs/PROVISIONING.md` §10), its secret opened.
+    async fn get_redirection_account(
+        &self,
+        tenant_id: &TenantId,
+        service: RedirectionService,
+    ) -> anyhow::Result<Option<RedirectionAccount>>;
+    async fn list_redirection_accounts(
+        &self,
+        tenant_id: &TenantId,
+    ) -> anyhow::Result<Vec<RedirectionAccount>>;
+    /// Make or replace an account; its secret is sealed at rest.
+    async fn put_redirection_account(&self, account: &RedirectionAccount) -> anyhow::Result<()>;
+    async fn delete_redirection_account(
+        &self,
+        tenant_id: &TenantId,
+        service: RedirectionService,
+    ) -> anyhow::Result<bool>;
+    /// Where a device stands with its vendor's service.
+    async fn get_device_redirection(
+        &self,
+        device_id: &DeviceId,
+    ) -> anyhow::Result<Option<DeviceRedirection>>;
+    async fn put_device_redirection(&self, record: &DeviceRedirection) -> anyhow::Result<()>;
+    async fn delete_device_redirection(&self, device_id: &DeviceId) -> anyhow::Result<()>;
+}
+
+// ---- Zero-touch: vendors' redirection services (§10) ----
+
+/// A vendor's redirection service: a phone out of its box asks it where
+/// its provisioning server is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RedirectionService {
+    /// Yealink's Redirection and Provisioning Service.
+    YealinkRps,
+    /// Poly's (Polycom's) Zero Touch Provisioning.
+    PolyZtp,
+}
+
+impl RedirectionService {
+    pub const ALL: [RedirectionService; 2] = [Self::YealinkRps, Self::PolyZtp];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::YealinkRps => "yealink_rps",
+            Self::PolyZtp => "poly_ztp",
+        }
+    }
+
+    /// The vendor whose phones ask it.
+    pub fn vendor(self) -> PhoneVendor {
+        match self {
+            Self::YealinkRps => PhoneVendor::Yealink,
+            Self::PolyZtp => PhoneVendor::Polycom,
+        }
+    }
+
+    /// The service a vendor's phones ask, where FCP has a connector.
+    pub fn for_vendor(vendor: PhoneVendor) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.vendor() == vendor)
+    }
+}
+
+impl std::str::FromStr for RedirectionService {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|v| v.as_str() == s)
+            .ok_or_else(|| format!("unknown redirection service `{s}` (yealink_rps, poly_ztp)"))
+    }
+}
+
+/// A tenant's account with a redirection service.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RedirectionAccount {
+    pub tenant_id: TenantId,
+    pub service: RedirectionService,
+    /// Off, devices are neither registered nor removed.
+    pub enabled: bool,
+    /// Yealink: the AccessKey ID; Poly: the API user id.
+    pub key_id: String,
+    /// Yealink: the AccessKey Secret; Poly: the API password. Sealed.
+    pub secret: String,
+    /// Poly: the Reference ID (`account-id`) devices are associated under.
+    pub account_id: Option<String>,
+    /// Poly: the profile, made in the ZTP console, naming the tenant's
+    /// provisioning URL (`templateCriteria`).
+    pub profile: Option<String>,
+    pub updated_at: SystemTime,
+}
+
+impl std::fmt::Debug for RedirectionAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedirectionAccount")
+            .field("tenant_id", &self.tenant_id)
+            .field("service", &self.service)
+            .field("enabled", &self.enabled)
+            .field("key_id", &self.key_id)
+            .field("secret", &"<redacted>")
+            .field("account_id", &self.account_id)
+            .field("profile", &self.profile)
+            .finish()
+    }
+}
+
+/// How a device's registration with its vendor went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RedirectionState {
+    /// The service sends the phone to the tenant's URL.
+    Registered,
+    /// The service refused or could not be reached: `detail` says why.
+    Failed,
+}
+
+/// Where a device stands with its vendor's service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRedirection {
+    pub tenant_id: TenantId,
+    pub device_id: DeviceId,
+    pub service: RedirectionService,
+    /// The MAC registered (12 hex digits): removed from the service when
+    /// the device's changes or the device goes.
+    pub mac_address: String,
+    /// The service's own id for the device, where it has one (Yealink's).
+    pub vendor_ref: Option<String>,
+    pub state: RedirectionState,
+    pub detail: Option<String>,
+    /// Whether the phone was given credentials through the service.
+    pub with_credentials: bool,
+    pub at: SystemTime,
 }
 
 /// A tenant's provisioning settings (`docs/PROVISIONING.md` §3).

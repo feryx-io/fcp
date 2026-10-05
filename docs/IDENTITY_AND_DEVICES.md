@@ -790,6 +790,36 @@ Each phase is one PR based on main, with its admin UI and its docs.
    - DHCP option 66/160 documented.
    - Proved against stand-ins of each vendor's API; real accounts checked
      by hand.
+   - Split in two: **8a** the connector trait, Yealink RPS and Poly ZTP,
+     the accounts, the device lifecycle, DHCP; **8b** Grandstream GDMS and
+     Fanvil FDPS.
+   - **8a done (v0.25.324)** (`docs/PROVISIONING.md` §10).
+     - `fcp_api_core::redirection`: `RedirectionConnector` (register,
+       unregister, check, whether it carries credentials); `YealinkRps`
+       over the RPS JSON API (HMAC-SHA256 signing per its guide, a
+       device's own `uniqueServerUrl` and credentials, add then edit when
+       it exists, delete by RPS's id); `PolyZtp` over the ZTP XML API
+       (`add-sip-device` to the tenant's profile under its Reference ID,
+       moved when associated elsewhere, `delete-sip-device`,
+       `query-sip-device` as the check).
+     - Accounts per tenant and service (`redirection_accounts`, migration
+       104, the secret sealed and on the re-encrypt list); where each
+       device stands (`device_redirections`); `[api.redirection]` for the
+       vendors' endpoints, the operator's, not a tenant's.
+     - A device registered when made, claimed, imported or first changed
+       with an account on, moved with its MAC, taken off when disabled or
+       deleted, on a task of its own; RPS given the device's token, or a
+       new one when the tenant requires credentials; tokens now 32
+       characters (RPS's limit).
+     - Routes: `/provisioning/redirection` (list, put, delete, check,
+       sync), `/devices/{id}/redirection` (read, register now); the
+       Devices page's *Zero-touch* card and *Register with its vendor*.
+     - DHCP options 66 and 160 documented.
+     - Proved by
+       `a_phone_is_registered_with_its_vendors_service_and_removed_with_its_device`
+       (`api_postgres.rs`) against `fcp_testkit::redirection`'s stand-ins
+       (RPS checking each signature); not yet run against the real
+       services (Q9).
 9. **Firmware.**
    - The image store (directory or S3, like recordings) and upload
      (Q10); serving under the provisioning URL.

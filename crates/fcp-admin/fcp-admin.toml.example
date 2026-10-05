@@ -46,6 +46,12 @@ auth_token = "change-this-to-a-secure-random-token"
 # ntp_server = "pool.ntp.org"
 # public_url = "https://pbx.example.com"
 
+# Where vendors' redirection services are reached (docs/PROVISIONING.md
+# §10); the vendors' own by default. Tenants give their own accounts.
+# [api.redirection]
+# yealink_rps_url = "https://api-dm.yealink.com:8443"
+# poly_ztp_url = "https://ztpconsole.polycom.com/inboundservlet/GenericServlet"
+
 [storage]
 # PostgreSQL is the one backend. Migrations run at startup.
 database_url = "postgresql://fcp_user:password@localhost:5432/fcp"

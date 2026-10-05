@@ -669,6 +669,10 @@ export type CreateConfigTemplateRequest = S['CreateConfigTemplateRequest']
 export type UpdateConfigTemplateRequest = S['UpdateConfigTemplateRequest']
 export type LibraryTemplate = S['LibraryTemplateResponse']
 export type PreviewTemplateResponse = S['PreviewTemplateResponse']
+/** Zero-touch: a tenant's account with a vendor's redirection service (§10). */
+export type RedirectionAccount = S['RedirectionAccountResponse']
+export type PutRedirectionAccountRequest = S['PutRedirectionAccountRequest']
+export type DeviceRedirection = S['DeviceRedirectionResponse']
 export type GroupRequest = S['GroupRequest']
 export type GroupMember = S['GroupMemberResponse']
 

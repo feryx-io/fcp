@@ -110,7 +110,33 @@ struct App {
     tenant_b: TenantId,
 }
 
+/// The API's configuration in these tests.
+fn test_api_config() -> ApiConfig {
+    ApiConfig {
+        auth_enabled: true,
+        auth_token: Some(ADMIN_TOKEN.to_string()),
+        provisioning_require_https: true,
+        // A stand-in identity provider listens on loopback.
+        sso: fcp_core::ApiSsoConfig {
+            public_url: Some(SSO_PUBLIC_URL.to_string()),
+            allow_private_issuers: true,
+        },
+        ..ApiConfig::default()
+    }
+}
+
 impl App {
+    /// The app with vendors' redirection services where `config` says:
+    /// the stand-ins (`docs/PROVISIONING.md` §10).
+    fn with_redirection(mut self, config: fcp_core::ApiRedirectionConfig) -> Self {
+        let api_config = ApiConfig {
+            redirection: config,
+            ..test_api_config()
+        };
+        self.router = create_router(self.state.clone(), &api_config);
+        self
+    }
+
     /// An app whose live conference endpoints proxy to `conference_url`.
     async fn with_conference_server(conference_url: &str) -> Option<Self> {
         Self::build(DeploymentMode::default(), Some(conference_url.to_string())).await
@@ -299,17 +325,7 @@ impl App {
             },
         ))));
 
-        let api_config = ApiConfig {
-            auth_enabled: true,
-            auth_token: Some(ADMIN_TOKEN.to_string()),
-            provisioning_require_https: true,
-            // A stand-in identity provider listens on loopback.
-            sso: fcp_core::ApiSsoConfig {
-                public_url: Some(SSO_PUBLIC_URL.to_string()),
-                allow_private_issuers: true,
-            },
-            ..ApiConfig::default()
-        };
+        let api_config = test_api_config();
 
         Some(Self {
             router: create_router(state.clone(), &api_config),
@@ -1259,7 +1275,11 @@ async fn device_create_normalizes_mac_and_issues_a_token() {
     let (id, token) = app
         .create_phone("Bob's desk", "AA:BB:CC:DD:EE:01", Some(&owner))
         .await;
-    assert!(token.starts_with("fcp_prov_"), "generated token: {token}");
+    // 32 characters: what a vendor's redirection service hands a phone.
+    assert!(
+        token.starts_with("fcp_") && token.len() == 32,
+        "generated token: {token}"
+    );
 
     let got = app
         .admin(Method::GET, &format!("/api/v1/devices/{id}"), None)
@@ -13791,6 +13811,273 @@ async fn phones_are_imported_all_or_none_and_xml_values_are_escaped() {
         .as_str()
         .unwrap()
         .contains("reg.1.address=\"erin@"));
+
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Zero-touch: vendors' redirection services (docs/IDENTITY_AND_DEVICES.md phase 8)
+// ---------------------------------------------------------------------------
+
+/// Poll a device's redirection until `done` says it has landed.
+async fn redirection_of(app: &App, device_id: &str, done: impl Fn(&Value) -> bool) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..50 {
+        let res = app
+            .admin(
+                Method::GET,
+                &format!("/api/v1/devices/{device_id}/redirection"),
+                None,
+            )
+            .await;
+        if res.status == StatusCode::OK && done(&res.json) {
+            return res.json;
+        }
+        last = res.json;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the device's redirection never settled: {last}");
+}
+
+#[tokio::test]
+async fn a_phone_is_registered_with_its_vendors_service_and_removed_with_its_device() {
+    use base64::Engine;
+    use fcp_testkit::redirection::{StandInRps, StandInZtp};
+    let app = require_app!();
+    let rps = StandInRps::start("rps-key-id", "rps-key-secret")
+        .await
+        .unwrap();
+    let ztp = StandInZtp::start("ztp-user", "ztp-pass", &["acme-ref"])
+        .await
+        .unwrap();
+    let app = app.with_redirection(fcp_core::ApiRedirectionConfig {
+        yealink_rps_url: rps.url().to_string(),
+        poly_ztp_url: ztp.url().to_string(),
+    });
+    let key = app.provisioning_key().await;
+    // The tenant wants each phone's own credentials: RPS hands them over.
+    let set = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"provisioning": {"require_device_credentials": true}})),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let owner = app.create_user("fay", Some("Sip-Secret-321")).await;
+    let template = app.create_template(app.tenant_a, TEMPLATE).await;
+
+    // The accounts: a wrong secret is told, and a Poly account needs its
+    // Reference ID and profile.
+    let wrong = app
+        .admin(
+            Method::PUT,
+            "/api/v1/provisioning/redirection/yealink_rps",
+            Some(json!({"key_id": "rps-key-id", "secret": "not-it"})),
+        )
+        .await;
+    assert_eq!(wrong.status, StatusCode::OK, "{}", wrong.text);
+    assert!(
+        wrong.json.get("secret").is_none(),
+        "the secret is never shown"
+    );
+    let checked = app
+        .admin(
+            Method::POST,
+            "/api/v1/provisioning/redirection/yealink_rps/check",
+            None,
+        )
+        .await;
+    assert_eq!(checked.json["ok"], false, "{}", checked.text);
+    assert!(
+        checked.json["detail"].as_str().unwrap().contains("401"),
+        "{}",
+        checked.text
+    );
+    let right = app
+        .admin(
+            Method::PUT,
+            "/api/v1/provisioning/redirection/yealink_rps",
+            Some(json!({"key_id": "rps-key-id", "secret": "rps-key-secret"})),
+        )
+        .await;
+    assert_eq!(right.status, StatusCode::OK, "{}", right.text);
+    let checked = app
+        .admin(
+            Method::POST,
+            "/api/v1/provisioning/redirection/yealink_rps/check",
+            None,
+        )
+        .await;
+    assert_eq!(checked.json["ok"], true, "{}", checked.text);
+    let incomplete = app
+        .admin(
+            Method::PUT,
+            "/api/v1/provisioning/redirection/poly_ztp",
+            Some(json!({"key_id": "ztp-user", "secret": "ztp-pass"})),
+        )
+        .await;
+    assert_eq!(
+        incomplete.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        incomplete.text
+    );
+    let poly = app
+        .admin(
+            Method::PUT,
+            "/api/v1/provisioning/redirection/poly_ztp",
+            Some(json!({"key_id": "ztp-user", "secret": "ztp-pass",
+                        "account_id": "acme-ref", "profile": "acme-fcp"})),
+        )
+        .await;
+    assert_eq!(poly.status, StatusCode::OK, "{}", poly.text);
+    let listed = app
+        .admin(Method::GET, "/api/v1/provisioning/redirection", None)
+        .await;
+    assert_eq!(listed.json.as_array().unwrap().len(), 2, "{}", listed.text);
+
+    // A Yealink made by MAC is registered: its MAC, the tenant's URL, and
+    // credentials the provisioning URL takes.
+    let (yealink, _token) = app
+        .create_phone("Fay's desk", "80:5E:C0:11:22:33", Some(&owner))
+        .await;
+    app.patch_device(&yealink, json!({ "config_template_id": template }))
+        .await;
+    let record = redirection_of(&app, &yealink, |r| r["state"] == "registered").await;
+    assert_eq!(record["service"], "yealink_rps");
+    assert_eq!(record["with_credentials"], true);
+    let at_rps = rps.device("805ec0112233").expect("RPS has the phone");
+    assert_eq!(at_rps.url, format!("{SSO_PUBLIC_URL}/provision/{key}/"));
+    let password = at_rps.password.clone().expect("credentials for the phone");
+    assert!(password.len() <= 32, "{password}");
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD
+            .encode(format!("{}:{password}", at_rps.auth_name.unwrap()))
+    );
+    let fetched = app
+        .send(
+            Method::GET,
+            &format!("/provision/{key}/805ec0112233.cfg"),
+            &[
+                ("x-forwarded-proto", "https"),
+                ("authorization", basic.as_str()),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(
+        fetched.status,
+        StatusCode::OK,
+        "the credentials RPS hands the phone work: {}",
+        fetched.text
+    );
+
+    // A Polycom is associated with the tenant's profile.
+    let (polycom, _) = app
+        .create_phone("Fay's VVX", "00:04:F2:11:22:33", Some(&owner))
+        .await;
+    let record = redirection_of(&app, &polycom, |r| r["state"] == "registered").await;
+    assert_eq!(record["service"], "poly_ztp");
+    assert_eq!(record["with_credentials"], false);
+    assert_eq!(
+        ztp.device("0004f2112233"),
+        Some(fcp_testkit::redirection::ZtpDevice {
+            account_id: "acme-ref".to_string(),
+            profile: "acme-fcp".to_string(),
+        })
+    );
+
+    // A phone of another vendor has no service.
+    let (other, _) = app
+        .create_phone("Lab phone", "AA:BB:CC:00:00:01", Some(&owner))
+        .await;
+    let none = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/devices/{other}/redirection"),
+            None,
+        )
+        .await;
+    assert_eq!(none.status, StatusCode::BAD_REQUEST, "{}", none.text);
+
+    // A new MAC moves it; deleting the device takes it off.
+    let moved = app
+        .patch_device(&yealink, json!({"mac_address": "80:5E:C0:44:55:66"}))
+        .await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.text);
+    redirection_of(&app, &yealink, |r| r["mac_address"] == "805ec0445566").await;
+    assert!(rps.device("805ec0112233").is_none());
+    assert!(rps.deleted().contains(&"805ec0112233".to_string()));
+    assert!(rps.device("805ec0445566").is_some());
+    for id in [&yealink, &polycom] {
+        let gone = app
+            .admin(Method::DELETE, &format!("/api/v1/devices/{id}"), None)
+            .await;
+        assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+    }
+    for _ in 0..50 {
+        if rps.device("805ec0445566").is_none() && ztp.device("0004f2112233").is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(rps.device("805ec0445566").is_none(), "off RPS");
+    assert!(ztp.device("0004f2112233").is_none(), "off ZTP");
+
+    // An account made after its phones registers them on a sync; a
+    // refusal is kept on the device.
+    let (late, _) = app
+        .create_phone("Late Yealink", "00:15:65:00:00:99", Some(&owner))
+        .await;
+    redirection_of(&app, &late, |r| r["state"] == "registered").await;
+    let off = app
+        .admin(
+            Method::PUT,
+            "/api/v1/provisioning/redirection/yealink_rps",
+            Some(json!({"key_id": "rps-key-id", "secret": "not-it", "enabled": true})),
+        )
+        .await;
+    assert_eq!(off.status, StatusCode::OK);
+    let again = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/devices/{late}/redirection"),
+            None,
+        )
+        .await;
+    assert_eq!(again.json["state"], "failed", "{}", again.text);
+    assert!(
+        again.json["detail"].as_str().unwrap().contains("401"),
+        "{}",
+        again.text
+    );
+    let fixed = app
+        .admin(
+            Method::PUT,
+            "/api/v1/provisioning/redirection/yealink_rps",
+            Some(json!({"key_id": "rps-key-id", "secret": "rps-key-secret"})),
+        )
+        .await;
+    assert_eq!(fixed.status, StatusCode::OK);
+    let synced = app
+        .admin(
+            Method::POST,
+            "/api/v1/provisioning/redirection/yealink_rps/sync",
+            None,
+        )
+        .await;
+    assert_eq!(synced.status, StatusCode::OK, "{}", synced.text);
+    assert_eq!(
+        (
+            synced.json["devices"].as_u64(),
+            synced.json["registered"].as_u64()
+        ),
+        (Some(1), Some(1)),
+        "{}",
+        synced.text
+    );
 
     app.finish().await;
 }

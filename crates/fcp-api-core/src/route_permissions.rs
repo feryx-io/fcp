@@ -363,6 +363,29 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/provisioning/key", Needs(DeviceUpdate)),
     (POST, "/provisioning/key", Needs(DeviceUpdate)),
     (GET, "/provisioning/pending", Needs(DeviceRead)),
+    (GET, "/provisioning/redirection", Needs(DeviceRead)),
+    (
+        PUT,
+        "/provisioning/redirection/:service",
+        Needs(DeviceUpdate),
+    ),
+    (
+        DELETE,
+        "/provisioning/redirection/:service",
+        Needs(DeviceUpdate),
+    ),
+    (
+        POST,
+        "/provisioning/redirection/:service/check",
+        Needs(DeviceUpdate),
+    ),
+    (
+        POST,
+        "/provisioning/redirection/:service/sync",
+        Needs(DeviceUpdate),
+    ),
+    (GET, "/devices/:id/redirection", Needs(DeviceRead)),
+    (POST, "/devices/:id/redirection", Needs(DeviceUpdate)),
     (DELETE, "/provisioning/pending/:mac", Needs(DeviceDelete)),
     (
         POST,

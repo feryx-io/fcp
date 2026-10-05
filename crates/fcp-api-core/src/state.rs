@@ -143,6 +143,9 @@ pub struct ApiState {
     /// What provisioned phones are told (`[api.provisioning]`).
     pub provisioning: fcp_core::ApiProvisioningConfig,
 
+    /// Where vendors' redirection services answer (`[api.redirection]`).
+    pub redirection: fcp_core::ApiRedirectionConfig,
+
     /// Trunk health monitoring map (populated by background health probe task).
     pub trunk_health: Option<crate::trunk_health::TrunkHealthMap>,
     /// Where the view each node has of its trunks is read from
@@ -256,6 +259,7 @@ impl ApiState {
             session_access_ttl: fcp_core::session::DEFAULT_ACCESS_TTL,
             provisioning_require_https: true,
             provisioning: fcp_core::ApiProvisioningConfig::default(),
+            redirection: fcp_core::ApiRedirectionConfig::default(),
             trunk_health: None,
             trunk_reports: None,
             route_previewer: None,
@@ -364,6 +368,12 @@ impl ApiState {
     /// Set the auth config for WebSocket first-message authentication.
     pub fn with_auth_config(mut self, config: crate::auth::AuthConfig) -> Self {
         self.auth_config = Some(config);
+        self
+    }
+
+    /// Where vendors' redirection services answer.
+    pub fn with_redirection_config(mut self, config: fcp_core::ApiRedirectionConfig) -> Self {
+        self.redirection = config;
         self
     }
 

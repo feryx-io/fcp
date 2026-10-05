@@ -19,7 +19,6 @@ use sha2::{Digest, Sha256};
 use std::str::FromStr;
 use std::time::SystemTime;
 use tracing::info;
-use uuid::Uuid;
 
 /// Helper macro to get storage or return error.
 macro_rules! require_storage {
@@ -219,12 +218,21 @@ fn hash_provisioning_token(token: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn generate_provisioning_token() -> String {
-    format!(
-        "fcp_prov_{}{}",
-        Uuid::new_v4().simple(),
-        Uuid::new_v4().simple()
-    )
+/// A device's provisioning token: 32 characters (`fcp_` and 28 random
+/// letters and digits, ~166 bits), the most Yealink RPS keeps as the
+/// password it hands a phone (`docs/PROVISIONING.md` §10).
+pub(crate) fn generate_provisioning_token() -> String {
+    use rand::Rng;
+    let random: String = rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(28)
+        .map(char::from)
+        .collect();
+    format!("fcp_{random}")
+}
+
+pub(crate) fn hash_device_token(token: &str) -> String {
+    hash_provisioning_token(token)
 }
 
 fn validate_device_provisioning_token(token: &str) -> Result<String, ApiError> {
@@ -739,6 +747,7 @@ pub async fn create_device(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
+    headers: axum::http::HeaderMap,
     Json(req): Json<CreateDeviceRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(&identity, Permission::DeviceCreate, state.deployment_mode)?;
@@ -787,11 +796,13 @@ pub async fn create_device(
         ensure_mac_available(storage, &normalized_mac, None).await?;
     }
 
+    let mut token_in_hand = None;
     let generated_provisioning_token =
         match req.provisioning_token.and_then(normalize_optional_string) {
             Some(token) => {
                 let token = validate_device_provisioning_token(&token)?;
                 device.provisioning_token_hash = Some(hash_provisioning_token(&token));
+                token_in_hand = Some(token);
                 None
             }
             None if device.mac_address.is_some() => {
@@ -857,6 +868,12 @@ pub async fn create_device(
 
     info!("Created device {} ({})", device.id, device.name);
     forget_pending(storage, &device).await;
+    crate::v1::redirection::device_changed(
+        &state,
+        &device,
+        &headers,
+        token_in_hand.or_else(|| generated_provisioning_token.clone()),
+    );
 
     let mut response = DeviceResponse::from(device);
     response.provisioning_token = generated_provisioning_token;
@@ -881,6 +898,7 @@ pub async fn update_device(
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<UpdateDeviceRequest>,
 ) -> Result<Json<DeviceResponse>, ApiError> {
     crate::auth::check_permission(&identity, Permission::DeviceUpdate, state.deployment_mode)?;
@@ -1022,11 +1040,14 @@ pub async fn update_device(
         };
     }
 
+    let mut token_in_hand = None;
     if let Some(provisioning_token) = req.provisioning_token {
         device.provisioning_token_hash =
             if let Some(token) = normalize_optional_string(provisioning_token) {
                 let token = validate_device_provisioning_token(&token)?;
-                Some(hash_provisioning_token(&token))
+                let hash = hash_provisioning_token(&token);
+                token_in_hand = Some(token);
+                Some(hash)
             } else {
                 None
             };
@@ -1074,6 +1095,7 @@ pub async fn update_device(
 
     info!("Updated device {} ({})", device.id, device.name);
     forget_pending(storage, &device).await;
+    crate::v1::redirection::device_changed(&state, &device, &headers, token_in_hand);
 
     Ok(Json(device.into()))
 }
@@ -1126,6 +1148,7 @@ pub async fn delete_device(
         }))
         .await;
 
+    crate::v1::redirection::device_removed(&state, &device);
     info!("Deleted device {}", id);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1407,6 +1430,7 @@ pub async fn claim_pending(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
+    headers: axum::http::HeaderMap,
     Path(mac): Path<String>,
     body: Option<Json<ClaimDeviceRequest>>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -1441,6 +1465,7 @@ pub async fn claim_pending(
         .map_err(|e| map_put_device_error("Failed to create device", e))?;
     store.remove_pending_device(&tenant.0, &normalized).await?;
     publish_device_changed(&state, &device).await;
+    crate::v1::redirection::device_changed(&state, &device, &headers, Some(token.clone()));
     info!(device_id = %device.id, mac = %normalized, "Claimed a pending phone");
     let mut response = DeviceResponse::from(device);
     response.provisioning_token = Some(token);
@@ -1496,6 +1521,7 @@ pub async fn import_devices(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
+    headers: axum::http::HeaderMap,
     Json(req): Json<ImportDevicesRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(&identity, Permission::DeviceCreate, state.deployment_mode)?;
@@ -1569,6 +1595,7 @@ pub async fn import_devices(
             let _ = store.remove_pending_device(&tenant.0, mac).await;
         }
         publish_device_changed(&state, &device).await;
+        crate::v1::redirection::device_changed(&state, &device, &headers, Some(token.clone()));
         let mut response = DeviceResponse::from(device);
         response.provisioning_token = Some(token);
         created.push(response);

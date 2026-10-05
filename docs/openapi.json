@@ -14268,6 +14268,282 @@
         }
       }
     },
+    "/api/v1/provisioning/redirection": {
+      "get": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "GET /api/v1/provisioning/redirection — each service and the tenant's\naccount with it.",
+        "operationId": "provisioning_list_redirection",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_RedirectionAccountResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/provisioning/redirection/{service}": {
+      "put": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "PUT /api/v1/provisioning/redirection/:service — the tenant's account.",
+        "operationId": "provisioning_put_redirection",
+        "parameters": [
+          {
+            "name": "service",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutRedirectionAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedirectionAccountResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "DELETE /api/v1/provisioning/redirection/:service — forget the account;\nphones registered with it stay registered at the vendor.",
+        "operationId": "provisioning_delete_redirection",
+        "parameters": [
+          {
+            "name": "service",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/provisioning/redirection/{service}/check": {
+      "post": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "POST /api/v1/provisioning/redirection/:service/check — ask the service\nwhether the account's credentials work.",
+        "operationId": "provisioning_check_redirection",
+        "parameters": [
+          {
+            "name": "service",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedirectionCheckResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/provisioning/redirection/{service}/sync": {
+      "post": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "POST /api/v1/provisioning/redirection/:service/sync — register every\nphone of the service's vendor not yet registered (an account made after\nits devices).",
+        "operationId": "provisioning_sync_redirection",
+        "parameters": [
+          {
+            "name": "service",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedirectionSyncResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{id}/redirection": {
+      "get": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "GET /api/v1/devices/:id/redirection",
+        "operationId": "provisioning_device_redirection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceRedirectionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "POST /api/v1/devices/:id/redirection — register the device's phone\nwith its vendor's service now (again, if it was).",
+        "operationId": "provisioning_register_device",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceRedirectionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/devices/{id}/resync": {
       "post": {
         "tags": [
@@ -20827,6 +21103,42 @@
           "outcome": {
             "type": "string",
             "description": "`served`, `unauthorized`, `not_served` (disabled, or no template)…"
+          }
+        }
+      },
+      "DeviceRedirectionResponse": {
+        "type": "object",
+        "description": "Where a device stands with its vendor's service.",
+        "required": [
+          "service",
+          "mac_address",
+          "state",
+          "with_credentials",
+          "at"
+        ],
+        "properties": {
+          "service": {
+            "$ref": "#/components/schemas/RedirectionService"
+          },
+          "mac_address": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RedirectionState"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "with_credentials": {
+            "type": "boolean",
+            "description": "Whether the phone was given its own credentials through the service."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -28546,6 +28858,87 @@
           }
         }
       },
+      "Page_RedirectionAccountResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A tenant's account with a redirection service; the secret is never shown.",
+              "required": [
+                "service",
+                "configured",
+                "enabled",
+                "carries_credentials"
+              ],
+              "properties": {
+                "service": {
+                  "$ref": "#/components/schemas/RedirectionService"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "key_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Yealink: the AccessKey ID; Poly: the API user id."
+                },
+                "account_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Poly: the Reference ID devices are associated under."
+                },
+                "profile": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Poly: the ZTP profile naming the tenant's provisioning URL."
+                },
+                "carries_credentials": {
+                  "type": "boolean",
+                  "description": "Whether the service hands phones their own credentials."
+                },
+                "updated_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_RegistrationResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -31670,6 +32063,44 @@
           }
         }
       },
+      "PutRedirectionAccountRequest": {
+        "type": "object",
+        "description": "An account, made or changed.",
+        "required": [
+          "key_id"
+        ],
+        "properties": {
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Unset: on."
+          },
+          "key_id": {
+            "type": "string"
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required to make the account; unset on a change keeps it."
+          },
+          "account_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "profile": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "QueueConfigResponse": {
         "type": "object",
         "description": "Queue config response.",
@@ -32206,6 +32637,120 @@
               "null"
             ],
             "description": "Who is moved: `caller` (the default) or `callee`. The other party is\ndropped."
+          }
+        }
+      },
+      "RedirectionAccountResponse": {
+        "type": "object",
+        "description": "A tenant's account with a redirection service; the secret is never shown.",
+        "required": [
+          "service",
+          "configured",
+          "enabled",
+          "carries_credentials"
+        ],
+        "properties": {
+          "service": {
+            "$ref": "#/components/schemas/RedirectionService"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "key_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Yealink: the AccessKey ID; Poly: the API user id."
+          },
+          "account_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Poly: the Reference ID devices are associated under."
+          },
+          "profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Poly: the ZTP profile naming the tenant's provisioning URL."
+          },
+          "carries_credentials": {
+            "type": "boolean",
+            "description": "Whether the service hands phones their own credentials."
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "RedirectionCheckResponse": {
+        "type": "object",
+        "description": "Whether an account's credentials work.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RedirectionService": {
+        "type": "string",
+        "description": "A vendor's redirection service: a phone out of its box asks it where\nits provisioning server is.",
+        "enum": [
+          "yealink_rps",
+          "poly_ztp"
+        ]
+      },
+      "RedirectionState": {
+        "type": "string",
+        "description": "How a device's registration with its vendor went.",
+        "enum": [
+          "registered",
+          "failed"
+        ]
+      },
+      "RedirectionSyncResponse": {
+        "type": "object",
+        "description": "What a sync did.",
+        "required": [
+          "devices",
+          "registered",
+          "failed"
+        ],
+        "properties": {
+          "devices": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The tenant's enabled devices of the service's vendor with a MAC.",
+            "minimum": 0
+          },
+          "registered": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },

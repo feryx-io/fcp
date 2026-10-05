@@ -1824,6 +1824,16 @@ Phase 7c done (v0.25.323): phones kept in step (`docs/PROVISIONING.md`
   told to fetch again. Phase 7 is complete; phase 8, zero-touch
   redirection, is next.
 
+Phase 8a done (v0.25.324): zero-touch (`docs/PROVISIONING.md` §10).
+- A tenant's accounts with Yealink RPS and Poly ZTP; each phone of the
+  vendor registered with the service when it is made or claimed — its
+  MAC, the tenant's URL, and with RPS its own credentials — moved with
+  its MAC and taken off when deleted.
+- DHCP options 66 and 160 documented.
+- Tested against stand-ins of both vendors' APIs; the real services are
+  to be checked by whoever has an account.
+- Next, 8b: Grandstream GDMS and Fanvil FDPS.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

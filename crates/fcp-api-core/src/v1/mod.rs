@@ -38,6 +38,7 @@ pub mod queue_config;
 pub mod queues;
 pub mod rate_plans;
 pub mod recordings;
+pub mod redirection;
 pub mod registrations;
 pub mod routing;
 pub mod schedules;
@@ -600,6 +601,24 @@ pub fn router() -> Router<ApiState> {
             get(provisioning::get_key).post(provisioning::rotate_key),
         )
         .route("/provisioning/pending", get(devices::list_pending))
+        // Zero-touch (docs/PROVISIONING.md §10)
+        .route("/provisioning/redirection", get(redirection::list_accounts))
+        .route(
+            "/provisioning/redirection/:service",
+            axum::routing::put(redirection::put_account).delete(redirection::delete_account),
+        )
+        .route(
+            "/provisioning/redirection/:service/check",
+            axum::routing::post(redirection::check_account),
+        )
+        .route(
+            "/provisioning/redirection/:service/sync",
+            axum::routing::post(redirection::sync_account),
+        )
+        .route(
+            "/devices/:id/redirection",
+            get(redirection::device_redirection).post(redirection::register_device),
+        )
         .route(
             "/provisioning/pending/:mac",
             axum::routing::delete(devices::dismiss_pending),
