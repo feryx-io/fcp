@@ -28,6 +28,8 @@ class StatusResponse:
             uptime_seconds (int):
             users_count (int):
             active_registrations_count (int):
+            sip_realm (str): The realm SIP digest hashes are computed in: the registrars' own
+                must say the same (`[sip] realm`).
      """
 
     status: str
@@ -35,6 +37,7 @@ class StatusResponse:
     uptime_seconds: int
     users_count: int
     active_registrations_count: int
+    sip_realm: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -52,6 +55,8 @@ class StatusResponse:
 
         active_registrations_count = self.active_registrations_count
 
+        sip_realm = self.sip_realm
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -61,6 +66,7 @@ class StatusResponse:
             "uptime_seconds": uptime_seconds,
             "users_count": users_count,
             "active_registrations_count": active_registrations_count,
+            "sip_realm": sip_realm,
         })
 
         return field_dict
@@ -80,12 +86,15 @@ class StatusResponse:
 
         active_registrations_count = d.pop("active_registrations_count")
 
+        sip_realm = d.pop("sip_realm")
+
         status_response = cls(
             status=status,
             version=version,
             uptime_seconds=uptime_seconds,
             users_count=users_count,
             active_registrations_count=active_registrations_count,
+            sip_realm=sip_realm,
         )
 
 

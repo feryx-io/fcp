@@ -7,6 +7,17 @@ use std::net::SocketAddr;
 use std::path::Path;
 use tracing::info;
 
+/// `[sip]`: the realm digest hashes are computed in (`docs/SINGLE-NODE-SETUP.md`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SipConfig {
+    /// The realm the call managers' and registrars' `[registrar] realm`
+    /// says. Unset, the call managers' realm from the operational
+    /// configuration, else `fcp.local`.
+    #[serde(default)]
+    pub realm: Option<String>,
+}
+
 /// Admin API configuration
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +33,11 @@ pub struct AdminConfig {
     /// Storage configuration
     #[serde(default)]
     pub storage: StorageConfig,
+
+    /// `[sip]`: the realm the deployment's registrars challenge with, which
+    /// the admin computes digest hashes in.
+    #[serde(default)]
+    pub sip: SipConfig,
 
     /// Logging configuration
     #[serde(default)]

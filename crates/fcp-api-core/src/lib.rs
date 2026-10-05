@@ -26,6 +26,7 @@ pub mod route_permissions;
 pub mod saml;
 pub mod scim;
 pub mod shape;
+pub mod sip_realm;
 pub mod site_files;
 pub mod state;
 pub mod time;

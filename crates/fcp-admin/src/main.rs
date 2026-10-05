@@ -436,7 +436,21 @@ async fn main() -> Result<()> {
         redirection: config.api.redirection.clone(),
         firmware: config.api.firmware.clone(),
     };
-    let realm = "fcp.local".to_string();
+    // The realm digest hashes are computed in, the registrars' (`[sip]
+    // realm`, else the call managers' from the operational configuration);
+    // on a change, the stored hashes made again in it. A site's users carry
+    // the cloud's hashes, so a site's admin leaves them be.
+    let (realm, realm_source) =
+        fcp_api_core::sip_realm::resolve(config.sip.realm.as_deref(), Some(config_store.as_ref()))
+            .await;
+    info!(realm = %realm, source = ?realm_source, "SIP realm");
+    if config.api.managed_by.is_none() {
+        if let Err(e) =
+            fcp_api_core::sip_realm::adopt(&storage, config_store.as_ref(), &realm).await
+        {
+            warn!(error = %e, "The stored digest hashes could not be brought into the realm");
+        }
+    }
     let default_tenant_id = config.service.default_tenant_id;
 
     info!(node_id = %config.service.node_id, "SIP components initialized (lightweight, no transport)");

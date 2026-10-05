@@ -10604,6 +10604,11 @@ export interface components {
             uptime_seconds: number;
             users_count: number;
             active_registrations_count: number;
+            /**
+             * @description The realm SIP digest hashes are computed in: the registrars' own
+             *     must say the same (`[sip] realm`).
+             */
+            sip_realm: string;
         };
         /**
          * @description A subject as the tenant knows them: every spelling that identifies them,

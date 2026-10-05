@@ -264,7 +264,9 @@ the records or recordings that never shipped are wanted.
   record. The line names the object; the link retries from its cursor.
 - **Phones do not register.** The user must exist in the cloud and have
   reached the site: the cloud's site record shows `sync_behind`; the
-  site's admin lists the tenant's users. The realm is `fcp.local`;
+  site's admin lists the tenant's users. The realm is `fcp.local`, and
+  must be the cloud's: the users' SIP password hashes come from the cloud,
+  made in its realm, and a site's admin does not make them again;
   `HOST_IP` must be the address the phone reaches.
 - **Calls to the cloud fail, or nothing comes down.** The link trunk
   must be registered: the call manager's `/status` (`18084`, its token)

@@ -63,7 +63,9 @@ inter-node trunks dial (`docs/DISTRIBUTED_CONFERENCING.md`).
 
 Companion settings, so the nodes agree:
 
-- the same `[registrar] realm` and `domain_aliases`;
+- the same `[registrar] realm` and `domain_aliases`, which the admin
+  computes SIP password hashes in too (`[sip] realm`, else the call
+  managers'; `docs/SINGLE-NODE-SETUP.md`);
 - `[events] server_url` and `auth_token` on every producer, all
   pointing at the region's events server;
 - `[cdr] sink = "stream"` where `fcp-jobs` stores records for the
