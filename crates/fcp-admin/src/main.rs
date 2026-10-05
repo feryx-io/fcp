@@ -173,9 +173,6 @@ async fn main() -> Result<()> {
     if let Some(auth_token) = cli.auth_token {
         config.api.auth_token = Some(auth_token);
     }
-    if let Some(provisioning_auth_token) = cli.provisioning_auth_token {
-        config.api.provisioning_auth_token = Some(provisioning_auth_token);
-    }
     if cli.provisioning_no_https {
         config.api.provisioning_require_https = false;
     }
@@ -197,6 +194,12 @@ async fn main() -> Result<()> {
         service = "fcp-admin",
         "Starting FCP Admin API"
     );
+    if config.api.provisioning_auth_token.is_some() {
+        warn!(
+            "[api] provisioning_auth_token is read by nothing: phones fetch from the tenant's \
+             provisioning URL (docs/PROVISIONING.md); remove the key, which a later release refuses"
+        );
+    }
 
     // Initialize storage backend
     let storage_result = storage::initialize_storage(&config.storage)
@@ -420,7 +423,6 @@ async fn main() -> Result<()> {
         bind: config.api.bind_address,
         auth_enabled: config.api.auth_enabled,
         auth_token: config.api.auth_token.clone(),
-        provisioning_auth_token: config.api.provisioning_auth_token.clone(),
         provisioning_require_https: config.api.provisioning_require_https,
         allow_public_signup: config.api.allow_public_signup,
         metrics_enabled: false,

@@ -564,6 +564,16 @@ impl DeviceStore for CachedDeviceStore {
         self.cache.clear();
         Ok(())
     }
+
+    // What routing reads from a device is untouched by a registration, so
+    // the cache stays.
+    async fn record_device_registration(
+        &self,
+        id: &crate::DeviceId,
+        update: &crate::device::DeviceRegistrationUpdate,
+    ) -> Result<()> {
+        self.inner.record_device_registration(id, update).await
+    }
 }
 
 #[cfg(test)]

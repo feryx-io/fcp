@@ -4132,6 +4132,37 @@ impl DeviceStore for PostgresStorage {
         Ok(())
     }
 
+    async fn record_device_registration(
+        &self,
+        id: &DeviceId,
+        update: &fcp_core::device::DeviceRegistrationUpdate,
+    ) -> Result<()> {
+        let registered = update.state == RegistrationState::Registered;
+        sqlx::query(
+            "UPDATE devices SET
+                 registration_state = $2,
+                 last_registration = CASE WHEN $3 THEN $4 ELSE last_registration END,
+                 last_ip_address = COALESCE($5, last_ip_address),
+                 user_agent = COALESCE($6, user_agent),
+                 vendor = COALESCE(vendor, $7),
+                 model = COALESCE(model, $8),
+                 firmware_version = COALESCE($9, firmware_version)
+             WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .bind(update.state.to_string())
+        .bind(registered)
+        .bind(system_time_to_datetime(update.at))
+        .bind(&update.address)
+        .bind(&update.user_agent)
+        .bind(update.vendor.map(|v| v.to_string()))
+        .bind(&update.model)
+        .bind(&update.firmware)
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
     async fn get_device_by_mac_address(&self, mac_address: &str) -> Result<Option<Device>> {
         let row = sqlx::query(concat!(
             "SELECT ",

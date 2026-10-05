@@ -359,6 +359,7 @@ from .rendered_config_response import RenderedConfigResponse
 from .require_totp import RequireTotp
 from .required_claim import RequiredClaim
 from .resource_counts import ResourceCounts
+from .resync_response import ResyncResponse
 from .retention_run_response import RetentionRunResponse
 from .rotate_api_token_request import RotateApiTokenRequest
 from .rotate_webhook_secret_request import RotateWebhookSecretRequest
@@ -400,6 +401,7 @@ from .subject_request_response import SubjectRequestResponse
 from .subscription_info import SubscriptionInfo
 from .supervise_request import SuperviseRequest
 from .synthesize_greeting_request import SynthesizeGreetingRequest
+from .template_resync_response import TemplateResyncResponse
 from .tenant_calling import TenantCalling
 from .tenant_offboarding import TenantOffboarding
 from .tenant_provisioning import TenantProvisioning
@@ -835,6 +837,7 @@ __all__ = (
     "RequiredClaim",
     "RequireTotp",
     "ResourceCounts",
+    "ResyncResponse",
     "RetentionRunResponse",
     "RotateApiTokenRequest",
     "RotateWebhookSecretRequest",
@@ -876,6 +879,7 @@ __all__ = (
     "SubscriptionInfo",
     "SuperviseRequest",
     "SynthesizeGreetingRequest",
+    "TemplateResyncResponse",
     "TenantCalling",
     "TenantOffboarding",
     "TenantProvisioning",

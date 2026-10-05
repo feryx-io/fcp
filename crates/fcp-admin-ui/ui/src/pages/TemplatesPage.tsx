@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Eye, Library, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Eye, Library, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -54,6 +54,12 @@ export function TemplatesPage() {
   })
   const fromLibrary = useMutation({ mutationFn: configTemplates.fromLibrary, onSuccess: refresh })
   const remove = useMutation({ mutationFn: configTemplates.delete, onSuccess: refresh })
+  const resync = useMutation({
+    mutationFn: (t: ConfigTemplate) => configTemplates.resync(t.id),
+    onSuccess: (res, t) =>
+      alert(`"${t.name}": ${res.devices} phone(s) use it; ${res.sent} registered contact(s) told to fetch again.`),
+    onError: (e) => alert((e as Error).message),
+  })
   const tryIt = useMutation({
     mutationFn: (d: Draft) => configTemplates.preview(d.template_body, d.vendor),
     onSuccess: (res) => setPreview({ content: res.content }),
@@ -132,6 +138,16 @@ export function TemplatesPage() {
               <TableCell className="text-sm text-muted-foreground">{t.description}</TableCell>
               <TableCell className="whitespace-nowrap text-right">
                 <Button variant="ghost" size="icon" aria-label="Edit" onClick={() => edit(t)}><Pencil className="h-4 w-4" /></Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Tell its phones to fetch again"
+                  title="Tell its phones to fetch again"
+                  disabled={resync.isPending}
+                  onClick={() => resync.mutate(t)}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
                 <Button
                   variant="ghost"
                   size="icon"

@@ -136,10 +136,6 @@ pub struct ApiState {
     pub session_ttl: std::time::Duration,
     pub session_access_ttl: std::time::Duration,
 
-    /// Shared token required for device auto-provisioning requests.
-    /// When unset, the provisioning endpoint fails closed.
-    pub provisioning_auth_token: Option<String>,
-
     /// Reject provisioning requests that did not arrive over HTTPS
     /// (detected via the `X-Forwarded-Proto` header set by a reverse proxy).
     pub provisioning_require_https: bool,
@@ -258,7 +254,6 @@ impl ApiState {
             session_keys: None,
             session_ttl: fcp_core::session::DEFAULT_SESSION_TTL,
             session_access_ttl: fcp_core::session::DEFAULT_ACCESS_TTL,
-            provisioning_auth_token: None,
             provisioning_require_https: true,
             provisioning: fcp_core::ApiProvisioningConfig::default(),
             trunk_health: None,
@@ -369,12 +364,6 @@ impl ApiState {
     /// Set the auth config for WebSocket first-message authentication.
     pub fn with_auth_config(mut self, config: crate::auth::AuthConfig) -> Self {
         self.auth_config = Some(config);
-        self
-    }
-
-    /// Set the shared token required for device auto-provisioning requests.
-    pub fn with_provisioning_auth_token(mut self, token: Option<String>) -> Self {
-        self.provisioning_auth_token = token;
         self
     }
 

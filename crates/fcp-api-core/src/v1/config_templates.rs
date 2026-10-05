@@ -526,3 +526,61 @@ pub async fn preview_template(
         context: serde_json::to_value(&context).map_err(|e| ApiError::Internal(e.to_string()))?,
     }))
 }
+
+/// What a template's resync did.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct TemplateResyncResponse {
+    /// The tenant's devices given this template (named, or picked by vendor
+    /// and model), enabled.
+    pub devices: u64,
+    /// NOTIFYs sent: one per registered contact.
+    pub sent: u64,
+}
+
+/// POST /api/v1/config-templates/:id/resync — tell every phone this
+/// template is rendered for to fetch its configuration again
+/// (`docs/PROVISIONING.md` §8).
+#[utoipa::path(
+    post,
+    path = "/api/v1/config-templates/{id}/resync",
+    tag = "config_templates",
+    operation_id = "config_templates_resync",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = TemplateResyncResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn resync_template(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Path(id): Path<String>,
+) -> Result<Json<TemplateResyncResponse>, ApiError> {
+    use fcp_core::storage::DeviceStore;
+    crate::auth::check_permission(&identity, Permission::DeviceUpdate, state.deployment_mode)?;
+    let storage = require_storage!(state);
+    let template_store = require_template_store(storage)?;
+    let id = ConfigTemplateId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid config template ID: {}", e)))?;
+    template_store
+        .get_config_template(&id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get config template: {}", e)))?
+        .filter(|t| t.tenant_id == tenant.0)
+        .ok_or_else(|| ApiError::NotFound(format!("Config template {} not found", id)))?;
+    let hint = fcp_core::provisioning::PhoneIdentity::default();
+    let (mut devices, mut sent) = (0, 0);
+    for device in storage.list_devices(&tenant.0).await? {
+        if !device.enabled {
+            continue;
+        }
+        let theirs = crate::v1::provisioning::choose_template(storage, &device, &hint).await?;
+        if theirs.is_some_and(|t| t.id == id) {
+            devices += 1;
+            sent += crate::v1::devices::resync_one(&state, &device).await?;
+        }
+    }
+    info!(template_id = %id, devices, sent, "Resynced a template's phones");
+    Ok(Json(TemplateResyncResponse { devices, sent }))
+}

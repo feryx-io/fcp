@@ -11,8 +11,6 @@ use fcp_core::{CredentialStore, Device, HotelingStore};
 use sha2::{Digest, Sha256};
 
 const PROVISIONING_NOT_FOUND: &str = "Provisioning config not found";
-const PROVISIONING_TOKEN_HEADER: &str = "x-fcp-provisioning-token";
-const DEVICE_PROVISIONING_TOKEN_HEADER: &str = "x-fcp-device-provisioning-token";
 
 fn provisioning_not_found() -> ApiError {
     ApiError::NotFound(PROVISIONING_NOT_FOUND.to_string())
@@ -29,155 +27,10 @@ fn request_is_https(headers: &HeaderMap) -> bool {
         .is_some_and(|proto| proto.eq_ignore_ascii_case("https"))
 }
 
-fn provisioning_token_from_headers(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(PROVISIONING_TOKEN_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            headers
-                .get(header::AUTHORIZATION)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.strip_prefix("Bearer "))
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        })
-}
-
-fn device_provisioning_token_from_headers(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(DEVICE_PROVISIONING_TOKEN_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
 fn hash_token(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     format!("{:x}", hasher.finalize())
-}
-
-async fn authorize_shared_provisioning_token(
-    expected_token: Option<&str>,
-    headers: &HeaderMap,
-) -> Result<(), ApiError> {
-    let expected_token = expected_token.ok_or_else(provisioning_not_found)?;
-    let presented_token =
-        provisioning_token_from_headers(headers).ok_or_else(provisioning_not_found)?;
-
-    let auth_config = crate::auth::AuthConfig::new(expected_token.to_string());
-    if crate::auth::validate_token(&presented_token, &auth_config)
-        .await
-        .is_none()
-    {
-        return Err(provisioning_not_found());
-    }
-
-    Ok(())
-}
-
-fn authorize_device_provisioning_token(
-    device: &Device,
-    headers: &HeaderMap,
-) -> Result<(), ApiError> {
-    let expected_device_token_hash = device
-        .provisioning_token_hash
-        .as_deref()
-        .filter(|hash| !hash.trim().is_empty())
-        .ok_or_else(provisioning_not_found)?;
-    let presented_device_token =
-        device_provisioning_token_from_headers(headers).ok_or_else(provisioning_not_found)?;
-    let presented_device_token_hash = hash_token(&presented_device_token);
-    if !fcp_core::secret::constant_time_eq(&presented_device_token_hash, expected_device_token_hash)
-    {
-        return Err(provisioning_not_found());
-    }
-
-    Ok(())
-}
-
-/// GET /provisioning/:mac_address -- Auto-provision a phone by MAC address.
-///
-/// Phones must present both:
-/// - `Authorization: Bearer <token>`
-/// - or `X-FCP-Provisioning-Token: <token>`
-/// - and `X-FCP-Device-Provisioning-Token: <per-device-token>`
-///
-/// Unknown or unauthorized devices all return the same 404 to avoid turning
-/// this endpoint into an enumeration surface.
-#[utoipa::path(
-    get,
-    path = "/api/v1/provisioning/{mac_address}",
-    tag = "provisioning",
-    operation_id = "provisioning_auto_provision",
-    params(("mac_address" = String, Path)),
-    responses(
-        (status = 200, description = "The device's rendered configuration", content_type = "text/plain", body = String),
-        (status = "default", description = "An error", body = crate::error::ErrorResponse),
-    ),
-)]
-pub async fn auto_provision(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    Path(mac_address): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
-    if state.provisioning_require_https && !request_is_https(&headers) {
-        return Err(provisioning_not_found());
-    }
-
-    // Gate the storage lookup on the shared token so unauthenticated callers
-    // can't probe MAC existence by timing or spin the DB.
-    authorize_shared_provisioning_token(state.provisioning_auth_token.as_deref(), &headers).await?;
-
-    let storage = state
-        .storage
-        .as_ref()
-        .ok_or_else(|| ApiError::Internal("Storage not configured".into()))?;
-
-    // Normalize MAC: strip colons/dashes/dots, lowercase
-    let normalized_mac = mac_address.replace([':', '-', '.'], "").to_lowercase();
-
-    // Look up device by MAC
-    let device = storage
-        .get_device_by_mac_address(&normalized_mac)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(provisioning_not_found)?;
-
-    // Verify the per-device token before inspecting device state so a caller
-    // with only the shared token cannot distinguish "disabled" from "enabled
-    // but wrong per-device token" by response timing.
-    authorize_device_provisioning_token(&device, &headers)?;
-
-    let base = public_base(&state, &headers);
-    let config = render_device(
-        &state,
-        storage,
-        &device,
-        normalized_mac,
-        &fcp_core::provisioning::PhoneIdentity::default(),
-        base.as_deref(),
-        None,
-    )
-    .await?;
-
-    // Return as text (could be XML, INI, etc. depending on vendor)
-    Ok((
-        StatusCode::OK,
-        [
-            ("content-type", "text/plain; charset=utf-8"),
-            ("cache-control", "no-store, no-cache, max-age=0"),
-            ("pragma", "no-cache"),
-            ("expires", "0"),
-            ("x-content-type-options", "nosniff"),
-        ],
-        config,
-    ))
 }
 
 /// Where phones reach this admin: `[api.provisioning] public_url`, else
@@ -294,6 +147,13 @@ pub(crate) async fn device_context(
         .get_tenant(&device.tenant_id)
         .await
         .map_err(internal)?;
+    // The domain names the tenant to the registrar (`docs/PROVISIONING.md`
+    // §5); without one, the server's address.
+    c.sip_domain = tenant
+        .as_ref()
+        .and_then(|t| t.sip_domains.iter().find(|d| !d.trim().is_empty()))
+        .map(|d| d.trim().to_string())
+        .unwrap_or_else(|| c.sip_server.clone());
     c.set_timezone(tenant.as_ref().and_then(|t| t.calling.timezone.as_deref()));
     let key = match key {
         Some(k) => Some(k.to_string()),
@@ -332,7 +192,7 @@ pub(crate) async fn device_context(
         c.sip_uri = device
             .sip_uri
             .clone()
-            .unwrap_or_else(|| format!("sip:{}@{}", account, state.realm));
+            .unwrap_or_else(|| format!("sip:{}@{}", account, c.sip_domain));
         c.sip_username = account;
         c.sip_auth_username = auth_username.clone();
         c.sip_auth_ha1_hash = ha1.clone();
@@ -345,7 +205,7 @@ pub(crate) async fn device_context(
         c.sip_uri = device
             .sip_uri
             .clone()
-            .unwrap_or_else(|| format!("sip:{}@{}", owner.sip_name(), state.realm));
+            .unwrap_or_else(|| format!("sip:{}@{}", owner.sip_name(), c.sip_domain));
         // The phone's account is the owner's SIP name, which a rename
         // keeps: the HA1 is computed over it.
         c.sip_username = owner.sip_name().to_string();
@@ -584,9 +444,12 @@ pub async fn serve_file(
     };
 
     let outcome: Fetched = async {
+        // A deployment's default tenant may have no row: its settings are
+        // the defaults. The key was made by its administrator either way.
         let settings = match storage.get_tenant(&tenant_id).await {
             Ok(Some(t)) => t.provisioning,
-            _ => return Fetched::Refused("unknown_tenant", StatusCode::NOT_FOUND),
+            Ok(None) => Default::default(),
+            Err(_) => return Fetched::Refused("unknown_tenant", StatusCode::NOT_FOUND),
         };
         let (mac, kind, master) = match requested {
             None => return Fetched::Refused("not_a_device_file", StatusCode::NOT_FOUND),
@@ -911,149 +774,6 @@ mod tests {
 
         headers.insert("x-forwarded-proto", "HTTPS".parse().unwrap());
         assert!(request_is_https(&headers), "case-insensitive");
-    }
-
-    #[test]
-    fn test_provisioning_token_from_custom_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            PROVISIONING_TOKEN_HEADER,
-            "shared-token".parse().expect("valid header"),
-        );
-
-        assert_eq!(
-            provisioning_token_from_headers(&headers).as_deref(),
-            Some("shared-token")
-        );
-    }
-
-    #[test]
-    fn test_provisioning_token_from_bearer_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer shared-token".parse().expect("valid header"),
-        );
-
-        assert_eq!(
-            provisioning_token_from_headers(&headers).as_deref(),
-            Some("shared-token")
-        );
-    }
-
-    #[test]
-    fn test_device_provisioning_token_from_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            DEVICE_PROVISIONING_TOKEN_HEADER,
-            " device-token ".parse().expect("valid header"),
-        );
-
-        assert_eq!(
-            device_provisioning_token_from_headers(&headers).as_deref(),
-            Some("device-token")
-        );
-    }
-
-    fn test_device_with_token_hash(hash: Option<&str>) -> Device {
-        let mut device = Device::new(
-            "Test Phone".to_string(),
-            fcp_core::DeviceType::DeskPhone,
-            fcp_core::TenantId::new(),
-        );
-        device.provisioning_token_hash = hash.map(str::to_string);
-        device
-    }
-
-    #[test]
-    fn test_authorize_device_provisioning_rejects_when_hash_unset() {
-        let device = test_device_with_token_hash(None);
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            DEVICE_PROVISIONING_TOKEN_HEADER,
-            "anything".parse().unwrap(),
-        );
-
-        let err = authorize_device_provisioning_token(&device, &headers)
-            .expect_err("device without a hash must fail closed");
-        assert!(matches!(err, ApiError::NotFound(_)));
-    }
-
-    #[test]
-    fn test_authorize_device_provisioning_rejects_when_header_missing() {
-        let hash = hash_token("correct-horse-battery-staple-correct-horse");
-        let device = test_device_with_token_hash(Some(&hash));
-        let headers = HeaderMap::new();
-
-        let err = authorize_device_provisioning_token(&device, &headers)
-            .expect_err("missing header must 404");
-        assert!(matches!(err, ApiError::NotFound(_)));
-    }
-
-    #[test]
-    fn test_authorize_device_provisioning_rejects_wrong_token() {
-        let hash = hash_token("correct-horse-battery-staple-correct-horse");
-        let device = test_device_with_token_hash(Some(&hash));
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            DEVICE_PROVISIONING_TOKEN_HEADER,
-            "wrong-token-but-also-32-chars-long-xx".parse().unwrap(),
-        );
-
-        let err = authorize_device_provisioning_token(&device, &headers)
-            .expect_err("wrong token must 404");
-        assert!(matches!(err, ApiError::NotFound(_)));
-    }
-
-    #[test]
-    fn test_authorize_device_provisioning_accepts_correct_token() {
-        let token = "correct-horse-battery-staple-correct-horse";
-        let hash = hash_token(token);
-        let device = test_device_with_token_hash(Some(&hash));
-        let mut headers = HeaderMap::new();
-        headers.insert(DEVICE_PROVISIONING_TOKEN_HEADER, token.parse().unwrap());
-
-        authorize_device_provisioning_token(&device, &headers)
-            .expect("correct token must authorize");
-    }
-
-    #[tokio::test]
-    async fn test_authorize_shared_provisioning_rejects_when_unconfigured() {
-        let mut headers = HeaderMap::new();
-        headers.insert(PROVISIONING_TOKEN_HEADER, "any-token".parse().unwrap());
-
-        let err = authorize_shared_provisioning_token(None, &headers)
-            .await
-            .expect_err("unset deployment token must fail closed");
-        assert!(matches!(err, ApiError::NotFound(_)));
-    }
-
-    #[tokio::test]
-    async fn test_authorize_shared_provisioning_rejects_when_header_missing() {
-        let headers = HeaderMap::new();
-        let err = authorize_shared_provisioning_token(Some("shared-token"), &headers)
-            .await
-            .expect_err("missing header must 404");
-        assert!(matches!(err, ApiError::NotFound(_)));
-    }
-
-    #[tokio::test]
-    async fn test_authorize_shared_provisioning_rejects_wrong_token() {
-        let mut headers = HeaderMap::new();
-        headers.insert(PROVISIONING_TOKEN_HEADER, "wrong-token".parse().unwrap());
-        let err = authorize_shared_provisioning_token(Some("shared-token"), &headers)
-            .await
-            .expect_err("wrong token must 404");
-        assert!(matches!(err, ApiError::NotFound(_)));
-    }
-
-    #[tokio::test]
-    async fn test_authorize_shared_provisioning_accepts_correct_token() {
-        let mut headers = HeaderMap::new();
-        headers.insert(PROVISIONING_TOKEN_HEADER, "shared-token".parse().unwrap());
-        authorize_shared_provisioning_token(Some("shared-token"), &headers)
-            .await
-            .expect("correct token must authorize");
     }
 
     #[test]

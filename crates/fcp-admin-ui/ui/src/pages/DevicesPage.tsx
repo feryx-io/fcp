@@ -209,6 +209,19 @@ export function DevicesPage() {
     },
   })
 
+  // Resync (docs/PROVISIONING.md §8): the phone's vendor's NOTIFY, sent by
+  // a call manager to each contact it is registered from.
+  const resyncMutation = useMutation({
+    mutationFn: (device: Device) => devices.resync(device.id),
+    onSuccess: (res, device) =>
+      alert(
+        res.sent > 0
+          ? `"${device.name}" was told to fetch its configuration again.`
+          : `"${device.name}" is not registered, so it could not be told.`,
+      ),
+    onError: (e) => alert((e as Error).message),
+  })
+
   const deleteMutation = useMutation({
     mutationFn: devices.delete,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['devices'] }),
@@ -363,6 +376,13 @@ export function DevicesPage() {
             <DropdownMenuItem onClick={() => setConfigOf(row.original)}>
               <FileUp className="mr-2 h-4 w-4" />
               Configuration
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={resyncMutation.isPending}
+              onClick={() => resyncMutation.mutate(row.original)}
+            >
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Tell it to fetch again
             </DropdownMenuItem>
             {row.original.e911_override && (
               <DropdownMenuItem

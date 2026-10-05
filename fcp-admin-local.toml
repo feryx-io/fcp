@@ -9,7 +9,6 @@ node_id = "admin-local"
 bind_address = "0.0.0.0:8080"
 auth_enabled = true
 auth_token = "fcp-local-dev-token-2026"
-provisioning_auth_token = "fcp-local-provisioning-token-2026"
 provisioning_require_https = false
 
 [storage]

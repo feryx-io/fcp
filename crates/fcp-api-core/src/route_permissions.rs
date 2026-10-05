@@ -358,6 +358,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (DELETE, "/devices/:id", Needs(DeviceDelete)),
     (GET, "/devices/:id/fetches", Needs(DeviceRead)),
     (POST, "/devices/:id/render", Needs(DeviceUpdate)),
+    (POST, "/devices/:id/resync", Needs(DeviceUpdate)),
     (POST, "/devices/import", Needs(DeviceCreate)),
     (GET, "/provisioning/key", Needs(DeviceUpdate)),
     (POST, "/provisioning/key", Needs(DeviceUpdate)),
@@ -374,6 +375,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (POST, "/config-templates", Needs(DeviceCreate)),
     (GET, "/config-templates/library", Needs(DeviceRead)),
     (POST, "/config-templates/preview", Needs(DeviceRead)),
+    (POST, "/config-templates/:id/resync", Needs(DeviceUpdate)),
     (
         POST,
         "/config-templates/library/:vendor",

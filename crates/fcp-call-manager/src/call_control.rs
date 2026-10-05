@@ -27,6 +27,59 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/calls/:id/play", post(play))
         .route("/calls/:id/say", post(say))
         .route("/calls/:id/hangup", post(hangup))
+        .route("/devices/:id/resync", post(resync_device))
+}
+
+/// Who a resync is for.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResyncBody {
+    #[serde(default)]
+    tenant_id: Option<TenantId>,
+}
+
+/// POST /devices/:id/resync — tell the device's phone to fetch its
+/// configuration again (`docs/PROVISIONING.md` §8): its vendor's NOTIFY to
+/// each of its registered contacts. `sent` is how many.
+async fn resync_device(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Option<Json<ResyncBody>>,
+) -> Response {
+    use fcp_core::storage::DeviceStore;
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let tenant = body.tenant_id.unwrap_or(state.default_tenant_id);
+    let not_found = || {
+        error(CallControlError::new(
+            404,
+            format!("Device not found: {id}"),
+        ))
+    };
+    let Ok(device_id) = id.parse::<fcp_core::DeviceId>() else {
+        return not_found();
+    };
+    let device = match state.storage.get_device(&device_id).await {
+        Ok(Some(d)) if d.tenant_id == tenant => d,
+        Ok(_) => return not_found(),
+        Err(e) => return error(CallControlError::new(500, e.to_string())),
+    };
+    let Some(handler) = state.sip_handler.clone() else {
+        return error(CallControlError::new(
+            503,
+            "resync is not available on this node",
+        ));
+    };
+    match handler.resync_device(&device).await {
+        Some(sent) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"device_id": id, "sent": sent})),
+        )
+            .into_response(),
+        None => error(CallControlError::new(
+            503,
+            "resync is not available on this node",
+        )),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]

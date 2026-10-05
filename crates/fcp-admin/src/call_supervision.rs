@@ -154,6 +154,41 @@ impl CallSupervisor for NodeCallSupervisor {
             )),
         }
     }
+
+    /// Any call manager reads the shared registrations and sends: the
+    /// first that answers does.
+    async fn resync_device(
+        &self,
+        tenant: TenantId,
+        device_id: &str,
+    ) -> Result<(u16, serde_json::Value), String> {
+        let mut last_error = None;
+        for base in self.nodes().await? {
+            let builder = self
+                .http
+                .post(format!("{base}/devices/{device_id}/resync"))
+                .json(&serde_json::json!({ "tenant_id": tenant }));
+            let builder = match &self.config.auth_token {
+                Some(token) => builder.bearer_auth(token),
+                None => builder,
+            };
+            match builder.send().await {
+                Ok(response) if response.status().as_u16() != 503 => {
+                    let status = response.status().as_u16();
+                    let body = response
+                        .json::<serde_json::Value>()
+                        .await
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    return Ok((status, body));
+                }
+                Ok(_) => last_error = Some(format!("the call manager at {base} cannot resync")),
+                Err(e) => {
+                    last_error = Some(format!("the call manager at {base} did not answer: {e}"))
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| "no call manager to ask".to_string()))
+    }
 }
 
 #[cfg(test)]

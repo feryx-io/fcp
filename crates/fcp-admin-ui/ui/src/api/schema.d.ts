@@ -524,32 +524,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/provisioning/{mac_address}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * GET /provisioning/:mac_address -- Auto-provision a phone by MAC address.
-         * @description Phones must present both:
-         *     - `Authorization: Bearer <token>`
-         *     - or `X-FCP-Provisioning-Token: <token>`
-         *     - and `X-FCP-Device-Provisioning-Token: <per-device-token>`
-         *
-         *     Unknown or unauthorized devices all return the same 404 to avoid turning
-         *     this endpoint into an enumeration surface.
-         */
-        get: operations["provisioning_auto_provision"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/auth/signup": {
         parameters: {
             query?: never;
@@ -4287,6 +4261,48 @@ export interface paths {
          *     the one given.
          */
         post: operations["provisioning_render_device"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/{id}/resync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/devices/:id/resync — tell the phone to fetch its
+         *     configuration again, with its vendor's NOTIFY (`docs/PROVISIONING.md`
+         *     §8), sent by a call manager to each contact it is registered from.
+         */
+        post: operations["provisioning_resync_device"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/config-templates/{id}/resync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/config-templates/:id/resync — tell every phone this
+         *     template is rendered for to fetch its configuration again
+         *     (`docs/PROVISIONING.md` §8).
+         */
+        post: operations["config_templates_resync"];
         delete?: never;
         options?: never;
         head?: never;
@@ -9863,6 +9879,16 @@ export interface components {
             users: number;
             devices: number;
         };
+        /** @description What a resync did. */
+        ResyncResponse: {
+            device_id: string;
+            /**
+             * Format: int64
+             * @description The phone's registered contacts sent the NOTIFY: 0 when it is not
+             *     registered.
+             */
+            sent: number;
+        };
         RetentionRunResponse: {
             tenant_id: string;
             /** Format: date-time */
@@ -10264,6 +10290,20 @@ export interface components {
             voice?: string | null;
             /** Format: int64 */
             expires_in_hours?: number | null;
+        };
+        /** @description What a template's resync did. */
+        TemplateResyncResponse: {
+            /**
+             * Format: int64
+             * @description The tenant's devices given this template (named, or picked by vendor
+             *     and model), enabled.
+             */
+            devices: number;
+            /**
+             * Format: int64
+             * @description NOTIFYs sent: one per registered contact.
+             */
+            sent: number;
         };
         /** @description A tenant's calling defaults. */
         TenantCalling: {
@@ -12521,37 +12561,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LoginResponse"];
-                };
-            };
-            /** @description An error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    provisioning_auto_provision: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                mac_address: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The device's rendered configuration */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
                 };
             };
             /** @description An error */
@@ -21843,6 +21852,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RenderedConfigResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_resync_device: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResyncResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    config_templates_resync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateResyncResponse"];
                 };
             };
             /** @description An error */

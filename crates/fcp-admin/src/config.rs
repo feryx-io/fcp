@@ -489,10 +489,9 @@ pub struct ApiConfig {
     #[serde(default)]
     pub auth_token: Option<String>,
 
-    /// Shared token accepted only by the device auto-provisioning endpoint.
-    ///
-    /// Keep this distinct from `auth_token`; provisioning tokens may be placed
-    /// in device bootstrap URLs and must not grant admin API access.
+    /// The old provisioning route's shared token: read by nothing since
+    /// v0.25.323 (`docs/PROVISIONING.md` §9), accepted for one release so
+    /// a configuration that still sets it starts, with a warning.
     #[serde(default)]
     pub provisioning_auth_token: Option<String>,
 
@@ -851,47 +850,6 @@ pub fn validate_config(config: &AdminConfig) -> Result<()> {
         anyhow::bail!("api.auth_token must be set when api.auth_enabled = true");
     }
 
-    let has_provisioning_token = config
-        .api
-        .provisioning_auth_token
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|token| !token.is_empty());
-
-    if let Some(raw_token) = config.api.provisioning_auth_token.as_deref() {
-        if raw_token.contains('\r') || raw_token.contains('\n') {
-            anyhow::bail!("api.provisioning_auth_token must not contain CR/LF characters");
-        }
-        let trimmed = raw_token.trim();
-        if !raw_token.is_empty() && trimmed.is_empty() {
-            anyhow::bail!(
-                "api.provisioning_auth_token must not be whitespace-only (use unset to disable auto-provisioning)"
-            );
-        }
-        // Auto-provisioning tokens gate access to device SIP credentials, so
-        // require the same ≥32-char entropy floor enforced for per-device
-        // tokens. An unset value is fine — the endpoint fails closed.
-        if !trimmed.is_empty() && trimmed.len() < 32 {
-            anyhow::bail!(
-                "api.provisioning_auth_token must be at least 32 characters (got {})",
-                trimmed.len()
-            );
-        }
-    }
-
-    if has_token && has_provisioning_token {
-        let auth_token = config.api.auth_token.as_deref().unwrap_or_default().trim();
-        let provisioning_token = config
-            .api
-            .provisioning_auth_token
-            .as_deref()
-            .unwrap_or_default()
-            .trim();
-        if auth_token == provisioning_token {
-            anyhow::bail!("api.provisioning_auth_token must be distinct from api.auth_token");
-        }
-    }
-
     if config.api.allow_public_signup && !has_token {
         anyhow::bail!("api.auth_token must be set when api.allow_public_signup = true");
     }
@@ -994,53 +952,5 @@ mod tests {
 
         config.api.auth_token = Some("secret".to_string());
         assert!(validate_config(&config).is_ok());
-    }
-
-    #[test]
-    fn test_provisioning_token_must_be_distinct() {
-        let mut config = AdminConfig::default();
-        let shared = "a".repeat(32);
-        config.api.auth_token = Some(shared.clone());
-        config.api.provisioning_auth_token = Some(shared);
-        assert!(validate_config(&config).is_err());
-
-        config.api.provisioning_auth_token = Some("b".repeat(32));
-        assert!(validate_config(&config).is_ok());
-    }
-
-    #[test]
-    fn test_provisioning_token_minimum_length() {
-        let mut config = AdminConfig::default();
-        config.api.auth_token = Some("a".repeat(32));
-
-        // Too short.
-        config.api.provisioning_auth_token = Some("short-token".to_string());
-        let err = validate_config(&config).expect_err("11-char token must be rejected");
-        assert!(err.to_string().contains("at least 32 characters"));
-
-        // 31 chars is still short.
-        config.api.provisioning_auth_token = Some("b".repeat(31));
-        assert!(validate_config(&config).is_err());
-
-        // Exactly 32 chars is the floor.
-        config.api.provisioning_auth_token = Some("b".repeat(32));
-        assert!(validate_config(&config).is_ok());
-
-        // Unset is fine — the endpoint fails closed at runtime.
-        config.api.provisioning_auth_token = None;
-        assert!(validate_config(&config).is_ok());
-    }
-
-    #[test]
-    fn test_provisioning_token_rejects_whitespace_only() {
-        let mut config = AdminConfig::default();
-        config.api.auth_token = Some("a".repeat(32));
-
-        config.api.provisioning_auth_token = Some("   ".to_string());
-        let err = validate_config(&config).expect_err("whitespace-only must be rejected");
-        assert!(err.to_string().contains("whitespace-only"));
-
-        config.api.provisioning_auth_token = Some("\t\t".to_string());
-        assert!(validate_config(&config).is_err());
     }
 }

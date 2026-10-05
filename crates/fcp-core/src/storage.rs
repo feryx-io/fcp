@@ -2012,6 +2012,20 @@ pub trait DeviceStore: Send + Sync {
 
     /// Delete a device by ID
     async fn delete_device(&self, id: &crate::DeviceId) -> Result<()>;
+
+    /// Write what a REGISTER said about a device, touching nothing else
+    /// (`docs/PROVISIONING.md` §8).
+    async fn record_device_registration(
+        &self,
+        id: &crate::DeviceId,
+        update: &crate::device::DeviceRegistrationUpdate,
+    ) -> Result<()> {
+        if let Some(mut device) = self.get_device(id).await? {
+            update.apply(&mut device);
+            self.put_device(device).await?;
+        }
+        Ok(())
+    }
 }
 
 /// SIP trunk storage operations.
@@ -4660,6 +4674,16 @@ impl DeviceStore for DynStorage {
 
     async fn delete_device(&self, id: &crate::DeviceId) -> Result<()> {
         self.device_store.delete_device(id).await
+    }
+
+    async fn record_device_registration(
+        &self,
+        id: &crate::DeviceId,
+        update: &crate::device::DeviceRegistrationUpdate,
+    ) -> Result<()> {
+        self.device_store
+            .record_device_registration(id, update)
+            .await
     }
 }
 

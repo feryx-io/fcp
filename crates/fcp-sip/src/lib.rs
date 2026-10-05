@@ -18,6 +18,7 @@ pub mod call_control;
 pub mod conference;
 pub mod conference_migration;
 pub mod config;
+pub mod device_sync;
 pub mod drain;
 pub mod edge;
 pub mod emergency;

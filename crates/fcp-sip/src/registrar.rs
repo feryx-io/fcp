@@ -717,6 +717,9 @@ pub struct FcpRegistrar {
     /// before.
     identity: Option<Arc<fcp_core::DynStorage>>,
 
+    /// Registrations written on devices (`docs/PROVISIONING.md` §8).
+    device_registrations: Option<Arc<crate::device_sync::DeviceRegistrations>>,
+
     /// Default registration expiry in seconds
     default_expires: u32,
 
@@ -767,6 +770,7 @@ impl FcpRegistrar {
             auth_invites: AtomicBool::new(false),
             credential_store,
             identity: None,
+            device_registrations: None,
             default_expires: 3600,
             min_expires: 60,
             max_expires: 86400,
@@ -833,6 +837,9 @@ impl FcpRegistrar {
     /// Check who a credential registers and calls as, and accept devices'
     /// own credentials (`docs/ENTERPRISE_CALLING.md` §3.8).
     pub fn with_identity(mut self, identity: Arc<fcp_core::DynStorage>) -> Self {
+        self.device_registrations = Some(Arc::new(crate::device_sync::DeviceRegistrations::new(
+            Arc::clone(&identity),
+        )));
         self.identity = Some(identity);
         self.refresh_authenticator();
         self
@@ -1003,6 +1010,34 @@ impl FcpRegistrar {
     }
 
     /// Publish a registration event (fire-and-forget).
+    /// Write a REGISTER on the device it is for (`docs/PROVISIONING.md` §8).
+    #[allow(clippy::too_many_arguments)]
+    fn note_device(
+        &self,
+        tenant_id: TenantId,
+        aor: &str,
+        auth_username: Option<String>,
+        address: Option<String>,
+        source: Option<std::net::SocketAddr>,
+        user_agent: Option<String>,
+        registered: bool,
+    ) {
+        let (Some(devices), Some(aor_user)) =
+            (&self.device_registrations, extract_username_from_aor(aor))
+        else {
+            return;
+        };
+        devices.note(
+            tenant_id,
+            aor_user,
+            auth_username,
+            address,
+            source.map(|s| s.ip()),
+            user_agent,
+            registered,
+        );
+    }
+
     fn publish_event(&self, event: RegistrationEvent) {
         if let Some(ref publisher) = self.event_publisher {
             let publisher = Arc::clone(publisher);
@@ -1074,6 +1109,10 @@ impl FcpRegistrar {
             .await
             .ok();
 
+        // Who the credentials are, for the device the registration is
+        // written on.
+        let mut auth_username: Option<String> = None;
+
         // Handle authentication if enabled (toggled at runtime via AtomicBool)
         if self.auth_enabled.load(Ordering::Relaxed) {
             if let Some(ref authenticator) = self.authenticator {
@@ -1106,6 +1145,7 @@ impl FcpRegistrar {
                 match authenticator.authenticate(request).await {
                     crate::auth::AuthOutcome::Authenticated { username } => {
                         debug!("Authentication successful");
+                        auth_username = Some(username.clone());
                         // The credentials may register only what is theirs
                         // (`docs/ENTERPRISE_CALLING.md` §3.8): no retry fixes
                         // that, so it is refused rather than challenged.
@@ -1169,7 +1209,7 @@ impl FcpRegistrar {
         }
 
         // Authentication passed or not required - handle registration
-        self.process_registration(request, flow_token, source_address)
+        self.process_registration(request, flow_token, source_address, auth_username)
             .await
     }
 
@@ -1200,6 +1240,7 @@ impl FcpRegistrar {
         request: &Request,
         flow_token: Option<&str>,
         source_address: Option<std::net::SocketAddr>,
+        auth_username: Option<String>,
     ) -> Response {
         // Extract To header for AOR
         let to_header = match request.headers().get_smol("To") {
@@ -1260,6 +1301,15 @@ impl FcpRegistrar {
                 {
                     Ok(_) => {
                         info!(aor = %aor, "Deregistered all contacts");
+                        self.note_device(
+                            tenant_id,
+                            &aor,
+                            auth_username.clone(),
+                            None,
+                            source_address,
+                            user_agent.clone(),
+                            false,
+                        );
                         // Emit unregistration event for wildcard deregistration
                         self.publish_event(RegistrationEvent::Unregistered {
                             aor: aor.clone(),
@@ -1294,6 +1344,15 @@ impl FcpRegistrar {
                 {
                     Ok(_) => {
                         info!(aor = %aor, contact = %contact_uri, "Deregistered contact");
+                        self.note_device(
+                            tenant_id,
+                            &aor,
+                            auth_username.clone(),
+                            None,
+                            source_address,
+                            user_agent.clone(),
+                            false,
+                        );
                         // Emit unregistration event
                         self.publish_event(RegistrationEvent::Unregistered {
                             aor: aor.clone(),
@@ -1332,6 +1391,15 @@ impl FcpRegistrar {
             {
                 Ok(_) => {
                     info!(aor = %aor, contact = %contact_uri, expires = expires, "Registration successful");
+                    self.note_device(
+                        tenant_id,
+                        &aor,
+                        auth_username.clone(),
+                        Some(contact_host_port(contact_uri)),
+                        source_address,
+                        user_agent.clone(),
+                        true,
+                    );
                     // Emit registration event
                     self.publish_event(RegistrationEvent::Registered {
                         aor: aor.clone(),
@@ -1932,6 +2000,18 @@ impl FcpRegistrar {
         // Return default preferences if no credential store or user not found
         fcp_core::MediaPreferences::default()
     }
+}
+
+/// A contact URI's host and port (`sip:alice@192.0.2.7:5060;transport=tcp`
+/// → `192.0.2.7:5060`).
+fn contact_host_port(contact: &str) -> String {
+    let rest = contact
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim_start_matches("sips:")
+        .trim_start_matches("sip:");
+    let host = rest.rsplit_once('@').map(|(_, h)| h).unwrap_or(rest);
+    host.split([';', '>']).next().unwrap_or(host).to_string()
 }
 
 #[cfg(test)]

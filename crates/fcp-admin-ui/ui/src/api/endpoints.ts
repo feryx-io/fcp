@@ -237,6 +237,9 @@ export const devices = {
   /** The configuration the phone would get now, or from the template given. */
   render: (id: string, data: RenderDeviceRequest = {}) =>
     apiClient.post<RenderedConfig>(`/devices/${encodeURIComponent(id)}/render`, data),
+  /** Tell the phone to fetch its configuration again (§8). */
+  resync: (id: string) =>
+    apiClient.post<{ device_id: string; sent: number }>(`/devices/${encodeURIComponent(id)}/resync`),
 }
 
 // Provisioning templates (docs/PROVISIONING.md §5)
@@ -250,6 +253,9 @@ export const configTemplates = {
   library: () => apiClient.getAll<LibraryTemplate>('/config-templates/library'),
   fromLibrary: (vendor: string) =>
     apiClient.post<ConfigTemplate>(`/config-templates/library/${encodeURIComponent(vendor)}`),
+  /** Tell every phone given this template to fetch again (§8). */
+  resync: (id: string) =>
+    apiClient.post<{ devices: number; sent: number }>(`/config-templates/${encodeURIComponent(id)}/resync`),
   /** A body rendered against sample values. */
   preview: (template_body: string, vendor?: string) =>
     apiClient.post<PreviewTemplateResponse>('/config-templates/preview', { template_body, vendor }),

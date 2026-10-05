@@ -755,6 +755,32 @@ Each phase is one PR based on main, with its admin UI and its docs.
        `a_pending_phone_is_claimed_and_gets_the_template_for_its_model` and
        `phones_are_imported_all_or_none_and_xml_values_are_escaped`
        (`api_postgres.rs`) and the template and identity unit tests.
+   - **7c done (v0.25.323)** (`docs/PROVISIONING.md` §8–§9) — phase 7
+     complete.
+     - The registration on the device: `fcp_sip::device_sync`
+       (`DeviceRegistrations`, run by the registrar that takes the
+       REGISTER) finds the device — own credentials, the MAC in the
+       User-Agent, the address its last fetch or registration came from,
+       its SIP URI, the user's only device — and writes state, address,
+       User-Agent, firmware and (where unset) vendor and model through
+       `DeviceStore::record_device_registration`, one UPDATE, at most every
+       ten minutes unchanged; the device views show `expired` without a
+       live registration.
+     - Resync: `/devices/{id}/resync` and `/config-templates/{id}/resync`,
+       asked of a call manager (`CallSupervisor::resync_device`, the node's
+       `/devices/{id}/resync`), which sends each contact the vendor's
+       NOTIFY (`check-sync;reboot=false`, `resync`, `check-sync`); hoteling
+       uses the same.
+     - `sip_domain` (the tenant's SIP domain, which names it to the
+       registrar) and the starters registering in it through `sip_server`
+       as outbound proxy; a default tenant with no row served its defaults.
+     - The old `/api/v1/provisioning/{mac}` route removed;
+       `[api] provisioning_auth_token` accepted with a warning for a
+       release.
+     - Proved by
+       `a_phone_fetches_its_file_registers_with_it_and_is_told_to_fetch_again`
+       (`fcp-admin/tests/provisioning.rs`, the testkit phone against the
+       admin and a call manager).
 8. **Zero-touch.**
    - A redirection-service connector trait. Connectors for Yealink RPS
      and Poly ZTP first, then Grandstream GDMS and Fanvil FDPS (Q9).

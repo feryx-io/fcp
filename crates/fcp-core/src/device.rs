@@ -290,6 +290,47 @@ impl fmt::Debug for Device {
     }
 }
 
+/// What a REGISTER said about a device (`docs/PROVISIONING.md` §8),
+/// written on its own so an administrator's edit is not lost to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRegistrationUpdate {
+    pub state: RegistrationState,
+    pub at: SystemTime,
+    /// The contact's host and port.
+    pub address: Option<String>,
+    pub user_agent: Option<String>,
+    /// Kept only where the device has none.
+    pub vendor: Option<crate::config_template::PhoneVendor>,
+    pub model: Option<String>,
+    /// What the phone runs: replaces what the device had.
+    pub firmware: Option<String>,
+}
+
+impl DeviceRegistrationUpdate {
+    /// Apply to a device as the store does.
+    pub fn apply(&self, device: &mut Device) {
+        device.registration_state = self.state;
+        if self.state == RegistrationState::Registered {
+            device.last_registration = Some(self.at);
+        }
+        if self.address.is_some() {
+            device.last_ip_address = self.address.clone();
+        }
+        if self.user_agent.is_some() {
+            device.user_agent = self.user_agent.clone();
+        }
+        if device.vendor.is_none() {
+            device.vendor = self.vendor;
+        }
+        if device.model.is_none() {
+            device.model = self.model.clone();
+        }
+        if self.firmware.is_some() {
+            device.firmware_version = self.firmware.clone();
+        }
+    }
+}
+
 /// A key programmed on a phone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

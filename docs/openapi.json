@@ -1278,48 +1278,6 @@
         }
       }
     },
-    "/api/v1/provisioning/{mac_address}": {
-      "get": {
-        "tags": [
-          "provisioning"
-        ],
-        "summary": "GET /provisioning/:mac_address -- Auto-provision a phone by MAC address.",
-        "description": "Phones must present both:\n- `Authorization: Bearer <token>`\n- or `X-FCP-Provisioning-Token: <token>`\n- and `X-FCP-Device-Provisioning-Token: <per-device-token>`\n\nUnknown or unauthorized devices all return the same 404 to avoid turning\nthis endpoint into an enumeration surface.",
-        "operationId": "provisioning_auto_provision",
-        "parameters": [
-          {
-            "name": "mac_address",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The device's rendered configuration",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "An error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/auth/signup": {
       "post": {
         "tags": [
@@ -14293,6 +14251,88 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RenderedConfigResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{id}/resync": {
+      "post": {
+        "tags": [
+          "provisioning"
+        ],
+        "summary": "POST /api/v1/devices/:id/resync — tell the phone to fetch its\nconfiguration again, with its vendor's NOTIFY (`docs/PROVISIONING.md`\n§8), sent by a call manager to each contact it is registered from.",
+        "operationId": "provisioning_resync_device",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResyncResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/config-templates/{id}/resync": {
+      "post": {
+        "tags": [
+          "config_templates"
+        ],
+        "summary": "POST /api/v1/config-templates/:id/resync — tell every phone this\ntemplate is rendered for to fetch its configuration again\n(`docs/PROVISIONING.md` §8).",
+        "operationId": "config_templates_resync",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateResyncResponse"
                 }
               }
             }
@@ -32370,6 +32410,25 @@
           }
         }
       },
+      "ResyncResponse": {
+        "type": "object",
+        "description": "What a resync did.",
+        "required": [
+          "device_id",
+          "sent"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "sent": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The phone's registered contacts sent the NOTIFY: 0 when it is not\nregistered.",
+            "minimum": 0
+          }
+        }
+      },
       "RetentionRunResponse": {
         "type": "object",
         "required": [
@@ -33619,6 +33678,28 @@
               "null"
             ],
             "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "TemplateResyncResponse": {
+        "type": "object",
+        "description": "What a template's resync did.",
+        "required": [
+          "devices",
+          "sent"
+        ],
+        "properties": {
+          "devices": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The tenant's devices given this template (named, or picked by vendor\nand model), enabled.",
+            "minimum": 0
+          },
+          "sent": {
+            "type": "integer",
+            "format": "int64",
+            "description": "NOTIFYs sent: one per registered contact.",
             "minimum": 0
           }
         }

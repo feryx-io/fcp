@@ -566,7 +566,10 @@ impl Phone {
         realm: &str,
         server: SocketAddr,
     ) -> Result<Self> {
-        Self::build(bind, username, username, password, realm, server, None).await
+        Self::build(
+            bind, username, username, password, realm, server, None, None,
+        )
+        .await
     }
 
     /// A phone whose address is `username` but whose digest credentials
@@ -587,6 +590,31 @@ impl Phone {
             realm,
             server,
             None,
+            None,
+        )
+        .await
+    }
+
+    /// As [`Phone::with_credentials`], saying it is `user_agent` on every
+    /// request: a provisioned desk phone (`Yealink SIP-T54W 96.86.0.70
+    /// 80:5e:c0:…`) whose REGISTER names its model and MAC.
+    pub async fn with_user_agent(
+        username: &str,
+        auth_username: &str,
+        password: &str,
+        realm: &str,
+        server: SocketAddr,
+        user_agent: &str,
+    ) -> Result<Self> {
+        Self::build(
+            "127.0.0.1:0",
+            username,
+            auth_username,
+            password,
+            realm,
+            server,
+            None,
+            Some(user_agent),
         )
         .await
     }
@@ -612,6 +640,7 @@ impl Phone {
             realm,
             server,
             Some(ca_pem),
+            None,
         )
         .await
     }
@@ -625,6 +654,7 @@ impl Phone {
         realm: &str,
         server: SocketAddr,
         tls_ca: Option<&std::path::Path>,
+        user_agent: Option<&str>,
     ) -> Result<Self> {
         disable_rate_limits();
         let socket = Arc::new(UdpSocket::bind(bind).await?);
@@ -682,19 +712,20 @@ impl Phone {
         );
         let dm: Arc<DialogManager> = uas.dialog_manager();
         let resolver = Arc::new(sip_dns::SipResolver::from_system()?);
-        let uac = Arc::new(
-            IntegratedUAC::builder()
-                .local_uri(local_uri.as_str())?
-                .contact_uri(&contact)?
-                .local_addr(local_addr.to_string())?
-                .via_advertised_addr(local_addr.to_string())?
-                .transaction_manager(Arc::clone(&tm))
-                .resolver(resolver)
-                .dispatcher(dispatcher)
-                .dialog_manager(dm)
-                .credentials(auth_username, password)
-                .build()?,
-        );
+        let mut builder = IntegratedUAC::builder()
+            .local_uri(local_uri.as_str())?
+            .contact_uri(&contact)?
+            .local_addr(local_addr.to_string())?
+            .via_advertised_addr(local_addr.to_string())?
+            .transaction_manager(Arc::clone(&tm))
+            .resolver(resolver)
+            .dispatcher(dispatcher)
+            .dialog_manager(dm)
+            .credentials(auth_username, password);
+        if let Some(agent) = user_agent {
+            builder = builder.user_agent(agent);
+        }
+        let uac = Arc::new(builder.build()?);
         let _ = inner.uas.set(Arc::clone(&uas));
         let _ = inner.uac.set(Arc::clone(&uac));
 
