@@ -1151,25 +1151,118 @@ pub async fn delete_device(
         .ok_or_else(|| ApiError::NotFound(format!("Device {} not found", id)))
         .and_then(|device| ensure_device_in_tenant(device, &tenant.0, &id))?;
 
+    remove_device(&state, storage, &device).await?;
+    info!("Deleted device {}", id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Remove a device, and everything it was signed in with: its app's
+/// sessions end (`docs/SOFTPHONE.md` §2.1), its own registrations are
+/// dropped, caches hear, and its redirection service forgets it.
+pub(crate) async fn remove_device(
+    state: &ApiState,
+    storage: &fcp_core::DynStorage,
+    device: &Device,
+) -> Result<(), ApiError> {
+    let now = SystemTime::now();
+    if let Some(sessions) = storage.login_session_store() {
+        let ended = sessions
+            .revoke_device_sessions(&device.id, "the device was removed", now)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to end the device's sessions: {e}")))?;
+        if ended > 0 {
+            info!(device = %device.id, ended, "Ended a removed device's app sessions");
+        }
+    }
+    drop_device_registrations(state, storage, device).await;
     storage
-        .delete_device(&id)
+        .delete_device(&device.id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to delete device: {}", e)))?;
-
-    // Publish ConfigChanged event for cache invalidation
     let _ = state
         .event_bus
         .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
             entity_type: "device".to_string(),
             entity_id: device.id.to_string(),
             tenant_id: device.tenant_id,
-            timestamp: SystemTime::now(),
+            timestamp: now,
         }))
         .await;
+    crate::v1::redirection::device_removed(state, device);
+    Ok(())
+}
 
-    crate::v1::redirection::device_removed(&state, &device);
-    info!("Deleted device {}", id);
-    Ok(StatusCode::NO_CONTENT)
+/// Drop the registrations a device made: those at the contact its last
+/// registration came from, under its owner's names or its own.
+async fn drop_device_registrations(
+    state: &ApiState,
+    storage: &fcp_core::DynStorage,
+    device: &Device,
+) {
+    let Some(address) = device.last_ip_address.as_deref().filter(|a| !a.is_empty()) else {
+        return;
+    };
+    let mut names: Vec<String> = device
+        .sip_username
+        .iter()
+        .map(|n| n.to_lowercase())
+        .collect();
+    if let Some(owner) = device.owner_user_id {
+        if let Ok(Some(user)) = storage.get_user_by_id(&owner).await {
+            names.push(user.username.to_lowercase());
+            names.push(user.sip_name().to_lowercase());
+            if let Some(ext) = user.extension.as_deref().filter(|e| !e.is_empty()) {
+                names.push(ext.to_lowercase());
+            }
+        }
+    }
+    let Ok(registrations) = storage
+        .get_all_registrations_in_tenant(&device.tenant_id)
+        .await
+    else {
+        return;
+    };
+    let at_address = |contact: &str| {
+        contact
+            .split(['@', '>', ';'])
+            .map(|part| {
+                part.trim()
+                    .trim_start_matches('<')
+                    .trim_start_matches("sips:")
+                    .trim_start_matches("sip:")
+            })
+            .any(|part| part == address)
+    };
+    for registration in registrations {
+        let user_part = registration
+            .aor
+            .trim_start_matches("sips:")
+            .trim_start_matches("sip:")
+            .split('@')
+            .next()
+            .unwrap_or_default()
+            .to_lowercase();
+        if !names.contains(&user_part) || !at_address(&registration.contact) {
+            continue;
+        }
+        if storage
+            .delete_registration_in_tenant(
+                &device.tenant_id,
+                &registration.aor,
+                &registration.contact,
+            )
+            .await
+            .is_ok()
+        {
+            crate::v1::registrations::announce_removed(
+                state,
+                device.tenant_id,
+                &registration.aor,
+                &registration.contact,
+            )
+            .await;
+        }
+    }
 }
 
 /// The tenant's firmware targets and the images they name, for the device

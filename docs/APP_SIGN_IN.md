@@ -75,7 +75,14 @@ Both answer the same tokens:
   "refresh_token": "…",         // opaque
   "refresh_expires_in": 7776000,
   "session_id": "sess-…",
-  "user": { "username": "alice", … }
+  "user": { "username": "alice", … },
+  "device": {                   // at a sign-in, not a refresh
+    "id": "dev-…",
+    "name": "Alice's MacBook",
+    "sip_username": "app-3f9c2a71d0",
+    "sip_password": "…",        // shown here only
+    "realm": "fcp.local"
+  }
 }
 ```
 
@@ -104,12 +111,39 @@ Both answer the same tokens:
   (`app_name`, `app_install_id`, `app_platform`, `app_version`), and its
   sign-in is published as `user.signed_in` with `method: "app"`.
 
-## 4. Errors
+## 4. The install's device
+
+Each install that signs in is one of the user's devices
+(`docs/SOFTPHONE.md` §2.1): a softphone they own, with a SIP username of its
+own (`app-` and ten hex digits) and a password FCP makes.
+
+- **Its SIP account.** The sign-in's answer carries `device`: the username,
+  the password and the realm the registrars challenge in. The device
+  registers and calls as its owner (as any device with credentials of its
+  own does: `docs/ENTERPRISE_CALLING.md` §3.8), so a call to the user rings
+  it with their desk phone. FCP keeps only the digest hash.
+- **Each sign-in, a new password.** The same install signing in again finds
+  its device and gets a new password; a refresh does not show one. An app
+  that lost its password signs in again.
+- **Removing it.** `DELETE /me/devices/{id}` (the user, from the portal's
+  Devices page) or `DELETE /devices/{id}` (an administrator):
+  - the install's app session ends;
+  - its registrations go — the bindings at the contact it last registered
+    from, under its owner's names — and are announced, so a call manager
+    hearing events stops ringing it at once (one with a registration cache
+    and no events keeps the binding until the cache's TTL);
+  - its credentials go with it, so its next REGISTER is refused.
+- **Seeing them.** `GET /me/devices` lists the user's devices, each app
+  install with `app` (`install_id`, `platform`, `version`, `signed_in`,
+  `signed_in_at`, `last_seen`); an administrator reads the same at
+  `GET /users/{username}/devices` (`device_read`).
+
+## 5. Errors
 
 | Status | When |
 |---|---|
 | 400 | A `redirect_uri` that is not a loopback address, a method other than S256, a malformed verifier, no `client_name`/`install_id`, an unknown `grant_type` |
 | 401 | A code spent, expired or not this verifier's; a refresh token that is not a live app session's; a browser session older than ten minutes asking to grant |
 | 403 | An API token asking to grant |
-| 404 | An app's request that has expired or was granted already |
+| 404 | An app's request that has expired or was granted already; a device that is not the caller's |
 | 409 | A refresh token replaced within the last ten seconds |

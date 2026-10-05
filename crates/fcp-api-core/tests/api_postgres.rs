@@ -14667,3 +14667,196 @@ async fn an_app_signs_in_through_the_browser_and_keeps_its_session() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+// ---------------------------------------------------------------------------
+// The device per app install (docs/SOFTPHONE.md §2.1)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_app_install_is_a_device_with_sip_credentials_of_its_own() {
+    use fcp_core::storage::{DeviceStore, RegistrationStore};
+    let app = require_app!();
+    app.create_user_with_role("alice", "end_user").await;
+    app.create_user_with_role("ops", "tenant_admin").await;
+    let sign_in = |install: &'static str| {
+        let app = &app;
+        async move {
+            let token = app.login("alice", PASSWORD).await.json["token"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let res = app
+                .send_as(
+                    &token,
+                    Method::POST,
+                    "/api/v1/auth/app/sessions",
+                    Some(
+                        json!({ "client_name": "Alice's laptop", "install_id": install,
+                                 "platform": "linux", "version": "0.2.0" }),
+                    ),
+                )
+                .await;
+            assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+            res
+        }
+    };
+
+    // Signing in makes the install a device: a softphone of hers, with a SIP
+    // username and password of its own, the password shown here only.
+    let first = sign_in("install-1").await;
+    let device = first.json["device"].clone();
+    let device_id = device["id"].as_str().unwrap().to_string();
+    let sip_username = device["sip_username"].as_str().unwrap().to_string();
+    let password = device["sip_password"].as_str().unwrap().to_string();
+    assert!(sip_username.starts_with("app-"), "{device}");
+    assert_eq!(password.len(), 24, "{device}");
+    // The realm the registrars challenge in, which the hash is made in.
+    let realm = device["realm"].as_str().unwrap().to_string();
+    assert_eq!(realm, app.state.realm, "{device}");
+    let stored = app
+        .storage
+        .get_device(&device_id.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.device_type, fcp_core::DeviceType::Softphone);
+    assert_eq!(
+        stored.sip_ha1_hash.as_deref(),
+        Some(fcp_core::storage::password::compute_ha1(&sip_username, &realm, &password).as_str())
+    );
+    assert!(
+        stored.sip_provisioning_password.is_none(),
+        "the password is not kept"
+    );
+    // A refresh does not show it again.
+    let refreshed = app
+        .send_raw(
+            "",
+            Method::POST,
+            "/api/v1/auth/app/token",
+            "application/json",
+            json!({ "grant_type": "refresh_token",
+                    "refresh_token": first.json["refresh_token"] })
+            .to_string()
+            .into_bytes(),
+        )
+        .await;
+    assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.text);
+    assert!(refreshed.json.get("device").is_none(), "{}", refreshed.text);
+
+    // The same install again: the same device, a new password.
+    let second = sign_in("install-1").await;
+    assert_eq!(second.json["device"]["id"], device_id.as_str());
+    assert_eq!(second.json["device"]["sip_username"], sip_username.as_str());
+    assert_ne!(second.json["device"]["sip_password"], password.as_str());
+    // Another install is another device.
+    let other = sign_in("install-2").await;
+    assert_ne!(other.json["device"]["id"], device_id.as_str());
+
+    // Her devices, with each install's session.
+    let access = second.json["access_token"].as_str().unwrap().to_string();
+    let mine = app
+        .send_as(&access, Method::GET, "/api/v1/me/devices", None)
+        .await;
+    assert_eq!(mine.status, StatusCode::OK, "{}", mine.text);
+    let listed = mine.json.as_array().unwrap();
+    assert_eq!(listed.len(), 2, "{}", mine.text);
+    let laptop = listed
+        .iter()
+        .find(|d| d["id"] == device_id.as_str())
+        .expect("the install's device");
+    assert_eq!(laptop["device_type"], "softphone");
+    assert_eq!(laptop["app"]["install_id"], "install-1");
+    assert_eq!(laptop["app"]["signed_in"], true);
+    assert_eq!(laptop["app"]["platform"], "linux");
+    // An administrator sees the same.
+    let ops = app.login("ops", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let theirs = app
+        .send_as(&ops, Method::GET, "/api/v1/users/alice/devices", None)
+        .await;
+    assert_eq!(theirs.status, StatusCode::OK, "{}", theirs.text);
+    assert_eq!(theirs.json.as_array().unwrap().len(), 2);
+
+    // Removing it: the app's session ends and its registration goes; the
+    // other install's stays.
+    // Registered from 192.0.2.10:5062, as the registrar writes it.
+    app.storage
+        .record_device_registration(
+            &device_id.parse().unwrap(),
+            &fcp_core::device::DeviceRegistrationUpdate {
+                state: fcp_core::device::RegistrationState::Registered,
+                at: SystemTime::now(),
+                address: Some("192.0.2.10:5062".to_string()),
+                user_agent: Some("Anvil/0.2.0".to_string()),
+                vendor: None,
+                model: None,
+                firmware: None,
+            },
+        )
+        .await
+        .unwrap();
+    let tenant = app
+        .storage
+        .get_device(&device_id.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap()
+        .tenant_id;
+    app.seed_registration(tenant, "sip:alice@fcp.local", "<sip:alice@192.0.2.10:5062>")
+        .await;
+    app.seed_registration(tenant, "sip:alice@fcp.local", "<sip:alice@192.0.2.11:5062>")
+        .await;
+    let removed = app
+        .send_as(
+            &access,
+            Method::DELETE,
+            &format!("/api/v1/me/devices/{device_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
+    assert_eq!(
+        app.send_as(&access, Method::GET, "/api/v1/auth/me", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED,
+        "the removed install's session ended"
+    );
+    assert!(app
+        .storage
+        .get_device(&device_id.parse().unwrap())
+        .await
+        .unwrap()
+        .is_none());
+    let left: Vec<String> = app
+        .storage
+        .get_registrations_in_tenant(&tenant, "sip:alice@fcp.local")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.contact)
+        .collect();
+    assert_eq!(left, vec!["<sip:alice@192.0.2.11:5062>".to_string()]);
+    let other_access = other.json["access_token"].as_str().unwrap();
+    assert_eq!(
+        app.send_as(other_access, Method::GET, "/api/v1/auth/me", None)
+            .await
+            .status,
+        StatusCode::OK,
+        "the other install is still signed in"
+    );
+
+    // Not hers: not found.
+    let ops_device = app
+        .send_as(
+            other_access,
+            Method::DELETE,
+            "/api/v1/me/devices/dev-00000000-0000-0000-0000-000000000001",
+            None,
+        )
+        .await;
+    assert_eq!(ops_device.status, StatusCode::NOT_FOUND);
+}

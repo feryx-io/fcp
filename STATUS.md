@@ -1884,7 +1884,17 @@ browser after `/auth/login`; `POST /auth/app/revoke`. An app session is a
 rotated with reuse detection, lasting the tenant's
 `sign_in.app_session_days` (90) from its last refresh, one per install;
 granting needs a sign-in from the last ten minutes
-(`docs/APP_SIGN_IN.md`). The device per install is F1b.
+(`docs/APP_SIGN_IN.md`).
+
+Softphone F1b, the device per install (v0.25.351): each app install that
+signs in is a softphone device of the user's with a SIP username of its own
+and a password made at each sign-in, returned once in the sign-in's
+`device` (`app_installs`, `login_sessions.device_id`: migration 108);
+`GET /me/devices` and `DELETE /me/devices/{id}`, `GET
+/users/{username}/devices`, the portal's Devices page; removing a device (by
+its user or an administrator) ends its app session, drops and announces its
+registrations, and takes its credentials. Proved at a call manager by
+`fcp-admin/tests/app_devices.rs`.
 
 The softphone (designed 2026-10-05, `docs/SOFTPHONE.md`): Anvil
 (`thevoiceguy/anvil`) as FCP's own client, desktop first: the app as a

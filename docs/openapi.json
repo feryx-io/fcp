@@ -632,6 +632,148 @@
         }
       }
     },
+    "/api/v1/me/devices": {
+      "get": {
+        "tags": [
+          "user_devices"
+        ],
+        "summary": "GET /api/v1/me/devices — your devices, with each app install's session.",
+        "operationId": "user_devices_list_mine",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_UserDeviceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/devices/{id}": {
+      "delete": {
+        "tags": [
+          "user_devices"
+        ],
+        "summary": "DELETE /api/v1/me/devices/{id} — remove one of your devices: an app\ninstall's session ends and its registrations go.",
+        "operationId": "user_devices_delete_mine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{username}/devices": {
+      "get": {
+        "tags": [
+          "user_devices"
+        ],
+        "summary": "GET /api/v1/users/{username}/devices — a user's devices, as they see\nthem at `/me/devices`.",
+        "operationId": "user_devices_list",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_UserDeviceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/sso/{id}/start": {
       "get": {
         "tags": [
@@ -17841,6 +17983,35 @@
           }
         }
       },
+      "AppDeviceResponse": {
+        "type": "object",
+        "description": "The install's device and its SIP account: the password is shown here\nonce, at each sign-in, and never again.",
+        "required": [
+          "id",
+          "name",
+          "sip_username",
+          "sip_password",
+          "realm"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sip_username": {
+            "type": "string"
+          },
+          "sip_password": {
+            "type": "string"
+          },
+          "realm": {
+            "type": "string",
+            "description": "The realm the password is hashed in, as the registrars challenge."
+          }
+        }
+      },
       "AppRevokeRequest": {
         "type": "object",
         "description": "What `POST /auth/app/revoke` takes (RFC 7009).",
@@ -17963,6 +18134,17 @@
           },
           "user": {
             "$ref": "#/components/schemas/AuthUserResponse"
+          },
+          "device": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AppDeviceResponse",
+                "description": "The install's device, at a sign-in; absent from a refresh."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -21738,6 +21920,51 @@
           },
           "class": {
             "$ref": "#/components/schemas/DestinationClass"
+          }
+        }
+      },
+      "DeviceAppResponse": {
+        "type": "object",
+        "description": "An app install's session, on its device.",
+        "required": [
+          "install_id",
+          "signed_in"
+        ],
+        "properties": {
+          "install_id": {
+            "type": "string"
+          },
+          "platform": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "signed_in": {
+            "type": "boolean",
+            "description": "Whether the app is signed in now."
+          },
+          "signed_in_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it signed in, while it is."
+          },
+          "last_seen": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it last refreshed its session, while it is signed in."
           }
         }
       },
@@ -31351,6 +31578,94 @@
           }
         }
       },
+      "Page_UserDeviceResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One of a user's devices.",
+              "required": [
+                "id",
+                "name",
+                "device_type",
+                "registration_state"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "device_type": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sip_username": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "registration_state": {
+                  "type": "string"
+                },
+                "last_registration": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "user_agent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "app": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/DeviceAppResponse",
+                      "description": "The app install it is, for a softphone that signed in."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_UserIdentityResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -38552,6 +38867,66 @@
             "type": "number",
             "format": "double",
             "description": "Sum of rated call costs in the period, in the tenant's rate-plan\ncurrency (0 when billing is not configured)."
+          }
+        }
+      },
+      "UserDeviceResponse": {
+        "type": "object",
+        "description": "One of a user's devices.",
+        "required": [
+          "id",
+          "name",
+          "device_type",
+          "registration_state"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "device_type": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sip_username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "registration_state": {
+            "type": "string"
+          },
+          "last_registration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "user_agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "app": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DeviceAppResponse",
+                "description": "The app install it is, for a softphone that signed in."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

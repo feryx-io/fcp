@@ -56,6 +56,7 @@ pub mod totp;
 pub mod trunks;
 pub mod uploads;
 pub mod usage;
+pub mod user_devices;
 pub mod users;
 pub mod voicemail;
 pub mod webhooks;
@@ -207,6 +208,9 @@ pub fn router() -> Router<ApiState> {
             "/me/calling",
             get(self_service::get_my_calling).put(self_service::update_my_calling),
         )
+        // Your devices: phones and app installs (docs/SOFTPHONE.md §2.1)
+        .route("/me/devices", get(user_devices::list_mine))
+        .route("/me/devices/:id", delete(user_devices::delete_mine))
         .route("/me/executives", get(self_service::get_my_executives))
         .route(
             "/me/executives/:user_id",
@@ -412,6 +416,7 @@ pub fn router() -> Router<ApiState> {
             "/users/:username/calling",
             get(calling::get_user_calling).put(calling::update_user_calling),
         )
+        .route("/users/:username/devices", get(user_devices::list_users))
         // Registrations
         .route("/registrations", get(registrations::list_registrations))
         .route(

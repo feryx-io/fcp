@@ -426,6 +426,7 @@ pub(crate) async fn begin_session(
         previous_refresh_hash: None,
         idp,
         app: None,
+        device_id: None,
     };
     store
         .create_login_session(&row)

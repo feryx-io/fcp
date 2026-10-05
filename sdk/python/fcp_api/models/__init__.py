@@ -5,6 +5,7 @@ from .agent_login_request import AgentLoginRequest
 from .agent_response import AgentResponse
 from .api_token_response import ApiTokenResponse
 from .app_client_request import AppClientRequest
+from .app_device_response import AppDeviceResponse
 from .app_revoke_request import AppRevokeRequest
 from .app_token_request import AppTokenRequest
 from .app_token_response import AppTokenResponse
@@ -88,6 +89,7 @@ from .delete_config_response import DeleteConfigResponse
 from .deletion_response import DeletionResponse
 from .destination_class import DestinationClass
 from .destination_override import DestinationOverride
+from .device_app_response import DeviceAppResponse
 from .device_binding_response import DeviceBindingResponse
 from .device_fetch_response import DeviceFetchResponse
 from .device_redirection_response import DeviceRedirectionResponse
@@ -320,6 +322,8 @@ from .page_tenant_response import PageTenantResponse
 from .page_tenant_response_data_item import PageTenantResponseDataItem
 from .page_trunk_response import PageTrunkResponse
 from .page_trunk_response_data_item import PageTrunkResponseDataItem
+from .page_user_device_response import PageUserDeviceResponse
+from .page_user_device_response_data_item import PageUserDeviceResponseDataItem
 from .page_user_identity_response import PageUserIdentityResponse
 from .page_user_identity_response_data_item import PageUserIdentityResponseDataItem
 from .page_user_response import PageUserResponse
@@ -479,6 +483,7 @@ from .update_voicemail_request import UpdateVoicemailRequest
 from .update_webhook_request import UpdateWebhookRequest
 from .upsert_rate_request import UpsertRateRequest
 from .usage_response import UsageResponse
+from .user_device_response import UserDeviceResponse
 from .user_identity_response import UserIdentityResponse
 from .user_readiness import UserReadiness
 from .user_response import UserResponse
@@ -507,6 +512,7 @@ __all__ = (
     "AgentResponse",
     "ApiTokenResponse",
     "AppClientRequest",
+    "AppDeviceResponse",
     "AppRevokeRequest",
     "ApproveRequest",
     "ApproveResponse",
@@ -590,6 +596,7 @@ __all__ = (
     "DeletionResponse",
     "DestinationClass",
     "DestinationOverride",
+    "DeviceAppResponse",
     "DeviceBindingResponse",
     "DeviceFetchResponse",
     "DeviceRedirectionResponse",
@@ -822,6 +829,8 @@ __all__ = (
     "PageTenantResponseDataItem",
     "PageTrunkResponse",
     "PageTrunkResponseDataItem",
+    "PageUserDeviceResponse",
+    "PageUserDeviceResponseDataItem",
     "PageUserIdentityResponse",
     "PageUserIdentityResponseDataItem",
     "PageUserResponse",
@@ -981,6 +990,7 @@ __all__ = (
     "UpdateWebhookRequest",
     "UpsertRateRequest",
     "UsageResponse",
+    "UserDeviceResponse",
     "UserIdentityResponse",
     "UserReadiness",
     "UserResponse",

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Voicemail, PhoneForwarded, Users, Settings, LogOut,
-  Moon, Sun, Monitor, Menu, X, Boxes, Key,
+  Moon, Sun, Monitor, Menu, X, Boxes, Key, Smartphone,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -25,6 +25,7 @@ const navItems: NavItem[] = [
   { label: 'Voicemail', href: '/user/voicemail', icon: Voicemail },
   { label: 'Calling', href: '/user/calling', icon: PhoneForwarded },
   { label: 'Conferences', href: '/user/conferences', icon: Users },
+  { label: 'Devices', href: '/user/devices', icon: Smartphone },
   { label: 'API Tokens', href: '/user/api-tokens', icon: Key },
   { label: 'Settings', href: '/user/settings', icon: Settings },
 ]

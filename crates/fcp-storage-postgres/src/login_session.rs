@@ -15,7 +15,7 @@ use std::time::SystemTime;
 
 const COLUMNS: &str = "id, tenant_id, user_id, method, created_at, refreshed_at, expires_at, \
      revoked_at, revoked_reason, ip, user_agent, refresh_hash, previous_refresh_hash, \
-     idp_provider_id, idp_sid, app_name, app_install_id, app_platform, app_version";
+     idp_provider_id, idp_sid, app_name, app_install_id, app_platform, app_version, device_id";
 
 const AUTHORIZATION_COLUMNS: &str = "id, client_id, redirect_uri, code_challenge, state, \
      created_at, expires_at, user_id, tenant_id, code_hash, code_expires_at";
@@ -86,6 +86,10 @@ fn parse(row: &sqlx::postgres::PgRow) -> fcp_core::Result<LoginSession> {
             }),
             _ => None,
         },
+        device_id: row
+            .get::<Option<String>, _>("device_id")
+            .map(|d| d.parse().map_err(|_| bad("device")))
+            .transpose()?,
     })
 }
 
@@ -124,8 +128,8 @@ impl LoginSessionStore for PostgresLoginSessionStore {
         sqlx::query(
             "INSERT INTO login_sessions (id, tenant_id, user_id, method, created_at,
                  refreshed_at, expires_at, ip, user_agent, refresh_hash, idp_provider_id, idp_sid,
-                 app_name, app_install_id, app_platform, app_version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+                 app_name, app_install_id, app_platform, app_version, device_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
         )
         .bind(s.id.to_string())
         .bind(s.tenant_id.to_string())
@@ -143,6 +147,7 @@ impl LoginSessionStore for PostgresLoginSessionStore {
         .bind(s.app.as_ref().map(|a| a.install_id.clone()))
         .bind(s.app.as_ref().and_then(|a| a.platform.clone()))
         .bind(s.app.as_ref().and_then(|a| a.version.clone()))
+        .bind(s.device_id.map(|d| d.to_string()))
         .execute(&self.pool)
         .await
         .map_err(store_error)?;
@@ -319,6 +324,79 @@ impl LoginSessionStore for PostgresLoginSessionStore {
         .await
         .map_err(store_error)?;
         rows.iter().map(parse).collect()
+    }
+
+    async fn app_install_device(
+        &self,
+        user_id: &UserId,
+        install_id: &str,
+    ) -> fcp_core::Result<Option<fcp_core::DeviceId>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT device_id FROM app_installs WHERE user_id = $1 AND install_id = $2",
+        )
+        .bind(user_id.to_string())
+        .bind(install_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(row.and_then(|(d,)| d.parse().ok()))
+    }
+
+    async fn set_app_install_device(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        install_id: &str,
+        device_id: &fcp_core::DeviceId,
+    ) -> fcp_core::Result<()> {
+        sqlx::query(
+            "INSERT INTO app_installs (user_id, install_id, tenant_id, device_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (user_id, install_id) DO UPDATE SET device_id = EXCLUDED.device_id",
+        )
+        .bind(user_id.to_string())
+        .bind(install_id)
+        .bind(tenant_id.to_string())
+        .bind(device_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
+    async fn app_installs_of_user(
+        &self,
+        user_id: &UserId,
+    ) -> fcp_core::Result<Vec<(fcp_core::DeviceId, String)>> {
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT device_id, install_id FROM app_installs WHERE user_id = $1")
+                .bind(user_id.to_string())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_error)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(d, i)| d.parse().ok().map(|d| (d, i)))
+            .collect())
+    }
+
+    async fn revoke_device_sessions(
+        &self,
+        device_id: &fcp_core::DeviceId,
+        reason: &str,
+        now: SystemTime,
+    ) -> fcp_core::Result<u64> {
+        let done = sqlx::query(
+            "UPDATE login_sessions SET revoked_at = $2, revoked_reason = $3
+             WHERE device_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(device_id.to_string())
+        .bind(at(now))
+        .bind(reason)
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(done.rows_affected())
     }
 
     async fn create_app_authorization(&self, a: &AppAuthorization) -> fcp_core::Result<()> {
