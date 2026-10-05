@@ -132,6 +132,7 @@ impl CallStateStore {
             }
             CallEvent::Ringing {
                 call_id,
+                tenant_id: _,
                 timestamp,
                 node_id,
             } => {
@@ -146,6 +147,7 @@ impl CallStateStore {
             }
             CallEvent::Progress {
                 call_id,
+                tenant_id: _,
                 timestamp: _,
                 node_id,
             } => {
@@ -162,6 +164,7 @@ impl CallStateStore {
             }
             CallEvent::Answered {
                 call_id,
+                tenant_id: _,
                 answer_time,
                 codec,
                 node_id,
@@ -179,6 +182,7 @@ impl CallStateStore {
             }
             CallEvent::Ended {
                 call_id,
+                tenant_id: _,
                 end_time,
                 duration_ms,
                 hangup_cause,
@@ -202,6 +206,7 @@ impl CallStateStore {
             }
             CallEvent::Failed {
                 call_id,
+                tenant_id: _,
                 timestamp,
                 reason,
                 trunk_name,
@@ -629,6 +634,7 @@ mod tests {
         // Ringing
         store.process_event(&CallEvent::Ringing {
             call_id,
+            tenant_id: None,
             timestamp: SystemTime::now(),
             node_id: Some("node-1".to_string()),
         });
@@ -640,6 +646,7 @@ mod tests {
         // Answered
         store.process_event(&CallEvent::Answered {
             call_id,
+            tenant_id: None,
             answer_time: SystemTime::now(),
             codec: "PCMU".to_string(),
             a_leg_sdp: None,
@@ -656,6 +663,7 @@ mod tests {
         // Ended
         store.process_event(&CallEvent::Ended {
             call_id,
+            tenant_id: None,
             end_time: SystemTime::now(),
             duration_ms: 30000,
             hangup_cause: "Normal Clearing".to_string(),

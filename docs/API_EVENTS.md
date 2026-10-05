@@ -6,7 +6,12 @@ Real-time event streaming via WebSocket.
 
 The FCP Event Streaming API provides a WebSocket endpoint that streams platform events in real-time. Clients can subscribe to events and optionally filter by tenant, call, or event type.
 
-The same events reach a tenant's webhooks, signed and retried: see `docs/WEBHOOKS.md`.
+The same events reach a tenant's webhooks, signed and retried: see `docs/WEBHOOKS.md`. Every
+call, flow and voicemail event names the call's or mailbox's `tenant_id`
+(since v0.25.341; before, only `call.initiated`, the emergency events,
+`call.transcript` and `voicemail.transcribed` did, so the rest never reached
+a webhook). An event from a node older than that has none and is not
+delivered.
 
 ## Endpoint
 
@@ -150,6 +155,7 @@ Sent when a call starts ringing (180/183 received).
   "call": {
     "type": "ringing",
     "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
     "timestamp": 1705584001
   }
 }
@@ -165,6 +171,7 @@ Sent when a call is answered (200 OK).
   "call": {
     "type": "answered",
     "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
     "answer_time": 1705584002,
     "codec": "PCMU"
   }
@@ -181,6 +188,7 @@ Sent when a call ends normally.
   "call": {
     "type": "ended",
     "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
     "end_time": 1705584120,
     "duration_ms": 118000,
     "hangup_cause": "Normal Clearing",

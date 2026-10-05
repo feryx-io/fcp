@@ -243,6 +243,10 @@ pub enum CallEvent {
 
     /// Call is ringing (180/183 received)
     Ringing {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -252,6 +256,10 @@ pub enum CallEvent {
 
     /// Call progress (183 Session Progress)
     Progress {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -261,6 +269,10 @@ pub enum CallEvent {
 
     /// Call answered (200 OK)
     Answered {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         #[serde(with = "system_time_serde")]
         answer_time: SystemTime,
@@ -275,6 +287,10 @@ pub enum CallEvent {
 
     /// Call ended (BYE/timeout/error)
     Ended {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         #[serde(with = "system_time_serde")]
         end_time: SystemTime,
@@ -292,6 +308,10 @@ pub enum CallEvent {
 
     /// Call failed (4xx/5xx/6xx)
     Failed {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -308,6 +328,10 @@ pub enum CallEvent {
 
     /// Call parked in a parking orbit
     Parked {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         orbit: u16,
         parker_extension: String,
@@ -317,6 +341,10 @@ pub enum CallEvent {
 
     /// Parked call retrieved (unparked)
     Unparked {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         orbit: u16,
         retriever_extension: String,
@@ -327,6 +355,10 @@ pub enum CallEvent {
     /// A leg put on hold by its far party (`docs/ENTERPRISE_CALLING.md`
     /// §3.2): `held_leg` is `a` or `b`.
     Held {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         held_leg: String,
         #[serde(with = "system_time_serde")]
@@ -353,6 +385,10 @@ pub enum CallEvent {
 
     /// The held leg taken off hold.
     Resumed {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         held_leg: String,
         #[serde(with = "system_time_serde")]
@@ -365,6 +401,10 @@ pub enum CallEvent {
     /// `mode` is `monitor`, `whisper` or `barge`; `party` the supervisor's
     /// address, `user_id` theirs when a user.
     PartyJoined {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         mode: String,
         party: String,
@@ -378,6 +418,10 @@ pub enum CallEvent {
 
     /// The supervisor left (hung up, was removed, or the call ended).
     PartyLeft {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         party: String,
         #[serde(with = "system_time_serde")]
@@ -515,6 +559,10 @@ pub enum RecordingEvent {
 pub enum FlowEvent {
     /// Flow execution started
     Started {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         flow_id: String,
         flow_version: u32,
@@ -525,6 +573,10 @@ pub enum FlowEvent {
 
     /// Flow node executed
     NodeExecuted {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         flow_id: String,
         node_id: String,
@@ -534,6 +586,10 @@ pub enum FlowEvent {
 
     /// Flow waiting for user input (DTMF)
     WaitingForInput {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         flow_id: String,
         variable: String,
@@ -544,6 +600,10 @@ pub enum FlowEvent {
 
     /// Flow execution completed
     Completed {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         flow_id: String,
         outcome: String, // "hangup", "stopped", "error"
@@ -553,6 +613,10 @@ pub enum FlowEvent {
 
     /// Flow execution failed with error
     Failed {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         flow_id: String,
         node_id: String,
@@ -1552,6 +1616,10 @@ pub enum PresenceEvent {
 pub enum VoicemailEvent {
     /// Voicemail message recorded
     MessageRecorded {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         mailbox_id: String,
         message_id: String,
@@ -1577,6 +1645,10 @@ pub enum VoicemailEvent {
 
     /// Voicemail message deleted
     MessageDeleted {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         mailbox_id: String,
         message_id: String,
         #[serde(with = "system_time_serde")]
@@ -1585,6 +1657,10 @@ pub enum VoicemailEvent {
 
     /// Voicemail message played back
     MessagePlayed {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         call_id: CallId,
         mailbox_id: String,
         message_id: String,
@@ -1594,6 +1670,10 @@ pub enum VoicemailEvent {
 
     /// MWI (Message Waiting Indicator) updated
     MwiUpdated {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         mailbox_id: String,
         new_messages: u32,
         old_messages: u32,
@@ -1606,13 +1686,17 @@ pub enum VoicemailEvent {
         mailbox_id: String,
         user_id: String,
         extension: String,
-        tenant_id: String,
+        tenant_id: TenantId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
 
     /// Mailbox updated (triggers voicemail server to refresh routes)
     MailboxUpdated {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         mailbox_id: String,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -1620,6 +1704,10 @@ pub enum VoicemailEvent {
 
     /// Mailbox deleted (triggers voicemail server to remove routes)
     MailboxDeleted {
+        /// The tenant, for the webhooks that need one to find their
+        /// endpoints. Absent only from an older node's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
         mailbox_id: String,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -2029,7 +2117,17 @@ impl PlatformEvent {
                 | CallEvent::EmergencyCompleted { tenant_id, .. }
                 | CallEvent::EmergencyNotificationFailed { tenant_id, .. }
                 | CallEvent::Transcript { tenant_id, .. } => Some(tenant_id),
-                _ => None,
+                CallEvent::Ringing { tenant_id, .. }
+                | CallEvent::Progress { tenant_id, .. }
+                | CallEvent::Answered { tenant_id, .. }
+                | CallEvent::Ended { tenant_id, .. }
+                | CallEvent::Failed { tenant_id, .. }
+                | CallEvent::Parked { tenant_id, .. }
+                | CallEvent::Unparked { tenant_id, .. }
+                | CallEvent::Held { tenant_id, .. }
+                | CallEvent::Resumed { tenant_id, .. }
+                | CallEvent::PartyJoined { tenant_id, .. }
+                | CallEvent::PartyLeft { tenant_id, .. } => tenant_id.as_ref(),
             },
             PlatformEvent::User(e) => match e {
                 UserEvent::Created { tenant_id, .. }
@@ -2124,9 +2222,23 @@ impl PlatformEvent {
                 | SystemEvent::VersionSkew { .. }
                 | SystemEvent::SiteLinkChanged { .. } => None,
             },
-            PlatformEvent::Voicemail(VoicemailEvent::MessageTranscribed { tenant_id, .. }) => {
-                Some(tenant_id)
-            }
+            PlatformEvent::Voicemail(e) => match e {
+                VoicemailEvent::MessageTranscribed { tenant_id, .. }
+                | VoicemailEvent::MailboxCreated { tenant_id, .. } => Some(tenant_id),
+                VoicemailEvent::MessageRecorded { tenant_id, .. }
+                | VoicemailEvent::MessageDeleted { tenant_id, .. }
+                | VoicemailEvent::MessagePlayed { tenant_id, .. }
+                | VoicemailEvent::MwiUpdated { tenant_id, .. }
+                | VoicemailEvent::MailboxUpdated { tenant_id, .. }
+                | VoicemailEvent::MailboxDeleted { tenant_id, .. } => tenant_id.as_ref(),
+            },
+            PlatformEvent::Flow(e) => match e {
+                FlowEvent::Started { tenant_id, .. }
+                | FlowEvent::NodeExecuted { tenant_id, .. }
+                | FlowEvent::WaitingForInput { tenant_id, .. }
+                | FlowEvent::Completed { tenant_id, .. }
+                | FlowEvent::Failed { tenant_id, .. } => tenant_id.as_ref(),
+            },
             PlatformEvent::Billing(e) => Some(e.tenant_id()),
             PlatformEvent::Cdr(
                 CdrEvent::Written { tenant_id, .. } | CdrEvent::Archived { tenant_id, .. },
@@ -2142,11 +2254,7 @@ impl PlatformEvent {
                 | RecordingEvent::Completed { tenant_id, .. }
                 | RecordingEvent::Failed { tenant_id, .. },
             ) => Some(tenant_id),
-            PlatformEvent::Media(_)
-            | PlatformEvent::Ivr(_)
-            | PlatformEvent::Flow(_)
-            | PlatformEvent::Voicemail(_)
-            | PlatformEvent::Sip(_) => None,
+            PlatformEvent::Media(_) | PlatformEvent::Ivr(_) | PlatformEvent::Sip(_) => None,
         }
     }
 
@@ -2840,6 +2948,54 @@ mod event_type_list {
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["transcription"], "call me back", "{json}");
         assert_eq!(json["confidence"], 0.9, "{json}");
+    }
+
+    /// A call's and a flow's events name the call's tenant, so the tenant's
+    /// webhooks get them; one from an older node, without it, still reads.
+    #[test]
+    fn call_and_flow_events_reach_their_tenant() {
+        let tenant = super::TenantId::new();
+        let call_id = fcp_core::CallId::new();
+        let ringing = PlatformEvent::Call(super::CallEvent::Ringing {
+            call_id,
+            tenant_id: Some(tenant),
+            timestamp: std::time::SystemTime::now(),
+            node_id: None,
+        });
+        assert_eq!(ringing.tenant_id(), Some(&tenant));
+        let completed = PlatformEvent::Flow(super::FlowEvent::Completed {
+            call_id,
+            tenant_id: Some(tenant),
+            flow_id: "flow-1".into(),
+            outcome: "hangup".into(),
+            timestamp: std::time::SystemTime::now(),
+        });
+        assert_eq!(completed.tenant_id(), Some(&tenant));
+
+        let mut older = serde_json::to_value(&ringing).unwrap();
+        assert!(older["tenant_id"].is_string(), "{older}");
+        older.as_object_mut().unwrap().remove("tenant_id");
+        let older: PlatformEvent = serde_json::from_value(older).unwrap();
+        assert_eq!(older.tenant_id(), None);
+        assert_eq!(older.call_id(), Some(&call_id));
+    }
+
+    /// A new mailbox names its tenant; one published before, with the
+    /// tenant as a bare UUID string, still reads as that tenant.
+    #[test]
+    fn a_new_mailbox_reaches_its_tenant() {
+        let tenant = super::TenantId::new();
+        let older = serde_json::json!({
+            "event_type": "voicemail",
+            "type": "mailbox_created",
+            "mailbox_id": "mbx",
+            "user_id": "user-1",
+            "extension": "1001",
+            "tenant_id": tenant.as_uuid().to_string(),
+            "timestamp": 1_791_220_983u64,
+        });
+        let event: PlatformEvent = serde_json::from_value(older).unwrap();
+        assert_eq!(event.tenant_id(), Some(&tenant));
     }
 
     #[test]

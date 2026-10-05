@@ -60,6 +60,13 @@ An unknown name is refused. The catalogue is generated from
 `PlatformEvent::EVENT_TYPES`, and the events themselves are described in
 `docs/API_EVENTS.md`.
 
+An event is delivered to the webhooks of the tenant it names. System
+events about the platform itself (a node starting, draining or leaving,
+the cluster's view, version skew, a site's link) name none and reach no
+tenant's webhook, nor do the SIP trace events (raw messages, for the
+admin's live trace); the media and IVR categories are listed but not
+published.
+
 ### Where a webhook may point
 
 A URL must be HTTPS, without credentials in it, and must reach only public
