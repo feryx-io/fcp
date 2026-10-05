@@ -1865,6 +1865,15 @@ else `fcp.local`; warns when its own differs from theirs; shows it as
 SIP password is kept again at startup, naming the rest
 (`docs/SINGLE-NODE-SETUP.md`).
 
+Resync through the node holding the phone (v0.25.330, siphon-rs
+v2026.10.05): a phone registered over TLS is reached only down its RFC
+5626 flow, which one call manager holds. The admin now asks every call
+manager; each sends down the flows it holds and skips the others', and
+the first sends to the contacts with no flow, so a phone is told once
+(`send_unsolicited_notify_with_state_via_flow` in siphon-rs). Proved with
+two call managers (`fcp-admin/tests/resync_cluster.rs`), and
+`device.firmware_behind` end to end (`fcp-admin/tests/firmware_behind.rs`).
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

@@ -324,7 +324,7 @@ pub async fn device_contacts(
     registrar: &FcpRegistrar,
     storage: &DynStorage,
     device: &Device,
-) -> Vec<sip_core::SipUri> {
+) -> Vec<(sip_core::SipUri, Option<String>)> {
     let realm = registrar.realm().to_string();
     let lookup = |aor: String| {
         let realm = realm.clone();
@@ -341,12 +341,18 @@ pub async fn device_contacts(
             }
         }
     };
-    let to_uris = |bindings: Vec<sip_registrar::Binding>| -> Vec<sip_core::SipUri> {
-        bindings
-            .iter()
-            .filter_map(|b| sip_core::SipUri::parse(&crate::ring_plan::contact_uri(b)).ok())
-            .collect()
-    };
+    // Each contact with the RFC 5626 flow it registered over, if any.
+    let to_uris =
+        |bindings: Vec<sip_registrar::Binding>| -> Vec<(sip_core::SipUri, Option<String>)> {
+            bindings
+                .iter()
+                .filter_map(|b| {
+                    sip_core::SipUri::parse(&crate::ring_plan::contact_uri(b))
+                        .ok()
+                        .map(|uri| (uri, b.flow_token().map(String::from)))
+                })
+                .collect()
+        };
     if let Some(uri) = device.sip_uri.as_deref() {
         let bindings = lookup(uri.to_string()).await;
         if !bindings.is_empty() {
@@ -400,28 +406,61 @@ pub async fn device_contacts(
 
 /// Tell a device's phone to fetch its configuration again: its vendor's
 /// NOTIFY to each contact, each on a task of its own. How many were sent.
+///
+/// A contact registered over an RFC 5626 flow (TCP or TLS behind NAT) is
+/// reached only down that flow, which only the node holding it can use:
+/// with `flows`, this node sends to the ones it holds and leaves the rest
+/// to their nodes. A contact with no flow is sent to directly when
+/// `flowless` says so — by one node only, so it is not told twice.
+/// Without `flows`, every contact is sent to directly, as before.
 pub async fn resync_device(
     uac: &Arc<SipUserAgentClient>,
     registrar: &FcpRegistrar,
     storage: &DynStorage,
     device: &Device,
+    flows: Option<&crate::flow::FlowRegistry>,
+    flowless: bool,
 ) -> usize {
     let event = resync_event(device.vendor);
-    let contacts = device_contacts(registrar, storage, device).await;
-    for contact in &contacts {
+    let mut sent = 0;
+    for (contact, token) in device_contacts(registrar, storage, device).await {
+        let flow = match (&token, flows) {
+            (Some(token), Some(flows)) => match flows.lookup(token) {
+                Some(info) => Some(info),
+                // Another node's connection.
+                None => continue,
+            },
+            (None, Some(_)) if !flowless => continue,
+            _ => None,
+        };
+        sent += 1;
         let uac = Arc::clone(uac);
-        let contact = contact.clone();
         tokio::spawn(async move {
-            match uac
-                .send_unsolicited_notify_with_state(
-                    &contact,
-                    event,
-                    "application/simple-message-summary",
-                    "",
-                    "terminated",
-                )
-                .await
-            {
+            let answer = match flow {
+                Some(info) => {
+                    uac.send_unsolicited_notify_with_state_via_flow(
+                        &contact,
+                        event,
+                        "application/simple-message-summary",
+                        "",
+                        "terminated",
+                        info.stream,
+                        info.peer_addr,
+                    )
+                    .await
+                }
+                None => {
+                    uac.send_unsolicited_notify_with_state(
+                        &contact,
+                        event,
+                        "application/simple-message-summary",
+                        "",
+                        "terminated",
+                    )
+                    .await
+                }
+            };
+            match answer {
                 Ok(r) => {
                     debug!(contact = %contact.as_str(), code = r.code(), event, "Resync NOTIFY answered")
                 }
@@ -431,7 +470,7 @@ pub async fn resync_device(
             }
         });
     }
-    contacts.len()
+    sent
 }
 
 #[cfg(test)]

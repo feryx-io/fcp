@@ -36,6 +36,10 @@ pub fn routes() -> Router<Arc<AppState>> {
 struct ResyncBody {
     #[serde(default)]
     tenant_id: Option<TenantId>,
+    /// Also send to contacts with no flow; the admin asks one node to.
+    /// Unset: yes, as a node asked alone must.
+    #[serde(default)]
+    flowless: Option<bool>,
 }
 
 /// POST /devices/:id/resync — tell the device's phone to fetch its
@@ -69,7 +73,10 @@ async fn resync_device(
             "resync is not available on this node",
         ));
     };
-    match handler.resync_device(&device).await {
+    match handler
+        .resync_device(&device, body.flowless.unwrap_or(true))
+        .await
+    {
         Some(sent) => (
             StatusCode::OK,
             Json(serde_json::json!({"device_id": id, "sent": sent})),

@@ -45,6 +45,15 @@ impl NodeCallSupervisor {
 
     /// The call managers that may hold the call.
     async fn nodes(&self) -> Result<Vec<String>, String> {
+        self.nodes_where(|status| status == ClusterNodeStatus::Healthy)
+            .await
+    }
+
+    /// The call managers whose status `keep` takes, or the one configured.
+    async fn nodes_where(
+        &self,
+        keep: impl Fn(ClusterNodeStatus) -> bool,
+    ) -> Result<Vec<String>, String> {
         if let Some(url) = &self.config.url {
             return Ok(vec![url.trim_end_matches('/').to_string()]);
         }
@@ -57,7 +66,7 @@ impl NodeCallSupervisor {
             .await
             .map_err(|e| format!("could not read the cluster: {e}"))?
             .into_iter()
-            .filter(|n| n.node_type == CALL_MANAGER && n.status == ClusterNodeStatus::Healthy)
+            .filter(|n| n.node_type == CALL_MANAGER && keep(n.status))
             .map(|n| format!("http://{}", n.http_address))
             .collect();
         if nodes.is_empty() {
@@ -155,37 +164,64 @@ impl CallSupervisor for NodeCallSupervisor {
         }
     }
 
-    /// Any call manager reads the shared registrations and sends: the
-    /// first that answers does.
+    /// Every call manager is asked: each sends down the flows it holds (a
+    /// phone on TCP or TLS behind NAT is reachable only through the node
+    /// it registered at), and the first that answers also sends to the
+    /// contacts with no flow. What they sent is added up.
     async fn resync_device(
         &self,
         tenant: TenantId,
         device_id: &str,
     ) -> Result<(u16, serde_json::Value), String> {
+        let mut sent = 0u64;
+        let mut answered = false;
+        let mut not_found = false;
         let mut last_error = None;
-        for base in self.nodes().await? {
+        // A degraded node still holds its phones' flows: it is asked too.
+        for base in self
+            .nodes_where(|status| status != ClusterNodeStatus::Offline)
+            .await?
+        {
             let builder = self
                 .http
                 .post(format!("{base}/devices/{device_id}/resync"))
-                .json(&serde_json::json!({ "tenant_id": tenant }));
+                .json(&serde_json::json!({ "tenant_id": tenant, "flowless": !answered }));
             let builder = match &self.config.auth_token {
                 Some(token) => builder.bearer_auth(token),
                 None => builder,
             };
             match builder.send().await {
-                Ok(response) if response.status().as_u16() != 503 => {
-                    let status = response.status().as_u16();
+                Ok(response) if response.status().is_success() => {
                     let body = response
                         .json::<serde_json::Value>()
                         .await
                         .unwrap_or_else(|_| serde_json::json!({}));
-                    return Ok((status, body));
+                    sent += body["sent"].as_u64().unwrap_or(0);
+                    answered = true;
                 }
-                Ok(_) => last_error = Some(format!("the call manager at {base} cannot resync")),
+                Ok(response) if response.status().as_u16() == 404 => not_found = true,
+                Ok(response) => {
+                    last_error = Some(format!(
+                        "the call manager at {base} answered {}",
+                        response.status()
+                    ))
+                }
                 Err(e) => {
                     last_error = Some(format!("the call manager at {base} did not answer: {e}"))
                 }
             }
+        }
+        if answered {
+            return Ok((
+                200,
+                serde_json::json!({ "device_id": device_id, "sent": sent }),
+            ));
+        }
+        if not_found {
+            return Ok((
+                404,
+                serde_json::json!({ "error": format!("Device not found: {device_id}") }),
+            ));
         }
         Err(last_error.unwrap_or_else(|| "no call manager to ask".to_string()))
     }
