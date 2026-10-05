@@ -84,6 +84,7 @@ from .destination_class import DestinationClass
 from .destination_override import DestinationOverride
 from .device_binding_response import DeviceBindingResponse
 from .device_fetch_response import DeviceFetchResponse
+from .device_redirection_response import DeviceRedirectionResponse
 from .device_response import DeviceResponse
 from .device_validation_response import DeviceValidationResponse
 from .dialog_info import DialogInfo
@@ -282,6 +283,8 @@ from .page_rate_response import PageRateResponse
 from .page_rate_response_data_item import PageRateResponseDataItem
 from .page_recording_response import PageRecordingResponse
 from .page_recording_response_data_item import PageRecordingResponseDataItem
+from .page_redirection_account_response import PageRedirectionAccountResponse
+from .page_redirection_account_response_data_item import PageRedirectionAccountResponseDataItem
 from .page_registration_response import PageRegistrationResponse
 from .page_registration_response_data_item import PageRegistrationResponseDataItem
 from .page_retention_run_response import PageRetentionRunResponse
@@ -339,6 +342,7 @@ from .provider_settings import ProviderSettings
 from .provisioning_key_response import ProvisioningKeyResponse
 from .purge_report import PurgeReport
 from .purge_response import PurgeResponse
+from .put_redirection_account_request import PutRedirectionAccountRequest
 from .queue_config_response import QueueConfigResponse
 from .queue_response import QueueResponse
 from .queue_stats_response import QueueStatsResponse
@@ -351,6 +355,11 @@ from .readiness_summary import ReadinessSummary
 from .recording_response import RecordingResponse
 from .recovery_codes import RecoveryCodes
 from .redirect_request import RedirectRequest
+from .redirection_account_response import RedirectionAccountResponse
+from .redirection_check_response import RedirectionCheckResponse
+from .redirection_service import RedirectionService
+from .redirection_state import RedirectionState
+from .redirection_sync_response import RedirectionSyncResponse
 from .reencrypt_report import ReencryptReport
 from .registration_response import RegistrationResponse
 from .release_hold_request import ReleaseHoldRequest
@@ -562,6 +571,7 @@ __all__ = (
     "DestinationOverride",
     "DeviceBindingResponse",
     "DeviceFetchResponse",
+    "DeviceRedirectionResponse",
     "DeviceResponse",
     "DeviceValidationResponse",
     "DialogInfo",
@@ -760,6 +770,8 @@ __all__ = (
     "PageRateResponseDataItem",
     "PageRecordingResponse",
     "PageRecordingResponseDataItem",
+    "PageRedirectionAccountResponse",
+    "PageRedirectionAccountResponseDataItem",
     "PageRegistrationResponse",
     "PageRegistrationResponseDataItem",
     "PageRetentionRunResponse",
@@ -817,6 +829,7 @@ __all__ = (
     "ProvisioningKeyResponse",
     "PurgeReport",
     "PurgeResponse",
+    "PutRedirectionAccountRequest",
     "QueueConfigResponse",
     "QueueResponse",
     "QueueStatsResponse",
@@ -828,6 +841,11 @@ __all__ = (
     "ReadinessSummary",
     "RecordingResponse",
     "RecoveryCodes",
+    "RedirectionAccountResponse",
+    "RedirectionCheckResponse",
+    "RedirectionService",
+    "RedirectionState",
+    "RedirectionSyncResponse",
     "RedirectRequest",
     "ReencryptReport",
     "RegistrationResponse",

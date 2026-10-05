@@ -17,10 +17,10 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import { devices, emergency, locations, tenants, users } from '@/api/endpoints'
+import { devices, emergency, locations, provisioning, tenants, users } from '@/api/endpoints'
 import type { AddressValidation, Device, CreateDeviceRequest, UpdateDeviceRequest } from '@/types'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
-import { ProvisioningUrlCard, DeviceFetchesDialog, PendingPhonesCard, DeviceConfigDialog } from '@/components/ProvisioningUrl'
+import { ProvisioningUrlCard, DeviceFetchesDialog, PendingPhonesCard, DeviceConfigDialog, RedirectionCard } from '@/components/ProvisioningUrl'
 import type { LineKey } from '@/types'
 
 /** The vendors a phone can be (docs/PROVISIONING.md §5). */
@@ -100,8 +100,10 @@ const regBadge = (state: string) => {
 
 /// Generate a 192-bit provisioning token rendered as 48 hex chars.
 /// Well above the 32-char minimum enforced by the backend.
+// 32 characters: the most a vendor's redirection service hands a phone
+// (docs/PROVISIONING.md §10).
 function generateProvisioningToken(): string {
-  const bytes = new Uint8Array(24)
+  const bytes = new Uint8Array(16)
   crypto.getRandomValues(bytes)
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
@@ -218,6 +220,19 @@ export function DevicesPage() {
         res.sent > 0
           ? `"${device.name}" was told to fetch its configuration again.`
           : `"${device.name}" is not registered, so it could not be told.`,
+      ),
+    onError: (e) => alert((e as Error).message),
+  })
+
+  // Zero-touch (docs/PROVISIONING.md §10): register the phone with its
+  // vendor's redirection service now.
+  const redirectMutation = useMutation({
+    mutationFn: (device: Device) => provisioning.registerDevice(device.id),
+    onSuccess: (res, device) =>
+      alert(
+        res.state === 'registered'
+          ? `"${device.name}" is registered with ${res.service === 'poly_ztp' ? 'Poly ZTP' : 'Yealink RPS'}.`
+          : `"${device.name}" could not be registered: ${res.detail}`,
       ),
     onError: (e) => alert((e as Error).message),
   })
@@ -376,6 +391,13 @@ export function DevicesPage() {
             <DropdownMenuItem onClick={() => setConfigOf(row.original)}>
               <FileUp className="mr-2 h-4 w-4" />
               Configuration
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!row.original.mac_address || redirectMutation.isPending}
+              onClick={() => redirectMutation.mutate(row.original)}
+            >
+              <Upload className="mr-2 h-4 w-4" />
+              Register with its vendor
             </DropdownMenuItem>
             <DropdownMenuItem
               disabled={resyncMutation.isPending}
@@ -550,6 +572,7 @@ export function DevicesPage() {
       </div>
 
       <ProvisioningUrlCard />
+      <RedirectionCard />
       <PendingPhonesCard
         onClaimed={(device) => {
           if (device.provisioning_token) {

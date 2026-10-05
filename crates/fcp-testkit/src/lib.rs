@@ -25,6 +25,7 @@ pub mod db;
 pub mod media;
 pub mod oidc;
 pub mod phone;
+pub mod redirection;
 pub mod seed;
 pub mod service;
 pub mod sinks;

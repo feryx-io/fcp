@@ -1,10 +1,11 @@
 # Provisioning phones
 
-How a tenant's phones fetch their configuration from FCP, and how FCP
-keeps them in step. This is phase 7 of `docs/IDENTITY_AND_DEVICES.md`: 7a
-the URL and how it is guarded; 7b the templates, picked by model, pending
-phones and import; 7c the registration on the device, resync, and the old
-route removed.
+How a tenant's phones fetch their configuration from FCP, how FCP keeps
+them in step, and how a phone out of its box finds FCP. This is phases 7
+and 8 of `docs/IDENTITY_AND_DEVICES.md`: 7a the URL and how it is guarded;
+7b the templates, picked by model, pending phones and import; 7c the
+registration on the device, resync, and the old route removed; 8a
+zero-touch through Yealink RPS and Poly ZTP, and DHCP.
 
 ## 1. The tenant's provisioning URL
 
@@ -69,8 +70,9 @@ A phone that sends Basic credentials has them checked even when the
 tenant does not require them.
 
 The device's provisioning token is made with the device (when it has a
-MAC) and shown once; `PATCH /devices/{id}` with `provisioning_token`
-rotates it.
+MAC) and shown once: 32 characters, the most a vendor's redirection
+service hands a phone (§10). `PATCH /devices/{id}` with
+`provisioning_token` replaces it.
 
 ## 4. Every fetch is recorded
 
@@ -316,3 +318,100 @@ from the tenant's URL. `[api] provisioning_auth_token` is read by nothing;
 it is still accepted, with a warning at startup, and a later release
 refuses it. The `--provisioning-auth-token` flag and
 `FCP_ADMIN_PROVISIONING_AUTH_TOKEN` are gone.
+
+## 10. Zero-touch
+
+A phone out of its box knows nobody's URL. It learns it one of three ways:
+from its vendor's redirection service, from DHCP, or from whoever types it
+into its web page. FCP does the first itself and documents the second.
+
+### Redirection services
+
+A phone asks its vendor's service, by its MAC, where its provisioning
+server is. With a tenant's account with the service, FCP registers each of
+the tenant's phones of that vendor:
+
+| Service | FCP registers | Per-device credentials |
+|---|---|---|
+| Yealink RPS (`yealink_rps`) | the MAC, with the tenant's URL as its own server (`uniqueServerUrl`) and the device's name as the remark | yes: the device's provisioning token as the password, the MAC as the username |
+| Poly ZTP (`poly_ztp`) | the MAC, associated with a profile under the tenant's Reference ID | no |
+
+Grandstream GDMS and Fanvil FDPS come next (8b), behind the same
+interface.
+
+**When.** A device with a MAC whose vendor (`vendor`, else the MAC's
+prefix) has an account that is on is registered when it is made, claimed
+or imported, and on any change after that it has not been. A new MAC
+takes the old one off and puts the new one on; a device disabled or
+deleted is taken off. It all happens after the request answers, so a
+vendor's outage does not hold up an administrator; the outcome is on the
+device:
+
+- `GET /api/v1/devices/{id}/redirection` (`device_read`): the service, the
+  MAC registered, `registered` or `failed` with the service's reason,
+  whether the phone was given credentials.
+- `POST /api/v1/devices/{id}/redirection` (`device_update`, or *Register
+  with its vendor* on a device's menu): register it now, or again.
+
+**Credentials.** Where the service carries them (RPS), the phone is given
+its provisioning token: the one made with the device, or, when the tenant
+requires device credentials (§3) and FCP no longer holds it, a new one,
+which replaces the old. RPS keeps at most 32 characters, which is why
+tokens are 32. With ZTP the phone has no credentials of its own: a tenant
+that requires them cannot use ZTP's phones without giving each its token
+by hand.
+
+### The accounts
+
+On the Devices page (*Zero-touch*), or:
+
+| Route | Permission | |
+|---|---|---|
+| `GET /api/v1/provisioning/redirection` | `device_read` | each service and the tenant's account with it (never the secret) |
+| `PUT /api/v1/provisioning/redirection/{service}` | `device_update` | `key_id`, `secret` (required to make it, kept when left out), `enabled`; for Poly `account_id` and `profile` |
+| `DELETE /api/v1/provisioning/redirection/{service}` | `device_update` | forget it (phones stay registered at the vendor) |
+| `POST /api/v1/provisioning/redirection/{service}/check` | `device_update` | whether the credentials work: `ok` and the service's reason |
+| `POST /api/v1/provisioning/redirection/{service}/sync` | `device_update` | register every phone of the vendor not yet registered: an account made after its phones |
+
+The secret is sealed at rest, like every other secret (`docs/ENCRYPTION.md`).
+
+**Yealink RPS.** In the RPS management platform, *System Management › API
+Service › Acquire* gives an AccessKey ID (`key_id`) and Secret (`secret`).
+FCP signs each request as the RPS JSON API guide describes (HMAC-SHA256
+over the method, `Content-MD5`, `X-Ca-Key`, `X-Ca-Nonce`,
+`X-Ca-Timestamp`, the path and the query). Phones need not be on an RPS
+server: each gets the tenant's URL as its own.
+
+**Poly ZTP.** Poly gives the API account (`key_id`, `secret`) on request
+(ztpinfo@polycom.com). The ZTP API cannot make profiles: make one in the
+ZTP console whose provisioning server is the tenant's URL, and a Reference
+ID (`account_id`), and give FCP both. Each phone is associated with that
+profile under that Reference ID; one already associated elsewhere in the
+account is moved.
+
+**Where FCP reaches them** is the operator's, not a tenant's
+(`[api.redirection]` on the admin): `yealink_rps_url` (default
+`https://api-dm.yealink.com:8443`) and `poly_ztp_url` (default
+`https://ztpconsole.polycom.com/inboundservlet/GenericServlet`). The URL a
+service is told is `[api.provisioning] public_url` (else `[api.sso]
+public_url`, else the address the administrator's request came to) with
+the tenant's key: set `public_url` so it is the address phones reach.
+
+Both connectors are tested against stand-ins written from the vendors'
+guides (`fcp_testkit::redirection`); they have not been run against the
+real services, which need vendor accounts. Whoever has one should check
+them by hand (the *Check* button is the first step).
+
+### DHCP
+
+Where a network's DHCP server can be set, it can hand phones the URL:
+
+| Option | Read by |
+|---|---|
+| 66 (TFTP server name), a full `https://…/provision/<key>/` URL | Yealink, Polycom, Grandstream, Cisco, Fanvil, Snom |
+| 160 (provisioning server), the same URL | Polycom (before 66), Yealink |
+| 43 (vendor-specific), sub-option as each vendor's guide says | Cisco and others; not set up by FCP |
+
+A URL in DHCP is seen by everything on the network, and the key is in it:
+use it on networks the tenant trusts, and list them in its `networks`
+(§3).

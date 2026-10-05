@@ -9,7 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { configTemplates, devices, provisioning, users } from '@/api/endpoints'
-import type { Device, PendingDevice } from '@/types'
+import type { Device, PendingDevice, RedirectionAccount } from '@/types'
 
 /** The tenant's provisioning URL (docs/PROVISIONING.md): shown, copied, and
  * replaced — which stops the old one working. */
@@ -298,6 +298,168 @@ export function DeviceConfigDialog({ device, onClose }: { device: { id: string; 
         {data && (
           <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3 font-mono text-xs">{data.content}</pre>
         )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+const SERVICE_NAMES: Record<string, string> = {
+  yealink_rps: 'Yealink RPS',
+  poly_ztp: 'Poly ZTP',
+}
+
+/** Zero-touch (docs/PROVISIONING.md §10): the tenant's accounts with vendors'
+ * redirection services, which send a phone out of its box to the tenant's
+ * provisioning URL. */
+export function RedirectionCard() {
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState<RedirectionAccount | null>(null)
+  const { data: accounts = [] } = useQuery({ queryKey: ['redirection'], queryFn: provisioning.redirection })
+  const check = useMutation({
+    mutationFn: provisioning.checkRedirection,
+    onSuccess: (res, service) =>
+      alert(res.ok ? `${SERVICE_NAMES[service]}: the credentials work.` : `${SERVICE_NAMES[service]}: ${res.detail}`),
+    onError: (e) => alert((e as Error).message),
+  })
+  const sync = useMutation({
+    mutationFn: provisioning.syncRedirection,
+    onSuccess: (res, service) =>
+      alert(`${SERVICE_NAMES[service]}: ${res.registered} of ${res.devices} phone(s) registered${res.failed ? `, ${res.failed} failed` : ''}.`),
+    onError: (e) => alert((e as Error).message),
+  })
+  const remove = useMutation({
+    mutationFn: provisioning.deleteRedirection,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['redirection'] }),
+  })
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4">
+        <div>
+          <p className="text-sm font-medium">Zero-touch</p>
+          <p className="text-sm text-muted-foreground">
+            With an account here, each phone of the vendor is registered with its redirection service when it is made or
+            claimed, so it finds the provisioning URL out of its box.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {accounts.map((a) => (
+            <div key={a.service} className="flex items-center gap-2 rounded-md border px-3 py-2">
+              <span className="text-sm font-medium">{SERVICE_NAMES[a.service] ?? a.service}</span>
+              <span className="text-xs text-muted-foreground">
+                {a.configured ? (a.enabled ? 'on' : 'off') : 'not set up'}
+              </span>
+              <Button size="sm" variant="outline" onClick={() => setEditing(a)}>
+                {a.configured ? 'Edit' : 'Set up'}
+              </Button>
+              {a.configured && (
+                <>
+                  <Button size="sm" variant="ghost" disabled={check.isPending} onClick={() => check.mutate(a.service)}>
+                    Check
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={sync.isPending} onClick={() => sync.mutate(a.service)}>
+                    Register phones
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label="Remove"
+                    onClick={() => {
+                      if (confirm(`Forget the ${SERVICE_NAMES[a.service]} account? Phones registered with it stay registered there.`))
+                        remove.mutate(a.service)
+                    }}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+        <RedirectionDialog account={editing} onClose={() => setEditing(null)} />
+      </CardContent>
+    </Card>
+  )
+}
+
+function RedirectionDialog({ account, onClose }: { account: RedirectionAccount | null; onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const [keyId, setKeyId] = useState('')
+  const [secret, setSecret] = useState('')
+  const [accountId, setAccountId] = useState('')
+  const [profile, setProfile] = useState('')
+  const [enabled, setEnabled] = useState(true)
+  const [shownFor, setShownFor] = useState<string | null>(null)
+  if (account && shownFor !== account.service) {
+    setShownFor(account.service)
+    setKeyId(account.key_id ?? '')
+    setSecret('')
+    setAccountId(account.account_id ?? '')
+    setProfile(account.profile ?? '')
+    setEnabled(account.configured ? account.enabled : true)
+  }
+  const poly = account?.service === 'poly_ztp'
+  const save = useMutation({
+    mutationFn: () =>
+      provisioning.putRedirection(account!.service, {
+        key_id: keyId,
+        secret: secret || undefined,
+        account_id: poly ? accountId : undefined,
+        profile: poly ? profile : undefined,
+        enabled,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['redirection'] })
+      setShownFor(null)
+      onClose()
+    },
+  })
+  return (
+    <Dialog open={!!account} onOpenChange={(open) => { if (!open) { setShownFor(null); onClose() } }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{account ? SERVICE_NAMES[account.service] : ''}</DialogTitle>
+          <DialogDescription>
+            {poly
+              ? 'The ZTP API account Poly gave you, the Reference ID, and the profile you made in the ZTP console naming this tenant\'s provisioning URL. ZTP hands phones no credentials of their own.'
+              : 'The AccessKey ID and Secret from System Management › API Service. RPS gives each phone the provisioning URL and its own credentials.'}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label htmlFor="rd-key">{poly ? 'API user id' : 'AccessKey ID'}</Label>
+            <Input id="rd-key" value={keyId} onChange={(e) => setKeyId(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="rd-secret">{poly ? 'API password' : 'AccessKey Secret'}</Label>
+            <Input
+              id="rd-secret"
+              type="password"
+              value={secret}
+              placeholder={account?.configured ? 'Unchanged' : ''}
+              onChange={(e) => setSecret(e.target.value)}
+            />
+          </div>
+          {poly && (
+            <>
+              <div className="space-y-1">
+                <Label htmlFor="rd-account">Reference ID</Label>
+                <Input id="rd-account" value={accountId} onChange={(e) => setAccountId(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="rd-profile">Profile</Label>
+                <Input id="rd-profile" value={profile} onChange={(e) => setProfile(e.target.value)} />
+              </div>
+            </>
+          )}
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> On
+          </label>
+          {save.isError && <p className="text-sm text-destructive">{(save.error as Error).message}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={onClose}>Cancel</Button>
+            <Button disabled={save.isPending || !keyId.trim()} onClick={() => save.mutate()}>Save</Button>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   )

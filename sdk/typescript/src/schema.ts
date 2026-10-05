@@ -4267,6 +4267,109 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/provisioning/redirection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/provisioning/redirection — each service and the tenant's
+         *     account with it.
+         */
+        get: operations["provisioning_list_redirection"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/provisioning/redirection/{service}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /api/v1/provisioning/redirection/:service — the tenant's account. */
+        put: operations["provisioning_put_redirection"];
+        post?: never;
+        /**
+         * DELETE /api/v1/provisioning/redirection/:service — forget the account;
+         *     phones registered with it stay registered at the vendor.
+         */
+        delete: operations["provisioning_delete_redirection"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/provisioning/redirection/{service}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/provisioning/redirection/:service/check — ask the service
+         *     whether the account's credentials work.
+         */
+        post: operations["provisioning_check_redirection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/provisioning/redirection/{service}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/provisioning/redirection/:service/sync — register every
+         *     phone of the service's vendor not yet registered (an account made after
+         *     its devices).
+         */
+        post: operations["provisioning_sync_redirection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/{id}/redirection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/devices/:id/redirection */
+        get: operations["provisioning_device_redirection"];
+        put?: never;
+        /**
+         * POST /api/v1/devices/:id/redirection — register the device's phone
+         *     with its vendor's service now (again, if it was).
+         */
+        post: operations["provisioning_register_device"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/devices/{id}/resync": {
         parameters: {
             query?: never;
@@ -6182,6 +6285,17 @@ export interface components {
             user_agent?: string | null;
             /** @description `served`, `unauthorized`, `not_served` (disabled, or no template)… */
             outcome: string;
+        };
+        /** @description Where a device stands with its vendor's service. */
+        DeviceRedirectionResponse: {
+            service: components["schemas"]["RedirectionService"];
+            mac_address: string;
+            state: components["schemas"]["RedirectionState"];
+            detail?: string | null;
+            /** @description Whether the phone was given its own credentials through the service. */
+            with_credentials: boolean;
+            /** Format: date-time */
+            at: string;
         };
         /** @description Device response. */
         DeviceResponse: {
@@ -8623,6 +8737,31 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_RedirectionAccountResponse: {
+            data: {
+                service: components["schemas"]["RedirectionService"];
+                configured: boolean;
+                enabled: boolean;
+                /** @description Yealink: the AccessKey ID; Poly: the API user id. */
+                key_id?: string | null;
+                /** @description Poly: the Reference ID devices are associated under. */
+                account_id?: string | null;
+                /** @description Poly: the ZTP profile naming the tenant's provisioning URL. */
+                profile?: string | null;
+                /** @description Whether the service hands phones their own credentials. */
+                carries_credentials: boolean;
+                /** Format: date-time */
+                updated_at?: string | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_RegistrationResponse: {
             data: {
                 aor: string;
@@ -9651,6 +9790,16 @@ export interface components {
             username: string;
             report: components["schemas"]["PurgeReport"];
         };
+        /** @description An account, made or changed. */
+        PutRedirectionAccountRequest: {
+            /** @description Unset: on. */
+            enabled?: boolean | null;
+            key_id: string;
+            /** @description Required to make the account; unset on a change keeps it. */
+            secret?: string | null;
+            account_id?: string | null;
+            profile?: string | null;
+        };
         /** @description Queue config response. */
         QueueConfigResponse: {
             id: string;
@@ -9808,6 +9957,50 @@ export interface components {
              *     dropped.
              */
             party?: string | null;
+        };
+        /** @description A tenant's account with a redirection service; the secret is never shown. */
+        RedirectionAccountResponse: {
+            service: components["schemas"]["RedirectionService"];
+            configured: boolean;
+            enabled: boolean;
+            /** @description Yealink: the AccessKey ID; Poly: the API user id. */
+            key_id?: string | null;
+            /** @description Poly: the Reference ID devices are associated under. */
+            account_id?: string | null;
+            /** @description Poly: the ZTP profile naming the tenant's provisioning URL. */
+            profile?: string | null;
+            /** @description Whether the service hands phones their own credentials. */
+            carries_credentials: boolean;
+            /** Format: date-time */
+            updated_at?: string | null;
+        };
+        /** @description Whether an account's credentials work. */
+        RedirectionCheckResponse: {
+            ok: boolean;
+            detail?: string | null;
+        };
+        /**
+         * @description A vendor's redirection service: a phone out of its box asks it where
+         *     its provisioning server is.
+         * @enum {string}
+         */
+        RedirectionService: "yealink_rps" | "poly_ztp";
+        /**
+         * @description How a device's registration with its vendor went.
+         * @enum {string}
+         */
+        RedirectionState: "registered" | "failed";
+        /** @description What a sync did. */
+        RedirectionSyncResponse: {
+            /**
+             * Format: int64
+             * @description The tenant's enabled devices of the service's vendor with a MAC.
+             */
+            devices: number;
+            /** Format: int64 */
+            registered: number;
+            /** Format: int64 */
+            failed: number;
         };
         /** @description Outcome of a bulk re-seal pass. */
         ReencryptReport: {
@@ -21852,6 +22045,223 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RenderedConfigResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_list_redirection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_RedirectionAccountResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_put_redirection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                service: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutRedirectionAccountRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedirectionAccountResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_delete_redirection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                service: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_check_redirection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                service: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedirectionCheckResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_sync_redirection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                service: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedirectionSyncResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_device_redirection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceRedirectionResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    provisioning_register_device: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceRedirectionResponse"];
                 };
             };
             /** @description An error */

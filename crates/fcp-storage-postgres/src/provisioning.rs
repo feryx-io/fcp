@@ -5,7 +5,8 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::provisioning::{
-    hash_key, DeviceFetch, PendingDevice, ProvisioningKey, ProvisioningStore, PENDING_KEPT,
+    hash_key, DeviceFetch, DeviceRedirection, PendingDevice, ProvisioningKey, ProvisioningStore,
+    RedirectionAccount, RedirectionService, RedirectionState, PENDING_KEPT,
 };
 use fcp_core::{DeviceId, TenantId};
 use sqlx::Row;
@@ -217,6 +218,180 @@ impl ProvisioningStore for PostgresStorage {
                 .execute(self.writes())
                 .await?;
         Ok(done.rows_affected() > 0)
+    }
+
+    async fn get_redirection_account(
+        &self,
+        tenant_id: &TenantId,
+        service: RedirectionService,
+    ) -> anyhow::Result<Option<RedirectionAccount>> {
+        let row = sqlx::query(
+            "SELECT service, enabled, key_id, secret_sealed, account_id, profile, updated_at
+             FROM redirection_accounts WHERE tenant_id = $1 AND service = $2",
+        )
+        .bind(tenant_id.to_string())
+        .bind(service.as_str())
+        .fetch_optional(self.reads())
+        .await?;
+        match row {
+            Some(row) => Ok(Some(self.row_to_account(tenant_id, row).await?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_redirection_accounts(
+        &self,
+        tenant_id: &TenantId,
+    ) -> anyhow::Result<Vec<RedirectionAccount>> {
+        let rows = sqlx::query(
+            "SELECT service, enabled, key_id, secret_sealed, account_id, profile, updated_at
+             FROM redirection_accounts WHERE tenant_id = $1 ORDER BY service",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(self.reads())
+        .await?;
+        let mut accounts = Vec::with_capacity(rows.len());
+        for row in rows {
+            accounts.push(self.row_to_account(tenant_id, row).await?);
+        }
+        Ok(accounts)
+    }
+
+    async fn put_redirection_account(&self, a: &RedirectionAccount) -> anyhow::Result<()> {
+        let sealed = self.seal_opt(Some(&a.secret))?.unwrap_or_default();
+        sqlx::query(
+            "INSERT INTO redirection_accounts
+                 (id, tenant_id, service, enabled, key_id, secret_sealed, account_id, profile, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (id) DO UPDATE SET
+                 enabled = EXCLUDED.enabled,
+                 key_id = EXCLUDED.key_id,
+                 secret_sealed = EXCLUDED.secret_sealed,
+                 account_id = EXCLUDED.account_id,
+                 profile = EXCLUDED.profile,
+                 updated_at = EXCLUDED.updated_at",
+        )
+        .bind(format!("{}:{}", a.tenant_id, a.service.as_str()))
+        .bind(a.tenant_id.to_string())
+        .bind(a.service.as_str())
+        .bind(a.enabled)
+        .bind(&a.key_id)
+        .bind(sealed)
+        .bind(&a.account_id)
+        .bind(&a.profile)
+        .bind(system_time_to_datetime(a.updated_at))
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_redirection_account(
+        &self,
+        tenant_id: &TenantId,
+        service: RedirectionService,
+    ) -> anyhow::Result<bool> {
+        let done = sqlx::query("DELETE FROM redirection_accounts WHERE id = $1")
+            .bind(format!("{}:{}", tenant_id, service.as_str()))
+            .execute(self.writes())
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn get_device_redirection(
+        &self,
+        device_id: &DeviceId,
+    ) -> anyhow::Result<Option<DeviceRedirection>> {
+        let row = sqlx::query(
+            "SELECT tenant_id, service, mac_address, vendor_ref, state, detail,
+                    with_credentials, at
+             FROM device_redirections WHERE device_id = $1",
+        )
+        .bind(device_id.to_string())
+        .fetch_optional(self.writes())
+        .await?;
+        let Some(row) = row else { return Ok(None) };
+        Ok(Some(DeviceRedirection {
+            tenant_id: TenantId::from_str(&row.try_get::<String, _>("tenant_id")?)?,
+            device_id: *device_id,
+            service: row
+                .try_get::<String, _>("service")?
+                .parse()
+                .map_err(anyhow::Error::msg)?,
+            mac_address: row.try_get("mac_address")?,
+            vendor_ref: row.try_get("vendor_ref")?,
+            state: match row.try_get::<String, _>("state")?.as_str() {
+                "registered" => RedirectionState::Registered,
+                _ => RedirectionState::Failed,
+            },
+            detail: row.try_get("detail")?,
+            with_credentials: row.try_get("with_credentials")?,
+            at: datetime_to_system_time(row.try_get::<DateTime<Utc>, _>("at")?),
+        }))
+    }
+
+    async fn put_device_redirection(&self, r: &DeviceRedirection) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO device_redirections
+                 (device_id, tenant_id, service, mac_address, vendor_ref, state, detail,
+                  with_credentials, at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (device_id) DO UPDATE SET
+                 service = EXCLUDED.service,
+                 mac_address = EXCLUDED.mac_address,
+                 vendor_ref = EXCLUDED.vendor_ref,
+                 state = EXCLUDED.state,
+                 detail = EXCLUDED.detail,
+                 with_credentials = EXCLUDED.with_credentials,
+                 at = EXCLUDED.at",
+        )
+        .bind(r.device_id.to_string())
+        .bind(r.tenant_id.to_string())
+        .bind(r.service.as_str())
+        .bind(&r.mac_address)
+        .bind(&r.vendor_ref)
+        .bind(match r.state {
+            RedirectionState::Registered => "registered",
+            RedirectionState::Failed => "failed",
+        })
+        .bind(&r.detail)
+        .bind(r.with_credentials)
+        .bind(system_time_to_datetime(r.at))
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_device_redirection(&self, device_id: &DeviceId) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM device_redirections WHERE device_id = $1")
+            .bind(device_id.to_string())
+            .execute(self.writes())
+            .await?;
+        Ok(())
+    }
+}
+
+impl PostgresStorage {
+    async fn row_to_account(
+        &self,
+        tenant_id: &TenantId,
+        row: sqlx::postgres::PgRow,
+    ) -> anyhow::Result<RedirectionAccount> {
+        Ok(RedirectionAccount {
+            tenant_id: *tenant_id,
+            service: row
+                .try_get::<String, _>("service")?
+                .parse()
+                .map_err(anyhow::Error::msg)?,
+            enabled: row.try_get("enabled")?,
+            key_id: row.try_get("key_id")?,
+            secret: self
+                .open_opt(Some(row.try_get::<String, _>("secret_sealed")?))
+                .await?
+                .unwrap_or_default(),
+            account_id: row.try_get("account_id")?,
+            profile: row.try_get("profile")?,
+            updated_at: datetime_to_system_time(row.try_get::<DateTime<Utc>, _>("updated_at")?),
+        })
     }
 }
 

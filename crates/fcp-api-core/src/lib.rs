@@ -20,6 +20,7 @@ pub mod oidc;
 pub mod openapi;
 pub mod page;
 pub mod rate_limit;
+pub mod redirection;
 pub mod route_permissions;
 pub mod saml;
 pub mod scim;
@@ -239,7 +240,8 @@ pub fn create_router_with(
     state = state.with_sso_config(&api_config.sso);
     state = state
         .with_provisioning_require_https(api_config.provisioning_require_https)
-        .with_provisioning_config(api_config.provisioning.clone());
+        .with_provisioning_config(api_config.provisioning.clone())
+        .with_redirection_config(api_config.redirection.clone());
 
     // Conditionally apply bearer token authentication middleware
     if api_config.auth_enabled {

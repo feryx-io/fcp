@@ -809,6 +809,58 @@ pub struct ApiConfig {
     /// What provisioned phones are told (phase 7).
     #[serde(default)]
     pub provisioning: ApiProvisioningConfig,
+
+    /// Where vendors' redirection services are reached (phase 8).
+    #[serde(default)]
+    pub redirection: ApiRedirectionConfig,
+}
+
+/// `[api.redirection]`: where vendors' redirection services answer
+/// (`docs/PROVISIONING.md` §10). Set by the operator, not a tenant, so a
+/// tenant's account cannot point FCP at an address of its choosing; the
+/// defaults are the vendors' own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiRedirectionConfig {
+    #[serde(default = "default_yealink_rps_url")]
+    pub yealink_rps_url: String,
+    #[serde(default = "default_poly_ztp_url")]
+    pub poly_ztp_url: String,
+}
+
+fn default_yealink_rps_url() -> String {
+    "https://api-dm.yealink.com:8443".to_string()
+}
+
+fn default_poly_ztp_url() -> String {
+    "https://ztpconsole.polycom.com/inboundservlet/GenericServlet".to_string()
+}
+
+impl Default for ApiRedirectionConfig {
+    fn default() -> Self {
+        Self {
+            yealink_rps_url: default_yealink_rps_url(),
+            poly_ztp_url: default_poly_ztp_url(),
+        }
+    }
+}
+
+impl ApiRedirectionConfig {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        for (key, url) in [
+            ("yealink_rps_url", &self.yealink_rps_url),
+            ("poly_ztp_url", &self.poly_ztp_url),
+        ] {
+            if !(url.starts_with("https://") || url.starts_with("http://"))
+                || url.chars().any(|c| c.is_whitespace() || c.is_control())
+            {
+                return Err(format!(
+                    "api.redirection.{key} must be an http(s):// address"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `[api.provisioning]`: what provisioned phones are told — where they
@@ -1081,6 +1133,7 @@ impl Default for ApiConfig {
             session: ApiSessionConfig::default(),
             sso: ApiSsoConfig::default(),
             provisioning: ApiProvisioningConfig::default(),
+            redirection: ApiRedirectionConfig::default(),
         }
     }
 }
@@ -1106,6 +1159,7 @@ impl ApiConfig {
         }
         self.session.validate(self.auth_token.as_deref())?;
         self.provisioning.validate()?;
+        self.redirection.validate()?;
         Ok(())
     }
 }

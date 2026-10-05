@@ -23,6 +23,9 @@ import type {
   UpdateConfigTemplateRequest,
   LibraryTemplate,
   PreviewTemplateResponse,
+  RedirectionAccount,
+  PutRedirectionAccountRequest,
+  DeviceRedirection,
   PurgeResponse,
   CreateUserRequest,
   UpdateUserRequest,
@@ -278,6 +281,20 @@ export const provisioning = {
     apiClient.post<Device>(`/provisioning/pending/${encodeURIComponent(mac)}/claim`, data),
   dismiss: (mac: string) =>
     apiClient.delete<void>(`/provisioning/pending/${encodeURIComponent(mac)}`),
+  /** Zero-touch: the vendors' redirection services (§10). */
+  redirection: () => apiClient.getAll<RedirectionAccount>('/provisioning/redirection'),
+  putRedirection: (service: string, data: PutRedirectionAccountRequest) =>
+    apiClient.put<RedirectionAccount>(`/provisioning/redirection/${encodeURIComponent(service)}`, data),
+  deleteRedirection: (service: string) =>
+    apiClient.delete<void>(`/provisioning/redirection/${encodeURIComponent(service)}`),
+  checkRedirection: (service: string) =>
+    apiClient.post<{ ok: boolean; detail?: string | null }>(`/provisioning/redirection/${encodeURIComponent(service)}/check`),
+  syncRedirection: (service: string) =>
+    apiClient.post<{ devices: number; registered: number; failed: number }>(
+      `/provisioning/redirection/${encodeURIComponent(service)}/sync`,
+    ),
+  registerDevice: (id: string) =>
+    apiClient.post<DeviceRedirection>(`/devices/${encodeURIComponent(id)}/redirection`),
 }
 
 // Hoteling sessions (docs/ENTERPRISE_CALLING.md §3.8)
