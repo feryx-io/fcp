@@ -328,6 +328,9 @@ their tenant, how they signed in, when it ends and whether it was revoked
     stays signed out if enabled again.
   - A deleted user's sessions go with them.
   - A session lasts 12 hours however often it is refreshed.
+- **Apps.** FCP's apps (the softphone) sign in through the browser and keep
+  a session of their own, refreshed with a token rather than a cookie and
+  lasting 90 days from its last use: `docs/APP_SIGN_IN.md`.
 - **The keys.** Access tokens are signed with `[api.session] signing_key`
   (32 characters or more, distinct from `auth_token`;
   `FCP_ADMIN_SESSION_SIGNING_KEY`).

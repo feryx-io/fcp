@@ -46,6 +46,90 @@ pub mod method {
     pub const OIDC: &str = "oidc";
     /// Through a tenant's SAML provider.
     pub const SAML: &str = "saml";
+    /// An app session, granted by a sign-in in the browser or a fresh
+    /// session (`docs/SOFTPHONE.md` §2.2).
+    pub const APP: &str = "app";
+}
+
+/// How long an app session lasts after its last refresh, by default
+/// (`docs/SOFTPHONE.md` §2.3); a tenant sets its own.
+pub const DEFAULT_APP_SESSION_DAYS: u32 = 90;
+/// How long an app's sign-in may sit in the browser, and how long its code
+/// lives once granted.
+pub const APP_AUTHORIZATION_TTL: Duration = Duration::from_secs(10 * 60);
+pub const APP_CODE_TTL: Duration = Duration::from_secs(60);
+/// How recent a browser sign-in must be to grant an app a session.
+pub const APP_GRANT_FRESHNESS: Duration = Duration::from_secs(10 * 60);
+
+/// The app an app session belongs to: what the user sees in their list of
+/// devices, and the install it came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppClient {
+    /// What the app calls itself on this machine ("Alice's MacBook").
+    pub name: String,
+    /// Kept by the install across sign-ins, so a second sign-in on the same
+    /// machine replaces the first rather than adding a device.
+    pub install_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// An app's sign-in in the browser (RFC 8252, RFC 7636): begun by the app,
+/// granted by the user signing in, its code redeemed once by the app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppAuthorization {
+    pub id: String,
+    pub client_id: String,
+    pub redirect_uri: String,
+    /// The S256 challenge the app's verifier must answer.
+    pub code_challenge: String,
+    pub state: Option<String>,
+    pub created_at: SystemTime,
+    pub expires_at: SystemTime,
+    /// Set when granted: who, and the code's hash and expiry.
+    pub user_id: Option<UserId>,
+    pub tenant_id: Option<TenantId>,
+    pub code_hash: Option<String>,
+    pub code_expires_at: Option<SystemTime>,
+}
+
+/// The S256 challenge of a PKCE verifier (RFC 7636 §4.2).
+pub fn pkce_challenge(verifier: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+/// Whether `verifier` is a PKCE verifier at all (RFC 7636 §4.1): 43 to 128
+/// unreserved characters.
+pub fn valid_pkce_verifier(verifier: &str) -> bool {
+    (43..=128).contains(&verifier.len())
+        && verifier
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '~'))
+}
+
+/// Where an app may be sent back to: a loopback address on any port over
+/// plain HTTP (RFC 8252 §7.3) — `127.0.0.1`, `[::1]` or `localhost`.
+/// Mobile apps' claimed links and private-use schemes come with the mobile
+/// project.
+pub fn valid_app_redirect(uri: &str) -> bool {
+    let Some(rest) = uri.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return false;
+    }
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        match v6.split_once(']') {
+            Some((host, port)) if port.is_empty() || port.starts_with(':') => host,
+            _ => return false,
+        }
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
+    matches!(host, "127.0.0.1" | "::1" | "localhost")
 }
 
 /// A sign-in session.
@@ -72,6 +156,9 @@ pub struct LoginSession {
     /// session, so the provider's back-channel logout can end it
     /// (`docs/IDENTITY_AND_DEVICES.md` phase 3b).
     pub idp: Option<IdpSession>,
+    /// The app, for an app session (`docs/SOFTPHONE.md` §2.3); a browser's
+    /// session has none.
+    pub app: Option<AppClient>,
 }
 
 /// A session's provider: its id, and the `sid` its ID token carried.
@@ -149,6 +236,45 @@ pub trait LoginSessionStore: Send + Sync {
         reason: &str,
         now: SystemTime,
     ) -> crate::Result<u64>;
+
+    /// Push a session's expiry out (an app session, on each refresh).
+    async fn extend_login_session(
+        &self,
+        id: &LoginSessionId,
+        expires_at: SystemTime,
+    ) -> crate::Result<()>;
+
+    /// A user's live sessions of the app install `install_id`.
+    async fn app_sessions_of_install(
+        &self,
+        user_id: &UserId,
+        install_id: &str,
+    ) -> crate::Result<Vec<LoginSession>>;
+
+    /// Keep an app's sign-in begun in the browser.
+    async fn create_app_authorization(&self, authorization: &AppAuthorization)
+        -> crate::Result<()>;
+
+    async fn get_app_authorization(&self, id: &str) -> crate::Result<Option<AppAuthorization>>;
+
+    /// Grant an app's sign-in to a user: once, and only while it has not
+    /// expired; false otherwise.
+    async fn grant_app_authorization(
+        &self,
+        id: &str,
+        user_id: &UserId,
+        tenant_id: &TenantId,
+        code_hash: &str,
+        code_expires_at: SystemTime,
+        now: SystemTime,
+    ) -> crate::Result<bool>;
+
+    /// Redeem a granted sign-in's code: once, before it expires.
+    async fn redeem_app_code(
+        &self,
+        code_hash: &str,
+        now: SystemTime,
+    ) -> crate::Result<Option<AppAuthorization>>;
 
     /// Delete sessions that ended more than `keep` ago; how many.
     async fn sweep_ended_sessions(&self, keep: Duration) -> crate::Result<u64> {
@@ -556,5 +682,48 @@ mod tests {
         assert_eq!(parsed, session);
         assert_eq!(got, secret);
         assert!(parse_refresh_cookie("no-dot").is_none());
+    }
+}
+
+#[cfg(test)]
+mod app_tests {
+    use super::*;
+
+    #[test]
+    fn a_pkce_challenge_is_the_rfc_7636_example() {
+        // RFC 7636 Appendix B.
+        assert_eq!(
+            pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+        assert!(valid_pkce_verifier(
+            "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        ));
+        assert!(!valid_pkce_verifier("short"));
+        assert!(!valid_pkce_verifier(&"a".repeat(42)));
+        assert!(!valid_pkce_verifier(&format!("{}+", "a".repeat(50))));
+    }
+
+    #[test]
+    fn an_app_is_sent_back_only_to_a_loopback_address() {
+        for ok in [
+            "http://127.0.0.1:53124/callback",
+            "http://127.0.0.1/",
+            "http://localhost:8000/cb?x=1",
+            "http://[::1]:7000/cb",
+        ] {
+            assert!(valid_app_redirect(ok), "{ok}");
+        }
+        for bad in [
+            "https://127.0.0.1:53124/callback",
+            "http://evil.example/cb",
+            "http://127.0.0.1.evil.example/cb",
+            "http://user@127.0.0.1/cb",
+            "http://[::1]evil/cb",
+            "fcp://callback",
+            "",
+        ] {
+            assert!(!valid_app_redirect(bad), "{bad}");
+        }
     }
 }

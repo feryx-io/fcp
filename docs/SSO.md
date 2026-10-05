@@ -110,6 +110,9 @@ How a sign-in becomes a user:
 
 ## 3. Signing in
 
+An app (the softphone) signs in through the same page in the system
+browser, so a provider needs nothing more for it (`docs/APP_SIGN_IN.md`).
+
 - **The login page** asks for a username or email.
   - An email whose domain is one of the tenant's login domains offers a
     button for each enabled provider: "Continue with ‹name›".

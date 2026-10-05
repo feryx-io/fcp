@@ -5,14 +5,20 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use fcp_core::session::{LoginSession, LoginSessionStore, RefreshOutcome, REFRESH_REUSE_GRACE};
-use fcp_core::{LoginSessionId, UserId};
+use fcp_core::session::{
+    AppAuthorization, AppClient, LoginSession, LoginSessionStore, RefreshOutcome,
+    REFRESH_REUSE_GRACE,
+};
+use fcp_core::{LoginSessionId, TenantId, UserId};
 use sqlx::{Pool, Postgres, Row};
 use std::time::SystemTime;
 
 const COLUMNS: &str = "id, tenant_id, user_id, method, created_at, refreshed_at, expires_at, \
      revoked_at, revoked_reason, ip, user_agent, refresh_hash, previous_refresh_hash, \
-     idp_provider_id, idp_sid";
+     idp_provider_id, idp_sid, app_name, app_install_id, app_platform, app_version";
+
+const AUTHORIZATION_COLUMNS: &str = "id, client_id, redirect_uri, code_challenge, state, \
+     created_at, expires_at, user_id, tenant_id, code_hash, code_expires_at";
 
 fn at(t: SystemTime) -> DateTime<Utc> {
     DateTime::<Utc>::from(t)
@@ -68,6 +74,47 @@ fn parse(row: &sqlx::postgres::PgRow) -> fcp_core::Result<LoginSession> {
                 provider_id,
                 sid: row.get("idp_sid"),
             }),
+        app: match (
+            row.get::<Option<String>, _>("app_name"),
+            row.get::<Option<String>, _>("app_install_id"),
+        ) {
+            (Some(name), Some(install_id)) => Some(AppClient {
+                name,
+                install_id,
+                platform: row.get("app_platform"),
+                version: row.get("app_version"),
+            }),
+            _ => None,
+        },
+    })
+}
+
+fn parse_authorization(row: &sqlx::postgres::PgRow) -> fcp_core::Result<AppAuthorization> {
+    let bad = |what: &str| {
+        fcp_core::Error::Storage(fcp_core::error::StorageError::Database(format!(
+            "an app authorization's {what} does not parse"
+        )))
+    };
+    Ok(AppAuthorization {
+        id: row.get("id"),
+        client_id: row.get("client_id"),
+        redirect_uri: row.get("redirect_uri"),
+        code_challenge: row.get("code_challenge"),
+        state: row.get("state"),
+        created_at: row.get::<DateTime<Utc>, _>("created_at").into(),
+        expires_at: row.get::<DateTime<Utc>, _>("expires_at").into(),
+        user_id: row
+            .get::<Option<String>, _>("user_id")
+            .map(|u| u.parse().map_err(|_| bad("user")))
+            .transpose()?,
+        tenant_id: row
+            .get::<Option<String>, _>("tenant_id")
+            .map(|t| t.parse::<TenantId>().map_err(|_| bad("tenant")))
+            .transpose()?,
+        code_hash: row.get("code_hash"),
+        code_expires_at: row
+            .get::<Option<DateTime<Utc>>, _>("code_expires_at")
+            .map(Into::into),
     })
 }
 
@@ -76,8 +123,9 @@ impl LoginSessionStore for PostgresLoginSessionStore {
     async fn create_login_session(&self, s: &LoginSession) -> fcp_core::Result<()> {
         sqlx::query(
             "INSERT INTO login_sessions (id, tenant_id, user_id, method, created_at,
-                 refreshed_at, expires_at, ip, user_agent, refresh_hash, idp_provider_id, idp_sid)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                 refreshed_at, expires_at, ip, user_agent, refresh_hash, idp_provider_id, idp_sid,
+                 app_name, app_install_id, app_platform, app_version)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
         )
         .bind(s.id.to_string())
         .bind(s.tenant_id.to_string())
@@ -91,6 +139,10 @@ impl LoginSessionStore for PostgresLoginSessionStore {
         .bind(&s.refresh_hash)
         .bind(s.idp.as_ref().map(|i| i.provider_id.clone()))
         .bind(s.idp.as_ref().and_then(|i| i.sid.clone()))
+        .bind(s.app.as_ref().map(|a| a.name.clone()))
+        .bind(s.app.as_ref().map(|a| a.install_id.clone()))
+        .bind(s.app.as_ref().and_then(|a| a.platform.clone()))
+        .bind(s.app.as_ref().and_then(|a| a.version.clone()))
         .execute(&self.pool)
         .await
         .map_err(store_error)?;
@@ -234,8 +286,123 @@ impl LoginSessionStore for PostgresLoginSessionStore {
         rows.iter().map(parse).collect()
     }
 
+    async fn extend_login_session(
+        &self,
+        id: &LoginSessionId,
+        expires_at: SystemTime,
+    ) -> fcp_core::Result<()> {
+        sqlx::query(
+            "UPDATE login_sessions SET expires_at = GREATEST(expires_at, $2)
+             WHERE id = $1 AND revoked_at IS NULL",
+        )
+        .bind(id.to_string())
+        .bind(at(expires_at))
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
+    async fn app_sessions_of_install(
+        &self,
+        user_id: &UserId,
+        install_id: &str,
+    ) -> fcp_core::Result<Vec<LoginSession>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {COLUMNS} FROM login_sessions
+             WHERE user_id = $1 AND app_install_id = $2
+               AND revoked_at IS NULL AND expires_at > NOW()"
+        ))
+        .bind(user_id.to_string())
+        .bind(install_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        rows.iter().map(parse).collect()
+    }
+
+    async fn create_app_authorization(&self, a: &AppAuthorization) -> fcp_core::Result<()> {
+        sqlx::query(
+            "INSERT INTO app_authorizations
+                 (id, client_id, redirect_uri, code_challenge, state, created_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(&a.id)
+        .bind(&a.client_id)
+        .bind(&a.redirect_uri)
+        .bind(&a.code_challenge)
+        .bind(&a.state)
+        .bind(at(a.created_at))
+        .bind(at(a.expires_at))
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
+    async fn get_app_authorization(&self, id: &str) -> fcp_core::Result<Option<AppAuthorization>> {
+        let row = sqlx::query(&format!(
+            "SELECT {AUTHORIZATION_COLUMNS} FROM app_authorizations WHERE id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        row.as_ref().map(parse_authorization).transpose()
+    }
+
+    async fn grant_app_authorization(
+        &self,
+        id: &str,
+        user_id: &UserId,
+        tenant_id: &TenantId,
+        code_hash: &str,
+        code_expires_at: SystemTime,
+        now: SystemTime,
+    ) -> fcp_core::Result<bool> {
+        let done = sqlx::query(
+            "UPDATE app_authorizations
+             SET user_id = $2, tenant_id = $3, code_hash = $4, code_expires_at = $5
+             WHERE id = $1 AND user_id IS NULL AND expires_at > $6",
+        )
+        .bind(id)
+        .bind(user_id.to_string())
+        .bind(tenant_id.to_string())
+        .bind(code_hash)
+        .bind(at(code_expires_at))
+        .bind(at(now))
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn redeem_app_code(
+        &self,
+        code_hash: &str,
+        now: SystemTime,
+    ) -> fcp_core::Result<Option<AppAuthorization>> {
+        let row = sqlx::query(&format!(
+            "UPDATE app_authorizations SET redeemed_at = $2
+             WHERE code_hash = $1 AND redeemed_at IS NULL AND code_expires_at > $2
+             RETURNING {AUTHORIZATION_COLUMNS}"
+        ))
+        .bind(code_hash)
+        .bind(at(now))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        row.as_ref().map(parse_authorization).transpose()
+    }
+
     async fn sweep_ended_sessions(&self, keep: std::time::Duration) -> fcp_core::Result<u64> {
         let before = at(SystemTime::now() - keep);
+        // App sign-ins nobody finished, or long finished.
+        sqlx::query("DELETE FROM app_authorizations WHERE expires_at < $1")
+            .bind(before)
+            .execute(&self.pool)
+            .await
+            .map_err(store_error)?;
         let done = sqlx::query(
             "DELETE FROM login_sessions
              WHERE expires_at < $1 OR (revoked_at IS NOT NULL AND revoked_at < $1)",

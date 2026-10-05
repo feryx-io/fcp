@@ -39,6 +39,18 @@ type Step =
   | { kind: 'enroll'; ticket: string; enrollment: TotpEnrollment | null }
   | { kind: 'recovery-codes'; codes: string[]; response: LoginResponse }
 
+/** An app's sign-in waiting for this one (docs/SOFTPHONE.md §2.2): kept
+ * across an identity provider's round trip, which loses the query. */
+const APP_REQUEST = 'fcp_app_request'
+
+function pendingApp(): string | null {
+  try {
+    return sessionStorage.getItem(APP_REQUEST)
+  } catch {
+    return null
+  }
+}
+
 export function LoginPage() {
   const [username, setUsername] = useState('')
   const [organisation, setOrganisation] = useState<string | null>(null)
@@ -48,6 +60,7 @@ export function LoginPage() {
   const [step, setStep] = useState<Step>({ kind: 'password' })
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [appSignedIn, setAppSignedIn] = useState<string | null>(null)
   const navigate = useNavigate()
   const { login } = useAuthStore()
 
@@ -72,6 +85,29 @@ export function LoginPage() {
   const enter = (response: LoginResponse) => {
     if (!response.token) return
     login(response.token, response.user, response.expires_in)
+    const app = pendingApp()
+    if (app) {
+      try {
+        sessionStorage.removeItem(APP_REQUEST)
+      } catch {
+        /* nothing kept */
+      }
+      // Signed in for an app: grant its sign-in and send the browser back to it.
+      auth
+        .appApprove(app)
+        .then(({ redirect_url, client_id }) => {
+          setAppSignedIn(client_id)
+          window.location.href = redirect_url
+        })
+        .catch((err) => {
+          setError(
+            err instanceof ApiRequestError
+              ? err.body.details || err.body.error
+              : 'Signing in the app failed',
+          )
+        })
+      return
+    }
     navigate(response.user.role === 'end_user' ? '/user' : '/admin')
   }
 
@@ -106,6 +142,15 @@ export function LoginPage() {
   const [params, setParams] = useSearchParams()
   const handled = useRef(false)
   useEffect(() => {
+    // Opened by an app to sign it in: remember it until the sign-in ends.
+    const app = params.get('app')
+    if (app) {
+      try {
+        sessionStorage.setItem(APP_REQUEST, app)
+      } catch {
+        /* the grant then follows only a sign-in without a provider */
+      }
+    }
     if (handled.current) return
     const code = params.get('sso_code')
     const failed = params.get('sso_error')
@@ -155,6 +200,16 @@ export function LoginPage() {
         <CardContent className="space-y-4">
           {error && (
             <div className="rounded-md bg-destructive/15 p-3 text-sm text-destructive">{error}</div>
+          )}
+          {appSignedIn && (
+            <div className="rounded-md bg-primary/10 p-3 text-sm">
+              {appSignedIn} is signed in. You can close this tab and return to the app.
+            </div>
+          )}
+          {!appSignedIn && pendingApp() && (
+            <div className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
+              Signing in an app on this computer.
+            </div>
           )}
 
           {step.kind === 'password' && (
