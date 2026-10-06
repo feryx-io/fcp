@@ -4,6 +4,7 @@ FROM rust:1.92 as builder
 # Install build dependencies
 # libxmlsec1-dev and libclang for SAML sign-in (the `saml` feature, docs/SSO.md)
 RUN apt-get update && apt-get install -y \
+    cmake \
     pkg-config \
     libssl-dev \
     libxmlsec1-dev \

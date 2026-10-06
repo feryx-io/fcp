@@ -2433,6 +2433,58 @@ pub mod embedded {
             );
         }
 
+        /// An Opus leg (a softphone or browser offers it first) bridged to a
+        /// G.711 leg is transcoded both ways in the default build.
+        #[cfg(feature = "opus")]
+        #[tokio::test]
+        async fn an_opus_leg_is_transcoded_to_a_pcmu_leg() {
+            let pool_config = PortPoolConfig::new(42310, 42500).unwrap();
+            let port_pool = std::sync::Arc::new(forge_rtp::PortPool::new(pool_config));
+            let session = ForgeMediaSession::new(
+                forge_core::CallId::generate(),
+                ParticipantId::generate(),
+                ParticipantId::generate(),
+                &port_pool,
+                forge_engine::session::MediaSessionConfig {
+                    transcoding_config: TranscodingConfig {
+                        enable_transcoding: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            {
+                let mut pa = session.participant_a().write().await;
+                pa.codec_config = sdp_codec_to_forge_config(&crate::sdp::SdpCodecInfo {
+                    payload_type: 111,
+                    encoding_name: "opus".into(),
+                    clock_rate: 48000,
+                });
+                pa.payload_type = 111;
+            }
+            {
+                let mut pb = session.participant_b().write().await;
+                pb.codec_config.codec = forge_core::AudioCodec::PCMU;
+                pb.codec_config.payload_type = 0;
+                pb.payload_type = 0;
+            }
+            sync_transcoding_state(&fcp_core::CallId::new(), &session).await;
+            assert!(
+                session.transcoder_a_to_b().lock().await.is_some(),
+                "Opus to PCMU must be armed"
+            );
+            assert!(
+                session.transcoder_b_to_a().lock().await.is_some(),
+                "PCMU to Opus must be armed"
+            );
+        }
+
         #[test]
         fn test_parse_remote_endpoint_ipv4() {
             let sdp = "v=0\r\n\

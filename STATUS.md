@@ -27,7 +27,7 @@ Update this file when feature status changes; keep other docs describing scope, 
 | Policy-based routing + LCR | ✅ Done | `fcp-routing` (rule evaluator, ~1,000 lines) |
 | Provisioning — serving layer | ✅ Done | `fcp-api-core/src/v1/provisioning.rs`: token auth (constant-time), HTTPS enforcement, template rendering, migrations 045/046 |
 | TTS service | ✅ Done | `fcp-tts-server`: synthesize/voices/providers/cache routes, Redis feature-gating |
-| Audio transcoding | ✅ Done | B2BUA/SBC path wired (2026-09-01): `fcp-media` rebuilds the payload-type map from each leg's negotiated SDP and arms forge-engine's per-packet transcoders on codec mismatch, in both single-session and cross-wired bridge modes; queue path already had it. Transcodable set: PCMU/PCMA/Opus/PCM (Opus needs the `opus` feature; G722/G729 pass through untranscoded). Gated by `media.enable_transcoding` (default off). `RemoteBackend` stubs now return errors instead of panicking (remote mode remains unimplemented) |
+| Audio transcoding | ✅ Done | B2BUA/SBC path wired (2026-09-01): `fcp-media` rebuilds the payload-type map from each leg's negotiated SDP and arms forge-engine's per-packet transcoders on codec mismatch, in both single-session and cross-wired bridge modes; queue path already had it. Transcodable set: PCMU/PCMA/Opus/PCM (Opus on by default since v0.25.346, and a build without a codec neither offers nor accepts it; G722/G729 pass through untranscoded). Gated by `media.enable_transcoding` (default off). `RemoteBackend` stubs now return errors instead of panicking (remote mode remains unimplemented) |
 | Provisioning — vendor templates | ✅ Done (2026-09-01) | Built-in starter templates for Yealink, Polycom, Grandstream, Cisco ship in `fcp-core/src/config_template.rs`; tenants browse them at `GET /v1/config-templates/library` and instantiate a customizable copy via `POST /v1/config-templates/library/:vendor` (never overwrites an existing copy) |
 | Policy engine (`fcp-policy`) | ✅ Extracted (2026-09-01) | Dedicated crate: rule model, evaluator, YAML store with hot reload. `fcp-routing` re-exports everything (no consumer changes). Extraction also fixed the ignored `TimeWindow.timezone` (rules now evaluate in their own timezone, overnight windows supported) and added per-tenant feature toggles (`require_features` on rules + `feature_toggles` in YAML). SBC admission stays in `fcp-sbc-core` (it is rate/capacity control, a different concern); number manipulation remains future (SBC transform stage) |
 | Billing | ✅ Done (2026-09-01) | Dedicated `fcp-billing` crate (rating, balance admission, settlement, hooks; model stays in `fcp-core/src/billing.rs`). Rate plans + longest-prefix rates (migration 047, `/v1/rate-plans`); answered calls rated and **settled** at CDR creation (atomic debit, one charge per call). **Balance enforcement** per tenant (migration 048, `/v1/billing/balance`): 402 at admission when the first billing increment is unaffordable, mid-call cut-off when the affordable duration runs out, fail-open on storage errors. **External hooks**: `billing.*` platform events (`call_rated`, `balance_changed`, `balance_low`, `balance_depleted`, `call_rejected`, `call_cut_off`) → webhooks/WebSocket, plus the `BillingHook` trait for in-process integrations; credits/adjustments via `/v1/billing/balance/transactions`. See `docs/BILLING.md`. Not yet: multi-currency, sub-balances, invoicing |
@@ -1905,6 +1905,14 @@ events), and `voicemail.mailbox_created`'s tenant, a string nobody read,
 is a tenant id. Proved by `fcp-admin/tests/call_webhooks.rs`: a webhook on
 `call.*` gets the answered and ended events of a call (only
 `call.initiated` without the fix).
+
+Opus on by default (v0.25.346): `fcp-media`'s `opus` feature was off, so
+every shipped binary negotiated Opus from an offer (softphones and browsers
+put it first) and then failed to transcode it ("Opus support not enabled").
+It is now a default feature, the images' builders carry `cmake` for
+libopus, and `supported_codec_registry` holds only the codecs a build can
+transcode, so a build without Opus no longer accepts it. Found by Anvil's
+first calls through FCP (`docs/SOFTPHONE.md`).
 
 ## Historical documents
 

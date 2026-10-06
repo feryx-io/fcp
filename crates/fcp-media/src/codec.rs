@@ -46,7 +46,11 @@ pub fn supported_codec_registry() -> HashMap<String, (u8, u32)> {
     let mut m = HashMap::new();
     m.insert("PCMU".into(), (0, 8000));
     m.insert("PCMA".into(), (8, 8000));
+    // Only what this build can decode and transcode: a node built without a
+    // codec must not accept it from an offer and then fail to transcode it.
+    #[cfg(feature = "g722")]
     m.insert("G722".into(), (9, 16000));
+    #[cfg(feature = "opus")]
     m.insert("opus".into(), (111, 48000));
     m
 }
@@ -70,6 +74,15 @@ pub fn find_common_codec<'a>(a_leg: &'a [String], b_leg: &'a [String]) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a build offers and accepts is what it can transcode.
+    #[test]
+    fn the_registry_holds_what_this_build_can_transcode() {
+        let registry = supported_codec_registry();
+        assert!(registry.contains_key("PCMU") && registry.contains_key("PCMA"));
+        assert_eq!(registry.contains_key("opus"), cfg!(feature = "opus"));
+        assert_eq!(registry.contains_key("G722"), cfg!(feature = "g722"));
+    }
 
     #[test]
     fn test_requires_transcoding() {
