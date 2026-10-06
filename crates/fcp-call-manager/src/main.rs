@@ -2312,7 +2312,9 @@ fn create_registrar(
     // Devices' own credentials, and who a credential may register as
     // (docs/ENTERPRISE_CALLING.md §3.8).
     .with_identity(Arc::clone(storage))
-    .with_auth_invites(config.registrar.auth_invites);
+    .with_auth_invites(config.registrar.auth_invites)
+    // Where the admin is, for the softphone (docs/SOFTPHONE.md §2.5).
+    .with_provisioning_url(config.registrar.provisioning_url.clone());
 
     // Add domain aliases if configured
     let registrar = if !config.registrar.domain_aliases.is_empty() {

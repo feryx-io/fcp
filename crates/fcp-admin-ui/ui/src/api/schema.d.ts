@@ -293,6 +293,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/softphone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/me/softphone — the app's SIP account and settings, with an
+         *     ETag (`If-None-Match` answers 304).
+         */
+        get: operations["softphone_get_config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/softphone/rotate-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/me/softphone/rotate-password — a new SIP password for the
+         *     app's device; the old one stops at once.
+         */
+        post: operations["softphone_rotate_password"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/devices": {
         parameters: {
             query?: never;
@@ -11214,6 +11254,64 @@ export interface components {
             /** Format: date-time */
             enrollment_token_expires_at: string;
         };
+        /** @description The SIP account the app registers with. */
+        SoftphoneAccount: {
+            /** @description The address of record: the user in the tenant's domain. */
+            aor: string;
+            display_name?: string | null;
+            /** @description The tenant's SIP domain. */
+            domain: string;
+            /** @description The Request-URI of a REGISTER: `sip:<domain>`. */
+            registrar: string;
+            /**
+             * @description Where every request goes when the domain is not the server's
+             *     address: `sip:<server>:<port>;transport=<transport>`.
+             */
+            outbound_proxy?: string | null;
+            /** @description `udp`, `tcp` or `tls`. */
+            transport: string;
+            /** @description The realm the password is hashed in. */
+            realm: string;
+            /** @description The device's own SIP username; the password came with the sign-in. */
+            sip_username: string;
+            /**
+             * Format: int32
+             * @description Seconds a registration is asked for.
+             */
+            register_expires: number;
+        };
+        /** @description Everything the app needs. */
+        SoftphoneConfig: {
+            account: components["schemas"]["SoftphoneAccount"];
+            media: components["schemas"]["SoftphoneMedia"];
+            /** @description The user as FCP knows them. */
+            username: string;
+            extension?: string | null;
+            /** @description The feature codes, by name (`park`, `voicemail`, `dnd_on`, …). */
+            feature_codes: {
+                [key: string]: string;
+            };
+            /** @description Where this admin is, for the app's API calls. */
+            api_url?: string | null;
+            /** @description The device the app is. */
+            device_id: string;
+        };
+        /** @description The media the app offers. */
+        SoftphoneMedia: {
+            /** @description In order of preference, as SDP names them. */
+            codecs: string[];
+            /** @description `optional` over TLS (SDES-SRTP offered, plain RTP taken), else `off`. */
+            srtp: string;
+            /** @description `rfc2833`. */
+            dtmf: string;
+        };
+        /** @description A new SIP password for the app's device. */
+        SoftphonePassword: {
+            sip_username: string;
+            /** @description Shown here once. */
+            sip_password: string;
+            realm: string;
+        };
         /** @description The one-time code the login page was handed. */
         SsoExchangeRequest: {
             code: string;
@@ -13110,6 +13208,71 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    softphone_get_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoftphoneConfig"];
+                };
+            };
+            /** @description Unchanged since the ETag given */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    softphone_rotate_password: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The new password */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoftphonePassword"];
+                };
             };
             /** @description An error */
             default: {

@@ -209,6 +209,7 @@ services:
       RUST_LOG: info
       FCP_CALL_MANAGER_LOG_FORMAT: pretty
       FCP_CALL_MANAGER_PUBLIC_IP: ${HOST_IP}
+      HOST_IP: ${HOST_IP}
       FCP_CALL_MANAGER_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
       FCP_ENCRYPTION_PROVIDER: local
       FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key

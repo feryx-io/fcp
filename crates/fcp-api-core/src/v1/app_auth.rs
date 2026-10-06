@@ -401,6 +401,21 @@ async fn install_device(
         }
     };
     device.name = client.name.clone();
+    let password = set_sip_password(state, &mut device).await?;
+    sessions
+        .set_app_install_device(&user.tenant_id, &user.id, &client.install_id, &device.id)
+        .await?;
+    Ok((device, password))
+}
+
+/// Give an app's device a new SIP password, keep only its digest hash in
+/// the realm the registrars challenge in, and save the device: the
+/// password, which nothing else will learn.
+pub(crate) async fn set_sip_password(
+    state: &ApiState,
+    device: &mut fcp_core::Device,
+) -> Result<String, ApiError> {
+    use fcp_core::storage::DeviceStore;
     let (password, _) = session::new_refresh_secret();
     let password: String = password.chars().take(24).collect();
     let username = device.sip_username.clone().unwrap_or_default();
@@ -411,10 +426,7 @@ async fn install_device(
     ));
     device.sip_provisioning_password = None;
     device.updated_at = SystemTime::now();
-    storage.put_device(device.clone()).await?;
-    sessions
-        .set_app_install_device(&user.tenant_id, &user.id, &client.install_id, &device.id)
-        .await?;
+    storage(state)?.put_device(device.clone()).await?;
     let _ = state
         .event_bus
         .publish(fcp_events::PlatformEvent::System(
@@ -426,7 +438,7 @@ async fn install_device(
             },
         ))
         .await;
-    Ok((device, password))
+    Ok(password)
 }
 
 /// A SIP username for a new app device: `app-` and ten hex digits, held by

@@ -744,6 +744,11 @@ pub struct FcpRegistrar {
     /// Domain aliases - list of domains that should be treated as equivalent.
     /// When looking up registrations, all aliased domains are checked.
     domain_aliases: Vec<String>,
+
+    /// Where the admin is, told to every phone a REGISTER succeeds for in
+    /// `X-FCP-Provisioning-Url` (`docs/SOFTPHONE.md` §2.5): how the softphone
+    /// finds its branding and settings without being told.
+    provisioning_url: Option<String>,
 }
 
 impl FcpRegistrar {
@@ -779,6 +784,7 @@ impl FcpRegistrar {
             tenant_store: None,
             default_tenant_id: None,
             domain_aliases: Vec::new(),
+            provisioning_url: None,
         };
         registrar.refresh_authenticator();
         registrar
@@ -867,6 +873,13 @@ impl FcpRegistrar {
     }
 
     /// Set the explicit default tenant used when SIP addressing carries no tenant domain.
+    /// Tell phones where the admin is in each REGISTER's 200 OK
+    /// (`X-FCP-Provisioning-Url`).
+    pub fn with_provisioning_url(mut self, url: Option<String>) -> Self {
+        self.provisioning_url = url.filter(|u| !u.trim().is_empty());
+        self
+    }
+
     pub fn with_default_tenant_id(mut self, tenant_id: TenantId) -> Self {
         self.default_tenant_id = Some(tenant_id);
         self.refresh_authenticator();
@@ -1701,6 +1714,12 @@ impl FcpRegistrar {
             }
         }
 
+        if let Some(url) = &self.provisioning_url {
+            let _ = headers.push(
+                SmolStr::new("X-FCP-Provisioning-Url"),
+                SmolStr::new(url.as_str()),
+            );
+        }
         let _ = headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         Response::new(
@@ -2253,6 +2272,20 @@ mod tests {
 
         let response = registrar.handle_register(&request).await;
         assert_eq!(response.start_line().code(), 200);
+        // Not configured: no provisioning URL told.
+        assert!(response.headers().get("X-FCP-Provisioning-Url").is_none());
+
+        // Configured: every 200 OK tells the phone where the admin is.
+        let told = FcpRegistrar::new(storage.clone(), None, None, false)
+            .with_default_tenant_id(fcp_core::TenantId::nil())
+            .with_provisioning_url(Some("https://pbx.example.com".to_string()))
+            .handle_register(&request)
+            .await;
+        assert_eq!(told.start_line().code(), 200);
+        assert_eq!(
+            told.headers().get("X-FCP-Provisioning-Url"),
+            Some("https://pbx.example.com")
+        );
 
         // Verify registration was stored
         let regs = storage

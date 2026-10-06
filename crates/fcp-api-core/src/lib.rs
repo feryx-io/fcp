@@ -337,6 +337,12 @@ pub fn create_router_with(
             .route(
                 "/brand/v1/assets/:sha256",
                 axum::routing::get(v1::branding::serve_asset),
+            )
+            // Where this FCP is, for an app finding it (docs/SOFTPHONE.md
+            // §2.6): public.
+            .route(
+                "/.well-known/fcp-provisioning",
+                axum::routing::get(v1::softphone::well_known),
             ),
     );
     // `/api/v1/health` says `ok` and a version and nothing else; it is

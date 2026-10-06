@@ -138,11 +138,37 @@ own (`app-` and ten hex digits) and a password FCP makes.
   `signed_in_at`, `last_seen`); an administrator reads the same at
   `GET /users/{username}/devices` (`device_read`).
 
-## 5. Errors
+## 5. What the app is told
+
+- **`GET /api/v1/me/softphone`**, with the app's access token (a browser's
+  gets 400), answers everything the app registers and calls with:
+  - `account`: `aor` (the user in the tenant's first SIP domain),
+    `registrar` (`sip:<domain>`), `outbound_proxy` (the server as
+    `[api.provisioning]` names it, `sip:<server>:<port>;transport=…`, when
+    the domain does not name it), `transport`, `realm`, the device's
+    `sip_username`, `register_expires`;
+  - `media`: `codecs` this build transcodes, best first (`opus`, `G722`,
+    `PCMU`, `PCMA`), `srtp` (`optional` over TLS, else `off`), `dtmf`;
+  - `feature_codes` by name (`park`, `retrieve`, `voicemail`, `dnd_on`, …:
+    the call manager's defaults), `username`, `extension`, `api_url`,
+    `device_id`.
+
+  It carries an `ETag`; `If-None-Match` answers 304.
+- **`POST /api/v1/me/softphone/rotate-password`** gives the app's device a
+  new SIP password, shown once; the old one stops at once.
+- **`GET /.well-known/fcp-provisioning`** (public, at the root, not under
+  `/api/v1`) says where this FCP is and how an app signs in:
+  `public_url`, `api_url`, `authorize_url`, `token_url`, `version`. An app
+  given an email address asks `https://{email domain}/.well-known/…` first.
+- **`X-FCP-Provisioning-Url`** on every REGISTER's 200 OK names the admin,
+  when the call manager's `[registrar] provisioning_url` is set (the compose
+  stack sets it to the admin through the proxy).
+
+## 6. Errors
 
 | Status | When |
 |---|---|
-| 400 | A `redirect_uri` that is not a loopback address, a method other than S256, a malformed verifier, no `client_name`/`install_id`, an unknown `grant_type` |
+| 400 | `/me/softphone` with a browser's session; a `redirect_uri` that is not a loopback address, a method other than S256, a malformed verifier, no `client_name`/`install_id`, an unknown `grant_type` |
 | 401 | A code spent, expired or not this verifier's; a refresh token that is not a live app session's; a browser session older than ten minutes asking to grant |
 | 403 | An API token asking to grant |
 | 404 | An app's request that has expired or was granted already; a device that is not the caller's |

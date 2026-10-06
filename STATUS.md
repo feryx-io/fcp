@@ -1914,7 +1914,7 @@ NOTIFYed at once, again on every `voicemail.mwi_updated` from the node
 holding the subscription, refresh and end inside the dialog, 404 without a
 mailbox (`fcp-call-manager/tests/mwi.rs`).
 
-Softphone F3, branding (v0.25.357, `docs/BRANDING.md`): a tenant's brand
+Softphone F3, branding (v0.25.359, `docs/BRANDING.md`): a tenant's brand
 — app name, light and dark colors, logo, dark logo, icon, ringtones,
 links and dial-plan hints — made at `/api/v1/branding` under the new
 `branding_manage` (tenant admins), with assets uploaded as the body, typed
@@ -1963,7 +1963,7 @@ never dialled it. The API now keeps an extension row for it (made, moved,
 removed with the field; 409 for a number that dials something else). Found
 by Anvil's first calls through FCP (`docs/USERS.md`).
 
-A redirection race (v0.25.357): a phone made and changed at once (its
+A redirection race (v0.25.359): a phone made and changed at once (its
 template set straight after) started two syncs with its vendor's service;
 both could register it before either recorded it, the second giving the
 phone new credentials, and whichever reached the service last decided
@@ -1971,6 +1971,15 @@ whether the phone's credentials worked (a flake in CI). A device's syncs
 now run one at a time, and a token in hand is used only while the device
 still has it. Proved by a stand-in RPS answering after a random delay
 (`StandInRps::slow`).
+
+Softphone F2, configuration and discovery (v0.25.359): `GET /me/softphone`
+(the app's account — AOR in the tenant's domain, registrar, outbound proxy
+from `[api.provisioning]`, transport, realm, the device's username — the
+codecs this build transcodes, SRTP policy, feature codes; ETag and 304),
+`POST /me/softphone/rotate-password`, the public
+`/.well-known/fcp-provisioning`, and `X-FCP-Provisioning-Url` on REGISTER's
+200 OK from the call manager's `[registrar] provisioning_url` (set in
+compose).
 
 ## Historical documents
 

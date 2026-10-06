@@ -632,6 +632,71 @@
         }
       }
     },
+    "/api/v1/me/softphone": {
+      "get": {
+        "tags": [
+          "softphone"
+        ],
+        "summary": "GET /api/v1/me/softphone — the app's SIP account and settings, with an\nETag (`If-None-Match` answers 304).",
+        "operationId": "softphone_get_config",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SoftphoneConfig"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Unchanged since the ETag given"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/softphone/rotate-password": {
+      "post": {
+        "tags": [
+          "softphone"
+        ],
+        "summary": "POST /api/v1/me/softphone/rotate-password — a new SIP password for the\napp's device; the old one stops at once.",
+        "operationId": "softphone_rotate_password",
+        "responses": {
+          "200": {
+            "description": "The new password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SoftphonePassword"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/devices": {
       "get": {
         "tags": [
@@ -36363,6 +36428,161 @@
           }
         ],
         "description": "A site just made, or a new token for one: the token, shown this once."
+      },
+      "SoftphoneAccount": {
+        "type": "object",
+        "description": "The SIP account the app registers with.",
+        "required": [
+          "aor",
+          "domain",
+          "registrar",
+          "transport",
+          "realm",
+          "sip_username",
+          "register_expires"
+        ],
+        "properties": {
+          "aor": {
+            "type": "string",
+            "description": "The address of record: the user in the tenant's domain."
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "domain": {
+            "type": "string",
+            "description": "The tenant's SIP domain."
+          },
+          "registrar": {
+            "type": "string",
+            "description": "The Request-URI of a REGISTER: `sip:<domain>`."
+          },
+          "outbound_proxy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where every request goes when the domain is not the server's\naddress: `sip:<server>:<port>;transport=<transport>`."
+          },
+          "transport": {
+            "type": "string",
+            "description": "`udp`, `tcp` or `tls`."
+          },
+          "realm": {
+            "type": "string",
+            "description": "The realm the password is hashed in."
+          },
+          "sip_username": {
+            "type": "string",
+            "description": "The device's own SIP username; the password came with the sign-in."
+          },
+          "register_expires": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds a registration is asked for.",
+            "minimum": 0
+          }
+        }
+      },
+      "SoftphoneConfig": {
+        "type": "object",
+        "description": "Everything the app needs.",
+        "required": [
+          "account",
+          "media",
+          "username",
+          "feature_codes",
+          "device_id"
+        ],
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/SoftphoneAccount"
+          },
+          "media": {
+            "$ref": "#/components/schemas/SoftphoneMedia"
+          },
+          "username": {
+            "type": "string",
+            "description": "The user as FCP knows them."
+          },
+          "extension": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "feature_codes": {
+            "type": "object",
+            "description": "The feature codes, by name (`park`, `voicemail`, `dnd_on`, …).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "api_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where this admin is, for the app's API calls."
+          },
+          "device_id": {
+            "type": "string",
+            "description": "The device the app is."
+          }
+        }
+      },
+      "SoftphoneMedia": {
+        "type": "object",
+        "description": "The media the app offers.",
+        "required": [
+          "codecs",
+          "srtp",
+          "dtmf"
+        ],
+        "properties": {
+          "codecs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "In order of preference, as SDP names them."
+          },
+          "srtp": {
+            "type": "string",
+            "description": "`optional` over TLS (SDES-SRTP offered, plain RTP taken), else `off`."
+          },
+          "dtmf": {
+            "type": "string",
+            "description": "`rfc2833`."
+          }
+        }
+      },
+      "SoftphonePassword": {
+        "type": "object",
+        "description": "A new SIP password for the app's device.",
+        "required": [
+          "sip_username",
+          "sip_password",
+          "realm"
+        ],
+        "properties": {
+          "sip_username": {
+            "type": "string"
+          },
+          "sip_password": {
+            "type": "string",
+            "description": "Shown here once."
+          },
+          "realm": {
+            "type": "string"
+          }
+        }
       },
       "SsoExchangeRequest": {
         "type": "object",

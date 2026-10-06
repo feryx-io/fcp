@@ -430,6 +430,11 @@ from .site_response import SiteResponse
 from .site_response_versions import SiteResponseVersions
 from .site_status import SiteStatus
 from .site_with_token_response import SiteWithTokenResponse
+from .softphone_account import SoftphoneAccount
+from .softphone_config import SoftphoneConfig
+from .softphone_config_feature_codes import SoftphoneConfigFeatureCodes
+from .softphone_media import SoftphoneMedia
+from .softphone_password import SoftphonePassword
 from .sso_exchange_request import SsoExchangeRequest
 from .status_response import StatusResponse
 from .subject_expansion import SubjectExpansion
@@ -954,6 +959,11 @@ __all__ = (
     "SiteResponseVersions",
     "SiteStatus",
     "SiteWithTokenResponse",
+    "SoftphoneAccount",
+    "SoftphoneConfig",
+    "SoftphoneConfigFeatureCodes",
+    "SoftphoneMedia",
+    "SoftphonePassword",
     "SsoExchangeRequest",
     "StatusResponse",
     "SubjectExpansion",
