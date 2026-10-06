@@ -2013,3 +2013,40 @@ async fn a_flow_that_hangs_up_ends_the_call_it_answered() {
     assert!(!cdr["call_duration_ms"].is_null(), "{cdr}");
     stack.finish().await;
 }
+
+/// An INVITE challenged over UDP that rings a while is one call (RFC 3261
+/// §17.2.1). The ACK to the 401 is the INVITE server transaction's; the
+/// node passed every ACK to the B2BUA instead, so the 401 was resent for
+/// half a minute, and a client that answers each resend with another
+/// authenticated INVITE (siphon-rs's auto-retry did) placed the call again
+/// and again — found by Anvil watching a busy lamp.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_challenged_call_that_rings_a_while_is_one_call() {
+    let Some(stack) = Stack::start_registrar("auth_invites = true", "", "", 40).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    // Ringing for longer than the 401's first resends (0.5 s, 1 s, 2 s).
+    let mut rings = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(3500);
+    while tokio::time::Instant::now() < deadline {
+        if bob_phone
+            .incoming(Duration::from_millis(250))
+            .await
+            .is_some()
+        {
+            rings += 1;
+        }
+    }
+    assert_eq!(rings, 1, "Bob's phone rang {rings} times for one call");
+    let _ = call.hangup().await;
+    stack.finish().await;
+}
