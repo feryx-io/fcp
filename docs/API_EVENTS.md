@@ -110,17 +110,24 @@ Upon successful connection, the server sends a confirmation message:
 
 ### Event Messages
 
-Events follow this structure:
+Each event is one message, flat: `event_type` names its family, `type` the
+event within it, and the event's own fields sit beside them:
 
 ```json
 {
-  "event_type": "call|media|ivr|recording|system",
-  "{event_type}": {
-    "type": "...",
-    // Event-specific fields
-  }
+  "event_type": "call",
+  "type": "initiated",
+  "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+  "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+  "from": "alice@example.com",
+  "to": "bob@example.com",
+  "direction": "inbound",
+  "timestamp": 1705584000
 }
 ```
+
+A message without `event_type` is the stream's own (`auth_ok`,
+`auth_error`, `connected`).
 
 ## Event Types
 
@@ -133,15 +140,13 @@ Sent when a call is created.
 ```json
 {
   "event_type": "call",
-  "call": {
-    "type": "initiated",
-    "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
-    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
-    "from": "alice@example.com",
-    "to": "bob@example.com",
-    "direction": "inbound",
-    "timestamp": 1705584000
-  }
+  "type": "initiated",
+  "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+  "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+  "from": "alice@example.com",
+  "to": "bob@example.com",
+  "direction": "inbound",
+  "timestamp": 1705584000
 }
 ```
 
@@ -152,12 +157,10 @@ Sent when a call starts ringing (180/183 received).
 ```json
 {
   "event_type": "call",
-  "call": {
-    "type": "ringing",
-    "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
-    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
-    "timestamp": 1705584001
-  }
+  "type": "ringing",
+  "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+  "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+  "timestamp": 1705584001
 }
 ```
 
@@ -168,13 +171,11 @@ Sent when a call is answered (200 OK).
 ```json
 {
   "event_type": "call",
-  "call": {
-    "type": "answered",
-    "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
-    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
-    "answer_time": 1705584002,
-    "codec": "PCMU"
-  }
+  "type": "answered",
+  "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+  "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+  "answer_time": 1705584002,
+  "codec": "PCMU"
 }
 ```
 
@@ -185,15 +186,13 @@ Sent when a call ends normally.
 ```json
 {
   "event_type": "call",
-  "call": {
-    "type": "ended",
-    "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
-    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
-    "end_time": 1705584120,
-    "duration_ms": 118000,
-    "hangup_cause": "Normal Clearing",
-    "hangup_party": null
-  }
+  "type": "ended",
+  "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+  "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+  "end_time": 1705584120,
+  "duration_ms": 118000,
+  "hangup_cause": "Normal Clearing",
+  "hangup_party": null
 }
 ```
 
@@ -204,13 +203,11 @@ Sent when a call fails (4xx/5xx response or timeout).
 ```json
 {
   "event_type": "call",
-  "call": {
-    "type": "failed",
-    "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
-    "timestamp": 1705584003,
-    "reason": "486 Busy Here",
-    "sip_code": 486
-  }
+  "type": "failed",
+  "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+  "timestamp": 1705584003,
+  "reason": "486 Busy Here",
+  "sip_code": 486
 }
 ```
 
@@ -221,14 +218,12 @@ Sent when a call fails (4xx/5xx response or timeout).
 ```json
 {
   "event_type": "media",
-  "media": {
-    "type": "session_started",
-    "session_id": "sess-123e4567-e89b-12d3-a456-426614174000",
-    "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
-    "codec": "PCMU",
-    "remote_addr": "192.168.1.100:10000",
-    "timestamp": 1705584002
-  }
+  "type": "session_started",
+  "session_id": "sess-123e4567-e89b-12d3-a456-426614174000",
+  "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+  "codec": "PCMU",
+  "remote_addr": "192.168.1.100:10000",
+  "timestamp": 1705584002
 }
 ```
 
@@ -237,12 +232,10 @@ Sent when a call fails (4xx/5xx response or timeout).
 ```json
 {
   "event_type": "media",
-  "media": {
-    "type": "dtmf_received",
-    "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
-    "digit": "5",
-    "timestamp": 1705584010
-  }
+  "type": "dtmf_received",
+  "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+  "digit": "5",
+  "timestamp": 1705584010
 }
 ```
 
@@ -253,11 +246,9 @@ Sent when a call fails (4xx/5xx response or timeout).
 ```json
 {
   "event_type": "system",
-  "system": {
-    "type": "started",
-    "node_id": "node-123e4567-e89b-12d3-a456-426614174000",
-    "timestamp": 1705584000
-  }
+  "type": "started",
+  "node_id": "node-123e4567-e89b-12d3-a456-426614174000",
+  "timestamp": 1705584000
 }
 ```
 
@@ -271,18 +262,16 @@ the ledger into an external billing system. See [BILLING.md](BILLING.md).
 ```json
 {
   "event_type": "billing",
-  "billing": {
-    "type": "call_rated",
-    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
-    "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
-    "cost": 0.06,
-    "currency": "USD",
-    "matched_prefix": "44",
-    "billable_secs": 120,
-    "destination": "442079460000",
-    "balance_after": 24.94,
-    "timestamp": 1705584060
-  }
+  "type": "call_rated",
+  "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+  "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+  "cost": 0.06,
+  "currency": "USD",
+  "matched_prefix": "44",
+  "billable_secs": 120,
+  "destination": "442079460000",
+  "balance_after": 24.94,
+  "timestamp": 1705584060
 }
 ```
 
@@ -291,19 +280,17 @@ the ledger into an external billing system. See [BILLING.md](BILLING.md).
 ```json
 {
   "event_type": "billing",
-  "billing": {
-    "type": "balance_changed",
-    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
-    "transaction_id": "7e1c…",
-    "kind": "top_up",
-    "amount": 25.0,
-    "balance_after": 25.0,
-    "currency": "USD",
-    "call_id": null,
-    "description": "card payment",
-    "external_ref": "pay_01H…",
-    "timestamp": 1705584000
-  }
+  "type": "balance_changed",
+  "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+  "transaction_id": "7e1c…",
+  "kind": "top_up",
+  "amount": 25.0,
+  "balance_after": 25.0,
+  "currency": "USD",
+  "call_id": null,
+  "description": "card payment",
+  "external_ref": "pay_01H…",
+  "timestamp": 1705584000
 }
 ```
 
@@ -332,21 +319,19 @@ again under the same key, announced with a higher `generation`.
 ```json
 {
   "event_type": "cdr",
-  "cdr": {
-    "type": "written",
-    "cdr_id": "0f5bee62-94cc-4859-9798-de71d1decbbe",
-    "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
-    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
-    "kind": "call",
-    "disposition": "answered",
-    "start_time": 1705584000,
-    "end_time": 1705584095,
-    "duration_ms": 90210,
-    "cost": 0.06,
-    "currency": "USD",
-    "node_id": "call-manager-1",
-    "timestamp": 1705584096
-  }
+  "type": "written",
+  "cdr_id": "0f5bee62-94cc-4859-9798-de71d1decbbe",
+  "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+  "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+  "kind": "call",
+  "disposition": "answered",
+  "start_time": 1705584000,
+  "end_time": 1705584095,
+  "duration_ms": 90210,
+  "cost": 0.06,
+  "currency": "USD",
+  "node_id": "call-manager-1",
+  "timestamp": 1705584096
 }
 ```
 
@@ -355,18 +340,16 @@ again under the same key, announced with a higher `generation`.
 ```json
 {
   "event_type": "cdr",
-  "cdr": {
-    "type": "archived",
-    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
-    "day": "2024-01-18",
-    "target": "s3://example-cdr-archive",
-    "object_key": "cdrs/tenant-123e4567-e89b-12d3-a456-426614174000/2024/01/18.jsonl.gz",
-    "records": 18234,
-    "bytes": 2263114,
-    "sha256": "9f2c1c3d0b7e4a8f5d6e7c8b9a0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7",
-    "generation": 1,
-    "timestamp": 1705633200
-  }
+  "type": "archived",
+  "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+  "day": "2024-01-18",
+  "target": "s3://example-cdr-archive",
+  "object_key": "cdrs/tenant-123e4567-e89b-12d3-a456-426614174000/2024/01/18.jsonl.gz",
+  "records": 18234,
+  "bytes": 2263114,
+  "sha256": "9f2c1c3d0b7e4a8f5d6e7c8b9a0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7",
+  "generation": 1,
+  "timestamp": 1705633200
 }
 ```
 
@@ -427,18 +410,19 @@ Query parameters are not taken. The messages are the ones above:
 ws.onmessage = (event) => {
     const platformEvent = JSON.parse(event.data);
 
-    if (platformEvent.type === 'connected') {
-        console.log('Connected to event stream');
+    // The stream's own messages carry no event_type.
+    if (!platformEvent.event_type) {
+        console.log('Stream:', platformEvent.type);
         return;
     }
 
-    // Handle platform events
+    // Handle platform events: `type` is the event within its family.
     switch (platformEvent.event_type) {
         case 'call':
-            handleCallEvent(platformEvent.call);
+            handleCallEvent(platformEvent.type, platformEvent);
             break;
         case 'media':
-            handleMediaEvent(platformEvent.media);
+            handleMediaEvent(platformEvent.type, platformEvent);
             break;
         // ... other types
     }
