@@ -9,6 +9,7 @@ description = "Test-support helpers for FCP: binary smoke tests, throwaway datab
 publish = false
 
 [dependencies]
+rand = "0.8"
 anyhow = { workspace = true }
 async-trait = "0.1"
 bytes = { workspace = true }

@@ -51,6 +51,18 @@ fn service_for(device: &Device) -> Option<RedirectionService> {
     RedirectionService::for_vendor(vendor)
 }
 
+/// The lock each device's syncs take, so they run one at a time.
+fn sync_lock(device: &fcp_core::DeviceId) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        dashmap::DashMap<fcp_core::DeviceId, std::sync::Arc<tokio::sync::Mutex<()>>>,
+    > = std::sync::OnceLock::new();
+    LOCKS
+        .get_or_init(dashmap::DashMap::new)
+        .entry(*device)
+        .or_default()
+        .clone()
+}
+
 /// Bring a device's registration with its vendor in line with the device:
 /// removed from a service it no longer belongs on (its MAC changed, the
 /// device went, the account is off), registered where it belongs and is
@@ -64,9 +76,24 @@ pub(crate) async fn sync_device(
     token: Option<&str>,
     force: bool,
 ) -> Result<Option<DeviceRedirection>, ApiError> {
+    // One device's syncs one at a time: a device made and then changed at
+    // once (its template set) starts two, and two registering together
+    // left the service holding one's credentials and the device the
+    // other's. The second, once the first is done, sees its registration.
+    let lock = sync_lock(&device.id);
+    let _held = lock.lock().await;
     let storage = storage(state)?;
     let store = store(storage)?;
     let prior = store.get_device_redirection(&device.id).await?;
+    // A token in hand is the phone's only while the device still has it:
+    // another sync may have given the phone a new one meanwhile.
+    let current = storage.get_device(&device.id).await?;
+    let token = token.filter(|t| {
+        current.as_ref().is_some_and(|d| {
+            d.provisioning_token_hash.as_deref()
+                == Some(crate::v1::devices::hash_device_token(t).as_str())
+        })
+    });
     let mac = device
         .mac_address
         .as_deref()

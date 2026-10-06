@@ -14969,3 +14969,81 @@ async fn a_users_extension_is_the_extension_that_dials_them() {
         .await;
     assert_eq!(invalid.status, StatusCode::BAD_REQUEST, "{}", invalid.text);
 }
+
+/// Phones made and changed at once (their template set straight after):
+/// each sync of a device waits for the one before, so the credentials the
+/// vendor's service hands every phone are the ones its device has.
+#[tokio::test]
+async fn phones_changed_as_they_are_made_keep_the_credentials_rps_has() {
+    use base64::Engine;
+    use fcp_testkit::redirection::StandInRps;
+    let app = require_app!();
+    let rps = StandInRps::start("rps-key-id", "rps-key-secret")
+        .await
+        .unwrap();
+    let app = app.with_redirection(fcp_core::ApiRedirectionConfig {
+        yealink_rps_url: rps.url().to_string(),
+        poly_ztp_url: String::new(),
+    });
+    let key = app.provisioning_key().await;
+    let set = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"provisioning": {"require_device_credentials": true}})),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let owner = app.create_user("gus", Some("Sip-Secret-321")).await;
+    let template = app.create_template(app.tenant_a, TEMPLATE).await;
+    let account = app
+        .admin(
+            Method::PUT,
+            "/api/v1/provisioning/redirection/yealink_rps",
+            Some(json!({"key_id": "rps-key-id", "secret": "rps-key-secret"})),
+        )
+        .await;
+    assert_eq!(account.status, StatusCode::OK, "{}", account.text);
+    // A slow service: a phone's sync is still talking to it when the
+    // change's sync starts.
+    rps.slow(Duration::from_millis(150));
+
+    let mut phones = Vec::new();
+    for i in 0..6 {
+        let mac = format!("80:5E:C0:00:AA:0{i}");
+        let (id, _token) = app
+            .create_phone(&format!("Desk {i}"), &mac, Some(&owner))
+            .await;
+        app.patch_device(&id, json!({ "config_template_id": template }))
+            .await;
+        phones.push((id, mac.replace(':', "").to_lowercase()));
+    }
+    for (id, _) in &phones {
+        redirection_of(&app, id, |r| r["state"] == "registered").await;
+    }
+    // Every sync settled: the last word at RPS is the device's.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    for (_, mac) in &phones {
+        let at_rps = rps.device(mac).expect("RPS has the phone");
+        let basic = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!(
+                "{}:{}",
+                at_rps.auth_name.unwrap(),
+                at_rps.password.unwrap()
+            ))
+        );
+        let fetched = app
+            .send(
+                Method::GET,
+                &format!("/provision/{key}/{mac}.cfg"),
+                &[
+                    ("x-forwarded-proto", "https"),
+                    ("authorization", basic.as_str()),
+                ],
+                None,
+            )
+            .await;
+        assert_eq!(fetched.status, StatusCode::OK, "{mac}: {}", fetched.text);
+    }
+}

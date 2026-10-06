@@ -1930,6 +1930,15 @@ never dialled it. The API now keeps an extension row for it (made, moved,
 removed with the field; 409 for a number that dials something else). Found
 by Anvil's first calls through FCP (`docs/USERS.md`).
 
+A redirection race (v0.25.355): a phone made and changed at once (its
+template set straight after) started two syncs with its vendor's service;
+both could register it before either recorded it, the second giving the
+phone new credentials, and whichever reached the service last decided
+whether the phone's credentials worked (a flake in CI). A device's syncs
+now run one at a time, and a token in hand is used only while the device
+still has it. Proved by a stand-in RPS answering after a random delay
+(`StandInRps::slow`).
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
