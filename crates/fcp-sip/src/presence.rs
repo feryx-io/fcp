@@ -62,7 +62,7 @@ pub trait PresenceHandler: Send + Sync {
     ///
     /// Sends NOTIFY with appropriate body (PIDF for `event: presence`,
     /// dialog-info for `event: dialog`) to each watcher's Contact URI.
-    async fn notify_watchers(&self, aor: &str) -> Result<()>;
+    async fn notify_watchers(&self, aor: &str, tenant_id: &TenantId) -> Result<()>;
 
     /// Send terminated NOTIFY to a list of watchers (e.g., on expiry or shutdown).
     ///
@@ -154,8 +154,14 @@ pub struct SipPresenceHandler {
     presence: PresenceManager,
     /// UAC for sending NOTIFY requests
     uac: Arc<SipUserAgentClient>,
-    /// Default tenant (single-tenant deployment)
+    /// Where a request belongs when its domain names no tenant (a
+    /// single-tenant deployment, or a host literal).
     tenant_id: TenantId,
+    /// The tenants, so a request's domain says whose presence it is about.
+    tenant_store: Option<Arc<dyn fcp_core::storage::TenantStore>>,
+    /// Devices, extensions and lines: devices' own credentials, and whom a
+    /// credential may act as (`crate::hoteling::may_act_as`).
+    identity: Option<Arc<fcp_core::DynStorage>>,
     /// Default subscription expiry in seconds
     default_expires: u32,
     /// Rate limiter for SUBSCRIBE requests (keyed by source IP and AOR)
@@ -177,6 +183,8 @@ struct SubscribeContext {
     watcher_aor: String,
     contact_uri: String,
     expires: u32,
+    /// Whose presence this is: the presentity's tenant.
+    tenant_id: TenantId,
 }
 
 impl SipPresenceHandler {
@@ -199,6 +207,8 @@ impl SipPresenceHandler {
             presence,
             uac,
             tenant_id,
+            tenant_store: None,
+            identity: None,
             default_expires,
             subscribe_limiter,
             publish_limiter,
@@ -217,13 +227,53 @@ impl SipPresenceHandler {
         self
     }
 
+    /// Resolve each request's tenant from its domain (the presentity's), as
+    /// the registrar does; call before
+    /// [`with_digest_auth`](Self::with_digest_auth), so credentials are
+    /// looked up in the right tenant too.
+    pub fn with_tenant_store(mut self, store: Arc<dyn fcp_core::storage::TenantStore>) -> Self {
+        self.tenant_store = Some(store);
+        self
+    }
+
+    /// Devices with credentials of their own (an app install, a hot desk)
+    /// may subscribe as whom they may act for, as they register and call;
+    /// call before [`with_digest_auth`](Self::with_digest_auth).
+    pub fn with_identity(mut self, storage: Arc<fcp_core::DynStorage>) -> Self {
+        self.identity = Some(storage);
+        self
+    }
+
+    /// The tenant an address belongs to: the one claiming its domain, the
+    /// default for a host literal or without tenants. `None` for a domain
+    /// no tenant claims.
+    async fn tenant_of(&self, aor: &str) -> Option<TenantId> {
+        // Presence keeps addresses without a scheme; the resolver reads one.
+        let uri = if aor.starts_with("sip:") || aor.starts_with("sips:") {
+            aor.to_string()
+        } else {
+            format!("sip:{aor}")
+        };
+        crate::registrar::resolve_tenant_for_inputs(
+            self.tenant_store.as_ref(),
+            None,
+            Some(self.tenant_id),
+            Some(&uri),
+            None,
+        )
+        .await
+        .ok()
+    }
+
     pub fn with_digest_auth(
         mut self,
         credential_store: Arc<dyn CredentialStore>,
         realm: String,
     ) -> Self {
         let adapter =
-            crate::registrar::CredentialStoreAdapter::new(credential_store, realm.clone());
+            crate::registrar::CredentialStoreAdapter::new(credential_store, realm.clone())
+                .with_tenant_context(self.tenant_store.clone(), Some(self.tenant_id))
+                .with_identity(self.identity.clone());
         self.auth = Some(PresenceDigestAuth {
             authenticator: Arc::new(crate::auth::Ha1Authenticator::new(realm, adapter)),
         });
@@ -235,6 +285,8 @@ impl SipPresenceHandler {
             presence: self.presence.clone(),
             uac: Arc::clone(&self.uac),
             tenant_id: self.tenant_id,
+            tenant_store: self.tenant_store.clone(),
+            identity: self.identity.clone(),
             default_expires: self.default_expires,
             subscribe_limiter: Arc::clone(&self.subscribe_limiter),
             publish_limiter: Arc::clone(&self.publish_limiter),
@@ -364,7 +416,17 @@ impl SipPresenceHandler {
 
         let expected_username = Self::extract_aor_username(expected_aor)
             .ok_or_else(|| anyhow::anyhow!("Invalid AOR '{}'", expected_aor))?;
-        if username != expected_username {
+        // The credentials' own name, or one they may act as: a device for
+        // its owner, a user for their extension or line.
+        let may_act = username == expected_username
+            || match (&self.identity, self.tenant_of(expected_aor).await) {
+                (Some(identity), Some(tenant)) => {
+                    crate::hoteling::may_act_as(identity, &tenant, &username, expected_username)
+                        .await
+                }
+                _ => false,
+            };
+        if !may_act {
             let response = sip_uas::UserAgentServer::create_response(request, 403, "Forbidden");
             handle.send_final(response).await;
             return Ok(false);
@@ -393,13 +455,13 @@ impl SipPresenceHandler {
     }
 
     /// Spawn a background task to notify watchers of a state change.
-    fn spawn_notify_watchers(&self, aor: &str) {
+    fn spawn_notify_watchers(&self, aor: &str, tenant_id: TenantId) {
         let delay = self.presence.notify_delay();
         let handler = self.clone_for_async();
         let aor = aor.to_string();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
-            if let Err(e) = handler.notify_watchers(&aor).await {
+            if let Err(e) = handler.notify_watchers(&aor, &tenant_id).await {
                 warn!(error = %e, aor = %aor, "Failed to notify watchers after PUBLISH");
             }
         });
@@ -731,6 +793,7 @@ impl SipPresenceHandler {
             watcher_aor,
             contact_uri,
             expires,
+            tenant_id: self.tenant_id,
         })
     }
 
@@ -748,12 +811,25 @@ impl SipPresenceHandler {
             return Ok(false);
         }
 
-        if !self.presence.is_watcher_authorized_for_tenant(
-            &ctx.watcher_aor,
-            &ctx.presentity_aor,
-            &self.tenant_id,
-            &ctx.event,
-        ) {
+        // A presentity's own policy decides when there is one. Without one,
+        // a colleague may watch: a watcher in the presentity's tenant (busy
+        // lamps on a PBX need no setup); anyone else only themselves.
+        let authorized = if self
+            .presence
+            .get_auth_policy_for_tenant(&ctx.presentity_aor, &ctx.tenant_id)
+            .is_some()
+        {
+            self.presence.is_watcher_authorized_for_tenant(
+                &ctx.watcher_aor,
+                &ctx.presentity_aor,
+                &ctx.tenant_id,
+                &ctx.event,
+            )
+        } else {
+            ctx.watcher_aor.eq_ignore_ascii_case(&ctx.presentity_aor)
+                || self.tenant_of(&ctx.watcher_aor).await == Some(ctx.tenant_id)
+        };
+        if !authorized {
             info!(
                 watcher = %ctx.watcher_aor,
                 presentity = %ctx.presentity_aor,
@@ -775,9 +851,16 @@ impl SipPresenceHandler {
     ) -> Result<()> {
         let watchers = self
             .presence
-            .get_watchers_for_tenant(&ctx.presentity_aor, &self.tenant_id);
+            .get_watchers_for_tenant(&ctx.presentity_aor, &ctx.tenant_id);
+        // The subscription this dialog holds, not another device's.
+        let call_id = sip_parse::header(request.headers(), "Call-ID")
+            .map(|c| c.to_string())
+            .unwrap_or_default();
         for w in &watchers {
-            if w.watcher_aor == ctx.watcher_aor && w.event_package == ctx.event {
+            if w.watcher_aor == ctx.watcher_aor
+                && w.event_package == ctx.event
+                && w.sip_call_id.as_deref().is_none_or(|c| c == call_id)
+            {
                 if let Err(e) = self
                     .send_notify_to_watcher(w, "terminated;reason=deactivated")
                     .await
@@ -811,7 +894,7 @@ impl SipPresenceHandler {
         let new_expires = Instant::now() + Duration::from_secs(ctx.expires as u64);
         if let Err(e) = self.presence.refresh_watcher_for_tenant(
             &ctx.presentity_aor,
-            &self.tenant_id,
+            &ctx.tenant_id,
             sub_id,
             new_expires,
         ) {
@@ -828,7 +911,7 @@ impl SipPresenceHandler {
         // Send NOTIFY with active state for refreshed subscription
         let refreshed_watchers = self
             .presence
-            .get_watchers_for_tenant(&ctx.presentity_aor, &self.tenant_id);
+            .get_watchers_for_tenant(&ctx.presentity_aor, &ctx.tenant_id);
         if let Some(w) = refreshed_watchers
             .iter()
             .find(|w| w.subscription_id == sub_id)
@@ -864,12 +947,12 @@ impl SipPresenceHandler {
             // Unsubscribe from winfo
             let winfo_watchers = self
                 .presence
-                .get_winfo_watchers_for_tenant(&ctx.presentity_aor, &self.tenant_id);
+                .get_winfo_watchers_for_tenant(&ctx.presentity_aor, &ctx.tenant_id);
             for w in &winfo_watchers {
                 if w.watcher_aor == ctx.watcher_aor {
                     self.presence.remove_winfo_watcher_for_tenant(
                         &ctx.presentity_aor,
-                        &self.tenant_id,
+                        &ctx.tenant_id,
                         &w.subscription_id,
                     );
                     break;
@@ -889,7 +972,7 @@ impl SipPresenceHandler {
             presentity_aor: ctx.presentity_aor.clone(),
             subscription_id: subscription_id.clone(),
             expires_at: Instant::now() + Duration::from_secs(ctx.expires as u64),
-            tenant_id: self.tenant_id,
+            tenant_id: ctx.tenant_id,
             contact_uri: ctx.contact_uri.clone(),
             event_package: "presence.winfo".to_string(),
             sip_call_id: None,
@@ -945,7 +1028,7 @@ impl SipPresenceHandler {
             presentity_aor: ctx.presentity_aor.clone(),
             subscription_id: subscription_id.clone(),
             expires_at: Instant::now() + Duration::from_secs(ctx.expires as u64),
-            tenant_id: self.tenant_id,
+            tenant_id: ctx.tenant_id,
             contact_uri: ctx.contact_uri.clone(),
             event_package: ctx.event.clone(),
             sip_call_id,
@@ -990,7 +1073,15 @@ impl PresenceHandler for SipPresenceHandler {
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
     ) -> Result<()> {
-        let ctx = self.parse_subscribe_context(request)?;
+        let mut ctx = self.parse_subscribe_context(request)?;
+        ctx.tenant_id = match self.tenant_of(&ctx.presentity_aor).await {
+            Some(tenant) => tenant,
+            None => {
+                let response = sip_uas::UserAgentServer::create_response(request, 404, "Not Found");
+                handle.send_final(response).await;
+                return Ok(());
+            }
+        };
 
         // Rate limiting: check both per-IP and per-AOR
         let source_ip = Self::extract_source_ip(request);
@@ -1042,11 +1133,17 @@ impl PresenceHandler for SipPresenceHandler {
             return self.handle_unsubscribe(&ctx, request, handle).await;
         }
 
-        if let Some(existing_sub_id) = self.presence.find_existing_watcher_for_tenant(
+        // A refresh comes inside its subscription's dialog; another of the
+        // watcher's devices is a subscription of its own.
+        let call_id = sip_parse::header(request.headers(), "Call-ID")
+            .map(|c| c.to_string())
+            .unwrap_or_default();
+        if let Some(existing_sub_id) = self.presence.find_watcher_in_dialog_for_tenant(
             &ctx.watcher_aor,
             &ctx.presentity_aor,
-            &self.tenant_id,
+            &ctx.tenant_id,
             &ctx.event,
+            &call_id,
         ) {
             return self
                 .handle_subscribe_refresh(&ctx, &existing_sub_id, request, handle)
@@ -1094,6 +1191,11 @@ impl PresenceHandler for SipPresenceHandler {
             return Ok(());
         }
 
+        let Some(tenant) = self.tenant_of(&presentity_aor).await else {
+            let response = sip_uas::UserAgentServer::create_response(request, 404, "Not Found");
+            handle.send_final(response).await;
+            return Ok(());
+        };
         let if_match = Self::extract_sip_if_match(request);
         let expires = Self::extract_expires(request).unwrap_or(3600);
         let expires = self.presence.cap_publish_expiry(expires);
@@ -1135,7 +1237,7 @@ impl PresenceHandler for SipPresenceHandler {
                         &update.aor,
                         update.state,
                         update.note.clone(),
-                        &self.tenant_id,
+                        &tenant,
                         expires,
                     )
                     .await;
@@ -1144,20 +1246,14 @@ impl PresenceHandler for SipPresenceHandler {
                 // this is the primary update; if enabled, store_publish already recomposed)
                 let info = self
                     .presence
-                    .update_presence(update, &self.tenant_id)
+                    .update_presence(update, &tenant)
                     .await
                     .context("Failed to update presence from PUBLISH")?;
 
-                fcp_presence::events::publish_received(
-                    &None,
-                    &info.aor,
-                    info.state,
-                    &self.tenant_id,
-                )
-                .await;
+                fcp_presence::events::publish_received(&None, &info.aor, info.state, &tenant).await;
 
                 Self::send_publish_ok(request, handle, &etag, expires).await;
-                self.spawn_notify_watchers(&info.aor);
+                self.spawn_notify_watchers(&info.aor, tenant);
             }
 
             // Refresh PUBLISH: no body, SIP-If-Match present
@@ -1224,20 +1320,17 @@ impl PresenceHandler for SipPresenceHandler {
                     Ok(new_etag) => {
                         let info = self
                             .presence
-                            .update_presence(update, &self.tenant_id)
+                            .update_presence(update, &tenant)
                             .await
                             .context("Failed to update presence from PUBLISH")?;
 
                         fcp_presence::events::publish_received(
-                            &None,
-                            &info.aor,
-                            info.state,
-                            &self.tenant_id,
+                            &None, &info.aor, info.state, &tenant,
                         )
                         .await;
 
                         Self::send_publish_ok(request, handle, &new_etag, expires).await;
-                        self.spawn_notify_watchers(&info.aor);
+                        self.spawn_notify_watchers(&info.aor, tenant);
                     }
                     Err(_) => {
                         let response = sip_uas::UserAgentServer::create_response(
@@ -1261,8 +1354,8 @@ impl PresenceHandler for SipPresenceHandler {
         Ok(())
     }
 
-    async fn notify_watchers(&self, aor: &str) -> Result<()> {
-        let watchers = self.presence.get_watchers_for_tenant(aor, &self.tenant_id);
+    async fn notify_watchers(&self, aor: &str, tenant_id: &TenantId) -> Result<()> {
+        let watchers = self.presence.get_watchers_for_tenant(aor, tenant_id);
 
         if watchers.is_empty() {
             return Ok(());
@@ -1278,7 +1371,7 @@ impl PresenceHandler for SipPresenceHandler {
         // regeneration across N watchers for the same AOR.
         let pidf_body = self
             .presence
-            .generate_pidf_for_tenant(aor, &self.tenant_id)
+            .generate_pidf_for_tenant(aor, tenant_id)
             .unwrap_or_else(|| {
                 fcp_presence::pidf::generate_pidf(
                     aor,
@@ -1289,10 +1382,10 @@ impl PresenceHandler for SipPresenceHandler {
             });
         let dialog_body = self
             .presence
-            .generate_dialog_info_for_tenant(aor, &self.tenant_id);
+            .generate_dialog_info_for_tenant(aor, tenant_id);
         let winfo_body = self
             .presence
-            .generate_watcherinfo_for_tenant(aor, &self.tenant_id)
+            .generate_watcherinfo_for_tenant(aor, tenant_id)
             .unwrap_or_else(|e| {
                 warn!(error = %e, "Failed to generate watcherinfo XML");
                 "<watcherinfo xmlns=\"urn:ietf:params:xml:ns:watcherinfo\" version=\"0\" state=\"full\"></watcherinfo>".to_string()

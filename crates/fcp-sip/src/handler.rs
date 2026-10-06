@@ -2401,6 +2401,31 @@ impl SipMessageHandler {
                         return Ok(());
                     }
                 }
+                // Outside a dialog, an event no handler here takes: 489
+                // (RFC 6665 §4.2.2), not the in-dialog forward's error.
+                let in_dialog = sip_parse::header(request.headers(), "To")
+                    .is_some_and(|to| to.to_ascii_lowercase().contains(";tag="));
+                if !in_dialog {
+                    let mut response = self.create_simple_response(request, 489, "Bad Event");
+                    let mut allowed: Vec<&str> = Vec::new();
+                    if self.mwi_subscriptions.is_some() {
+                        allowed.push("message-summary");
+                    }
+                    if self.presence_handler.is_some() {
+                        allowed.extend(["presence", "dialog"]);
+                    }
+                    if self.sca.is_some() {
+                        allowed.extend(["call-info", "line-seize"]);
+                    }
+                    if !allowed.is_empty() {
+                        let _ = response.headers_mut().push(
+                            SmolStr::new("Allow-Events"),
+                            SmolStr::new(allowed.join(", ")),
+                        );
+                    }
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
                 let response = self.handle_subscribe(request).await?;
                 handle.send_final(response).await;
             }

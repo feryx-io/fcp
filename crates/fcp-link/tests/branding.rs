@@ -176,11 +176,16 @@ format = "compact"
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    assert_eq!(
-        site_asset(ring.clone()).await.0,
-        404,
-        "the dropped ringtone"
-    );
+    // The link stores the new brand, then drops what it no longer names.
+    let mut gone = false;
+    for _ in 0..80 {
+        if site_asset(ring.clone()).await.0 == 404 {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(gone, "the dropped ringtone");
     assert_eq!(site_asset(logo.clone()).await.0, 200, "the logo stays");
 
     // The brand gone at the cloud, gone at the site.
@@ -200,7 +205,16 @@ format = "compact"
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert_eq!(site_brand().await.0, 404, "the brand stayed at the site");
-    assert_eq!(site_asset(logo).await.0, 404, "its logo stayed at the site");
+    // The brand goes first, then its assets.
+    let mut gone = false;
+    for _ in 0..80 {
+        if site_asset(logo.clone()).await.0 == 404 {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(gone, "its logo stayed at the site");
 
     site_admin.stop().await;
     cloud.finish().await;

@@ -76,7 +76,7 @@ fn extract_domain_from_aor(aor: &str) -> Option<String> {
 ///
 /// 5. **Default tenant.** Last-resort compatibility for single-tenant
 ///    deployments. Only used when nothing above provided a match.
-async fn resolve_tenant_for_inputs(
+pub(crate) async fn resolve_tenant_for_inputs(
     tenant_store: Option<&Arc<dyn TenantStore>>,
     credential_store: Option<&Arc<dyn CredentialStore>>,
     default_tenant_id: Option<TenantId>,

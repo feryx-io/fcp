@@ -1258,7 +1258,10 @@ async fn run() -> Result<()> {
                 Arc::clone(&uac),
                 default_tenant_id,
                 config.presence.default_subscription_expiry_secs,
-            );
+            )
+            // Whose presence a request is about: its domain's tenant.
+            .with_tenant_store(Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::TenantStore>)
+            .with_identity(Arc::clone(&dyn_storage));
             let handler = if config.registrar.auth_enabled {
                 handler.with_digest_auth(
                     Arc::clone(&dyn_storage) as Arc<dyn fcp_core::CredentialStore>,
@@ -2984,6 +2987,36 @@ fn resolve_mailbox_aor(
 /// Looks up the extension by number, resolves its target to device(s),
 /// and returns the device SIP URIs as AORs. Returns an empty vec if
 /// the AOR is not an extension or resolution fails.
+/// The addresses a user dialed by `callee_aor` (an extension, or their SIP
+/// name) is watched at: their name on each of the tenant's domains, as
+/// their phones register and watchers subscribe. Empty when it names no
+/// user.
+async fn resolve_callee_user_aors(
+    callee_aor: &str,
+    tenant_id: &fcp_core::TenantId,
+    storage: &fcp_core::DynStorage,
+) -> Vec<String> {
+    use fcp_core::storage::{CredentialStore, TenantStore};
+    let Some((dialed, _)) = callee_aor.split_once('@') else {
+        return Vec::new();
+    };
+    let Some(user_id) = fcp_sip::ring_plan::user_of(storage, tenant_id, dialed).await else {
+        return Vec::new();
+    };
+    let Ok(Some(user)) = storage.get_user_by_id(&user_id).await else {
+        return Vec::new();
+    };
+    let domains = match storage.get_tenant(tenant_id).await {
+        Ok(Some(tenant)) => tenant.sip_domains,
+        _ => Vec::new(),
+    };
+    domains
+        .iter()
+        .map(|d| format!("{}@{}", user.sip_name(), d).to_ascii_lowercase())
+        .filter(|aor| !aor.eq_ignore_ascii_case(callee_aor))
+        .collect()
+}
+
 async fn resolve_extension_to_device_aors(
     aor: &str,
     tenant_id: &fcp_core::TenantId,
@@ -3511,10 +3544,18 @@ async fn run_presence_listener(
                             )
                             .await;
 
-                            // Also set Ringing for device AOR(s) that the extension resolves to
-                            let device_aors =
+                            // Also set Ringing for device AOR(s) that the extension resolves to,
+                            // and for the user it rings, where watchers watch them.
+                            let mut device_aors =
                                 resolve_extension_to_device_aors(&callee_aor, &tenant_id, &storage)
                                     .await;
+                            for user_aor in
+                                resolve_callee_user_aors(&callee_aor, &tenant_id, &storage).await
+                            {
+                                if !device_aors.contains(&user_aor) {
+                                    device_aors.push(user_aor);
+                                }
+                            }
                             for dev_aor in &device_aors {
                                 let update = fcp_presence::PresenceUpdate {
                                     aor: dev_aor.clone(),
@@ -4006,16 +4047,20 @@ async fn run_presence_notifier(
         match stream.next().await {
             Some(event) => match &event {
                 PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged {
-                    aor, ..
+                    aor,
+                    tenant_id,
+                    ..
                 }) => {
-                    if let Err(e) = presence_handler.notify_watchers(aor).await {
+                    if let Err(e) = presence_handler.notify_watchers(aor, tenant_id).await {
                         warn!(aor = %aor, error = %e, "Failed to notify watchers");
                     }
                 }
                 PlatformEvent::Presence(fcp_events::PresenceEvent::DialogChanged {
-                    aor, ..
+                    aor,
+                    tenant_id,
+                    ..
                 }) => {
-                    if let Err(e) = presence_handler.notify_watchers(aor).await {
+                    if let Err(e) = presence_handler.notify_watchers(aor, tenant_id).await {
                         warn!(aor = %aor, error = %e, "Failed to notify dialog watchers");
                     }
                 }

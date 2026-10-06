@@ -666,6 +666,34 @@ impl PresenceManager {
         self.find_existing_watcher_for_key(watcher_aor, &key, event_package)
     }
 
+    /// As [`find_existing_watcher_for_tenant`](Self::find_existing_watcher_for_tenant),
+    /// but only the subscription inside the dialog `call_id` names: a user's
+    /// second device watching the same presentity is a subscription of its
+    /// own, not a refresh of the first's. A watcher stored without a
+    /// Call-ID still matches by address.
+    pub fn find_watcher_in_dialog_for_tenant(
+        &self,
+        watcher_aor: &str,
+        presentity_aor: &str,
+        tenant_id: &TenantId,
+        event_package: &str,
+        call_id: &str,
+    ) -> Option<String> {
+        let key = Self::scoped_aor_key(tenant_id, presentity_aor);
+        let now = Instant::now();
+        self.watchers.get(&key).and_then(|entry| {
+            entry
+                .iter()
+                .find(|w| {
+                    w.watcher_aor == watcher_aor
+                        && w.event_package == event_package
+                        && w.expires_at > now
+                        && w.sip_call_id.as_deref().is_none_or(|c| c == call_id)
+                })
+                .map(|w| w.subscription_id.clone())
+        })
+    }
+
     fn find_existing_watcher_for_key(
         &self,
         watcher_aor: &str,
