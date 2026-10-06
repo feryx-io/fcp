@@ -352,6 +352,9 @@ async fn main() -> Result<()> {
             config.service.default_tenant_id,
             config.presence.default_subscription_expiry_secs,
         )
+        // Whose presence a request is about: its domain's tenant.
+        .with_tenant_store(Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::TenantStore>)
+        .with_identity(Arc::clone(&dyn_storage))
         .with_admission(Some(Arc::clone(&node_admission)));
         if config.sip.auth_enabled {
             handler.with_digest_auth(
@@ -922,12 +925,16 @@ async fn run_presence_notifier(
         match stream.next().await {
             Some(event) => match &event {
                 PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged {
-                    aor, ..
+                    aor,
+                    tenant_id,
+                    ..
                 })
                 | PlatformEvent::Presence(fcp_events::PresenceEvent::DialogChanged {
-                    aor, ..
+                    aor,
+                    tenant_id,
+                    ..
                 }) => {
-                    if let Err(e) = presence_handler.notify_watchers(aor).await {
+                    if let Err(e) = presence_handler.notify_watchers(aor, tenant_id).await {
                         warn!(aor = %aor, error = %e, "Failed to notify watchers");
                     }
                 }

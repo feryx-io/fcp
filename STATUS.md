@@ -1938,6 +1938,28 @@ by `SubjectMatcher`; newest first, keyset-paged, `missed=true`), and `GET
 one person with each one's presence, searchable, refused (403) while the
 tenant's new `directory.visible_to_users` is off. `/me/events` is F4b.
 
+Presence and busy lamps in every tenant (v0.25.360): over SIP, presence
+worked only for the node's default tenant, so a phone in any other tenant
+could not watch a colleague. The SIP presence handler (call manager and
+presence server) now:
+- resolves each SUBSCRIBE's and PUBLISH's tenant from the presentity's
+  domain, as the registrar does, and finds digest credentials in it;
+- notifies watchers in the tenant the presence event names;
+- lets a watcher in the presentity's own tenant subscribe when no policy is
+  set (it was the presentity alone), while another tenant is still refused
+  and a policy still decides when one exists;
+- lights a lamp for the user an extension rings, at their name on the
+  tenant's domains, not only for the dialed `2102@node` address.
+- lets a device with credentials of its own (an app install, a hot desk)
+  subscribe as whom it may act for, as it registers and calls (digest
+  against the device, then `hoteling::may_act_as`);
+- keeps a user's second device watching the same presentity as a
+  subscription of its own: a refresh or an unsubscribe is matched by the
+  dialog's Call-ID, not by the watcher's address alone, so the desk phone
+  and the softphone are both told.
+An out-of-dialog SUBSCRIBE to a package nothing takes is answered 489 with
+`Allow-Events`, not 500 (`fcp-call-manager/tests/presence.rs`).
+
 Tenants on call, flow and voicemail events (v0.25.341): `call.ringing`,
 `call.answered`, `call.ended`, `call.failed`, park, hold, supervision
 parties, every `flow.*` and the voicemail message and mailbox events named

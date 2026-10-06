@@ -407,6 +407,9 @@ backups hold them; a site's link fetches the bytes by hash.
     holds the subscription.
   - A refresh or an end is handled inside the dialog. A subscriber with no
     mailbox gets 404.
+  Presence and busy lamps worked only in the node's default tenant; fixed
+  in v0.25.360 (tenant per request, colleagues may watch without a policy,
+  the rung user's lamp lit, 489 not 500 for an unknown package).
 
 ### Phase F4: what a user sees (fcp)
 
