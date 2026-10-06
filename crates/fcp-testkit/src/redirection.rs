@@ -31,6 +31,8 @@ struct RpsState {
     secret: String,
     devices: Mutex<HashMap<String, RpsDevice>>,
     deleted: Mutex<Vec<String>>,
+    /// How long each answer waits, as a slow service's does.
+    delay_ms: std::sync::atomic::AtomicU64,
 }
 
 /// A stand-in Yealink RPS: `url()` is what `[api.redirection]
@@ -102,9 +104,16 @@ impl StandInRps {
             secret: secret.to_string(),
             devices: Mutex::new(HashMap::new()),
             deleted: Mutex::new(Vec::new()),
+            delay_ms: std::sync::atomic::AtomicU64::new(0),
         });
         let body_route = |path: &'static str| {
             move |State(s): State<Arc<RpsState>>, headers: HeaderMap, body: Bytes| async move {
+                // Up to the delay, at random: requests overtake each other.
+                let delay = s.delay_ms.load(std::sync::atomic::Ordering::Relaxed);
+                if delay > 0 {
+                    let wait = rand::random::<u64>() % (delay + 1);
+                    tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+                }
                 if !rps_signed(&s, "POST", path, &[], &headers, Some(&body)) {
                     return refused(401, "Error user key.");
                 }
@@ -193,6 +202,16 @@ impl StandInRps {
             let _ = axum::serve(listener, app).await;
         });
         Ok(Self { url, state })
+    }
+
+    /// Answer each request after a random wait of up to `delay`, as a slow
+    /// service does: two requests about one phone overlap, and the later
+    /// one may arrive first.
+    pub fn slow(&self, delay: std::time::Duration) {
+        self.state.delay_ms.store(
+            delay.as_millis() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     pub fn url(&self) -> &str {
