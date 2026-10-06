@@ -11804,15 +11804,20 @@ async fn a_deleted_user_waits_out_the_grace_period_and_is_purged_from_every_stor
     );
     let message_id = message.id.clone();
     app.storage.put_message(message).await.unwrap();
-    sqlx::query(
-        "INSERT INTO extensions (id, number, target_type, target_id, tenant_id)
-         VALUES ('ext-dee', '2001', 'user', $1, $2)",
+    // Her extension, made when it was set on her.
+    let (extensions,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM extensions WHERE number = '2001' AND target_type = 'user'
+           AND target_id = $1 AND tenant_id = $2",
     )
     .bind(&dee_id)
     .bind(&tenant)
-    .execute(&pool)
+    .fetch_one(&pool)
     .await
     .unwrap();
+    assert_eq!(
+        extensions, 1,
+        "setting her extension made the one that dials her"
+    );
     let set = app
         .admin(
             Method::PUT,
@@ -14859,4 +14864,108 @@ async fn an_app_install_is_a_device_with_sip_credentials_of_its_own() {
         )
         .await;
     assert_eq!(ops_device.status, StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// A user's extension dials them
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_users_extension_is_the_extension_that_dials_them() {
+    use fcp_core::storage::ExtensionStore;
+    let app = require_app!();
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({ "username": "alice", "password": PASSWORD, "extension": "1001" })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let alice: fcp_core::UserId = created.json["id"].as_str().unwrap().parse().unwrap();
+    let tenant: fcp_core::TenantId = created.json["tenant_id"].as_str().unwrap().parse().unwrap();
+    let dials = |number: &'static str| {
+        let app = &app;
+        async move {
+            app.storage
+                .get_extension_by_number(&tenant, number)
+                .await
+                .unwrap()
+                .map(|e| e.target)
+        }
+    };
+    // Creating her made the extension routing reads.
+    assert_eq!(
+        dials("1001").await,
+        Some(fcp_core::ExtensionTarget::User(alice))
+    );
+
+    // Another user cannot have it.
+    let taken = app
+        .admin(
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({ "username": "bob", "password": PASSWORD, "extension": "1001" })),
+        )
+        .await;
+    assert_eq!(taken.status, StatusCode::CONFLICT, "{}", taken.text);
+    assert_eq!(
+        app.admin(Method::GET, "/api/v1/users/bob", None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND,
+        "refused before anything was made"
+    );
+
+    // Changing it moves it; clearing it removes it.
+    let moved = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/alice",
+            Some(json!({ "extension": "1002" })),
+        )
+        .await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.text);
+    assert_eq!(dials("1001").await, None);
+    assert_eq!(
+        dials("1002").await,
+        Some(fcp_core::ExtensionTarget::User(alice))
+    );
+    let cleared = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/alice",
+            Some(json!({ "extension": "" })),
+        )
+        .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text);
+    assert_eq!(dials("1002").await, None);
+
+    // A number that already dials something else is refused; not a number
+    // at all, too.
+    let bob = app.create_user_with_role("bob", "end_user").await;
+    let to_bob = app
+        .admin(
+            Method::POST,
+            "/api/v1/extensions",
+            Some(json!({ "number": "1003", "target": { "type": "user", "id": bob } })),
+        )
+        .await;
+    assert_eq!(to_bob.status, StatusCode::CREATED, "{}", to_bob.text);
+    let refused = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/alice",
+            Some(json!({ "extension": "1003" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+    let invalid = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/alice",
+            Some(json!({ "extension": "not a number" })),
+        )
+        .await;
+    assert_eq!(invalid.status, StatusCode::BAD_REQUEST, "{}", invalid.text);
 }
