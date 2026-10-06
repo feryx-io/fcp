@@ -191,6 +191,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/app/authorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/auth/app/authorize — an app begins its sign-in in the
+         *     browser, which is sent to the admin UI's sign-in to finish it.
+         */
+        get: operations["app_auth_authorize"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/app/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/auth/app/approve — the signed-in user grants the app's
+         *     sign-in: the address to send the browser to, with a one-time code.
+         */
+        post: operations["app_auth_approve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/app/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/auth/app/sessions — an app without a browser
+         *     (`anvil-cli`) gets a session of its own from a session signed in within
+         *     the last ten minutes (`/auth/login`, `/auth/login/totp`).
+         */
+        post: operations["app_auth_create_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/app/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/auth/app/token — a code and its verifier for an app
+         *     session, or a refresh token for the next one.
+         */
+        post: operations["app_auth_token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/app/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/auth/app/revoke — an app signs out: its session ends.
+         *     Answers 200 whether or not the token named a live session (RFC 7009
+         *     §2.2).
+         */
+        post: operations["app_auth_revoke"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/sso/{id}/start": {
         parameters: {
             query?: never;
@@ -5276,6 +5378,70 @@ export interface components {
             rotated_at?: string | null;
             /** @description Until when the secret a rotation replaced still opens the token. */
             previous_secret_valid_until?: string | null;
+        };
+        /** @description The app, as it names itself. */
+        AppClientRequest: {
+            /** @description What the app calls itself on this machine ("Alice's MacBook"). */
+            client_name: string;
+            /** @description Kept by the install across sign-ins. */
+            install_id: string;
+            platform?: string | null;
+            version?: string | null;
+        };
+        /** @description What `POST /auth/app/revoke` takes (RFC 7009). */
+        AppRevokeRequest: {
+            token: string;
+        };
+        /**
+         * @description What `POST /auth/app/token` takes, as JSON or a form (RFC 6749 §4.1.3,
+         *     §6).
+         */
+        AppTokenRequest: {
+            /** @description `authorization_code` or `refresh_token`. */
+            grant_type: string;
+            code?: string | null;
+            code_verifier?: string | null;
+            redirect_uri?: string | null;
+            client_id?: string | null;
+            refresh_token?: string | null;
+            /** @description With `authorization_code`: the app, as `/auth/app/sessions` takes it. */
+            client_name?: string | null;
+            install_id?: string | null;
+            platform?: string | null;
+            version?: string | null;
+        };
+        /** @description An app session's tokens. */
+        AppTokenResponse: {
+            access_token: string;
+            /** @description `Bearer`. */
+            token_type: string;
+            /**
+             * Format: int64
+             * @description Seconds the access token lasts.
+             */
+            expires_in: number;
+            /** @description Opaque; rotated on every refresh, so keep the newest. */
+            refresh_token: string;
+            /**
+             * Format: int64
+             * @description Seconds the session lasts unless refreshed.
+             */
+            refresh_expires_in: number;
+            /** @description The session, as `/me/sessions` and the audit log name it. */
+            session_id: string;
+            user: components["schemas"]["AuthUserResponse"];
+        };
+        /** @description What `POST /auth/app/approve` takes. */
+        ApproveRequest: {
+            /** @description The `app` the sign-in page was opened with. */
+            request: string;
+        };
+        /** @description Where to send the browser. */
+        ApproveResponse: {
+            /** @description The app's loopback address with `code` and `state`. */
+            redirect_url: string;
+            /** @description The app that asked. */
+            client_id: string;
         };
         AssistantView: {
             user_id: string;
@@ -10828,6 +10994,12 @@ export interface components {
              *     SCIM made.
              */
             scim?: boolean;
+            /**
+             * Format: int32
+             * @description How many days an app session (the softphone's) lasts after its last
+             *     refresh (`docs/SOFTPHONE.md` §2.3); absent, 90.
+             */
+            app_session_days?: number | null;
         };
         /** @description A test delivery. */
         TestWebhookRequest: {
@@ -12286,6 +12458,174 @@ export interface operations {
         responses: {
             /** @description Reset */
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    app_auth_authorize: {
+        parameters: {
+            query: {
+                /** @description The app (`anvil`). */
+                client_id: string;
+                /** @description Where the browser is sent back: a loopback address (RFC 8252 §7.3). */
+                redirect_uri: string;
+                /** @description The S256 challenge of the app's verifier. */
+                code_challenge: string;
+                /** @description Only `S256`. */
+                code_challenge_method: string;
+                /** @description Returned to the app unchanged. */
+                state?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description To the sign-in page, with `app` naming the request */
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    app_auth_approve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveRequest"];
+            };
+        };
+        responses: {
+            /** @description Where to send the browser */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApproveResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    app_auth_create_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppClientRequest"];
+            };
+        };
+        responses: {
+            /** @description The app's session */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppTokenResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    app_auth_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description The app session's tokens */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppTokenResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    app_auth_revoke: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppRevokeRequest"];
+            };
+        };
+        responses: {
+            /** @description The session, if any, has ended */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

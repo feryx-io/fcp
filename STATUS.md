@@ -1874,6 +1874,18 @@ the first sends to the contacts with no flow, so a phone is told once
 two call managers (`fcp-admin/tests/resync_cluster.rs`), and
 `device.firmware_behind` end to end (`fcp-admin/tests/firmware_behind.rs`).
 
+Softphone F1a, app sign-in (v0.25.334): OAuth 2.0 for native apps with
+PKCE — `GET /auth/app/authorize` (a loopback `redirect_uri`) to the admin
+UI's sign-in, which grants with `POST /auth/app/approve` and sends the
+browser back with a one-time code; `POST /auth/app/token` redeems it (form
+or JSON) and refreshes; `POST /auth/app/sessions` for an app without a
+browser after `/auth/login`; `POST /auth/app/revoke`. An app session is a
+`login_sessions` row naming the app (migration 107), its refresh token
+rotated with reuse detection, lasting the tenant's
+`sign_in.app_session_days` (90) from its last refresh, one per install;
+granting needs a sign-in from the last ten minutes
+(`docs/APP_SIGN_IN.md`). The device per install is F1b.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

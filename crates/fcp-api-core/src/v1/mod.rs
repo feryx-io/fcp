@@ -1,6 +1,7 @@
 //! API v1 routes.
 
 pub mod api_tokens;
+pub mod app_auth;
 pub mod auth_session;
 pub mod billing;
 pub mod call_control;
@@ -96,6 +97,10 @@ pub fn pre_auth_router(enable_signup: bool) -> Router<ApiState> {
             "/auth/saml/:id/slo",
             get(sso::saml_slo_redirect).post(sso::saml_slo_post),
         )
+        // An app's sign-in and its session (docs/SOFTPHONE.md §2.2)
+        .route("/auth/app/authorize", get(app_auth::authorize))
+        .route("/auth/app/token", post(app_auth::token))
+        .route("/auth/app/revoke", post(app_auth::revoke))
         .route("/auth/refresh", post(auth_session::refresh))
         .route("/auth/logout", post(auth_session::logout))
         .route(
@@ -130,6 +135,8 @@ pub fn router() -> Router<ApiState> {
     let user_routes = Router::new()
         // Auth session endpoints that require a valid JWT
         .route("/auth/me", get(auth_session::me))
+        .route("/auth/app/approve", post(app_auth::approve))
+        .route("/auth/app/sessions", post(app_auth::create_session))
         // Self-service (end-user portal)
         .route(
             "/me/profile",

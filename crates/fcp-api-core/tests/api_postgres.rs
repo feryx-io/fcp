@@ -14375,3 +14375,295 @@ async fn firmware_is_uploaded_once_targeted_per_tenant_piloted_and_served() {
 
     app.finish().await;
 }
+
+// ---------------------------------------------------------------------------
+// An app's sign-in and its session (docs/SOFTPHONE.md §2.2, §2.3)
+// ---------------------------------------------------------------------------
+
+const APP_REDIRECT: &str = "http://127.0.0.1:53124/callback";
+
+impl App {
+    /// An app's sign-in begun with `verifier`'s challenge: its request id.
+    async fn app_authorize(&self, verifier: &str) -> String {
+        let challenge = fcp_core::session::pkce_challenge(verifier);
+        let path = format!(
+            "/api/v1/auth/app/authorize?client_id=anvil&redirect_uri={}&code_challenge={challenge}\
+             &code_challenge_method=S256&state=st-1",
+            urlencoding::encode(APP_REDIRECT)
+        );
+        let res = self.send(Method::GET, &path, &[], None).await;
+        assert_eq!(res.status, StatusCode::SEE_OTHER, "{}", res.text);
+        let location = res.headers[header::LOCATION].to_str().unwrap().to_string();
+        // The admin UI's sign-in, at the public URL when one is set.
+        let id = location
+            .split_once("/login?app=")
+            .map(|(_, id)| id)
+            .unwrap_or_else(|| panic!("to the sign-in page: {location}"));
+        urlencoding::decode(id).unwrap().into_owned()
+    }
+
+    /// The code the approved sign-in sends the browser back with.
+    async fn app_approve(&self, token: &str, request: &str) -> String {
+        let res = self
+            .send_as(
+                token,
+                Method::POST,
+                "/api/v1/auth/app/approve",
+                Some(json!({ "request": request })),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+        let url = res.json["redirect_url"].as_str().unwrap().to_string();
+        assert!(url.starts_with(&format!("{APP_REDIRECT}?code=")), "{url}");
+        assert!(url.ends_with("&state=st-1"), "{url}");
+        let code = url
+            .split_once("code=")
+            .unwrap()
+            .1
+            .split('&')
+            .next()
+            .unwrap();
+        urlencoding::decode(code).unwrap().into_owned()
+    }
+
+    async fn app_token(&self, form: &[(&str, &str)]) -> Response {
+        let body = serde_urlencoded::to_string(form).unwrap();
+        self.send_raw(
+            "",
+            Method::POST,
+            "/api/v1/auth/app/token",
+            "application/x-www-form-urlencoded",
+            body.into_bytes(),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn an_app_signs_in_through_the_browser_and_keeps_its_session() {
+    let app = require_app!();
+    let alice: fcp_core::UserId = app
+        .create_user_with_role("alice", "end_user")
+        .await
+        .trim_start_matches("user-")
+        .parse()
+        .unwrap();
+    let verifier = "a".repeat(20) + &"b".repeat(30);
+
+    // A redirect that is not a loopback address is refused.
+    let bad = format!(
+        "/api/v1/auth/app/authorize?client_id=anvil&redirect_uri={}&code_challenge={}\
+         &code_challenge_method=S256",
+        urlencoding::encode("https://evil.example/cb"),
+        fcp_core::session::pkce_challenge(&verifier)
+    );
+    assert_eq!(
+        app.send(Method::GET, &bad, &[], None).await.status,
+        StatusCode::BAD_REQUEST
+    );
+
+    // The app begins; the user signs in in the browser and grants it.
+    let request = app.app_authorize(&verifier).await;
+    let token = app.login("alice", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let code = app.app_approve(&token, &request).await;
+    // Granted once.
+    let again = app
+        .send_as(
+            &token,
+            Method::POST,
+            "/api/v1/auth/app/approve",
+            Some(json!({ "request": request })),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND, "{}", again.text);
+
+    // The app redeems the code with its verifier, as a form.
+    let app_form = |code: &str, verifier: &str| {
+        vec![
+            ("grant_type".to_string(), "authorization_code".to_string()),
+            ("code".to_string(), code.to_string()),
+            ("code_verifier".to_string(), verifier.to_string()),
+            ("redirect_uri".to_string(), APP_REDIRECT.to_string()),
+            ("client_id".to_string(), "anvil".to_string()),
+            ("client_name".to_string(), "Alice's laptop".to_string()),
+            ("install_id".to_string(), "install-1".to_string()),
+            ("platform".to_string(), "linux".to_string()),
+        ]
+    };
+    let form = app_form(&code, &verifier);
+    let pairs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let issued = app.app_token(&pairs).await;
+    assert_eq!(issued.status, StatusCode::OK, "{}", issued.text);
+    assert_eq!(issued.json["token_type"], "Bearer");
+    assert_eq!(issued.json["user"]["username"], "alice");
+    let access = issued.json["access_token"].as_str().unwrap().to_string();
+    let refresh = issued.json["refresh_token"].as_str().unwrap().to_string();
+    assert_eq!(
+        app.send_as(&access, Method::GET, "/api/v1/auth/me", None)
+            .await
+            .json["username"],
+        "alice"
+    );
+    // A code is redeemed once.
+    let replay = app.app_token(&pairs).await;
+    assert_eq!(replay.status, StatusCode::UNAUTHORIZED, "{}", replay.text);
+
+    // The session names the app and lasts 90 days, not a browser's 12 hours.
+    let sessions = app.dyn_storage.login_session_store().unwrap().clone();
+    let sid: fcp_core::LoginSessionId =
+        issued.json["session_id"].as_str().unwrap().parse().unwrap();
+    let row = sessions.get_login_session(&sid).await.unwrap().unwrap();
+    let client = row.app.clone().expect("an app session");
+    assert_eq!(client.name, "Alice's laptop");
+    assert_eq!(client.install_id, "install-1");
+    assert_eq!(client.platform.as_deref(), Some("linux"));
+    let lasts = row
+        .expires_at
+        .duration_since(std::time::SystemTime::now())
+        .unwrap();
+    assert!(lasts > Duration::from_secs(89 * 86_400), "{lasts:?}");
+
+    // A wrong verifier is refused, and the code is spent.
+    let request = app.app_authorize(&verifier).await;
+    let code = app.app_approve(&token, &request).await;
+    let wrong = "c".repeat(50);
+    let form = app_form(&code, &wrong);
+    let pairs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    assert_eq!(app.app_token(&pairs).await.status, StatusCode::UNAUTHORIZED);
+    let form = app_form(&code, &verifier);
+    let pairs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    assert_eq!(app.app_token(&pairs).await.status, StatusCode::UNAUTHORIZED);
+
+    // Refresh: the token turns over; the one before it, again at once, is
+    // refused without ending the session; after the grace, it ends it.
+    let refreshed = app
+        .app_token(&[("grant_type", "refresh_token"), ("refresh_token", &refresh)])
+        .await;
+    assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.text);
+    let turned = refreshed.json["refresh_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(turned, refresh);
+    let raced = app
+        .app_token(&[("grant_type", "refresh_token"), ("refresh_token", &refresh)])
+        .await;
+    assert_eq!(raced.status, StatusCode::CONFLICT, "{}", raced.text);
+    let (_, secret) = fcp_core::session::parse_refresh_cookie(&refresh).unwrap();
+    let later = std::time::SystemTime::now() + Duration::from_secs(60);
+    assert_eq!(
+        sessions
+            .rotate_refresh(&sid, &fcp_core::session::refresh_hash(&secret), "x", later)
+            .await
+            .unwrap(),
+        fcp_core::session::RefreshOutcome::Reused
+    );
+    let ended = app
+        .app_token(&[("grant_type", "refresh_token"), ("refresh_token", &turned)])
+        .await;
+    assert_eq!(ended.status, StatusCode::UNAUTHORIZED, "{}", ended.text);
+
+    // A browser's refresh cookie is not an app's refresh token.
+    let signed_in = app.login("alice", PASSWORD).await;
+    let cookie = refresh_cookie(&signed_in).unwrap();
+    let browser = cookie.trim_start_matches("fcp_refresh=").to_string();
+    assert_eq!(
+        app.app_token(&[("grant_type", "refresh_token"), ("refresh_token", &browser)])
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Without a browser: a fresh session gets the app a session of its own,
+    // and the same install signing in again ends its earlier one.
+    let fresh = signed_in.json["token"].as_str().unwrap().to_string();
+    let body = json!({ "client_name": "anvil-cli", "install_id": "install-2" });
+    let first = app
+        .send_as(
+            &fresh,
+            Method::POST,
+            "/api/v1/auth/app/sessions",
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(first.status, StatusCode::CREATED, "{}", first.text);
+    let second = app
+        .send_as(
+            &fresh,
+            Method::POST,
+            "/api/v1/auth/app/sessions",
+            Some(body),
+        )
+        .await;
+    assert_eq!(second.status, StatusCode::CREATED, "{}", second.text);
+    let first_access = first.json["access_token"].as_str().unwrap();
+    assert_eq!(
+        app.send_as(first_access, Method::GET, "/api/v1/auth/me", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED,
+        "the install's earlier session ended"
+    );
+
+    // An app's session does not grant another.
+    let second_access = second.json["access_token"].as_str().unwrap().to_string();
+    let refused = app
+        .send_as(
+            &second_access,
+            Method::POST,
+            "/api/v1/auth/app/sessions",
+            Some(json!({ "client_name": "x", "install_id": "install-3" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.text);
+
+    // A browser session older than ten minutes must sign in again.
+    // Her browser session, made old.
+    let stale_sid = sessions
+        .list_user_sessions(&alice)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|s| s.app.is_none())
+        .expect("her browser session")
+        .id;
+    sqlx::query(
+        "UPDATE login_sessions SET created_at = NOW() - INTERVAL '11 minutes'
+         WHERE id = $1",
+    )
+    .bind(stale_sid.to_string())
+    .execute(app.storage.pool())
+    .await
+    .unwrap();
+    let stale = app
+        .send_as(
+            &fresh,
+            Method::POST,
+            "/api/v1/auth/app/sessions",
+            Some(json!({ "client_name": "x", "install_id": "install-4" })),
+        )
+        .await;
+    assert_eq!(stale.status, StatusCode::UNAUTHORIZED, "{}", stale.text);
+
+    // Signing out: the app's session ends.
+    let second_refresh = second.json["refresh_token"].as_str().unwrap().to_string();
+    let revoked = app
+        .send_raw(
+            "",
+            Method::POST,
+            "/api/v1/auth/app/revoke",
+            "application/json",
+            json!({ "token": second_refresh }).to_string().into_bytes(),
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.text);
+    assert_eq!(
+        app.send_as(&second_access, Method::GET, "/api/v1/auth/me", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+}

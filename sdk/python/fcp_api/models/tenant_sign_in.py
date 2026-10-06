@@ -11,6 +11,7 @@ from ..types import UNSET, Unset
 from ..models.password_login import PasswordLogin
 from ..models.require_totp import RequireTotp
 from ..types import UNSET, Unset
+from typing import cast
 
 
 
@@ -31,11 +32,14 @@ class TenantSignIn:
             scim (bool | Unset): The tenant's users come from its SCIM provisioner (`docs/SCIM.md`):
                 single sign-on makes nobody just in time and signs in only users
                 SCIM made.
+            app_session_days (int | None | Unset): How many days an app session (the softphone's) lasts after its last
+                refresh (`docs/SOFTPHONE.md` §2.3); absent, 90.
      """
 
     password_login: PasswordLogin | Unset = UNSET
     require_totp: RequireTotp | Unset = UNSET
     scim: bool | Unset = UNSET
+    app_session_days: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -55,6 +59,12 @@ class TenantSignIn:
 
         scim = self.scim
 
+        app_session_days: int | None | Unset
+        if isinstance(self.app_session_days, Unset):
+            app_session_days = UNSET
+        else:
+            app_session_days = self.app_session_days
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -66,6 +76,8 @@ class TenantSignIn:
             field_dict["require_totp"] = require_totp
         if scim is not UNSET:
             field_dict["scim"] = scim
+        if app_session_days is not UNSET:
+            field_dict["app_session_days"] = app_session_days
 
         return field_dict
 
@@ -96,10 +108,21 @@ class TenantSignIn:
 
         scim = d.pop("scim", UNSET)
 
+        def _parse_app_session_days(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        app_session_days = _parse_app_session_days(d.pop("app_session_days", UNSET))
+
+
         tenant_sign_in = cls(
             password_login=password_login,
             require_totp=require_totp,
             scim=scim,
+            app_session_days=app_session_days,
         )
 
 

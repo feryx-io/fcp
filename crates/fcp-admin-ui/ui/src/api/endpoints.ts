@@ -161,6 +161,9 @@ export const auth = {
   ssoStartUrl: (providerId: string) => `/api/v1/auth/sso/${encodeURIComponent(providerId)}/start`,
   /** A session for the one-time code the provider's sign-in landed with. */
   ssoExchange: (code: string) => apiClient.post<LoginResponse>('/auth/sso/exchange', { code }),
+  /** Grant an app's sign-in (docs/SOFTPHONE.md §2.2): where to send the browser back. */
+  appApprove: (request: string) =>
+    apiClient.post<{ redirect_url: string; client_id: string }>('/auth/app/approve', { request }),
   logout: () => apiClient.post<void>('/auth/logout'),
   refresh: () => apiClient.post<LoginResponse>('/auth/refresh'),
   me: () => apiClient.get<AuthUser>('/auth/me'),

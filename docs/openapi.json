@@ -394,6 +394,244 @@
         }
       }
     },
+    "/api/v1/auth/app/authorize": {
+      "get": {
+        "tags": [
+          "app_auth"
+        ],
+        "summary": "GET /api/v1/auth/app/authorize — an app begins its sign-in in the\nbrowser, which is sent to the admin UI's sign-in to finish it.",
+        "operationId": "app_auth_authorize",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "query",
+            "description": "The app (`anvil`).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "redirect_uri",
+            "in": "query",
+            "description": "Where the browser is sent back: a loopback address (RFC 8252 §7.3).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_challenge",
+            "in": "query",
+            "description": "The S256 challenge of the app's verifier.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_challenge_method",
+            "in": "query",
+            "description": "Only `S256`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Returned to the app unchanged.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "To the sign-in page, with `app` naming the request"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/app/approve": {
+      "post": {
+        "tags": [
+          "app_auth"
+        ],
+        "summary": "POST /api/v1/auth/app/approve — the signed-in user grants the app's\nsign-in: the address to send the browser to, with a one-time code.",
+        "operationId": "app_auth_approve",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Where to send the browser",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApproveResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/app/sessions": {
+      "post": {
+        "tags": [
+          "app_auth"
+        ],
+        "summary": "POST /api/v1/auth/app/sessions — an app without a browser\n(`anvil-cli`) gets a session of its own from a session signed in within\nthe last ten minutes (`/auth/login`, `/auth/login/totp`).",
+        "operationId": "app_auth_create_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppClientRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The app's session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppTokenResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/app/token": {
+      "post": {
+        "tags": [
+          "app_auth"
+        ],
+        "summary": "POST /api/v1/auth/app/token — a code and its verifier for an app\nsession, or a refresh token for the next one.",
+        "operationId": "app_auth_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The app session's tokens",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppTokenResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/app/revoke": {
+      "post": {
+        "tags": [
+          "app_auth"
+        ],
+        "summary": "POST /api/v1/auth/app/revoke — an app signs out: its session ends.\nAnswers 200 whether or not the token named a live session (RFC 7009\n§2.2).",
+        "operationId": "app_auth_revoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppRevokeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The session, if any, has ended"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/sso/{id}/start": {
       "get": {
         "tags": [
@@ -17570,6 +17808,192 @@
               "null"
             ],
             "description": "Until when the secret a rotation replaced still opens the token."
+          }
+        }
+      },
+      "AppClientRequest": {
+        "type": "object",
+        "description": "The app, as it names itself.",
+        "required": [
+          "client_name",
+          "install_id"
+        ],
+        "properties": {
+          "client_name": {
+            "type": "string",
+            "description": "What the app calls itself on this machine (\"Alice's MacBook\")."
+          },
+          "install_id": {
+            "type": "string",
+            "description": "Kept by the install across sign-ins."
+          },
+          "platform": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AppRevokeRequest": {
+        "type": "object",
+        "description": "What `POST /auth/app/revoke` takes (RFC 7009).",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        }
+      },
+      "AppTokenRequest": {
+        "type": "object",
+        "description": "What `POST /auth/app/token` takes, as JSON or a form (RFC 6749 §4.1.3,\n§6).",
+        "required": [
+          "grant_type"
+        ],
+        "properties": {
+          "grant_type": {
+            "type": "string",
+            "description": "`authorization_code` or `refresh_token`."
+          },
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code_verifier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redirect_uri": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refresh_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "With `authorization_code`: the app, as `/auth/app/sessions` takes it."
+          },
+          "install_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "platform": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AppTokenResponse": {
+        "type": "object",
+        "description": "An app session's tokens.",
+        "required": [
+          "access_token",
+          "token_type",
+          "expires_in",
+          "refresh_token",
+          "refresh_expires_in",
+          "session_id",
+          "user"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "token_type": {
+            "type": "string",
+            "description": "`Bearer`."
+          },
+          "expires_in": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds the access token lasts.",
+            "minimum": 0
+          },
+          "refresh_token": {
+            "type": "string",
+            "description": "Opaque; rotated on every refresh, so keep the newest."
+          },
+          "refresh_expires_in": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds the session lasts unless refreshed.",
+            "minimum": 0
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The session, as `/me/sessions` and the audit log name it."
+          },
+          "user": {
+            "$ref": "#/components/schemas/AuthUserResponse"
+          }
+        }
+      },
+      "ApproveRequest": {
+        "type": "object",
+        "description": "What `POST /auth/app/approve` takes.",
+        "required": [
+          "request"
+        ],
+        "properties": {
+          "request": {
+            "type": "string",
+            "description": "The `app` the sign-in page was opened with."
+          }
+        }
+      },
+      "ApproveResponse": {
+        "type": "object",
+        "description": "Where to send the browser.",
+        "required": [
+          "redirect_url",
+          "client_id"
+        ],
+        "properties": {
+          "redirect_url": {
+            "type": "string",
+            "description": "The app's loopback address with `code` and `state`."
+          },
+          "client_id": {
+            "type": "string",
+            "description": "The app that asked."
           }
         }
       },
@@ -35150,6 +35574,15 @@
           "scim": {
             "type": "boolean",
             "description": "The tenant's users come from its SCIM provisioner (`docs/SCIM.md`):\nsingle sign-on makes nobody just in time and signs in only users\nSCIM made."
+          },
+          "app_session_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many days an app session (the softphone's) lasts after its last\nrefresh (`docs/SOFTPHONE.md` §2.3); absent, 90.",
+            "minimum": 0
           }
         }
       },

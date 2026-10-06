@@ -4,6 +4,12 @@ from .add_member_request import AddMemberRequest
 from .agent_login_request import AgentLoginRequest
 from .agent_response import AgentResponse
 from .api_token_response import ApiTokenResponse
+from .app_client_request import AppClientRequest
+from .app_revoke_request import AppRevokeRequest
+from .app_token_request import AppTokenRequest
+from .app_token_response import AppTokenResponse
+from .approve_request import ApproveRequest
+from .approve_response import ApproveResponse
 from .assistant_view import AssistantView
 from .audit_entry_response import AuditEntryResponse
 from .audit_entry_response_new_value import AuditEntryResponseNewValue
@@ -500,6 +506,12 @@ __all__ = (
     "AgentLoginRequest",
     "AgentResponse",
     "ApiTokenResponse",
+    "AppClientRequest",
+    "AppRevokeRequest",
+    "ApproveRequest",
+    "ApproveResponse",
+    "AppTokenRequest",
+    "AppTokenResponse",
     "AssistantView",
     "AuditEntryResponse",
     "AuditEntryResponseNewValue",

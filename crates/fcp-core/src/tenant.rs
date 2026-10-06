@@ -217,6 +217,21 @@ pub struct TenantSignIn {
     /// SCIM made.
     #[serde(default)]
     pub scim: bool,
+    /// How many days an app session (the softphone's) lasts after its last
+    /// refresh (`docs/SOFTPHONE.md` §2.3); absent, 90.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_session_days: Option<u32>,
+}
+
+impl TenantSignIn {
+    /// How long an app session lasts after its last refresh.
+    pub fn app_session_ttl(&self) -> std::time::Duration {
+        let days = self
+            .app_session_days
+            .unwrap_or(crate::session::DEFAULT_APP_SESSION_DAYS)
+            .clamp(1, 365);
+        std::time::Duration::from_secs(u64::from(days) * 86_400)
+    }
 }
 
 /// Who must add a one-time code to a password sign-in.

@@ -59,7 +59,7 @@ pub(crate) async fn roles_of(state: &ApiState, user: &fcp_core::User) -> Vec<Use
 }
 
 /// The role to show for `user`: the most privileged they hold.
-async fn shown_role(state: &ApiState, user: &fcp_core::User) -> String {
+pub(crate) async fn shown_role(state: &ApiState, user: &fcp_core::User) -> String {
     display_role(&roles_of(state, user).await)
 }
 
@@ -307,14 +307,14 @@ pub(crate) struct Issued {
     pub session: Option<LoginSessionId>,
 }
 
-fn session_store(state: &ApiState) -> Option<std::sync::Arc<dyn LoginSessionStore>> {
+pub(crate) fn session_store(state: &ApiState) -> Option<std::sync::Arc<dyn LoginSessionStore>> {
     state
         .storage
         .as_ref()
         .and_then(|s| s.login_session_store().cloned())
 }
 
-fn keys(state: &ApiState) -> Result<&session::SessionKeys, ApiError> {
+pub(crate) fn keys(state: &ApiState) -> Result<&session::SessionKeys, ApiError> {
     state
         .session_keys
         .as_ref()
@@ -322,7 +322,7 @@ fn keys(state: &ApiState) -> Result<&session::SessionKeys, ApiError> {
 }
 
 /// An access token for `user` in `session`, and how long it lasts.
-fn access_token(
+pub(crate) fn access_token(
     state: &ApiState,
     user: &fcp_core::User,
     sid: Option<&LoginSessionId>,
@@ -425,6 +425,7 @@ pub(crate) async fn begin_session(
         refresh_hash,
         previous_refresh_hash: None,
         idp,
+        app: None,
     };
     store
         .create_login_session(&row)
@@ -466,7 +467,7 @@ fn signed_in(
     response
 }
 
-fn auth_user(user: &fcp_core::User, role: String) -> AuthUserResponse {
+pub(crate) fn auth_user(user: &fcp_core::User, role: String) -> AuthUserResponse {
     AuthUserResponse {
         username: user.username.clone(),
         role,
