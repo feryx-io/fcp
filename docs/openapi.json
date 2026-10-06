@@ -2824,6 +2824,30 @@
         }
       }
     },
+    "/api/v1/me/events": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/events — the user's live events as a WebSocket. The first\nmessage is `{\"type\":\"auth\",\"token\":\"…\"}`; the answer `auth_ok`, then\n`connected`, then events as `/events` sends them.",
+        "operationId": "self_service_my_events",
+        "responses": {
+          "101": {
+            "description": "Switching to the user's event WebSocket; authenticate with the first message"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/calling": {
       "get": {
         "tags": [

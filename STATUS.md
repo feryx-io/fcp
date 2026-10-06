@@ -1905,7 +1905,7 @@ and `/me/events`; Anvil caught up to today's stacks with registration that
 lasts, MWI, BLF, transfer, park and SRTP, proved against FCP's nightly
 images. Phases A0–A5 (anvil) and F1–F4 (fcp); questions open.
 
-Subscribed message waiting (v0.25.358): a SUBSCRIBE to `message-summary`
+Subscribed message waiting (v0.25.356): a SUBSCRIBE to `message-summary`
 was answered 489 (the presence handler took every SUBSCRIBE and knew only
 presence and dialog). `fcp_sip::mwi_subscriptions` now answers it:
 authenticated like an INVITE, for the subscriber's own mailbox (the user
@@ -1914,7 +1914,7 @@ NOTIFYed at once, again on every `voicemail.mwi_updated` from the node
 holding the subscription, refresh and end inside the dialog, 404 without a
 mailbox (`fcp-call-manager/tests/mwi.rs`).
 
-Softphone F3, branding (v0.25.359, `docs/BRANDING.md`): a tenant's brand
+Softphone F3, branding (v0.25.357, `docs/BRANDING.md`): a tenant's brand
 — app name, light and dark colors, logo, dark logo, icon, ringtones,
 links and dial-plan hints — made at `/api/v1/branding` under the new
 `branding_manage` (tenant admins), with assets uploaded as the body, typed
@@ -1928,6 +1928,13 @@ assets by hash over `/link/v1/brand-assets/…` and keeps only those the
 brand names; the site's admin refuses writes). The admin UI's Branding
 page with a preview. Proved by `a_tenant_brands_its_softphone` and
 `fcp-link/tests/branding.rs`.
+
+Softphone F4b, a user's events (v0.25.363): `GET /me/events`, the event
+WebSocket for a signed-in user (first-message auth with a session or
+personal token, no permission): their calls (a `call.initiated` naming
+them, matched as `/me/calls` matches, then every event of that call to
+its end), their mailbox's events, their own user events, and the tenant's
+presence changes while the directory is shown (`docs/API_EVENTS.md`).
 
 Softphone F4a, what a user sees (v0.25.358): `GET /me/calls`, the
 user's call history (call records matched as a subject export matches
@@ -1996,7 +2003,7 @@ never dialled it. The API now keeps an extension row for it (made, moved,
 removed with the field; 409 for a number that dials something else). Found
 by Anvil's first calls through FCP (`docs/USERS.md`).
 
-A redirection race (v0.25.359): a phone made and changed at once (its
+A redirection race (v0.25.355): a phone made and changed at once (its
 template set straight after) started two syncs with its vendor's service;
 both could register it before either recorded it, the second giving the
 phone new credentials, and whichever reached the service last decided

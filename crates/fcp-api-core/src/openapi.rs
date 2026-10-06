@@ -93,6 +93,7 @@ use utoipa::{Modify, OpenApi};
         crate::v1::self_service::clear_my_location,
         crate::v1::me_data::list_my_calls,
         crate::v1::me_data::list_directory,
+        crate::v1::me_events::my_events,
         crate::v1::self_service::get_my_calling,
         crate::v1::self_service::update_my_calling,
         crate::v1::self_service::get_my_executives,
@@ -612,6 +613,7 @@ mod tests {
             ("POST", "/auth/change-expired-password"),
             ("POST", "/auth/signup"),
             ("GET", "/events"),
+            ("GET", "/me/events"),
         ] {
             bound.insert((method.to_string(), format!("/api/v1{path}")));
         }

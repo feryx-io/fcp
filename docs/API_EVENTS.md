@@ -393,6 +393,32 @@ its `event_type`:
 
 `hold_placed` carries the same fields without `reason`.
 
+## A user's own events: `/me/events`
+
+`GET /api/v1/me/events` is the same WebSocket, for a signed-in user rather
+than an administrator (`docs/SOFTPHONE.md` §2.7). The first message is
+`{"type":"auth","token":"…"}`. The token must be a session's access token
+(an app's above all) or a personal token; the static token and admin API
+tokens name no user and get `auth_error`. No permission is asked, because
+everything on the stream is the user's own:
+
+- **Their calls.** A `call.initiated` whose `from` or `to` is one of their
+  names, extensions, numbers or addresses on the tenant's domains, matched
+  as a subject export matches them. After that, every event naming that
+  call (ringing, answered, held, media, recording, flow) until its
+  `ended` or `failed`. A call already up when the stream opens is not
+  followed: its `initiated` went before.
+- **Their mailbox.** Every voicemail event for their mailbox: new and
+  deleted messages, MWI, transcriptions.
+- **Their account.** Every user event naming them: calling settings
+  changed elsewhere, renamed, suspended, hoteling.
+- **Presence.** `presence.status_changed` and `presence.dialog_changed` in
+  the tenant, while the tenant shows its directory
+  (`directory.visible_to_users`).
+
+Query parameters are not taken. The messages are the ones above:
+`auth_ok`, `connected`, then events.
+
 ## Client Handling
 
 ### Receiving Events

@@ -1096,6 +1096,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /me/events — the user's live events as a WebSocket. The first
+         *     message is `{"type":"auth","token":"…"}`; the answer `auth_ok`, then
+         *     `connected`, then events as `/events` sends them.
+         */
+        get: operations["self_service_my_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/calling": {
         parameters: {
             query?: never;
@@ -14924,6 +14945,33 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Page_DirectoryEntry"];
                 };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_events: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Switching to the user's event WebSocket; authenticate with the first message */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description An error */
             default: {
