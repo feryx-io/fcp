@@ -2641,6 +2641,124 @@
         }
       }
     },
+    "/api/v1/me/calls": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/calls — the user's calls, newest first: the records whose\ncaller or callee is one of their names, extensions, numbers or\naddresses, as a subject export finds them.",
+        "operationId": "self_service_list_my_calls",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "missed",
+            "in": "query",
+            "description": "Only the incoming calls nobody answered.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_MyCallResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/directory": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/directory — the tenant's people and the extensions that ring\nno one person, each with its presence, while the tenant lets its users\nsee them (`directory.visible_to_users`; 403 otherwise).",
+        "operationId": "self_service_list_directory",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "A word in a name, username, email or extension.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_DirectoryEntry"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/calling": {
       "get": {
         "tags": [
@@ -21754,6 +21872,17 @@
               }
             ]
           },
+          "directory": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantDirectory",
+                "description": "What the tenant's people see of each other; unset, they see the\ndirectory."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "provisioning": {
             "oneOf": [
               {
@@ -22914,6 +23043,75 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "DirectoryEntry": {
+        "type": "object",
+        "description": "Someone, or something, in the tenant's directory.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`user`, or `extension` for one that rings no user (a queue, a\nflow, a number)."
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The user's id; unset for an extension."
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extension": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "department": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "presence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`\nor `ringing`; unset when nothing is known."
+          },
+          "presence_note": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -25693,6 +25891,77 @@
           }
         }
       },
+      "MyCallResponse": {
+        "type": "object",
+        "description": "One of the user's calls, from their side.",
+        "required": [
+          "cdr_id",
+          "call_id",
+          "direction",
+          "other_party",
+          "disposition",
+          "missed",
+          "start_time"
+        ],
+        "properties": {
+          "cdr_id": {
+            "type": "string",
+            "description": "The record's id, as `/cdrs` names it."
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "description": "`outgoing` when the user placed it, else `incoming`."
+          },
+          "other_party": {
+            "type": "string",
+            "description": "The other party's address."
+          },
+          "other_party_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "disposition": {
+            "type": "string",
+            "description": "`answered`, `busy`, `no_answer`, `failed` or `cancelled`."
+          },
+          "missed": {
+            "type": "boolean",
+            "description": "An incoming call nobody answered."
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "answer_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "end_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "duration_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Talk time, from the answer.",
+            "minimum": 0
+          }
+        }
+      },
       "MyExecutive": {
         "type": "object",
         "description": "An executive the user assists (`docs/ENTERPRISE_CALLING.md` §3.10).",
@@ -27408,6 +27677,103 @@
                   "items": {
                     "type": "string"
                   }
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_DirectoryEntry": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "Someone, or something, in the tenant's directory.",
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "description": "`user`, or `extension` for one that rings no user (a queue, a\nflow, a number)."
+                },
+                "user_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The user's id; unset for an extension."
+                },
+                "username": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "display_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "extension": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "email": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "department": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "job_title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "presence": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`\nor `ringing`; unset when nothing is known."
+                },
+                "presence_note": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               }
             }
@@ -29397,6 +29763,105 @@
                     "null"
                   ],
                   "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_MyCallResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One of the user's calls, from their side.",
+              "required": [
+                "cdr_id",
+                "call_id",
+                "direction",
+                "other_party",
+                "disposition",
+                "missed",
+                "start_time"
+              ],
+              "properties": {
+                "cdr_id": {
+                  "type": "string",
+                  "description": "The record's id, as `/cdrs` names it."
+                },
+                "call_id": {
+                  "type": "string"
+                },
+                "direction": {
+                  "type": "string",
+                  "description": "`outgoing` when the user placed it, else `incoming`."
+                },
+                "other_party": {
+                  "type": "string",
+                  "description": "The other party's address."
+                },
+                "other_party_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "disposition": {
+                  "type": "string",
+                  "description": "`answered`, `busy`, `no_answer`, `failed` or `cancelled`."
+                },
+                "missed": {
+                  "type": "boolean",
+                  "description": "An incoming call nobody answered."
+                },
+                "start_time": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "answer_time": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "end_time": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "duration_seconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "Talk time, from the answer.",
+                  "minimum": 0
                 }
               }
             }
@@ -31805,6 +32270,7 @@
                 "login_domains",
                 "sign_in",
                 "offboarding",
+                "directory",
                 "provisioning"
               ],
               "properties": {
@@ -31915,6 +32381,10 @@
                 "offboarding": {
                   "$ref": "#/components/schemas/TenantOffboarding",
                   "description": "What happens to a deleted user (`docs/USERS.md` §4)."
+                },
+                "directory": {
+                  "$ref": "#/components/schemas/TenantDirectory",
+                  "description": "What the tenant's people see of each other (`/me/directory`)."
                 },
                 "provisioning": {
                   "$ref": "#/components/schemas/TenantProvisioning",
@@ -36346,6 +36816,16 @@
           }
         }
       },
+      "TenantDirectory": {
+        "type": "object",
+        "description": "What a tenant's people see of each other through `/me/directory`.",
+        "properties": {
+          "visible_to_users": {
+            "type": "boolean",
+            "description": "Whether its users may list the tenant's users, extensions and\npresence; on unless a tenant turns it off."
+          }
+        }
+      },
       "TenantId": {
         "type": "string",
         "description": "A TenantId: `tenant-<uuid>`, or the bare UUID"
@@ -36401,6 +36881,7 @@
           "login_domains",
           "sign_in",
           "offboarding",
+          "directory",
           "provisioning"
         ],
         "properties": {
@@ -36511,6 +36992,10 @@
           "offboarding": {
             "$ref": "#/components/schemas/TenantOffboarding",
             "description": "What happens to a deleted user (`docs/USERS.md` §4)."
+          },
+          "directory": {
+            "$ref": "#/components/schemas/TenantDirectory",
+            "description": "What the tenant's people see of each other (`/me/directory`)."
           },
           "provisioning": {
             "$ref": "#/components/schemas/TenantProvisioning",
@@ -38983,6 +39468,17 @@
               {
                 "$ref": "#/components/schemas/TenantOffboarding",
                 "description": "Replaces what happens to a deleted user."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "directory": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantDirectory",
+                "description": "Replaces what the tenant's people see of each other."
               },
               {
                 "type": "null"

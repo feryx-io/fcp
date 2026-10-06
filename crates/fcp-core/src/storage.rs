@@ -1495,6 +1495,10 @@ pub struct CdrQuery {
     /// Keyset pagination: records strictly after this position in the
     /// listing's order (newest first). Takes the place of `offset`.
     pub cursor: Option<CdrCursor>,
+    /// Records whose caller or callee has any of these canonical keys
+    /// (`crate::subject::keys`): a person's calls. The keys lean towards
+    /// matching; narrow with a `SubjectMatcher`.
+    pub subject_keys: Option<Vec<String>>,
 }
 
 /// A position in a record listing, newest first: the last record of a page

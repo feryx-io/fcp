@@ -104,6 +104,7 @@ from .device_redirection_response import DeviceRedirectionResponse
 from .device_response import DeviceResponse
 from .device_validation_response import DeviceValidationResponse
 from .dialog_info import DialogInfo
+from .directory_entry import DirectoryEntry
 from .discover_request import DiscoverRequest
 from .discover_response import DiscoverResponse
 from .discovered_provider import DiscoveredProvider
@@ -190,6 +191,7 @@ from .message_response import MessageResponse
 from .mfa_ticket_request import MfaTicketRequest
 from .mint_join_token_request import MintJoinTokenRequest
 from .missing_file import MissingFile
+from .my_call_response import MyCallResponse
 from .my_executive import MyExecutive
 from .my_greeting_upload import MyGreetingUpload
 from .network_response import NetworkResponse
@@ -235,6 +237,8 @@ from .page_device_response import PageDeviceResponse
 from .page_device_response_data_item import PageDeviceResponseDataItem
 from .page_dialog_info import PageDialogInfo
 from .page_dialog_info_data_item import PageDialogInfoDataItem
+from .page_directory_entry import PageDirectoryEntry
+from .page_directory_entry_data_item import PageDirectoryEntryDataItem
 from .page_emergency_call_response import PageEmergencyCallResponse
 from .page_emergency_call_response_data_item import PageEmergencyCallResponseDataItem
 from .page_extension_response import PageExtensionResponse
@@ -278,6 +282,8 @@ from .page_meeting_response import PageMeetingResponse
 from .page_meeting_response_data_item import PageMeetingResponseDataItem
 from .page_message_response import PageMessageResponse
 from .page_message_response_data_item import PageMessageResponseDataItem
+from .page_my_call_response import PageMyCallResponse
+from .page_my_call_response_data_item import PageMyCallResponseDataItem
 from .page_my_executive import PageMyExecutive
 from .page_my_executive_data_item import PageMyExecutiveDataItem
 from .page_network_response import PageNetworkResponse
@@ -441,6 +447,7 @@ from .supervise_request import SuperviseRequest
 from .synthesize_greeting_request import SynthesizeGreetingRequest
 from .template_resync_response import TemplateResyncResponse
 from .tenant_calling import TenantCalling
+from .tenant_directory import TenantDirectory
 from .tenant_offboarding import TenantOffboarding
 from .tenant_provisioning import TenantProvisioning
 from .tenant_response import TenantResponse
@@ -621,6 +628,7 @@ __all__ = (
     "DeviceResponse",
     "DeviceValidationResponse",
     "DialogInfo",
+    "DirectoryEntry",
     "DiscoveredProvider",
     "DiscoverRequest",
     "DiscoverResponse",
@@ -707,6 +715,7 @@ __all__ = (
     "MfaTicketRequest",
     "MintJoinTokenRequest",
     "MissingFile",
+    "MyCallResponse",
     "MyExecutive",
     "MyGreetingUpload",
     "NetworkResponse",
@@ -752,6 +761,8 @@ __all__ = (
     "PageDeviceResponseDataItem",
     "PageDialogInfo",
     "PageDialogInfoDataItem",
+    "PageDirectoryEntry",
+    "PageDirectoryEntryDataItem",
     "PageEmergencyCallResponse",
     "PageEmergencyCallResponseDataItem",
     "PageExtensionResponse",
@@ -795,6 +806,8 @@ __all__ = (
     "PageMeMessageResponseDataItem",
     "PageMessageResponse",
     "PageMessageResponseDataItem",
+    "PageMyCallResponse",
+    "PageMyCallResponseDataItem",
     "PageMyExecutive",
     "PageMyExecutiveDataItem",
     "PageNetworkResponse",
@@ -958,6 +971,7 @@ __all__ = (
     "SynthesizeGreetingRequest",
     "TemplateResyncResponse",
     "TenantCalling",
+    "TenantDirectory",
     "TenantOffboarding",
     "TenantProvisioning",
     "TenantResponse",

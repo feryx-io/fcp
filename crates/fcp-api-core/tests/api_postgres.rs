@@ -572,7 +572,22 @@ impl App {
         cost: Option<fcp_core::billing::Decimal>,
         age: Duration,
     ) -> (CallId, String) {
-        let start = SystemTime::now() - age;
+        let cdr = cdr_record(tenant, answered_ms, cost, SystemTime::now() - age);
+        let id = cdr.call_id;
+        let sip_call_id = cdr.sip_call_id.clone();
+        self.storage.insert_cdr(cdr).await.expect("insert cdr");
+        (id, sip_call_id)
+    }
+}
+
+/// A call's record as the seed helpers write it, starting at `start`.
+fn cdr_record(
+    tenant: TenantId,
+    answered_ms: Option<u64>,
+    cost: Option<fcp_core::billing::Decimal>,
+    start: SystemTime,
+) -> CallDetailRecord {
+    {
         let (disposition, answer_time) = match answered_ms {
             Some(_) => (
                 CallDisposition::Answered,
@@ -580,7 +595,7 @@ impl App {
             ),
             None => (CallDisposition::NoAnswer, None),
         };
-        let cdr = CallDetailRecord {
+        CallDetailRecord {
             cdr_id: uuid::Uuid::new_v4(),
             kind: fcp_core::storage::CdrKind::Call,
             schema_version: fcp_core::storage::CDR_SCHEMA_VERSION,
@@ -630,13 +645,11 @@ impl App {
             rated_at: None,
             created_at: None,
             custom_data: None,
-        };
-        let id = cdr.call_id;
-        let sip_call_id = cdr.sip_call_id.clone();
-        self.storage.insert_cdr(cdr).await.expect("insert cdr");
-        (id, sip_call_id)
+        }
     }
+}
 
+impl App {
     /// Serve the router on a loopback TCP port (for WebSocket tests, which
     /// cannot go through `oneshot`). Returns the bound port.
     async fn serve(&self) -> u16 {
@@ -15400,5 +15413,178 @@ async fn a_sites_admin_leaves_the_brand_to_the_cloud() {
         )
         .await;
     assert_eq!(upload.status, StatusCode::FORBIDDEN, "{}", upload.text);
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// What a user sees: their calls and the directory (docs/SOFTPHONE.md §2.7)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_user_sees_their_own_calls_newest_first() {
+    let app = require_app!();
+    let domains = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"sip_domains": ["calls.test"]})),
+        )
+        .await;
+    assert_eq!(domains.status, StatusCode::OK, "{}", domains.text);
+    app.create_user_with_role("carol", "end_user").await;
+    let set = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/carol",
+            Some(json!({"extension": "2101"})),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let carol = app.login("carol", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Carol's calls, under her name and her extension, among others'.
+    let now = SystemTime::now();
+    let insert = |from: &str, to: &str, answered: bool, mins: u64| {
+        let mut cdr = cdr_record(
+            app.tenant_a,
+            answered.then_some(30_000),
+            None,
+            now - Duration::from_secs(mins * 60),
+        );
+        cdr.from_uri = from.to_string();
+        cdr.to_uri = to.to_string();
+        cdr.from_display_name = None;
+        let storage = app.storage.clone();
+        async move { storage.insert_cdr(cdr).await.expect("insert cdr") }
+    };
+    insert("sip:carol@calls.test", "sip:+15550001@calls.test", true, 50).await;
+    insert(
+        "sip:+15550002@carrier.example",
+        "sip:2101@calls.test",
+        false,
+        40,
+    )
+    .await;
+    insert(
+        "\"Dan\" <sip:dan@calls.test>",
+        "sip:carol@calls.test;transport=tcp",
+        true,
+        30,
+    )
+    .await;
+    insert("sip:dan@calls.test", "sip:erin@calls.test", true, 20).await;
+    // Another tenant's carol, and a carol at another host: not hers.
+    insert("sip:carol@elsewhere.example", "sip:x@calls.test", true, 10).await;
+    let mut other = cdr_record(app.tenant_b, Some(1000), None, now);
+    other.from_uri = "sip:carol@calls.test".into();
+    app.storage.insert_cdr(other).await.unwrap();
+
+    let all = app
+        .send_as(&carol, Method::GET, "/api/v1/me/calls", None)
+        .await;
+    assert_eq!(all.status, StatusCode::OK, "{}", all.text);
+    let calls = all.json.as_array().unwrap();
+    assert_eq!(calls.len(), 3, "{}", all.text);
+    assert_eq!(calls[0]["direction"], "incoming");
+    assert_eq!(calls[0]["other_party"], "\"Dan\" <sip:dan@calls.test>");
+    assert_eq!(calls[0]["missed"], false);
+    assert_eq!(calls[1]["direction"], "incoming");
+    assert_eq!(calls[1]["missed"], true, "{}", all.text);
+    assert_eq!(calls[2]["direction"], "outgoing");
+    assert_eq!(calls[2]["other_party"], "sip:+15550001@calls.test");
+    assert_eq!(calls[2]["duration_seconds"], 30);
+
+    // Paged: the cursor carries on where the page stopped.
+    let first = app
+        .send_as(&carol, Method::GET, "/api/v1/me/calls?limit=2", None)
+        .await;
+    assert_eq!(first.json.as_array().unwrap().len(), 2);
+    let cursor = first.body["next_cursor"]
+        .as_str()
+        .expect("a next page")
+        .to_string();
+    let second = app
+        .send_as(
+            &carol,
+            Method::GET,
+            &format!("/api/v1/me/calls?limit=2&cursor={cursor}"),
+            None,
+        )
+        .await;
+    assert_eq!(second.json.as_array().unwrap().len(), 1, "{}", second.text);
+    assert_eq!(second.json[0]["direction"], "outgoing");
+    assert!(second.body["next_cursor"].is_null(), "{}", second.text);
+
+    let missed = app
+        .send_as(&carol, Method::GET, "/api/v1/me/calls?missed=true", None)
+        .await;
+    assert_eq!(missed.json.as_array().unwrap().len(), 1, "{}", missed.text);
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn a_user_sees_the_directory_while_the_tenant_shows_it() {
+    let app = require_app!();
+    app.create_user_with_role("frank", "end_user").await;
+    app.create_user_with_role("grace", "end_user").await;
+    let set = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/grace",
+            Some(
+                json!({"display_name": "Grace Hopper", "extension": "2202", "department": "Navy"}),
+            ),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let frank = app.login("frank", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let listed = app
+        .send_as(&frank, Method::GET, "/api/v1/me/directory", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    let grace = listed
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["username"] == "grace")
+        .cloned()
+        .expect("grace in the directory");
+    assert_eq!(grace["kind"], "user");
+    assert_eq!(grace["extension"], "2202");
+    assert_eq!(grace["department"], "Navy");
+    let searched = app
+        .send_as(&frank, Method::GET, "/api/v1/me/directory?q=hopper", None)
+        .await;
+    let names: Vec<&str> = searched
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["username"].as_str())
+        .collect();
+    assert_eq!(names, vec!["grace"], "{}", searched.text);
+
+    // A tenant that keeps its directory to its administrators.
+    let hidden = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"directory": {"visible_to_users": false}})),
+        )
+        .await;
+    assert_eq!(hidden.status, StatusCode::OK, "{}", hidden.text);
+    assert_eq!(hidden.json["directory"]["visible_to_users"], false);
+    let refused = app
+        .send_as(&frank, Method::GET, "/api/v1/me/directory", None)
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
     app.finish().await;
 }

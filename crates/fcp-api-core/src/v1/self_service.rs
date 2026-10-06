@@ -32,7 +32,7 @@ macro_rules! require_storage {
     };
 }
 
-async fn load_claims_user(
+pub(crate) async fn load_claims_user(
     storage: &std::sync::Arc<fcp_core::DynStorage>,
     claims: &Claims,
     state: &ApiState,

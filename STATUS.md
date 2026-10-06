@@ -1905,7 +1905,7 @@ and `/me/events`; Anvil caught up to today's stacks with registration that
 lasts, MWI, BLF, transfer, park and SRTP, proved against FCP's nightly
 images. Phases A0–A5 (anvil) and F1–F4 (fcp); questions open.
 
-Subscribed message waiting (v0.25.356): a SUBSCRIBE to `message-summary`
+Subscribed message waiting (v0.25.358): a SUBSCRIBE to `message-summary`
 was answered 489 (the presence handler took every SUBSCRIBE and knew only
 presence and dialog). `fcp_sip::mwi_subscriptions` now answers it:
 authenticated like an INVITE, for the subscriber's own mailbox (the user
@@ -1928,6 +1928,15 @@ assets by hash over `/link/v1/brand-assets/…` and keeps only those the
 brand names; the site's admin refuses writes). The admin UI's Branding
 page with a preview. Proved by `a_tenant_brands_its_softphone` and
 `fcp-link/tests/branding.rs`.
+
+Softphone F4a, what a user sees (v0.25.358): `GET /me/calls`, the
+user's call history (call records matched as a subject export matches
+them: the user's names, extension, numbers and addresses; candidates by a
+GIN index on `fcp_subject_keys` of both parties, migration 110, narrowed
+by `SubjectMatcher`; newest first, keyset-paged, `missed=true`), and `GET
+/me/directory`, the tenant's active users and the extensions that ring no
+one person with each one's presence, searchable, refused (403) while the
+tenant's new `directory.visible_to_users` is off. `/me/events` is F4b.
 
 Tenants on call, flow and voicemail events (v0.25.341): `call.ringing`,
 `call.answered`, `call.ended`, `call.failed`, park, hold, supervision

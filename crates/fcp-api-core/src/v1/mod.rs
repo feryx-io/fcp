@@ -31,6 +31,7 @@ pub mod join_tokens;
 pub mod lcr_routes;
 pub mod line_bindings;
 pub mod locations;
+pub mod me_data;
 pub mod media;
 pub mod metrics;
 pub mod phone_numbers;
@@ -212,6 +213,8 @@ pub fn router() -> Router<ApiState> {
         // Your devices: phones and app installs (docs/SOFTPHONE.md §2.1)
         .route("/me/devices", get(user_devices::list_mine))
         .route("/me/devices/:id", delete(user_devices::delete_mine))
+        .route("/me/calls", get(me_data::list_my_calls))
+        .route("/me/directory", get(me_data::list_directory))
         .route("/me/executives", get(self_service::get_my_executives))
         .route(
             "/me/executives/:user_id",

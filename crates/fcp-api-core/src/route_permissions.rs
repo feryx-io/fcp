@@ -80,6 +80,8 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (DELETE, "/me/location", Open),
     (GET, "/me/devices", Open),
     (DELETE, "/me/devices/:id", Open),
+    (GET, "/me/calls", Open),
+    (GET, "/me/directory", Open),
     (GET, "/me/calling", Open),
     (PUT, "/me/calling", Open),
     (GET, "/me/executives", Open),
