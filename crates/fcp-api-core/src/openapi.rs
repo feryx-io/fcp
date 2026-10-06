@@ -89,6 +89,8 @@ use utoipa::{Modify, OpenApi};
         crate::v1::self_service::get_my_location,
         crate::v1::self_service::declare_my_location,
         crate::v1::self_service::clear_my_location,
+        crate::v1::me_data::list_my_calls,
+        crate::v1::me_data::list_directory,
         crate::v1::self_service::get_my_calling,
         crate::v1::self_service::update_my_calling,
         crate::v1::self_service::get_my_executives,

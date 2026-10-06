@@ -398,6 +398,7 @@ fn build_cdr_query(
             params.call_id.is_some(),
         )
         .map_err(ApiError::BadRequest)?,
+        subject_keys: None,
         cursor: params
             .cursor
             .as_deref()

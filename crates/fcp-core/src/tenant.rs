@@ -160,6 +160,33 @@ pub struct Tenant {
     /// (`docs/PROVISIONING.md` §3).
     #[serde(default)]
     pub provisioning: crate::provisioning::TenantProvisioning,
+
+    /// What the tenant's people see of each other (`docs/SOFTPHONE.md`
+    /// §2.7).
+    #[serde(default)]
+    pub directory: TenantDirectory,
+}
+
+/// What a tenant's people see of each other through `/me/directory`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TenantDirectory {
+    /// Whether its users may list the tenant's users, extensions and
+    /// presence; on unless a tenant turns it off.
+    #[serde(default = "default_visible_to_users")]
+    pub visible_to_users: bool,
+}
+
+fn default_visible_to_users() -> bool {
+    true
+}
+
+impl Default for TenantDirectory {
+    fn default() -> Self {
+        Self {
+            visible_to_users: true,
+        }
+    }
 }
 
 /// What happens to a tenant's deleted user (`docs/USERS.md` §4): they are
@@ -414,6 +441,7 @@ impl Tenant {
             sign_in: TenantSignIn::default(),
             offboarding: TenantOffboarding::default(),
             provisioning: Default::default(),
+            directory: TenantDirectory::default(),
         }
     }
 

@@ -16,7 +16,8 @@ Agreed 2026-10-05: the first target is Anvil as an FCP client on the
 desktop, with mobile push later. Work in the anvil repo is a branch and PR
 per phase, merged by the owner, as in FCP. The questions in §6 are open.
 
-Progress: phase F3 done (v0.25.357): the tenant's brand
+Progress: phase F4a done (v0.25.358): `/me/calls` and `/me/directory`
+(§2.7); `/me/events` is F4b. Phase F3 done (v0.25.357): the tenant's brand
 (`docs/BRANDING.md`). Phase F1a done (v0.25.334): app sign-in and app sessions
 (`docs/APP_SIGN_IN.md`); the password grant of §2.2 became
 `POST /auth/app/sessions`, one sign-in path rather than a copy of it.
@@ -397,7 +398,7 @@ backups hold them; a site's link fetches the bytes by hash.
   `/me/calling`.
 - Whatever FCP gets wrong against a real client is fixed in FCP in the same
   phase. A known example: a SUBSCRIBE to `message-summary` gets 489.
-  Fixed in v0.25.356 (`fcp_sip::mwi_subscriptions`):
+  Fixed in v0.25.358 (`fcp_sip::mwi_subscriptions`):
   - The SUBSCRIBE is authenticated like an INVITE, for the subscriber's own
     mailbox: the user their `From` names, or the owner of a device acting
     for them.
@@ -408,6 +409,21 @@ backups hold them; a site's link fetches the bytes by hash.
     mailbox gets 404.
 
 ### Phase F4: what a user sees (fcp)
+
+F4a done in v0.25.358:
+
+- `GET /me/calls` finds the user's records the way a subject export does.
+  The user is expanded to their username, extension, numbers, line
+  bindings and addresses on the tenant's domains. Candidates come through
+  a GIN index on the parties' canonical keys (migration 110), then
+  `SubjectMatcher` keeps only the user's own. Results are newest first,
+  keyset-paged, with `missed=true` for missed calls only.
+- `GET /me/directory` lists the tenant's active users and the extensions
+  that ring no one person, each with its presence, and takes `q` to search.
+  It answers 403 while the tenant's `directory.visible_to_users` is off.
+  The setting is on the tenant API and the admin UI's tenant form.
+
+F4b, `/me/events`, follows.
 
 - `/me/calls`, `/me/directory` (with `directory.visible_to_users`),
   `/me/events` (the events server filtering by user), all in the contract

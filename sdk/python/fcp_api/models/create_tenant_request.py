@@ -14,6 +14,7 @@ import datetime
 
 if TYPE_CHECKING:
   from ..models.tenant_calling import TenantCalling
+  from ..models.tenant_directory import TenantDirectory
   from ..models.tenant_offboarding import TenantOffboarding
   from ..models.tenant_provisioning import TenantProvisioning
   from ..models.tenant_sign_in import TenantSignIn
@@ -51,6 +52,7 @@ class CreateTenantRequest:
             login_domains (list[str] | Unset): Email domains whose people are this tenant's.
             sign_in (None | TenantSignIn | Unset):
             offboarding (None | TenantOffboarding | Unset):
+            directory (None | TenantDirectory | Unset):
             provisioning (None | TenantProvisioning | Unset):
      """
 
@@ -71,6 +73,7 @@ class CreateTenantRequest:
     login_domains: list[str] | Unset = UNSET
     sign_in: None | TenantSignIn | Unset = UNSET
     offboarding: None | TenantOffboarding | Unset = UNSET
+    directory: None | TenantDirectory | Unset = UNSET
     provisioning: None | TenantProvisioning | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -80,6 +83,7 @@ class CreateTenantRequest:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
+        from ..models.tenant_directory import TenantDirectory # noqa: PLC0415
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
         from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
@@ -189,6 +193,14 @@ class CreateTenantRequest:
         else:
             offboarding = self.offboarding
 
+        directory: dict[str, Any] | None | Unset
+        if isinstance(self.directory, Unset):
+            directory = UNSET
+        elif isinstance(self.directory, TenantDirectory):
+            directory = self.directory.to_dict()
+        else:
+            directory = self.directory
+
         provisioning: dict[str, Any] | None | Unset
         if isinstance(self.provisioning, Unset):
             provisioning = UNSET
@@ -235,6 +247,8 @@ class CreateTenantRequest:
             field_dict["sign_in"] = sign_in
         if offboarding is not UNSET:
             field_dict["offboarding"] = offboarding
+        if directory is not UNSET:
+            field_dict["directory"] = directory
         if provisioning is not UNSET:
             field_dict["provisioning"] = provisioning
 
@@ -245,6 +259,7 @@ class CreateTenantRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
+        from ..models.tenant_directory import TenantDirectory # noqa: PLC0415
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
         from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
@@ -437,6 +452,26 @@ class CreateTenantRequest:
         offboarding = _parse_offboarding(d.pop("offboarding", UNSET))
 
 
+        def _parse_directory(data: object) -> None | TenantDirectory | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                directory_type_0 = TenantDirectory.from_dict(data)
+
+
+
+                return directory_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TenantDirectory | Unset, data)
+
+        directory = _parse_directory(d.pop("directory", UNSET))
+
+
         def _parse_provisioning(data: object) -> None | TenantProvisioning | Unset:
             if data is None:
                 return data
@@ -475,6 +510,7 @@ class CreateTenantRequest:
             login_domains=login_domains,
             sign_in=sign_in,
             offboarding=offboarding,
+            directory=directory,
             provisioning=provisioning,
         )
 

@@ -168,7 +168,7 @@ fn encode(key: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.as_bytes())
 }
 
-fn decode(cursor: &str) -> Result<String, ApiError> {
+pub(crate) fn decode(cursor: &str) -> Result<String, ApiError> {
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(cursor)
         .ok()

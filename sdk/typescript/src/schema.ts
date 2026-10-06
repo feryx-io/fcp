@@ -1014,6 +1014,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/calls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /me/calls — the user's calls, newest first: the records whose
+         *     caller or callee is one of their names, extensions, numbers or
+         *     addresses, as a subject export finds them.
+         */
+        get: operations["self_service_list_my_calls"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/directory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /me/directory — the tenant's people and the extensions that ring
+         *     no one person, each with its presence, while the tenant lets its users
+         *     see them (`directory.visible_to_users`; 403 otherwise).
+         */
+        get: operations["self_service_list_directory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/calling": {
         parameters: {
             query?: never;
@@ -6551,6 +6593,7 @@ export interface components {
             login_domains?: string[];
             sign_in?: components["schemas"]["TenantSignIn"] | null;
             offboarding?: components["schemas"]["TenantOffboarding"] | null;
+            directory?: components["schemas"]["TenantDirectory"] | null;
             provisioning?: components["schemas"]["TenantProvisioning"] | null;
         };
         /** @description Credit or adjustment request. */
@@ -6877,6 +6920,28 @@ export interface components {
             /** Format: int32 */
             remote_cseq: number;
             route_set: string[];
+        };
+        /** @description Someone, or something, in the tenant's directory. */
+        DirectoryEntry: {
+            /**
+             * @description `user`, or `extension` for one that rings no user (a queue, a
+             *     flow, a number).
+             */
+            kind: string;
+            /** @description The user's id; unset for an extension. */
+            user_id?: string | null;
+            username?: string | null;
+            display_name?: string | null;
+            extension?: string | null;
+            email?: string | null;
+            department?: string | null;
+            job_title?: string | null;
+            /**
+             * @description Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`
+             *     or `ringing`; unset when nothing is known.
+             */
+            presence?: string | null;
+            presence_note?: string | null;
         };
         /** @description What a login may sign in with. */
         DiscoverRequest: {
@@ -7803,6 +7868,32 @@ export interface components {
             path: string;
             reason: string;
         };
+        /** @description One of the user's calls, from their side. */
+        MyCallResponse: {
+            /** @description The record's id, as `/cdrs` names it. */
+            cdr_id: string;
+            call_id: string;
+            /** @description `outgoing` when the user placed it, else `incoming`. */
+            direction: string;
+            /** @description The other party's address. */
+            other_party: string;
+            other_party_name?: string | null;
+            /** @description `answered`, `busy`, `no_answer`, `failed` or `cancelled`. */
+            disposition: string;
+            /** @description An incoming call nobody answered. */
+            missed: boolean;
+            /** Format: date-time */
+            start_time: string;
+            /** Format: date-time */
+            answer_time?: string | null;
+            /** Format: date-time */
+            end_time?: string | null;
+            /**
+             * Format: int64
+             * @description Talk time, from the answer.
+             */
+            duration_seconds?: number | null;
+        };
         /** @description An executive the user assists (`docs/ENTERPRISE_CALLING.md` §3.10). */
         MyExecutive: {
             user_id: string;
@@ -8362,6 +8453,37 @@ export interface components {
                 /** Format: int32 */
                 remote_cseq: number;
                 route_set: string[];
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_DirectoryEntry: {
+            data: {
+                /**
+                 * @description `user`, or `extension` for one that rings no user (a queue, a
+                 *     flow, a number).
+                 */
+                kind: string;
+                /** @description The user's id; unset for an extension. */
+                user_id?: string | null;
+                username?: string | null;
+                display_name?: string | null;
+                extension?: string | null;
+                email?: string | null;
+                department?: string | null;
+                job_title?: string | null;
+                /**
+                 * @description Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`
+                 *     or `ringing`; unset when nothing is known.
+                 */
+                presence?: string | null;
+                presence_note?: string | null;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -8963,6 +9085,41 @@ export interface components {
                 created_at: string;
                 /** Format: date-time */
                 accessed_at?: string | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_MyCallResponse: {
+            data: {
+                /** @description The record's id, as `/cdrs` names it. */
+                cdr_id: string;
+                call_id: string;
+                /** @description `outgoing` when the user placed it, else `incoming`. */
+                direction: string;
+                /** @description The other party's address. */
+                other_party: string;
+                other_party_name?: string | null;
+                /** @description `answered`, `busy`, `no_answer`, `failed` or `cancelled`. */
+                disposition: string;
+                /** @description An incoming call nobody answered. */
+                missed: boolean;
+                /** Format: date-time */
+                start_time: string;
+                /** Format: date-time */
+                answer_time?: string | null;
+                /** Format: date-time */
+                end_time?: string | null;
+                /**
+                 * Format: int64
+                 * @description Talk time, from the answer.
+                 */
+                duration_seconds?: number | null;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -9716,6 +9873,8 @@ export interface components {
                 sign_in: components["schemas"]["TenantSignIn"];
                 /** @description What happens to a deleted user (`docs/USERS.md` §4). */
                 offboarding: components["schemas"]["TenantOffboarding"];
+                /** @description What the tenant's people see of each other (`/me/directory`). */
+                directory: components["schemas"]["TenantDirectory"];
                 /**
                  * @description How the tenant's phones fetch their configuration
                  *     (`docs/PROVISIONING.md` §3).
@@ -11201,6 +11360,14 @@ export interface components {
              */
             hoteling_session_hours?: number | null;
         };
+        /** @description What a tenant's people see of each other through `/me/directory`. */
+        TenantDirectory: {
+            /**
+             * @description Whether its users may list the tenant's users, extensions and
+             *     presence; on unless a tenant turns it off.
+             */
+            visible_to_users?: boolean;
+        };
         /** @description A TenantId: `tenant-<uuid>`, or the bare UUID */
         TenantId: string;
         /**
@@ -11273,6 +11440,8 @@ export interface components {
             sign_in: components["schemas"]["TenantSignIn"];
             /** @description What happens to a deleted user (`docs/USERS.md` §4). */
             offboarding: components["schemas"]["TenantOffboarding"];
+            /** @description What the tenant's people see of each other (`/me/directory`). */
+            directory: components["schemas"]["TenantDirectory"];
             /**
              * @description How the tenant's phones fetch their configuration
              *     (`docs/PROVISIONING.md` §3).
@@ -11985,6 +12154,7 @@ export interface components {
             login_domains?: string[] | null;
             sign_in?: components["schemas"]["TenantSignIn"] | null;
             offboarding?: components["schemas"]["TenantOffboarding"] | null;
+            directory?: components["schemas"]["TenantDirectory"] | null;
             provisioning?: components["schemas"]["TenantProvisioning"] | null;
         };
         /** @description Update trunk request. */
@@ -14523,6 +14693,74 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_list_my_calls: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+                /** @description Only the incoming calls nobody answered. */
+                missed?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_MyCallResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_list_directory: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+                /** @description A word in a name, username, email or extension. */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_DirectoryEntry"];
+                };
             };
             /** @description An error */
             default: {

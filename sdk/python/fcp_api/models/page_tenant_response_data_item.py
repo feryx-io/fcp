@@ -14,6 +14,7 @@ import datetime
 
 if TYPE_CHECKING:
   from ..models.tenant_calling import TenantCalling
+  from ..models.tenant_directory import TenantDirectory
   from ..models.tenant_offboarding import TenantOffboarding
   from ..models.tenant_provisioning import TenantProvisioning
   from ..models.tenant_sign_in import TenantSignIn
@@ -45,6 +46,7 @@ class PageTenantResponseDataItem:
             sign_in (TenantSignIn): How a tenant's people may sign in (`docs/IDENTITY_AND_DEVICES.md` §2).
             offboarding (TenantOffboarding): What happens to a tenant's deleted user (`docs/USERS.md` §4): they are
                 suspended at once and purged `grace_days` later.
+            directory (TenantDirectory): What a tenant's people see of each other through `/me/directory`.
             provisioning (TenantProvisioning): A tenant's provisioning settings (`docs/PROVISIONING.md` §3).
             description (None | str | Unset):
             contact_email (None | str | Unset):
@@ -68,6 +70,7 @@ class PageTenantResponseDataItem:
     login_domains: list[str]
     sign_in: TenantSignIn
     offboarding: TenantOffboarding
+    directory: TenantDirectory
     provisioning: TenantProvisioning
     description: None | str | Unset = UNSET
     contact_email: None | str | Unset = UNSET
@@ -86,6 +89,7 @@ class PageTenantResponseDataItem:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
+        from ..models.tenant_directory import TenantDirectory # noqa: PLC0415
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
         from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
@@ -114,6 +118,8 @@ class PageTenantResponseDataItem:
         sign_in = self.sign_in.to_dict()
 
         offboarding = self.offboarding.to_dict()
+
+        directory = self.directory.to_dict()
 
         provisioning = self.provisioning.to_dict()
 
@@ -188,6 +194,7 @@ class PageTenantResponseDataItem:
             "login_domains": login_domains,
             "sign_in": sign_in,
             "offboarding": offboarding,
+            "directory": directory,
             "provisioning": provisioning,
         })
         if description is not UNSET:
@@ -216,6 +223,7 @@ class PageTenantResponseDataItem:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
+        from ..models.tenant_directory import TenantDirectory # noqa: PLC0415
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
         from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
@@ -255,6 +263,11 @@ class PageTenantResponseDataItem:
 
 
         offboarding = TenantOffboarding.from_dict(d.pop("offboarding"))
+
+
+
+
+        directory = TenantDirectory.from_dict(d.pop("directory"))
 
 
 
@@ -376,6 +389,7 @@ class PageTenantResponseDataItem:
             login_domains=login_domains,
             sign_in=sign_in,
             offboarding=offboarding,
+            directory=directory,
             provisioning=provisioning,
             description=description,
             contact_email=contact_email,

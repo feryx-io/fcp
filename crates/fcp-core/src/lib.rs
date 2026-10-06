@@ -171,7 +171,7 @@ pub use crate::storage::{
 pub use crate::sync::{JournalEntry, SyncOp, SyncStore, SYNC_TABLES};
 pub use crate::tenant::{
     is_host_literal, login_domain, normalize_login_domain, PasswordLogin, RequireTotp, Tenant,
-    TenantCalling, TenantOffboarding, TenantSignIn, TenantStatus,
+    TenantCalling, TenantDirectory, TenantOffboarding, TenantSignIn, TenantStatus,
 };
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,

@@ -98,6 +98,8 @@ pub struct TenantResponse {
     pub sign_in: fcp_core::TenantSignIn,
     /// What happens to a deleted user (`docs/USERS.md` §4).
     pub offboarding: fcp_core::TenantOffboarding,
+    /// What the tenant's people see of each other (`/me/directory`).
+    pub directory: fcp_core::TenantDirectory,
     /// How the tenant's phones fetch their configuration
     /// (`docs/PROVISIONING.md` §3).
     pub provisioning: fcp_core::provisioning::TenantProvisioning,
@@ -139,6 +141,7 @@ impl From<Tenant> for TenantResponse {
             sign_in: tenant.sign_in,
             offboarding: tenant.offboarding,
             provisioning: tenant.provisioning,
+            directory: tenant.directory,
         }
     }
 }
@@ -180,6 +183,10 @@ pub struct CreateTenantRequest {
     /// no users to name as a meetings owner).
     #[serde(default)]
     pub offboarding: Option<fcp_core::TenantOffboarding>,
+    /// What the tenant's people see of each other; unset, they see the
+    /// directory.
+    #[serde(default)]
+    pub directory: Option<fcp_core::TenantDirectory>,
     /// How the tenant's phones fetch their configuration.
     #[serde(default)]
     pub provisioning: Option<fcp_core::provisioning::TenantProvisioning>,
@@ -215,6 +222,9 @@ pub struct UpdateTenantRequest {
     pub sign_in: Option<fcp_core::TenantSignIn>,
     /// Replaces what happens to a deleted user.
     pub offboarding: Option<fcp_core::TenantOffboarding>,
+    /// Replaces what the tenant's people see of each other.
+    #[serde(default)]
+    pub directory: Option<fcp_core::TenantDirectory>,
     /// Replaces how the tenant's phones fetch their configuration.
     pub provisioning: Option<fcp_core::provisioning::TenantProvisioning>,
 }
@@ -535,6 +545,7 @@ pub async fn create_tenant(
         login_domains,
         sign_in,
         offboarding,
+        directory: req.directory.clone().unwrap_or_default(),
         provisioning: req
             .provisioning
             .clone()
@@ -688,6 +699,9 @@ pub async fn update_tenant(
 
     if let Some(offboarding) = req.offboarding {
         tenant.offboarding = normalize_offboarding(storage, Some(&tenant.id), offboarding).await?;
+    }
+    if let Some(directory) = req.directory {
+        tenant.directory = directory;
     }
 
     if let Some(provisioning) = req.provisioning {
