@@ -24,6 +24,14 @@ from .balance_response import BalanceResponse
 from .balance_transaction_kind import BalanceTransactionKind
 from .balance_transaction_response import BalanceTransactionResponse
 from .billing_summary_response import BillingSummaryResponse
+from .brand_asset_response import BrandAssetResponse
+from .brand_colors import BrandColors
+from .brand_dial_plan import BrandDialPlan
+from .brand_dial_plan_short_codes import BrandDialPlanShortCodes
+from .brand_links import BrandLinks
+from .brand_request import BrandRequest
+from .brand_response import BrandResponse
+from .brand_ringtone import BrandRingtone
 from .bundle_response import BundleResponse
 from .call_control_response import CallControlResponse
 from .call_info import CallInfo
@@ -206,6 +214,8 @@ from .page_audit_event_response import PageAuditEventResponse
 from .page_audit_event_response_data_item import PageAuditEventResponseDataItem
 from .page_balance_transaction_response import PageBalanceTransactionResponse
 from .page_balance_transaction_response_data_item import PageBalanceTransactionResponseDataItem
+from .page_brand_asset_response import PageBrandAssetResponse
+from .page_brand_asset_response_data_item import PageBrandAssetResponseDataItem
 from .page_call_info import PageCallInfo
 from .page_call_info_data_item import PageCallInfoDataItem
 from .page_class_of_service_response import PageClassOfServiceResponse
@@ -530,6 +540,14 @@ __all__ = (
     "BalanceTransactionKind",
     "BalanceTransactionResponse",
     "BillingSummaryResponse",
+    "BrandAssetResponse",
+    "BrandColors",
+    "BrandDialPlan",
+    "BrandDialPlanShortCodes",
+    "BrandLinks",
+    "BrandRequest",
+    "BrandResponse",
+    "BrandRingtone",
     "BTreeMap",
     "BundleResponse",
     "CallControlResponse",
@@ -713,6 +731,8 @@ __all__ = (
     "PageAuditEventResponseDataItem",
     "PageBalanceTransactionResponse",
     "PageBalanceTransactionResponseDataItem",
+    "PageBrandAssetResponse",
+    "PageBrandAssetResponseDataItem",
     "PageCallInfo",
     "PageCallInfoDataItem",
     "PageClassOfServiceResponse",

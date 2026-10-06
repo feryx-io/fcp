@@ -151,6 +151,9 @@ and `tenant_admin`'s alone: a group's role is its members' too.
 `group_read` is also held by `telecom_admin` (who picks a queue's group),
 `user_admin`, `department_admin` and `read_only`.
 
+`branding_manage` (`/branding`, `docs/BRANDING.md`) came with the
+softphone's branding. Only `super_admin` and `tenant_admin` hold it.
+
 `scim_provision` (`/scim/v2`, `docs/SCIM.md`) came with SCIM. Only
 `super_admin` and `tenant_admin` hold it: the provisioner makes users,
 administrators among them.

@@ -149,6 +149,25 @@ export class ApiClient {
     return response.json()
   }
 
+  /** Upload a file as the request body, as it is. */
+  async uploadRaw<T>(path: string, file: Blob): Promise<T> {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      body: file,
+      headers: { ...this.authHeaders(), 'Content-Type': 'application/octet-stream' },
+    })
+    if (!response.ok) {
+      let error: ApiError
+      try {
+        error = await response.json()
+      } catch {
+        error = { error: `HTTP ${response.status}`, details: response.statusText }
+      }
+      throw new ApiRequestError(response.status, error)
+    }
+    return response.json()
+  }
+
   /** Fetch a binary resource and return an object URL. */
   async fetchBlobUrl(path: string): Promise<string> {
     const response = await fetch(`${API_BASE}${path}`, {

@@ -14924,6 +14924,233 @@
         }
       }
     },
+    "/api/v1/branding": {
+      "get": {
+        "tags": [
+          "branding"
+        ],
+        "summary": "GET /api/v1/branding",
+        "operationId": "branding_get_brand",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "branding"
+        ],
+        "summary": "PUT /api/v1/branding — set the tenant's brand.",
+        "operationId": "branding_put_brand",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "branding"
+        ],
+        "summary": "DELETE /api/v1/branding — no brand: the apps show their own.",
+        "operationId": "branding_delete_brand",
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/branding/assets": {
+      "get": {
+        "tags": [
+          "branding"
+        ],
+        "summary": "GET /api/v1/branding/assets",
+        "operationId": "branding_list_assets",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_BrandAssetResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "branding"
+        ],
+        "summary": "POST /api/v1/branding/assets — upload a file as the body: a PNG, JPEG,\nWebP or SVG image, or Ogg, MP3 or WAV audio, at most 5 MB. What it is\ncomes from its bytes. The same file again is the same asset.",
+        "operationId": "branding_upload_asset",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "description": "The file's name, for the admin's page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandAssetResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/branding/assets/{sha256}": {
+      "delete": {
+        "tags": [
+          "branding"
+        ],
+        "summary": "DELETE /api/v1/branding/assets/{sha256} — one the brand names is\nrefused (409).",
+        "operationId": "branding_delete_asset",
+        "parameters": [
+          {
+            "name": "sha256",
+            "in": "path",
+            "description": "The asset's SHA-256",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/provisioning/redirection": {
       "get": {
         "tags": [
@@ -18520,6 +18747,331 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "BrandAssetResponse": {
+        "type": "object",
+        "description": "An uploaded file.",
+        "required": [
+          "sha256",
+          "mime",
+          "kind",
+          "size",
+          "uploaded_at"
+        ],
+        "properties": {
+          "sha256": {
+            "type": "string",
+            "description": "Hex SHA-256: what the brand names it by."
+          },
+          "mime": {
+            "type": "string",
+            "description": "What the file is, from its bytes."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`image` or `audio`."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "width": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "A PNG's dimensions.",
+            "minimum": 0
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "file_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where apps fetch it, without credentials."
+          },
+          "uploaded_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "BrandColors": {
+        "type": "object",
+        "description": "The colors of one theme, each `#RRGGBB` or `#RRGGBBAA`; one unset is\nthe app's own.",
+        "properties": {
+          "primary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "accent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "background": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "surface": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "on_primary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "on_surface": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "BrandDialPlan": {
+        "type": "object",
+        "description": "Hints for the app's dialer: prefixes it takes off what is dialed, and\nshort codes it turns into addresses.",
+        "properties": {
+          "prefix_strip": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "short_codes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "BrandLinks": {
+        "type": "object",
+        "description": "The tenant's links, each `https://`.",
+        "properties": {
+          "support": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "privacy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "terms": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "BrandRequest": {
+        "type": "object",
+        "description": "The tenant's brand, as its administrator writes it: assets by hash.",
+        "required": [
+          "app_name"
+        ],
+        "properties": {
+          "app_name": {
+            "type": "string",
+            "description": "The app's name, as the tenant's people see it."
+          },
+          "colors": {
+            "$ref": "#/components/schemas/BrandColors"
+          },
+          "dark_colors": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BrandColors",
+                "description": "The dark theme's; unset, the app derives its own."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "logo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An uploaded image's hash."
+          },
+          "logo_dark": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "icon": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An uploaded PNG, JPEG or WebP image's hash."
+          },
+          "ringtones": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BrandRingtone"
+            },
+            "description": "Uploaded audio, by hash; at most one the default."
+          },
+          "links": {
+            "$ref": "#/components/schemas/BrandLinks"
+          },
+          "dial_plan": {
+            "$ref": "#/components/schemas/BrandDialPlan"
+          }
+        }
+      },
+      "BrandResponse": {
+        "type": "object",
+        "description": "The tenant's brand, with what its assets are.",
+        "required": [
+          "tenant_id",
+          "app_name",
+          "colors",
+          "ringtones",
+          "links",
+          "dial_plan",
+          "assets",
+          "updated_at"
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": "string"
+          },
+          "app_name": {
+            "type": "string"
+          },
+          "colors": {
+            "$ref": "#/components/schemas/BrandColors"
+          },
+          "dark_colors": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BrandColors"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "logo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "logo_dark": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "icon": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ringtones": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BrandRingtone"
+            }
+          },
+          "links": {
+            "$ref": "#/components/schemas/BrandLinks"
+          },
+          "dial_plan": {
+            "$ref": "#/components/schemas/BrandDialPlan"
+          },
+          "assets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BrandAssetResponse"
+            },
+            "description": "The assets it names."
+          },
+          "brand_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the tenant's softphones fetch it."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "BrandRingtone": {
+        "type": "object",
+        "description": "A ringtone the app offers, by its asset's hash.",
+        "required": [
+          "name",
+          "sha256"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "default": {
+            "type": "boolean"
+          },
+          "sha256": {
+            "type": "string"
           }
         }
       },
@@ -25983,6 +26535,98 @@
                   ]
                 },
                 "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_BrandAssetResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "An uploaded file.",
+              "required": [
+                "sha256",
+                "mime",
+                "kind",
+                "size",
+                "uploaded_at"
+              ],
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "description": "Hex SHA-256: what the brand names it by."
+                },
+                "mime": {
+                  "type": "string",
+                  "description": "What the file is, from its bytes."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`image` or `audio`."
+                },
+                "size": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "width": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "description": "A PNG's dimensions.",
+                  "minimum": 0
+                },
+                "height": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "file_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Where apps fetch it, without credentials."
+                },
+                "uploaded_at": {
                   "type": "string",
                   "format": "date-time"
                 }

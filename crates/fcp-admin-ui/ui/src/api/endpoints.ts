@@ -1,6 +1,7 @@
 import type { components } from '@/api/schema'
 import { apiClient, ApiRequestError } from './client'
 import type {
+  Brand, BrandAsset, BrandRequest,
   DiscoverResponse,
   IdentityProvider,
   IdentityProviderRequest,
@@ -785,6 +786,25 @@ export const apiTokens = {
     apiClient.post<CreateApiTokenResponse>(`/api-tokens/${encodeURIComponent(id)}/rotate`, data),
   /** Revokes: the token is kept, marked, and refused. */
   delete: (id: string) => apiClient.delete<void>(`/api-tokens/${encodeURIComponent(id)}`),
+}
+
+/** The tenant's brand for its softphones (docs/BRANDING.md). */
+export const branding = {
+  /** `null` when the tenant has none. */
+  get: async (): Promise<Brand | null> => {
+    try {
+      return await apiClient.get<Brand>('/branding')
+    } catch (e) {
+      if (e instanceof ApiRequestError && e.status === 404) return null
+      throw e
+    }
+  },
+  put: (data: BrandRequest) => apiClient.put<Brand>('/branding', data),
+  remove: () => apiClient.delete<void>('/branding'),
+  assets: () => apiClient.getAll<BrandAsset>('/branding/assets'),
+  upload: (file: File) =>
+    apiClient.uploadRaw<BrandAsset>(`/branding/assets?name=${encodeURIComponent(file.name)}`, file),
+  deleteAsset: (sha256: string) => apiClient.delete<void>(`/branding/assets/${encodeURIComponent(sha256)}`),
 }
 
 export const identityProviders = {

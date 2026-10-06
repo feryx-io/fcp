@@ -46,6 +46,8 @@ pub const SYNCED_RESOURCES: &[&str] = &[
     // A tenant's firmware targets, and the platform's images, are the
     // cloud's (docs/PROVISIONING.md §11).
     "firmware",
+    // The tenant's brand and its assets (docs/BRANDING.md).
+    "branding",
 ];
 
 /// Whether `path` (relative to the v1 root, no leading slash) is a synced

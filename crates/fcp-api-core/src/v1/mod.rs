@@ -4,6 +4,7 @@ pub mod api_tokens;
 pub mod app_auth;
 pub mod auth_session;
 pub mod billing;
+pub mod branding;
 pub mod call_control;
 pub mod calling;
 pub mod cdrs;
@@ -633,6 +634,25 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/firmware/targets/:id",
             axum::routing::put(firmware::update_target).delete(firmware::delete_target),
+        )
+        // The tenant's brand (docs/BRANDING.md): assets up to 5 MB.
+        .route(
+            "/branding",
+            get(branding::get_brand)
+                .put(branding::put_brand)
+                .delete(branding::delete_brand),
+        )
+        .route(
+            "/branding/assets",
+            get(branding::list_assets)
+                .post(branding::upload_asset)
+                .layer(DefaultBodyLimit::max(
+                    fcp_core::branding::MAX_ASSET_BYTES + 64 * 1024,
+                )),
+        )
+        .route(
+            "/branding/assets/:sha256",
+            axum::routing::delete(branding::delete_asset),
         )
         // Zero-touch (docs/PROVISIONING.md §10)
         .route("/provisioning/redirection", get(redirection::list_accounts))

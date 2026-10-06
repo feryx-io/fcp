@@ -3609,6 +3609,7 @@ pub struct DynStorage {
     subject_erase_store: Option<Arc<dyn crate::subject_erasure::SubjectEraseStore>>,
     offboarding_store: Option<Arc<dyn crate::offboarding::OffboardingStore>>,
     group_store: Option<Arc<dyn crate::group::GroupStore>>,
+    brand_store: Option<Arc<dyn crate::branding::BrandStore>>,
     provisioning_store: Option<Arc<dyn crate::provisioning::ProvisioningStore>>,
 }
 
@@ -3691,6 +3692,7 @@ impl DynStorage {
             subject_erase_store: None,
             offboarding_store: None,
             group_store: None,
+            brand_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -3777,6 +3779,7 @@ impl DynStorage {
             subject_erase_store: None,
             offboarding_store: None,
             group_store: None,
+            brand_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -4044,6 +4047,17 @@ impl DynStorage {
     /// The tenant's groups, when attached.
     pub fn group_store(&self) -> Option<&Arc<dyn crate::group::GroupStore>> {
         self.group_store.as_ref()
+    }
+
+    /// Attach tenants' brands (`docs/BRANDING.md`).
+    pub fn with_brand_store(mut self, store: Arc<dyn crate::branding::BrandStore>) -> Self {
+        self.brand_store = Some(store);
+        self
+    }
+
+    /// Tenants' brands, when attached.
+    pub fn brand_store(&self) -> Option<&Arc<dyn crate::branding::BrandStore>> {
+        self.brand_store.as_ref()
     }
 
     /// Where deprovisioned users are purged, when attached.

@@ -28,6 +28,7 @@
 //! ```
 
 pub mod api_token;
+mod branding;
 mod cdr_archive;
 mod cdr_volume;
 pub mod compliance;
