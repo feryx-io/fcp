@@ -12,6 +12,7 @@ fcp-core = { path = "../fcp-core", features = ["openapi"] }
 ipnetwork = "0.20"
 fcp-sip = { path = "../fcp-sip" }
 fcp-media = { path = "../fcp-media" }
+fcp-pbx = { path = "../fcp-pbx" }
 fcp-events = { path = "../fcp-events" }
 fcp-policy = { path = "../fcp-policy" }
 fcp-billing = { path = "../fcp-billing" }

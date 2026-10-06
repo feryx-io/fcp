@@ -29,6 +29,10 @@ max_expires = 86400
 # Phones register with the realm's domain; add the host's address here if
 # yours register with the IP.
 domain_aliases = ["fcp.local"]
+# Where the admin is, told to every phone in REGISTER's 200 OK
+# (X-FCP-Provisioning-Url): how the softphone finds its settings. The admin
+# through the proxy; HOST_IP is resolved from the environment.
+provisioning_url = "https://${HOST_IP}:8444"
 
 [calls]
 call_timeout_seconds = 60

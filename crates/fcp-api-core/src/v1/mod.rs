@@ -50,6 +50,7 @@ pub mod self_service;
 pub mod signup;
 pub mod sip_trace;
 pub mod sites;
+pub mod softphone;
 pub mod sso;
 pub mod supervision;
 pub mod system;
@@ -211,6 +212,11 @@ pub fn router() -> Router<ApiState> {
             get(self_service::get_my_calling).put(self_service::update_my_calling),
         )
         // Your devices: phones and app installs (docs/SOFTPHONE.md §2.1)
+        .route("/me/softphone", get(softphone::get_config))
+        .route(
+            "/me/softphone/rotate-password",
+            post(softphone::rotate_password),
+        )
         .route("/me/devices", get(user_devices::list_mine))
         .route("/me/devices/:id", delete(user_devices::delete_mine))
         .route("/me/calls", get(me_data::list_my_calls))

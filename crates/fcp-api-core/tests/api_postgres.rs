@@ -15588,3 +15588,117 @@ async fn a_user_sees_the_directory_while_the_tenant_shows_it() {
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
     app.finish().await;
 }
+
+// ---------------------------------------------------------------------------
+// What the softphone is told (docs/SOFTPHONE.md §2.4, §2.6)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_softphone_gets_its_account_and_settings() {
+    use fcp_core::storage::DeviceStore;
+    let app = require_app!();
+    app.create_user_with_role("alice", "end_user").await;
+    let web = app.login("alice", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let signed_in = app
+        .send_as(
+            &web,
+            Method::POST,
+            "/api/v1/auth/app/sessions",
+            Some(json!({ "client_name": "Alice's laptop", "install_id": "laptop-1" })),
+        )
+        .await;
+    assert_eq!(signed_in.status, StatusCode::CREATED, "{}", signed_in.text);
+    let access = signed_in.json["access_token"].as_str().unwrap().to_string();
+    let device = signed_in.json["device"].clone();
+
+    // Its account: the user in the tenant's domain, the device's username,
+    // the realm; codecs this build takes; the feature codes.
+    let config = app
+        .send_as(&access, Method::GET, "/api/v1/me/softphone", None)
+        .await;
+    assert_eq!(config.status, StatusCode::OK, "{}", config.text);
+    let account = &config.json["account"];
+    assert!(
+        account["aor"].as_str().unwrap().starts_with("sip:alice@"),
+        "{account}"
+    );
+    assert_eq!(
+        account["registrar"].as_str().unwrap(),
+        format!("sip:{}", account["domain"].as_str().unwrap())
+    );
+    assert_eq!(account["sip_username"], device["sip_username"]);
+    assert_eq!(account["realm"], device["realm"]);
+    assert_eq!(config.json["device_id"], device["id"]);
+    let codecs: Vec<&str> = config.json["media"]["codecs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert_eq!(codecs.first(), Some(&"opus"), "{codecs:?}");
+    assert!(codecs.contains(&"PCMU"));
+    assert_eq!(config.json["feature_codes"]["park"], "*70");
+
+    // Unchanged: 304 for its ETag.
+    let etag = config.headers[header::ETAG].to_str().unwrap().to_string();
+    let again = app
+        .send(
+            Method::GET,
+            "/api/v1/me/softphone",
+            &[
+                (AUTH_HEADER, format!("Bearer {access}").as_str()),
+                ("if-none-match", etag.as_str()),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_MODIFIED);
+
+    // A browser's session is not the softphone's.
+    let refused = app
+        .send_as(&web, Method::GET, "/api/v1/me/softphone", None)
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+
+    // A new SIP password, shown once; the old one's hash is gone.
+    let before = app
+        .storage
+        .get_device(&device["id"].as_str().unwrap().parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap()
+        .sip_ha1_hash;
+    let rotated = app
+        .send_as(
+            &access,
+            Method::POST,
+            "/api/v1/me/softphone/rotate-password",
+            None,
+        )
+        .await;
+    assert_eq!(rotated.status, StatusCode::OK, "{}", rotated.text);
+    assert_ne!(rotated.json["sip_password"], device["sip_password"]);
+    let after = app
+        .storage
+        .get_device(&device["id"].as_str().unwrap().parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap()
+        .sip_ha1_hash;
+    assert_ne!(before, after);
+
+    // Where FCP is, for an app finding it.
+    let known = app
+        .send(Method::GET, "/.well-known/fcp-provisioning", &[], None)
+        .await;
+    assert_eq!(known.status, StatusCode::OK, "{}", known.text);
+    assert!(known.json["authorize_url"]
+        .as_str()
+        .is_some_and(|u| u.ends_with("/api/v1/auth/app/authorize")));
+    assert!(known.json["api_url"]
+        .as_str()
+        .is_some_and(|u| u.ends_with("/api/v1")));
+}

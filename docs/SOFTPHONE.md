@@ -17,7 +17,7 @@ desktop, with mobile push later. Work in the anvil repo is a branch and PR
 per phase, merged by the owner, as in FCP. The questions in §6 are open.
 
 Progress: phase F4a done (v0.25.358): `/me/calls` and `/me/directory`
-(§2.7); `/me/events` is F4b. Phase F3 done (v0.25.357): the tenant's brand
+(§2.7); `/me/events` is F4b. Phase F3 done (v0.25.359): the tenant's brand
 (`docs/BRANDING.md`). Phase F1a done (v0.25.334): app sign-in and app sessions
 (`docs/APP_SIGN_IN.md`); the password grant of §2.2 became
 `POST /auth/app/sessions`, one sign-in path rather than a copy of it.
@@ -373,7 +373,7 @@ on.
 
 ### Phase F3: branding (fcp)
 
-Done in v0.25.357 (`docs/BRANDING.md`). One change from the plan: assets are
+Done in v0.25.359 (`docs/BRANDING.md`). One change from the plan: assets are
 kept in Postgres with the brand, not in a directory or a bucket as firmware
 is. They are small, so every admin node sees them without shared storage and
 backups hold them; a site's link fetches the bytes by hash.

@@ -40,6 +40,8 @@ use utoipa::{Modify, OpenApi};
         crate::v1::app_auth::create_session,
         crate::v1::app_auth::token,
         crate::v1::app_auth::revoke,
+        crate::v1::softphone::get_config,
+        crate::v1::softphone::rotate_password,
         crate::v1::user_devices::list_mine,
         crate::v1::user_devices::delete_mine,
         crate::v1::user_devices::list_users,

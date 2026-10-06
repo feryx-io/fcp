@@ -330,6 +330,13 @@ pub struct RegistrarSection {
     #[serde(default)]
     pub domain_aliases: Vec<String>,
 
+    /// Where the admin is, e.g. `https://pbx.example.com`: told to every
+    /// phone a REGISTER succeeds for in `X-FCP-Provisioning-Url`, so the
+    /// softphone finds its settings and branding (`docs/SOFTPHONE.md` §2.5).
+    /// Unset, the header is not sent.
+    #[serde(default)]
+    pub provisioning_url: Option<String>,
+
     /// Seconds a registration lookup is kept before the store is read
     /// again (`docs/MULTI_REGION_FOLLOWUPS.md` §2.1, phase 2). Zero reads
     /// the store on every lookup, as this node did before the cache.
@@ -375,6 +382,7 @@ impl Default for RegistrarSection {
             min_expires: default_min_expires(),
             max_expires: default_max_expires(),
             domain_aliases: Vec::new(),
+            provisioning_url: None,
             auth_invites: false,
             cache_ttl_secs: default_registration_cache_ttl(),
         }
@@ -1106,6 +1114,7 @@ redis_stream_key = "custom:stream"
             min_expires: default_min_expires(),
             max_expires: default_max_expires(),
             domain_aliases: Vec::new(),
+            provisioning_url: None,
             auth_invites: false,
             cache_ttl_secs: default_registration_cache_ttl(),
         };
