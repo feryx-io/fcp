@@ -1214,6 +1214,16 @@ impl FcpRegistrar {
             .await
     }
 
+    /// The tenant of whoever a request's `From` says placed it, as digest
+    /// authentication looks their credentials up.
+    pub async fn caller_tenant(&self, request: &Request) -> Option<TenantId> {
+        let aor = from_aor(request)?;
+        let username = extract_username_from_aor(&aor);
+        self.resolve_tenant(request, Some(&aor), username.as_deref())
+            .await
+            .ok()
+    }
+
     /// Extract AOR from a REGISTER request's To header.
     fn extract_aor_from_request(&self, request: &Request) -> Option<String> {
         extract_aor_from_request(request)

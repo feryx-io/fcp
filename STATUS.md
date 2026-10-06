@@ -1905,6 +1905,15 @@ and `/me/events`; Anvil caught up to today's stacks with registration that
 lasts, MWI, BLF, transfer, park and SRTP, proved against FCP's nightly
 images. Phases A0–A5 (anvil) and F1–F4 (fcp); questions open.
 
+Subscribed message waiting (v0.25.356): a SUBSCRIBE to `message-summary`
+was answered 489 (the presence handler took every SUBSCRIBE and knew only
+presence and dialog). `fcp_sip::mwi_subscriptions` now answers it:
+authenticated like an INVITE, for the subscriber's own mailbox (the user
+the `From` names, or a device's owner), 200 with the RFC 3842 counts
+NOTIFYed at once, again on every `voicemail.mwi_updated` from the node
+holding the subscription, refresh and end inside the dialog, 404 without a
+mailbox (`fcp-call-manager/tests/mwi.rs`).
+
 Tenants on call, flow and voicemail events (v0.25.341): `call.ringing`,
 `call.answered`, `call.ended`, `call.failed`, park, hold, supervision
 parties, every `flow.*` and the voicemail message and mailbox events named
