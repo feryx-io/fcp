@@ -517,6 +517,7 @@ pub fn link_router(state: LinkState) -> Router {
         .route("/link/v1/requests", get(requests))
         .route("/link/v1/requests/:id", post(request_result))
         .route("/link/v1/firmware/:image", get(firmware_image))
+        .route("/link/v1/brand-assets/:sha256", get(brand_asset))
         // A file a site sends up is one body; a recording may be large.
         .layer(axum::extract::DefaultBodyLimit::max(SITE_UPLOAD_LIMIT))
         .layer(Extension(state))
@@ -1050,6 +1051,10 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
     for synced in synced_firmware_targets(storage, tenant).await? {
         items.push(item("firmware_targets", &synced.target.id, &synced)?);
     }
+    // The brand, with what its assets are (docs/BRANDING.md).
+    if let Some(synced) = synced_brand(storage, tenant).await? {
+        items.push(item("tenant_brands", tenant, &synced)?);
+    }
     // After the users: a group's members name them (docs/USERS.md §5).
     if let Some(groups) = storage.group_store() {
         for g in groups.list_groups(tenant).await? {
@@ -1212,6 +1217,10 @@ async fn object_now(
                 .transpose()?,
             Err(_) => None,
         },
+        "tenant_brands" if id == tenant.to_string() => synced_brand(storage, tenant)
+            .await?
+            .map(|s| serde_json::to_value(&s))
+            .transpose()?,
         "groups" => match (storage.group_store(), id.parse()) {
             (Some(store), Ok(id)) => same_tenant!(store.get_group(&id).await?),
             _ => None,
@@ -1227,6 +1236,56 @@ async fn object_now(
         },
         _ => None,
     })
+}
+
+/// A tenant's brand, with the assets it names.
+async fn synced_brand(
+    storage: &DynStorage,
+    tenant: &TenantId,
+) -> Result<Option<fcp_core::branding::SyncedBrand>> {
+    let Some(store) = storage.brand_store() else {
+        return Ok(None);
+    };
+    let Some(brand) = store.get_brand(tenant).await? else {
+        return Ok(None);
+    };
+    let mut assets = Vec::new();
+    for hash in brand.asset_hashes() {
+        if let Some(asset) = store.get_brand_asset(tenant, hash).await? {
+            assets.push(asset);
+        }
+    }
+    Ok(Some(fcp_core::branding::SyncedBrand { brand, assets }))
+}
+
+/// `GET /link/v1/brand-assets/:sha256` — an asset the site's tenant's
+/// brand names, for the site to serve its softphones.
+async fn brand_asset(
+    Extension(state): Extension<LinkState>,
+    headers: HeaderMap,
+    axum::extract::Path(sha256): axum::extract::Path<String>,
+) -> Result<Response, LinkError> {
+    let site = site_of(&state, &headers).await?;
+    let not_found = || {
+        LinkError(
+            StatusCode::NOT_FOUND,
+            "No such asset for this site".to_string(),
+        )
+    };
+    let named = synced_brand(&state.storage, &site.tenant_id)
+        .await?
+        .is_some_and(|s| s.assets.iter().any(|a| a.sha256 == sha256));
+    if !named {
+        return Err(not_found());
+    }
+    let (asset, bytes) = state
+        .storage
+        .brand_store()
+        .ok_or_else(not_found)?
+        .brand_asset_bytes(&sha256)
+        .await?
+        .ok_or_else(not_found)?;
+    Ok((StatusCode::OK, [(header::CONTENT_TYPE, asset.mime)], bytes).into_response())
 }
 
 /// A tenant's firmware targets, each with the image it names.

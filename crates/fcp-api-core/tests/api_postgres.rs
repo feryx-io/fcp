@@ -212,50 +212,52 @@ impl App {
         let sip_traces = Arc::new(PostgresSipTraceStore::new(storage.pool().clone()));
         let emergency = Arc::new(PostgresEmergencyStore::new(storage.pool().clone()));
         let compliance = Arc::new(PostgresComplianceStore::new(storage.pool().clone()));
-        let dyn_storage =
-            Arc::new(
-                DynStorage::from_all_in_one(Arc::clone(&storage))
-                    .with_api_token_store(api_tokens)
-                    .with_totp_store(Arc::clone(&storage) as Arc<dyn fcp_core::totp::TotpStore>)
-                    .with_identity_store(
-                        Arc::clone(&storage) as Arc<dyn fcp_core::identity::IdentityStore>
-                    )
-                    .with_login_session_store(Arc::new(
-                        fcp_storage_postgres::login_session::PostgresLoginSessionStore::new(
-                            storage.pool().clone(),
-                        ),
-                    )
-                        as Arc<dyn fcp_core::session::LoginSessionStore>)
-                    .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>)
-                    .with_sip_trace_store(Arc::clone(&sip_traces) as Arc<dyn SipTraceStore>)
-                    .with_emergency_store(
-                        Arc::clone(&emergency) as Arc<dyn fcp_core::e911::EmergencyStore>
-                    )
-                    .with_compliance_store(
-                        Arc::clone(&compliance) as Arc<dyn fcp_core::compliance::ComplianceStore>
-                    )
-                    .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
-                        as Arc<dyn fcp_core::prompt::PromptStore>)
-                    .with_recording_store(Arc::new(PostgresRecordingStore::new(
+        let dyn_storage = Arc::new(
+            DynStorage::from_all_in_one(Arc::clone(&storage))
+                .with_api_token_store(api_tokens)
+                .with_totp_store(Arc::clone(&storage) as Arc<dyn fcp_core::totp::TotpStore>)
+                .with_identity_store(
+                    Arc::clone(&storage) as Arc<dyn fcp_core::identity::IdentityStore>
+                )
+                .with_login_session_store(Arc::new(
+                    fcp_storage_postgres::login_session::PostgresLoginSessionStore::new(
                         storage.pool().clone(),
-                    ))
-                        as Arc<dyn fcp_core::recording::RecordingStore>)
-                    .with_call_recording_store(Arc::new(PostgresRecordingStore::new(
-                        storage.pool().clone(),
-                    ))
-                        as Arc<dyn fcp_core::recording::CallRecordingStore>)
-                    .with_subject_data_store(Arc::clone(&storage)
-                        as Arc<dyn fcp_core::subject_request::SubjectDataStore>)
-                    .with_subject_erase_store(Arc::clone(&storage)
-                        as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>)
-                    .with_offboarding_store(
-                        Arc::clone(&storage) as Arc<dyn fcp_core::offboarding::OffboardingStore>
-                    )
-                    .with_group_store(Arc::clone(&storage) as Arc<dyn fcp_core::group::GroupStore>)
-                    .with_provisioning_store(
-                        Arc::clone(&storage) as Arc<dyn fcp_core::provisioning::ProvisioningStore>
                     ),
-            );
+                )
+                    as Arc<dyn fcp_core::session::LoginSessionStore>)
+                .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>)
+                .with_sip_trace_store(Arc::clone(&sip_traces) as Arc<dyn SipTraceStore>)
+                .with_emergency_store(
+                    Arc::clone(&emergency) as Arc<dyn fcp_core::e911::EmergencyStore>
+                )
+                .with_compliance_store(
+                    Arc::clone(&compliance) as Arc<dyn fcp_core::compliance::ComplianceStore>
+                )
+                .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
+                    as Arc<dyn fcp_core::prompt::PromptStore>)
+                .with_recording_store(
+                    Arc::new(PostgresRecordingStore::new(storage.pool().clone()))
+                        as Arc<dyn fcp_core::recording::RecordingStore>,
+                )
+                .with_call_recording_store(Arc::new(PostgresRecordingStore::new(
+                    storage.pool().clone(),
+                ))
+                    as Arc<dyn fcp_core::recording::CallRecordingStore>)
+                .with_subject_data_store(
+                    Arc::clone(&storage) as Arc<dyn fcp_core::subject_request::SubjectDataStore>
+                )
+                .with_subject_erase_store(
+                    Arc::clone(&storage) as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>
+                )
+                .with_offboarding_store(
+                    Arc::clone(&storage) as Arc<dyn fcp_core::offboarding::OffboardingStore>
+                )
+                .with_group_store(Arc::clone(&storage) as Arc<dyn fcp_core::group::GroupStore>)
+                .with_brand_store(Arc::clone(&storage) as Arc<dyn fcp_core::branding::BrandStore>)
+                .with_provisioning_store(
+                    Arc::clone(&storage) as Arc<dyn fcp_core::provisioning::ProvisioningStore>
+                ),
+        );
         let dir = tempfile::Builder::new()
             .prefix("fcp-api-test-")
             .tempdir()
@@ -15046,4 +15048,357 @@ async fn phones_changed_as_they_are_made_keep_the_credentials_rps_has() {
             .await;
         assert_eq!(fetched.status, StatusCode::OK, "{mac}: {}", fetched.text);
     }
+}
+
+// ---------------------------------------------------------------------------
+// A tenant's brand (docs/BRANDING.md, docs/SOFTPHONE.md phase F3)
+// ---------------------------------------------------------------------------
+
+/// A PNG's signature and header, `width` by `height`, and a few bytes
+/// that make each one its own file.
+fn tiny_png(width: u32, height: u32, salt: u8) -> Vec<u8> {
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    png.extend_from_slice(&width.to_be_bytes());
+    png.extend_from_slice(&height.to_be_bytes());
+    png.extend_from_slice(&[8, 6, 0, 0, 0, salt]);
+    png
+}
+
+#[tokio::test]
+async fn a_tenant_brands_its_softphone() {
+    let app = require_app!();
+    app.create_user_with_role("brand-admin", "tenant_admin")
+        .await;
+    app.create_user_with_role("brand-user", "end_user").await;
+    let token_of = |res: Response| res.json["token"].as_str().unwrap().to_string();
+    let admin = token_of(app.login("brand-admin", PASSWORD).await);
+    let user = token_of(app.login("brand-user", PASSWORD).await);
+
+    // No brand: the app shows its own.
+    let none = app
+        .send_as(&admin, Method::GET, "/api/v1/branding", None)
+        .await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND, "{}", none.text);
+    let served = app.send_as(&user, Method::GET, "/brand/v1", None).await;
+    assert_eq!(served.status, StatusCode::NOT_FOUND, "{}", served.text);
+    // Unauthenticated, nothing.
+    let anonymous = app.send(Method::GET, "/brand/v1", &[], None).await;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+    // A user does not make the brand.
+    let refused = app
+        .send_as(
+            &user,
+            Method::PUT,
+            "/api/v1/branding",
+            Some(json!({"app_name": "Mine"})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+
+    // Assets: what they are comes from their bytes.
+    let upload = |bytes: Vec<u8>, name: &str| {
+        let path = format!("/api/v1/branding/assets?name={name}");
+        let admin = admin.clone();
+        let app = &app;
+        async move {
+            app.send_raw(
+                &admin,
+                Method::POST,
+                &path,
+                "application/octet-stream",
+                bytes,
+            )
+            .await
+        }
+    };
+    let icon_png = tiny_png(512, 512, 1);
+    let icon = upload(icon_png.clone(), "icon.png").await;
+    assert_eq!(icon.status, StatusCode::CREATED, "{}", icon.text);
+    assert_eq!(icon.json["mime"], "image/png");
+    assert_eq!(icon.json["kind"], "image");
+    assert_eq!(icon.json["width"], 512);
+    let icon_hash = icon.json["sha256"].as_str().unwrap().to_string();
+    assert_eq!(
+        icon.json["url"],
+        format!("{SSO_PUBLIC_URL}/brand/v1/assets/{icon_hash}")
+    );
+    let again = upload(icon_png.clone(), "icon-again.png").await;
+    assert_eq!(
+        again.json["sha256"],
+        icon_hash.as_str(),
+        "the same file, the same asset"
+    );
+    assert_eq!(again.json["file_name"], "icon.png", "the first upload kept");
+    let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"/>".to_vec();
+    let logo = upload(svg.clone(), "logo.svg").await;
+    assert_eq!(logo.json["mime"], "image/svg+xml", "{}", logo.text);
+    let logo_hash = logo.json["sha256"].as_str().unwrap().to_string();
+    let ring = upload(b"OggS\0\x02\0\0\0\0ring".to_vec(), "ring.ogg").await;
+    assert_eq!(ring.json["kind"], "audio", "{}", ring.text);
+    let ring_hash = ring.json["sha256"].as_str().unwrap().to_string();
+    let html = upload(b"<html><script>x</script></html>".to_vec(), "x.html").await;
+    assert_eq!(html.status, StatusCode::BAD_REQUEST, "{}", html.text);
+    let too_big = upload(vec![0x89; 5 * 1024 * 1024 + 1], "big.png").await;
+    assert!(
+        too_big.status == StatusCode::BAD_REQUEST
+            || too_big.status == StatusCode::PAYLOAD_TOO_LARGE,
+        "{}",
+        too_big.status
+    );
+
+    // The brand, checked.
+    let brand = |patch: Value| {
+        let mut b = json!({
+            "app_name": "Acme Voice",
+            "colors": {"primary": "#1A73E8", "on_primary": "#FFFFFF"},
+            "dark_colors": {"primary": "#8AB4F8"},
+            "logo": logo_hash,
+            "icon": icon_hash,
+            "ringtones": [{"name": "Acme", "default": true, "sha256": ring_hash}],
+            "links": {"support": "https://acme.example/support"},
+            "dial_plan": {"prefix_strip": ["+1"], "short_codes": {"1000": "sip:frontdesk@acme.example"}},
+        });
+        for (k, v) in patch.as_object().unwrap() {
+            b[k] = v.clone();
+        }
+        b
+    };
+    for (patch, why) in [
+        (json!({"colors": {"primary": "blue"}}), "colors.primary"),
+        (
+            json!({"links": {"terms": "http://acme.example"}}),
+            "links.terms",
+        ),
+        (json!({"icon": logo_hash}), "icon"),
+        (json!({"logo": ring_hash}), "logo"),
+        (json!({"logo": "f".repeat(64)}), "upload it first"),
+        (
+            json!({"ringtones": [{"name": "x", "sha256": icon_hash}]}),
+            "not audio",
+        ),
+        (json!({"app_name": " "}), "app_name"),
+        (
+            json!({"dial_plan": {"short_codes": {"1000": "http://x"}}}),
+            "short code",
+        ),
+    ] {
+        let res = app
+            .send_as(
+                &admin,
+                Method::PUT,
+                "/api/v1/branding",
+                Some(brand(patch.clone())),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{patch}: {}", res.text);
+        assert!(res.text.contains(why), "{patch}: {}", res.text);
+    }
+    let set = app
+        .send_as(
+            &admin,
+            Method::PUT,
+            "/api/v1/branding",
+            Some(brand(json!({}))),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    assert_eq!(
+        set.json["assets"].as_array().unwrap().len(),
+        3,
+        "{}",
+        set.text
+    );
+    assert_eq!(set.json["brand_url"], format!("{SSO_PUBLIC_URL}/brand/v1"));
+
+    // Served to the tenant's people as the contract has it.
+    let served = app
+        .send_as(
+            &user,
+            Method::GET,
+            "/brand/v1?aor=sip%3Abrand-user%40a.test",
+            None,
+        )
+        .await;
+    assert_eq!(served.status, StatusCode::OK, "{}", served.text);
+    let b = &served.json;
+    assert_eq!(b["schema_version"], 1);
+    assert_eq!(b["tenant_id"], app.tenant_a.to_string());
+    assert_eq!(b["app_name"], "Acme Voice");
+    assert_eq!(b["colors"]["primary"], "#1A73E8");
+    assert_eq!(b["dark_colors"]["primary"], "#8AB4F8");
+    assert_eq!(b["logo"]["mime"], "image/svg+xml");
+    assert_eq!(b["logo"]["sha256"], logo_hash.as_str());
+    assert_eq!(b["icon"]["width"], 512);
+    assert!(b.get("logo_dark").is_none(), "{b}");
+    assert_eq!(b["ringtones"][0]["default"], true);
+    assert_eq!(b["ringtones"][0]["asset"]["mime"], "audio/ogg");
+    assert_eq!(b["links"]["support"], "https://acme.example/support");
+    assert_eq!(
+        b["dial_plan"]["short_codes"]["1000"],
+        "sip:frontdesk@acme.example"
+    );
+    let etag = served.headers[header::ETAG].to_str().unwrap().to_string();
+    assert_eq!(etag, format!("\"{}\"", b["etag"].as_str().unwrap()));
+    let auth = format!("Bearer {user}");
+    let unchanged = app
+        .send(
+            Method::GET,
+            "/brand/v1",
+            &[
+                (AUTH_HEADER, auth.as_str()),
+                ("if-none-match", etag.as_str()),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(unchanged.status, StatusCode::NOT_MODIFIED);
+    assert!(unchanged.bytes.is_empty());
+
+    // The assets, to anyone, by hash.
+    let png = app
+        .send(
+            Method::GET,
+            &format!("/brand/v1/assets/{icon_hash}"),
+            &[],
+            None,
+        )
+        .await;
+    assert_eq!(png.status, StatusCode::OK);
+    assert_eq!(png.headers[header::CONTENT_TYPE], "image/png");
+    assert_eq!(png.bytes, icon_png);
+    assert!(png.headers[header::CACHE_CONTROL]
+        .to_str()
+        .unwrap()
+        .contains("immutable"));
+    let svg_served = app
+        .send(
+            Method::GET,
+            &format!("/brand/v1/assets/{logo_hash}"),
+            &[],
+            None,
+        )
+        .await;
+    assert!(svg_served.headers[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap()
+        .contains("sandbox"));
+    for missing in ["f".repeat(64), "../../etc/passwd".to_string()] {
+        let res = app
+            .send(
+                Method::GET,
+                &format!("/brand/v1/assets/{missing}"),
+                &[],
+                None,
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::NOT_FOUND, "{missing}");
+    }
+
+    // A change is a new ETag; the old one fetches it.
+    let changed = app
+        .send_as(
+            &admin,
+            Method::PUT,
+            "/api/v1/branding",
+            Some(brand(json!({"app_name": "Acme Calls"}))),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.text);
+    let fresh = app
+        .send(
+            Method::GET,
+            "/brand/v1",
+            &[
+                (AUTH_HEADER, auth.as_str()),
+                ("if-none-match", etag.as_str()),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(fresh.status, StatusCode::OK);
+    assert_eq!(fresh.json["app_name"], "Acme Calls");
+    assert_ne!(fresh.headers[header::ETAG].to_str().unwrap(), etag);
+
+    // An asset the brand names stays; another goes.
+    let named = app
+        .send_as(
+            &admin,
+            Method::DELETE,
+            &format!("/api/v1/branding/assets/{icon_hash}"),
+            None,
+        )
+        .await;
+    assert_eq!(named.status, StatusCode::CONFLICT, "{}", named.text);
+    let spare = upload(tiny_png(64, 64, 2), "spare.png").await;
+    let spare_hash = spare.json["sha256"].as_str().unwrap().to_string();
+    let listed = app
+        .send_as(&admin, Method::GET, "/api/v1/branding/assets", None)
+        .await;
+    assert_eq!(listed.json.as_array().unwrap().len(), 4, "{}", listed.text);
+    let gone = app
+        .send_as(
+            &admin,
+            Method::DELETE,
+            &format!("/api/v1/branding/assets/{spare_hash}"),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+
+    // Another tenant has its own, and cannot name this one's assets.
+    let other = app
+        .admin_in(app.tenant_b, Method::GET, "/api/v1/branding", None)
+        .await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND, "{}", other.text);
+    let borrowed = app
+        .admin_in(
+            app.tenant_b,
+            Method::PUT,
+            "/api/v1/branding",
+            Some(json!({"app_name": "B", "icon": icon_hash})),
+        )
+        .await;
+    assert_eq!(
+        borrowed.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        borrowed.text
+    );
+
+    // Removed: the apps show their own again.
+    let removed = app
+        .send_as(&admin, Method::DELETE, "/api/v1/branding", None)
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
+    let served = app.send_as(&user, Method::GET, "/brand/v1", None).await;
+    assert_eq!(served.status, StatusCode::NOT_FOUND, "{}", served.text);
+    app.finish().await;
+}
+
+/// At a site the brand is the cloud's, like the rest of the tenant's
+/// configuration (docs/HYBRID_CONTROL_PLANE.md).
+#[tokio::test]
+async fn a_sites_admin_leaves_the_brand_to_the_cloud() {
+    let Some(app) = App::as_site().await else {
+        return;
+    };
+    let refused = app
+        .admin(
+            Method::PUT,
+            "/api/v1/branding",
+            Some(json!({"app_name": "Local"})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let upload = app
+        .send_raw(
+            BEARER.trim_start_matches("Bearer "),
+            Method::POST,
+            "/api/v1/branding/assets",
+            "application/octet-stream",
+            tiny_png(8, 8, 3),
+        )
+        .await;
+    assert_eq!(upload.status, StatusCode::FORBIDDEN, "{}", upload.text);
+    app.finish().await;
 }

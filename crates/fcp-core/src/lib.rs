@@ -4,6 +4,7 @@
 //! structures that other crates depend on.
 
 pub mod billing;
+pub mod branding;
 pub mod cached_storage;
 pub mod calling;
 pub mod cdr_archive;

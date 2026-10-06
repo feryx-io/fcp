@@ -47,6 +47,9 @@ pub const SYNC_TABLES: &[&str] = &[
     // the link fetches the images themselves.
     "firmware_targets",
     "group_members",
+    // The tenant's brand, carrying what its assets are (docs/BRANDING.md);
+    // the link fetches their bytes by hash.
+    "tenant_brands",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

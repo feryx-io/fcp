@@ -199,6 +199,9 @@ pub fn create_router_with(
             axum::routing::get(v1::metrics::prometheus_metrics)
                 .route_layer(middleware::from_fn(auth::require_admin)),
         )
+        // The tenant's brand for its softphones (`docs/BRANDING.md`): any
+        // of the tenant's tokens, an app's session above all.
+        .route("/brand/v1", axum::routing::get(v1::branding::serve_brand))
         .nest(
             "/api/v1",
             v1::router()
@@ -329,6 +332,11 @@ pub fn create_router_with(
             .route(
                 "/provision/:key/firmware/:image/:file",
                 axum::routing::get(v1::provisioning::serve_firmware),
+            )
+            // A brand's assets, public by hash (`docs/BRANDING.md` §6).
+            .route(
+                "/brand/v1/assets/:sha256",
+                axum::routing::get(v1::branding::serve_asset),
             ),
     );
     // `/api/v1/health` says `ok` and a version and nothing else; it is

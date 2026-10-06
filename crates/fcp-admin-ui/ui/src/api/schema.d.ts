@@ -4514,6 +4514,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/branding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/branding */
+        get: operations["branding_get_brand"];
+        /** PUT /api/v1/branding — set the tenant's brand. */
+        put: operations["branding_put_brand"];
+        post?: never;
+        /** DELETE /api/v1/branding — no brand: the apps show their own. */
+        delete: operations["branding_delete_brand"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/branding/assets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/branding/assets */
+        get: operations["branding_list_assets"];
+        put?: never;
+        /**
+         * POST /api/v1/branding/assets — upload a file as the body: a PNG, JPEG,
+         *     WebP or SVG image, or Ogg, MP3 or WAV audio, at most 5 MB. What it is
+         *     comes from its bytes. The same file again is the same asset.
+         */
+        post: operations["branding_upload_asset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/branding/assets/{sha256}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /api/v1/branding/assets/{sha256} — one the brand names is
+         *     refused (409).
+         */
+        delete: operations["branding_delete_asset"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/provisioning/redirection": {
         parameters: {
             query?: never;
@@ -5621,6 +5682,100 @@ export interface components {
             usage: components["schemas"]["UsageResponse"];
             resource_counts: components["schemas"]["ResourceCounts"];
             balance?: components["schemas"]["BalanceResponse"] | null;
+        };
+        /** @description An uploaded file. */
+        BrandAssetResponse: {
+            /** @description Hex SHA-256: what the brand names it by. */
+            sha256: string;
+            /** @description What the file is, from its bytes. */
+            mime: string;
+            /** @description `image` or `audio`. */
+            kind: string;
+            /** Format: int64 */
+            size: number;
+            /**
+             * Format: int32
+             * @description A PNG's dimensions.
+             */
+            width?: number | null;
+            /** Format: int32 */
+            height?: number | null;
+            file_name?: string | null;
+            /** @description Where apps fetch it, without credentials. */
+            url?: string | null;
+            /** Format: date-time */
+            uploaded_at: string;
+        };
+        /**
+         * @description The colors of one theme, each `#RRGGBB` or `#RRGGBBAA`; one unset is
+         *     the app's own.
+         */
+        BrandColors: {
+            primary?: string | null;
+            accent?: string | null;
+            background?: string | null;
+            surface?: string | null;
+            on_primary?: string | null;
+            on_surface?: string | null;
+            error?: string | null;
+        };
+        /**
+         * @description Hints for the app's dialer: prefixes it takes off what is dialed, and
+         *     short codes it turns into addresses.
+         */
+        BrandDialPlan: {
+            prefix_strip?: string[];
+            short_codes?: {
+                [key: string]: string;
+            };
+        };
+        /** @description The tenant's links, each `https://`. */
+        BrandLinks: {
+            support?: string | null;
+            privacy?: string | null;
+            terms?: string | null;
+            website?: string | null;
+        };
+        /** @description The tenant's brand, as its administrator writes it: assets by hash. */
+        BrandRequest: {
+            /** @description The app's name, as the tenant's people see it. */
+            app_name: string;
+            colors?: components["schemas"]["BrandColors"];
+            dark_colors?: components["schemas"]["BrandColors"] | null;
+            /** @description An uploaded image's hash. */
+            logo?: string | null;
+            logo_dark?: string | null;
+            /** @description An uploaded PNG, JPEG or WebP image's hash. */
+            icon?: string | null;
+            /** @description Uploaded audio, by hash; at most one the default. */
+            ringtones?: components["schemas"]["BrandRingtone"][];
+            links?: components["schemas"]["BrandLinks"];
+            dial_plan?: components["schemas"]["BrandDialPlan"];
+        };
+        /** @description The tenant's brand, with what its assets are. */
+        BrandResponse: {
+            tenant_id: string;
+            app_name: string;
+            colors: components["schemas"]["BrandColors"];
+            dark_colors?: components["schemas"]["BrandColors"] | null;
+            logo?: string | null;
+            logo_dark?: string | null;
+            icon?: string | null;
+            ringtones: components["schemas"]["BrandRingtone"][];
+            links: components["schemas"]["BrandLinks"];
+            dial_plan: components["schemas"]["BrandDialPlan"];
+            /** @description The assets it names. */
+            assets: components["schemas"]["BrandAssetResponse"][];
+            /** @description Where the tenant's softphones fetch it. */
+            brand_url?: string | null;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description A ringtone the app offers, by its asset's hash. */
+        BrandRingtone: {
+            name: string;
+            default?: boolean;
+            sha256: string;
         };
         BundleResponse: {
             /** Format: int64 */
@@ -7946,6 +8101,38 @@ export interface components {
                 external_ref?: string | null;
                 /** Format: date-time */
                 created_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_BrandAssetResponse: {
+            data: {
+                /** @description Hex SHA-256: what the brand names it by. */
+                sha256: string;
+                /** @description What the file is, from its bytes. */
+                mime: string;
+                /** @description `image` or `audio`. */
+                kind: string;
+                /** Format: int64 */
+                size: number;
+                /**
+                 * Format: int32
+                 * @description A PNG's dimensions.
+                 */
+                width?: number | null;
+                /** Format: int32 */
+                height?: number | null;
+                file_name?: string | null;
+                /** @description Where apps fetch it, without credentials. */
+                url?: string | null;
+                /** Format: date-time */
+                uploaded_at: string;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -23037,6 +23224,193 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    branding_get_brand: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrandResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    branding_put_brand: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BrandRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrandResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    branding_delete_brand: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    branding_list_assets: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_BrandAssetResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    branding_upload_asset: {
+        parameters: {
+            query?: {
+                /** @description The file's name, for the admin's page. */
+                name?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Kept */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrandAssetResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    branding_delete_asset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The asset's SHA-256 */
+                sha256: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
             204: {
                 headers: {
                     [name: string]: unknown;

@@ -13,6 +13,7 @@ openapi = ["dep:utoipa"]
 default = []
 
 [dependencies]
+url = "2"
 anyhow = { workspace = true }
 async-trait = "0.1"
 bcrypt = { workspace = true }

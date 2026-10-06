@@ -75,6 +75,7 @@ pub async fn open_site(database_url: &str, max_connections: u32) -> Result<SiteS
         .with_identity_store(storage.clone() as Arc<dyn fcp_core::identity::IdentityStore>)
         .with_offboarding_store(storage.clone() as Arc<dyn fcp_core::offboarding::OffboardingStore>)
         .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>)
+        .with_brand_store(storage.clone() as Arc<dyn fcp_core::branding::BrandStore>)
         .with_provisioning_store(
             storage.clone() as Arc<dyn fcp_core::provisioning::ProvisioningStore>
         );
@@ -337,6 +338,57 @@ impl Syncer {
         *self.applied.lock().unwrap_or_else(|e| e.into_inner()) += 1;
     }
 
+    /// The tenant's brand (`docs/BRANDING.md`): the assets it names that
+    /// the site lacks fetched from the cloud by hash and checked against
+    /// it, then the brand; assets it no longer names go.
+    async fn put_brand(&self, synced: fcp_core::branding::SyncedBrand) -> Result<()> {
+        use sha2::{Digest, Sha256};
+        let store = self
+            .stores
+            .storage
+            .brand_store()
+            .context("no brand store")?;
+        for asset in &synced.assets {
+            if store
+                .get_brand_asset(&self.tenant, &asset.sha256)
+                .await?
+                .is_some()
+            {
+                continue;
+            }
+            let response = self
+                .client
+                .get(self.url(&format!("/link/v1/brand-assets/{}", asset.sha256)))
+                .bearer_auth(&self.secret)
+                .send()
+                .await
+                .context("reaching the cloud for a brand asset")?;
+            if !response.status().is_success() {
+                anyhow::bail!(
+                    "the cloud answered {} for brand asset {}",
+                    response.status(),
+                    asset.sha256
+                );
+            }
+            let bytes = response.bytes().await.context("reading a brand asset")?;
+            let got = format!("{:x}", Sha256::digest(&bytes));
+            if got != asset.sha256 {
+                anyhow::bail!("brand asset {} arrived as {got}", asset.sha256);
+            }
+            store.put_brand_asset(asset, &bytes).await?;
+        }
+        store.put_brand(&synced.brand).await?;
+        let named = synced.brand.asset_hashes();
+        for asset in store.list_brand_assets(&self.tenant).await? {
+            if !named.contains(&asset.sha256.as_str()) {
+                store
+                    .delete_brand_asset(&self.tenant, &asset.sha256)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Write one object as the cloud has it.
     async fn put(&self, table: &str, id: &str, object: serde_json::Value) -> Result<()> {
         let storage = self.stores.storage.as_ref();
@@ -429,6 +481,7 @@ impl Syncer {
                 let member: fcp_core::group::GroupMember = parse!();
                 store.add_member(&member).await?;
             }
+            "tenant_brands" => self.put_brand(parse!()).await?,
             "rate_plans" => {
                 #[derive(Deserialize)]
                 struct PlanWithRates {
@@ -605,6 +658,15 @@ impl Syncer {
                             }
                         }
                     }
+                }
+            }
+            "tenant_brands" => {
+                let store = storage.brand_store().context("no brand store")?;
+                store.delete_brand(&self.tenant).await?;
+                for asset in store.list_brand_assets(&self.tenant).await? {
+                    store
+                        .delete_brand_asset(&self.tenant, &asset.sha256)
+                        .await?;
                 }
             }
             "group_members" => {

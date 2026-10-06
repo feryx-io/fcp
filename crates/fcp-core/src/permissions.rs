@@ -240,6 +240,9 @@ pub enum Permission {
     /// The tenant's identity providers: who signs in through what, and
     /// the roles their groups give (docs/IDENTITY_AND_DEVICES.md phase 3).
     IdentityProviderManage,
+    /// The tenant's brand: the app name, colors, logos and ringtones its
+    /// softphone takes on (docs/BRANDING.md).
+    BrandingManage,
     /// The tenant's groups and who is in them (`docs/USERS.md` §5).
     GroupRead,
     /// Making groups, their roles and their members: a group's role is
@@ -319,6 +322,7 @@ impl FromStr for Permission {
             "extension_manage" => Ok(Self::ExtensionManage),
             "webhook_manage" => Ok(Self::WebhookManage),
             "identity_provider_manage" => Ok(Self::IdentityProviderManage),
+            "branding_manage" => Ok(Self::BrandingManage),
             "group_read" => Ok(Self::GroupRead),
             "group_manage" => Ok(Self::GroupManage),
             "scim_provision" => Ok(Self::ScimProvision),
@@ -393,6 +397,7 @@ impl Permission {
         Self::ExtensionManage,
         Self::WebhookManage,
         Self::IdentityProviderManage,
+        Self::BrandingManage,
         Self::GroupRead,
         Self::GroupManage,
         Self::ScimProvision,
@@ -445,6 +450,7 @@ impl Permission {
             Self::ExtensionRead | Self::ExtensionManage => "Extensions",
             Self::WebhookManage => "Webhooks",
             Self::IdentityProviderManage => "Single sign-on",
+            Self::BrandingManage => "Branding",
             Self::GroupRead | Self::GroupManage => "Groups",
             Self::ScimProvision => "SCIM provisioning",
         }
@@ -516,6 +522,7 @@ impl Permission {
             Self::ExtensionManage => "extension_manage",
             Self::WebhookManage => "webhook_manage",
             Self::IdentityProviderManage => "identity_provider_manage",
+            Self::BrandingManage => "branding_manage",
             Self::GroupRead => "group_read",
             Self::GroupManage => "group_manage",
             Self::ScimProvision => "scim_provision",
@@ -588,6 +595,7 @@ impl Permission {
             Self::ExtensionManage => "Manage Extensions",
             Self::WebhookManage => "Manage Webhooks",
             Self::IdentityProviderManage => "Manage Identity Providers",
+            Self::BrandingManage => "Manage Branding",
             Self::GroupRead => "View Groups",
             Self::GroupManage => "Manage Groups",
             Self::ScimProvision => "Provision Users (SCIM)",
@@ -669,6 +677,10 @@ impl UserRole {
             // make anyone a tenant admin.
             (TenantAdmin, IdentityProviderManage, _) => true,
             (_, IdentityProviderManage, _) => false,
+
+            // What the tenant's softphone looks like: its administrator.
+            (TenantAdmin, BrandingManage, _) => true,
+            (_, BrandingManage, _) => false,
 
             // Groups give their members a role, so making them and filling
             // them is the tenant administrator's; whoever reads users, or

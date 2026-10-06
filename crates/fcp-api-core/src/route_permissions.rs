@@ -375,6 +375,12 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (POST, "/firmware/targets", Needs(DeviceUpdate)),
     (PUT, "/firmware/targets/:id", Needs(DeviceUpdate)),
     (DELETE, "/firmware/targets/:id", Needs(DeviceUpdate)),
+    (GET, "/branding", Needs(BrandingManage)),
+    (PUT, "/branding", Needs(BrandingManage)),
+    (DELETE, "/branding", Needs(BrandingManage)),
+    (GET, "/branding/assets", Needs(BrandingManage)),
+    (POST, "/branding/assets", Needs(BrandingManage)),
+    (DELETE, "/branding/assets/:sha256", Needs(BrandingManage)),
     (GET, "/provisioning/redirection", Needs(DeviceRead)),
     (
         PUT,

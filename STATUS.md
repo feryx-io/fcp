@@ -1914,6 +1914,21 @@ NOTIFYed at once, again on every `voicemail.mwi_updated` from the node
 holding the subscription, refresh and end inside the dialog, 404 without a
 mailbox (`fcp-call-manager/tests/mwi.rs`).
 
+Softphone F3, branding (v0.25.357, `docs/BRANDING.md`): a tenant's brand
+— app name, light and dark colors, logo, dark logo, icon, ringtones,
+links and dial-plan hints — made at `/api/v1/branding` under the new
+`branding_manage` (tenant admins), with assets uploaded as the body, typed
+by their bytes (PNG/JPEG/WebP/SVG, Ogg/MP3/WAV, 5 MB) and named by SHA-256.
+Served to the tenant's softphones at `/brand/v1` (Anvil's contract v1,
+bearer only, ETag and 304, 404 without a brand) and the assets public by
+hash at `/brand/v1/assets/{sha256}` (immutable, SVG sandboxed). Kept in
+Postgres (`tenant_brands`, `brand_assets`, migration 109), not a file
+store: assets are small. Synced to sites (journaled; the link fetches the
+assets by hash over `/link/v1/brand-assets/…` and keeps only those the
+brand names; the site's admin refuses writes). The admin UI's Branding
+page with a preview. Proved by `a_tenant_brands_its_softphone` and
+`fcp-link/tests/branding.rs`.
+
 Tenants on call, flow and voicemail events (v0.25.341): `call.ringing`,
 `call.answered`, `call.ended`, `call.failed`, park, hold, supervision
 parties, every `flow.*` and the voicemail message and mailbox events named
@@ -1939,7 +1954,7 @@ never dialled it. The API now keeps an extension row for it (made, moved,
 removed with the field; 409 for a number that dials something else). Found
 by Anvil's first calls through FCP (`docs/USERS.md`).
 
-A redirection race (v0.25.355): a phone made and changed at once (its
+A redirection race (v0.25.357): a phone made and changed at once (its
 template set straight after) started two syncs with its vendor's service;
 both could register it before either recorded it, the second giving the
 phone new credentials, and whichever reached the service last decided

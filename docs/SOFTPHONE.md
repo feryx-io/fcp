@@ -16,7 +16,8 @@ Agreed 2026-10-05: the first target is Anvil as an FCP client on the
 desktop, with mobile push later. Work in the anvil repo is a branch and PR
 per phase, merged by the owner, as in FCP. The questions in §6 are open.
 
-Progress: phase F1a done (v0.25.334): app sign-in and app sessions
+Progress: phase F3 done (v0.25.357): the tenant's brand
+(`docs/BRANDING.md`). Phase F1a done (v0.25.334): app sign-in and app sessions
 (`docs/APP_SIGN_IN.md`); the password grant of §2.2 became
 `POST /auth/app/sessions`, one sign-in path rather than a copy of it.
 
@@ -370,6 +371,11 @@ on.
   calling an `fcp_testkit` phone.
 
 ### Phase F3: branding (fcp)
+
+Done in v0.25.357 (`docs/BRANDING.md`). One change from the plan: assets are
+kept in Postgres with the brand, not in a directory or a bucket as firmware
+is. They are small, so every admin node sees them without shared storage and
+backups hold them; a site's link fetches the bytes by hash.
 
 - The tenant brand (migration, `fcp_core::branding`), assets stored like
   prompts and firmware (directory or S3), `/api/v1/branding`
