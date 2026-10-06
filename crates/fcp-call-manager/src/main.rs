@@ -932,7 +932,7 @@ async fn run() -> Result<()> {
     // Shared lines' appearances (docs/ENTERPRISE_CALLING.md §3.9): in the
     // cluster's Redis where there is a cluster, so every node's phones see
     // every node's calls; this node's own otherwise.
-    let sca = {
+    let (sca, mwi_subs) = {
         let table: Arc<dyn fcp_sip::sca::AppearanceTable> = {
             #[cfg(feature = "storage-redis")]
             {
@@ -969,13 +969,20 @@ async fn run() -> Result<()> {
         );
         sca.install(&call_manager);
         spawn_sca_listener(Arc::clone(&sca), Arc::clone(&event_bus));
+        let mwi_subs = fcp_sip::mwi_subscriptions::MwiSubscriptions::new(
+            Arc::clone(&dyn_storage),
+            Arc::clone(&uac),
+            registrar.clone(),
+            sip_address.to_string(),
+        );
+        spawn_mwi_subscription_listener(Arc::clone(&mwi_subs), Arc::clone(&event_bus));
         if config.cluster.enabled && !config.events.use_redis {
             warn!(
                 "[cluster] is on but [events] use_redis is off: a shared line's phones are \
                  shown only the calls of the node they watch through"
             );
         }
-        sca
+        (sca, mwi_subs)
     };
 
     // Hold music (docs/ENTERPRISE_CALLING.md §3.3): the built-in default in
@@ -1522,6 +1529,7 @@ async fn run() -> Result<()> {
     .with_user_calls(Arc::clone(&user_calls))
     .with_hoteling(Arc::clone(&hoteling))
     .with_sca(Arc::clone(&sca))
+    .with_mwi_subscriptions(Arc::clone(&mwi_subs))
     .with_supervisions(Arc::clone(&supervisions))
     .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
         &config.e911.trusted_edges,
@@ -3310,6 +3318,33 @@ fn spawn_sca_listener(sca: Arc<fcp_sip::sca::Sca>, event_bus: Arc<InMemoryEventB
         while let Some(event) = stream.next().await {
             if let fcp_events::PlatformEvent::Presence(presence) = &event {
                 sca.on_event(presence).await;
+            }
+        }
+    });
+}
+
+/// A mailbox's counts changed on any node: this node's subscribers to it
+/// are told (RFC 3842, `fcp_sip::mwi_subscriptions`).
+fn spawn_mwi_subscription_listener(
+    subs: Arc<fcp_sip::mwi_subscriptions::MwiSubscriptions>,
+    event_bus: Arc<InMemoryEventBus>,
+) {
+    tokio::spawn(async move {
+        let filter = EventFilter::new().types(vec![EventType::Voicemail]);
+        let mut stream = match event_bus.subscribe(filter).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                warn!(error = %e, "Message waiting: no event subscription; subscribers are told their counts only when they subscribe");
+                return;
+            }
+        };
+        while let Some(event) = stream.next().await {
+            if let fcp_events::PlatformEvent::Voicemail(fcp_events::VoicemailEvent::MwiUpdated {
+                mailbox_id,
+                ..
+            }) = &event
+            {
+                subs.mailbox_changed(mailbox_id).await;
             }
         }
     });

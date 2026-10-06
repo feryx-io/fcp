@@ -542,6 +542,7 @@ pub struct SipMessageHandler {
     hoteling: Option<Arc<crate::hoteling::Hoteling>>,
     /// Shared lines' appearances (§3.9).
     sca: Option<Arc<crate::sca::Sca>>,
+    mwi_subscriptions: Option<Arc<crate::mwi_subscriptions::MwiSubscriptions>>,
     /// Calls with a supervisor (§3.11).
     supervisions: Option<Arc<crate::supervision::Supervisions>>,
     /// Retrieves sent to the node holding the call: the call here → that
@@ -997,6 +998,7 @@ impl SipMessageHandler {
             user_calls: None,
             hoteling: None,
             sca: None,
+            mwi_subscriptions: None,
             supervisions: None,
             sca_handoff_targets: Arc::new(dashmap::DashMap::new()),
             trusted_edges: Default::default(),
@@ -1221,6 +1223,15 @@ impl SipMessageHandler {
     /// `docs/ENTERPRISE_CALLING.md` §3.9).
     pub fn with_sca(mut self, sca: Arc<crate::sca::Sca>) -> Self {
         self.sca = Some(sca);
+        self
+    }
+
+    /// Answer `message-summary` subscriptions (RFC 3842).
+    pub fn with_mwi_subscriptions(
+        mut self,
+        subs: Arc<crate::mwi_subscriptions::MwiSubscriptions>,
+    ) -> Self {
+        self.mwi_subscriptions = Some(subs);
         self
     }
 
@@ -2353,6 +2364,18 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
             }
             Method::Subscribe => {
+                // Message waiting (RFC 3842), in or out of dialog.
+                if let Some(subs) = &self.mwi_subscriptions {
+                    if crate::mwi_subscriptions::MwiSubscriptions::handles_event(request) {
+                        if let Err(e) = subs.handle_subscribe(request, handle).await {
+                            warn!(error = %e, "A message-summary SUBSCRIBE failed");
+                            let response =
+                                self.create_simple_response(request, 500, "Server Internal Error");
+                            handle.send_final(response).await;
+                        }
+                        return Ok(());
+                    }
+                }
                 // A shared line's appearances (`call-info`, `line-seize`,
                 // `docs/ENTERPRISE_CALLING.md` §3.9), in or out of dialog.
                 if let Some(sca) = &self.sca {

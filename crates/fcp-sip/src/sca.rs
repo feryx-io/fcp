@@ -1011,7 +1011,7 @@ impl Sca {
 }
 
 /// The request's `Event` package, parameters dropped, lower case.
-fn event_of(request: &Request) -> Option<String> {
+pub(crate) fn event_of(request: &Request) -> Option<String> {
     header(request, "Event").map(|e| {
         e.split(';')
             .next()
@@ -1021,11 +1021,11 @@ fn event_of(request: &Request) -> Option<String> {
     })
 }
 
-fn header(request: &Request, name: &str) -> Option<String> {
+pub(crate) fn header(request: &Request, name: &str) -> Option<String> {
     sip_parse::header(request.headers(), name).map(|v| v.to_string())
 }
 
-fn expires_of(request: &Request) -> Option<u32> {
+pub(crate) fn expires_of(request: &Request) -> Option<u32> {
     header(request, "Expires").and_then(|v| v.trim().parse().ok())
 }
 
@@ -1042,7 +1042,7 @@ fn request_user(request: &Request) -> Option<String> {
 
 /// The request's `Contact` URI, brackets and parameters outside them
 /// dropped.
-fn contact_of(request: &Request) -> Option<String> {
+pub(crate) fn contact_of(request: &Request) -> Option<String> {
     let contact = header(request, "Contact")?;
     let uri = match contact.split_once('<') {
         Some((_, rest)) => rest.split('>').next().unwrap_or(rest),
@@ -1067,7 +1067,7 @@ fn contact_key(contact: &str) -> String {
 }
 
 /// A header value's `tag` parameter.
-fn tag_of(value: &str) -> Option<String> {
+pub(crate) fn tag_of(value: &str) -> Option<String> {
     let after = match value.rfind('>') {
         Some(i) => &value[i + 1..],
         None => value,
@@ -1081,7 +1081,7 @@ fn tag_of(value: &str) -> Option<String> {
 }
 
 /// A `From`/`To` value without its `tag` parameter.
-fn without_tag(value: &str) -> String {
+pub(crate) fn without_tag(value: &str) -> String {
     let (head, params) = match value.rfind('>') {
         Some(i) => (&value[..=i], &value[i + 1..]),
         None => match value.find(';') {
@@ -1104,7 +1104,7 @@ fn without_tag(value: &str) -> String {
     out
 }
 
-async fn respond(
+pub(crate) async fn respond(
     handle: &sip_transaction::ServerTransactionHandle,
     request: &Request,
     code: u16,
@@ -1116,7 +1116,7 @@ async fn respond(
 }
 
 /// A 200 to a SUBSCRIBE: our tag on the `To`, the granted `Expires`.
-async fn respond_ok(
+pub(crate) async fn respond_ok(
     handle: &sip_transaction::ServerTransactionHandle,
     request: &Request,
     our_tag: Option<&str>,

@@ -35,6 +35,7 @@ pub mod link_peers;
 pub mod listener;
 pub mod metrics;
 pub mod mwi;
+pub mod mwi_subscriptions;
 pub mod presence;
 pub mod presence_checker;
 pub mod queue;

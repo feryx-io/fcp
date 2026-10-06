@@ -391,6 +391,15 @@ on.
   `/me/calling`.
 - Whatever FCP gets wrong against a real client is fixed in FCP in the same
   phase. A known example: a SUBSCRIBE to `message-summary` gets 489.
+  Fixed in v0.25.356 (`fcp_sip::mwi_subscriptions`):
+  - The SUBSCRIBE is authenticated like an INVITE, for the subscriber's own
+    mailbox: the user their `From` names, or the owner of a device acting
+    for them.
+  - It is answered 200, and the counts follow at once in a NOTIFY.
+  - Each `voicemail.mwi_updated` sends another NOTIFY from whichever node
+    holds the subscription.
+  - A refresh or an end is handled inside the dialog. A subscriber with no
+    mailbox gets 404.
 
 ### Phase F4: what a user sees (fcp)
 
