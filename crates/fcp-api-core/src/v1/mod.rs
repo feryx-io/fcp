@@ -32,6 +32,7 @@ pub mod lcr_routes;
 pub mod line_bindings;
 pub mod locations;
 pub mod me_data;
+pub mod me_events;
 pub mod media;
 pub mod metrics;
 pub mod phone_numbers;
@@ -125,7 +126,9 @@ pub fn pre_auth_router(enable_signup: bool) -> Router<ApiState> {
 /// cannot set `Authorization` headers on WebSocket connections. Each handler
 /// validates auth inline via the first-message protocol.
 pub fn ws_router() -> Router<ApiState> {
-    Router::new().route("/events", get(events::event_stream_websocket))
+    Router::new()
+        .route("/events", get(events::event_stream_websocket))
+        .route("/me/events", get(me_events::my_events))
 }
 
 /// Create the v1 API router.

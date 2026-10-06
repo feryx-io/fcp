@@ -16,9 +16,9 @@ Agreed 2026-10-05: the first target is Anvil as an FCP client on the
 desktop, with mobile push later. Work in the anvil repo is a branch and PR
 per phase, merged by the owner, as in FCP. The questions in §6 are open.
 
-Progress: phase F4a done (v0.25.358): `/me/calls` and `/me/directory`
-(§2.7); `/me/events` is F4b. Phase F3 done (v0.25.359): the tenant's brand
-(`docs/BRANDING.md`). Phase F1a done (v0.25.334): app sign-in and app sessions
+Progress: phase F4 done: F4a (v0.25.358) `/me/calls` and `/me/directory`,
+F4b (v0.25.363) `/me/events` (§2.7). Phase F3 done (v0.25.357): the tenant's
+brand (`docs/BRANDING.md`). Phase F1a done (v0.25.334): app sign-in and app sessions
 (`docs/APP_SIGN_IN.md`); the password grant of §2.2 became
 `POST /auth/app/sessions`, one sign-in path rather than a copy of it.
 
@@ -373,7 +373,7 @@ on.
 
 ### Phase F3: branding (fcp)
 
-Done in v0.25.359 (`docs/BRANDING.md`). One change from the plan: assets are
+Done in v0.25.357 (`docs/BRANDING.md`). One change from the plan: assets are
 kept in Postgres with the brand, not in a directory or a bucket as firmware
 is. They are small, so every admin node sees them without shared storage and
 backups hold them; a site's link fetches the bytes by hash.
@@ -398,7 +398,7 @@ backups hold them; a site's link fetches the bytes by hash.
   `/me/calling`.
 - Whatever FCP gets wrong against a real client is fixed in FCP in the same
   phase. A known example: a SUBSCRIBE to `message-summary` gets 489.
-  Fixed in v0.25.358 (`fcp_sip::mwi_subscriptions`):
+  Fixed in v0.25.356 (`fcp_sip::mwi_subscriptions`):
   - The SUBSCRIBE is authenticated like an INVITE, for the subscriber's own
     mailbox: the user their `From` names, or the owner of a device acting
     for them.
@@ -426,7 +426,15 @@ F4a done in v0.25.358:
   It answers 403 while the tenant's `directory.visible_to_users` is off.
   The setting is on the tenant API and the admin UI's tenant form.
 
-F4b, `/me/events`, follows.
+F4b done in v0.25.363: `GET /me/events` is the event WebSocket for a
+signed-in user (`docs/API_EVENTS.md`), served by the admin API next to
+`/events` rather than by the events server. Apps already talk to the admin
+API, which has the same bus. It carries:
+
+- the user's calls, followed by call id from a `call.initiated` naming
+  them;
+- their mailbox's events and their own user events;
+- the tenant's presence while the directory is shown.
 
 - `/me/calls`, `/me/directory` (with `directory.visible_to_users`),
   `/me/events` (the events server filtering by user), all in the contract

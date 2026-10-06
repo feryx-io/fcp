@@ -15702,3 +15702,122 @@ async fn the_softphone_gets_its_account_and_settings() {
         .as_str()
         .is_some_and(|u| u.ends_with("/api/v1")));
 }
+
+#[tokio::test]
+async fn a_users_event_stream_carries_only_their_own() {
+    use tokio_tungstenite::tungstenite::Message;
+    let app = require_app!();
+    let domains = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"sip_domains": ["events.test"]})),
+        )
+        .await;
+    assert_eq!(domains.status, StatusCode::OK, "{}", domains.text);
+    let hank_id = app.create_user_with_role("hank", "end_user").await;
+    let hank = app.login("hank", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let port = app.serve().await;
+    let url = format!("ws://127.0.0.1:{port}/api/v1/me/events");
+    async fn next(
+        ws: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> String {
+        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("a frame in time")
+            .unwrap()
+            .unwrap();
+        frame.to_text().unwrap().to_string()
+    }
+
+    // The static token is no one's: refused.
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(Message::Text(
+        json!({"type": "auth", "token": ADMIN_TOKEN}).to_string(),
+    ))
+    .await
+    .unwrap();
+    assert!(next(&mut ws).await.contains("auth_error"));
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(Message::Text(
+        json!({"type": "auth", "token": hank}).to_string(),
+    ))
+    .await
+    .unwrap();
+    assert!(next(&mut ws).await.contains("auth_ok"));
+    assert!(next(&mut ws).await.contains("connected"));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let (mine, theirs) = (CallId::new(), CallId::new());
+    let initiated = |call: CallId, from: &str, to: &str| {
+        PlatformEvent::Call(fcp_events::CallEvent::Initiated {
+            call_id: call,
+            tenant_id: app.tenant_a,
+            from: from.into(),
+            to: to.into(),
+            direction: fcp_events::CallDirection::Inbound,
+            timestamp: SystemTime::now(),
+            trunk_name: None,
+            trunk_id: None,
+            node_id: None,
+        })
+    };
+    let ringing = |call: CallId| {
+        PlatformEvent::Call(fcp_events::CallEvent::Ringing {
+            tenant_id: Some(app.tenant_a),
+            call_id: call,
+            timestamp: SystemTime::now(),
+            node_id: None,
+        })
+    };
+    let calling = |user: &str, name: &str| {
+        PlatformEvent::User(fcp_events::UserEvent::CallingChanged {
+            user_id: user.into(),
+            username: name.into(),
+            tenant_id: app.tenant_a,
+            timestamp: SystemTime::now(),
+        })
+    };
+    for event in [
+        initiated(theirs, "sip:dan@events.test", "sip:erin@events.test"),
+        initiated(mine, "sip:dan@events.test", "sip:hank@events.test"),
+        ringing(theirs),
+        ringing(mine),
+        calling("user-someone-else", "erin"),
+        calling(&hank_id, "hank"),
+    ] {
+        app.event_bus.publish(event).await.expect("publish");
+    }
+    let mut got = Vec::new();
+    loop {
+        let text = next(&mut ws).await;
+        let done = text.contains("calling_changed");
+        got.push(text);
+        if done {
+            break;
+        }
+    }
+    // Events carry call ids without their prefix.
+    let bare = |c: CallId| c.to_string().trim_start_matches("call-").to_string();
+    let (mine, theirs) = (bare(mine), bare(theirs));
+    assert_eq!(got.len(), 3, "{got:#?}");
+    assert!(
+        got[0].contains(&mine) && got[0].contains("initiated"),
+        "{}",
+        got[0]
+    );
+    assert!(
+        got[1].contains(&mine) && got[1].contains("ringing"),
+        "{}",
+        got[1]
+    );
+    assert!(got[2].contains(&hank_id), "{}", got[2]);
+    assert!(!got.iter().any(|t| t.contains(&theirs)), "{got:#?}");
+    app.finish().await;
+}
