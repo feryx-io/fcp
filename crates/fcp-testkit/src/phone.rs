@@ -144,6 +144,8 @@ struct Inner {
     /// On a REFER: dial the Refer-To, report with NOTIFY, drop the old
     /// leg on success — what a phone does on a blind transfer.
     follow_refers: std::sync::atomic::AtomicBool,
+    /// Ignore everything that arrives, as a phone off the network does.
+    silent: std::sync::atomic::AtomicBool,
     /// Where the server is, for bare-number targets.
     server: SocketAddr,
     /// `;transport=tls` for a phone that talks SIPS, else empty: on every
@@ -695,6 +697,7 @@ impl Phone {
             uac: OnceLock::new(),
             auto_answer: std::sync::atomic::AtomicBool::new(false),
             follow_refers: std::sync::atomic::AtomicBool::new(false),
+            silent: std::sync::atomic::AtomicBool::new(false),
             server,
             transport_param,
         });
@@ -739,8 +742,12 @@ impl Phone {
         let loop_tm = Arc::clone(&tm);
         let loop_uas = Arc::clone(&uas);
         let loop_socket = Arc::clone(&socket);
+        let loop_inner = Arc::clone(&inner);
         tokio::spawn(async move {
             while let Some(packet) = rx.recv().await {
+                if loop_inner.silent.load(std::sync::atomic::Ordering::Relaxed) {
+                    continue;
+                }
                 handle_packet(&loop_tm, &loop_uas, &loop_socket, packet).await;
             }
         });
@@ -763,6 +770,15 @@ impl Phone {
         self.inner
             .auto_answer
             .store(yes, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Stop answering anything, as a phone that has lost its network: the
+    /// server's requests to it go unanswered until their transactions time
+    /// out.
+    pub fn fall_silent(&self) {
+        self.inner
+            .silent
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Follow a REFER as a phone does on a blind transfer: dial the

@@ -2697,10 +2697,20 @@ impl SipMessageHandler {
         // A trusted edge placing a call for one of a tenant's users names
         // them; that is the call's tenant and caller.
         let edge_caller = self.trusted_edges.caller(request, peer.ip());
+        // A leg this node placed to itself, continuing one of its calls (a
+        // transfer or a forward): the call's tenant's, and admitted without
+        // a digest — the node checked the caller when it placed the leg.
+        let own_leg_tenant = if edge_caller.is_none() {
+            self.own_leg_tenant(request, peer)
+        } else {
+            None
+        };
         // A registered device is itself, whoever else shares its address;
         // otherwise a carrier's call is whose the trunk it arrived on says
         // (`docs/TENANT_TRUNKS.md` §7), before the domain is looked at.
-        let registered_tenant = if edge_caller.is_none() {
+        let registered_tenant = if own_leg_tenant.is_some() {
+            own_leg_tenant
+        } else if edge_caller.is_none() {
             self.registered_caller_tenant(request, peer.ip()).await
         } else {
             None
@@ -2883,7 +2893,9 @@ impl SipMessageHandler {
         // plausible place, and a phone that has moved has not stopped
         // being itself.
         let peer_ip = peer.ip();
-        let is_trusted_edge = edge_caller.is_some() || self.trusted_edges.contains(peer_ip);
+        let is_trusted_edge = edge_caller.is_some()
+            || own_leg_tenant.is_some()
+            || self.trusted_edges.contains(peer_ip);
         let invite_auth = match (&self.registrar, is_trusted_edge) {
             (Some(registrar), false) => registrar.authenticate_invite(request).await,
             _ => crate::registrar::InviteAuth::NotRequired,
@@ -6229,7 +6241,20 @@ impl SipMessageHandler {
                 debug!(call_id = %call_id, destination = %destination_aor, "No extension found, using direct registrar lookup");
 
                 if let Some(registrar) = &self.registrar {
-                    match registrar.get_registrations(destination_aor).await {
+                    let found = match registrar.get_registrations(destination_aor).await {
+                        Ok(bindings) if !bindings.is_empty() => Ok(bindings),
+                        other => {
+                            let named = self
+                                .registrations_of_named_user(&call_id, destination_aor)
+                                .await;
+                            if named.is_empty() {
+                                other
+                            } else {
+                                Ok(named)
+                            }
+                        }
+                    };
+                    match found {
                         Ok(bindings) if !bindings.is_empty() => {
                             debug!(
                                 call_id = %call_id,
@@ -7444,6 +7469,9 @@ impl SipMessageHandler {
             } else {
                 None
             };
+            // The callee's own answer, kept on its leg as the caller's offer
+            // is on the A leg: a transfer of the callee re-offers it.
+            let callee_sdp = b_leg_sdp.clone();
 
             // A carrier that answers a trunk requiring SRTP in the clear
             // has not answered it (`docs/TENANT_TRUNKS.md` §6).
@@ -7687,6 +7715,7 @@ impl SipMessageHandler {
                 // Store B-leg dialog information
                 if let Some(b_leg) = &mut call.b_leg {
                     b_leg.dialog = Some(b_leg_dialog.clone());
+                    b_leg.sdp = callee_sdp.clone();
                     debug!(
                         call_id = %call_id,
                         b_leg_dialog_call_id = ?b_leg_dialog.id().call_id(),
@@ -8205,6 +8234,9 @@ impl SipMessageHandler {
             } else {
                 None
             };
+            // The callee's own answer, kept on its leg as the caller's offer
+            // is on the A leg: a transfer of the callee re-offers it.
+            let callee_sdp = b_leg_sdp.clone();
 
             // A carrier that answers a trunk requiring SRTP in the clear
             // has not answered it (`docs/TENANT_TRUNKS.md` §6).
@@ -8456,6 +8488,7 @@ impl SipMessageHandler {
                 call.a_leg.dialog = Some(a_leg_dialog.clone());
                 if let Some(b_leg) = &mut call.b_leg {
                     b_leg.dialog = b_leg_dialog.clone();
+                    b_leg.sdp = callee_sdp.clone();
                 }
                 call.state = fcp_b2bua_core::CallState::Established;
                 call.establish();
@@ -16153,6 +16186,81 @@ impl SipMessageHandler {
     ) -> Result<Arc<crate::uac::OutboundCall>> {
         self.create_outbound_call_for(request, target_uri, uac, sdp_override, None)
             .await
+    }
+
+    /// A user's registrations when they are dialed by name at an address
+    /// that is not the one they registered under — this node's own, as a
+    /// transfer dials back into it: the user of that name in the call's
+    /// tenant, at each of the tenant's SIP domains.
+    async fn registrations_of_named_user(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        destination_aor: &str,
+    ) -> Vec<sip_registrar::Binding> {
+        use fcp_core::storage::{CredentialStore, TenantStore};
+        let (Some(storage), Some(registrar)) = (&self.storage, &self.registrar) else {
+            return Vec::new();
+        };
+        let Some(tenant_id) = self.call_manager.get_call(call_id).map(|c| c.tenant_id) else {
+            return Vec::new();
+        };
+        let bare = destination_aor
+            .strip_prefix("sip:")
+            .or_else(|| destination_aor.strip_prefix("sips:"))
+            .unwrap_or(destination_aor);
+        let Some((dialed, _)) = bare.split_once('@') else {
+            return Vec::new();
+        };
+        let Some(user_id) = crate::ring_plan::user_of(storage, &tenant_id, dialed).await else {
+            return Vec::new();
+        };
+        let Ok(Some(user)) = storage.get_user_by_id(&user_id).await else {
+            return Vec::new();
+        };
+        let domains = match storage.get_tenant(&tenant_id).await {
+            Ok(Some(tenant)) => tenant.sip_domains,
+            _ => return Vec::new(),
+        };
+        let mut found = Vec::new();
+        for domain in domains {
+            let aor = format!("sip:{}@{}", user.sip_name(), domain);
+            if let Ok(bindings) = registrar
+                .get_registrations_for_tenant(&tenant_id, &aor)
+                .await
+            {
+                found.extend(bindings);
+            }
+        }
+        found
+    }
+
+    /// The tenant of the call an INVITE continues, when this node placed it
+    /// to itself: it comes from this node's own SIP address and port and
+    /// names, as its transfer origin or the call it forwards for, a call
+    /// this node has (the headers survive ingress only then, `claims`).
+    fn own_leg_tenant(
+        &self,
+        request: &sip_core::Request,
+        peer: std::net::SocketAddr,
+    ) -> Option<fcp_core::TenantId> {
+        let own_port = self.uas.local_uri.port().unwrap_or(5060);
+        let own_ip = self.local_addr.parse::<std::net::IpAddr>().ok();
+        let from_here = peer.port() == own_port
+            && (Some(peer.ip()) == own_ip
+                || peer.ip().is_loopback()
+                || self.uas.local_uri.host() == peer.ip().to_string());
+        if !from_here {
+            return None;
+        }
+        let continued = [TRANSFERRED_FROM_HEADER, FORWARDED_FOR_HEADER]
+            .into_iter()
+            .find_map(|name| sip_parse::header(request.headers(), name))?;
+        let id = continued.as_str().trim().parse::<fcp_core::CallId>().ok()?;
+        let call = self
+            .call_manager
+            .get_call(&fcp_b2bua_core::CallId::from_uuid(*id.as_uuid()))?;
+        debug!(source = %peer, call_id = %call.id, "INVITE is a leg this node placed for one of its calls");
+        Some(call.tenant_id)
     }
 
     /// [`Self::create_outbound_call`] for a leg forwarding `forwarded_for`:
