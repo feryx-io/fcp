@@ -174,7 +174,26 @@ pub struct SipPresenceHandler {
     /// short subscriptions so its watchers come back somewhere that is
     /// serving (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
     admission: Option<Arc<dyn crate::admission::NodeAdmission>>,
+    /// A delivery queue per subscription: a watcher's NOTIFYs go in the
+    /// order their events happened, and one that does not answer delays
+    /// only its own, never the node's other lamps.
+    deliveries: Arc<dashmap::DashMap<String, tokio::sync::mpsc::UnboundedSender<Delivery>>>,
 }
+
+/// One NOTIFY waiting for its watcher's queue.
+struct Delivery {
+    watcher: Watcher,
+    subscription_state: String,
+    event: &'static str,
+    content_type: &'static str,
+    body: String,
+}
+
+/// How long terminated NOTIFYs are waited on, together.
+const TERMINATED_NOTIFY_WAIT: Duration = Duration::from_secs(5);
+
+/// How long a watcher's queue waits for more before its worker goes.
+const DELIVERY_IDLE: Duration = Duration::from_secs(60);
 
 /// Parsed SUBSCRIBE context for easier dispatch.
 struct SubscribeContext {
@@ -214,7 +233,50 @@ impl SipPresenceHandler {
             publish_limiter,
             auth: None,
             admission: None,
+            deliveries: Arc::new(dashmap::DashMap::new()),
         }
+    }
+
+    /// Put a NOTIFY on its watcher's queue, starting the queue's worker
+    /// when it has none. The send happens under the map's entry, so a
+    /// worker that retires (removing its entry first) has every NOTIFY
+    /// handed to it already in its channel.
+    fn enqueue(&self, delivery: Delivery) {
+        let key = delivery.watcher.subscription_id.clone();
+        let mut entry = self
+            .deliveries
+            .entry(key.clone())
+            .or_insert_with(|| self.start_delivery_worker(key.clone()));
+        if let Err(tokio::sync::mpsc::error::SendError(delivery)) = entry.send(delivery) {
+            // The worker is gone without having removed itself: replace it.
+            let tx = self.start_delivery_worker(key);
+            let _ = tx.send(delivery);
+            *entry = tx;
+        }
+    }
+
+    fn start_delivery_worker(&self, key: String) -> tokio::sync::mpsc::UnboundedSender<Delivery> {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Delivery>();
+        let uac = Arc::clone(&self.uac);
+        let presence = self.presence.clone();
+        let deliveries = Arc::clone(&self.deliveries);
+        let ours = tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match tokio::time::timeout(DELIVERY_IDLE, rx.recv()).await {
+                    Ok(Some(d)) => deliver(&uac, &presence, &d).await,
+                    Ok(None) => return,
+                    Err(_) => {
+                        deliveries.remove_if(&key, |_, tx| tx.same_channel(&ours));
+                        while let Ok(d) = rx.try_recv() {
+                            deliver(&uac, &presence, &d).await;
+                        }
+                        return;
+                    }
+                }
+            }
+        });
+        tx
     }
 
     /// What this node accepts, so a draining one shortens the
@@ -292,6 +354,7 @@ impl SipPresenceHandler {
             publish_limiter: Arc::clone(&self.publish_limiter),
             auth: self.auth.clone(),
             admission: self.admission.clone(),
+            deliveries: Arc::clone(&self.deliveries),
         }
     }
 
@@ -683,7 +746,7 @@ impl SipPresenceHandler {
             .await
     }
 
-    /// Send NOTIFY to a single watcher with a pre-built body.
+    /// Send NOTIFY to a single watcher with a pre-built body, now.
     async fn send_notify_with_body(
         &self,
         watcher: &Watcher,
@@ -692,78 +755,16 @@ impl SipPresenceHandler {
         content_type: &str,
         body: &str,
     ) -> Result<()> {
-        let target_uri =
-            SipUri::parse(&watcher.contact_uri).context("Failed to parse watcher contact URI")?;
-
-        let (base_delay_ms, _, _) = self.presence.retry_config();
-
-        match self
-            .uac
-            .send_unsolicited_notify_with_state(
-                &target_uri,
-                event,
-                content_type,
-                body,
-                subscription_state,
-            )
-            .await
-        {
-            Ok(response) => {
-                if response.code() >= 200 && response.code() < 300 {
-                    debug!(
-                        watcher = %watcher.watcher_aor,
-                        presentity = %watcher.presentity_aor,
-                        event = %watcher.event_package,
-                        sub_state = %subscription_state,
-                        "Presence NOTIFY accepted"
-                    );
-                    self.presence
-                        .metrics()
-                        .inc_counter("fcp_presence_notify_success_total", &[]);
-                    self.presence
-                        .remove_retry(&watcher.subscription_id, &watcher.presentity_aor);
-                } else {
-                    warn!(
-                        watcher = %watcher.watcher_aor,
-                        presentity = %watcher.presentity_aor,
-                        code = response.code(),
-                        "Presence NOTIFY rejected"
-                    );
-                    self.presence
-                        .metrics()
-                        .inc_counter("fcp_presence_notify_failure_total", &[]);
-                    let retry = fcp_presence::NotifyRetryEntry {
-                        watcher: watcher.clone(),
-                        subscription_state: subscription_state.to_string(),
-                        attempt: 1,
-                        next_retry_at: Instant::now() + Duration::from_millis(base_delay_ms),
-                        created_at: Instant::now(),
-                    };
-                    self.presence.enqueue_retry(retry);
-                }
-            }
-            Err(e) => {
-                warn!(
-                    watcher = %watcher.watcher_aor,
-                    presentity = %watcher.presentity_aor,
-                    error = %e,
-                    "Failed to send presence NOTIFY"
-                );
-                self.presence
-                    .metrics()
-                    .inc_counter("fcp_presence_notify_failure_total", &[]);
-                let retry = fcp_presence::NotifyRetryEntry {
-                    watcher: watcher.clone(),
-                    subscription_state: subscription_state.to_string(),
-                    attempt: 1,
-                    next_retry_at: Instant::now() + Duration::from_millis(base_delay_ms),
-                    created_at: Instant::now(),
-                };
-                self.presence.enqueue_retry(retry);
-            }
-        }
-
-        Ok(())
+        send_notify(
+            &self.uac,
+            &self.presence,
+            watcher,
+            subscription_state,
+            event,
+            content_type,
+            body,
+        )
+        .await
     }
 
     /// Parse SUBSCRIBE request into a context struct.
@@ -1063,6 +1064,125 @@ impl SipPresenceHandler {
         });
 
         Ok(())
+    }
+}
+
+/// Send one NOTIFY to a watcher and wait for its answer: a refusal is
+/// retried later, a timeout ends the subscription.
+async fn send_notify(
+    uac: &Arc<SipUserAgentClient>,
+    presence: &PresenceManager,
+    watcher: &Watcher,
+    subscription_state: &str,
+    event: &str,
+    content_type: &str,
+    body: &str,
+) -> Result<()> {
+    let target_uri =
+        SipUri::parse(&watcher.contact_uri).context("Failed to parse watcher contact URI")?;
+
+    let (base_delay_ms, _, _) = presence.retry_config();
+
+    match uac
+        .send_unsolicited_notify_with_state(
+            &target_uri,
+            event,
+            content_type,
+            body,
+            subscription_state,
+        )
+        .await
+    {
+        Ok(response) => {
+            if response.code() >= 200 && response.code() < 300 {
+                debug!(
+                    watcher = %watcher.watcher_aor,
+                    presentity = %watcher.presentity_aor,
+                    event = %watcher.event_package,
+                    sub_state = %subscription_state,
+                    "Presence NOTIFY accepted"
+                );
+                presence
+                    .metrics()
+                    .inc_counter("fcp_presence_notify_success_total", &[]);
+                presence.remove_retry(&watcher.subscription_id, &watcher.presentity_aor);
+            } else {
+                warn!(
+                    watcher = %watcher.watcher_aor,
+                    presentity = %watcher.presentity_aor,
+                    code = response.code(),
+                    "Presence NOTIFY rejected"
+                );
+                presence
+                    .metrics()
+                    .inc_counter("fcp_presence_notify_failure_total", &[]);
+                let retry = fcp_presence::NotifyRetryEntry {
+                    watcher: watcher.clone(),
+                    subscription_state: subscription_state.to_string(),
+                    attempt: 1,
+                    next_retry_at: Instant::now() + Duration::from_millis(base_delay_ms),
+                    created_at: Instant::now(),
+                };
+                presence.enqueue_retry(retry);
+            }
+        }
+        Err(e) if e.to_string().contains("Timer F") => {
+            // Nobody there (RFC 6665 §4.2.2): the subscription ends,
+            // rather than every later change waiting on it again.
+            warn!(
+                watcher = %watcher.watcher_aor,
+                presentity = %watcher.presentity_aor,
+                "Presence NOTIFY timed out; the subscription is removed"
+            );
+            presence
+                .metrics()
+                .inc_counter("fcp_presence_notify_failure_total", &[]);
+            presence
+                .remove_watcher_for_tenant(
+                    &watcher.presentity_aor,
+                    &watcher.subscription_id,
+                    &watcher.tenant_id,
+                )
+                .await;
+        }
+        Err(e) => {
+            warn!(
+                watcher = %watcher.watcher_aor,
+                presentity = %watcher.presentity_aor,
+                error = %e,
+                "Failed to send presence NOTIFY"
+            );
+            presence
+                .metrics()
+                .inc_counter("fcp_presence_notify_failure_total", &[]);
+            let retry = fcp_presence::NotifyRetryEntry {
+                watcher: watcher.clone(),
+                subscription_state: subscription_state.to_string(),
+                attempt: 1,
+                next_retry_at: Instant::now() + Duration::from_millis(base_delay_ms),
+                created_at: Instant::now(),
+            };
+            presence.enqueue_retry(retry);
+        }
+    }
+
+    Ok(())
+}
+
+/// A queued NOTIFY delivered; a failure is the watcher's alone.
+async fn deliver(uac: &Arc<SipUserAgentClient>, presence: &PresenceManager, d: &Delivery) {
+    if let Err(e) = send_notify(
+        uac,
+        presence,
+        &d.watcher,
+        &d.subscription_state,
+        d.event,
+        d.content_type,
+        &d.body,
+    )
+    .await
+    {
+        warn!(watcher = %d.watcher.watcher_aor, error = %e, "Failed to notify watcher");
     }
 }
 
@@ -1398,16 +1518,13 @@ impl PresenceHandler for SipPresenceHandler {
                 "presence.winfo" => ("presence.winfo", "application/watcherinfo+xml", &winfo_body),
                 _ => ("presence", "application/pidf+xml", &pidf_body),
             };
-            if let Err(e) = self
-                .send_notify_with_body(watcher, &sub_state, event, content_type, body)
-                .await
-            {
-                warn!(
-                    watcher = %watcher.watcher_aor,
-                    error = %e,
-                    "Failed to notify watcher"
-                );
-            }
+            self.enqueue(Delivery {
+                watcher: watcher.clone(),
+                subscription_state: sub_state,
+                event,
+                content_type,
+                body: body.clone(),
+            });
         }
 
         Ok(())
@@ -1419,14 +1536,29 @@ impl PresenceHandler for SipPresenceHandler {
         reason: &str,
     ) -> Result<()> {
         let sub_state = format!("terminated;reason={reason}");
-        for watcher in watchers {
-            if let Err(e) = self.send_notify_to_watcher(watcher, &sub_state).await {
-                warn!(
-                    watcher = %watcher.watcher_aor,
-                    error = %e,
-                    "Failed to send terminated NOTIFY"
-                );
+        // All at once, and not waited on past a few seconds: a watcher that
+        // is gone would otherwise hold a shutdown (or the expiry sweep) for
+        // its whole transaction timeout.
+        let sends = watchers.iter().map(|watcher| {
+            let sub_state = &sub_state;
+            async move {
+                if let Err(e) = self.send_notify_to_watcher(watcher, sub_state).await {
+                    warn!(
+                        watcher = %watcher.watcher_aor,
+                        error = %e,
+                        "Failed to send terminated NOTIFY"
+                    );
+                }
             }
+        });
+        if tokio::time::timeout(TERMINATED_NOTIFY_WAIT, futures::future::join_all(sends))
+            .await
+            .is_err()
+        {
+            warn!(
+                count = watchers.len(),
+                "Not every terminated NOTIFY was answered in time"
+            );
         }
         Ok(())
     }

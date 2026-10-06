@@ -156,6 +156,19 @@ format = "compact"
         assert!(lamp(&app).await.is_some(), "and is told the lamp");
     }
 
+    // A watcher whose phone has gone off the network: its NOTIFYs go
+    // unanswered for half a minute, and nobody else's lamp waits on them.
+    let gone = phone(&alice).await;
+    assert_eq!(
+        gone.subscribe(&bob_aor, "dialog", 600, None)
+            .await
+            .unwrap()
+            .code,
+        200
+    );
+    assert!(lamp(&gone).await.is_some());
+    gone.fall_silent();
+
     // Alice calls Bob: Carol sees it.
     let call = alice_phone.call(&bob.extension).await.unwrap();
     let incoming = bob_phone.incoming(SOON).await.expect("Bob rings");

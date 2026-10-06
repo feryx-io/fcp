@@ -1967,6 +1967,31 @@ presence server) now:
 An out-of-dialog SUBSCRIBE to a package nothing takes is answered 489 with
 `Allow-Events`, not 500 (`fcp-call-manager/tests/presence.rs`).
 
+Transfers, forwards and lamps as a softphone meets them (v0.25.364), found
+by Anvil's transfer tests against a node with `auth_invites` on and phones
+on their own addresses:
+- the caller may transfer the callee: a leg's `sdp` was kept for the caller
+  only, so a REFER from the caller failed with 488 "no SDP for the
+  transferred party". The callee's answer is now kept on the B leg (which
+  also gives a callee's re-INVITE its prior SDP and the CDR its side;
+  `the_caller_transfers_the_callee`);
+- the legs the node places to itself — a transfer's, a forward's — are let
+  in under `auth_invites`: one arriving from the node's own SIP address and
+  port that names a call this node has takes that call's tenant and is not
+  challenged. They used to be challenged or refused (403 "Tenant context
+  required"), so with `auth_invites` on no executed transfer or forward
+  worked; with it off they worked only when the transferred party sat on
+  the node's own address (`the_nodes_own_legs_pass_invite_authentication`);
+- a user dialed by name at the node's own address (as a transfer dials
+  back) is found at the tenant's SIP domains, not looked up as
+  `name@<node address>`;
+- a presence watcher that stops answering delays only itself: each
+  subscription has its own ordered NOTIFY queue, a NOTIFY that times out
+  ends the subscription (RFC 6665 §4.2.2), and terminated NOTIFYs at
+  shutdown go together with a five-second wait. One dead phone used to hold
+  every lamp on the node for 32 s per change, and a shutdown as long
+  (`fcp-call-manager/tests/presence.rs`, `Phone::fall_silent`).
+
 One call, not four (v0.25.361): the node passed every ACK to the B2BUA,
 so the ACK to a 401 (or any non-2xx final) never reached its INVITE
 server transaction, and over UDP the 401 was resent until Timer H (about

@@ -735,6 +735,60 @@ async fn the_node_carries_out_a_blind_transfer() {
     stack.finish().await;
 }
 
+/// The caller transfers the callee: the callee's leg is offered to the
+/// target with the callee's own answer, which the node keeps on its leg.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_caller_transfers_the_callee() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+
+    // Alice sends Bob to Carol.
+    let refer_to = format!("sip:{}@{}", carol.extension, stack.sip);
+    assert_eq!(alice_call.refer(&refer_to).await.unwrap(), 202);
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("Carol's phone did not ring for the transfer", &alice)
+            .await;
+    };
+    // Bob is known by the number Alice dialed.
+    assert!(
+        at_carol.from.contains(&bob.extension),
+        "Carol sees {}",
+        at_carol.from
+    );
+    let carol_call = at_carol.answer().await.unwrap();
+    let notified = alice
+        .expect(
+            SOON,
+            |e| matches!(e, PhoneEvent::Notify { body, .. } if body.contains("200")),
+        )
+        .await;
+    assert!(
+        notified.is_some(),
+        "Alice was not told the transfer succeeded"
+    );
+    assert!(alice_call.ended(SOON).await, "Alice's leg was not dropped");
+
+    // Bob, on his own call still, hears Carol, and she him.
+    carol_call.media().play_tone(660.0, 3000);
+    assert!(
+        bob_call.media().heard(660, SOON).await,
+        "Bob does not hear Carol"
+    );
+    bob_call.media().play_tone(440.0, 3000);
+    assert!(
+        carol_call.media().heard(440, SOON).await,
+        "Carol does not hear Bob"
+    );
+    bob_call.hangup().await.unwrap();
+    assert!(
+        carol_call.ended(SOON).await,
+        "Carol's leg outlived the call"
+    );
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_attended_transfer_joins_the_other_two() {
     let stack = stack_or_skip!();
@@ -2923,5 +2977,56 @@ async fn the_api_transfers_a_call_and_redirects_it_into_a_flow() {
         ran.iter().any(|t| t.node_id.as_deref() == Some("noted")),
         "{ran:?}"
     );
+    stack.finish().await;
+}
+
+/// With `auth_invites` on, the legs the node places to itself — a
+/// transfer's, a forward's — carry no digest: they come from the node's own
+/// address naming one of its calls, take that call's tenant and are let in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_nodes_own_legs_pass_invite_authentication() {
+    let Some(stack) = Stack::start_configured("", "auth_invites = true").await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+
+    // A transfer: Alice sends Bob to Carol.
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    let refer_to = format!("sip:{}@{}", carol.extension, stack.sip);
+    assert_eq!(alice_call.refer(&refer_to).await.unwrap(), 202);
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("Carol's phone did not ring for the transfer", &alice)
+            .await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    assert!(alice_call.ended(SOON).await, "Alice's leg was not dropped");
+    carol_call.media().play_tone(660.0, 3000);
+    assert!(
+        bob_call.media().heard(660, SOON).await,
+        "Bob does not hear Carol"
+    );
+    bob_call.hangup().await.unwrap();
+    assert!(carol_call.ended(SOON).await);
+
+    // A forward: Bob's calls go to Carol.
+    stack
+        .calling(&bob, |s| {
+            s.forward_all = Some(CallTarget::Extension(carol.extension.clone()))
+        })
+        .await;
+    let call = alice.call(&bob.extension).await.unwrap();
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("Carol's phone did not ring for the forward", &alice)
+            .await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    call.answered(SOON)
+        .await
+        .expect("the forwarded call is answered");
+    call.hangup().await.unwrap();
+    assert!(carol_call.ended(SOON).await);
     stack.finish().await;
 }
