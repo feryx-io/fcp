@@ -143,6 +143,7 @@ import type {
   WebhookDelivery,
   WebhookDeliveryOutcome,
   WebhookEventType,
+  UserDevice,
 } from '@/types'
 
 // Auth
@@ -867,6 +868,9 @@ export const config = {
 
 // Self-service (end-user portal)
 export const me = {
+  // Devices: phones and app installs (docs/SOFTPHONE.md §2.1)
+  listDevices: () => apiClient.getAll<UserDevice>('/me/devices'),
+  removeDevice: (id: string) => apiClient.delete<void>(`/me/devices/${encodeURIComponent(id)}`),
   // Profile
   listApiTokens: () => apiClient.getAll<ApiToken>('/me/api-tokens'),
   createApiToken: (data: CreatePersonalTokenRequest) =>

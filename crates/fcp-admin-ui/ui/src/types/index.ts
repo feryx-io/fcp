@@ -528,6 +528,8 @@ export interface Page<T> {
 
 // API Tokens (docs/DEVELOPER_SURFACE.md §3, phase 1)
 export type ApiToken = S['ApiTokenResponse']
+/** One of a user's devices, with an app install's session (docs/SOFTPHONE.md §2.1). */
+export type UserDevice = S['UserDeviceResponse']
 
 export type CreateApiTokenRequest = S['CreateApiTokenRequest']
 

@@ -159,6 +159,8 @@ pub struct LoginSession {
     /// The app, for an app session (`docs/SOFTPHONE.md` §2.3); a browser's
     /// session has none.
     pub app: Option<AppClient>,
+    /// The install's device, for an app session (§2.1).
+    pub device_id: Option<crate::DeviceId>,
 }
 
 /// A session's provider: its id, and the `sid` its ID token carried.
@@ -250,6 +252,36 @@ pub trait LoginSessionStore: Send + Sync {
         user_id: &UserId,
         install_id: &str,
     ) -> crate::Result<Vec<LoginSession>>;
+
+    /// The device an app install of `user_id` is.
+    async fn app_install_device(
+        &self,
+        user_id: &UserId,
+        install_id: &str,
+    ) -> crate::Result<Option<crate::DeviceId>>;
+
+    /// Record the device an app install is.
+    async fn set_app_install_device(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        install_id: &str,
+        device_id: &crate::DeviceId,
+    ) -> crate::Result<()>;
+
+    /// The install of each of a user's app devices: device to install id.
+    async fn app_installs_of_user(
+        &self,
+        user_id: &UserId,
+    ) -> crate::Result<Vec<(crate::DeviceId, String)>>;
+
+    /// Revoke the live sessions of a device's app; how many.
+    async fn revoke_device_sessions(
+        &self,
+        device_id: &crate::DeviceId,
+        reason: &str,
+        now: SystemTime,
+    ) -> crate::Result<u64>;
 
     /// Keep an app's sign-in begun in the browser.
     async fn create_app_authorization(&self, authorization: &AppAuthorization)

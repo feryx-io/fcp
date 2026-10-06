@@ -268,6 +268,18 @@ impl AppClientRequest {
     }
 }
 
+/// The install's device and its SIP account: the password is shown here
+/// once, at each sign-in, and never again.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AppDeviceResponse {
+    pub id: String,
+    pub name: String,
+    pub sip_username: String,
+    pub sip_password: String,
+    /// The realm the password is hashed in, as the registrars challenge.
+    pub realm: String,
+}
+
 /// An app session's tokens.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AppTokenResponse {
@@ -283,6 +295,9 @@ pub struct AppTokenResponse {
     /// The session, as `/me/sessions` and the audit log name it.
     pub session_id: String,
     pub user: AuthUserResponse,
+    /// The install's device, at a sign-in; absent from a refresh.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<AppDeviceResponse>,
 }
 
 /// Begin an app session for `user`: the install's earlier one ends.
@@ -303,6 +318,7 @@ async fn begin_app_session(
             .await?;
     }
     let ttl = app_session_ttl(state, user).await?;
+    let (device, sip_password) = install_device(state, user, &client).await?;
     let (secret, refresh_hash) = session::new_refresh_secret();
     let row = LoginSession {
         id: LoginSessionId::new(),
@@ -323,6 +339,7 @@ async fn begin_app_session(
         previous_refresh_hash: None,
         idp: None,
         app: Some(client.clone()),
+        device_id: Some(device.id),
     };
     store.create_login_session(&row).await?;
     publish(
@@ -338,7 +355,101 @@ async fn begin_app_session(
         },
     );
     tracing::info!(username = %user.username, app = %client.name, install = %client.install_id, "An app signed in");
-    tokens(state, user, &row.id, &secret, ttl, now).await
+    let mut issued = tokens(state, user, &row.id, &secret, ttl, now).await?;
+    issued.device = Some(AppDeviceResponse {
+        id: device.id.to_string(),
+        name: device.name.clone(),
+        sip_username: device.sip_username.clone().unwrap_or_default(),
+        sip_password,
+        realm: state.realm.clone(),
+    });
+    Ok(issued)
+}
+
+/// The install's device (`docs/SOFTPHONE.md` §2.1): found by the install,
+/// or made — a softphone owned by the user, with a SIP username of its own —
+/// and given a new SIP password, which only this sign-in learns.
+async fn install_device(
+    state: &ApiState,
+    user: &User,
+    client: &AppClient,
+) -> Result<(fcp_core::Device, String), ApiError> {
+    use fcp_core::storage::DeviceStore;
+    let storage = storage(state)?;
+    let sessions = store(state)?;
+    let known = match sessions
+        .app_install_device(&user.id, &client.install_id)
+        .await?
+    {
+        Some(id) => storage
+            .get_device(&id)
+            .await?
+            .filter(|d| d.owner_user_id == Some(user.id) && d.tenant_id == user.tenant_id),
+        None => None,
+    };
+    let mut device = match known {
+        Some(device) => device,
+        None => {
+            let mut device = fcp_core::Device::new(
+                client.name.clone(),
+                fcp_core::DeviceType::Softphone,
+                user.tenant_id,
+            );
+            device.owner_user_id = Some(user.id);
+            device.sip_username = Some(free_sip_username(storage, &user.tenant_id).await?);
+            device
+        }
+    };
+    device.name = client.name.clone();
+    let (password, _) = session::new_refresh_secret();
+    let password: String = password.chars().take(24).collect();
+    let username = device.sip_username.clone().unwrap_or_default();
+    device.sip_ha1_hash = Some(fcp_core::storage::password::compute_ha1(
+        &username,
+        &state.realm,
+        &password,
+    ));
+    device.sip_provisioning_password = None;
+    device.updated_at = SystemTime::now();
+    storage.put_device(device.clone()).await?;
+    sessions
+        .set_app_install_device(&user.tenant_id, &user.id, &client.install_id, &device.id)
+        .await?;
+    let _ = state
+        .event_bus
+        .publish(fcp_events::PlatformEvent::System(
+            fcp_events::SystemEvent::ConfigChanged {
+                entity_type: "device".to_string(),
+                entity_id: device.id.to_string(),
+                tenant_id: device.tenant_id,
+                timestamp: SystemTime::now(),
+            },
+        ))
+        .await;
+    Ok((device, password))
+}
+
+/// A SIP username for a new app device: `app-` and ten hex digits, held by
+/// no user and no device of the tenant.
+async fn free_sip_username(
+    storage: &fcp_core::DynStorage,
+    tenant: &fcp_core::TenantId,
+) -> Result<String, ApiError> {
+    use fcp_core::storage::DeviceStore;
+    for _ in 0..8 {
+        let name = format!("app-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+        let taken = storage.get_user_by_sip_name(&name, tenant).await?.is_some()
+            || storage
+                .get_device_by_sip_name(tenant, &name)
+                .await?
+                .is_some();
+        if !taken {
+            return Ok(name);
+        }
+    }
+    Err(ApiError::Internal(
+        "No free SIP username for the app".to_string(),
+    ))
 }
 
 async fn app_session_ttl(state: &ApiState, user: &User) -> Result<std::time::Duration, ApiError> {
@@ -366,6 +477,7 @@ async fn tokens(
         refresh_expires_in: ttl.as_secs(),
         session_id: sid.to_string(),
         user: auth_user(user, shown_role(state, user).await),
+        device: None,
     })
 }
 

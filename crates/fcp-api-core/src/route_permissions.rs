@@ -78,6 +78,8 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/me/location", Open),
     (PUT, "/me/location", Open),
     (DELETE, "/me/location", Open),
+    (GET, "/me/devices", Open),
+    (DELETE, "/me/devices/:id", Open),
     (GET, "/me/calling", Open),
     (PUT, "/me/calling", Open),
     (GET, "/me/executives", Open),
@@ -237,6 +239,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     ),
     (GET, "/users/:username/calling", Needs(UserRead)),
     (PUT, "/users/:username/calling", Needs(UserUpdate)),
+    (GET, "/users/:username/devices", Needs(DeviceRead)),
     // Registrations.
     (GET, "/registrations", Needs(RegistrationView)),
     (GET, "/registrations/:aor", Needs(RegistrationView)),

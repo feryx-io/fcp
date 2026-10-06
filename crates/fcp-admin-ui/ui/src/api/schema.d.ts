@@ -293,6 +293,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/me/devices — your devices, with each app install's session. */
+        get: operations["user_devices_list_mine"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/devices/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /api/v1/me/devices/{id} — remove one of your devices: an app
+         *     install's session ends and its registrations go.
+         */
+        delete: operations["user_devices_delete_mine"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{username}/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/users/{username}/devices — a user's devices, as they see
+         *     them at `/me/devices`.
+         */
+        get: operations["user_devices_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/sso/{id}/start": {
         parameters: {
             query?: never;
@@ -5388,6 +5445,18 @@ export interface components {
             platform?: string | null;
             version?: string | null;
         };
+        /**
+         * @description The install's device and its SIP account: the password is shown here
+         *     once, at each sign-in, and never again.
+         */
+        AppDeviceResponse: {
+            id: string;
+            name: string;
+            sip_username: string;
+            sip_password: string;
+            /** @description The realm the password is hashed in, as the registrars challenge. */
+            realm: string;
+        };
         /** @description What `POST /auth/app/revoke` takes (RFC 7009). */
         AppRevokeRequest: {
             token: string;
@@ -5430,6 +5499,7 @@ export interface components {
             /** @description The session, as `/me/sessions` and the audit log name it. */
             session_id: string;
             user: components["schemas"]["AuthUserResponse"];
+            device?: components["schemas"]["AppDeviceResponse"] | null;
         };
         /** @description What `POST /auth/app/approve` takes. */
         ApproveRequest: {
@@ -6520,6 +6590,24 @@ export interface components {
         DestinationOverride: {
             prefix: string;
             class: components["schemas"]["DestinationClass"];
+        };
+        /** @description An app install's session, on its device. */
+        DeviceAppResponse: {
+            install_id: string;
+            platform?: string | null;
+            version?: string | null;
+            /** @description Whether the app is signed in now. */
+            signed_in: boolean;
+            /**
+             * Format: date-time
+             * @description When it signed in, while it is.
+             */
+            signed_in_at?: string | null;
+            /**
+             * Format: date-time
+             * @description When it last refreshed its session, while it is signed in.
+             */
+            last_seen?: string | null;
         };
         DeviceBindingResponse: {
             device_id: string;
@@ -9549,6 +9637,28 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_UserDeviceResponse: {
+            data: {
+                id: string;
+                name: string;
+                device_type: string;
+                model?: string | null;
+                sip_username?: string | null;
+                registration_state: string;
+                /** Format: date-time */
+                last_registration?: string | null;
+                user_agent?: string | null;
+                app?: components["schemas"]["DeviceAppResponse"] | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_UserIdentityResponse: {
             data: {
                 provider_id: string;
@@ -11812,6 +11922,19 @@ export interface components {
              */
             total_cost: number;
         };
+        /** @description One of a user's devices. */
+        UserDeviceResponse: {
+            id: string;
+            name: string;
+            device_type: string;
+            model?: string | null;
+            sip_username?: string | null;
+            registration_state: string;
+            /** Format: date-time */
+            last_registration?: string | null;
+            user_agent?: string | null;
+            app?: components["schemas"]["DeviceAppResponse"] | null;
+        };
         /** @description A UserId: `user-<uuid>`, or the bare UUID */
         UserId: string;
         /** @description A user's account at one of the tenant's providers. */
@@ -12630,6 +12753,101 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    user_devices_list_mine: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_UserDeviceResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    user_devices_delete_mine: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    user_devices_list: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_UserDeviceResponse"];
+                };
             };
             /** @description An error */
             default: {
