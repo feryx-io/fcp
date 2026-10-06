@@ -366,7 +366,7 @@ pub async fn create_mailbox(
                 mailbox_id: mailbox.id.clone(),
                 user_id: req.user_id.clone(),
                 extension: user.sip_name().to_string(),
-                tenant_id: tenant.0.to_string(),
+                tenant_id: tenant.0,
                 timestamp: SystemTime::now(),
             },
         ))
@@ -526,6 +526,7 @@ pub async fn update_mailbox(
         .publish_event(fcp_events::PlatformEvent::Voicemail(
             fcp_events::VoicemailEvent::MailboxUpdated {
                 mailbox_id: id.clone(),
+                tenant_id: Some(tenant.0),
                 timestamp: SystemTime::now(),
             },
         ))
@@ -567,6 +568,7 @@ pub async fn delete_mailbox(
         .publish_event(fcp_events::PlatformEvent::Voicemail(
             fcp_events::VoicemailEvent::MailboxDeleted {
                 mailbox_id: id.clone(),
+                tenant_id: Some(tenant.0),
                 timestamp: SystemTime::now(),
             },
         ))

@@ -611,6 +611,7 @@ impl CallManager {
                 (_, CallState::Proceeding) if old_state != CallState::Proceeding => {
                     Some(PlatformEvent::Call(CallEvent::Ringing {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        tenant_id: Some(updated_call.tenant_id),
                         timestamp: std::time::SystemTime::now(),
                         node_id: node_id.clone(),
                     }))
@@ -620,6 +621,7 @@ impl CallManager {
                 (_, CallState::Parked) if old_state != CallState::Parked => {
                     Some(PlatformEvent::Call(CallEvent::Parked {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        tenant_id: Some(updated_call.tenant_id),
                         orbit: updated_call.parked_orbit.unwrap_or_default(),
                         parker_extension: updated_call.parker_extension.clone().unwrap_or_default(),
                         timestamp: std::time::SystemTime::now(),
@@ -628,6 +630,7 @@ impl CallManager {
                 (CallState::Parked, CallState::Established) => {
                     Some(PlatformEvent::Call(CallEvent::Unparked {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        tenant_id: Some(updated_call.tenant_id),
                         orbit: 0,
                         retriever_extension: updated_call
                             .b_leg
@@ -649,6 +652,7 @@ impl CallManager {
 
                     Some(PlatformEvent::Call(CallEvent::Answered {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        tenant_id: Some(updated_call.tenant_id),
                         answer_time: updated_call
                             .established_at
                             .unwrap_or_else(std::time::SystemTime::now),
@@ -664,12 +668,14 @@ impl CallManager {
             let held_change = match (old_held, new_held) {
                 (None, Some(leg)) => Some(PlatformEvent::Call(CallEvent::Held {
                     call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                    tenant_id: Some(updated_call.tenant_id),
                     held_leg: leg.as_str().to_string(),
                     timestamp: std::time::SystemTime::now(),
                     node_id: node_id.clone(),
                 })),
                 (Some(leg), None) => Some(PlatformEvent::Call(CallEvent::Resumed {
                     call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                    tenant_id: Some(updated_call.tenant_id),
                     held_leg: leg.as_str().to_string(),
                     timestamp: std::time::SystemTime::now(),
                     node_id: node_id.clone(),
@@ -760,6 +766,7 @@ impl CallManager {
                     // Normal termination
                     PlatformEvent::Call(CallEvent::Ended {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        tenant_id: Some(call.tenant_id),
                         end_time: call.ended_at.unwrap_or_else(std::time::SystemTime::now),
                         duration_ms: call.duration().map(|d| d.as_millis() as u64).unwrap_or(0),
                         hangup_cause: "Normal Clearing".to_string(),
@@ -782,6 +789,7 @@ impl CallManager {
 
                     PlatformEvent::Call(CallEvent::Failed {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        tenant_id: Some(call.tenant_id),
                         timestamp: call.ended_at.unwrap_or_else(std::time::SystemTime::now),
                         reason,
                         sip_code,
@@ -800,6 +808,7 @@ impl CallManager {
                     // Publish as Failed with generic reason
                     PlatformEvent::Call(CallEvent::Failed {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        tenant_id: Some(call.tenant_id),
                         timestamp: std::time::SystemTime::now(),
                         reason: format!("Terminated in unexpected state: {:?}", call.state),
                         sip_code: None,

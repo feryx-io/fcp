@@ -537,6 +537,7 @@ impl FlowCallHandler {
         if let Some(events) = &self.events {
             let event = PlatformEvent::Flow(FlowEvent::Started {
                 call_id: call_id_core,
+                tenant_id: Some(call.tenant_id),
                 flow_id: flow_id.clone(),
                 flow_version: flow.version,
                 initial_node: flow.initial_node.clone(),
@@ -2163,6 +2164,7 @@ impl FlowCallHandler {
                 if let Some(events) = &self.events {
                     let event = PlatformEvent::Voicemail(VoicemailEvent::MessageRecorded {
                         call_id: core_call_id,
+                        tenant_id: self.tenant_of(&call_id),
                         mailbox_id: mailbox,
                         message_id: message.id,
                         caller,
@@ -3641,6 +3643,7 @@ impl FlowCallHandler {
         if let Some(events) = &self.events {
             let event = PlatformEvent::Flow(FlowEvent::NodeExecuted {
                 call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                tenant_id: self.tenant_of(&call_id),
                 flow_id: context_guard.flow.id.clone(),
                 node_id: current_node.clone(),
                 timestamp: std::time::SystemTime::now(),
@@ -3693,6 +3696,7 @@ impl FlowCallHandler {
                 if let Some(events) = &self.events {
                     let event = PlatformEvent::Flow(FlowEvent::Completed {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        tenant_id: self.tenant_of(&call_id),
                         flow_id: context_guard.flow.id.clone(),
                         outcome: "hangup".to_string(),
                         timestamp: std::time::SystemTime::now(),
@@ -3801,6 +3805,7 @@ impl FlowCallHandler {
                 if let Some(events) = &self.events {
                     let event = PlatformEvent::Flow(FlowEvent::WaitingForInput {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        tenant_id: self.tenant_of(&call_id),
                         flow_id,
                         variable: variable.clone(),
                         timeout_secs,
@@ -4316,6 +4321,7 @@ impl FlowCallHandler {
             if let Some(events) = &self.events {
                 let event = PlatformEvent::Flow(FlowEvent::Completed {
                     call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                    tenant_id: self.tenant_of(&call_id),
                     flow_id: context_guard.flow.id.clone(),
                     outcome: "stopped".to_string(),
                     timestamp: std::time::SystemTime::now(),
@@ -4331,6 +4337,14 @@ impl FlowCallHandler {
         }
 
         Ok(())
+    }
+
+    /// The tenant of a call, for the events that name it.
+    fn tenant_of(&self, call_id: &CallId) -> Option<fcp_core::TenantId> {
+        self.call_manager
+            .as_ref()
+            .and_then(|cm| cm.get_call(call_id))
+            .map(|call| call.tenant_id)
     }
 
     /// Get the current flow context for a call.

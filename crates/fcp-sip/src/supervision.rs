@@ -398,6 +398,7 @@ impl Supervisions {
         self.call_manager.publish(fcp_events::PlatformEvent::Call(
             fcp_events::CallEvent::PartyJoined {
                 call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                tenant_id: self.call_manager.get_call(call_id).map(|c| c.tenant_id),
                 mode: mode.as_str().to_string(),
                 party: party.to_string(),
                 user_id: user_id.map(|u| u.to_string()),
@@ -411,6 +412,7 @@ impl Supervisions {
         self.call_manager.publish(fcp_events::PlatformEvent::Call(
             fcp_events::CallEvent::PartyLeft {
                 call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                tenant_id: self.call_manager.get_call(call_id).map(|c| c.tenant_id),
                 party: active.party.clone(),
                 timestamp: SystemTime::now(),
                 node_id: None,
