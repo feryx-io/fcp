@@ -17103,6 +17103,22 @@ impl InboundMessageHandler for SipMessageHandler {
             // Special handling for ACK - it doesn't create a server transaction
             // ACK for 2xx responses is handled outside the transaction layer (RFC 3261 §17.1.1.3)
             if req.method() == &sip_core::Method::Ack {
+                // An ACK for a non-2xx final (a 401 challenge, a 486) is the
+                // INVITE server transaction's: absorbed, it stops the final's
+                // retransmissions (RFC 3261 §17.2.1). Only an ACK nothing
+                // absorbs — the one for a 2xx — is the B2BUA's. Without this
+                // every challenged INVITE over UDP had its 401 resent until
+                // Timer H.
+                if let Some(branch) = sip_transaction::request_branch_id(&req) {
+                    let key = sip_transaction::TransactionKey::new(
+                        branch.as_str(),
+                        sip_core::Method::Invite,
+                        true,
+                    );
+                    if self.transaction_manager.ack_received(&key).await {
+                        return Ok(());
+                    }
+                }
                 if let Err(e) = self.handle_ack(&req) {
                     error!("Failed to handle ACK: {}", e);
                 }

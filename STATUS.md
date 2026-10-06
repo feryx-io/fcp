@@ -1960,6 +1960,17 @@ presence server) now:
 An out-of-dialog SUBSCRIBE to a package nothing takes is answered 489 with
 `Allow-Events`, not 500 (`fcp-call-manager/tests/presence.rs`).
 
+One call, not four (v0.25.361): the node passed every ACK to the B2BUA,
+so the ACK to a 401 (or any non-2xx final) never reached its INVITE
+server transaction, and over UDP the 401 was resent until Timer H (about
+32 s). A client that answers every resend with another authenticated
+INVITE — siphon-rs's auto-retry, so the testkit's phone and Anvil — placed
+the call again each time: the callee rang four times for one call. The
+node now hands an ACK to `TransactionManager::ack_received` first and to
+the B2BUA only when no transaction absorbed it
+(`a_challenged_call_that_rings_a_while_is_one_call`). The client side is
+fixed in siphon-rs (a retransmitted final is ACKed again, not delivered).
+
 Tenants on call, flow and voicemail events (v0.25.341): `call.ringing`,
 `call.answered`, `call.ended`, `call.failed`, park, hold, supervision
 parties, every `flow.*` and the voicemail message and mailbox events named
