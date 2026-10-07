@@ -892,6 +892,56 @@ async fn a_call_parked_by_transfer_is_retrieved_from_its_orbit() {
     stack.finish().await;
 }
 
+/// An encrypted caller transfers the callee to a plain phone: the plain
+/// phone takes the caller's side, so the node's keys for that side must go
+/// — kept, the node would encrypt toward it and refuse its plain packets.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plain_phone_taking_an_encrypted_side_is_heard() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let alice_call = alice
+        .call_offering_srtp(
+            &bob.extension,
+            "1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz",
+        )
+        .await
+        .unwrap();
+    let Some(at_bob) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice).await;
+    };
+    let bob_call = at_bob.answer().await.unwrap();
+    alice_call.answered(SOON).await.expect("answered");
+    assert!(
+        alice_call
+            .answer_sdp()
+            .is_some_and(|a| a.contains(" RTP/SAVP ")),
+        "Alice's side is encrypted"
+    );
+
+    // Alice sends Bob to Carol, who takes Alice's side of the call.
+    let refer_to = format!("sip:{}@{}", carol.extension, stack.sip);
+    assert_eq!(alice_call.refer(&refer_to).await.unwrap(), 202);
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack.fail("Carol's phone did not ring", &alice).await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    assert!(alice_call.ended(SOON).await, "Alice's leg was not dropped");
+
+    carol_call.media().play_tone(660.0, 3000);
+    assert!(
+        bob_call.media().heard(660, SOON).await,
+        "Bob does not hear Carol"
+    );
+    bob_call.media().play_tone(440.0, 3000);
+    assert!(
+        carol_call.media().heard(440, SOON).await,
+        "Carol does not hear Bob"
+    );
+    bob_call.hangup().await.unwrap();
+    assert!(carol_call.ended(SOON).await);
+    stack.finish().await;
+}
+
 /// An encrypted phone taking over a leg is answered encrypted: a key of
 /// the node's under the phone's own tag, not plain RTP.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

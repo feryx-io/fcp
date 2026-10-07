@@ -1108,6 +1108,15 @@ pub mod embedded {
                         warn!(?call_id, error = %e, "Failed to decode A-leg SDES key params");
                     }
                 }
+            } else if result.remote_crypto.is_none() {
+                // The A side is now plain — a transfer put a plain phone
+                // where an encrypted one was: the old keys must not go on
+                // encrypting toward it.
+                let mut srtp_a = session_info.forge_session.srtp_a().lock().await;
+                if srtp_a.is_enabled() {
+                    *srtp_a = forge_rtp::srtp::SrtpContext::new();
+                    info!(?call_id, "A-leg is plain now; its SRTP keys are cleared");
+                }
             }
 
             // Update cached session state
@@ -1242,6 +1251,13 @@ pub mod embedded {
                             warn!(?call_id, error = %e, "Failed to decode B-leg SDES key params");
                         }
                     },
+                }
+            } else {
+                // The B side is now plain (see the A side's note).
+                let mut srtp_b = session_info.forge_session.srtp_b().lock().await;
+                if srtp_b.is_enabled() {
+                    *srtp_b = forge_rtp::srtp::SrtpContext::new();
+                    info!(?call_id, "B-leg is plain now; its SRTP keys are cleared");
                 }
             }
 
