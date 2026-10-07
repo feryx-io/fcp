@@ -555,6 +555,12 @@ fn transport_kind(kind: sip_transaction::TransportKind) -> sip_transport::Transp
     }
 }
 
+/// `sdp` offering SDES-SRTP: its audio `RTP/SAVP`, with `crypto`.
+fn offering_srtp(sdp: String, crypto: &str) -> String {
+    let sdp = sdp.replacen(" RTP/AVP ", " RTP/SAVP ", 1);
+    format!("{sdp}a=crypto:{crypto}\r\n")
+}
+
 fn disable_rate_limits() {
     static ONCE: OnceLock<()> = OnceLock::new();
     ONCE.get_or_init(|| {
@@ -842,8 +848,7 @@ impl Phone {
         let crypto = crypto.to_string();
         self.inner
             .place_call_edited(target, None, sip_core::Headers::new(), move |sdp| {
-                let sdp = sdp.replacen(" RTP/AVP ", " RTP/SAVP ", 1);
-                format!("{sdp}a=crypto:{crypto}\r\n")
+                offering_srtp(sdp, &crypto)
             })
             .await
     }
@@ -1195,8 +1200,22 @@ impl Call {
 
     /// As [`Call::reinvite`], with the SDP the far end answered with.
     pub async fn reinvite_answered(&self, direction: &str) -> Result<(u16, String)> {
+        self.reinvite_with(self.state.media.sdp(direction)).await
+    }
+
+    /// As [`Call::reinvite_answered`], offering SDES-SRTP with `crypto` as
+    /// [`Phone::call_offering_srtp`] does.
+    pub async fn reinvite_offering_srtp(
+        &self,
+        direction: &str,
+        crypto: &str,
+    ) -> Result<(u16, String)> {
+        self.reinvite_with(offering_srtp(self.state.media.sdp(direction), crypto))
+            .await
+    }
+
+    async fn reinvite_with(&self, sdp: String) -> Result<(u16, String)> {
         let mut dialog = self.dialog().await?;
-        let sdp = self.state.media.sdp(direction);
         let resp = tokio::time::timeout(
             Duration::from_secs(10),
             self.uac().send_reinvite(&mut dialog, Some(&sdp)),
