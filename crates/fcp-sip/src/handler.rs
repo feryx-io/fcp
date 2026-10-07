@@ -8541,10 +8541,14 @@ impl SipMessageHandler {
 
                 resp
             } else {
-                // Fallback: No provisional was sent (shouldn't happen in forking)
-                warn!(
+                // The callee answered before any ringing reached the caller:
+                // there is no early dialog, so the 200 OK starts it with a
+                // tag of its own, and the A-leg dialog below is made from
+                // this 200 OK. The provisional relay, finding the call
+                // established, sends nothing after it.
+                debug!(
                     call_id = %call_id,
-                    "No A-leg To-tag saved in forking path, generating new one (dialog mismatch possible)"
+                    "Answered before any ringing reached the caller; the 200 OK sets the To-tag"
                 );
                 self.uas
                     .create_ok(&request, b_leg_sdp.as_deref())
