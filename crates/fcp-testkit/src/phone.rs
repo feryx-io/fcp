@@ -845,11 +845,27 @@ impl Phone {
     /// `RTP/SAVP` with `crypto` (an `a=crypto` value). The phone's own media
     /// stays plain, so this is for what is signalled, not what is heard.
     pub async fn call_offering_srtp(&self, target: &str, crypto: &str) -> Result<Call> {
+        self.call_offering_srtp_with_headers(target, crypto, &[])
+            .await
+    }
+
+    /// As [`Phone::call_offering_srtp`], with extra request headers (a
+    /// `Replaces`, …).
+    pub async fn call_offering_srtp_with_headers(
+        &self,
+        target: &str,
+        crypto: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<Call> {
+        let mut extra = sip_core::Headers::new();
+        for (name, value) in headers {
+            extra
+                .push(*name, *value)
+                .map_err(|e| anyhow!("header {name}: {e}"))?;
+        }
         let crypto = crypto.to_string();
         self.inner
-            .place_call_edited(target, None, sip_core::Headers::new(), move |sdp| {
-                offering_srtp(sdp, &crypto)
-            })
+            .place_call_edited(target, None, extra, move |sdp| offering_srtp(sdp, &crypto))
             .await
     }
 

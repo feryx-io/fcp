@@ -462,6 +462,22 @@ impl SrtpOffer {
         })
     }
 
+    /// Our key for answering a peer's offered `a=crypto`: fresh, under the
+    /// offer's tag (RFC 4568 §5.1.2). Only the suite every offer here uses
+    /// is taken; [`accept`](Self::accept) then installs the peer's key.
+    pub fn answering(offered: &SdesCryptoLine) -> Result<Self> {
+        if !offered.suite.eq_ignore_ascii_case(Self::SUITE) {
+            return Err(Error::Sdp(format!(
+                "the offer's SRTP suite {} is not {}",
+                offered.suite,
+                Self::SUITE
+            )));
+        }
+        let mut ours = Self::generate()?;
+        ours.sdp.tag = offered.tag;
+        Ok(ours)
+    }
+
     /// Install the peer's key from the answer's `a=crypto` line for this
     /// section. The answer must keep our suite (RFC 4568 §5.1.2).
     pub fn accept(self, answer: &SdesCryptoLine) -> Result<forge_rtp::srtp::SrtpContext> {
@@ -2476,6 +2492,23 @@ a=rtpmap:0 PCMU/8000
         );
         assert!(secure.contains("m=video 0 RTP/AVP 96"), "{secure}");
         assert_eq!(parse_sdes_crypto(&secure).len(), 1);
+    }
+
+    #[test]
+    fn an_answering_key_takes_the_offers_tag_and_keeps_our_suite() {
+        let offered = SdesCryptoLine {
+            tag: 7,
+            suite: "AES_CM_128_HMAC_SHA1_80".into(),
+            key_params: "inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz".into(),
+        };
+        let ours = SrtpOffer::answering(&offered).unwrap();
+        assert_eq!(ours.sdp.tag, 7);
+        assert!(ours.clone().accept(&offered).is_ok());
+        let other = SdesCryptoLine {
+            suite: "F8_128_HMAC_SHA1_80".into(),
+            ..offered
+        };
+        assert!(SrtpOffer::answering(&other).is_err());
     }
 
     /// An encrypted caller's offer, sent on to a leg the node does not key:
