@@ -16,9 +16,13 @@ Agreed 2026-10-05: the first target is Anvil as an FCP client on the
 desktop, with mobile push later. Work in the anvil repo is a branch and PR
 per phase, merged by the owner, as in FCP. The questions in §6 are open.
 
-Progress: phase A5 in FCP: an encrypted caller answered encrypted with its
-key kept off the callee's leg (v0.25.366), and a softphone registered over
-TLS offered SDES-SRTP (v0.25.367). Phase F4 done: F4a (v0.25.358) `/me/calls` and `/me/directory`,
+Progress: every phase's work is done on both sides. Anvil's PRs are #1–#9,
+and §7 is the guide to running it. Phase A5 in FCP: an encrypted caller
+answered encrypted with its key kept off the callee's leg (v0.25.366), and
+a softphone registered over TLS offered SDES-SRTP (v0.25.367). One thing is
+still open: Anvil's CI runs its tests against FCP only once the anvil
+repository has the `FCP_READ_TOKEN` secret, a read token for this
+repository. Phase F4 done: F4a (v0.25.358) `/me/calls` and `/me/directory`,
 F4b (v0.25.363) `/me/events` (§2.7). Phase F3 done (v0.25.357): the tenant's
 brand (`docs/BRANDING.md`). Phase F1a done (v0.25.334): app sign-in and app sessions
 (`docs/APP_SIGN_IN.md`); the password grant of §2.2 became
@@ -514,3 +518,77 @@ Each has a recommendation.
     the user's devices, so all their registered devices ring (forked, as
     today). The user can choose in the app not to ring the desktop while
     their desk phone is registered, as a device setting.
+
+## 7. Running Anvil against FCP
+
+### 7.1 What the operator sets
+
+- **Where apps register.** `[api.provisioning]` on the admin says what
+  `/me/softphone` tells the app:
+  - `sip_server` and `sip_port` say where it registers;
+  - `sip_transport` is `udp`, `tcp` or `tls`. Over `tls` the app is told SRTP
+    `optional`, and each call to it is offered SDES-SRTP.
+- **TLS.** For TLS, the call manager's `[sip] sips_bind`, `tls_cert_path`
+  and `tls_key_path` must be set. The certificate must name the address the
+  app is given.
+- **Where the app is told to fetch from.** `[api.provisioning] public_url`
+  is where the app reaches the admin. `[registrar] provisioning_url` on the
+  call manager puts it in `X-FCP-Provisioning-Url` on every registration
+  answer, which is where the brand comes from.
+- **Finding the server.** An email domain FCP serves answers
+  `/.well-known/fcp-provisioning` (§2.6). Otherwise the user types the
+  server's address.
+- **Live events.** `/me/events` carries the user's calls only when the
+  admin and the call manager share an events server: `[events] server_url`
+  on both, the events server's `/ingest`.
+- **Per tenant:**
+  - `directory.visible_to_users` decides whether users see the directory and
+    others' presence;
+  - `sign_in.app_session_days` sets how long an app stays signed in (90 days
+    from last use by default);
+  - `PUT /api/v1/branding` sets the brand (`docs/BRANDING.md`).
+
+### 7.2 What a user does
+
+With the reference client, `anvil-cli`:
+
+```bash
+anvil-cli login https://pbx.example.com     # or an email address; opens the browser
+anvil-cli --call sip:1002@example.com       # registers with FCP's settings, calls
+anvil-cli calls --missed                    # history
+anvil-cli directory ann                     # the directory, with presence
+anvil-cli voicemail                         # counts and messages
+anvil-cli settings --dnd true               # do not disturb, call waiting
+anvil-cli events                            # the user's live events
+anvil-cli logout
+```
+
+Signing in makes the install one of the user's devices, with a SIP account
+of its own (`/me/devices`). Removing the device ends the app's session and
+its registrations. A UI built on `anvil-ffi` uses the same calls: open the
+session, then read the data as JSON.
+
+### 7.3 What works
+
+All of this was proved against FCP by Anvil's tests
+(`anvil-fcp/tests/fcp.rs`):
+- calls both ways, held, transferred blind and attended, parked, and a
+  second call waiting;
+- do not disturb and forwards set from the app;
+- message waiting, presence and busy lamps;
+- call history, the directory, voicemail, and the user's live events;
+- encrypted media both ways: an encrypting caller answered encrypted, and an
+  app over TLS called encrypted;
+- the tenant's brand.
+
+What it found wrong in FCP was fixed in FCP:
+- message waiting subscriptions (v0.25.356);
+- presence outside the default tenant (v0.25.360);
+- a challenged call ringing four times (v0.25.361);
+- the caller transferring the callee, the node's own legs under
+  `auth_invites`, and a dead watcher freezing every lamp (v0.25.364);
+- the events document (v0.25.365);
+- a caller's SRTP key handed to the callee (v0.25.366).
+
+Not done here (§5): mobile push, ICE, a UI, video.
+
