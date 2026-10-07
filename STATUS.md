@@ -1967,6 +1967,15 @@ presence server) now:
 An out-of-dialog SUBSCRIBE to a package nothing takes is answered 489 with
 `Allow-Events`, not 500 (`fcp-call-manager/tests/presence.rs`).
 
+A softphone over TLS is offered SRTP (v0.25.367, softphone A5b): a call
+forking to a user's devices offers SDES-SRTP (`RTP/SAVP` with the node's key
+for the call, `fcp_media::with_sdes`) to each device registered over TLS —
+one with an RFC 5626 flow, which this node makes only for TLS — when the
+call is anchored here and goes to no trunk; devices registered over UDP or
+TCP are offered plain RTP as before. The key is kept like a trunk's
+(`b_leg_srtp`), so the answering device is keyed from our own offer and a
+plain answer leaves the leg plain (`fcp-call-manager/tests/srtp.rs`).
+
 An encrypted caller keeps its key (v0.25.366), found by Anvil's SDES-SRTP
 (softphone A5): a caller offering `RTP/SAVP` with `a=crypto` had its media
 answered by the backend with a key of the node's, but

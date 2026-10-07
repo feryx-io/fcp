@@ -1489,6 +1489,31 @@ impl SipMessageHandler {
 
     /// The SRTP this node offered on the call's B-leg, taken out of the map
     /// now that the answer is here.
+    /// The offer for a device registered over TLS: `sdp` with the call's
+    /// device key (made on first use), when the call is anchored here and
+    /// goes to no trunk; `sdp` unchanged otherwise.
+    fn secure_device_offer(&self, call_id: &fcp_b2bua_core::CallId, sdp: String) -> String {
+        let Some(call) = self.call_manager.get_call(call_id) else {
+            return sdp;
+        };
+        if !(call.media_anchored && call.media_session_id.is_some())
+            || !call.route_trunks.is_empty()
+        {
+            return sdp;
+        }
+        let offer = match self.b_leg_srtp.entry(*call_id) {
+            dashmap::mapref::entry::Entry::Occupied(e) => e.get().sdp.clone(),
+            dashmap::mapref::entry::Entry::Vacant(e) => match fcp_media::SrtpOffer::generate() {
+                Ok(offer) => e.insert(offer).sdp.clone(),
+                Err(err) => {
+                    warn!(call_id = %call_id, error = %err, "Could not generate SRTP key material for a TLS device");
+                    return sdp;
+                }
+            },
+        };
+        fcp_media::with_sdes(&sdp, &offer)
+    }
+
     fn take_b_leg_srtp(&self, call_id: &fcp_b2bua_core::CallId) -> Option<fcp_media::SrtpOffer> {
         self.b_leg_srtp.remove(call_id).map(|(_, offer)| offer)
     }
@@ -7144,6 +7169,14 @@ impl SipMessageHandler {
                 SmolStr::new(token),
             );
         }
+        // A softphone registered over TLS (it has a flow) on an anchored
+        // call is offered SDES-SRTP with the node's key for the call — the
+        // same key for every such device, kept for the answer like a
+        // trunk's. Every other leg is offered what it was.
+        let a_leg_sdp_clone = match (&flow_token_clone, a_leg_sdp_clone) {
+            (Some(_), Some(sdp)) => Some(self.secure_device_offer(&call_id_clone, sdp)),
+            (_, sdp) => sdp,
+        };
         let invite_options = |sdp: Option<&str>| sip_uac::InviteOptions {
             body: sdp.map(sip_uac::InviteBody::sdp),
             extra_headers: extra_headers.clone(),
