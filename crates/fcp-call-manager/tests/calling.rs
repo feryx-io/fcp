@@ -892,6 +892,50 @@ async fn a_call_parked_by_transfer_is_retrieved_from_its_orbit() {
     stack.finish().await;
 }
 
+/// An encrypted phone taking over a leg is answered encrypted: a key of
+/// the node's under the phone's own tag, not plain RTP.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_encrypted_phone_taking_over_a_call_is_answered_encrypted() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (_carol, carol_phone)] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+
+    let key = "WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz";
+    let replaces = bob_call.replaces().await.unwrap();
+    let carol_call = carol_phone
+        .call_offering_srtp_with_headers(
+            &bob.extension,
+            &format!("3 AES_CM_128_HMAC_SHA1_80 inline:{key}"),
+            &[("Replaces", replaces.as_str())],
+        )
+        .await
+        .unwrap();
+    if let Err(e) = carol_call.answered(SOON).await {
+        stack
+            .fail(&format!("the Replaces was not answered: {e}"), &carol_phone)
+            .await;
+    }
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+    let answer = carol_call.answer_sdp().expect("Carol's answer");
+    assert!(
+        answer.contains(" RTP/SAVP "),
+        "answered in the clear: {answer}"
+    );
+    let crypto = answer
+        .lines()
+        .find_map(|l| l.strip_prefix("a=crypto:"))
+        .unwrap_or_else(|| panic!("no key: {answer}"));
+    assert!(
+        crypto.starts_with("3 AES_CM_128_HMAC_SHA1_80 inline:"),
+        "{crypto}"
+    );
+    assert!(!crypto.contains(key), "answered with Carol's own key");
+
+    alice_call.hangup().await.unwrap();
+    assert!(carol_call.ended(SOON).await);
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_invite_with_replaces_takes_over_a_call() {
     let stack = stack_or_skip!();

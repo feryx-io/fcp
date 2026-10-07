@@ -1967,6 +1967,19 @@ presence server) now:
 An out-of-dialog SUBSCRIBE to a package nothing takes is answered 489 with
 `Allow-Events`, not 500 (`fcp-call-manager/tests/presence.rs`).
 
+An encrypted phone picking up or taking over a call is answered encrypted
+(v0.25.371): a picker's answer (`anchor_pickup_media`) and a phone taking a
+leg with `Replaces` were built without a key, and the picker's or taker's
+encrypted offer was taken with a fresh key its answer never named. A
+callee-side offer is now keyed from a key of ours under its tag
+(`SrtpOffer::answering`, `key_b_leg_from_offer`) and answered with it; a
+caller-side taker is answered with the backend's key; and the held party
+`Replaces` resumes is offered its own leg's key
+(`an_encrypted_phone_taking_over_a_call_is_answered_encrypted`; the
+testkit's `call_offering_srtp_with_headers`). Still built plain: the
+re-INVITEs a node-run transfer sends the transferred party
+(`fcp_sip::transfer`).
+
 An encrypted leg on hold keeps its key (v0.25.369): a hold the node answers
 itself (music on hold) and the answer to a re-INVITE relayed from either leg
 were built without a key, so an encrypted phone holding or resuming was
@@ -1975,8 +1988,7 @@ offer carries `a=crypto`, the answer now carries that leg's key: the caller's
 as the media backend last answered it, the callee's as this node offered it
 — kept for the call once answered (`b_leg_keys`), and used to re-key a
 callee whose hold also moves its media (`an_encrypted_caller_on_hold_keeps_its_key`;
-the testkit's `Call::reinvite_offering_srtp`). Pickup and `Replaces` answers
-are still built for a plain leg.
+the testkit's `Call::reinvite_offering_srtp`).
 
 A softphone over TLS is offered SRTP (v0.25.367, softphone A5b): a call
 forking to a user's devices offers SDES-SRTP (`RTP/SAVP` with the node's key

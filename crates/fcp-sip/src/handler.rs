@@ -1544,6 +1544,40 @@ impl SipMessageHandler {
         }
     }
 
+    /// Take a remote offer on a call's B-leg: an encrypted one is keyed
+    /// from a fresh key of ours under its tag — kept as the leg's key, and
+    /// returned for the answer — rather than one the answer would not name;
+    /// a plain one as before.
+    async fn key_b_leg_from_offer(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        session_id: &fcp_core::CallId,
+        media_manager: &Arc<fcp_media::MediaManager>,
+        offer: &str,
+    ) -> fcp_media::Result<Option<fcp_media::SrtpSdpContext>> {
+        let answering = fcp_media::parse_sdes_crypto(offer)
+            .first()
+            .and_then(|line| fcp_media::SrtpOffer::answering(line).ok());
+        match answering {
+            Some(ours) => {
+                media_manager
+                    .update_session_b_leg_offered(session_id, offer.to_string(), Some(ours.clone()))
+                    .await?;
+                let key = ours.sdp.clone();
+                self.b_leg_keys
+                    .retain(|id, _| self.call_manager.get_call(id).is_some());
+                self.b_leg_keys.insert(*call_id, ours);
+                Ok(Some(key))
+            }
+            None => {
+                media_manager
+                    .update_session_b_leg(session_id, offer.to_string())
+                    .await?;
+                Ok(None)
+            }
+        }
+    }
+
     /// Count the call against the trunk that answered it, if a trunk did.
     async fn count_answering_trunk(&self, call_id: &fcp_b2bua_core::CallId) {
         let Some(counter) = &self.trunk_calls else {
@@ -4510,14 +4544,16 @@ impl SipMessageHandler {
             None => None,
         };
 
-        if let Some(offer) = picker_offer {
-            media_manager
-                .update_session_b_leg(&media_session_id, offer.to_string())
+        // An encrypted picker is answered with a key of ours for its leg.
+        let picker_srtp = match picker_offer {
+            Some(offer) => self
+                .key_b_leg_from_offer(ringing_call_id, &media_session_id, media_manager, offer)
                 .await
                 .with_context(|| {
                     format!("{} failed: could not set picker media endpoint", label)
-                })?;
-        }
+                })?,
+            None => None,
+        };
 
         let session = media_manager
             .get_session(&media_session_id)
@@ -4527,7 +4563,12 @@ impl SipMessageHandler {
         let local_offer = generate_basic_sdp(&self.local_addr, rtp_port);
         let picker_answer = picker_offer
             .map(|offer| {
-                fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, rtp_port, None)
+                fcp_media::construct_answer_for_a_leg(
+                    offer,
+                    &self.local_addr,
+                    rtp_port,
+                    picker_srtp.as_ref(),
+                )
             })
             .or_else(|| Some(local_offer.clone()));
         let original_answer = original_answer.or(Some(local_offer));
@@ -13377,26 +13418,47 @@ impl SipMessageHandler {
             .zip(self.media_manager.clone());
         let (answer, party_sdp_now) = match anchored {
             Some((session_id, media_manager)) => {
-                let moved = match side {
+                // The phone taking the leg, if encrypted, is answered with
+                // that leg's key: the backend's for the A side, a fresh one
+                // of ours for the B side.
+                let taken = match side {
                     fcp_b2bua_core::LegSide::A => media_manager
                         .update_session(&session_id, offer.clone())
                         .await
-                        .map(|_| ()),
+                        .map(|_| None),
                     fcp_b2bua_core::LegSide::B => {
-                        media_manager
-                            .update_session_b_leg(&session_id, offer.clone())
+                        self.key_b_leg_from_offer(&call.id, &session_id, &media_manager, &offer)
                             .await
                     }
                 };
-                if let Err(e) = moved {
-                    return fail(503, "Service Unavailable", format!("media session: {e}")).await;
-                }
-                let port = match media_manager.get_session(&session_id).await {
-                    Ok(session) => session.ports().0,
+                let taker_srtp = match taken {
+                    Ok(key) => key,
                     Err(e) => {
                         return fail(503, "Service Unavailable", format!("media session: {e}"))
                             .await
                     }
+                };
+                let session = match media_manager.get_session(&session_id).await {
+                    Ok(session) => session,
+                    Err(e) => {
+                        return fail(503, "Service Unavailable", format!("media session: {e}"))
+                            .await
+                    }
+                };
+                let port = session.ports().0;
+                let encrypted = !fcp_media::parse_sdes_crypto(&offer).is_empty();
+                let taker_srtp = match (side, encrypted) {
+                    (fcp_b2bua_core::LegSide::A, true) => {
+                        self.leg_srtp(&call.id, side, &session).await
+                    }
+                    _ => taker_srtp,
+                };
+                // The held party, if its leg is encrypted, is offered its
+                // leg's key to come off hold.
+                let party_srtp = if fcp_media::parse_sdes_crypto(&party_sdp).is_empty() {
+                    None
+                } else {
+                    self.leg_srtp(&call.id, party, &session).await
                 };
                 if held {
                     let resume = crate::hold::with_direction(
@@ -13404,7 +13466,7 @@ impl SipMessageHandler {
                             &party_sdp,
                             &self.local_addr,
                             port,
-                            None,
+                            party_srtp.as_ref(),
                         ),
                         "sendrecv",
                     );
@@ -13419,7 +13481,12 @@ impl SipMessageHandler {
                     }
                 }
                 (
-                    fcp_media::construct_answer_for_a_leg(&offer, &self.local_addr, port, None),
+                    fcp_media::construct_answer_for_a_leg(
+                        &offer,
+                        &self.local_addr,
+                        port,
+                        taker_srtp.as_ref(),
+                    ),
                     party_sdp,
                 )
             }
