@@ -16,7 +16,9 @@ Agreed 2026-10-05: the first target is Anvil as an FCP client on the
 desktop, with mobile push later. Work in the anvil repo is a branch and PR
 per phase, merged by the owner, as in FCP. The questions in §6 are open.
 
-Progress: phase F4 done: F4a (v0.25.358) `/me/calls` and `/me/directory`,
+Progress: phase A5 in FCP: an encrypted caller answered encrypted with its
+key kept off the callee's leg (v0.25.366), and a softphone registered over
+TLS offered SDES-SRTP (v0.25.367). Phase F4 done: F4a (v0.25.358) `/me/calls` and `/me/directory`,
 F4b (v0.25.363) `/me/events` (§2.7). Phase F3 done (v0.25.357): the tenant's
 brand (`docs/BRANDING.md`). Phase F1a done (v0.25.334): app sign-in and app sessions
 (`docs/APP_SIGN_IN.md`); the password grant of §2.2 became

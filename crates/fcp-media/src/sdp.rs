@@ -833,6 +833,43 @@ impl SrtpSdpContext {
     }
 }
 
+/// An anchored offer made secure: the first audio section `RTP/SAVP` with
+/// `srtp`'s key, any other key in it dropped. What a leg the node keys
+/// itself — a softphone registered over TLS — is offered.
+pub fn with_sdes(sdp: &str, srtp: &SrtpSdpContext) -> String {
+    let mut out = String::with_capacity(sdp.len() + 96);
+    let (mut in_audio, mut audio_seen) = (false, false);
+    for line in sdp.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("m=") {
+            in_audio = false;
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if parts.first() == Some(&"audio") && parts.len() >= 3 && !audio_seen {
+                audio_seen = true;
+                in_audio = true;
+                out.push_str(&format!(
+                    "m=audio {} {}",
+                    parts[1],
+                    secure_protocol(parts[2])
+                ));
+                for p in &parts[3..] {
+                    out.push(' ');
+                    out.push_str(p);
+                }
+                out.push_str("\r\n");
+                out.push_str(&format!("a=crypto:{}\r\n", srtp.crypto_value()));
+                continue;
+            }
+        }
+        if in_audio && trimmed.starts_with("a=crypto:") {
+            continue;
+        }
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    out
+}
+
 /// The node's own SDES key in an SDP it made for a leg — the answer the
 /// media backend gave an encrypted caller — to answer that leg with again.
 /// `None` when the SDP carries none (the leg is plain).
@@ -2419,6 +2456,27 @@ a=rtpmap:0 PCMU/8000
     }
 
     // ── SRTP SDP rewriting tests ─────────────────────────────────────────
+
+    /// A plain anchored offer made secure for a device the node keys:
+    /// `RTP/SAVP` and our key, nothing else changed.
+    #[test]
+    fn with_sdes_secures_the_audio_section_only() {
+        let plain = "v=0\r\nc=IN IP4 10.0.0.5\r\nt=0 0\r\nm=audio 20000 RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\nm=video 0 RTP/AVP 96\r\n";
+        let ctx = SrtpSdpContext {
+            local_key_b64: "inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz".into(),
+            suite: "AES_CM_128_HMAC_SHA1_80".into(),
+            tag: 1,
+        };
+        let secure = with_sdes(plain, &ctx);
+        assert!(
+            secure.contains(
+                "m=audio 20000 RTP/SAVP 0 101\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:"
+            ),
+            "{secure}"
+        );
+        assert!(secure.contains("m=video 0 RTP/AVP 96"), "{secure}");
+        assert_eq!(parse_sdes_crypto(&secure).len(), 1);
+    }
 
     /// An encrypted caller's offer, sent on to a leg the node does not key:
     /// plain RTP, and the caller's key nowhere in it.
