@@ -97,6 +97,9 @@ pub(crate) struct TransferRun {
     pub media_manager: Option<Arc<fcp_media::MediaManager>>,
     pub sip_call_id_map: Arc<dashmap::DashMap<String, String>>,
     pub in_flight: Arc<dashmap::DashMap<CallId, ()>>,
+    /// The key each call's B-leg was keyed with: what an encrypted party
+    /// on that side is re-offered.
+    pub b_leg_keys: Arc<dashmap::DashMap<CallId, fcp_media::SrtpOffer>>,
     pub b2bua_config: B2buaConfig,
     pub local_addr: String,
     pub call_id: CallId,
@@ -314,14 +317,28 @@ impl TransferRun {
                     let _ = self.uac.bye(&new_dialog).await;
                     return Err((500, "Server Internal Error", format!("media session: {e}")));
                 }
-                // Held by the referrer: taken off hold, by the node.
+                // Held by the referrer: taken off hold, by the node — an
+                // encrypted party offered its own leg's key.
                 if call.held == Some(party) {
+                    let party_srtp = if fcp_media::parse_sdes_crypto(&party_sdp).is_empty() {
+                        None
+                    } else {
+                        match party {
+                            LegSide::A => match media_manager.get_session(session_id).await {
+                                Ok(session) => fcp_media::srtp_context_of(
+                                    &session.local_sdp().await.unwrap_or_default(),
+                                ),
+                                Err(_) => None,
+                            },
+                            LegSide::B => self.b_leg_keys.get(&call.id).map(|o| o.sdp.clone()),
+                        }
+                    };
                     let resume = crate::hold::with_direction(
                         &fcp_media::rewrite_sdp_for_anchoring(
                             &party_sdp,
                             &self.local_addr,
                             port,
-                            None,
+                            party_srtp.as_ref(),
                         ),
                         "sendrecv",
                     );

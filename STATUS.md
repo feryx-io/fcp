@@ -1967,6 +1967,16 @@ presence server) now:
 An out-of-dialog SUBSCRIBE to a package nothing takes is answered 489 with
 `Allow-Events`, not 500 (`fcp-call-manager/tests/presence.rs`).
 
+A plain phone taking an encrypted side is heard (v0.25.372): when a side of
+a call turned plain — an encrypted caller transferring the callee to a plain
+phone, which takes the caller's side — the media backend kept that side's
+SRTP keys, encrypting toward the plain phone and refusing its packets, so
+neither party heard the other. An update without `a=crypto` now clears that
+side's keys (`a_plain_phone_taking_an_encrypted_side_is_heard`), and the
+re-INVITE taking a held, encrypted party off hold in a node-run transfer
+offers its own leg's key (`TransferRun.b_leg_keys`). Every SDP the node
+builds toward an encrypted leg now carries that leg's key.
+
 An encrypted phone picking up or taking over a call is answered encrypted
 (v0.25.371): a picker's answer (`anchor_pickup_media`) and a phone taking a
 leg with `Replaces` were built without a key, and the picker's or taker's
@@ -1976,9 +1986,7 @@ callee-side offer is now keyed from a key of ours under its tag
 caller-side taker is answered with the backend's key; and the held party
 `Replaces` resumes is offered its own leg's key
 (`an_encrypted_phone_taking_over_a_call_is_answered_encrypted`; the
-testkit's `call_offering_srtp_with_headers`). Still built plain: the
-re-INVITEs a node-run transfer sends the transferred party
-(`fcp_sip::transfer`).
+testkit's `call_offering_srtp_with_headers`).
 
 An encrypted leg on hold keeps its key (v0.25.369): a hold the node answers
 itself (music on hold) and the answer to a re-INVITE relayed from either leg
