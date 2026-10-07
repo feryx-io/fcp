@@ -108,6 +108,8 @@ struct CallState {
     media: Arc<MediaLeg>,
     phase: watch::Sender<CallPhase>,
     timings: Mutex<CallTimings>,
+    /// The SDP the far end answered with, once it has.
+    answer: Mutex<Option<String>>,
 }
 
 impl CallState {
@@ -201,13 +203,25 @@ impl Inner {
         multipart: Option<sip_core::MultipartBody>,
         headers: sip_core::Headers,
     ) -> Result<Call> {
+        self.place_call_edited(target, multipart, headers, |sdp| sdp)
+            .await
+    }
+
+    /// As [`Inner::place_call_inner`], the offer passed through `edit`.
+    async fn place_call_edited(
+        self: &Arc<Self>,
+        target: &str,
+        multipart: Option<sip_core::MultipartBody>,
+        headers: sip_core::Headers,
+        edit: impl FnOnce(String) -> String,
+    ) -> Result<Call> {
         let target = if target.starts_with("sip:") || target.starts_with("sips:") {
             target.to_string()
         } else {
             format!("sip:{target}@{}{}", self.server, self.transport_param)
         };
         let media = Arc::new(MediaLeg::open().await?);
-        let offer = media.sdp("sendrecv");
+        let offer = edit(media.sdp("sendrecv"));
         let options = match multipart {
             Some(mut body) => {
                 // The SDP first, then whatever the caller added.
@@ -255,6 +269,7 @@ impl Inner {
             media: Arc::clone(&media),
             phase: phase_tx,
             timings: Mutex::new(CallTimings::default()),
+            answer: Mutex::new(None),
         });
         self.calls.insert(call_id.clone(), Arc::clone(&state));
 
@@ -319,6 +334,7 @@ impl Inner {
                     let dialog = handle.dialog.read().await.clone();
                     *st.dialog.write().await = Some(dialog);
                     let answer = String::from_utf8_lossy(resp.body()).to_string();
+                    *st.answer.lock().unwrap() = Some(answer.clone());
                     if let Err(e) = st.media.set_remote(&answer).await {
                         warn!(error = %e, "answer SDP unusable");
                     }
@@ -819,6 +835,19 @@ impl Phone {
         self.inner.place_call(target).await
     }
 
+    /// As [`Phone::call`], offering SDES-SRTP: the audio section
+    /// `RTP/SAVP` with `crypto` (an `a=crypto` value). The phone's own media
+    /// stays plain, so this is for what is signalled, not what is heard.
+    pub async fn call_offering_srtp(&self, target: &str, crypto: &str) -> Result<Call> {
+        let crypto = crypto.to_string();
+        self.inner
+            .place_call_edited(target, None, sip_core::Headers::new(), move |sdp| {
+                let sdp = sdp.replacen(" RTP/AVP ", " RTP/SAVP ", 1);
+                format!("{sdp}a=crypto:{crypto}\r\n")
+            })
+            .await
+    }
+
     /// As [`Phone::call`], with extra request headers on the INVITE.
     pub async fn call_with_headers(&self, target: &str, headers: &[(&str, &str)]) -> Result<Call> {
         let mut extra = sip_core::Headers::new();
@@ -1061,6 +1090,11 @@ impl Call {
 
     pub fn media(&self) -> &MediaLeg {
         &self.state.media
+    }
+
+    /// The SDP the far end answered this phone's offer with.
+    pub fn answer_sdp(&self) -> Option<String> {
+        self.state.answer.lock().unwrap().clone()
     }
 
     /// When this call's milestones happened, measured from the INVITE
@@ -1460,6 +1494,7 @@ impl UasRequestHandler for Handler {
             media,
             phase: phase_tx,
             timings: Mutex::new(CallTimings::default()),
+            answer: Mutex::new(None),
         });
         self.0.calls.insert(call_id.clone(), Arc::clone(&state));
         let call = Call {

@@ -833,6 +833,18 @@ impl SrtpSdpContext {
     }
 }
 
+/// The node's own SDES key in an SDP it made for a leg — the answer the
+/// media backend gave an encrypted caller — to answer that leg with again.
+/// `None` when the SDP carries none (the leg is plain).
+pub fn srtp_context_of(sdp: &str) -> Option<SrtpSdpContext> {
+    let line = parse_sdes_crypto(sdp).into_iter().next()?;
+    Some(SrtpSdpContext {
+        local_key_b64: line.key_params,
+        suite: line.suite,
+        tag: line.tag,
+    })
+}
+
 /// How to answer an offered video section.
 #[derive(Debug, Clone)]
 pub struct VideoAnswer<'a> {
@@ -1450,10 +1462,21 @@ fn secure_protocol(protocol: &str) -> String {
     }
 }
 
+/// The SDES-secured profile's plain counterpart: an anchored leg the node
+/// does not key is offered RTP in the clear.
+fn plain_protocol(protocol: &str) -> String {
+    match protocol {
+        "RTP/SAVP" => "RTP/AVP".to_string(),
+        "RTP/SAVPF" => "RTP/AVPF".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Rewrite an SDP so every section points at the server: every `c=` line
 /// becomes `server_ip`; the first audio section takes `ports.audio` (and
-/// `RTP/SAVP` plus our `a=crypto` when `srtp` is given, existing crypto
-/// lines stripped); the camera's video section takes `ports.video` and a
+/// `RTP/SAVP` plus our `a=crypto` when `srtp` is given, else `RTP/AVP` —
+/// existing crypto lines stripped either way, so one leg's key never
+/// reaches the other); the camera's video section takes `ports.video` and a
 /// shared screen's `ports.content`, each disabled with port 0 when its
 /// port is `None`; a second section of any kind, and every other section,
 /// is disabled — one port carries one stream. A disabled section keeps
@@ -1489,10 +1512,13 @@ pub fn rewrite_for_anchoring(
                     SectionKind::Audio if !audio_seen => {
                         audio_seen = true;
                         in_anchored_audio = true;
+                        // The node terminates each leg's media: the section is
+                        // secure with our key, or plain — never the other
+                        // leg's profile and key passed through.
                         let protocol = if srtp.is_some() {
                             secure_protocol(parts[2])
                         } else {
-                            parts[2].to_string()
+                            plain_protocol(parts[2])
                         };
                         (ports.audio.to_string(), protocol)
                     }
@@ -1529,8 +1555,9 @@ pub fn rewrite_for_anchoring(
             }
         }
 
-        // Our key replaces the peer's in the audio section.
-        if srtp.is_some() && in_anchored_audio && trimmed.starts_with("a=crypto:") {
+        // The other leg's key never crosses the node: ours replaces it, or
+        // the section goes without.
+        if in_anchored_audio && trimmed.starts_with("a=crypto:") {
             continue;
         }
 
@@ -2393,6 +2420,30 @@ a=rtpmap:0 PCMU/8000
 
     // ── SRTP SDP rewriting tests ─────────────────────────────────────────
 
+    /// An encrypted caller's offer, sent on to a leg the node does not key:
+    /// plain RTP, and the caller's key nowhere in it.
+    #[test]
+    fn an_unkeyed_anchored_leg_is_plain_and_carries_no_key() {
+        let original = "v=0\r\n\
+                         o=- 123 1 IN IP4 192.168.1.100\r\n\
+                         s=Test\r\n\
+                         c=IN IP4 192.168.1.100\r\n\
+                         t=0 0\r\n\
+                         m=audio 10000 RTP/SAVP 0 101\r\n\
+                         a=rtpmap:0 PCMU/8000\r\n\
+                         a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz\r\n";
+        let rewritten = rewrite_sdp_for_anchoring(original, "10.0.0.5", 20000, None);
+        assert!(
+            rewritten.contains("m=audio 20000 RTP/AVP 0 101"),
+            "{rewritten}"
+        );
+        assert!(
+            !rewritten.contains("a=crypto"),
+            "the caller's key leaked: {rewritten}"
+        );
+        assert!(parse_sdes_crypto(&rewritten).is_empty());
+    }
+
     #[test]
     fn test_rewrite_sdp_strips_and_injects_crypto() {
         let original = "v=0\r\n\
@@ -2425,8 +2476,11 @@ a=rtpmap:0 PCMU/8000
         assert!(rewritten.contains("a=rtpmap:8 PCMA/8000"));
     }
 
+    /// Without a key of the node's, an existing crypto line is dropped: the
+    /// node terminates each leg's media, so one leg's key is never the
+    /// other's.
     #[test]
-    fn test_rewrite_sdp_none_context_passthrough() {
+    fn test_rewrite_sdp_none_context_drops_crypto() {
         let original = "v=0\r\n\
                          o=- 123 1 IN IP4 192.168.1.100\r\n\
                          s=Test\r\n\
@@ -2440,14 +2494,8 @@ a=rtpmap:0 PCMU/8000
 
         // Protocol stays RTP/AVP (no SRTP)
         assert!(rewritten.contains("m=audio 20000 RTP/AVP 0"));
-        // Existing crypto line preserved (no stripping when None)
-        assert!(rewritten.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:existingkey"));
-        // No new crypto lines injected
-        assert_eq!(
-            rewritten.matches("a=crypto:").count(),
-            1,
-            "should have exactly one crypto line (the original)"
-        );
+        // The peer's key is not passed on, and none is injected.
+        assert_eq!(rewritten.matches("a=crypto:").count(), 0, "{rewritten}");
     }
 
     #[test]
