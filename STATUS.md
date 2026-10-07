@@ -1967,6 +1967,24 @@ presence server) now:
 An out-of-dialog SUBSCRIBE to a package nothing takes is answered 489 with
 `Allow-Events`, not 500 (`fcp-call-manager/tests/presence.rs`).
 
+An encrypted caller keeps its key (v0.25.366), found by Anvil's SDES-SRTP
+(softphone A5): a caller offering `RTP/SAVP` with `a=crypto` had its media
+answered by the backend with a key of the node's, but
+- the B2BUA built the caller's answer itself (`construct_answer_for_a_leg`,
+  and the anchoring rewrite as its fallback) without that key, so the
+  caller was answered in the clear while the node expected SRTP from it;
+- the offer sent on to the callee kept the caller's `RTP/SAVP` and its
+  `a=crypto` line — the caller's master key handed to the callee, and a
+  plain callee refusing the call 488.
+An anchored audio section the node does not key is now plain `RTP/AVP` with
+no `a=crypto` (`plain_protocol`); the caller's answer carries the node's
+own key read back from the session (`fcp_media::srtp_context_of`) on the
+initial answer, its fallbacks, the parallel-forking winner and a re-INVITE
+the caller sent (`an_encrypted_caller_is_answered_encrypted_and_keeps_its_key`;
+the testkit's phone gains `call_offering_srtp` and `Call::answer_sdp`).
+Answers built for other legs (pickup, a node-answered hold, `Replaces`) are
+unchanged.
+
 Transfers, forwards and lamps as a softphone meets them (v0.25.364), found
 by Anvil's transfer tests against a node with `auth_invites` on and phones
 on their own addresses:

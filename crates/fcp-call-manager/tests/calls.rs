@@ -2050,3 +2050,62 @@ async fn a_challenged_call_that_rings_a_while_is_one_call() {
     let _ = call.hangup().await;
     stack.finish().await;
 }
+
+/// An encrypted caller (SDES, RFC 4568) is answered encrypted, with the
+/// node's own key, and its key stays on its own leg: the callee is offered
+/// plain RTP and never sees it. The node used to pass the caller's
+/// `RTP/SAVP` and `a=crypto` on to the callee, and answered the caller in
+/// the clear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_encrypted_caller_is_answered_encrypted_and_keeps_its_key() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+
+    let key = "WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz";
+    let call = alice_phone
+        .call_offering_srtp(
+            &bob.extension,
+            &format!("1 AES_CM_128_HMAC_SHA1_80 inline:{key}"),
+        )
+        .await
+        .unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice_phone).await;
+    };
+    let offer = String::from_utf8_lossy(incoming.body()).to_string();
+    assert!(
+        offer.contains(" RTP/AVP "),
+        "Bob is offered plain RTP: {offer}"
+    );
+    assert!(!offer.contains("a=crypto"), "Bob was handed a key: {offer}");
+    assert!(!offer.contains(key), "Bob was handed Alice's key: {offer}");
+
+    let bob_call = incoming.answer().await.unwrap();
+    call.answered(SOON).await.expect("answered");
+    let answer = call.answer_sdp().expect("Alice's answer");
+    assert!(
+        answer.contains(" RTP/SAVP "),
+        "Alice is answered encrypted: {answer}"
+    );
+    let crypto = answer
+        .lines()
+        .find_map(|l| l.strip_prefix("a=crypto:"))
+        .unwrap_or_else(|| panic!("Alice's answer has no key: {answer}"));
+    assert!(
+        crypto.starts_with("1 AES_CM_128_HMAC_SHA1_80 inline:"),
+        "the answer keeps the offer's tag and suite: {crypto}"
+    );
+    assert!(
+        !crypto.contains(key),
+        "the node answered with Alice's own key"
+    );
+
+    call.hangup().await.unwrap();
+    assert!(bob_call.ended(SOON).await);
+    stack.finish().await;
+}

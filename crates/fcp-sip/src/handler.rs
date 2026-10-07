@@ -7546,6 +7546,12 @@ impl SipMessageHandler {
                     match media_manager.get_session(&media_session_id).await {
                         Ok(session) => {
                             let (rtp_port, _rtcp_port) = session.ports();
+                            // The caller's own key, as the media backend answered its offer: an
+                            // encrypted caller is answered encrypted, whichever way the answer is
+                            // built.
+                            let a_leg_srtp = fcp_media::srtp_context_of(
+                                &session.local_sdp().await.unwrap_or_default(),
+                            );
 
                             // Construct answer for A-leg using A-leg's preferred codec
                             // This is critical for transcoding: A-leg sees its preferred codec,
@@ -7567,7 +7573,7 @@ impl SipMessageHandler {
                                             &a_leg_offer,
                                             &self.local_addr,
                                             rtp_port,
-                                            None,
+                                            a_leg_srtp.as_ref(),
                                         );
                                         info!(
                                             call_id = %call_id,
@@ -7582,7 +7588,7 @@ impl SipMessageHandler {
                                             original_sdp,
                                             &self.local_addr,
                                             rtp_port,
-                                            None,
+                                            a_leg_srtp.as_ref(),
                                         )
                                     }
                                 } else {
@@ -7591,7 +7597,7 @@ impl SipMessageHandler {
                                         original_sdp,
                                         &self.local_addr,
                                         rtp_port,
-                                        None,
+                                        a_leg_srtp.as_ref(),
                                     )
                                 }
                             } else {
@@ -7600,7 +7606,7 @@ impl SipMessageHandler {
                                     original_sdp,
                                     &self.local_addr,
                                     rtp_port,
-                                    None,
+                                    a_leg_srtp.as_ref(),
                                 )
                             };
 
@@ -8312,6 +8318,12 @@ impl SipMessageHandler {
                     match media_manager.get_session(&media_session_id).await {
                         Ok(session) => {
                             let (rtp_port, _rtcp_port) = session.ports();
+                            // The caller's own key, as the media backend answered its offer: an
+                            // encrypted caller is answered encrypted, whichever way the answer is
+                            // built.
+                            let a_leg_srtp = fcp_media::srtp_context_of(
+                                &session.local_sdp().await.unwrap_or_default(),
+                            );
 
                             // Construct answer for A-leg using A-leg's preferred codec
                             // This is critical for transcoding: A-leg sees its preferred codec,
@@ -8333,7 +8345,7 @@ impl SipMessageHandler {
                                             &a_leg_offer,
                                             &self.local_addr,
                                             rtp_port,
-                                            None,
+                                            a_leg_srtp.as_ref(),
                                         );
                                         info!(
                                             call_id = %call_id,
@@ -8348,7 +8360,7 @@ impl SipMessageHandler {
                                             original_sdp,
                                             &self.local_addr,
                                             rtp_port,
-                                            None,
+                                            a_leg_srtp.as_ref(),
                                         )
                                     }
                                 } else {
@@ -8357,7 +8369,7 @@ impl SipMessageHandler {
                                         original_sdp,
                                         &self.local_addr,
                                         rtp_port,
-                                        None,
+                                        a_leg_srtp.as_ref(),
                                     )
                                 }
                             } else {
@@ -8366,7 +8378,7 @@ impl SipMessageHandler {
                                     original_sdp,
                                     &self.local_addr,
                                     rtp_port,
-                                    None,
+                                    a_leg_srtp.as_ref(),
                                 )
                             };
 
@@ -9544,6 +9556,15 @@ impl SipMessageHandler {
                     match media_manager.get_session(media_session_id).await {
                         Ok(session) => {
                             let (rtp_port, _rtcp_port) = session.ports();
+                            // When the caller sent it, the answer carries the caller's own key,
+                            // as the media backend first answered it.
+                            let a_leg_srtp = if is_a_leg {
+                                fcp_media::srtp_context_of(
+                                    &session.local_sdp().await.unwrap_or_default(),
+                                )
+                            } else {
+                                None
+                            };
 
                             // The answer to the sender's own offer: its codec
                             // (the transcoder bridges the far leg's), and the
@@ -9559,14 +9580,14 @@ impl SipMessageHandler {
                                         offer,
                                         &self.local_addr,
                                         rtp_port,
-                                        None,
+                                        a_leg_srtp.as_ref(),
                                     )
                                 }
                                 _ => fcp_media::rewrite_sdp_for_anchoring(
                                     &response_sdp,
                                     &self.local_addr,
                                     rtp_port,
-                                    None,
+                                    a_leg_srtp.as_ref(),
                                 ),
                             };
 
