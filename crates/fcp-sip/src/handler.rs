@@ -658,6 +658,9 @@ pub struct SipMessageHandler {
     /// The SRTP this node offered on a call's B-leg, kept until the answer
     /// names the key the far end sends with (`docs/TENANT_TRUNKS.md` §6).
     b_leg_srtp: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, fcp_media::SrtpOffer>>,
+    /// The key each call's B-leg was keyed with, once answered: what this
+    /// node answers that leg's later offers with.
+    b_leg_keys: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, fcp_media::SrtpOffer>>,
     /// The header manipulation rules a trunk may name
     /// (`docs/TENANT_TRUNKS.md` §6); `None` on a node with none configured.
     header_rules: Option<Arc<dyn crate::trunk_egress::TrunkHeaderRules>>,
@@ -1039,6 +1042,7 @@ impl SipMessageHandler {
             emergency_fallbacks: Arc::new(dashmap::DashMap::new()),
             trunk_fallbacks: Arc::new(dashmap::DashMap::new()),
             b_leg_srtp: Arc::new(dashmap::DashMap::new()),
+            b_leg_keys: Arc::new(dashmap::DashMap::new()),
             header_rules: None,
             inbound_trunks: None,
             link_peers: Arc::new(crate::link_peers::LinkPeers::new()),
@@ -1487,8 +1491,6 @@ impl SipMessageHandler {
         }
     }
 
-    /// The SRTP this node offered on the call's B-leg, taken out of the map
-    /// now that the answer is here.
     /// The offer for a device registered over TLS: `sdp` with the call's
     /// device key (made on first use), when the call is anchored here and
     /// goes to no trunk; `sdp` unchanged otherwise.
@@ -1514,8 +1516,32 @@ impl SipMessageHandler {
         fcp_media::with_sdes(&sdp, &offer)
     }
 
+    /// The SRTP this node offered on the call's B-leg, taken out of the map
+    /// now that the answer is here, and kept as the leg's key for later
+    /// answers (a hold, a re-INVITE) while the call lasts.
     fn take_b_leg_srtp(&self, call_id: &fcp_b2bua_core::CallId) -> Option<fcp_media::SrtpOffer> {
-        self.b_leg_srtp.remove(call_id).map(|(_, offer)| offer)
+        let offer = self.b_leg_srtp.remove(call_id).map(|(_, offer)| offer)?;
+        self.b_leg_keys
+            .retain(|id, _| self.call_manager.get_call(id).is_some());
+        self.b_leg_keys.insert(*call_id, offer.clone());
+        Some(offer)
+    }
+
+    /// The key this node answers `side` with when that leg is encrypted: the
+    /// caller's as the media backend last answered it, the callee's as this
+    /// node offered it. `None` for a leg this node does not key.
+    async fn leg_srtp(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        side: fcp_b2bua_core::LegSide,
+        session: &fcp_media::MediaSession,
+    ) -> Option<fcp_media::SrtpSdpContext> {
+        match side {
+            fcp_b2bua_core::LegSide::A => {
+                fcp_media::srtp_context_of(&session.local_sdp().await.unwrap_or_default())
+            }
+            fcp_b2bua_core::LegSide::B => self.b_leg_keys.get(call_id).map(|o| o.sdp.clone()),
+        }
     }
 
     /// Count the call against the trunk that answered it, if a trunk did.
@@ -9589,14 +9615,17 @@ impl SipMessageHandler {
                     match media_manager.get_session(media_session_id).await {
                         Ok(session) => {
                             let (rtp_port, _rtcp_port) = session.ports();
-                            // When the caller sent it, the answer carries the caller's own key,
-                            // as the media backend first answered it.
-                            let a_leg_srtp = if is_a_leg {
-                                fcp_media::srtp_context_of(
-                                    &session.local_sdp().await.unwrap_or_default(),
-                                )
-                            } else {
-                                None
+                            // An encrypted sender is answered encrypted, with its own leg's key.
+                            let a_leg_srtp = match sender_offer.as_deref() {
+                                Some(offer) if !fcp_media::parse_sdes_crypto(offer).is_empty() => {
+                                    let side = if is_a_leg {
+                                        fcp_b2bua_core::LegSide::A
+                                    } else {
+                                        fcp_b2bua_core::LegSide::B
+                                    };
+                                    self.leg_srtp(&call.id, side, &session).await
+                                }
+                                _ => None,
                             };
 
                             // The answer to the sender's own offer: its codec
@@ -9735,24 +9764,47 @@ impl SipMessageHandler {
                     .update_session(&session_id, offer.to_string())
                     .await
                     .map(|_| ()),
+                // An encrypted callee stays keyed from this node's own offer,
+                // which its answer will name again.
                 fcp_b2bua_core::LegSide::B => {
-                    media_manager
-                        .update_session_b_leg(&session_id, offer.to_string())
-                        .await
+                    match self.b_leg_keys.get(&call.id).map(|o| o.clone()) {
+                        Some(ours) if !fcp_media::parse_sdes_crypto(offer).is_empty() => {
+                            media_manager
+                                .update_session_b_leg_offered(
+                                    &session_id,
+                                    offer.to_string(),
+                                    Some(ours),
+                                )
+                                .await
+                        }
+                        _ => {
+                            media_manager
+                                .update_session_b_leg(&session_id, offer.to_string())
+                                .await
+                        }
+                    }
                 }
             };
             if let Err(e) = updated {
                 warn!(call_id = %call.id, error = %e, "The holder's new media endpoint was not taken");
             }
         }
-        let port = match media_manager.get_session(&session_id).await {
-            Ok(session) => session.ports().0,
+        let session = match media_manager.get_session(&session_id).await {
+            Ok(session) => session,
             Err(e) => {
                 warn!(call_id = %call.id, error = %e, "No media session to answer a hold from");
                 return Ok(self.create_simple_response(request, 500, "Media Unavailable"));
             }
         };
-        let answer = fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, port, None);
+        let port = session.ports().0;
+        // An encrypted holder is answered encrypted, with its leg's key.
+        let srtp = if fcp_media::parse_sdes_crypto(offer).is_empty() {
+            None
+        } else {
+            self.leg_srtp(&call.id, sender, &session).await
+        };
+        let answer =
+            fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, port, srtp.as_ref());
         store_leg_sdp(
             &self.call_manager,
             &call.id,

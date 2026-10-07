@@ -15,12 +15,19 @@ const BIN: &str = env!("CARGO_BIN_EXE_fcp-call-manager");
 const REALM: &str = "e2e.local";
 const SOON: Duration = Duration::from_secs(5);
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_softphone_registered_over_tls_is_offered_srtp() {
-    let Some(db) = TestDatabase::create().await else {
-        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
-        return;
-    };
+/// A call manager with a TLS listener, and the way in to it.
+struct Stack {
+    service: Service,
+    seed: Seed,
+    db: TestDatabase,
+    udp: SocketAddr,
+    tls: SocketAddr,
+    ca: ClusterCa,
+    _dir: tempfile::TempDir,
+}
+
+async fn stack() -> Option<Stack> {
+    let db = TestDatabase::create().await?;
     let seed = Seed::new(db.url(), REALM).await;
     let (sip, sips, http) = (free_port(), free_port(), free_port());
     let rtp_start = allocate_port_pair().rtp_port;
@@ -79,6 +86,32 @@ format = "compact"
         SocketAddr::from(([127, 0, 0, 1], sips)),
     );
 
+    Some(Stack {
+        service,
+        seed,
+        db,
+        udp,
+        tls,
+        ca,
+        _dir: dir,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_softphone_registered_over_tls_is_offered_srtp() {
+    let Some(Stack {
+        service,
+        seed,
+        db,
+        udp,
+        tls,
+        ca,
+        _dir,
+    }) = stack().await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
     let alice = seed.user("alice", "alice-pw", "1001").await;
     let bob = seed.user("bob", "bob-pw", "1002").await;
     // Bob's softphone over TLS, his desk phone over UDP.
@@ -118,6 +151,80 @@ format = "compact"
     call.hangup().await.unwrap();
     assert!(bob_call.ended(SOON).await);
 
+    service.stop().await;
+    db.drop_db().await;
+}
+
+/// An encrypted caller who holds and resumes is answered by the node with
+/// its own key each time — not in the clear, which would tell a phone to
+/// drop its encryption while the node still expects it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_encrypted_caller_on_hold_keeps_its_key() {
+    let Some(Stack {
+        service,
+        seed,
+        db,
+        udp,
+        _dir,
+        ..
+    }) = stack().await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = seed.user("alice", "alice-pw", "1001").await;
+    let bob = seed.user("bob", "bob-pw", "1002").await;
+    let bob_phone = Phone::new(&bob.username, &bob.password, REALM, udp)
+        .await
+        .unwrap();
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    let alice_phone = Phone::new(&alice.username, &alice.password, REALM, udp)
+        .await
+        .unwrap();
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+
+    let crypto = "1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz";
+    let call = alice_phone
+        .call_offering_srtp(&bob.extension, crypto)
+        .await
+        .unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        let logs = service.kill().await;
+        panic!("Bob's phone did not ring\n{logs}");
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    call.answered(SOON).await.expect("answered");
+    let key_of = |sdp: &str| {
+        sdp.lines()
+            .find_map(|l| l.strip_prefix("a=crypto:"))
+            .map(str::to_string)
+    };
+    let first = call.answer_sdp().expect("the answer");
+    let node_key = key_of(&first).unwrap_or_else(|| panic!("answered in the clear: {first}"));
+
+    for (direction, answered) in [("sendonly", "recvonly"), ("sendrecv", "sendrecv")] {
+        let (code, answer) = call
+            .reinvite_offering_srtp(direction, crypto)
+            .await
+            .unwrap();
+        assert_eq!(code, 200, "{direction}: {answer}");
+        assert!(
+            answer.contains(" RTP/SAVP "),
+            "{direction} answered in the clear: {answer}"
+        );
+        assert_eq!(
+            key_of(&answer).as_deref(),
+            Some(node_key.as_str()),
+            "{direction}: the node's key changed: {answer}"
+        );
+        assert!(
+            answer.contains(&format!("a={answered}")),
+            "{direction}: {answer}"
+        );
+    }
+
+    call.hangup().await.unwrap();
+    assert!(bob_call.ended(SOON).await);
     service.stop().await;
     db.drop_db().await;
 }
