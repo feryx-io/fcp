@@ -2863,11 +2863,12 @@ async fn run_event_forwarder(
 
     // Subscribe to business-level events only. SIP trace events are excluded
     // because they are extremely high-volume (one per SIP message) and already
-    // persisted via the dedicated SIP trace batch pipeline. Presence events are
-    // also excluded — they are high-frequency internal signals consumed only by
-    // the local presence NOTIFY dispatcher and don't need forwarding.
+    // persisted via the dedicated SIP trace batch pipeline. Of presence, only
+    // what a user's app shows goes (`forwarded`): a status and a busy lamp,
+    // which `/me/events` carries to the tenant's users.
     use fcp_events::filter::EventType;
     let filter = EventFilter::new().types(vec![
+        EventType::Presence,
         EventType::Call,
         EventType::Media,
         EventType::Ivr,
@@ -2889,6 +2890,7 @@ async fn run_event_forwarder(
 
     loop {
         match stream.next().await {
+            Some(event) if !forwarded(&event) => {}
             Some(event) => {
                 tracing::debug!(?event, "Forwarding event to events server");
                 // Fire-and-forget POST to events server
@@ -2937,6 +2939,22 @@ async fn run_event_forwarder(
                 }
             }
         }
+    }
+}
+
+/// Whether the event forwarder sends `event` to the events server. Of
+/// presence, a user's status and their dialogs (the busy lamp) go: an app
+/// shows them (`/me/events`, docs/SOFTPHONE.md). Watchers, PUBLISH
+/// bookkeeping and shared-line appearances stay on the node, whose NOTIFY
+/// dispatcher is their only reader.
+fn forwarded(event: &fcp_events::PlatformEvent) -> bool {
+    use fcp_events::{PlatformEvent, PresenceEvent};
+    match event {
+        PlatformEvent::Presence(p) => matches!(
+            p,
+            PresenceEvent::StatusChanged { .. } | PresenceEvent::DialogChanged { .. }
+        ),
+        _ => true,
     }
 }
 
