@@ -1967,6 +1967,15 @@ presence server) now:
 An out-of-dialog SUBSCRIBE to a package nothing takes is answered 489 with
 `Allow-Events`, not 500 (`fcp-call-manager/tests/presence.rs`).
 
+A colleague's busy lamp reaches a user's app (v0.25.375): `/me/events`
+carries the tenant's presence, but a call manager forwarding its events to
+the events server over HTTP (`[events] server_url`, as the compose stack
+does) dropped every presence event, so no app saw a status or a lamp. The
+forwarder now sends a user's status and dialog changes
+(`presence.status_changed`, `presence.dialog_changed`); watchers, PUBLISH
+bookkeeping and shared-line appearances stay on the node
+(`fcp-admin/tests/presence_events.rs`). Found by Anvil's U2a.
+
 A plain phone taking an encrypted side is heard (v0.25.372): when a side of
 a call turned plain — an encrypted caller transferring the callee to a plain
 phone, which takes the caller's side — the media backend kept that side's
