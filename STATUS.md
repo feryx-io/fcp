@@ -2113,6 +2113,16 @@ codecs this build transcodes, SRTP policy, feature codes; ETag and 304),
 200 OK from the call manager's `[registrar] provisioning_url` (set in
 compose).
 
+Push (designed 2026-10-09, `docs/PUSH.md`): ringing a sleeping phone app.
+RFC 8599 push addresses in REGISTER (`pn-provider`, `pn-param`,
+`pn-prid`; 555 and Feature-Caps), long-lived push bindings matched by
+instance, APNs (VoIP, token auth) and FCM (HTTP v1) senders in `fcp-push`
+with the publisher's keys in `[push]`, a call to a sleeping app pushed and
+held for its re-REGISTER within the ring time (the fork gaining legs),
+cancel pushes, a flow on another node reached through its node, sites
+pushing through the cloud; Anvil's PushKit and FCM. Phases P1–P4 (fcp),
+A1–A3 (anvil); questions open.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
