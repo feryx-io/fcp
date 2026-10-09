@@ -771,6 +771,24 @@ pub struct Registration {
     /// device that moves (`docs/E911_BLOCK_2.md` §6.2).
     #[serde(default)]
     pub source_address: Option<String>,
+
+    /// The Contact's `+sip.instance` (RFC 5626): the same phone across
+    /// addresses, so a new binding from it replaces the old.
+    #[serde(default)]
+    pub instance_id: Option<String>,
+
+    /// The Contact's `reg-id` (RFC 5626).
+    #[serde(default)]
+    pub reg_id: Option<u32>,
+
+    /// Where a sleeping app is woken (RFC 8599, `docs/PUSH.md`).
+    #[serde(default)]
+    pub push: Option<crate::push::PushAddress>,
+
+    /// The node holding this binding's flow (`flow_token`), which a call on
+    /// another node reaches it through.
+    #[serde(default)]
+    pub flow_node: Option<String>,
 }
 
 /// Storage backend for user credentials.
@@ -5607,6 +5625,10 @@ mod tests {
             path: None,
             flow_token: None,
             source_address: None,
+            instance_id: None,
+            reg_id: None,
+            push: None,
+            flow_node: None,
         };
 
         storage.put_registration(reg.clone()).await.unwrap();

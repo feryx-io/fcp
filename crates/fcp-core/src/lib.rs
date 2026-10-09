@@ -40,6 +40,7 @@ pub mod pidf_lo;
 pub mod porting;
 pub mod prompt;
 pub mod provisioning;
+pub mod push;
 pub mod queue_config;
 pub mod recording;
 pub mod region;

@@ -331,6 +331,10 @@ async fn what_a_site_writes_reaches_the_cloud_and_its_files_are_reached_through_
             path: None,
             flow_token: None,
             source_address: None,
+            instance_id: None,
+            reg_id: None,
+            push: None,
+            flow_node: None,
         })
         .await
         .unwrap();

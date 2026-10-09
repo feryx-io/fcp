@@ -281,12 +281,16 @@ impl LocationStoreAdapter {
         }
     }
 
+    /// Store a binding; one from a phone that names its instance replaces
+    /// that instance's other bindings (RFC 5626 §6: a woken app's new
+    /// address, a phone that moved), which are returned.
     async fn upsert_in_tenant(
         &self,
         binding: Binding,
         tenant_id: TenantId,
         source_address: Option<std::net::SocketAddr>,
-    ) -> Result<()> {
+        details: BindingDetails,
+    ) -> Result<Vec<String>> {
         let mut registration = Self::from_binding(&binding);
         registration.tenant_id = tenant_id;
         // Where the device registered from, which places a device that
@@ -294,10 +298,44 @@ impl LocationStoreAdapter {
         registration.source_address = source_address.map(|a| a.to_string());
         registration.contact =
             crate::registrar::FcpRegistrar::normalize_contact_for_matching(&registration.contact);
+        if let Some(expires) = details.expires {
+            registration.expires_at = SystemTime::now() + expires;
+        }
+        registration.instance_id = details.instance_id;
+        registration.reg_id = details.reg_id;
+        registration.push = details.push;
+        registration.flow_node = details.flow_node;
         let aor = registration.aor.clone();
+        let contact = registration.contact.clone();
+        let instance = registration.instance_id.clone();
+        let reg_id = registration.reg_id;
         let stored = self.store.put_registration(registration).await;
         self.invalidate(&tenant_id, &aor);
-        stored
+        stored?;
+
+        let mut replaced = Vec::new();
+        if let Some(instance) = instance {
+            fcp_core::storage::RegistrationReads::global()
+                .note(fcp_core::storage::RegistrationRead::Housekeeping);
+            for old in self
+                .store
+                .get_registrations_in_tenant(&tenant_id, &aor)
+                .await?
+            {
+                let same_phone = old.instance_id.as_deref() == Some(instance.as_str())
+                    && (old.reg_id.is_none() || reg_id.is_none() || old.reg_id == reg_id);
+                if same_phone && old.contact != contact {
+                    self.store
+                        .delete_registration_in_tenant(&tenant_id, &aor, &old.contact)
+                        .await?;
+                    replaced.push(old.contact);
+                }
+            }
+            if !replaced.is_empty() {
+                self.invalidate(&tenant_id, &aor);
+            }
+        }
+        Ok(replaced)
     }
 
     async fn remove_in_tenant(&self, tenant_id: &TenantId, aor: &str, contact: &str) -> Result<()> {
@@ -345,17 +383,14 @@ impl LocationStoreAdapter {
     /// The bindings a REGISTER's answer lists. Read from the store, never
     /// the cache — the answer is the store's word on what it now holds —
     /// and counted as housekeeping, since no call is waiting on it.
-    async fn lookup_in_tenant(&self, tenant_id: &TenantId, aor: &str) -> Result<Vec<Binding>> {
+    async fn lookup_in_tenant(&self, tenant_id: &TenantId, aor: &str) -> Result<Vec<Registration>> {
         fcp_core::storage::RegistrationReads::global()
             .note(fcp_core::storage::RegistrationRead::Housekeeping);
-        let now = SystemTime::now();
-        self.store
-            .get_registrations_in_tenant(tenant_id, aor)
-            .await?
-            .iter()
-            .filter(|r| r.expires_at > now)
-            .map(Self::to_binding)
-            .collect()
+        Ok(Self::live(
+            self.store
+                .get_registrations_in_tenant(tenant_id, aor)
+                .await?,
+        ))
     }
 
     /// The live registrations for an AOR, which carry the address the
@@ -412,11 +447,14 @@ impl LocationStoreAdapter {
         // is tracked via expires_at. This ensures conversions don't fail due to
         // time passing between storage and lookup.
         const MIN_EXPIRES_SECS: u64 = 60;
-        let clamped_duration = if expires_duration.as_secs() < MIN_EXPIRES_SECS {
-            std::time::Duration::from_secs(MIN_EXPIRES_SECS)
-        } else {
+        // And to siphon-rs's day at most: a push binding is kept longer
+        // (`docs/PUSH.md` §2.1), and its row says how long.
+        const MAX_EXPIRES_SECS: u64 = 86_400;
+        let clamped_duration = std::time::Duration::from_secs(
             expires_duration
-        };
+                .as_secs()
+                .clamp(MIN_EXPIRES_SECS, MAX_EXPIRES_SECS),
+        );
 
         let mut binding = Binding::new(
             reg.aor.clone().into(),
@@ -475,6 +513,10 @@ impl LocationStoreAdapter {
             // Store flow token for RFC 5626 connection reuse
             flow_token: binding.flow_token().map(|s| s.to_string()),
             source_address: None,
+            instance_id: None,
+            reg_id: None,
+            push: None,
+            flow_node: None,
         }
     }
 }
@@ -749,6 +791,26 @@ pub struct FcpRegistrar {
     /// `X-FCP-Provisioning-Url` (`docs/SOFTPHONE.md` §2.5): how the softphone
     /// finds its branding and settings without being told.
     provisioning_url: Option<String>,
+
+    /// `[push]`: which apps this node can wake, and how long their bindings
+    /// live (`docs/PUSH.md` §2.1). Without it a push address is refused
+    /// with 555.
+    push: Option<Arc<fcp_core::push::PushConfig>>,
+
+    /// This node, named on the bindings whose flows it holds.
+    node_id: Option<String>,
+}
+
+/// What a REGISTER says about its phone beyond the binding siphon-rs keeps.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BindingDetails {
+    /// How long it is kept, where that is longer than siphon-rs's binding
+    /// holds (a push binding's week).
+    pub expires: Option<std::time::Duration>,
+    pub instance_id: Option<String>,
+    pub reg_id: Option<u32>,
+    pub push: Option<fcp_core::push::PushAddress>,
+    pub flow_node: Option<String>,
 }
 
 impl FcpRegistrar {
@@ -785,6 +847,8 @@ impl FcpRegistrar {
             default_tenant_id: None,
             domain_aliases: Vec::new(),
             provisioning_url: None,
+            push: None,
+            node_id: None,
         };
         registrar.refresh_authenticator();
         registrar
@@ -877,6 +941,18 @@ impl FcpRegistrar {
     /// (`X-FCP-Provisioning-Url`).
     pub fn with_provisioning_url(mut self, url: Option<String>) -> Self {
         self.provisioning_url = url.filter(|u| !u.trim().is_empty());
+        self
+    }
+
+    /// Wake apps with these keys (`[push]`, `docs/PUSH.md` §2.1).
+    pub fn with_push(mut self, push: fcp_core::push::PushConfig) -> Self {
+        self.push = Some(Arc::new(push));
+        self
+    }
+
+    /// This node's id, recorded on the bindings whose flows it holds.
+    pub fn with_node_id(mut self, node_id: impl Into<String>) -> Self {
+        self.node_id = Some(node_id.into());
         self
     }
 
@@ -1035,6 +1111,7 @@ impl FcpRegistrar {
         source: Option<std::net::SocketAddr>,
         user_agent: Option<String>,
         registered: bool,
+        push_provider: Option<String>,
     ) {
         let (Some(devices), Some(aor_user)) =
             (&self.device_registrations, extract_username_from_aor(aor))
@@ -1049,6 +1126,7 @@ impl FcpRegistrar {
             source.map(|s| s.ip()),
             user_agent,
             registered,
+            push_provider,
         );
     }
 
@@ -1333,6 +1411,7 @@ impl FcpRegistrar {
                             source_address,
                             user_agent.clone(),
                             false,
+                            None,
                         );
                         // Emit unregistration event for wildcard deregistration
                         self.publish_event(RegistrationEvent::Unregistered {
@@ -1367,7 +1446,11 @@ impl FcpRegistrar {
                     .await
                 {
                     Ok(_) => {
-                        info!(aor = %aor, contact = %contact_uri, "Deregistered contact");
+                        info!(
+                            aor = %aor,
+                            contact = %Self::normalize_contact_for_matching(contact_uri),
+                            "Deregistered contact"
+                        );
                         self.note_device(
                             tenant_id,
                             &aor,
@@ -1376,11 +1459,14 @@ impl FcpRegistrar {
                             source_address,
                             user_agent.clone(),
                             false,
+                            None,
                         );
-                        // Emit unregistration event
+                        // Emit unregistration event, naming the contact as
+                        // it was stored (and announced registered): without
+                        // its transient and push parameters.
                         self.publish_event(RegistrationEvent::Unregistered {
                             aor: aor.clone(),
-                            contact: contact_uri.to_string(),
+                            contact: Self::normalize_contact_for_matching(contact_uri),
                             tenant_id,
                             reason: "explicit".to_string(),
                             timestamp: SystemTime::now(),
@@ -1396,25 +1482,80 @@ impl FcpRegistrar {
         }
 
         // Handle registration (Expires > 0)
+        let mut echo: Option<(String, String)> = None;
+        let mut feature_caps = Vec::new();
         if let Some(contact_str) = contact_header {
             // Strip contact-params (like ;expires=0)
             let contact_uri = Self::extract_contact_uri(contact_str.as_str());
-            let binding =
-                match Self::create_binding(&aor, contact_uri, expires, request, flow_token) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::error!("Failed to create binding: {}", e);
-                        return self.create_error_response(request, 400, "Bad Request");
+            // Its instance and reg-id, and where to wake it (`docs/PUSH.md`
+            // §2.1): a push address this node cannot use is refused, so the
+            // app registers without one.
+            let parts = crate::push_address::parse_contact(contact_str.as_str());
+            let push = match parts.push {
+                crate::push_address::PushRequest::None => None,
+                crate::push_address::PushRequest::Incomplete => {
+                    return self.create_error_response(
+                        request,
+                        400,
+                        "Bad Request - pn-provider needs pn-param and pn-prid",
+                    );
+                }
+                crate::push_address::PushRequest::Address(address) => {
+                    match self.push.as_deref().map(|p| p.check(&address)) {
+                        Some(Ok(())) => Some(address),
+                        _ => {
+                            info!(
+                                aor = %aor,
+                                provider = %address.provider,
+                                param = %address.param,
+                                "REGISTER asks for a push this node cannot send"
+                            );
+                            return self.push_not_supported(request);
+                        }
                     }
-                };
+                }
+            };
+            // A push binding outlives its connection: its app re-registers
+            // when it runs and is woken when a call needs it.
+            let expires = match (&push, &self.push) {
+                (Some(_), Some(config)) => self.expires_up_to(request, config.max_expires()),
+                _ => expires,
+            };
+            let stored_contact = Self::normalize_contact_for_matching(contact_uri);
+            let binding = match Self::create_binding(
+                &aor,
+                contact_uri,
+                expires.min(86_400),
+                request,
+                flow_token,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("Failed to create binding: {}", e);
+                    return self.create_error_response(request, 400, "Bad Request");
+                }
+            };
+            let details = BindingDetails {
+                expires: Some(std::time::Duration::from_secs(u64::from(expires))),
+                instance_id: parts.instance.clone(),
+                reg_id: parts.reg_id,
+                push: push.clone(),
+                flow_node: flow_token.and(self.node_id.clone()),
+            };
 
             match self
                 .location_store
-                .upsert_in_tenant(binding, tenant_id, source_address)
+                .upsert_in_tenant(binding, tenant_id, source_address, details)
                 .await
             {
-                Ok(_) => {
-                    info!(aor = %aor, contact = %contact_uri, expires = expires, "Registration successful");
+                Ok(replaced) => {
+                    info!(
+                        aor = %aor,
+                        contact = %stored_contact,
+                        expires = expires,
+                        push = ?push.as_ref().map(|p| p.provider.as_str()),
+                        "Registration successful"
+                    );
                     self.note_device(
                         tenant_id,
                         &aor,
@@ -1423,16 +1564,32 @@ impl FcpRegistrar {
                         source_address,
                         user_agent.clone(),
                         true,
+                        push.as_ref().map(|p| p.provider.clone()),
                     );
+                    for old in replaced {
+                        info!(aor = %aor, contact = %old, "Binding replaced by its instance's new one");
+                        self.publish_event(RegistrationEvent::Unregistered {
+                            aor: aor.clone(),
+                            contact: old,
+                            tenant_id,
+                            reason: "replaced".to_string(),
+                            timestamp: SystemTime::now(),
+                        });
+                    }
                     // Emit registration event
                     self.publish_event(RegistrationEvent::Registered {
                         aor: aor.clone(),
-                        contact: contact_uri.to_string(),
+                        contact: stored_contact.clone(),
                         tenant_id,
                         expires_secs: expires,
                         user_agent: user_agent.clone(),
                         timestamp: SystemTime::now(),
+                        instance_id: parts.instance,
                     });
+                    if let Some(push) = &push {
+                        feature_caps = crate::push_address::feature_caps(&[push.provider.as_str()]);
+                    }
+                    echo = Some((stored_contact, contact_uri.to_string()));
                 }
                 Err(e) => {
                     tracing::error!("Failed to store registration: {}", e);
@@ -1443,12 +1600,38 @@ impl FcpRegistrar {
 
         // Retrieve all current bindings and return in response
         match self.location_store.lookup_in_tenant(&tenant_id, &aor).await {
-            Ok(bindings) => self.create_ok_response(request, bindings),
+            Ok(bindings) => {
+                let mut response = self.create_ok_response_echoing(request, bindings, echo);
+                for caps in feature_caps {
+                    let _ = response
+                        .headers_mut()
+                        .push(SmolStr::new("Feature-Caps"), SmolStr::new(caps));
+                }
+                response
+            }
             Err(e) => {
                 tracing::error!("Failed to lookup registrations: {}", e);
                 self.create_error_response(request, 500, "Internal Server Error")
             }
         }
+    }
+
+    /// 555 Push Notification Service Not Supported (RFC 8599 §5.2), naming
+    /// the providers this node can push through.
+    fn push_not_supported(&self, request: &Request) -> Response {
+        let mut response =
+            self.create_error_response(request, 555, "Push Notification Service Not Supported");
+        let providers = self
+            .push
+            .as_deref()
+            .map(|p| p.providers())
+            .unwrap_or_default();
+        for caps in crate::push_address::feature_caps(&providers) {
+            let _ = response
+                .headers_mut()
+                .push(SmolStr::new("Feature-Caps"), SmolStr::new(caps));
+        }
+        response
     }
 
     /// Extract the Contact URI without contact-params (strips ;expires=N, etc.)
@@ -1502,8 +1685,14 @@ impl FcpRegistrar {
 
                 for param in &parts[1..] {
                     let param_name = param.split('=').next().unwrap_or("");
-                    // Keep transport and other stable params, skip rinstance and gr
-                    if param_name != "rinstance" && param_name != "gr" {
+                    // Keep transport and other stable params, skip rinstance
+                    // and gr, and RFC 8599's push address, which is kept on
+                    // its own (`docs/PUSH.md` §2.1) and is not where the
+                    // phone is.
+                    if param_name != "rinstance"
+                        && param_name != "gr"
+                        && !crate::push_address::is_push_param(param_name)
+                    {
                         stable_params.push(param);
                     }
                 }
@@ -1530,7 +1719,9 @@ impl FcpRegistrar {
                 .iter()
                 .filter(|param| {
                     let param_name = param.split('=').next().unwrap_or("");
-                    param_name != "rinstance" && param_name != "gr"
+                    param_name != "rinstance"
+                        && param_name != "gr"
+                        && !crate::push_address::is_push_param(param_name)
                 })
                 .copied()
                 .collect();
@@ -1545,6 +1736,11 @@ impl FcpRegistrar {
 
     /// Extract expires value from request
     fn extract_expires(&self, request: &Request) -> u32 {
+        self.expires_up_to(request, self.max_expires)
+    }
+
+    /// The expiry a REGISTER asks for, kept between the minimum and `max`.
+    fn expires_up_to(&self, request: &Request, max: u32) -> u32 {
         // Check Contact header params first
         if let Some(contact) = request.headers().get("Contact") {
             if let Some(expires_str) = contact
@@ -1558,7 +1754,7 @@ impl FcpRegistrar {
                             debug!("Client requested expires=0 (deregistration)");
                             return 0;
                         }
-                        let clamped = exp.clamp(self.min_expires, self.max_expires);
+                        let clamped = exp.clamp(self.min_expires, max.max(self.min_expires));
                         debug!(
                             requested = exp,
                             accepted = clamped,
@@ -1579,7 +1775,7 @@ impl FcpRegistrar {
                     debug!("Client requested expires=0 (deregistration)");
                     return 0;
                 }
-                let clamped = exp.clamp(self.min_expires, self.max_expires);
+                let clamped = exp.clamp(self.min_expires, max.max(self.min_expires));
                 debug!(
                     requested = exp,
                     accepted = clamped,
@@ -1661,7 +1857,20 @@ impl FcpRegistrar {
     }
 
     /// Create a 200 OK response with Contact headers for all bindings
-    fn create_ok_response(&self, request: &Request, bindings: Vec<Binding>) -> Response {
+    fn create_ok_response(&self, request: &Request, bindings: Vec<Registration>) -> Response {
+        self.create_ok_response_echoing(request, bindings, None)
+    }
+
+    /// A 200 OK whose Contact for the binding just made (stored as
+    /// `echo.0`) is the phone's own (`echo.1`): a phone finds its binding in
+    /// the answer by the URI it sent, push parameters and all (RFC 8599
+    /// keeps those out of the stored contact).
+    fn create_ok_response_echoing(
+        &self,
+        request: &Request,
+        bindings: Vec<Registration>,
+        echo: Option<(String, String)>,
+    ) -> Response {
         let mut headers = sip_core::Headers::new();
 
         // Copy required headers from request
@@ -1687,15 +1896,27 @@ impl FcpRegistrar {
         }
 
         // Add Contact headers for each binding and collect Service-Route info
+        let now = SystemTime::now();
         for binding in &bindings {
-            let contact_str = binding.contact();
+            let contact_str = match &echo {
+                Some((stored, sent)) if binding.contact == *stored => sent.as_str(),
+                _ => binding.contact.as_str(),
+            };
+            // To the nearest second: a binding just made reads as granted.
+            let left = (binding
+                .expires_at
+                .duration_since(now)
+                .unwrap_or_default()
+                .as_millis()
+                + 500)
+                / 1000;
             // Check if contact already has angle brackets
             let contact = if contact_str.starts_with('<') {
                 // Already has angle brackets, just add expires parameter
-                format!("{};expires={}", contact_str, binding.expires().as_secs())
+                format!("{};expires={}", contact_str, left)
             } else {
                 // No angle brackets, wrap it
-                format!("<{}>;expires={}", contact_str, binding.expires().as_secs())
+                format!("<{}>;expires={}", contact_str, left)
             };
             let _ = headers.push(SmolStr::new("Contact"), SmolStr::new(contact));
         }
@@ -1704,12 +1925,9 @@ impl FcpRegistrar {
         // The Service-Route informs the UA of the route set to use for subsequent requests.
         // We derive it from the stored Path headers.
         for binding in &bindings {
-            if let Some(path) = binding.path() {
+            if let Some(path) = binding.path.as_deref().filter(|p| !p.is_empty()) {
                 // Path and Service-Route have the same format
-                let _ = headers.push(
-                    SmolStr::new("Service-Route"),
-                    SmolStr::new(path.to_string()),
-                );
+                let _ = headers.push(SmolStr::new("Service-Route"), SmolStr::new(path));
                 debug!(service_route = %path, "Added Service-Route to 200 OK");
             }
         }
@@ -2065,6 +2283,10 @@ mod tests {
             path: None,
             flow_token: None,
             source_address: source.map(str::to_string),
+            instance_id: None,
+            reg_id: None,
+            push: None,
+            flow_node: None,
         }
     }
 
@@ -3209,5 +3431,276 @@ mod tests {
     #[test]
     fn the_from_user_is_who_the_request_says_placed_it() {
         assert_eq!(from_user(&invite("alice", None)).as_deref(), Some("alice"));
+    }
+
+    // ===== Push (`docs/PUSH.md` §2.1) =====
+
+    const APP: &str = "sip:app-3f9c@10.0.0.7:52311;transport=tls";
+    const INSTANCE: &str = "<urn:uuid:00000000-0000-0000-0000-0000000000a1>";
+    const TOKEN: &str = "8f2c4d6e8a0b2c4d6e8a91";
+
+    /// A REGISTER whose Contact header is `contact` as written.
+    fn bob_register_contact(contact: &str, cseq: u32) -> Request {
+        let mut request = bob_register("sip:placeholder@invalid", 3600, cseq);
+        let mut headers = sip_core::Headers::new();
+        for header in request.headers().iter() {
+            if header.name_eq("Contact") {
+                let _ = headers.push(SmolStr::new("Contact"), SmolStr::new(contact));
+            } else if !header.name_eq("Expires") {
+                let _ = headers.push(header.name_smol().clone(), header.value_smol().clone());
+            }
+        }
+        *request.headers_mut() = headers;
+        request
+    }
+
+    fn app_contact(push: &str, extra: &str) -> String {
+        format!("<{APP}{push}>;+sip.instance=\"{INSTANCE}\";reg-id=1{extra}")
+    }
+
+    fn apns_push() -> String {
+        format!(";pn-provider=apns;pn-param=ABCDE12345.com.thevoiceguy.anvil.voip;pn-prid={TOKEN}")
+    }
+
+    fn push_config() -> fcp_core::push::PushConfig {
+        toml::from_str(
+            r#"
+            [[apns]]
+            team_id = "ABCDE12345"
+            key_id = "XYZ987"
+            key = "k"
+            topics = ["com.thevoiceguy.anvil.voip"]
+            "#,
+        )
+        .unwrap()
+    }
+
+    async fn push_registrar(name: &str, push: Option<fcp_core::push::PushConfig>) -> FcpRegistrar {
+        let dir = std::env::temp_dir().join(format!("fcp-test-push-{name}"));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let storage = Arc::new(FileBackedStorage::new(dir).await.unwrap());
+        let registrar = FcpRegistrar::new(storage, None, None, false)
+            .with_default_tenant_id(TenantId::nil())
+            .with_node_id("node-a");
+        match push {
+            Some(push) => registrar.with_push(push),
+            None => registrar,
+        }
+    }
+
+    fn headers_named(response: &Response, name: &str) -> Vec<String> {
+        response
+            .headers()
+            .get_all(name)
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_app_registers_where_to_wake_it_for_a_week() {
+        let registrar = push_registrar("week", Some(push_config())).await;
+        let response = registrar
+            .handle_register_with_flow(
+                &bob_register_contact(&app_contact(&apns_push(), ";expires=604800"), 1),
+                Some("flow-1"),
+            )
+            .await;
+        assert_eq!(response.start_line().code(), 200);
+        assert_eq!(
+            headers_named(&response, "Feature-Caps"),
+            ["*;+sip.pns=\"apns\""]
+        );
+        // The app finds its binding by the URI it sent, push address and all.
+        let contacts = headers_named(&response, "Contact");
+        assert_eq!(contacts.len(), 1);
+        assert!(
+            contacts[0].contains(&format!("pn-prid={TOKEN}")),
+            "{contacts:?}"
+        );
+        assert!(contacts[0].ends_with(";expires=604800"), "{contacts:?}");
+
+        let rows = registrar
+            .get_registration_rows("sip:bob@example.com")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        // Where the phone is, without where to push it.
+        assert_eq!(row.contact, format!("<{APP}>"));
+        assert_eq!(row.instance_id.as_deref(), Some(INSTANCE));
+        assert_eq!(row.reg_id, Some(1));
+        assert_eq!(row.flow_node.as_deref(), Some("node-a"));
+        let push = row.push.as_ref().expect("a push address");
+        assert_eq!(push.provider, "apns");
+        assert_eq!(push.param, "ABCDE12345.com.thevoiceguy.anvil.voip");
+        assert_eq!(push.prid, TOKEN);
+        let left = row
+            .expires_at
+            .duration_since(SystemTime::now())
+            .unwrap()
+            .as_secs();
+        assert!(left > 86_400, "a push binding outlives a day: {left}");
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_phone_keeps_a_day_at_most_and_no_feature_caps() {
+        let registrar = push_registrar("ordinary", Some(push_config())).await;
+        let response = registrar
+            .handle_register(&bob_register_contact(
+                &app_contact("", ";expires=604800"),
+                1,
+            ))
+            .await;
+        assert_eq!(response.start_line().code(), 200);
+        assert!(headers_named(&response, "Feature-Caps").is_empty());
+        assert!(headers_named(&response, "Contact")[0].ends_with(";expires=86400"));
+        let rows = registrar
+            .get_registration_rows("sip:bob@example.com")
+            .await
+            .unwrap();
+        assert_eq!(rows[0].push, None);
+        assert_eq!(rows[0].instance_id.as_deref(), Some(INSTANCE));
+        // No flow, so no node holding one.
+        assert_eq!(rows[0].flow_node, None);
+    }
+
+    #[tokio::test]
+    async fn a_push_this_node_cannot_send_is_555_naming_what_it_can() {
+        let registrar = push_registrar("unsupported", Some(push_config())).await;
+        let fcm = format!(";pn-provider=fcm;pn-param=another-project;pn-prid={TOKEN}");
+        let response = registrar
+            .handle_register(&bob_register_contact(&app_contact(&fcm, ""), 1))
+            .await;
+        assert_eq!(response.start_line().code(), 555);
+        assert_eq!(
+            headers_named(&response, "Feature-Caps"),
+            ["*;+sip.pns=\"apns\""]
+        );
+        assert!(registrar
+            .get_registration_rows("sip:bob@example.com")
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Without [push] every push address is refused, naming none.
+        let none = push_registrar("unconfigured", None).await;
+        let response = none
+            .handle_register(&bob_register_contact(&app_contact(&apns_push(), ""), 1))
+            .await;
+        assert_eq!(response.start_line().code(), 555);
+        assert!(headers_named(&response, "Feature-Caps").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_provider_without_its_token_is_a_bad_request() {
+        let registrar = push_registrar("incomplete", Some(push_config())).await;
+        let response = registrar
+            .handle_register(&bob_register_contact(
+                &app_contact(";pn-provider=apns", ""),
+                1,
+            ))
+            .await;
+        assert_eq!(response.start_line().code(), 400);
+    }
+
+    #[tokio::test]
+    async fn a_phone_that_moves_replaces_its_binding() {
+        let registrar = push_registrar("moves", Some(push_config())).await;
+        let first = registrar
+            .handle_register(&bob_register_contact(&app_contact(&apns_push(), ""), 1))
+            .await;
+        assert_eq!(first.start_line().code(), 200);
+        // Woken on another network: the same instance at a new address.
+        let moved = format!(
+            "<sip:app-3f9c@198.51.100.4:40001;transport=tls{}>;+sip.instance=\"{INSTANCE}\";reg-id=1",
+            apns_push()
+        );
+        let second = registrar
+            .handle_register(&bob_register_contact(&moved, 2))
+            .await;
+        assert_eq!(second.start_line().code(), 200);
+        assert_eq!(
+            bob_contacts(&registrar).await,
+            ["sip:app-3f9c@198.51.100.4:40001;transport=tls"]
+        );
+        // Another phone of Bob's, with an instance of its own, stays.
+        let other = "<sip:bob@192.0.2.20:5060>;+sip.instance=\"<urn:uuid:desk>\"";
+        registrar
+            .handle_register(&bob_register_contact(other, 3))
+            .await;
+        assert_eq!(bob_contacts(&registrar).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_app_unregisters_with_its_push_address_in_the_contact() {
+        let registrar = push_registrar("unregister", Some(push_config())).await;
+        registrar
+            .handle_register(&bob_register_contact(&app_contact(&apns_push(), ""), 1))
+            .await;
+        let response = registrar
+            .handle_register(&bob_register_contact(
+                &app_contact(&apns_push(), ";expires=0"),
+                2,
+            ))
+            .await;
+        assert_eq!(response.start_line().code(), 200);
+        assert!(bob_contacts(&registrar).await.is_empty());
+    }
+
+    /// Keeps what the registrar announces.
+    #[derive(Default)]
+    struct Announced(std::sync::Mutex<Vec<PlatformEvent>>);
+
+    #[async_trait]
+    impl EventPublisher for Announced {
+        async fn publish(&self, event: PlatformEvent) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_phone_is_announced_gone_by_the_contact_it_was_announced_by() {
+        // Registered and unregistered name the same contact, without the
+        // parameters that are not where the phone is (`rinstance`, `pn-*`),
+        // so whoever keeps registrations by contact sees it go.
+        let dir = std::env::temp_dir().join("fcp-test-push-announced");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let storage = Arc::new(FileBackedStorage::new(dir).await.unwrap());
+        let announced = Arc::new(Announced::default());
+        let registrar = FcpRegistrar::with_events(storage, None, None, announced.clone(), false)
+            .with_default_tenant_id(TenantId::nil())
+            .with_push(push_config());
+        let contact = app_contact(&format!(";rinstance=abc{}", apns_push()), "");
+        registrar
+            .handle_register(&bob_register_contact(&contact, 1))
+            .await;
+        registrar
+            .handle_register(&bob_register_contact(
+                &app_contact(&format!(";rinstance=abc{}", apns_push()), ";expires=0"),
+                2,
+            ))
+            .await;
+        // Published on tasks of their own.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let events = announced.0.lock().unwrap().clone();
+        let registered = events.iter().find_map(|e| match e {
+            PlatformEvent::Registration(RegistrationEvent::Registered {
+                contact,
+                instance_id,
+                ..
+            }) => Some((contact.clone(), instance_id.clone())),
+            _ => None,
+        });
+        let unregistered = events.iter().find_map(|e| match e {
+            PlatformEvent::Registration(RegistrationEvent::Unregistered { contact, .. }) => {
+                Some(contact.clone())
+            }
+            _ => None,
+        });
+        let (registered, instance) = registered.expect("registered");
+        assert_eq!(registered, format!("<{APP}>"));
+        assert_eq!(instance.as_deref(), Some(INSTANCE));
+        assert_eq!(unregistered.as_deref(), Some(registered.as_str()));
     }
 }

@@ -2121,7 +2121,18 @@ with the publisher's keys in `[push]`, a call to a sleeping app pushed and
 held for its re-REGISTER within the ring time (the fork gaining legs),
 cancel pushes, a flow on another node reached through its node, sites
 pushing through the cloud; Anvil's PushKit and FCM. Phases P1–P4 (fcp),
-A1–A3 (anvil); questions open.
+A1–A3 (anvil); agreed 2026-10-09 on every recommendation.
+
+Push P1, registering with a push address (v0.25.377): a REGISTER's Contact
+keeps its `+sip.instance` and `reg-id` (they were dropped for every phone),
+and a new binding from the same instance replaces the old; RFC 8599's
+`pn-provider`, `pn-param` and `pn-prid` are stored beside the contact
+(migration 111, `fcp_core::push`, `fcp_sip::push_address`), refused with
+555 and `Feature-Caps` when the node has no key for them, answered with
+`Feature-Caps` when it has; push bindings live up to `[push] max_expires`
+(a week); bindings over a flow record their node; devices show the
+provider that wakes them. `[push]` on the call manager and the standalone
+registrar.
 
 ## Historical documents
 

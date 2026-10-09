@@ -40,6 +40,13 @@ pub struct RegistrarConfig {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingSection,
+
+    /// Push (`docs/PUSH.md` §2.1): which phone apps the call managers can
+    /// wake, so their push bindings are accepted here; the same `[push]` as
+    /// theirs. Unset, a push address is answered 555. Never written out:
+    /// it holds the publisher's keys.
+    #[serde(default, skip_serializing)]
+    pub push: Option<fcp_core::push::PushConfig>,
 }
 
 /// Service identification.
@@ -346,6 +353,9 @@ pub fn load_config(config_path: Option<&Path>) -> Result<RegistrarConfig> {
 }
 
 pub fn validate_config(config: &RegistrarConfig) -> Result<()> {
+    if let Some(push) = &config.push {
+        push.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
     fcp_sip::validate_sip_binds(
         &config.sip.udp_bind,
         &config.sip.tcp_bind,

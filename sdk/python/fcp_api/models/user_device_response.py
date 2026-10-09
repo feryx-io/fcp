@@ -36,6 +36,8 @@ class UserDeviceResponse:
             sip_username (None | str | Unset):
             last_registration (datetime.datetime | None | Unset):
             user_agent (None | str | Unset):
+            push_provider (None | str | Unset): The provider that wakes it when it sleeps (`apns`, `fcm`), while it
+                is registered with a push address (`docs/PUSH.md` §2.1).
             app (DeviceAppResponse | None | Unset):
      """
 
@@ -47,6 +49,7 @@ class UserDeviceResponse:
     sip_username: None | str | Unset = UNSET
     last_registration: datetime.datetime | None | Unset = UNSET
     user_agent: None | str | Unset = UNSET
+    push_provider: None | str | Unset = UNSET
     app: DeviceAppResponse | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -90,6 +93,12 @@ class UserDeviceResponse:
         else:
             user_agent = self.user_agent
 
+        push_provider: None | str | Unset
+        if isinstance(self.push_provider, Unset):
+            push_provider = UNSET
+        else:
+            push_provider = self.push_provider
+
         app: dict[str, Any] | None | Unset
         if isinstance(self.app, Unset):
             app = UNSET
@@ -115,6 +124,8 @@ class UserDeviceResponse:
             field_dict["last_registration"] = last_registration
         if user_agent is not UNSET:
             field_dict["user_agent"] = user_agent
+        if push_provider is not UNSET:
+            field_dict["push_provider"] = push_provider
         if app is not UNSET:
             field_dict["app"] = app
 
@@ -184,6 +195,16 @@ class UserDeviceResponse:
         user_agent = _parse_user_agent(d.pop("user_agent", UNSET))
 
 
+        def _parse_push_provider(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        push_provider = _parse_push_provider(d.pop("push_provider", UNSET))
+
+
         def _parse_app(data: object) -> DeviceAppResponse | None | Unset:
             if data is None:
                 return data
@@ -213,6 +234,7 @@ class UserDeviceResponse:
             sip_username=sip_username,
             last_registration=last_registration,
             user_agent=user_agent,
+            push_provider=push_provider,
             app=app,
         )
 

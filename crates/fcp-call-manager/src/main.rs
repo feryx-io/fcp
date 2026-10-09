@@ -2317,7 +2317,22 @@ fn create_registrar(
     .with_identity(Arc::clone(storage))
     .with_auth_invites(config.registrar.auth_invites)
     // Where the admin is, for the softphone (docs/SOFTPHONE.md §2.5).
-    .with_provisioning_url(config.registrar.provisioning_url.clone());
+    .with_provisioning_url(config.registrar.provisioning_url.clone())
+    // Bindings name the node holding their flow (docs/PUSH.md §2.4).
+    .with_node_id(config.service.node_id.clone());
+
+    // Phone apps that can be woken (docs/PUSH.md §2.1).
+    let registrar = match &config.push {
+        Some(push) => {
+            info!(
+                providers = ?push.providers(),
+                max_expires = push.max_expires(),
+                "Push bindings accepted"
+            );
+            registrar.with_push(push.clone())
+        }
+        None => registrar,
+    };
 
     // Add domain aliases if configured
     let registrar = if !config.registrar.domain_aliases.is_empty() {

@@ -950,6 +950,11 @@ pub enum RegistrationEvent {
         user_agent: Option<String>,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
+        /// The Contact's `+sip.instance` (RFC 5626): the same phone across
+        /// addresses, which a call waiting for a woken app matches
+        /// (`docs/PUSH.md` §2.2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instance_id: Option<String>,
     },
 
     /// Registration refreshed (re-REGISTER with same contact)

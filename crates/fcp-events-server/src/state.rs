@@ -482,6 +482,7 @@ impl RegistrationStateStore {
                 expires_secs,
                 user_agent,
                 timestamp,
+                ..
             } => {
                 let key = RegistrationKey {
                     aor: aor.clone(),

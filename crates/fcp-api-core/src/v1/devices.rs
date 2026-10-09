@@ -61,6 +61,9 @@ pub struct DeviceResponse {
     pub last_registration: Option<SystemTime>,
     pub last_ip_address: Option<String>,
     pub user_agent: Option<String>,
+    /// The provider that wakes it when it sleeps (`apns`, `fcm`), while it
+    /// is registered with a push address (`docs/PUSH.md` §2.1).
+    pub push_provider: Option<String>,
     pub max_lines: u8,
     pub supports_video: bool,
     pub supports_blf: bool,
@@ -114,6 +117,7 @@ impl From<Device> for DeviceResponse {
             last_registration: device.last_registration,
             last_ip_address: device.last_ip_address,
             user_agent: device.user_agent,
+            push_provider: device.push_provider,
             max_lines: device.max_lines,
             supports_video: device.supports_video,
             supports_blf: device.supports_blf,

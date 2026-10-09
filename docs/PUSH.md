@@ -12,8 +12,22 @@ delivered, pushes and waits for the app to come back.
 
 This document designs that for FCP and for Anvil, FCP's softphone
 (`docs/SOFTPHONE.md`), whose mobile app (Anvil's U4) works while it is
-open. It is Anvil's U5 (`thevoiceguy/anvil` `docs/APP.md`). The questions
-in §6 are open.
+open. It is Anvil's U5 (`thevoiceguy/anvil` `docs/APP.md`). Agreed
+2026-10-09 on every recommendation in §6.
+
+Progress: phase P1 done (v0.25.377). A REGISTER's Contact keeps its
+`+sip.instance` and `reg-id` for every phone, and a new binding from an
+instance replaces its others (announced `registration.unregistered`,
+reason `replaced`); `pn-provider`, `pn-param` and `pn-prid` are stored
+apart from the contact (migration 111), refused with 555 and
+`Feature-Caps` when this node has no key for them, answered with
+`Feature-Caps: *;+sip.pns="…"` and the phone's own Contact when it has;
+a push binding lives up to `[push] max_expires`, past siphon-rs's day
+(the row holds the expiry, the 200 OK is built from rows); bindings over a
+flow name their node (`flow_node`); a device's `push_provider` in both
+device views and the UI. `[push]` is read by the call manager and the
+standalone registrar from the file only (never written to the stored
+sections), and validated at start.
 
 ## 1. What FCP has, and what it lacks
 

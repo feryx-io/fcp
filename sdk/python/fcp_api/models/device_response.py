@@ -62,6 +62,8 @@ class DeviceResponse:
             last_registration (datetime.datetime | None | Unset):
             last_ip_address (None | str | Unset):
             user_agent (None | str | Unset):
+            push_provider (None | str | Unset): The provider that wakes it when it sleeps (`apns`, `fcm`), while it
+                is registered with a push address (`docs/PUSH.md` §2.1).
             location (None | str | Unset):
             location_id (None | str | Unset):
             e911_override (E911AddressResponse | None | Unset):
@@ -100,6 +102,7 @@ class DeviceResponse:
     last_registration: datetime.datetime | None | Unset = UNSET
     last_ip_address: None | str | Unset = UNSET
     user_agent: None | str | Unset = UNSET
+    push_provider: None | str | Unset = UNSET
     location: None | str | Unset = UNSET
     location_id: None | str | Unset = UNSET
     e911_override: E911AddressResponse | None | Unset = UNSET
@@ -231,6 +234,12 @@ class DeviceResponse:
         else:
             user_agent = self.user_agent
 
+        push_provider: None | str | Unset
+        if isinstance(self.push_provider, Unset):
+            push_provider = UNSET
+        else:
+            push_provider = self.push_provider
+
         location: None | str | Unset
         if isinstance(self.location, Unset):
             location = UNSET
@@ -320,6 +329,8 @@ class DeviceResponse:
             field_dict["last_ip_address"] = last_ip_address
         if user_agent is not UNSET:
             field_dict["user_agent"] = user_agent
+        if push_provider is not UNSET:
+            field_dict["push_provider"] = push_provider
         if location is not UNSET:
             field_dict["location"] = location
         if location_id is not UNSET:
@@ -531,6 +542,16 @@ class DeviceResponse:
         user_agent = _parse_user_agent(d.pop("user_agent", UNSET))
 
 
+        def _parse_push_provider(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        push_provider = _parse_push_provider(d.pop("push_provider", UNSET))
+
+
         def _parse_location(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -640,6 +661,7 @@ class DeviceResponse:
             last_registration=last_registration,
             last_ip_address=last_ip_address,
             user_agent=user_agent,
+            push_provider=push_provider,
             location=location,
             location_id=location_id,
             e911_override=e911_override,

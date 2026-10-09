@@ -1321,7 +1321,8 @@ impl CredentialStore for PostgresStorage {
 impl RegistrationStore for PostgresStorage {
     async fn get_registrations(&self, aor: &str) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
-            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address
+            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address,
+                    instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node
              FROM registrations
              WHERE aor = $1
              ORDER BY q DESC NULLS LAST",
@@ -1344,7 +1345,8 @@ impl RegistrationStore for PostgresStorage {
         aor: &str,
     ) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
-            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address
+            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address,
+                    instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node
              FROM registrations
              WHERE tenant_id = $1 AND aor = $2
              ORDER BY q DESC NULLS LAST",
@@ -1367,8 +1369,9 @@ impl RegistrationStore for PostgresStorage {
         let registered_at = system_time_to_datetime(registration.registered_at);
 
         sqlx::query(
-            "INSERT INTO registrations (tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            "INSERT INTO registrations (tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address,
+                                        instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
              ON CONFLICT (tenant_id, aor, contact)
              DO UPDATE SET
                  expires_at = EXCLUDED.expires_at,
@@ -1379,7 +1382,13 @@ impl RegistrationStore for PostgresStorage {
                  registered_at = EXCLUDED.registered_at,
                  path = EXCLUDED.path,
                  flow_token = EXCLUDED.flow_token,
-                 source_address = EXCLUDED.source_address",
+                 source_address = EXCLUDED.source_address,
+                 instance_id = EXCLUDED.instance_id,
+                 reg_id = EXCLUDED.reg_id,
+                 pn_provider = EXCLUDED.pn_provider,
+                 pn_param = EXCLUDED.pn_param,
+                 pn_prid = EXCLUDED.pn_prid,
+                 flow_node = EXCLUDED.flow_node",
         )
         .bind(registration.tenant_id.to_string())
         .bind(&registration.aor)
@@ -1393,6 +1402,12 @@ impl RegistrationStore for PostgresStorage {
         .bind(&registration.path)
         .bind(&registration.flow_token)
         .bind(&registration.source_address)
+        .bind(&registration.instance_id)
+        .bind(registration.reg_id.map(|r| r as i32))
+        .bind(registration.push.as_ref().map(|p| p.provider.as_str()))
+        .bind(registration.push.as_ref().map(|p| p.param.as_str()))
+        .bind(registration.push.as_ref().map(|p| p.prid.as_str()))
+        .bind(&registration.flow_node)
         .execute(self.writes())
         .await?;
 
@@ -1476,7 +1491,8 @@ impl RegistrationStore for PostgresStorage {
 
     async fn get_all_registrations(&self) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
-            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address
+            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address,
+                    instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node
              FROM registrations
              WHERE expires_at > NOW()
              ORDER BY aor, q DESC NULLS LAST",
@@ -1497,7 +1513,8 @@ impl RegistrationStore for PostgresStorage {
         tenant_id: &TenantId,
     ) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
-            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address
+            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address,
+                    instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node
              FROM registrations
              WHERE tenant_id = $1 AND expires_at > NOW()
              ORDER BY aor, q DESC NULLS LAST",
@@ -3221,6 +3238,27 @@ fn row_to_registration(row: sqlx::postgres::PgRow) -> Result<Registration> {
         path: row.try_get("path").ok(),
         flow_token: row.try_get("flow_token").ok().flatten(),
         source_address: row.try_get("source_address").ok().flatten(),
+        instance_id: row.try_get("instance_id").ok().flatten(),
+        reg_id: row
+            .try_get::<Option<i32>, _>("reg_id")
+            .ok()
+            .flatten()
+            .map(|r| r as u32),
+        push: match (
+            row.try_get::<Option<String>, _>("pn_provider")
+                .ok()
+                .flatten(),
+            row.try_get::<Option<String>, _>("pn_param").ok().flatten(),
+            row.try_get::<Option<String>, _>("pn_prid").ok().flatten(),
+        ) {
+            (Some(provider), Some(param), Some(prid)) => Some(fcp_core::push::PushAddress {
+                provider,
+                param,
+                prid,
+            }),
+            _ => None,
+        },
+        flow_node: row.try_get("flow_node").ok().flatten(),
     })
 }
 
@@ -3962,7 +4000,7 @@ macro_rules! device_columns {
          max_lines, supports_video, supports_blf, codec_support,
          location, location_id, e911_override_json, e911_trust_location, provisioning_url,
          config_template_id, provisioning_token_hash, enabled, created_at, updated_at,
-         vendor, line_keys_json"
+         vendor, line_keys_json, push_provider"
     };
 }
 
@@ -4073,9 +4111,9 @@ impl DeviceStore for PostgresStorage {
                 sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                 max_lines, supports_video, supports_blf, codec_support,
                 location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
-                created_at, updated_at, vendor, line_keys_json
+                created_at, updated_at, vendor, line_keys_json, push_provider
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  mac_address = EXCLUDED.mac_address,
@@ -4105,7 +4143,8 @@ impl DeviceStore for PostgresStorage {
                  enabled = EXCLUDED.enabled,
                  updated_at = EXCLUDED.updated_at,
                  vendor = EXCLUDED.vendor,
-                 line_keys_json = EXCLUDED.line_keys_json",
+                 line_keys_json = EXCLUDED.line_keys_json,
+                 push_provider = EXCLUDED.push_provider",
         )
         .bind(&id)
         .bind(&device.name)
@@ -4140,6 +4179,7 @@ impl DeviceStore for PostgresStorage {
         .bind(updated_at)
         .bind(device.vendor.map(|v| v.to_string()))
         .bind(&line_keys_json)
+        .bind(&device.push_provider)
         .execute(self.writes())
         .await
         .map_err(map_device_write_error)?;
@@ -4162,7 +4202,8 @@ impl DeviceStore for PostgresStorage {
                  user_agent = COALESCE($6, user_agent),
                  vendor = COALESCE(vendor, $7),
                  model = COALESCE(model, $8),
-                 firmware_version = COALESCE($9, firmware_version)
+                 firmware_version = COALESCE($9, firmware_version),
+                 push_provider = CASE WHEN $3 THEN $10 ELSE NULL END
              WHERE id = $1",
         )
         .bind(id.to_string())
@@ -4174,6 +4215,7 @@ impl DeviceStore for PostgresStorage {
         .bind(update.vendor.map(|v| v.to_string()))
         .bind(&update.model)
         .bind(&update.firmware)
+        .bind(&update.push_provider)
         .execute(self.writes())
         .await?;
         Ok(())
@@ -4921,6 +4963,7 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
         last_registration,
         last_ip_address: row.get("last_ip_address"),
         user_agent: row.get("user_agent"),
+        push_provider: row.try_get("push_provider").ok().flatten(),
         max_lines: row.get::<i32, _>("max_lines") as u8,
         supports_video: row.get::<bool, _>("supports_video"),
         supports_blf: row.get::<bool, _>("supports_blf"),

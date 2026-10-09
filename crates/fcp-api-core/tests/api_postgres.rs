@@ -681,6 +681,10 @@ impl App {
                 path: None,
                 flow_token: None,
                 source_address: None,
+                instance_id: None,
+                reg_id: None,
+                push: None,
+                flow_node: None,
             })
             .await
             .expect("put registration");
@@ -14814,10 +14818,34 @@ async fn an_app_install_is_a_device_with_sip_credentials_of_its_own() {
                 vendor: None,
                 model: None,
                 firmware: None,
+                push_provider: Some("fcm".to_string()),
             },
         )
         .await
         .unwrap();
+    // Registered with a push address: both views say what wakes it
+    // (docs/PUSH.md §2.1).
+    let mine = app
+        .send_as(&access, Method::GET, "/api/v1/me/devices", None)
+        .await;
+    let woken = mine
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == device_id.as_str())
+        .expect("the install's device");
+    assert_eq!(woken["push_provider"], "fcm");
+    let admin_view = app
+        .send_as(
+            &ops,
+            Method::GET,
+            &format!("/api/v1/devices/{device_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(admin_view.status, StatusCode::OK, "{}", admin_view.text);
+    assert_eq!(admin_view.json["push_provider"], "fcm");
     let tenant = app
         .storage
         .get_device(&device_id.parse().unwrap())

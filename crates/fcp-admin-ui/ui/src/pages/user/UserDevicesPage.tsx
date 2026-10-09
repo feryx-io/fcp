@@ -68,6 +68,7 @@ export function UserDevicesPage() {
                     {d.registration_state === 'registered'
                       ? `registered ${when(d.last_registration)}`
                       : d.registration_state}
+                    {d.push_provider && ' · rings while asleep'}
                   </div>
                   {d.app && (
                     <div className="text-xs text-muted-foreground">
