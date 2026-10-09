@@ -268,6 +268,10 @@ mod tests {
             path: None,
             flow_token: None,
             source_address: None,
+            instance_id: None,
+            reg_id: None,
+            push: None,
+            flow_node: None,
         }
     }
 

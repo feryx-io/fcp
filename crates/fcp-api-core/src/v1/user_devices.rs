@@ -53,6 +53,9 @@ pub struct UserDeviceResponse {
     #[schema(value_type = Option<String>, format = DateTime)]
     pub last_registration: Option<SystemTime>,
     pub user_agent: Option<String>,
+    /// The provider that wakes it when it sleeps (`apns`, `fcm`), while it
+    /// is registered with a push address (`docs/PUSH.md` §2.1).
+    pub push_provider: Option<String>,
     /// The app install it is, for a softphone that signed in.
     pub app: Option<DeviceAppResponse>,
 }
@@ -106,6 +109,7 @@ fn response(d: Device, app: Option<DeviceAppResponse>) -> UserDeviceResponse {
         registration_state: d.registration_state.to_string(),
         last_registration: d.last_registration,
         user_agent: d.user_agent,
+        push_provider: d.push_provider,
         app,
     }
 }

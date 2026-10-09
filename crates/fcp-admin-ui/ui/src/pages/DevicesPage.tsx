@@ -341,9 +341,17 @@ export function DevicesPage() {
       accessorKey: 'registration_state',
       header: 'Registration',
       cell: ({ row }) => (
-        <Badge variant={regBadge(row.original.registration_state)}>
-          {row.original.registration_state}
-        </Badge>
+        <div className="flex flex-col gap-1">
+          <Badge variant={regBadge(row.original.registration_state)}>
+            {row.original.registration_state}
+          </Badge>
+          {/* An app woken by push when it sleeps (docs/PUSH.md §2.1). */}
+          {row.original.push_provider && (
+            <span className="text-xs text-muted-foreground">
+              woken by {row.original.push_provider.toUpperCase()}
+            </span>
+          )}
+        </div>
       ),
     },
     {

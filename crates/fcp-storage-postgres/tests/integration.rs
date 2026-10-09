@@ -22,7 +22,7 @@ use fcp_core::storage::{
     CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore, HangupCause,
     PhoneNumberStore, Registration, RegistrationStore, TenantStore, User,
 };
-use fcp_core::storage::{ConferenceStore, TrunkStore, WebhookStore};
+use fcp_core::storage::{ConferenceStore, DeviceStore, TrunkStore, WebhookStore};
 use fcp_core::{CallId, PhoneNumber, StorageError, Tenant, TenantId};
 use fcp_crypto::EncryptionSettings;
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
@@ -170,6 +170,10 @@ fn registration(tenant_id: TenantId, aor: &str, contact: &str, ttl: Duration) ->
         path: None,
         flow_token: None,
         source_address: None,
+        instance_id: None,
+        reg_id: None,
+        push: None,
+        flow_node: None,
     }
 }
 
@@ -430,6 +434,92 @@ async fn users_are_scoped_by_tenant() {
 }
 
 // ─── Registrations ───────────────────────────────────────────────────────
+
+/// A push binding keeps its phone's instance, where to wake it and the node
+/// holding its flow (`docs/PUSH.md` §2.1, migration 111).
+#[tokio::test]
+async fn a_push_binding_keeps_its_instance_and_where_to_wake_it() {
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("push");
+    s.put_tenant(a.clone()).await.unwrap();
+    let aor = "sip:app@push.example.com";
+    let mut row = registration(
+        a.id,
+        aor,
+        "<sip:app-1@10.0.0.7:52311;transport=tls>",
+        Duration::from_secs(604_800),
+    );
+    row.instance_id = Some("<urn:uuid:00000000-0000-0000-0000-0000000000a1>".into());
+    row.reg_id = Some(1);
+    row.flow_token = Some("flow-1".into());
+    row.flow_node = Some("node-a".into());
+    row.push = Some(fcp_core::push::PushAddress {
+        provider: "fcm".into(),
+        param: "anvil-12345".into(),
+        prid: "dA1b2C3d4E5f6G7h8I9j".into(),
+    });
+    s.put_registration(row.clone()).await.unwrap();
+    let back = s.get_registrations_in_tenant(&a.id, aor).await.unwrap();
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].instance_id, row.instance_id);
+    assert_eq!(back[0].reg_id, Some(1));
+    assert_eq!(back[0].flow_node.as_deref(), Some("node-a"));
+    assert_eq!(back[0].push, row.push);
+    let left = back[0]
+        .expires_at
+        .duration_since(SystemTime::now())
+        .unwrap()
+        .as_secs();
+    assert!(left > 600_000, "a week is kept: {left}");
+
+    // An ordinary binding has none of it.
+    s.put_registration(registration(
+        a.id,
+        aor,
+        "sip:desk@10.0.0.9:5060",
+        Duration::from_secs(3600),
+    ))
+    .await
+    .unwrap();
+    let desk = s
+        .get_registrations_in_tenant(&a.id, aor)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.contact == "sip:desk@10.0.0.9:5060")
+        .unwrap();
+    assert_eq!(desk.push, None);
+    assert_eq!(desk.instance_id, None);
+
+    // A device shows the provider that wakes it, gone once it unregisters.
+    let mut device =
+        fcp_core::Device::new("App".into(), fcp_core::device::DeviceType::Softphone, a.id);
+    device.sip_username = Some("app-1".into());
+    s.put_device(device.clone()).await.unwrap();
+    let mut update = fcp_core::device::DeviceRegistrationUpdate {
+        state: fcp_core::device::RegistrationState::Registered,
+        at: SystemTime::now(),
+        address: None,
+        user_agent: None,
+        vendor: None,
+        model: None,
+        firmware: None,
+        push_provider: Some("fcm".into()),
+    };
+    s.record_device_registration(&device.id, &update)
+        .await
+        .unwrap();
+    let got = s.get_device(&device.id).await.unwrap().unwrap();
+    assert_eq!(got.push_provider.as_deref(), Some("fcm"));
+    update.state = fcp_core::device::RegistrationState::Unregistered;
+    update.push_provider = None;
+    s.record_device_registration(&device.id, &update)
+        .await
+        .unwrap();
+    let got = s.get_device(&device.id).await.unwrap().unwrap();
+    assert_eq!(got.push_provider, None);
+}
 
 #[tokio::test]
 async fn registrations_bind_expire_and_scope() {

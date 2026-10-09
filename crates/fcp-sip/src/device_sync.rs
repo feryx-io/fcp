@@ -232,6 +232,7 @@ impl DeviceRegistrations {
         source: Option<std::net::IpAddr>,
         user_agent: Option<String>,
         registered: bool,
+        push_provider: Option<String>,
     ) {
         let this = Arc::clone(self);
         tokio::spawn(async move {
@@ -243,6 +244,7 @@ impl DeviceRegistrations {
                 source,
                 user_agent,
                 registered,
+                push_provider,
             )
             .await;
         });
@@ -258,6 +260,7 @@ impl DeviceRegistrations {
         source: Option<std::net::IpAddr>,
         user_agent: Option<String>,
         registered: bool,
+        push_provider: Option<String>,
     ) {
         let Some(device) = device_for_registration(
             &self.storage,
@@ -294,6 +297,7 @@ impl DeviceRegistrations {
             vendor: identity.vendor,
             model: identity.model,
             firmware: identity.firmware,
+            push_provider,
         };
         match self
             .storage

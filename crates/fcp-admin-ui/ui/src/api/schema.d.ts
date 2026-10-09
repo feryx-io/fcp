@@ -6934,6 +6934,11 @@ export interface components {
             last_registration?: string | null;
             last_ip_address?: string | null;
             user_agent?: string | null;
+            /**
+             * @description The provider that wakes it when it sleeps (`apns`, `fcm`), while it
+             *     is registered with a push address (`docs/PUSH.md` §2.1).
+             */
+            push_provider?: string | null;
             /** Format: int32 */
             max_lines: number;
             supports_video: boolean;
@@ -8466,6 +8471,11 @@ export interface components {
                 last_registration?: string | null;
                 last_ip_address?: string | null;
                 user_agent?: string | null;
+                /**
+                 * @description The provider that wakes it when it sleeps (`apns`, `fcm`), while it
+                 *     is registered with a push address (`docs/PUSH.md` §2.1).
+                 */
+                push_provider?: string | null;
                 /** Format: int32 */
                 max_lines: number;
                 supports_video: boolean;
@@ -10055,6 +10065,11 @@ export interface components {
                 /** Format: date-time */
                 last_registration?: string | null;
                 user_agent?: string | null;
+                /**
+                 * @description The provider that wakes it when it sleeps (`apns`, `fcm`), while it
+                 *     is registered with a push address (`docs/PUSH.md` §2.1).
+                 */
+                push_provider?: string | null;
                 app?: components["schemas"]["DeviceAppResponse"] | null;
             }[];
             /** @description The cursor for the next page; null on the last. */
@@ -12409,6 +12424,11 @@ export interface components {
             /** Format: date-time */
             last_registration?: string | null;
             user_agent?: string | null;
+            /**
+             * @description The provider that wakes it when it sleeps (`apns`, `fcm`), while it
+             *     is registered with a push address (`docs/PUSH.md` §2.1).
+             */
+            push_provider?: string | null;
             app?: components["schemas"]["DeviceAppResponse"] | null;
         };
         /** @description A UserId: `user-<uuid>`, or the bare UUID */

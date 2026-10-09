@@ -120,6 +120,14 @@ pub struct CallManagerConfig {
     /// (`docs/TENANT_TRUNKS.md` §6).
     #[serde(default)]
     pub stir_shaken: fcp_sbc_core::stir_shaken::StirShakenConfig,
+
+    /// Push (`docs/PUSH.md`): the publisher's keys for waking a phone app
+    /// that sleeps, and how long its binding lives. Unset, a REGISTER with
+    /// a push address is answered 555 and the app registers without one.
+    /// Read from the file only, never written out (the stored sections
+    /// leave it alone): it holds the publisher's keys.
+    #[serde(default, skip_serializing)]
+    pub push: Option<fcp_core::push::PushConfig>,
 }
 
 /// What a node does about trunks it did not read from its own config.
@@ -910,6 +918,9 @@ pub fn validate_config(config: &CallManagerConfig) -> Result<()> {
     fcp_pbx::config::validate_config(&config.pbx).map_err(anyhow::Error::msg)?;
     fcp_sip::emergency::TrustedEdges::parse(&config.e911.trusted_edges)
         .map_err(|e| anyhow::anyhow!("[e911] {e}"))?;
+    if let Some(push) = &config.push {
+        push.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
     Ok(())
 }
 

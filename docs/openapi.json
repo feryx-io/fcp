@@ -22963,6 +22963,13 @@
               "null"
             ]
           },
+          "push_provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The provider that wakes it when it sleeps (`apns`, `fcm`), while it\nis registered with a push address (`docs/PUSH.md` §2.1)."
+          },
           "max_lines": {
             "type": "integer",
             "format": "int32",
@@ -27598,6 +27605,13 @@
                     "string",
                     "null"
                   ]
+                },
+                "push_provider": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The provider that wakes it when it sleeps (`apns`, `fcm`), while it\nis registered with a push address (`docs/PUSH.md` §2.1)."
                 },
                 "max_lines": {
                   "type": "integer",
@@ -32836,6 +32850,13 @@
                     "string",
                     "null"
                   ]
+                },
+                "push_provider": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The provider that wakes it when it sleeps (`apns`, `fcm`), while it\nis registered with a push address (`docs/PUSH.md` §2.1)."
                 },
                 "app": {
                   "oneOf": [
@@ -40300,6 +40321,13 @@
               "string",
               "null"
             ]
+          },
+          "push_provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The provider that wakes it when it sleeps (`apns`, `fcm`), while it\nis registered with a push address (`docs/PUSH.md` §2.1)."
           },
           "app": {
             "oneOf": [

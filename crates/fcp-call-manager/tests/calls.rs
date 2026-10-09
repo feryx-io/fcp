@@ -1814,6 +1814,10 @@ async fn a_dead_registration_does_not_delay_the_answer() {
             path: None,
             flow_token: None,
             source_address: Some(format!("127.0.0.1:{dead_port}")),
+            instance_id: None,
+            reg_id: None,
+            push: None,
+            flow_node: None,
         })
         .await
         .unwrap();

@@ -81,6 +81,12 @@ pub struct Device {
     /// User-Agent header from REGISTER
     pub user_agent: Option<String>,
 
+    /// The provider that wakes it when it sleeps (`apns`, `fcm`): set by a
+    /// REGISTER with a push address, gone when it unregisters
+    /// (`docs/PUSH.md` §2.1).
+    #[serde(default)]
+    pub push_provider: Option<String>,
+
     // ===== Capabilities =====
     /// How many line appearances this device supports
     pub max_lines: u8,
@@ -165,6 +171,7 @@ impl Device {
             last_registration: None,
             last_ip_address: None,
             user_agent: None,
+            push_provider: None,
             max_lines: 1,
             supports_video: false,
             supports_blf: false,
@@ -304,6 +311,9 @@ pub struct DeviceRegistrationUpdate {
     pub model: Option<String>,
     /// What the phone runs: replaces what the device had.
     pub firmware: Option<String>,
+    /// The provider of the binding's push address: replaces what the device
+    /// had when registered, and is cleared when not.
+    pub push_provider: Option<String>,
 }
 
 impl DeviceRegistrationUpdate {
@@ -312,6 +322,9 @@ impl DeviceRegistrationUpdate {
         device.registration_state = self.state;
         if self.state == RegistrationState::Registered {
             device.last_registration = Some(self.at);
+            device.push_provider = self.push_provider.clone();
+        } else {
+            device.push_provider = None;
         }
         if self.address.is_some() {
             device.last_ip_address = self.address.clone();
