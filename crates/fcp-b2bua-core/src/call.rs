@@ -373,7 +373,10 @@ impl Call {
     }
 
     pub fn counted_users(&self) -> Vec<fcp_core::UserId> {
-        if !matches!(self.state, CallState::Established | CallState::Parked) {
+        // A relayed leg's parties count on its call's node.
+        if !matches!(self.state, CallState::Established | CallState::Parked)
+            || self.relay_for.is_some()
+        {
             return Vec::new();
         }
         let mut users: Vec<fcp_core::UserId> = [self.caller_user_id, self.callee_user_id]
@@ -535,6 +538,12 @@ pub struct Call {
     /// §3.1).
     pub callee_user_id: Option<fcp_core::UserId>,
 
+    /// A leg this node carries for another node's call, down a phone's
+    /// flow it holds (`docs/PUSH.md` §2.4): that call's id. Such a call is
+    /// the other node's to record, rate and announce, so this node does
+    /// none of it.
+    pub relay_for: Option<fcp_core::CallId>,
+
     /// What the plan decided for busy and for no answer, applied when
     /// every leg has failed. `None` on a call whose legs were not a
     /// user's plan (a device, a trunk, a forward's own legs).
@@ -679,6 +688,7 @@ impl Call {
             no_answer_timeout: None,
             original_callee: None,
             callee_user_id: None,
+            relay_for: None,
             treatments: None,
             held: None,
             appearance: None,
@@ -795,6 +805,7 @@ impl Call {
             no_answer_timeout: None,
             original_callee: None,
             callee_user_id: None,
+            relay_for: None,
             treatments: None,
             held: None,
             appearance: None,

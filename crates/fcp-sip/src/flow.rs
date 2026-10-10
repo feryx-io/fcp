@@ -35,6 +35,10 @@ pub struct FlowInfo {
     pub stream: mpsc::Sender<Bytes>,
     /// The peer's socket address.
     pub peer_addr: SocketAddr,
+    /// Whose binding it carries, once its REGISTER succeeded: the tenant
+    /// and the address of record. What another node's relay of a call down
+    /// this flow is trusted for (`docs/PUSH.md` §2.4).
+    pub owner: Option<(fcp_core::TenantId, String)>,
 }
 
 /// Registry for RFC 5626 flow tokens mapping to connection writers.
@@ -67,8 +71,14 @@ impl FlowRegistry {
     pub fn register(&self, stream: mpsc::Sender<Bytes>, peer_addr: SocketAddr) -> FlowToken {
         let token = format!("flow-{}", Uuid::new_v4().simple());
         debug!(flow_token = %token, peer = %peer_addr, "Registered new flow");
-        self.flows
-            .insert(token.clone(), FlowInfo { stream, peer_addr });
+        self.flows.insert(
+            token.clone(),
+            FlowInfo {
+                stream,
+                peer_addr,
+                owner: None,
+            },
+        );
         token
     }
 
@@ -81,6 +91,14 @@ impl FlowRegistry {
     /// The flow info (stream + peer address) if found and still valid.
     pub fn lookup(&self, token: &str) -> Option<FlowInfo> {
         self.flows.get(token).map(|entry| entry.value().clone())
+    }
+
+    /// The flow carries this tenant's binding at `aor` (its REGISTER
+    /// succeeded).
+    pub fn set_owner(&self, token: &str, tenant: fcp_core::TenantId, aor: String) {
+        if let Some(mut entry) = self.flows.get_mut(token) {
+            entry.owner = Some((tenant, aor));
+        }
     }
 
     /// Look up just the connection writer by flow token.
