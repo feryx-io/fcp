@@ -47,6 +47,25 @@ be woken and says what each did; the Devices page offers it. Stand-ins:
 provider's authentication and headers. Each `[[push.apns]]` and
 `[[push.fcm]]` takes an `endpoint`, for a stand-in.
 
+Phase P3 done (v0.25.379, siphon-rs v2026.10.09). A user's binding with a
+push address and no flow this node can send down is woken rather than rung
+(`SipMessageHandler::split_wakeable`; one whose flow another node holds is
+left to that node, phase P4). With nothing else to ring, the plan pushes at
+once and a user none of whose apps can be woken takes their unreachable
+treatment, find-me included; with live phones too, the pushes go alongside
+their INVITEs and the race starts once both are out, so a cancel never
+overtakes its call push. The caller hears 180 while only woken apps ring.
+`fcp_sip::push::PushWaits` keeps each call's wait; a `registration.registered`
+anywhere in the cluster (`spawn_push_wake_listener`) hands the woken app's
+new binding — the same instance or token, registered again — to the call's
+fork, which gains it as a leg (`LateLegs`, races over `FuturesUnordered`,
+late legs CANCELled with the rest), and stops waiting once every app is back
+or its push was refused. The race's end tells the apps that never came back
+(`cancel`). A call planned twice (an extension whose user's only phones are
+being woken no longer falls back to a direct lookup) keeps one wait. The
+testkit's `Phone::new_app` names its instance, registers its push address
+(`set_push`) and can `sleep` (siphon-rs `TlsPool::close_all`).
+
 ## 1. What FCP has, and what it lacks
 
 Nothing of push exists in FCP or siphon-rs: no `pn-*` parameter, no

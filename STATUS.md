@@ -2143,6 +2143,14 @@ told as `device.push_failed`; `fcp_push_total` on `/metrics`;
 `[push]`, and on the Devices page; APNs and FCM stand-ins in
 `fcp_testkit::push`.
 
+Push P3, ringing a sleeping app (v0.25.379, siphon-rs v2026.10.09): a
+binding with a push address and no live flow here is pushed instead of
+rung; the caller hears ringing; the woken app's REGISTER (any node, by
+`registration.registered`) becomes a new leg of the call's fork; the ring
+time still governs; apps that never came back get a cancel push; a user
+whose apps cannot be woken is unreachable at once. Proved by
+`fcp-call-manager/tests/push.rs` with the testkit's sleeping app.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

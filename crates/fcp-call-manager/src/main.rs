@@ -1646,6 +1646,11 @@ async fn run() -> Result<()> {
     }
 
     let handler = Arc::new(handler);
+    // A woken app's REGISTER, on any node, reaches the call waiting for it
+    // (docs/PUSH.md §2.2).
+    if config.push.is_some() {
+        spawn_push_wake_listener(Arc::clone(&handler), Arc::clone(&event_bus));
+    }
 
     // Leaving service without dropping calls
     // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6): the same sequence whether
@@ -3432,6 +3437,28 @@ fn spawn_sca_listener(sca: Arc<fcp_sip::sca::Sca>, event_bus: Arc<InMemoryEventB
 
 /// A mailbox's counts changed on any node: this node's subscribers to it
 /// are told (RFC 3842, `fcp_sip::mwi_subscriptions`).
+/// Registrations, to the calls waiting for the apps they woke.
+fn spawn_push_wake_listener(handler: Arc<SipMessageHandler>, event_bus: Arc<InMemoryEventBus>) {
+    tokio::spawn(async move {
+        let filter = EventFilter::new().types(vec![EventType::Registration]);
+        let mut stream = match event_bus.subscribe(filter).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                warn!(error = %e, "Push: no event subscription; a woken app's call is not told it is back");
+                return;
+            }
+        };
+        while let Some(event) = stream.next().await {
+            if let fcp_events::PlatformEvent::Registration(
+                fcp_events::RegistrationEvent::Registered { aor, tenant_id, .. },
+            ) = &event
+            {
+                handler.note_registered(tenant_id, aor).await;
+            }
+        }
+    });
+}
+
 fn spawn_mwi_subscription_listener(
     subs: Arc<fcp_sip::mwi_subscriptions::MwiSubscriptions>,
     event_bus: Arc<InMemoryEventBus>,
