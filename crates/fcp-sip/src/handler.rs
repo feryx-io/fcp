@@ -430,6 +430,15 @@ struct TargetContact {
     egress: crate::trunk_egress::TrunkEgress,
 }
 
+/// Legs a fork gains while it runs: the apps it woke, as they come back
+/// (`docs/PUSH.md` §2.2), each sent the INVITE the others were.
+struct LateLegs {
+    contacts: tokio::sync::mpsc::Receiver<crate::push::LateContact>,
+    uac: Arc<SipUserAgentClient>,
+    sdp: Option<String>,
+    headers: Option<sip_core::Headers>,
+}
+
 /// The emergency routes a call has not tried yet, and what each attempt
 /// carries: an emergency call goes to its routes one at a time, in order,
 /// never to two carriers at once (`docs/E911.md`).
@@ -542,6 +551,8 @@ pub struct SipMessageHandler {
     hoteling: Option<Arc<crate::hoteling::Hoteling>>,
     /// The publisher's keys, for waking phone apps (`docs/PUSH.md`).
     push: Option<Arc<fcp_push::PushSender>>,
+    /// Calls waiting for the apps they woke (`docs/PUSH.md` §2.2).
+    push_waits: Arc<crate::push::PushWaits>,
     /// Shared lines' appearances (§3.9).
     sca: Option<Arc<crate::sca::Sca>>,
     mwi_subscriptions: Option<Arc<crate::mwi_subscriptions::MwiSubscriptions>>,
@@ -1003,6 +1014,7 @@ impl SipMessageHandler {
             user_calls: None,
             hoteling: None,
             push: None,
+            push_waits: Arc::new(crate::push::PushWaits::default()),
             sca: None,
             mwi_subscriptions: None,
             supervisions: None,
@@ -1272,6 +1284,144 @@ impl SipMessageHandler {
     pub fn with_push(mut self, push: Option<Arc<fcp_push::PushSender>>) -> Self {
         self.push = push;
         self
+    }
+
+    /// The bindings among `contacts` to wake rather than ring
+    /// (`docs/PUSH.md` §2.2): a push address and no flow this node can
+    /// send down. A binding whose flow another node holds is that node's
+    /// to reach; one with a live flow here rings as any phone does.
+    async fn split_wakeable(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        contacts: Vec<sip_registrar::Binding>,
+    ) -> (
+        Vec<sip_registrar::Binding>,
+        Vec<fcp_core::storage::Registration>,
+    ) {
+        let (Some(_), Some(registrar)) = (&self.push, &self.registrar) else {
+            return (contacts, Vec::new());
+        };
+        let mut rows: std::collections::HashMap<String, Vec<fcp_core::storage::Registration>> =
+            std::collections::HashMap::new();
+        let mut ring = Vec::new();
+        let mut wake = Vec::new();
+        for binding in contacts {
+            let aor = binding.aor().to_string();
+            if !rows.contains_key(&aor) {
+                let found = registrar
+                    .get_registration_rows_in_tenant(tenant_id, &aor)
+                    .await
+                    .unwrap_or_default();
+                rows.insert(aor.clone(), found);
+            }
+            let row = rows[&aor]
+                .iter()
+                .find(|r| r.contact == binding.contact())
+                .cloned();
+            let wakeable = row.as_ref().is_some_and(|row| {
+                row.push.is_some()
+                    && !binding
+                        .flow_token()
+                        .is_some_and(|t| self.flow_registry.is_valid(t))
+                    && row
+                        .flow_node
+                        .as_deref()
+                        .is_none_or(|node| node == self.node_id)
+            });
+            match row {
+                Some(row) if wakeable => wake.push(row),
+                _ => ring.push(binding),
+            }
+        }
+        (ring, wake)
+    }
+
+    /// What a call's push says: the call, and who calls (the phone's call
+    /// screen shows it before the app has done anything).
+    fn push_message(
+        request: &sip_core::Request,
+        call_id: fcp_b2bua_core::CallId,
+        tenant_id: &fcp_core::TenantId,
+    ) -> fcp_push::PushMessage {
+        let from = request.headers().get("From").unwrap_or("");
+        let name = from
+            .split('<')
+            .next()
+            .map(|n| n.trim().trim_matches('"').trim().to_string())
+            .filter(|n| !n.is_empty());
+        fcp_push::PushMessage::new(
+            fcp_push::PushKind::Call,
+            call_id.to_string(),
+            tenant_id.to_string(),
+        )
+        .caller(caller_number(request), name)
+    }
+
+    /// Push to the bindings a call waits for: how many the providers took.
+    async fn push_waiting(&self, call_id: fcp_b2bua_core::CallId) -> usize {
+        let (Some(sender), Some(registrar)) = (&self.push, &self.registrar) else {
+            return 0;
+        };
+        let Some((targets, message)) = self.push_waits.targets(&call_id) else {
+            return 0;
+        };
+        let results = crate::push::push_bindings(sender, registrar, &targets, &message, None).await;
+        let sent = results.iter().filter(|r| r.outcome == "sent").count();
+        // A push not taken: that app will not come back.
+        let failed: Vec<usize> = results
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.outcome != "sent")
+            .map(|(i, _)| i)
+            .collect();
+        self.push_waits.abandon(&call_id, &failed);
+        info!(
+            call_id = %call_id,
+            pushed = targets.len(),
+            sent,
+            "Woke the callee's sleeping apps"
+        );
+        sent
+    }
+
+    /// A REGISTER somewhere in the cluster (`registration.registered`): an
+    /// app a call woke has come back, and its new binding goes to the call
+    /// (`docs/PUSH.md` §2.2).
+    pub async fn note_registered(&self, tenant_id: &fcp_core::TenantId, aor: &str) {
+        let calls = self.push_waits.waiting_at(tenant_id, aor);
+        if calls.is_empty() {
+            return;
+        }
+        let Some(registrar) = &self.registrar else {
+            return;
+        };
+        let rows = registrar
+            .get_registration_rows_in_tenant(tenant_id, aor)
+            .await
+            .unwrap_or_default();
+        for call in calls {
+            let n = self.push_waits.deliver(&call, &rows);
+            if n > 0 {
+                info!(call_id = %call, aor, woken = n, "A woken app is back: ringing it");
+            }
+        }
+    }
+
+    /// A call that woke apps is over: those that never came back are told
+    /// so (a cancel push), so they stop ringing.
+    fn end_push_wait(&self, call_id: fcp_b2bua_core::CallId) {
+        let Some((missing, cancel)) = self.push_waits.end(&call_id) else {
+            return;
+        };
+        let (Some(sender), Some(registrar)) = (self.push.clone(), self.registrar.clone()) else {
+            return;
+        };
+        if missing.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            crate::push::push_bindings(&sender, &registrar, &missing, &cancel, None).await;
+        });
     }
 
     /// An administrator's test push to a device's apps: what each push did,
@@ -6348,8 +6498,10 @@ impl SipMessageHandler {
                 }
             }
 
-            // If we found contacts via extension routing, use them
-            if !extension_contacts.is_empty() {
+            // If we found contacts via extension routing, use them — or
+            // none, when the user's only phones are apps being woken
+            // (`docs/PUSH.md` §2.2): the fork waits for them.
+            if !extension_contacts.is_empty() || self.push_waits.has(&call_id) {
                 extension_contacts
             } else {
                 // Fall back to direct registrar lookup (existing behavior)
@@ -7101,6 +7253,7 @@ impl SipMessageHandler {
                         vec![(target, outbound, None)],
                         call_id,
                         cancel_notify,
+                        None,
                     )
                     .await
                 {
@@ -7148,17 +7301,58 @@ impl SipMessageHandler {
             ));
         }
 
-        // Wait for all INVITEs to complete (concurrently)
+        // The callee's sleeping apps (`docs/PUSH.md` §2.2): pushed now if
+        // live phones ring too (with nothing else to ring, the plan pushed
+        // already), and their fork takes each as it comes back.
+        let push_now = self.push_waits.has(&call_id) && !target_contacts.is_empty();
+        let late = if self.push_waits.has(&call_id) {
+            let (tx, rx) = tokio::sync::mpsc::channel(8);
+            self.push_waits.attach(&call_id, tx);
+            Some(LateLegs {
+                contacts: rx,
+                uac: Arc::clone(&uac),
+                sdp: a_leg_sdp.clone(),
+                headers: emergency_headers.clone(),
+            })
+        } else {
+            None
+        };
+
+        // Wait for all INVITEs to complete (concurrently), and the pushes
+        // with them: the race starts once both are out, so a call that is
+        // answered at once is cancelled after its push, never before.
         // Each result includes (target_uri, call_handle, flow_token) for RFC 5626 BYE support
-        let results = futures::future::join_all(invite_futures).await;
+        let (results, _) = tokio::join!(futures::future::join_all(invite_futures), async {
+            if push_now {
+                self.push_waiting(call_id).await;
+            }
+        });
         let b_leg_calls: Vec<_> = results.into_iter().flatten().collect();
 
         // Clear caller identity overrides after INVITEs sent
         uac.inner().set_display_name(None).await;
         uac.inner().set_from_uri(None).await;
 
+        // Only apps that are being woken: the caller hears ringing while
+        // they come back.
+        if b_leg_calls.is_empty() && late.is_some() {
+            let mut ringing = self.uas.create_ringing(request);
+            self.ensure_response_hygiene(request, &mut ringing);
+            if let Some(tag) = ringing
+                .headers()
+                .get("To")
+                .map(SmolStr::new)
+                .and_then(|to| extract_tag_value(Some(&to)))
+            {
+                let _ = self.call_manager.update_call(&call_id, |call| {
+                    call.a_leg_to_tag = Some(tag);
+                });
+            }
+            a_leg_handle.send_provisional(ringing).await;
+        }
+
         // Check if we successfully created any B-legs
-        if b_leg_calls.is_empty() {
+        if b_leg_calls.is_empty() && late.is_none() {
             error!(call_id = %call_id, "Failed to create any B-leg INVITEs");
             let response = self.create_simple_response(request, 500, "Failed to forward call");
             a_leg_handle.send_final(response).await;
@@ -7194,6 +7388,7 @@ impl SipMessageHandler {
                     b_leg_calls,
                     call_id_clone,
                     cancel_notify,
+                    late,
                 )
                 .await
             {
@@ -7904,6 +8099,7 @@ impl SipMessageHandler {
         b_leg_calls: Vec<(String, Arc<crate::uac::OutboundCall>, Option<String>)>,
         call_id: fcp_b2bua_core::CallId,
         cancel_notify: Arc<tokio::sync::Notify>,
+        late: Option<LateLegs>,
     ) -> Result<()> {
         info!(
             call_id = %call_id,
@@ -7922,59 +8118,20 @@ impl SipMessageHandler {
         let dedup_provisionals = self.b2bua_config.forking.deduplicate_provisionals;
 
         for (i, (target, b_leg_handle, _flow_token)) in b_leg_calls.iter().enumerate() {
-            let b_leg_handle_clone = Arc::clone(b_leg_handle);
-            let target_clone = target.clone();
-            let call_id_clone = call_id;
-            let provisional_tx_clone = provisional_tx.clone();
-            let provisional_sent_clone = Arc::clone(&provisional_sent);
-            let task_early_media_policy = early_media_policy;
-            let task_dedup = dedup_provisionals;
-
-            // Spawn provisional listener task (loops until first 180+ response)
-            tokio::spawn(async move {
-                // If early media is suppressed, skip provisional relay entirely
-                if task_early_media_policy == fcp_b2bua_core::EarlyMediaPolicy::None {
-                    debug!(
-                        call_id = %call_id_clone,
-                        target = %target_clone,
-                        "Early media suppressed by policy — skipping provisional relay for B-leg {}", i
-                    );
-                    return;
-                }
-
-                // Loop to consume provisionals until we get a 180+ response
-                while let Some(response) = b_leg_handle_clone.await_provisional().await {
-                    let code = response.start_line().code();
-                    debug!(
-                        call_id = %call_id_clone,
-                        target = %target_clone,
-                        code = code,
-                        has_body = !response.body().is_empty(),
-                        "B-leg {} provisional response", i
-                    );
-
-                    // Signal if it's a ringing/progress response (skip 100 Trying etc.)
-                    if (180..200).contains(&code) {
-                        let mut sent = provisional_sent_clone.lock().await;
-                        if !*sent || !task_dedup {
-                            info!(
-                                call_id = %call_id_clone,
-                                target = %target_clone,
-                                code = code,
-                                has_sdp = !response.body().is_empty(),
-                                "First provisional from B-leg {} - sending full response to relay task", i
-                            );
-                            // Send the ENTIRE response object (preserves SDP, Require: 100rel, etc.)
-                            let _ = provisional_tx_clone.send(response).await;
-                            *sent = true;
-                        }
-                        break;
-                    }
-                    // Continue looping past 100 Trying and other non-ringing provisionals
-                }
-            });
+            spawn_provisional_listener(
+                i,
+                target.clone(),
+                Arc::clone(b_leg_handle),
+                provisional_tx.clone(),
+                Arc::clone(&provisional_sent),
+                early_media_policy,
+                dedup_provisionals,
+                call_id,
+            );
         }
 
+        // A leg that joins later (a woken app) relays its ringing too.
+        let late_provisional_tx = late.as_ref().map(|_| provisional_tx.clone());
         // Drop original sender so channel closes when all provisional tasks complete
         drop(provisional_tx);
 
@@ -8057,52 +8214,24 @@ impl SipMessageHandler {
 
         // Create tasks to wait for FINAL responses from all B-legs (for racing)
         // Each task returns (index, target, code, response, handle, flow_token) for the winning leg
-        let mut tasks = Vec::new();
-        for (i, (target, b_leg_handle, flow_token)) in b_leg_calls.iter().enumerate() {
-            let b_leg_handle_clone = Arc::clone(b_leg_handle);
-            let target_clone = target.clone();
-            let call_id_clone = call_id;
-            let flow_token_clone = flow_token.clone();
-
-            let task = tokio::spawn(async move {
-                debug!(
-                    call_id = %call_id_clone,
-                    target = %target_clone,
-                    "B-leg {} race task waiting for final response", i
-                );
-
-                // Wait for final response (this is what we race on)
-                match b_leg_handle_clone.await_final().await {
-                    Ok(response) => {
-                        let code = response.start_line().code();
-                        debug!(
-                            call_id = %call_id_clone,
-                            target = %target_clone,
-                            code = code,
-                            "B-leg {} final response", i
-                        );
-                        Some((
-                            i,
-                            target_clone,
-                            code,
-                            response,
-                            Arc::clone(&b_leg_handle_clone),
-                            flow_token_clone,
-                        ))
-                    }
-                    Err(e) => {
-                        warn!(
-                            call_id = %call_id_clone,
-                            target = %target_clone,
-                            error = %e,
-                            "B-leg {} failed", i
-                        );
-                        None
-                    }
-                }
-            });
-            tasks.push(task);
-        }
+        let mut tasks: futures::stream::FuturesUnordered<_> = b_leg_calls
+            .iter()
+            .enumerate()
+            .map(|(i, (target, b_leg_handle, flow_token))| {
+                spawn_race_task(
+                    i,
+                    target.clone(),
+                    Arc::clone(b_leg_handle),
+                    flow_token.clone(),
+                    call_id,
+                )
+            })
+            .collect();
+        // Legs that joined while the race ran: kept here so the CANCELs
+        // below reach them whichever way it ends.
+        let added_legs: std::sync::Mutex<Vec<BLeg>> = std::sync::Mutex::new(Vec::new());
+        let first_index = b_leg_calls.len();
+        let mut late = late;
 
         // Race all tasks and take the first successful 2xx response.
         // Also listen for A-leg cancellation so we can abort immediately.
@@ -8121,10 +8250,82 @@ impl SipMessageHandler {
 
         // Wrap the B-leg race into a single future so we can select against cancel
         let race_future = async {
+            use futures::StreamExt;
             let mut race_failure_code: Option<u16> = None;
-            while !tasks.is_empty() {
-                let (result, _task_index, remaining) = futures::future::select_all(tasks).await;
-                tasks = remaining;
+            loop {
+                if tasks.is_empty() && late.is_none() {
+                    break;
+                }
+                // Which happened: a leg finished, or a woken app came back
+                // (`None`: every app it woke is accounted for).
+                enum Step<R> {
+                    Finished(R),
+                    Late(Option<crate::push::LateContact>),
+                }
+                let has_late = late.is_some();
+                let step = {
+                    let next_late = async {
+                        match late.as_mut() {
+                            Some(late) => late.contacts.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    };
+                    tokio::select! {
+                        Some(result) = tasks.next(), if !tasks.is_empty() => Step::Finished(result),
+                        contact = next_late, if has_late => Step::Late(contact),
+                    }
+                };
+                let result = match step {
+                    Step::Finished(result) => result,
+                    Step::Late(None) => {
+                        late = None;
+                        continue;
+                    }
+                    // A woken app is back: it rings like the others.
+                    Step::Late(Some(contact)) => {
+                        let Some(ready) = late.as_ref() else { continue };
+                        let target = TargetContact {
+                            uri: contact.uri,
+                            flow_token: contact.flow_token,
+                            egress: crate::trunk_egress::TrunkEgress::none(),
+                        };
+                        if let Some(leg) = self
+                            .send_b_leg_invite(
+                                Arc::clone(&ready.uac),
+                                target,
+                                ready.sdp.clone(),
+                                ready.headers.clone(),
+                                call_id,
+                            )
+                            .await
+                        {
+                            let mut added = added_legs.lock().unwrap_or_else(|e| e.into_inner());
+                            let i = first_index + added.len();
+                            info!(call_id = %call_id, target = %leg.0, "A woken app joins the race");
+                            if let Some(tx) = &late_provisional_tx {
+                                spawn_provisional_listener(
+                                    i,
+                                    leg.0.clone(),
+                                    Arc::clone(&leg.1),
+                                    tx.clone(),
+                                    Arc::clone(&provisional_sent),
+                                    early_media_policy,
+                                    dedup_provisionals,
+                                    call_id,
+                                );
+                            }
+                            tasks.push(spawn_race_task(
+                                i,
+                                leg.0.clone(),
+                                Arc::clone(&leg.1),
+                                leg.2.clone(),
+                                call_id,
+                            ));
+                            added.push(leg);
+                        }
+                        continue;
+                    }
+                };
 
                 match result {
                     Ok(Some((i, target, code, response, handle, flow_token))) => {
@@ -8220,6 +8421,17 @@ impl SipMessageHandler {
                 fork_timed_out = true;
             }
         }
+
+        // Late legs join the rest for what follows (their CANCELs), and the
+        // apps woken that never came back are told the call is over.
+        let mut b_leg_calls = b_leg_calls;
+        b_leg_calls.extend(
+            added_legs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .drain(..),
+        );
+        self.end_push_wait(call_id);
 
         debug!(
             call_id = %call_id,
@@ -8673,6 +8885,7 @@ impl SipMessageHandler {
                     vec![(target, outbound, None)],
                     call_id,
                     cancel_notify,
+                    None,
                 ))
                 .await;
             }
@@ -8694,6 +8907,7 @@ impl SipMessageHandler {
                         vec![next],
                         call_id,
                         cancel_notify,
+                        None,
                     ))
                     .await;
                 }
@@ -8712,6 +8926,7 @@ impl SipMessageHandler {
                     legs,
                     call_id,
                     cancel_notify,
+                    None,
                 ))
                 .await;
             }
@@ -14607,6 +14822,7 @@ impl SipMessageHandler {
                         b_leg_calls,
                         call_id,
                         cancel_notify,
+                        None,
                     )
                     .await;
             } else {
@@ -14640,6 +14856,7 @@ impl SipMessageHandler {
                                     vec![(member.clone(), outbound_call, flow_token)],
                                     call_id,
                                     cancel_notify,
+                                    None,
                                 )
                                 .await;
                         }
@@ -15507,6 +15724,7 @@ impl SipMessageHandler {
                             legs,
                             call_id,
                             cancel_notify,
+                            None,
                         )
                         .await?;
                     }
@@ -15569,6 +15787,34 @@ impl SipMessageHandler {
                         .map(|u| u.display_name.unwrap_or(u.username)),
                     _ => None,
                 };
+                // Apps asleep are woken by push rather than rung
+                // (`docs/PUSH.md` §2.2); the fork takes them when they
+                // come back.
+                let (contacts, wake) = self.split_wakeable(tenant_id, contacts).await;
+                if !wake.is_empty() {
+                    self.push_waits.begin(
+                        call_id,
+                        *tenant_id,
+                        wake,
+                        Self::push_message(request, call_id, tenant_id),
+                    );
+                    // Nothing else rings: push now, and a user whose apps
+                    // cannot be woken is unreachable.
+                    if contacts.is_empty() && self.push_waiting(call_id).await == 0 {
+                        self.push_waits.end(&call_id);
+                        info!(call_id = %call_id, "The callee's apps cannot be woken: unreachable");
+                        return Box::pin(self.ring_by_plan(
+                            request,
+                            a_leg_handle,
+                            call_id,
+                            tenant_id,
+                            user_id,
+                            Vec::new(),
+                            callee,
+                        ))
+                        .await;
+                    }
+                }
                 let _ = self.call_manager.update_call(&call_id, |call| {
                     call.callee_user_id = user_id;
                     call.treatments = Some(treatments);
@@ -16368,6 +16614,7 @@ impl SipMessageHandler {
                 vec![(target_uri, outbound_call, None)],
                 call_id,
                 cancel_notify,
+                None,
             )
             .await
         }) // end Box::pin(async move { ... })
@@ -16376,7 +16623,7 @@ impl SipMessageHandler {
     /// Create an outbound call to a target URI via the UAC.
     ///
     /// Extracts SDP from the A-leg request (if present) and sends INVITE to the
-    /// target URI. Returns an Arc<OutboundCall> ready for `handle_parallel_forking()`.
+    /// target URI. Returns an Arc<OutboundCall> ready for `handle_parallel_forking(, None)`.
     ///
     /// If `sdp_override` is provided, it is used instead of the A-leg request body.
     /// This is used by CFNA routing to send a media-anchored SDP to the B-leg.
@@ -17521,6 +17768,116 @@ impl InboundMessageHandler for SipMessageHandler {
 }
 
 /// Helper to extract tag parameter from header value.
+/// Relay a B-leg's first ringing (180/183) to the A-leg, through the one
+/// relay task the fork runs.
+#[allow(clippy::too_many_arguments)]
+fn spawn_provisional_listener(
+    i: usize,
+    target: String,
+    b_leg_handle: Arc<crate::uac::OutboundCall>,
+    provisional_tx: tokio::sync::mpsc::Sender<sip_core::Response>,
+    provisional_sent: Arc<tokio::sync::Mutex<bool>>,
+    early_media_policy: fcp_b2bua_core::EarlyMediaPolicy,
+    dedup_provisionals: bool,
+    call_id: fcp_b2bua_core::CallId,
+) {
+    // Spawn provisional listener task (loops until first 180+ response)
+    tokio::spawn(async move {
+        // If early media is suppressed, skip provisional relay entirely
+        if early_media_policy == fcp_b2bua_core::EarlyMediaPolicy::None {
+            debug!(
+                call_id = %call_id,
+                target = %target,
+                "Early media suppressed by policy — skipping provisional relay for B-leg {}", i
+            );
+            return;
+        }
+
+        // Loop to consume provisionals until we get a 180+ response
+        while let Some(response) = b_leg_handle.await_provisional().await {
+            let code = response.start_line().code();
+            debug!(
+                call_id = %call_id,
+                target = %target,
+                code = code,
+                has_body = !response.body().is_empty(),
+                "B-leg {} provisional response", i
+            );
+
+            // Signal if it's a ringing/progress response (skip 100 Trying etc.)
+            if (180..200).contains(&code) {
+                let mut sent = provisional_sent.lock().await;
+                if !*sent || !dedup_provisionals {
+                    info!(
+                        call_id = %call_id,
+                        target = %target,
+                        code = code,
+                        has_sdp = !response.body().is_empty(),
+                        "First provisional from B-leg {} - sending full response to relay task", i
+                    );
+                    // Send the ENTIRE response object (preserves SDP, Require: 100rel, etc.)
+                    let _ = provisional_tx.send(response).await;
+                    *sent = true;
+                }
+                break;
+            }
+            // Continue looping past 100 Trying and other non-ringing provisionals
+        }
+    });
+}
+
+/// A fork's leg: its target, its INVITE, the flow it went down.
+type BLeg = (String, Arc<crate::uac::OutboundCall>, Option<String>);
+
+/// How a leg finished: its index, target, final code and response, its
+/// INVITE and flow; `None` when it failed outright.
+type LegFinal = Option<(
+    usize,
+    String,
+    u16,
+    sip_core::Response,
+    Arc<crate::uac::OutboundCall>,
+    Option<String>,
+)>;
+
+/// Wait for a B-leg's final response: what the fork races on.
+fn spawn_race_task(
+    i: usize,
+    target: String,
+    b_leg_handle: Arc<crate::uac::OutboundCall>,
+    flow_token: Option<String>,
+    call_id: fcp_b2bua_core::CallId,
+) -> tokio::task::JoinHandle<LegFinal> {
+    tokio::spawn(async move {
+        debug!(
+            call_id = %call_id,
+            target = %target,
+            "B-leg {} race task waiting for final response", i
+        );
+        match b_leg_handle.await_final().await {
+            Ok(response) => {
+                let code = response.start_line().code();
+                debug!(
+                    call_id = %call_id,
+                    target = %target,
+                    code = code,
+                    "B-leg {} final response", i
+                );
+                Some((i, target, code, response, b_leg_handle, flow_token))
+            }
+            Err(e) => {
+                warn!(
+                    call_id = %call_id,
+                    target = %target,
+                    error = %e,
+                    "B-leg {} failed", i
+                );
+                None
+            }
+        }
+    })
+}
+
 fn extract_tag_value(value: Option<&SmolStr>) -> Option<String> {
     value.and_then(|v| {
         v.split(';').find_map(|seg| {

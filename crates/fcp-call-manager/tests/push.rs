@@ -254,3 +254,281 @@ format = "compact"
     );
     drop(service);
 }
+
+// ===== Ringing a sleeping app (`docs/PUSH.md` phase P3) =====
+
+use fcp_testkit::certs::ClusterCa;
+use fcp_testkit::smoke::toml_path;
+use fcp_testkit::Phone;
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+struct PushStack {
+    service: Service,
+    seed: Seed,
+    udp: SocketAddr,
+    tls: SocketAddr,
+    ca: ClusterCa,
+    apns: StandInApns,
+    _db: TestDatabase,
+    _dir: tempfile::TempDir,
+}
+
+/// A call manager over UDP and TLS with `[push]` at the APNs stand-in;
+/// ringing gives up after `ring_secs`.
+async fn push_stack(name: &str, ring_secs: u64) -> Option<PushStack> {
+    let db = TestDatabase::create().await?;
+    let apns = StandInApns::start().await;
+    let seed = Seed::new(db.url(), REALM).await;
+    let (sip, sips, http) = (free_port(), free_port(), free_port());
+    let rtp_start = allocate_port_pair().rtp_port;
+    let dir = tempfile::tempdir().unwrap();
+    let ca = ClusterCa::new(dir.path());
+    let cert = ca.node(name);
+    let key = dir.path().join("apns.p8");
+    std::fs::write(&key, apns.config().key.unwrap()).unwrap();
+    let config = format!(
+        r#"
+[service]
+node_id = "{name}"
+
+[sip]
+udp_bind = "127.0.0.1:{sip}"
+tcp_bind = "127.0.0.1:{sip}"
+sips_bind = "127.0.0.1:{sips}"
+tls_cert_path = "{cert}"
+tls_key_path = "{tls_key}"
+local_ip = "127.0.0.1"
+
+[registrar]
+auth_enabled = true
+realm = "{REALM}"
+
+[storage]
+database_url = "{db}"
+
+[cdr]
+spool_dir = "{dir}/cdr-spool"
+
+[http]
+bind_address = "127.0.0.1:{http}"
+
+[calls]
+call_timeout_seconds = 30
+
+[b2bua.forking]
+timeout = {ring_secs}
+
+[media]
+rtp_port_start = {rtp_start}
+rtp_port_end = {rtp_end}
+prompts_dir = "{dir}/prompts"
+tts_cache_dir = "{dir}/tts-cache"
+recording_dir = "{dir}/recordings"
+
+[[push.apns]]
+team_id = "{APNS_TEAM}"
+key_id = "{key_id}"
+key_file = "{key}"
+topics = ["{APNS_TOPIC}"]
+endpoint = "{url}"
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        cert = toml_path(&cert.cert_path),
+        tls_key = toml_path(&cert.key_path),
+        db = db.url(),
+        dir = toml_path(dir.path()),
+        rtp_end = rtp_start + 40,
+        key_id = apns.config().key_id,
+        key = toml_path(&key),
+        url = apns.config().endpoint.unwrap(),
+    );
+    let service = Service::start(name, BIN, &config, &loopback(http, "/health")).await;
+    Some(PushStack {
+        service,
+        seed,
+        udp: SocketAddr::from(([127, 0, 0, 1], sip)),
+        tls: SocketAddr::from(([127, 0, 0, 1], sips)),
+        ca,
+        apns,
+        _db: db,
+        _dir: dir,
+    })
+}
+
+/// Bob's phone app: registered over TLS with its push address, then
+/// asleep (its connection gone).
+async fn sleeping_app(
+    stack: &PushStack,
+    bob: &fcp_testkit::seed::SeededUser,
+    token: &str,
+) -> Phone {
+    let app = Phone::new_app(
+        &bob.username,
+        &bob.password,
+        REALM,
+        stack.tls,
+        &stack.ca.ca_path,
+        "<urn:uuid:00000000-0000-0000-0000-0000000000b1>",
+    )
+    .await
+    .unwrap();
+    app.set_push(Some(&format!(
+        ";pn-provider=apns;pn-param={APNS_TEAM}.{APNS_TOPIC};pn-prid={token}"
+    )))
+    .unwrap();
+    assert_eq!(app.register().await.unwrap(), 200);
+    app.sleep().await;
+    // The node notices the connection is gone.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    app
+}
+
+const RING: Duration = Duration::from_secs(10);
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_wakes_a_sleeping_app_which_answers() {
+    let Some(stack) = push_stack("e2e-push-wake", 20).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "Alice-pw-2026!", "2001").await;
+    let bob = stack.seed.user("bob", "Bob-pw-2026!", "2002").await;
+    let app = Arc::new(sleeping_app(&stack, &bob, "a1b2c3d4e5f6a7b8c9d0").await);
+    app.auto_answer(true);
+
+    // Woken by its push, the app registers again — a new connection — and
+    // takes the call.
+    let mut pushes = stack.apns.subscribe();
+    let woken = {
+        let app = Arc::clone(&app);
+        tokio::spawn(async move {
+            let push = StandInApns::next_push(&mut pushes, 15).await?;
+            assert_eq!(app.register().await.ok()?, 200);
+            Some(push)
+        })
+    };
+
+    let caller = Phone::new(&alice.username, &alice.password, REALM, stack.udp)
+        .await
+        .unwrap();
+    assert_eq!(caller.register().await.unwrap(), 200);
+    let call = caller.call(&bob.extension).await.unwrap();
+    if let Err(e) = call.answered(RING).await {
+        let logs = stack.service.kill().await;
+        panic!("the woken app should answer: {e}\n{logs}");
+    }
+    let push = woken.await.unwrap().expect("a push woke the app");
+    assert_eq!(push.kind(), "call");
+    assert_eq!(push.token, "a1b2c3d4e5f6a7b8c9d0");
+    assert!(push.payload["call"].as_str().is_some_and(|c| !c.is_empty()));
+    assert!(
+        push.payload["from"].as_str().is_some(),
+        "{:?}",
+        push.payload
+    );
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    // The app came back, so no cancel.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(stack.apns.pushes().iter().all(|p| p.kind() == "call"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_desk_phone_answers_and_the_sleeping_app_is_told_the_call_is_over() {
+    let Some(stack) = push_stack("e2e-push-cancel", 20).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "Alice-pw-2026!", "2001").await;
+    let bob = stack.seed.user("bob", "Bob-pw-2026!", "2002").await;
+    let _app = sleeping_app(&stack, &bob, "a1b2c3d4e5f6a7b8c9d0").await;
+    let desk = Phone::new(&bob.username, &bob.password, REALM, stack.udp)
+        .await
+        .unwrap();
+    assert_eq!(desk.register().await.unwrap(), 200);
+    desk.auto_answer(true);
+
+    let caller = Phone::new(&alice.username, &alice.password, REALM, stack.udp)
+        .await
+        .unwrap();
+    assert_eq!(caller.register().await.unwrap(), 200);
+    let mut pushes = stack.apns.subscribe();
+    let call = caller.call(&bob.extension).await.unwrap();
+    call.answered(RING).await.expect("the desk phone answers");
+    let first = StandInApns::next_push(&mut pushes, 5)
+        .await
+        .expect("the call's push");
+    let second = StandInApns::next_push(&mut pushes, 5)
+        .await
+        .expect("its cancel");
+    assert_eq!(first.kind(), "call");
+    assert_eq!(second.kind(), "cancel");
+    assert_eq!(second.payload["call"], first.payload["call"]);
+    assert_eq!(call.hangup().await.unwrap(), 200);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_app_that_cannot_be_woken_is_unreachable_at_once() {
+    // A long ring time: the caller must not wait it out.
+    let Some(stack) = push_stack("e2e-push-gone", 30).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "Alice-pw-2026!", "2001").await;
+    let bob = stack.seed.user("bob", "Bob-pw-2026!", "2002").await;
+    let _app = sleeping_app(&stack, &bob, "deadbeefdeadbeefdead").await;
+    stack.apns.forget("deadbeefdeadbeefdead");
+
+    let caller = Phone::new(&alice.username, &alice.password, REALM, stack.udp)
+        .await
+        .unwrap();
+    assert_eq!(caller.register().await.unwrap(), 200);
+    let started = std::time::Instant::now();
+    let call = caller.call(&bob.extension).await.unwrap();
+    let code = call.failed(Duration::from_secs(10)).await;
+    if code != Some(480) {
+        let logs = stack.service.kill().await;
+        panic!("unreachable, not a ring that times out: {code:?}\n{logs}");
+    }
+    assert!(started.elapsed() < Duration::from_secs(10));
+
+    // The binding lost its push address.
+    let rows = stack
+        .seed
+        .storage()
+        .get_registrations_in_tenant(&stack.seed.tenant_id, &format!("sip:bob@{REALM}"))
+        .await
+        .unwrap();
+    assert!(rows.iter().all(|r| r.push.is_none()), "{rows:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_app_that_never_comes_back_is_no_answer_and_is_told_so() {
+    let Some(stack) = push_stack("e2e-push-noanswer", 3).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "Alice-pw-2026!", "2001").await;
+    let bob = stack.seed.user("bob", "Bob-pw-2026!", "2002").await;
+    let _app = sleeping_app(&stack, &bob, "a1b2c3d4e5f6a7b8c9d0").await;
+
+    let caller = Phone::new(&alice.username, &alice.password, REALM, stack.udp)
+        .await
+        .unwrap();
+    assert_eq!(caller.register().await.unwrap(), 200);
+    let mut pushes = stack.apns.subscribe();
+    let call = caller.call(&bob.extension).await.unwrap();
+    // Ringing while the app is woken; no answer within the ring time.
+    let code = call.failed(Duration::from_secs(10)).await;
+    assert_eq!(code, Some(480), "no answer");
+    let first = StandInApns::next_push(&mut pushes, 2)
+        .await
+        .expect("the call's push");
+    let second = StandInApns::next_push(&mut pushes, 5)
+        .await
+        .expect("its cancel");
+    assert_eq!((first.kind(), second.kind()), ("call", "cancel"));
+}

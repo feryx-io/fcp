@@ -485,6 +485,8 @@ pub struct Phone {
     events: tokio::sync::Mutex<mpsc::UnboundedReceiver<PhoneEvent>>,
     incoming: tokio::sync::Mutex<mpsc::UnboundedReceiver<IncomingCall>>,
     _socket: Arc<UdpSocket>,
+    /// A TLS phone's connections, which [`Phone::sleep`] closes.
+    tls_pool: Option<Arc<sip_transport::pool::TlsPool>>,
 }
 
 /// The phone's outbound side: its own UDP socket, and for a phone made
@@ -591,7 +593,7 @@ impl Phone {
         server: SocketAddr,
     ) -> Result<Self> {
         Self::build(
-            bind, username, username, password, realm, server, None, None,
+            bind, username, username, password, realm, server, None, None, None,
         )
         .await
     }
@@ -613,6 +615,7 @@ impl Phone {
             password,
             realm,
             server,
+            None,
             None,
             None,
         )
@@ -639,6 +642,7 @@ impl Phone {
             server,
             None,
             Some(user_agent),
+            None,
         )
         .await
     }
@@ -665,8 +669,50 @@ impl Phone {
             server,
             Some(ca_pem),
             None,
+            None,
         )
         .await
+    }
+
+    /// A phone app (`docs/PUSH.md`): over SIPS as [`Phone::new_tls`],
+    /// naming its `instance` in each REGISTER (RFC 5626 `+sip.instance`),
+    /// with the push address [`Phone::set_push`] gives it, and able to
+    /// [`Phone::sleep`] as an app does when it leaves the screen.
+    pub async fn new_app(
+        username: &str,
+        password: &str,
+        realm: &str,
+        server: SocketAddr,
+        ca_pem: &std::path::Path,
+        instance: &str,
+    ) -> Result<Self> {
+        Self::build(
+            "127.0.0.1:0",
+            username,
+            username,
+            password,
+            realm,
+            server,
+            Some(ca_pem),
+            None,
+            Some(instance),
+        )
+        .await
+    }
+
+    /// The push address the next REGISTER carries in its Contact URI
+    /// (RFC 8599: `;pn-provider=…;pn-param=…;pn-prid=…`), or none.
+    pub fn set_push(&self, params: Option<&str>) -> Result<()> {
+        self.uac().set_register_contact_params(params)
+    }
+
+    /// Sleep, as an app does off the screen: every TLS connection to the
+    /// server closes, so the server holds the binding with no way in. The
+    /// next request opens a new one, as a woken app does.
+    pub async fn sleep(&self) {
+        if let Some(pool) = &self.tls_pool {
+            pool.close_all();
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -679,6 +725,7 @@ impl Phone {
         server: SocketAddr,
         tls_ca: Option<&std::path::Path>,
         user_agent: Option<&str>,
+        instance: Option<&str>,
     ) -> Result<Self> {
         disable_rate_limits();
         let socket = Arc::new(UdpSocket::bind(bind).await?);
@@ -700,6 +747,7 @@ impl Phone {
             }
             None => None,
         };
+        let tls_pool = tls.as_ref().map(|t| Arc::clone(&t.pool));
         let transport_param = if tls.is_some() { ";transport=tls" } else { "" };
         let dispatcher: Arc<dyn TransportDispatcher> = Arc::new(PhoneDispatcher {
             socket: Arc::clone(&socket),
@@ -750,6 +798,9 @@ impl Phone {
         if let Some(agent) = user_agent {
             builder = builder.user_agent(agent);
         }
+        if let Some(instance) = instance {
+            builder = builder.enable_outbound(instance);
+        }
         let uac = Arc::new(builder.build()?);
         let _ = inner.uas.set(Arc::clone(&uas));
         let _ = inner.uac.set(Arc::clone(&uac));
@@ -784,6 +835,7 @@ impl Phone {
             events: tokio::sync::Mutex::new(events_rx),
             incoming: tokio::sync::Mutex::new(incoming_rx),
             _socket: socket,
+            tls_pool,
         })
     }
 
