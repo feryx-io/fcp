@@ -29,6 +29,29 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/calls/:id/hangup", post(hangup))
         .route("/devices/:id/resync", post(resync_device))
         .route("/devices/:id/push-test", post(push_test_device))
+        .route("/push", post(relayed_push))
+}
+
+/// POST /push — a site's push, sent with this node's keys (`docs/PUSH.md`
+/// §2.4). The admin's link listener forwards it here, having held the
+/// message's tenant to the site's. 503 from a node without keys, which the
+/// admin passes over.
+async fn relayed_push(
+    State(state): State<Arc<AppState>>,
+    Json(push): Json<fcp_core::push::RelayedPush>,
+) -> Response {
+    let outcome = match &state.sip_handler {
+        Some(handler) => handler.send_relayed_push(&push).await,
+        None => None,
+    };
+    match outcome {
+        Some(Ok(outcome)) => (StatusCode::OK, Json(outcome.answer())).into_response(),
+        Some(Err(e)) => error(CallControlError::new(400, e)),
+        None => error(CallControlError::new(
+            503,
+            "push is not configured on this node",
+        )),
+    }
 }
 
 /// Who a test push is for.

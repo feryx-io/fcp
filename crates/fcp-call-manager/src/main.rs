@@ -2337,8 +2337,20 @@ async fn build_push_sender(
             );
         }
     }
+    if let Some(relay) = &mut push.relay {
+        if let Some(token) = relay.token.take() {
+            relay.token = Some(open(token).await.context("[push.relay] token")?);
+        }
+    }
     let sender = fcp_push::PushSender::new(&push, &|v| Ok(v.to_string()))?;
-    info!(providers = ?push.providers(), "Phone apps are woken by push");
+    match &push.relay {
+        Some(relay) => info!(
+            providers = ?push.providers(),
+            relay = %relay.url,
+            "Phone apps are woken by push, through the site's link"
+        ),
+        None => info!(providers = ?push.providers(), "Phone apps are woken by push"),
+    }
     Ok(Arc::new(sender))
 }
 

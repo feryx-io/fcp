@@ -68,4 +68,14 @@ pub struct Cli {
         hide_env_values = true
     )]
     pub site_database_url: Option<String>,
+
+    /// The token the site's call managers send their pushes with
+    /// (`[push.relay] token`); unset, the link relays none.
+    #[arg(
+        long = "push-token",
+        value_name = "TOKEN",
+        env = "FCP_LINK_PUSH_TOKEN",
+        hide_env_values = true
+    )]
+    pub push_token: Option<String>,
 }

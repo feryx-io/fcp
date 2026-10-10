@@ -17,6 +17,7 @@ async fn sender(payload: PushPayload) -> (PushSender, StandInApns, StandInFcm) {
         payload,
         apns: vec![apns.config()],
         fcm: vec![fcm.config()],
+        relay: None,
     };
     (PushSender::new(&config, &as_is).unwrap(), apns, fcm)
 }

@@ -5,7 +5,9 @@
 //! APNs or FCM), the app at that provider (`pn-param`) and the device's
 //! token (`pn-prid`). [`PushConfig`] is the `[push]` section of a node that
 //! registers phones or rings them: the publisher's keys, and which apps they
-//! can push to.
+//! can push to. A site holds no keys: its `[push]` names the same apps and a
+//! [`PushRelayConfig`], and its pushes go up its link to the cloud
+//! ([`RelayedPush`], `docs/PUSH.md` §2.4).
 
 use serde::{Deserialize, Serialize};
 
@@ -79,6 +81,53 @@ pub struct PushConfig {
     /// Google's, one entry per project.
     #[serde(default)]
     pub fcm: Vec<FcmConfig>,
+    /// A site's: no keys here, each push sent up the site's link for the
+    /// cloud to send. The apps above are listed without their keys.
+    #[serde(default)]
+    pub relay: Option<PushRelayConfig>,
+}
+
+/// `[push.relay]`: where a site's pushes go, its link's `/push`.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushRelayConfig {
+    pub url: String,
+    /// The link's `[site] push_token` (or `${NAME}`).
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for PushRelayConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushRelayConfig")
+            .field("url", &self.url)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// A push a site sends up its link (`POST /push` on the link, then
+/// `POST /link/v1/push` at the cloud, then `POST /push` on a call manager
+/// with the keys): where to, and the message as `fcp-push` writes it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayedPush {
+    pub to: PushAddress,
+    pub message: serde_json::Value,
+}
+
+impl RelayedPush {
+    /// The tenant the message is for, which the cloud holds to the site's.
+    pub fn tenant(&self) -> Option<&str> {
+        self.message.get("tenant").and_then(|t| t.as_str())
+    }
+}
+
+/// What came of a relayed push: `sent`, `gone` or `failed`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayedPushAnswer {
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl std::fmt::Debug for PushConfig {
@@ -88,6 +137,7 @@ impl std::fmt::Debug for PushConfig {
             .field("payload", &self.payload)
             .field("apns", &self.apns)
             .field("fcm", &self.fcm)
+            .field("relay", &self.relay)
             .finish()
     }
 }
@@ -97,6 +147,8 @@ impl std::fmt::Debug for PushConfig {
 #[serde(deny_unknown_fields)]
 pub struct ApnsConfig {
     pub team_id: String,
+    /// Required with a key; a relaying site has none.
+    #[serde(default)]
     pub key_id: String,
     /// The `.p8` key: inline (sealed, or `${NAME}`) or in a file.
     #[serde(default)]
@@ -172,9 +224,43 @@ pub enum PushRefusal {
 }
 
 impl PushConfig {
-    /// Each entry has its key, and something to push to.
+    /// Each entry has its key, and something to push to; a relaying site's
+    /// entries have none.
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(relay) = &self.relay {
+            if relay.url.is_empty() {
+                return Err("[push.relay] url is empty".into());
+            }
+            let keyed = self
+                .apns
+                .iter()
+                .any(|a| a.key.is_some() || a.key_file.is_some() || a.endpoint.is_some())
+                || self.fcm.iter().any(|f| {
+                    f.service_account.is_some()
+                        || f.service_account_file.is_some()
+                        || f.endpoint.is_some()
+                });
+            if keyed {
+                return Err(
+                    "[push.relay]: the cloud holds the keys; list the apps without key, key_file, service_account or endpoint"
+                        .into(),
+                );
+            }
+            if let Some(apns) = self.apns.iter().find(|a| a.topics.is_empty()) {
+                return Err(format!(
+                    "[[push.apns]] team {}: topics is empty",
+                    apns.team_id
+                ));
+            }
+            return self.check_expires();
+        }
         for apns in &self.apns {
+            if apns.key_id.is_empty() {
+                return Err(format!(
+                    "[[push.apns]] team {}: key_id is empty",
+                    apns.team_id
+                ));
+            }
             if apns.key.is_some() == apns.key_file.is_some() {
                 return Err(format!(
                     "[[push.apns]] team {}: set one of key and key_file",
@@ -196,6 +282,10 @@ impl PushConfig {
                 ));
             }
         }
+        self.check_expires()
+    }
+
+    fn check_expires(&self) -> Result<(), String> {
         if self.max_expires == Some(0) {
             return Err("[push] max_expires must be above zero".into());
         }
@@ -343,6 +433,53 @@ mod tests {
         let shown = format!("{:?}", config());
         assert!(!shown.contains("secret"), "{shown}");
         assert!(toml::from_str::<PushConfig>("unknown = 1").is_err());
+    }
+
+    #[test]
+    fn a_site_lists_the_apps_without_keys_and_relays() {
+        let site: PushConfig = toml::from_str(
+            r#"
+            [relay]
+            url = "http://fcp-link:8090/push"
+            token = "secret-token"
+
+            [[apns]]
+            team_id = "ABCDE12345"
+            topics = ["com.thevoiceguy.anvil.voip"]
+
+            [[fcm]]
+            project_id = "anvil-12345"
+            "#,
+        )
+        .unwrap();
+        assert!(site.validate().is_ok(), "{:?}", site.validate());
+        assert_eq!(site.providers(), ["apns", "fcm"]);
+        let token = "0123456789abcdef0123";
+        assert_eq!(site.check(&address("fcm", "anvil-12345", token)), Ok(()));
+        assert!(!format!("{site:?}").contains("secret-token"));
+        // Keys at a site are refused: they stay in the cloud.
+        let keyed: PushConfig = toml::from_str(
+            r#"
+            [relay]
+            url = "http://fcp-link:8090/push"
+            [[fcm]]
+            project_id = "anvil-12345"
+            service_account_file = "/etc/fcp/fcm.json"
+            "#,
+        )
+        .unwrap();
+        assert!(keyed.validate().is_err());
+        // Without a relay, a team needs its key's id.
+        let no_key_id: PushConfig = toml::from_str(
+            r#"
+            [[apns]]
+            team_id = "T"
+            key = "k"
+            topics = ["a.voip"]
+            "#,
+        )
+        .unwrap();
+        assert!(no_key_id.validate().is_err());
     }
 
     #[test]

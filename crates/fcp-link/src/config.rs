@@ -155,6 +155,11 @@ pub struct SiteConfig {
     /// firmware.
     #[serde(default)]
     pub firmware_dir: Option<String>,
+    /// What the site's call managers carry to the link's `/push` (their
+    /// `[push.relay] token`), whose pushes the link sends up for the cloud
+    /// to send (`docs/PUSH.md` §2.4). Unset, the link relays none.
+    #[serde(default)]
+    pub push_token: Option<String>,
 }
 
 fn default_heartbeat_ttl_secs() -> u64 {
@@ -180,6 +185,7 @@ impl Default for SiteConfig {
             file_roots: Vec::new(),
             forward_events: true,
             firmware_dir: None,
+            push_token: None,
         }
     }
 }
@@ -268,6 +274,14 @@ pub fn validate_config(config: &LinkFileConfig) -> Result<()> {
     }
     if config.site.max_connections == 0 {
         anyhow::bail!("site.max_connections must be greater than zero");
+    }
+    if config
+        .site
+        .push_token
+        .as_deref()
+        .is_some_and(|t| t.trim().is_empty())
+    {
+        anyhow::bail!("site.push_token is empty: set it, or leave it out to relay no pushes");
     }
     if config.site.feed_wait_secs > 30 {
         anyhow::bail!("site.feed_wait_secs is at most 30, the longest the cloud holds the feed");

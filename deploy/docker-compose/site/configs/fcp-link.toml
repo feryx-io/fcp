@@ -28,6 +28,9 @@ file_roots = ["/var/lib/fcp/call-manager"]
 # The firmware the tenant's targets name, fetched from the cloud and kept
 # where the site's admin serves it (docs/PROVISIONING.md §11).
 firmware_dir = "/var/lib/fcp/firmware"
+# The call manager's pushes, sent up for the cloud to send (docs/PUSH.md
+# §2.4): FCP_LINK_PUSH_TOKEN, the call manager's [push.relay] token.
+# Unset, the link relays none.
 
 [health]
 bind_address = "0.0.0.0:8096"
