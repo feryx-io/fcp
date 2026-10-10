@@ -66,6 +66,30 @@ being woken no longer falls back to a direct lookup) keeps one wait. The
 testkit's `Phone::new_app` names its instance, registers its push address
 (`set_push`) and can `sleep` (siphon-rs `TlsPool::close_all`).
 
+Phase P4a done (v0.25.380): a phone's flow on another node. A node that
+takes a REGISTER over a flow notes whose binding it carries
+(`FlowRegistry::set_owner`). At ring time `SipMessageHandler::classify_bindings`
+(which replaced `split_wakeable`) rings a binding through the node holding its
+flow when that node is in the cluster (`with_node_sip_address`, from the
+members' heartbeats): the INVITE goes to that node's SIP address with the
+flow's token in `X-FCP-Flow`, the phone's contact in `X-FCP-Flow-Contact`
+and the call's id in `X-FCP-Call-Id`. The flow token is the receiving node's
+own, never shown to a phone, so it is the relay's credential. The receiving
+node checks the flow is live and its own, takes the call as the
+registration's tenant's without a digest, admission, billing or class of
+service, and sends it down the flow and nowhere else. The leg is
+`Call::relay_for`, so it writes no record, publishes no call events and
+counts no parties: the call's node does all three. A flow that is gone gets
+RFC 5626's 430 Flow Failed. An app with a push address whose flow is on
+another node is a deferred target in the call's wait (`PushWaits::begin`
+takes `(row, deferred)`): it is pushed only on that 430 (`undefer`), and is
+let go when its node reached the phone or could not be asked (`forgo`). An
+app woken and back at another node (`LateContact::flow_node`) is rung
+through that node too. Two tests in `fcp-call-manager/tests/push.rs` cover
+this on two nodes sharing a database and Redis: an awake app on node B
+answers a call placed on node A, with exactly one record; and an app asleep
+on node B is pushed on B's 430, re-registers at B, and answers through it.
+
 ## 1. What FCP has, and what it lacks
 
 Nothing of push exists in FCP or siphon-rs: no `pn-*` parameter, no

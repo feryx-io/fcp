@@ -310,6 +310,13 @@ impl CallManager {
         let Some(events) = &self.events else {
             return;
         };
+        // A relayed leg's events are its call's node's to tell.
+        if let Some(id) = event.call_id() {
+            let id = CallId::from_uuid(*id.as_uuid());
+            if self.calls.get(&id).is_some_and(|c| c.relay_for.is_some()) {
+                return;
+            }
+        }
         let events = Arc::clone(events);
         tokio::spawn(async move {
             if let Err(e) = events.publish(event).await {
@@ -513,8 +520,9 @@ impl CallManager {
             "Creating new call"
         );
 
-        // Publish CallEvent::Initiated
-        if let Some(events) = &self.events {
+        // Publish CallEvent::Initiated (not for a relayed leg: its call's
+        // node announces the call)
+        if let Some(events) = self.events.as_ref().filter(|_| call.relay_for.is_none()) {
             let event = PlatformEvent::Call(CallEvent::Initiated {
                 call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
                 tenant_id: call.tenant_id,
@@ -604,7 +612,11 @@ impl CallManager {
         );
 
         // Publish state change events
-        if let Some(events) = &self.events {
+        if let Some(events) = self
+            .events
+            .as_ref()
+            .filter(|_| updated_call.relay_for.is_none())
+        {
             let node_id = self.node_id.clone();
             let should_publish = match (old_state, new_state) {
                 // Ringing: transition to Proceeding
@@ -759,7 +771,7 @@ impl CallManager {
         );
 
         // Publish termination event
-        if let Some(events) = &self.events {
+        if let Some(events) = self.events.as_ref().filter(|_| call.relay_for.is_none()) {
             let node_id = self.node_id.clone();
             let event = match call.state {
                 CallState::Terminated => {
@@ -829,8 +841,9 @@ impl CallManager {
 
         self.complete_emergency(&call);
 
-        // The call's record, off the call path through the writer.
-        if let Some(writer) = &self.cdr {
+        // The call's record, off the call path through the writer (a
+        // relayed leg is its call's node's to record).
+        if let (Some(writer), None) = (&self.cdr, &call.relay_for) {
             writer.write(self.record_for(&call));
         }
 

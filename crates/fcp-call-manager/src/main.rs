@@ -1566,8 +1566,14 @@ async fn run() -> Result<()> {
     .with_call_signer(call_signer.clone())
     .with_call_recorder(Arc::clone(&call_recorder));
     #[cfg(feature = "storage-redis")]
-    if let Some((_, _, selector)) = &_cluster_manager {
+    if let Some((cm, _, selector)) = &_cluster_manager {
         handler = handler.with_conference_node_selector(Arc::clone(selector));
+        // A phone's flow on another node is reached through that node
+        // (`docs/PUSH.md` §2.4).
+        let members = Arc::clone(cm.members_map());
+        handler = handler.with_node_sip_address(Arc::new(move |node: &str| {
+            members.get(node).map(|m| m.sip_address)
+        }));
     }
 
     // Set up SIP trace channel for raw message capture to PostgreSQL

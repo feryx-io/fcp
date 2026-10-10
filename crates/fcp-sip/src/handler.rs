@@ -428,6 +428,9 @@ struct TargetContact {
     /// identity, its session timer (`docs/TENANT_TRUNKS.md` §6). Nothing
     /// for a registered contact, which no trunk carries.
     egress: crate::trunk_egress::TrunkEgress,
+    /// Reached through the node holding its flow (`docs/PUSH.md` §2.4):
+    /// that node's SIP address and the flow's token.
+    relay: Option<(String, String)>,
 }
 
 /// Legs a fork gains while it runs: the apps it woke, as they come back
@@ -562,6 +565,15 @@ pub struct SipMessageHandler {
     /// node's SIP URI, the one destination its B-leg is sent to, and the
     /// handoff token the INVITE carries.
     sca_handoff_targets: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, (String, String)>>,
+    /// Relayed legs' destinations: the phone's contact and the flow
+    /// (`docs/PUSH.md` §2.4).
+    flow_relay_targets: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, (String, String)>>,
+    /// Where each node takes SIP, by node id: what a call to a phone whose
+    /// flow another node holds is relayed to (`docs/PUSH.md` §2.4).
+    node_sip_address: Option<NodeSipAddress>,
+    /// Per call: the bindings whose flow another node holds, by contact,
+    /// with that node and the flow.
+    flow_relays: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, FlowRelays>>,
     /// Edges whose caller headers are believed (`[e911] trusted_edges`).
     trusted_edges: crate::emergency::TrustedEdges,
     /// What reaches this node's SIP port, and what a flood of it costs
@@ -1019,6 +1031,9 @@ impl SipMessageHandler {
             mwi_subscriptions: None,
             supervisions: None,
             sca_handoff_targets: Arc::new(dashmap::DashMap::new()),
+            flow_relay_targets: Arc::new(dashmap::DashMap::new()),
+            node_sip_address: None,
+            flow_relays: Arc::new(dashmap::DashMap::new()),
             trusted_edges: Default::default(),
             edge_guard: None,
             vouch_client_address: false,
@@ -1280,32 +1295,55 @@ impl SipMessageHandler {
         )
     }
 
+    /// Where each node takes SIP, by node id (the cluster's members): what
+    /// a call to a phone whose flow another node holds is relayed to
+    /// (`docs/PUSH.md` §2.4).
+    pub fn with_node_sip_address(mut self, address: NodeSipAddress) -> Self {
+        self.node_sip_address = Some(address);
+        self
+    }
+
     /// Wake phone apps with these keys (`[push]`, `docs/PUSH.md`).
     pub fn with_push(mut self, push: Option<Arc<fcp_push::PushSender>>) -> Self {
         self.push = push;
         self
     }
 
-    /// The bindings among `contacts` to wake rather than ring
-    /// (`docs/PUSH.md` §2.2): a push address and no flow this node can
-    /// send down. A binding whose flow another node holds is that node's
-    /// to reach; one with a live flow here rings as any phone does.
-    async fn split_wakeable(
+    /// How each of `contacts` is reached (`docs/PUSH.md` §2.2, §2.4):
+    /// rung (a live flow here, no flow, or no way to wake it); rung through
+    /// the node holding its flow, recorded for the call; or woken by push —
+    /// at once, or (its flow on another node) only if that node says the
+    /// flow is gone. The rung, and the bindings to wake with whether each
+    /// is deferred.
+    async fn classify_bindings(
         &self,
+        call_id: fcp_b2bua_core::CallId,
         tenant_id: &fcp_core::TenantId,
         contacts: Vec<sip_registrar::Binding>,
     ) -> (
         Vec<sip_registrar::Binding>,
-        Vec<fcp_core::storage::Registration>,
+        Vec<(fcp_core::storage::Registration, bool)>,
     ) {
-        let (Some(_), Some(registrar)) = (&self.push, &self.registrar) else {
+        let Some(registrar) = &self.registrar else {
             return (contacts, Vec::new());
         };
         let mut rows: std::collections::HashMap<String, Vec<fcp_core::storage::Registration>> =
             std::collections::HashMap::new();
         let mut ring = Vec::new();
         let mut wake = Vec::new();
+        let mut relays = std::collections::HashMap::new();
         for binding in contacts {
+            let flow_here = binding
+                .flow_token()
+                .is_some_and(|t| self.flow_registry.is_valid(t));
+            // The stored row is wanted only for a binding that may be woken
+            // or reached through another node.
+            let elsewhere =
+                !flow_here && binding.flow_token().is_some() && self.node_sip_address.is_some();
+            if flow_here || (self.push.is_none() && !elsewhere) {
+                ring.push(binding);
+                continue;
+            }
             let aor = binding.aor().to_string();
             if !rows.contains_key(&aor) {
                 let found = registrar
@@ -1318,20 +1356,31 @@ impl SipMessageHandler {
                 .iter()
                 .find(|r| r.contact == binding.contact())
                 .cloned();
-            let wakeable = row.as_ref().is_some_and(|row| {
-                row.push.is_some()
-                    && !binding
-                        .flow_token()
-                        .is_some_and(|t| self.flow_registry.is_valid(t))
-                    && row
-                        .flow_node
-                        .as_deref()
-                        .is_none_or(|node| node == self.node_id)
-            });
-            match row {
-                Some(row) if wakeable => wake.push(row),
+            let wakeable = self.push.is_some() && row.as_ref().is_some_and(|r| r.push.is_some());
+            // Its flow on another node this node can reach.
+            let relay = match (&row, binding.flow_token(), &self.node_sip_address) {
+                (Some(row), Some(token), Some(address)) => row
+                    .flow_node
+                    .as_deref()
+                    .filter(|node| *node != self.node_id)
+                    .and_then(|node| address(node))
+                    .map(|at| (at.to_string(), token.to_string())),
+                _ => None,
+            };
+            match (relay, row) {
+                (Some(relay), row) => {
+                    relays.insert(binding.contact().to_string(), relay);
+                    if let (true, Some(row)) = (wakeable, row) {
+                        wake.push((row, true));
+                    }
+                    ring.push(binding);
+                }
+                (None, Some(row)) if wakeable => wake.push((row, false)),
                 _ => ring.push(binding),
             }
+        }
+        if !relays.is_empty() {
+            self.flow_relays.insert(call_id, relays);
         }
         (ring, wake)
     }
@@ -1357,27 +1406,31 @@ impl SipMessageHandler {
         .caller(caller_number(request), name)
     }
 
-    /// Push to the bindings a call waits for: how many the providers took.
+    /// Push to the bindings a call is to push now: how many the providers
+    /// took. One not taken will not come back.
     async fn push_waiting(&self, call_id: fcp_b2bua_core::CallId) -> usize {
         let (Some(sender), Some(registrar)) = (&self.push, &self.registrar) else {
             return 0;
         };
-        let Some((targets, message)) = self.push_waits.targets(&call_id) else {
+        let Some((targets, message)) = self.push_waits.take_to_push(&call_id) else {
             return 0;
         };
-        let results = crate::push::push_bindings(sender, registrar, &targets, &message, None).await;
+        if targets.is_empty() {
+            return 0;
+        }
+        let rows: Vec<_> = targets.iter().map(|(_, row)| row.clone()).collect();
+        let results = crate::push::push_bindings(sender, registrar, &rows, &message, None).await;
         let sent = results.iter().filter(|r| r.outcome == "sent").count();
-        // A push not taken: that app will not come back.
         let failed: Vec<usize> = results
             .iter()
-            .enumerate()
-            .filter(|(_, r)| r.outcome != "sent")
-            .map(|(i, _)| i)
+            .zip(&targets)
+            .filter(|(r, _)| r.outcome != "sent")
+            .map(|(_, (i, _))| *i)
             .collect();
         self.push_waits.abandon(&call_id, &failed);
         info!(
             call_id = %call_id,
-            pushed = targets.len(),
+            pushed = rows.len(),
             sent,
             "Woke the callee's sleeping apps"
         );
@@ -1395,6 +1448,9 @@ impl SipMessageHandler {
         let Some(registrar) = &self.registrar else {
             return;
         };
+        // From the store: this node's cache learns of the REGISTER from
+        // the same event, perhaps after this.
+        registrar.forget_registration(tenant_id, aor);
         let rows = registrar
             .get_registration_rows_in_tenant(tenant_id, aor)
             .await
@@ -2958,7 +3014,44 @@ impl SipMessageHandler {
         // A leg this node placed to itself, continuing one of its calls (a
         // transfer or a forward): the call's tenant's, and admitted without
         // a digest — the node checked the caller when it placed the leg.
-        let own_leg_tenant = if edge_caller.is_none() {
+        // A call another node relays down a phone's flow this node holds
+        // (`docs/PUSH.md` §2.4). The flow's token is this node's own, which
+        // only a node that read the binding knows; it stands for the
+        // phone's registration, which this node took. The call is that
+        // registration's tenant's and goes to the phone and nowhere else; a
+        // flow gone is RFC 5626's 430, so the sender can wake the phone.
+        let flow_relay = match sip_parse::header(request.headers(), crate::push::FLOW_RELAY_HEADER)
+        {
+            None => None,
+            Some(token) => {
+                let contact =
+                    sip_parse::header(request.headers(), crate::push::FLOW_RELAY_CONTACT_HEADER)
+                        .map(|c| c.as_str().trim().to_string());
+                let live = self
+                    .flow_registry
+                    .lookup(token.as_str())
+                    .filter(|f| !f.stream.is_closed())
+                    .and_then(|f| f.owner);
+                match (live, contact) {
+                    (Some((tenant, _aor)), Some(contact)) => Some(crate::push::FlowRelay {
+                        tenant,
+                        token: token.to_string(),
+                        contact,
+                        for_call: sip_parse::header(request.headers(), fcp_core::CALL_ID_HEADER)
+                            .and_then(|v| v.as_str().trim().parse().ok()),
+                    }),
+                    _ => {
+                        info!(source = %peer, "Refusing a relay down a flow this node does not hold");
+                        let response = self.create_simple_response(request, 430, "Flow Failed");
+                        handle.send_final(response).await;
+                        return Ok(());
+                    }
+                }
+            }
+        };
+        let own_leg_tenant = if let Some(relay) = &flow_relay {
+            Some(relay.tenant)
+        } else if edge_caller.is_none() {
             self.own_leg_tenant(request, peer)
         } else {
             None
@@ -3346,7 +3439,8 @@ impl SipMessageHandler {
         // is never refused for balance.
 
         let mut billing_max_duration: Option<Duration> = None;
-        if let (Some(billing), None) = (&self.billing, &emergency) {
+        // (A relayed leg is its call's node's to charge for.)
+        if let (Some(billing), None, None) = (&self.billing, &emergency, &flow_relay) {
             let destination = sip_parse::header(request.headers(), "To")
                 .map(|to| {
                     let to = to.as_str();
@@ -3409,9 +3503,18 @@ impl SipMessageHandler {
         // Refer-To this B2BUA relayed (see handle_refer).
         call.correlation_id = sip_parse::header(request.headers(), TRANSFERRED_FROM_HEADER)
             .and_then(|v| v.as_str().trim().parse::<fcp_core::CallId>().ok());
+        // A relayed leg: its call's node records and announces the call.
+        if let Some(relay) = &flow_relay {
+            call.relay_for = Some(relay.for_call.unwrap_or_default());
+        }
 
         // Store call in CallManager
         let call_id = self.call_manager.create_call(call);
+        if let Some(relay) = &flow_relay {
+            info!(call_id = %call_id, for_call = ?relay.for_call, "A call relayed down a flow this node holds");
+            self.flow_relay_targets
+                .insert(call_id, (relay.contact.clone(), relay.token.clone()));
+        }
 
         // The caller's class of service (`docs/ENTERPRISE_CALLING.md` §3.7):
         // what a user may dial, and how many calls they may be on. Not an
@@ -3422,6 +3525,7 @@ impl SipMessageHandler {
         if emergency.is_none()
             && inbound_trunk.is_none()
             && !forwarded_leg
+            && flow_relay.is_none()
             && !edge_caller.as_ref().is_some_and(|e| e.is_site())
         {
             let caller = edge_caller
@@ -3464,7 +3568,7 @@ impl SipMessageHandler {
         // What this node and this tenant will carry
         // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). Checked before the
         // work of a call, and never for an emergency call.
-        if let (Some(admission), None) = (&self.admission, &emergency) {
+        if let (Some(admission), None, None) = (&self.admission, &emergency, &flow_relay) {
             if let Err(refusal) = admission.admit(&call_id.to_string(), &tenant_id).await {
                 info!(
                     call_id = %call_id,
@@ -3611,6 +3715,19 @@ impl SipMessageHandler {
         // The user placing the call, if one of the tenant's is: the call
         // counts against them while it is up (`docs/ENTERPRISE_CALLING.md`
         // §3.4).
+        // A relayed leg goes down its flow, and is nothing else here
+        // (`docs/PUSH.md` §2.4).
+        if flow_relay.is_some() {
+            if let Some(uac) = &self.uac {
+                return Box::pin(self.forward_invite_to_b_leg(
+                    request,
+                    handle,
+                    call_id,
+                    uac.clone(),
+                ))
+                .await;
+            }
+        }
         self.note_caller_user(request, &call_id).await;
 
         // A call the API redirected into a flow, dialed back by this node
@@ -5061,9 +5178,28 @@ impl SipMessageHandler {
             (None, Vec::new())
         };
 
-        let destination_contacts = if let Some(node_uri) =
-            self.sca_handoff_targets.get(&call_id).map(|t| t.0.clone())
+        let destination_contacts = if let Some((_, (contact, token))) =
+            self.flow_relay_targets.remove(&call_id)
         {
+            // A relayed leg goes down the flow it names
+            // (`docs/PUSH.md` §2.4), to the phone and nowhere else.
+            match sip_registrar::Binding::new(
+                SmolStr::new(destination_aor),
+                SmolStr::new(format!("<{contact}>")),
+                Duration::from_secs(3600),
+            ) {
+                Ok(binding) => vec![binding.with_flow_token(SmolStr::new(token))],
+                Err(e) => {
+                    warn!(call_id = %call_id, contact = %contact, error = %e, "A relay's contact is not a SIP URI");
+                    let response = self.create_simple_response(request, 430, "Flow Failed");
+                    a_leg_handle.send_final(response).await;
+                    let _ = self
+                        .call_manager
+                        .terminate_call(&call_id, Some("relay: bad contact".into()));
+                    return Ok(());
+                }
+            }
+        } else if let Some(node_uri) = self.sca_handoff_targets.get(&call_id).map(|t| t.0.clone()) {
             // A retrieve of an appearance held on another node goes there,
             // carrying its handoff (§3.9).
             match sip_registrar::Binding::new(
@@ -6747,13 +6883,23 @@ impl SipMessageHandler {
                         .unwrap_or(contact_str)
                         .to_string()
                 };
+                // Its flow on another node: rung through that node.
+                let relay = self
+                    .flow_relays
+                    .get(&call_id)
+                    .and_then(|r| r.get(contact_str).cloned());
                 TargetContact {
                     uri,
-                    flow_token: contact.flow_token().map(|s: &str| s.to_string()),
+                    flow_token: match relay {
+                        Some(_) => None,
+                        None => contact.flow_token().map(|s: &str| s.to_string()),
+                    },
                     egress: crate::trunk_egress::TrunkEgress::none(),
+                    relay,
                 }
             })
             .collect();
+        self.flow_relays.remove(&call_id);
 
         // Deduplicate contacts by host:port to avoid sending multiple INVITEs to
         // the same physical device. Softphones like Zoiper register multiple
@@ -7304,7 +7450,11 @@ impl SipMessageHandler {
         // The callee's sleeping apps (`docs/PUSH.md` §2.2): pushed now if
         // live phones ring too (with nothing else to ring, the plan pushed
         // already), and their fork takes each as it comes back.
-        let push_now = self.push_waits.has(&call_id) && !target_contacts.is_empty();
+        let push_now = self.push_waits.has_to_push(&call_id) && !target_contacts.is_empty();
+        let relay_tokens: Vec<String> = target_contacts
+            .iter()
+            .filter_map(|t| t.relay.as_ref().map(|(_, token)| token.clone()))
+            .collect();
         let late = if self.push_waits.has(&call_id) {
             let (tx, rx) = tokio::sync::mpsc::channel(8);
             self.push_waits.attach(&call_id, tx);
@@ -7328,6 +7478,16 @@ impl SipMessageHandler {
             }
         });
         let b_leg_calls: Vec<_> = results.into_iter().flatten().collect();
+        // A relay that could not be sent: its node is not asked, and the
+        // phone is not woken for it.
+        for token in &relay_tokens {
+            if !b_leg_calls
+                .iter()
+                .any(|(target, ..)| crate::push::relay_token(target) == Some(token.as_str()))
+            {
+                self.push_waits.forgo(&call_id, token);
+            }
+        }
 
         // Clear caller identity overrides after INVITEs sent
         uac.inner().set_display_name(None).await;
@@ -7413,7 +7573,12 @@ impl SipMessageHandler {
         emergency_headers_clone: Option<sip_core::Headers>,
         call_id_clone: fcp_b2bua_core::CallId,
     ) -> Option<(String, Arc<crate::uac::OutboundCall>, Option<String>)> {
-        let target_uri_clone = target_contact.uri.clone();
+        // Reached through the node holding its flow (`docs/PUSH.md` §2.4):
+        // sent to that node, naming the flow and the phone.
+        let target_uri_clone = match &target_contact.relay {
+            Some((at, token)) => format!("sip:{at};{}={token}", crate::push::FLOW_RELAY_URI_PARAM),
+            None => target_contact.uri.clone(),
+        };
         let flow_token_clone = target_contact.flow_token.clone();
         let egress = target_contact.egress.clone();
         let header_rules = self.header_rules.clone();
@@ -7445,6 +7610,20 @@ impl SipMessageHandler {
             .and_then(|c| c.leg_alert_info)
         {
             let _ = extra_headers.push(SmolStr::new("Alert-Info"), SmolStr::new(alert));
+        }
+        if let Some((_, token)) = &target_contact.relay {
+            let _ = extra_headers.push(
+                SmolStr::new(crate::push::FLOW_RELAY_HEADER),
+                SmolStr::new(token.as_str()),
+            );
+            let _ = extra_headers.push(
+                SmolStr::new(crate::push::FLOW_RELAY_CONTACT_HEADER),
+                SmolStr::new(target_contact.uri.as_str()),
+            );
+            let _ = extra_headers.push(
+                SmolStr::new(fcp_core::CALL_ID_HEADER),
+                SmolStr::new(call_id_clone.to_string()),
+            );
         }
         // A retrieve handed to the node holding the call carries the
         // appearance's handoff token (§3.9).
@@ -8284,10 +8463,27 @@ impl SipMessageHandler {
                     // A woken app is back: it rings like the others.
                     Step::Late(Some(contact)) => {
                         let Some(ready) = late.as_ref() else { continue };
+                        // Back at another node: rung through it.
+                        let relay = match (
+                            &contact.flow_node,
+                            &contact.flow_token,
+                            &self.node_sip_address,
+                        ) {
+                            (Some(node), Some(token), Some(address))
+                                if *node != self.node_id && !self.flow_registry.is_valid(token) =>
+                            {
+                                address(node).map(|at| (at.to_string(), token.clone()))
+                            }
+                            _ => None,
+                        };
                         let target = TargetContact {
                             uri: contact.uri,
-                            flow_token: contact.flow_token,
+                            flow_token: match relay {
+                                Some(_) => None,
+                                None => contact.flow_token,
+                            },
                             egress: crate::trunk_egress::TrunkEgress::none(),
+                            relay,
                         };
                         if let Some(leg) = self
                             .send_b_leg_invite(
@@ -8327,6 +8523,23 @@ impl SipMessageHandler {
                     }
                 };
 
+                // The node holding a phone's flow says it is gone (430): an
+                // app is woken instead (`docs/PUSH.md` §2.4).
+                // Anything else from it: the phone was reached there, and
+                // is not woken.
+                if let Ok(Some((_, target, code, ..))) = &result {
+                    if let Some(token) = crate::push::relay_token(target) {
+                        if *code == 430 && self.push_waits.undefer(&call_id, token).is_some() {
+                            info!(call_id = %call_id, "A phone's flow on another node is gone: waking it");
+                            let handler = self.clone();
+                            tokio::spawn(async move {
+                                handler.push_waiting(call_id).await;
+                            });
+                        } else {
+                            self.push_waits.forgo(&call_id, token);
+                        }
+                    }
+                }
                 match result {
                     Ok(Some((i, target, code, response, handle, flow_token))) => {
                         debug!(
@@ -11224,6 +11437,24 @@ impl SipMessageHandler {
                 // keep the address it came from with the binding: a device
                 // that moves is placed by where it is (docs/E911_BLOCK_2.md
                 // §6.2).
+                // Whose binding the flow carries: what a call another node
+                // relays down it is trusted for (`docs/PUSH.md` §2.4). Noted
+                // before the REGISTER is handled, since the binding is
+                // announced as it is stored and another node may relay a
+                // call at once; the token is known to no other node until a
+                // REGISTER stores it, and a challenged one is let go below.
+                if let Some(token) = &flow_token {
+                    let aor = sip_parse::header(request.headers(), "To")
+                        .and_then(sip_parse::parse_to_header)
+                        .map(|to| {
+                            sip_registrar::normalize_aor(to.inner().uri())
+                                .unwrap_or_else(|_| to.inner().uri().to_string())
+                        });
+                    if let (Some(aor), Some(tenant)) = (aor, registrar.caller_tenant(request).await)
+                    {
+                        self.flow_registry.set_owner(token, tenant, aor);
+                    }
+                }
                 let response = registrar
                     .handle_register_from(request, flow_token.as_deref(), Some(peer_addr))
                     .await;
@@ -15790,7 +16021,7 @@ impl SipMessageHandler {
                 // Apps asleep are woken by push rather than rung
                 // (`docs/PUSH.md` §2.2); the fork takes them when they
                 // come back.
-                let (contacts, wake) = self.split_wakeable(tenant_id, contacts).await;
+                let (contacts, wake) = self.classify_bindings(call_id, tenant_id, contacts).await;
                 if !wake.is_empty() {
                     self.push_waits.begin(
                         call_id,
@@ -17825,6 +18056,13 @@ fn spawn_provisional_listener(
         }
     });
 }
+
+/// Where a node takes SIP, by node id (`docs/PUSH.md` §2.4).
+pub type NodeSipAddress = Arc<dyn Fn(&str) -> Option<std::net::SocketAddr> + Send + Sync>;
+
+/// A call's bindings reached through another node, by contact: that node's
+/// SIP address and the flow's token.
+type FlowRelays = std::collections::HashMap<String, (String, String)>;
 
 /// A fork's leg: its target, its INVITE, the flow it went down.
 type BLeg = (String, Arc<crate::uac::OutboundCall>, Option<String>);

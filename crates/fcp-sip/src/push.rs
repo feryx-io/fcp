@@ -128,6 +128,38 @@ pub async fn test_device(
     .await
 }
 
+// ===== A phone's flow on another node (`docs/PUSH.md` §2.4) =====
+
+/// The flow token a node relays a call down: one of the receiving node's
+/// own, which only a node that read the binding can know.
+pub const FLOW_RELAY_HEADER: &str = "X-FCP-Flow";
+
+/// The phone's contact, which the relayed leg is sent to.
+pub const FLOW_RELAY_CONTACT_HEADER: &str = "X-FCP-Flow-Contact";
+
+/// The Request-URI parameter naming the flow a relay leg is for, so a 430
+/// that comes back can be told apart.
+pub const FLOW_RELAY_URI_PARAM: &str = "fcp-flow";
+
+/// A call relayed to this node down a flow it holds.
+#[derive(Debug, Clone)]
+pub struct FlowRelay {
+    /// The flow's registration's tenant: the call is theirs.
+    pub tenant: fcp_core::TenantId,
+    pub token: String,
+    pub contact: String,
+    /// The call it is a leg of, on the node that sent it.
+    pub for_call: Option<fcp_core::CallId>,
+}
+
+/// The flow token in a relay leg's Request-URI, if it is one.
+pub fn relay_token(target: &str) -> Option<&str> {
+    target
+        .split(';')
+        .skip(1)
+        .find_map(|p| p.strip_prefix(FLOW_RELAY_URI_PARAM)?.strip_prefix('='))
+}
+
 // ===== Ringing a sleeping app (`docs/PUSH.md` §2.2) =====
 
 /// A woken app's new binding, for its call's fork to ring.
@@ -135,24 +167,43 @@ pub async fn test_device(
 pub struct LateContact {
     /// The URI to send the INVITE to.
     pub uri: String,
-    /// Its RFC 5626 flow, when it came over one.
+    /// Its RFC 5626 flow, when it came over one, and the node holding it.
     pub flow_token: Option<String>,
+    pub flow_node: Option<String>,
+}
+
+/// One binding a call may wake.
+struct WakeTarget {
+    /// As it was stored when the call began.
+    row: Registration,
+    /// Its flow is on another node, which the call reaches first; it is
+    /// pushed only if that node says the flow is gone (430).
+    deferred: bool,
+    pushed: bool,
+    /// Back (its new binding went to the fork), or never coming (its push
+    /// was not taken).
+    done: bool,
 }
 
 /// One call's wait for the apps it woke.
 struct CallWake {
     tenant_id: fcp_core::TenantId,
     message: PushMessage,
-    /// The bindings pushed, as they were stored.
-    targets: Vec<Registration>,
-    /// Whether each target's app has come back.
-    delivered: Vec<bool>,
+    targets: Vec<WakeTarget>,
     /// The call's fork, once it runs; what came back before it did waits.
     late: Option<tokio::sync::mpsc::Sender<LateContact>>,
     pending: Vec<LateContact>,
 }
 
-/// The calls waiting for apps they woke, by call.
+impl CallWake {
+    /// Nothing more can come back: every target back or given up (a
+    /// deferred one may yet be pushed, on a 430).
+    fn settled(&self) -> bool {
+        self.targets.iter().all(|t| t.done)
+    }
+}
+
+/// The calls waiting for the apps they woke, by call.
 #[derive(Default)]
 pub struct PushWaits {
     calls: dashmap::DashMap<fcp_b2bua_core::CallId, CallWake>,
@@ -160,16 +211,20 @@ pub struct PushWaits {
 
 /// Whether `row` is the app `target` woke, come back: the same phone (its
 /// instance, or its token) registered again since the binding the push
-/// went to — another REGISTER (its Call-ID and CSeq), or another address.
-/// (Not by time: a store may keep a binding's time to the second.)
+/// went to — over another connection (its flow), another REGISTER (its
+/// Call-ID and CSeq), or from another address. (Not by time: a store may
+/// keep a binding's time to the second. Nor by CSeq alone: an app that
+/// connects again may count from where it began.)
 fn woken_by(target: &Registration, row: &Registration) -> bool {
     let same_instance = target.instance_id.is_some() && row.instance_id == target.instance_id;
     let same_token = match (&target.push, &row.push) {
         (Some(a), Some(b)) => a.prid == b.prid,
         _ => false,
     };
-    let registered_again =
-        row.call_id != target.call_id || row.cseq != target.cseq || row.contact != target.contact;
+    let registered_again = row.flow_token != target.flow_token
+        || row.call_id != target.call_id
+        || row.cseq != target.cseq
+        || row.contact != target.contact;
     (same_instance || same_token) && registered_again
 }
 
@@ -182,32 +237,40 @@ pub fn stored_contact_uri(contact: &str) -> String {
 }
 
 impl PushWaits {
-    /// A call will wait for these apps, pushed with `message`.
+    /// A call may wake these bindings, pushed with `message`: each `true`
+    /// is deferred (its flow is on another node, tried first).
     pub fn begin(
         &self,
         call: fcp_b2bua_core::CallId,
         tenant_id: fcp_core::TenantId,
-        targets: Vec<Registration>,
+        targets: Vec<(Registration, bool)>,
         message: PushMessage,
     ) {
+        let targets = targets.into_iter().map(|(row, deferred)| WakeTarget {
+            row,
+            deferred,
+            pushed: false,
+            done: false,
+        });
         // A call planned twice keeps what it already waits for.
         if let Some(mut wait) = self.calls.get_mut(&call) {
             for target in targets {
-                if !wait.targets.iter().any(|t| t.contact == target.contact) {
+                if !wait
+                    .targets
+                    .iter()
+                    .any(|t| t.row.contact == target.row.contact)
+                {
                     wait.targets.push(target);
-                    wait.delivered.push(false);
                 }
             }
             return;
         }
-        let delivered = vec![false; targets.len()];
         self.calls.insert(
             call,
             CallWake {
                 tenant_id,
                 message,
-                targets,
-                delivered,
+                targets: targets.collect(),
                 late: None,
                 pending: Vec::new(),
             },
@@ -218,14 +281,56 @@ impl PushWaits {
         self.calls.contains_key(call)
     }
 
-    /// The bindings a call is to push, and what to say.
-    pub fn targets(
+    /// Whether the call has bindings to push now (not deferred, not yet
+    /// pushed).
+    pub fn has_to_push(&self, call: &fcp_b2bua_core::CallId) -> bool {
+        self.calls.get(call).is_some_and(|w| {
+            w.targets
+                .iter()
+                .any(|t| !t.deferred && !t.pushed && !t.done)
+        })
+    }
+
+    /// The bindings to push now, marked pushed, by index; and what to say.
+    pub fn take_to_push(
         &self,
         call: &fcp_b2bua_core::CallId,
-    ) -> Option<(Vec<Registration>, PushMessage)> {
-        self.calls
-            .get(call)
-            .map(|w| (w.targets.clone(), w.message.clone()))
+    ) -> Option<(Vec<(usize, Registration)>, PushMessage)> {
+        let mut wait = self.calls.get_mut(call)?;
+        let mut out = Vec::new();
+        for (i, t) in wait.targets.iter_mut().enumerate() {
+            if !t.deferred && !t.pushed && !t.done {
+                t.pushed = true;
+                out.push((i, t.row.clone()));
+            }
+        }
+        Some((out, wait.message.clone()))
+    }
+
+    /// The node holding a deferred binding's flow says it is gone (430):
+    /// it is to be pushed now. Its index and row, when the call has it.
+    pub fn undefer(&self, call: &fcp_b2bua_core::CallId, flow_token: &str) -> Option<usize> {
+        let mut wait = self.calls.get_mut(call)?;
+        let (i, t) = wait.targets.iter_mut().enumerate().find(|(_, t)| {
+            t.deferred && !t.pushed && t.row.flow_token.as_deref() == Some(flow_token)
+        })?;
+        t.deferred = false;
+        Some(i)
+    }
+
+    /// The node holding a deferred binding's flow reached the phone, or
+    /// could not be asked: it is not pushed.
+    pub fn forgo(&self, call: &fcp_b2bua_core::CallId, flow_token: &str) {
+        if let Some(mut wait) = self.calls.get_mut(call) {
+            for t in wait.targets.iter_mut() {
+                if t.deferred && !t.pushed && t.row.flow_token.as_deref() == Some(flow_token) {
+                    t.done = true;
+                }
+            }
+            if wait.settled() {
+                wait.late = None;
+            }
+        }
     }
 
     /// The call's fork is running: apps that come back from now on reach
@@ -239,24 +344,24 @@ impl PushWaits {
             for contact in std::mem::take(&mut wait.pending) {
                 let _ = late.try_send(contact);
             }
-            // Every app already back or given up: the fork's channel closes
-            // once it has what came.
-            if !wait.delivered.iter().all(|d| *d) {
+            // Nothing more to come: the fork's channel closes once it has
+            // what came.
+            if !wait.settled() {
                 wait.late = Some(late);
             }
         }
     }
 
     /// These targets will not come back (their push was not taken): the
-    /// fork stops waiting for them, and is not told of them again.
+    /// fork stops waiting for them.
     pub fn abandon(&self, call: &fcp_b2bua_core::CallId, indices: &[usize]) {
         if let Some(mut wait) = self.calls.get_mut(call) {
             for &i in indices {
-                if let Some(d) = wait.delivered.get_mut(i) {
-                    *d = true;
+                if let Some(t) = wait.targets.get_mut(i) {
+                    t.done = true;
                 }
             }
-            if wait.delivered.iter().all(|d| *d) {
+            if wait.settled() {
                 wait.late = None;
             }
         }
@@ -274,8 +379,7 @@ impl PushWaits {
                 w.tenant_id == *tenant_id
                     && w.targets
                         .iter()
-                        .zip(&w.delivered)
-                        .any(|(t, done)| !done && t.aor == aor)
+                        .any(|t| t.pushed && !t.done && t.row.aor == aor)
             })
             .map(|w| *w.key())
             .collect()
@@ -289,22 +393,23 @@ impl PushWaits {
         };
         let mut found = Vec::new();
         for (i, target) in wait.targets.iter().enumerate() {
-            if wait.delivered[i] {
+            if !target.pushed || target.done {
                 continue;
             }
-            if let Some(row) = rows.iter().find(|row| woken_by(target, row)) {
+            if let Some(row) = rows.iter().find(|row| woken_by(&target.row, row)) {
                 found.push((
                     i,
                     LateContact {
                         uri: stored_contact_uri(&row.contact),
                         flow_token: row.flow_token.clone(),
+                        flow_node: row.flow_node.clone(),
                     },
                 ));
             }
         }
         let n = found.len();
         for (i, contact) in found {
-            wait.delivered[i] = true;
+            wait.targets[i].done = true;
             match &wait.late {
                 Some(late) => {
                     let _ = late.try_send(contact);
@@ -312,23 +417,21 @@ impl PushWaits {
                 None => wait.pending.push(contact),
             }
         }
-        // Every app back: the fork's channel closes once it has them.
-        if wait.delivered.iter().all(|d| *d) {
+        if wait.settled() {
             wait.late = None;
         }
         n
     }
 
-    /// The call is over: the apps it woke that never came back, to be
+    /// The call is over: the apps it pushed that never came back, to be
     /// told so with a cancel push.
     pub fn end(&self, call: &fcp_b2bua_core::CallId) -> Option<(Vec<Registration>, PushMessage)> {
         let (_, wait) = self.calls.remove(call)?;
         let missing = wait
             .targets
             .into_iter()
-            .zip(wait.delivered)
-            .filter(|(_, done)| !done)
-            .map(|(t, _)| t)
+            .filter(|t| t.pushed && !t.done)
+            .map(|t| t.row)
             .collect();
         let mut cancel = wait.message;
         cancel.kind = PushKind::Cancel;
@@ -376,9 +479,11 @@ mod tests {
         waits.begin(
             call,
             fcp_core::TenantId::nil(),
-            vec![asleep.clone()],
+            vec![(asleep.clone(), false)],
             PushMessage::new(PushKind::Call, "c1", "t"),
         );
+        let (to_push, _) = waits.take_to_push(&call).unwrap();
+        assert_eq!(to_push.len(), 1);
         assert_eq!(
             waits.waiting_at(&fcp_core::TenantId::nil(), "sip:alice@x"),
             vec![call]
@@ -427,14 +532,62 @@ mod tests {
         waits.begin(
             call,
             fcp_core::TenantId::nil(),
-            vec![a, b],
+            vec![(a, false), (b, false)],
             PushMessage::new(PushKind::Call, "c1", "t"),
         );
+        waits.take_to_push(&call).unwrap();
         let back = row("<sip:a@198.51.100.4:9>", None, "tok-a", SystemTime::now());
         assert_eq!(waits.deliver(&call, &[back]), 1);
         let (missing, _) = waits.end(&call).unwrap();
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].push.as_ref().unwrap().prid, "tok-b");
         assert!(!waits.has(&call));
+    }
+
+    #[test]
+    fn a_deferred_app_is_pushed_only_when_its_node_says_its_flow_is_gone() {
+        let waits = PushWaits::default();
+        let call = fcp_b2bua_core::CallId::new();
+        let before = SystemTime::now() - Duration::from_secs(60);
+        let mut elsewhere = row("<sip:app@10.0.0.7:1>", Some("<urn:a>"), "tok", before);
+        elsewhere.flow_token = Some("flow-on-b".into());
+        waits.begin(
+            call,
+            fcp_core::TenantId::nil(),
+            vec![(elsewhere.clone(), true)],
+            PushMessage::new(PushKind::Call, "c1", "t"),
+        );
+        // Nothing to push at first, and no cancel for what was never pushed.
+        assert!(!waits.has_to_push(&call));
+        assert!(waits.take_to_push(&call).unwrap().0.is_empty());
+        // Its node answers 430: it is pushed.
+        assert_eq!(waits.undefer(&call, "flow-on-b"), Some(0));
+        assert!(waits.has_to_push(&call));
+        assert_eq!(waits.take_to_push(&call).unwrap().0.len(), 1);
+        assert_eq!(waits.undefer(&call, "flow-on-b"), None);
+        let (missing, _) = waits.end(&call).unwrap();
+        assert_eq!(missing.len(), 1, "pushed and never back: cancelled");
+
+        let quiet = fcp_b2bua_core::CallId::new();
+        waits.begin(
+            quiet,
+            fcp_core::TenantId::nil(),
+            vec![(elsewhere, true)],
+            PushMessage::new(PushKind::Call, "c2", "t"),
+        );
+        let (missing, _) = waits.end(&quiet).unwrap();
+        assert!(missing.is_empty(), "never pushed: nothing to cancel");
+    }
+
+    #[test]
+    fn an_app_back_over_a_new_connection_is_woken_even_with_its_old_cseq() {
+        let before = SystemTime::now() - Duration::from_secs(60);
+        let mut asleep = row("<sip:app@10.0.0.7:1>", Some("<urn:a>"), "tok", before);
+        asleep.flow_token = Some("flow-old".into());
+        // The same REGISTER as far as its headers go, over a new flow.
+        let mut back = asleep.clone();
+        back.flow_token = Some("flow-new".into());
+        assert!(woken_by(&asleep, &back));
+        assert!(!woken_by(&asleep, &asleep.clone()));
     }
 }
