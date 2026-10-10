@@ -29,6 +29,24 @@ device views and the UI. `[push]` is read by the call manager and the
 standalone registrar from the file only (never written to the stored
 sections), and validated at start.
 
+Phase P2 done (v0.25.378): `fcp-push` sends — APNs over HTTP/2 with a
+provider token (ES256, made again every fifty minutes, a refused one
+dropped), FCM's HTTP v1 with the service account's access token (RS256
+assertion, kept until five minutes before it lapses); once, within five
+seconds; `apns-expiration: 0`, FCM's TTL thirty seconds; `payload =
+"minimal"` honoured. A token the provider no longer knows (APNs 410,
+`BadDeviceToken`, `DeviceTokenNotForTopic`; FCM `UNREGISTERED`,
+`NOT_FOUND`) takes the push address off its binding, which stays, and is
+told as `device.push_failed`. `fcp_push_total{provider,kind,outcome}` on
+the call manager's `/metrics`. Sealed keys (`enc:v1:…`) are opened at
+start. `POST /api/v1/devices/{id}/push-test` (`device_update`) reaches the
+first call manager with `[push]` (one without answers 503 and is passed
+over), which sends a `test` push to each of the device's bindings that can
+be woken and says what each did; the Devices page offers it. Stand-ins:
+`fcp_testkit::push::{StandInApns, StandInFcm}`, each checking the
+provider's authentication and headers. Each `[[push.apns]]` and
+`[[push.fcm]]` takes an `endpoint`, for a stand-in.
+
 ## 1. What FCP has, and what it lacks
 
 Nothing of push exists in FCP or siphon-rs: no `pn-*` parameter, no
@@ -177,7 +195,8 @@ requires the app to show the call before it can do anything else:
  "name": "Ann Lee", "tenant": "<tenant id>", "sent": 1791547200}
 ```
 
-`type` is `call` or `cancel`. `[push] payload = "minimal"` leaves out
+`type` is `call`, `cancel` or `test` (an administrator's, which the app
+shows and ends at once). `[push] payload = "minimal"` leaves out
 `from` and `name` (§6 Q3).
 
 - **APNs.** HTTP/2 to `api.push.apple.com` (or the sandbox), token

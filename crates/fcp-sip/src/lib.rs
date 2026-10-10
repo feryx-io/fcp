@@ -38,6 +38,7 @@ pub mod mwi;
 pub mod mwi_subscriptions;
 pub mod presence;
 pub mod presence_checker;
+pub mod push;
 pub mod push_address;
 pub mod queue;
 pub mod recording;

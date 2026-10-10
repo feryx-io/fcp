@@ -225,6 +225,51 @@ impl CallSupervisor for NodeCallSupervisor {
         }
         Err(last_error.unwrap_or_else(|| "no call manager to ask".to_string()))
     }
+
+    /// The first call manager with the publisher's keys sends it: a push
+    /// goes through Apple or Google, so any node will do. One without
+    /// `[push]` (503) passes it on.
+    async fn push_test_device(
+        &self,
+        tenant: TenantId,
+        device_id: &str,
+    ) -> Result<(u16, serde_json::Value), String> {
+        let mut last_error = None;
+        for base in self
+            .nodes_where(|status| status != ClusterNodeStatus::Offline)
+            .await?
+        {
+            let builder = self
+                .http
+                .post(format!("{base}/devices/{device_id}/push-test"))
+                .json(&serde_json::json!({ "tenant_id": tenant }));
+            let builder = match &self.config.auth_token {
+                Some(token) => builder.bearer_auth(token),
+                None => builder,
+            };
+            match builder.send().await {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let body = response
+                        .json::<serde_json::Value>()
+                        .await
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    if status == 503 {
+                        last_error = Some(format!(
+                            "the call manager at {base}: {}",
+                            body["error"].as_str().unwrap_or("unavailable")
+                        ));
+                        continue;
+                    }
+                    return Ok((status, body));
+                }
+                Err(e) => {
+                    last_error = Some(format!("the call manager at {base} did not answer: {e}"))
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| "no call manager to ask".to_string()))
+    }
 }
 
 #[cfg(test)]

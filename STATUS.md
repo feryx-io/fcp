@@ -2134,6 +2134,15 @@ and a new binding from the same instance replaces the old; RFC 8599's
 provider that wakes them. `[push]` on the call manager and the standalone
 registrar.
 
+Push P2, senders (v0.25.378): `fcp-push` sends a VoIP push through APNs
+(HTTP/2, ES256 provider token) and a high-priority data message through
+FCM (HTTP v1, service account), once within five seconds; a token the
+provider no longer knows takes the push address off its binding and is
+told as `device.push_failed`; `fcp_push_total` on `/metrics`;
+`POST /api/v1/devices/{id}/push-test` through the first call manager with
+`[push]`, and on the Devices page; APNs and FCM stand-ins in
+`fcp_testkit::push`.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

@@ -25,7 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The provider's signing key: a throwaway made for these tests, never a
 /// secret of anything.
-const TEST_KEY: &str = "
+pub(crate) const TEST_KEY: &str = "
 -----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDL6aoFM9IcPMws
 CYmvnB0pO5+LCCJa5ngIBsBBwy7W3nFbesNipeOte+3UVFy4GThPuUmjwf8zu/Si

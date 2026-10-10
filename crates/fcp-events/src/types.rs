@@ -741,6 +741,25 @@ pub enum SystemEvent {
         timestamp: SystemTime,
     },
 
+    /// A push to wake a phone app was refused because the provider no
+    /// longer knows its token (`docs/PUSH.md` §2.3): the app was removed
+    /// or its token changed. Its binding loses the push address, so the
+    /// app is not woken again until it registers a new one.
+    DevicePushFailed {
+        tenant_id: TenantId,
+        /// The device, when the node knows it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_id: Option<String>,
+        aor: String,
+        contact: String,
+        /// `apns` or `fcm`.
+        provider: String,
+        /// What the provider said.
+        reason: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// The set of releases the cluster's nodes run changed while there
     /// is, or was, more than one (`docs/BACKUP_AND_RESTORE.md` §5): the
     /// first node of an upgrade started, or the last old one stopped.
@@ -1838,6 +1857,7 @@ impl PlatformEvent {
         "system.version_skew",
         "system.site_link_changed",
         "device.firmware_behind",
+        "device.push_failed",
         "user.created",
         "user.updated",
         "user.deleted",
@@ -1989,6 +2009,7 @@ impl PlatformEvent {
                 SystemEvent::VersionSkew { .. } => "system.version_skew",
                 SystemEvent::SiteLinkChanged { .. } => "system.site_link_changed",
                 SystemEvent::DeviceFirmwareBehind { .. } => "device.firmware_behind",
+                SystemEvent::DevicePushFailed { .. } => "device.push_failed",
             },
             PlatformEvent::User(e) => match e {
                 UserEvent::Created { .. } => "user.created",
@@ -2215,7 +2236,8 @@ impl PlatformEvent {
             },
             PlatformEvent::System(e) => match e {
                 SystemEvent::ConfigChanged { tenant_id, .. }
-                | SystemEvent::DeviceFirmwareBehind { tenant_id, .. } => Some(tenant_id),
+                | SystemEvent::DeviceFirmwareBehind { tenant_id, .. }
+                | SystemEvent::DevicePushFailed { tenant_id, .. } => Some(tenant_id),
                 SystemEvent::Started { .. }
                 | SystemEvent::Stopping { .. }
                 | SystemEvent::HealthCheck { .. }
@@ -2487,7 +2509,8 @@ impl SystemEvent {
             | SystemEvent::ClusterViewChanged { timestamp, .. }
             | SystemEvent::VersionSkew { timestamp, .. }
             | SystemEvent::SiteLinkChanged { timestamp, .. }
-            | SystemEvent::DeviceFirmwareBehind { timestamp, .. } => *timestamp,
+            | SystemEvent::DeviceFirmwareBehind { timestamp, .. }
+            | SystemEvent::DevicePushFailed { timestamp, .. } => *timestamp,
         }
     }
 }

@@ -1373,7 +1373,7 @@ fn process_event_for_state(
                 SystemEvent::ConfigChanged { .. } => {
                     // Config changes are handled by call-manager nodes via cache invalidation
                 }
-                SystemEvent::DeviceFirmwareBehind { .. } => {
+                SystemEvent::DeviceFirmwareBehind { .. } | SystemEvent::DevicePushFailed { .. } => {
                     // Delivered to the tenant's webhooks and live views.
                 }
                 SystemEvent::NodeJoined { node_id, .. } => {

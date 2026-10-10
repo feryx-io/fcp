@@ -1496,6 +1496,12 @@ async fn run() -> Result<()> {
         None
     };
 
+    // The publisher's keys, for waking phone apps (docs/PUSH.md §2.3).
+    let push_sender = match &config.push {
+        Some(push) => Some(build_push_sender(push, &dyn_storage).await?),
+        None => None,
+    };
+
     let mut handler = SipMessageHandler::new(
         Arc::clone(&transaction_manager_ref),
         Arc::clone(&dialog_manager_ref),
@@ -1529,6 +1535,7 @@ async fn run() -> Result<()> {
         config.service.node_id.clone(),
     )?
     .with_default_tenant_id(default_tenant_id)
+    .with_push(push_sender.clone())
     .with_user_calls(Arc::clone(&user_calls))
     .with_hoteling(Arc::clone(&hoteling))
     .with_sca(Arc::clone(&sca))
@@ -2292,6 +2299,38 @@ async fn run() -> Result<()> {
 }
 
 /// Create the FcpRegistrar from configuration and storage.
+/// `[push]` made ready to send: a key or service account sealed with
+/// encryption at rest (`enc:v1:…`) opened, a `*_file` read.
+async fn build_push_sender(
+    push: &fcp_core::push::PushConfig,
+    storage: &Arc<fcp_core::DynStorage>,
+) -> Result<Arc<fcp_push::PushSender>> {
+    let open = |value: String| async move {
+        match storage.encryption_store() {
+            Some(encryption) if value.starts_with("enc:") => encryption.open_secret(&value).await,
+            _ => Ok(value),
+        }
+    };
+    let mut push = push.clone();
+    for apns in &mut push.apns {
+        if let Some(key) = apns.key.take() {
+            apns.key = Some(open(key).await.context("[[push.apns]] key")?);
+        }
+    }
+    for fcm in &mut push.fcm {
+        if let Some(account) = fcm.service_account.take() {
+            fcm.service_account = Some(
+                open(account)
+                    .await
+                    .context("[[push.fcm]] service_account")?,
+            );
+        }
+    }
+    let sender = fcp_push::PushSender::new(&push, &|v| Ok(v.to_string()))?;
+    info!(providers = ?push.providers(), "Phone apps are woken by push");
+    Ok(Arc::new(sender))
+}
+
 fn create_registrar(
     config: &CallManagerConfig,
     storage: &Arc<fcp_core::DynStorage>,

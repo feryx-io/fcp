@@ -375,6 +375,7 @@ use utoipa::{Modify, OpenApi};
         crate::v1::redirection::device_redirection,
         crate::v1::redirection::register_device,
         crate::v1::devices::resync_device,
+        crate::v1::devices::push_test_device,
         crate::v1::config_templates::resync_template,
         crate::v1::devices::import_devices,
         crate::v1::devices::list_pending,

@@ -28,6 +28,8 @@ rcgen = "0.13"
 base64 = "0.22"
 # The stand-in identity provider signs ID tokens RS256.
 rsa = "0.9"
+# The stand-in APNs checks provider tokens signed ES256.
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
 sha2 = { version = "0.10", features = ["oid"] }
 # The stand-in Yealink RPS checks requests signed HMAC-SHA256 over a body MD5.
 hmac = "0.12"
