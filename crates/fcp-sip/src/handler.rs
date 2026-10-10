@@ -1448,6 +1448,9 @@ impl SipMessageHandler {
         let Some(registrar) = &self.registrar else {
             return;
         };
+        // From the store: this node's cache learns of the REGISTER from
+        // the same event, perhaps after this.
+        registrar.forget_registration(tenant_id, aor);
         let rows = registrar
             .get_registration_rows_in_tenant(tenant_id, aor)
             .await
@@ -11434,6 +11437,24 @@ impl SipMessageHandler {
                 // keep the address it came from with the binding: a device
                 // that moves is placed by where it is (docs/E911_BLOCK_2.md
                 // §6.2).
+                // Whose binding the flow carries: what a call another node
+                // relays down it is trusted for (`docs/PUSH.md` §2.4). Noted
+                // before the REGISTER is handled, since the binding is
+                // announced as it is stored and another node may relay a
+                // call at once; the token is known to no other node until a
+                // REGISTER stores it, and a challenged one is let go below.
+                if let Some(token) = &flow_token {
+                    let aor = sip_parse::header(request.headers(), "To")
+                        .and_then(sip_parse::parse_to_header)
+                        .map(|to| {
+                            sip_registrar::normalize_aor(to.inner().uri())
+                                .unwrap_or_else(|_| to.inner().uri().to_string())
+                        });
+                    if let (Some(aor), Some(tenant)) = (aor, registrar.caller_tenant(request).await)
+                    {
+                        self.flow_registry.set_owner(token, tenant, aor);
+                    }
+                }
                 let response = registrar
                     .handle_register_from(request, flow_token.as_deref(), Some(peer_addr))
                     .await;
@@ -11448,21 +11469,7 @@ impl SipMessageHandler {
                         "REGISTER handled successfully"
                     );
                     self.note_link_peer_registration(request, peer_addr, flow_token.as_deref());
-                    if let Some(token) = &flow_token {
-                        // Whose binding the flow carries: what a call
-                        // another node relays down it is trusted for
-                        // (`docs/PUSH.md` §2.4).
-                        let aor = sip_parse::header(request.headers(), "To")
-                            .and_then(sip_parse::parse_to_header)
-                            .map(|to| {
-                                sip_registrar::normalize_aor(to.inner().uri())
-                                    .unwrap_or_else(|_| to.inner().uri().to_string())
-                            });
-                        if let (Some(aor), Some(tenant)) =
-                            (aor, registrar.caller_tenant(request).await)
-                        {
-                            self.flow_registry.set_owner(token, tenant, aor);
-                        }
+                    if flow_token.is_some() {
                         // Each refresh leaves a token; the ones whose
                         // connection closed are let go here.
                         self.flow_registry.cleanup_stale();

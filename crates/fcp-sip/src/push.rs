@@ -211,16 +211,20 @@ pub struct PushWaits {
 
 /// Whether `row` is the app `target` woke, come back: the same phone (its
 /// instance, or its token) registered again since the binding the push
-/// went to — another REGISTER (its Call-ID and CSeq), or another address.
-/// (Not by time: a store may keep a binding's time to the second.)
+/// went to — over another connection (its flow), another REGISTER (its
+/// Call-ID and CSeq), or from another address. (Not by time: a store may
+/// keep a binding's time to the second. Nor by CSeq alone: an app that
+/// connects again may count from where it began.)
 fn woken_by(target: &Registration, row: &Registration) -> bool {
     let same_instance = target.instance_id.is_some() && row.instance_id == target.instance_id;
     let same_token = match (&target.push, &row.push) {
         (Some(a), Some(b)) => a.prid == b.prid,
         _ => false,
     };
-    let registered_again =
-        row.call_id != target.call_id || row.cseq != target.cseq || row.contact != target.contact;
+    let registered_again = row.flow_token != target.flow_token
+        || row.call_id != target.call_id
+        || row.cseq != target.cseq
+        || row.contact != target.contact;
     (same_instance || same_token) && registered_again
 }
 
@@ -573,5 +577,17 @@ mod tests {
         );
         let (missing, _) = waits.end(&quiet).unwrap();
         assert!(missing.is_empty(), "never pushed: nothing to cancel");
+    }
+
+    #[test]
+    fn an_app_back_over_a_new_connection_is_woken_even_with_its_old_cseq() {
+        let before = SystemTime::now() - Duration::from_secs(60);
+        let mut asleep = row("<sip:app@10.0.0.7:1>", Some("<urn:a>"), "tok", before);
+        asleep.flow_token = Some("flow-old".into());
+        // The same REGISTER as far as its headers go, over a new flow.
+        let mut back = asleep.clone();
+        back.flow_token = Some("flow-new".into());
+        assert!(woken_by(&asleep, &back));
+        assert!(!woken_by(&asleep, &asleep.clone()));
     }
 }
