@@ -1032,6 +1032,8 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
     if let Some(writer) = state.call_manager.cdr_writer() {
         body.push_str(&writer.prometheus(&format!("node=\"{node}\"")));
     }
+    // Pushes by provider, kind and outcome (docs/PUSH.md §2.3).
+    body.push_str(&fcp_push::PushCounters::global().prometheus(&format!("node=\"{node}\"")));
     // Calls by trunk, tenant and outcome (docs/TENANT_TRUNKS.md §9).
     body.push_str(
         &fcp_core::trunk_report::TrunkCounters::global().prometheus(&format!("node=\"{node}\"")),

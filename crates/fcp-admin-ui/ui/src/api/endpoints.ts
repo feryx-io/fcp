@@ -251,6 +251,12 @@ export const devices = {
   /** Tell the phone to fetch its configuration again (§8). */
   resync: (id: string) =>
     apiClient.post<{ device_id: string; sent: number }>(`/devices/${encodeURIComponent(id)}/resync`),
+  // A test push to the device's apps (docs/PUSH.md §2.3).
+  pushTest: (id: string) =>
+    apiClient.post<{
+      device_id: string
+      results: { provider: string; token: string; outcome: string; reason?: string | null }[]
+    }>(`/devices/${encodeURIComponent(id)}/push-test`),
 }
 
 // Firmware (docs/PROVISIONING.md §11)

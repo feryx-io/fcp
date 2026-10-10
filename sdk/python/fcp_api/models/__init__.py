@@ -376,6 +376,8 @@ from .provider_settings import ProviderSettings
 from .provisioning_key_response import ProvisioningKeyResponse
 from .purge_report import PurgeReport
 from .purge_response import PurgeResponse
+from .push_result_response import PushResultResponse
+from .push_test_response import PushTestResponse
 from .put_redirection_account_request import PutRedirectionAccountRequest
 from .queue_config_response import QueueConfigResponse
 from .queue_response import QueueResponse
@@ -905,6 +907,8 @@ __all__ = (
     "ProvisioningKeyResponse",
     "PurgeReport",
     "PurgeResponse",
+    "PushResultResponse",
+    "PushTestResponse",
     "PutRedirectionAccountRequest",
     "QueueConfigResponse",
     "QueueResponse",

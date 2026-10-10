@@ -368,6 +368,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/devices/:id/fetches", Needs(DeviceRead)),
     (POST, "/devices/:id/render", Needs(DeviceUpdate)),
     (POST, "/devices/:id/resync", Needs(DeviceUpdate)),
+    (POST, "/devices/:id/push-test", Needs(DeviceUpdate)),
     (POST, "/devices/import", Needs(DeviceCreate)),
     (GET, "/provisioning/key", Needs(DeviceUpdate)),
     (POST, "/provisioning/key", Needs(DeviceUpdate)),

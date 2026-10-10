@@ -27,6 +27,7 @@ fcp-routing = { path = "../fcp-routing" }
 fcp-policy = { path = "../fcp-policy" }
 fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }
+fcp-push = { path = "../fcp-push" }
 fcp-flow = { path = "../fcp-flow" }
 fcp-pbx = { path = "../fcp-pbx" }
 fcp-queue = { path = "../fcp-queue" }

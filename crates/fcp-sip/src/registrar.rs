@@ -2046,6 +2046,59 @@ impl FcpRegistrar {
         self.get_registration_rows_impl(&tenant_id, aor).await
     }
 
+    /// An AOR's live registrations in a tenant, as stored.
+    pub async fn get_registration_rows_in_tenant(
+        &self,
+        tenant_id: &TenantId,
+        aor: &str,
+    ) -> Result<Vec<Registration>> {
+        self.get_registration_rows_impl(tenant_id, aor).await
+    }
+
+    /// A push the provider refused for good (`docs/PUSH.md` §2.3): the
+    /// binding stays — the app may be awake on it — without its push
+    /// address, and the tenant is told (`device.push_failed`).
+    pub async fn forget_push(
+        &self,
+        row: &Registration,
+        device_id: Option<String>,
+        reason: &str,
+    ) -> Result<()> {
+        let Some(push) = row.push.clone() else {
+            return Ok(());
+        };
+        let mut kept = row.clone();
+        kept.push = None;
+        self.location_store.store.put_registration(kept).await?;
+        self.location_store.invalidate(&row.tenant_id, &row.aor);
+        warn!(
+            aor = %row.aor,
+            contact = %row.contact,
+            provider = %push.provider,
+            token = %push.shown_prid(),
+            %reason,
+            "Push token gone: the binding keeps no push address"
+        );
+        if let Some(ref publisher) = self.event_publisher {
+            let publisher = Arc::clone(publisher);
+            let event = PlatformEvent::System(fcp_events::SystemEvent::DevicePushFailed {
+                tenant_id: row.tenant_id,
+                device_id,
+                aor: row.aor.clone(),
+                contact: row.contact.clone(),
+                provider: push.provider,
+                reason: reason.to_string(),
+                timestamp: SystemTime::now(),
+            });
+            tokio::spawn(async move {
+                if let Err(e) = publisher.publish(event).await {
+                    tracing::debug!(%e, "Failed to publish device.push_failed");
+                }
+            });
+        }
+        Ok(())
+    }
+
     async fn get_registration_rows_impl(
         &self,
         tenant_id: &TenantId,

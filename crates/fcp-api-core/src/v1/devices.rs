@@ -1865,6 +1865,87 @@ pub struct ResyncResponse {
     pub sent: u64,
 }
 
+/// What one test push did (`docs/PUSH.md` §2.3).
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct PushResultResponse {
+    /// `apns` or `fcm`.
+    pub provider: String,
+    /// The device's token, shortened.
+    pub token: String,
+    /// `sent`; `gone` (the provider no longer knows the token, so the
+    /// binding lost its push address); `failed`.
+    pub outcome: String,
+    pub reason: Option<String>,
+}
+
+/// What a test push did.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct PushTestResponse {
+    pub device_id: String,
+    /// One per binding of the device's that can be woken; none when it has
+    /// no push address.
+    pub results: Vec<PushResultResponse>,
+}
+
+/// POST /api/v1/devices/:id/push-test — send the device's apps a test push
+/// (`docs/PUSH.md` §2.3) through a call manager with the publisher's keys:
+/// the app shows it and ends it at once. Whether each was taken.
+#[utoipa::path(
+    post,
+    path = "/api/v1/devices/{id}/push-test",
+    tag = "devices",
+    operation_id = "devices_push_test",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = PushTestResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn push_test_device(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Path(id): Path<String>,
+) -> Result<Json<PushTestResponse>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::DeviceUpdate, state.deployment_mode)?;
+    let storage = require_storage!(state);
+    let id = DeviceId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid device ID: {}", e)))?;
+    let device = storage
+        .get_device(&id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get device: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Device {} not found", id)))
+        .and_then(|device| ensure_device_in_tenant(device, &tenant.0, &id))?;
+    let supervisor = state.call_supervisor.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("no call manager can be reached".to_string())
+    })?;
+    let (status, body) = supervisor
+        .push_test_device(device.tenant_id, &device.id.to_string())
+        .await
+        .map_err(ApiError::ServiceUnavailable)?;
+    match status {
+        200..=299 => {
+            let results = serde_json::from_value(body["results"].clone()).unwrap_or_default();
+            info!(device_id = %device.id, "Sent a device a test push");
+            Ok(Json(PushTestResponse {
+                device_id: device.id.to_string(),
+                results,
+            }))
+        }
+        404 => Err(ApiError::NotFound(format!(
+            "Device {} not found",
+            device.id
+        ))),
+        _ => Err(ApiError::ServiceUnavailable(
+            body["error"]
+                .as_str()
+                .unwrap_or("no call manager could push")
+                .to_string(),
+        )),
+    }
+}
+
 /// Ask a call manager to resync one device: what it sent.
 pub(crate) async fn resync_one(state: &ApiState, device: &Device) -> Result<u64, ApiError> {
     let supervisor = state.call_supervisor.as_ref().ok_or_else(|| {

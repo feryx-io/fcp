@@ -102,6 +102,18 @@ pub trait CallSupervisor: Send + Sync {
         let _ = (tenant, device_id);
         Err("no call manager can resync a phone".to_string())
     }
+
+    /// Send a device's apps a test push (`docs/PUSH.md` §2.3), through a
+    /// node with the publisher's keys: the node's status and body
+    /// (`{"results": [...]}`), or why no node could.
+    async fn push_test_device(
+        &self,
+        tenant: fcp_core::TenantId,
+        device_id: &str,
+    ) -> std::result::Result<(u16, serde_json::Value), String> {
+        let _ = (tenant, device_id);
+        Err("no call manager can push".to_string())
+    }
 }
 
 /// What a route preview asks about.

@@ -108,6 +108,10 @@ pub struct ApnsConfig {
     /// Apple's development service, for builds signed for development.
     #[serde(default)]
     pub sandbox: bool,
+    /// Where to send instead of Apple's service (`https://…`; `http://`
+    /// speaks HTTP/2 without TLS): a stand-in, for tests.
+    #[serde(default)]
+    pub endpoint: Option<String>,
 }
 
 impl std::fmt::Debug for ApnsConfig {
@@ -119,6 +123,7 @@ impl std::fmt::Debug for ApnsConfig {
             .field("key_file", &self.key_file)
             .field("topics", &self.topics)
             .field("sandbox", &self.sandbox)
+            .field("endpoint", &self.endpoint)
             .finish()
     }
 }
@@ -134,6 +139,10 @@ pub struct FcmConfig {
     pub service_account: Option<String>,
     #[serde(default)]
     pub service_account_file: Option<String>,
+    /// Where to send instead of Google's service: a stand-in, for tests.
+    /// (The token endpoint is the service account's own `token_uri`.)
+    #[serde(default)]
+    pub endpoint: Option<String>,
 }
 
 impl std::fmt::Debug for FcmConfig {
@@ -145,6 +154,7 @@ impl std::fmt::Debug for FcmConfig {
                 &self.service_account.as_ref().map(|_| "<redacted>"),
             )
             .field("service_account_file", &self.service_account_file)
+            .field("endpoint", &self.endpoint)
             .finish()
     }
 }

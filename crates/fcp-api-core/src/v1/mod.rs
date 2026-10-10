@@ -619,6 +619,10 @@ pub fn router() -> Router<ApiState> {
             axum::routing::post(devices::resync_device),
         )
         .route(
+            "/devices/:id/push-test",
+            axum::routing::post(devices::push_test_device),
+        )
+        .route(
             "/devices/import",
             axum::routing::post(devices::import_devices),
         )

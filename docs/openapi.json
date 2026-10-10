@@ -15675,6 +15675,47 @@
         }
       }
     },
+    "/api/v1/devices/{id}/push-test": {
+      "post": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "POST /api/v1/devices/:id/push-test — send the device's apps a test push\n(`docs/PUSH.md` §2.3) through a call manager with the publisher's keys:\nthe app shows it and ends it at once. Whether each was taken.",
+        "operationId": "devices_push_test",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushTestResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/config-templates/{id}/resync": {
       "post": {
         "tags": [
@@ -34691,6 +34732,55 @@
           }
         }
       },
+      "PushResultResponse": {
+        "type": "object",
+        "description": "What one test push did (`docs/PUSH.md` §2.3).",
+        "required": [
+          "provider",
+          "token",
+          "outcome"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "`apns` or `fcm`."
+          },
+          "token": {
+            "type": "string",
+            "description": "The device's token, shortened."
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`sent`; `gone` (the provider no longer knows the token, so the\nbinding lost its push address); `failed`."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PushTestResponse": {
+        "type": "object",
+        "description": "What a test push did.",
+        "required": [
+          "device_id",
+          "results"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PushResultResponse"
+            },
+            "description": "One per binding of the device's that can be woken; none when it has\nno push address."
+          }
+        }
+      },
       "PutRedirectionAccountRequest": {
         "type": "object",
         "description": "An account, made or changed.",
@@ -40940,6 +41030,7 @@
               "system.version_skew",
               "system.site_link_changed",
               "device.firmware_behind",
+              "device.push_failed",
               "user.created",
               "user.updated",
               "user.deleted",

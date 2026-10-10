@@ -540,6 +540,8 @@ pub struct SipMessageHandler {
     user_calls: Option<Arc<crate::user_calls::UserCalls>>,
     /// Hoteling sessions, for `*88` and `*89` (§3.8).
     hoteling: Option<Arc<crate::hoteling::Hoteling>>,
+    /// The publisher's keys, for waking phone apps (`docs/PUSH.md`).
+    push: Option<Arc<fcp_push::PushSender>>,
     /// Shared lines' appearances (§3.9).
     sca: Option<Arc<crate::sca::Sca>>,
     mwi_subscriptions: Option<Arc<crate::mwi_subscriptions::MwiSubscriptions>>,
@@ -1000,6 +1002,7 @@ impl SipMessageHandler {
             default_tenant_id: None,
             user_calls: None,
             hoteling: None,
+            push: None,
             sca: None,
             mwi_subscriptions: None,
             supervisions: None,
@@ -1263,6 +1266,26 @@ impl SipMessageHandler {
             )
             .await,
         )
+    }
+
+    /// Wake phone apps with these keys (`[push]`, `docs/PUSH.md`).
+    pub fn with_push(mut self, push: Option<Arc<fcp_push::PushSender>>) -> Self {
+        self.push = push;
+        self
+    }
+
+    /// An administrator's test push to a device's apps: what each push did,
+    /// or `None` when this node has no `[push]` (or no registrar).
+    pub async fn push_test_device(
+        &self,
+        device: &fcp_core::Device,
+    ) -> Option<Vec<crate::push::PushResult>> {
+        let (Some(push), Some(registrar), Some(storage)) =
+            (&self.push, &self.registrar, &self.storage)
+        else {
+            return None;
+        };
+        Some(crate::push::test_device(push, registrar, storage, device).await)
     }
 
     /// Log users in and out of host phones (`*88`, `*89`).

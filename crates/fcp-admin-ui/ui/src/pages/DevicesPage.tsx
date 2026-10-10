@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle, RefreshCw, Copy, KeyRound, EyeOff, Eye, ShieldCheck } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle, RefreshCw, Copy, KeyRound, EyeOff, Eye, ShieldCheck, BellRing } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -224,6 +224,26 @@ export function DevicesPage() {
     onError: (e) => alert((e as Error).message),
   })
 
+  // A test push (docs/PUSH.md §2.3): the app shows it and ends it at once.
+  const pushTestMutation = useMutation({
+    mutationFn: (device: Device) => devices.pushTest(device.id),
+    onSuccess: (res, device) =>
+      alert(
+        res.results.length === 0
+          ? `"${device.name}" has no push address to wake.`
+          : res.results
+              .map((r) =>
+                r.outcome === 'sent'
+                  ? `${r.provider.toUpperCase()} took the push for "${device.name}".`
+                  : r.outcome === 'gone'
+                    ? `${r.provider.toUpperCase()} no longer knows "${device.name}": it will not be woken until the app registers again.`
+                    : `The push to "${device.name}" failed: ${r.reason ?? r.outcome}`,
+              )
+              .join('\n'),
+      ),
+    onError: (e) => alert((e as Error).message),
+  })
+
   // Zero-touch (docs/PROVISIONING.md §10): register the phone with its
   // vendor's redirection service now.
   const redirectMutation = useMutation({
@@ -431,6 +451,15 @@ export function DevicesPage() {
               <RefreshCw className="mr-2 h-4 w-4" />
               Tell it to fetch again
             </DropdownMenuItem>
+            {row.original.push_provider && (
+              <DropdownMenuItem
+                disabled={pushTestMutation.isPending}
+                onClick={() => pushTestMutation.mutate(row.original)}
+              >
+                <BellRing className="mr-2 h-4 w-4" />
+                Send a test push
+              </DropdownMenuItem>
+            )}
             {row.original.e911_override && (
               <DropdownMenuItem
                 onClick={() =>

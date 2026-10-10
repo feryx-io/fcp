@@ -28,6 +28,57 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/calls/:id/say", post(say))
         .route("/calls/:id/hangup", post(hangup))
         .route("/devices/:id/resync", post(resync_device))
+        .route("/devices/:id/push-test", post(push_test_device))
+}
+
+/// Who a test push is for.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PushTestBody {
+    #[serde(default)]
+    tenant_id: Option<TenantId>,
+}
+
+/// POST /devices/:id/push-test — a `test` push to each of the device's
+/// bindings that can be woken (`docs/PUSH.md` §2.3): what each did.
+async fn push_test_device(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Option<Json<PushTestBody>>,
+) -> Response {
+    use fcp_core::storage::DeviceStore;
+    let tenant = body
+        .and_then(|Json(b)| b.tenant_id)
+        .unwrap_or(state.default_tenant_id);
+    let not_found = || {
+        error(CallControlError::new(
+            404,
+            format!("Device not found: {id}"),
+        ))
+    };
+    let Ok(device_id) = id.parse::<fcp_core::DeviceId>() else {
+        return not_found();
+    };
+    let device = match state.storage.get_device(&device_id).await {
+        Ok(Some(d)) if d.tenant_id == tenant => d,
+        Ok(_) => return not_found(),
+        Err(e) => return error(CallControlError::new(500, e.to_string())),
+    };
+    let results = match &state.sip_handler {
+        Some(handler) => handler.push_test_device(&device).await,
+        None => None,
+    };
+    match results {
+        Some(results) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"device_id": id, "results": results})),
+        )
+            .into_response(),
+        None => error(CallControlError::new(
+            503,
+            "push is not configured on this node",
+        )),
+    }
 }
 
 /// Who a resync is for.
