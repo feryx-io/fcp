@@ -442,7 +442,6 @@ async fn a_caller_does_not_choose_what_its_record_points_at() {
         "Alert-Info",
         "Call-Info",
         "X-FCP-Intercom-Mode",
-        "X-FCP-Call-Id",
         "X-FCP-Transferred-From",
     ] {
         assert_eq!(
@@ -451,6 +450,12 @@ async fn a_caller_does_not_choose_what_its_record_points_at() {
             "Bob's phone was told {claimed} by a caller with no standing to say it"
         );
     }
+    // The call's id Bob's phone is told is FCP's (`docs/PUSH.md` §2.5).
+    let named = incoming.header("X-FCP-Call-Id");
+    assert!(
+        named.as_deref().is_some_and(|id| !id.contains("1111")),
+        "Bob's phone should be told FCP's id for the call, not the caller's: {named:?}"
+    );
     assert_ne!(
         incoming.header("P-Asserted-Identity").as_deref(),
         Some("<sip:+15125550100@carrier.example>"),

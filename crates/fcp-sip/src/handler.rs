@@ -3011,6 +3011,11 @@ impl SipMessageHandler {
                 .map(|id| fcp_b2bua_core::CallId::from_uuid(*id.as_uuid()))
                 .is_some_and(|id| self.call_manager.get_call(&id).is_some())
         };
+        // A relay's call id, read before it is stripped: believed below only
+        // with a flow token this node issued, which only a node has.
+        let relay_call_id = sip_parse::header(request.headers(), crate::push::FLOW_RELAY_HEADER)
+            .and_then(|_| sip_parse::header(request.headers(), fcp_core::CALL_ID_HEADER))
+            .and_then(|v| v.as_str().trim().parse::<fcp_core::CallId>().ok());
         let unclaimed = crate::claims::Claims::from(crate::claims::PeerTrust::of(
             self.trusted_edges.contains(peer.ip()),
         ))
@@ -3053,8 +3058,7 @@ impl SipMessageHandler {
                         tenant,
                         token: token.to_string(),
                         contact,
-                        for_call: sip_parse::header(request.headers(), fcp_core::CALL_ID_HEADER)
-                            .and_then(|v| v.as_str().trim().parse().ok()),
+                        for_call: relay_call_id,
                     }),
                     _ => {
                         info!(source = %peer, "Refusing a relay down a flow this node does not hold");
@@ -7636,10 +7640,19 @@ impl SipMessageHandler {
                 SmolStr::new(crate::push::FLOW_RELAY_CONTACT_HEADER),
                 SmolStr::new(target_contact.uri.as_str()),
             );
-            let _ = extra_headers.push(
-                SmolStr::new(fcp_core::CALL_ID_HEADER),
-                SmolStr::new(call_id_clone.to_string()),
-            );
+        }
+        // The phone is told which call this is: the one a push named, so
+        // a woken app knows the INVITE for the call already on its screen
+        // (`docs/PUSH.md` §2.5), as the push wrote it. A relayed leg names
+        // the call it is for.
+        if !extra_headers.contains(fcp_core::CALL_ID_HEADER) {
+            let named = self
+                .call_manager
+                .get_call(&call_id_clone)
+                .and_then(|c| c.relay_for)
+                .map(|c| c.as_uuid().to_string())
+                .unwrap_or_else(|| call_id_clone.to_string());
+            let _ = extra_headers.push(SmolStr::new(fcp_core::CALL_ID_HEADER), SmolStr::new(named));
         }
         // A retrieve handed to the node holding the call carries the
         // appearance's handoff token (§3.9).

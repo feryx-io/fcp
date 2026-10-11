@@ -435,17 +435,19 @@ async fn a_call_wakes_a_sleeping_app_which_answers() {
     let alice = stack.seed.user("alice", "Alice-pw-2026!", "2001").await;
     let bob = stack.seed.user("bob", "Bob-pw-2026!", "2002").await;
     let app = Arc::new(sleeping_app(&stack, &bob, "a1b2c3d4e5f6a7b8c9d0").await);
-    app.auto_answer(true);
 
     // Woken by its push, the app registers again — a new connection — and
-    // takes the call.
+    // takes the call, which the INVITE names as the push did.
     let mut pushes = stack.apns.subscribe();
     let woken = {
         let app = Arc::clone(&app);
         tokio::spawn(async move {
             let push = StandInApns::next_push(&mut pushes, 15).await?;
             assert_eq!(app.register().await.ok()?, 200);
-            Some(push)
+            let incoming = app.incoming(RING).await?;
+            let named = incoming.header("X-FCP-Call-Id");
+            let answered = incoming.answer().await.ok()?;
+            Some((push, named, answered))
         })
     };
 
@@ -458,10 +460,15 @@ async fn a_call_wakes_a_sleeping_app_which_answers() {
         let logs = stack.service.kill().await;
         panic!("the woken app should answer: {e}\n{logs}");
     }
-    let push = woken.await.unwrap().expect("a push woke the app");
+    let (push, named, _answered) = woken.await.unwrap().expect("a push woke the app");
     assert_eq!(push.kind(), "call");
     assert_eq!(push.token, "a1b2c3d4e5f6a7b8c9d0");
     assert!(push.payload["call"].as_str().is_some_and(|c| !c.is_empty()));
+    assert_eq!(
+        named.as_deref(),
+        push.payload["call"].as_str(),
+        "the woken app's INVITE names the call its push did"
+    );
     assert!(
         push.payload["from"].as_str().is_some(),
         "{:?}",
@@ -717,19 +724,22 @@ async fn an_app_asleep_on_another_node_is_woken_and_answers_there() {
     let alice = cluster.seed.user("alice", "Alice-pw-2026!", "2001").await;
     let bob = cluster.seed.user("bob", "Bob-pw-2026!", "2002").await;
     let app = app_on(&cluster, &cluster.b, &bob, "a1b2c3d4e5f6a7b8c9d0").await;
-    app.auto_answer(true);
     app.sleep().await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Node B says the flow is gone (430); node A pushes, and the app comes
-    // back to node B, where node A reaches it again.
+    // back to node B, where node A reaches it again — naming the call as
+    // its push did, though node B sends the INVITE.
     let mut pushes = cluster.apns.subscribe();
     let woken = {
         let app = Arc::clone(&app);
         tokio::spawn(async move {
             let push = StandInApns::next_push(&mut pushes, 15).await?;
             assert_eq!(app.register().await.ok()?, 200);
-            Some(push)
+            let incoming = app.incoming(RING).await?;
+            let named = incoming.header("X-FCP-Call-Id");
+            let answered = incoming.answer().await.ok()?;
+            Some((push, named, answered))
         })
     };
     let caller = alice_on(&cluster.a, &alice).await;
@@ -739,8 +749,9 @@ async fn an_app_asleep_on_another_node_is_woken_and_answers_there() {
         let b = cluster.b.service.kill().await;
         panic!("the woken app should answer: {e}\n--- A\n{a}\n--- B\n{b}");
     }
-    let push = woken.await.unwrap().expect("a push woke the app");
+    let (push, named, _answered) = woken.await.unwrap().expect("a push woke the app");
     assert_eq!(push.kind(), "call");
+    assert_eq!(named.as_deref(), push.payload["call"].as_str());
     assert_eq!(call.hangup().await.unwrap(), 200);
     // Pushed on node B's word, and reached through it once back.
     let a = cluster.a.service.stop().await;

@@ -342,6 +342,10 @@ shows and ends at once). `[push] payload = "minimal"` leaves out
   starts the phone without the UI, registers, and the INVITE that follows
   is the call already on the screen. A cancel push is reported and ended
   at once.
+- **Which INVITE is the pushed call.** Every INVITE FCP sends a registered
+  phone names its call in `X-FCP-Call-Id`, as the push's `call` does (a
+  leg relayed through another node names the call it is for). A woken app
+  matches the INVITE to the call it already showed by that id.
 - **Android:** a `FirebaseMessagingService`. A call push adds the incoming
   call to Telecom and starts the call's service (U4b), then the phone,
   which registers.
@@ -398,6 +402,10 @@ shows and ends at once). `[push] payload = "minimal"` leaves out
 - siphon-rs `contact_uri_params`; Anvil's outbound instance; the push
   address in the account; 555 handled; tested against FCP and its
   stand-ins.
+- Done (anvil #25): siphon-rs v2026.10.09 already had the Contact
+  parameters and outbound, so the phase was Anvil's alone — the push
+  address on every REGISTER, an instance per install, a 555 answered by
+  registering without it.
 
 ### Phase A2: Android (anvil)
 - FCM, the call push to Telecom and the call's service, the phone started
