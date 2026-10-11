@@ -82,6 +82,22 @@ bind_address = "0.0.0.0:18084"
 # them to the cloud, where the tenant's webhooks fire.
 use_redis = true
 
+# Phone apps that sleep are woken by push through the cloud, which holds
+# the app publisher's keys (docs/PUSH.md §2.4, docs/SITE_SETUP.md §3): the
+# apps listed as in the cloud's [push], without keys, and each push sent
+# to the link. Set FCP_PUSH_RELAY_TOKEN here and FCP_LINK_PUSH_TOKEN on
+# the link to the same value.
+# [push.relay]
+# url = "http://127.0.0.1:18096/push"
+# token = "${FCP_PUSH_RELAY_TOKEN}"
+#
+# [[push.apns]]
+# team_id = "ABCDE12345"
+# topics = ["com.thevoiceguy.anvil.voip"]
+#
+# [[push.fcm]]
+# project_id = "anvil-12345"
+
 [logging]
 level = "info"
 format = "pretty"

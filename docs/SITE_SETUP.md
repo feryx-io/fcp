@@ -143,6 +143,17 @@ a local carrier, made in the cloud with this site as *Runs at* — is
 tried before the link trunk, so the site keeps calling out when the
 cloud is unreachable.
 
+Phone apps that sleep (Anvil on iOS and Android) are woken by a push
+(`docs/PUSH.md`). The site holds none of the app publisher's keys: the
+cloud does, and the site's pushes go up the link. To turn it on, put a
+long random token in `.env` as `FCP_PUSH_RELAY_TOKEN`, pass it to the
+link (`FCP_LINK_PUSH_TOKEN`) and to the call manager, and uncomment the
+`[push.relay]` block and the apps in `configs/fcp-call-manager.toml` —
+the same team, topics and projects as the cloud's `[push]`, without keys.
+The cloud's call managers must have `[push]` and its admin a
+`[call_manager]` to reach them. While the cloud cannot be reached no app
+is woken; awake phones ring as before.
+
 ## 4. The site's admin
 
 `http://HOST_IP:18080` is the same admin UI and API as the cloud's,

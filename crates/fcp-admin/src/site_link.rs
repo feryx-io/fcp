@@ -156,6 +156,9 @@ pub struct LinkState {
     /// Firmware images, which a site's link fetches for the targets it
     /// holds (`docs/PROVISIONING.md` §11).
     pub firmware: Option<Arc<dyn fcp_api_core::firmware_files::FirmwareFiles>>,
+    /// The call managers, one of which sends a site's pushes with the
+    /// publisher's keys (`docs/PUSH.md` §2.4).
+    pub pushes: Option<Arc<crate::call_supervision::NodeCallSupervisor>>,
 }
 
 /// `POST /link/v1/enroll`.
@@ -518,6 +521,7 @@ pub fn link_router(state: LinkState) -> Router {
         .route("/link/v1/requests/:id", post(request_result))
         .route("/link/v1/firmware/:image", get(firmware_image))
         .route("/link/v1/brand-assets/:sha256", get(brand_asset))
+        .route("/link/v1/push", post(push))
         // A file a site sends up is one body; a recording may be large.
         .layer(axum::extract::DefaultBodyLimit::max(SITE_UPLOAD_LIMIT))
         .layer(Extension(state))
@@ -530,6 +534,40 @@ pub const SITE_UPLOAD_LIMIT: usize = 512 << 20;
 /// `ok`, or `failed`, with [`REQUEST_DETAIL_HEADER`] saying why.
 pub const REQUEST_OUTCOME_HEADER: &str = "x-fcp-outcome";
 pub const REQUEST_DETAIL_HEADER: &str = "x-fcp-detail";
+
+/// `POST /link/v1/push`: a push for one of the site's phone apps
+/// (`docs/PUSH.md` §2.4). The site holds no keys; a call manager here does,
+/// and sends it. The message is for the site's tenant or is refused. What
+/// came of it goes back: a gone token is the site's to forget.
+async fn push(
+    Extension(state): Extension<LinkState>,
+    headers: HeaderMap,
+    Json(push): Json<fcp_core::push::RelayedPush>,
+) -> Result<Response, LinkError> {
+    let site = site_of(&state, &headers).await?;
+    if push.tenant() != Some(site.tenant_id.to_string().as_str()) {
+        return Err(LinkError(
+            StatusCode::FORBIDDEN,
+            "a site pushes only for its own tenant".to_string(),
+        ));
+    }
+    let Some(pushes) = &state.pushes else {
+        return Err(LinkError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this cloud has no call manager to push through".to_string(),
+        ));
+    };
+    match pushes.send_push(&push).await {
+        Ok((status, body)) => {
+            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+            Ok((status, Json(body)).into_response())
+        }
+        Err(e) => {
+            warn!(site_id = %site.id, error = %e, "A site's push could not be sent");
+            Err(LinkError(StatusCode::SERVICE_UNAVAILABLE, e))
+        }
+    }
+}
 
 /// `POST /link/v1/cdrs`: the site's records, batch by batch. Each is
 /// rated afresh here — the site rated with its copy of the plans and

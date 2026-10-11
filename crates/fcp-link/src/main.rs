@@ -9,7 +9,8 @@
 //! a snapshot from the cloud, then every change as the cloud journals it,
 //! applied through the same storage crate the cloud writes with. Later
 //! phases carry records up over the same link. It opens no inbound port
-//! but its own health check; every connection is to the cloud.
+//! but its own health check, which also takes the site's pushes
+//! (`POST /push`, `docs/PUSH.md` §2.4); every connection is to the cloud.
 
 mod cli;
 mod config;
@@ -21,7 +22,13 @@ mod ship;
 mod sync;
 
 use anyhow::{Context, Result};
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
 use clap::Parser;
 use std::sync::Arc;
 use tokio::signal;
@@ -54,6 +61,9 @@ async fn main() -> Result<()> {
     if let Some(v) = &cli.site_database_url {
         config.site.database_url = Some(v.clone());
     }
+    if let Some(v) = &cli.push_token {
+        config.site.push_token = Some(v.clone());
+    }
     if let Some(v) = &cli.log_level {
         config.logging.level = v.clone();
     }
@@ -83,6 +93,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/status", get(status))
+        .route("/push", post(push))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(config.health.bind_address)
         .await
@@ -118,9 +129,49 @@ async fn status(State(state): State<AppState>) -> Json<LinkStatus> {
     Json(state.link.status())
 }
 
+/// POST /push — a push from one of the site's call managers, which holds
+/// no keys: sent up the link for the cloud to send, and what came of it
+/// passed back (`docs/PUSH.md` §2.4). Behind `[site] push_token`.
+async fn push(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(push): Json<fcp_core::push::RelayedPush>,
+) -> Response {
+    let refuse = |status: StatusCode, error: &str| {
+        (status, Json(serde_json::json!({ "error": error }))).into_response()
+    };
+    let Some(token) = state.link.push_token() else {
+        return refuse(
+            StatusCode::NOT_FOUND,
+            "this link relays no pushes: set [site] push_token",
+        );
+    };
+    let given = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    if given != Some(token) {
+        return refuse(StatusCode::UNAUTHORIZED, "the push token is wrong");
+    }
+    match state.link.push(&push).await {
+        Ok((status, body)) => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+            Json(body),
+        )
+            .into_response(),
+        Err(e) => {
+            warn!(error = %e, "A push could not be sent up the link");
+            refuse(StatusCode::SERVICE_UNAVAILABLE, &format!("{e:#}"))
+        }
+    }
+}
+
 /// The configuration as `--check-config` shows it: the token masked.
 fn mask(config: &LinkFileConfig) -> LinkFileConfig {
     let mut masked = config.clone();
+    if masked.site.push_token.is_some() {
+        masked.site.push_token = Some("***".to_string());
+    }
     if masked.link.enrollment_token.is_some() {
         masked.link.enrollment_token = Some("***".to_string());
     }

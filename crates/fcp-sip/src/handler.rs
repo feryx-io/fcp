@@ -1480,6 +1480,22 @@ impl SipMessageHandler {
         });
     }
 
+    /// A site's push, sent with this node's keys (`docs/PUSH.md` §2.4):
+    /// `None` when this node has no keys (no `[push]`, or it relays its own).
+    /// A gone token is the site's to take off its binding; the outcome says
+    /// so.
+    pub async fn send_relayed_push(
+        &self,
+        push: &fcp_core::push::RelayedPush,
+    ) -> Option<Result<fcp_push::PushOutcome, String>> {
+        let sender = self.push.as_ref().filter(|s| !s.relays())?;
+        let message = match serde_json::from_value::<fcp_push::PushMessage>(push.message.clone()) {
+            Ok(m) => m,
+            Err(e) => return Some(Err(format!("the message: {e}"))),
+        };
+        Some(Ok(sender.send(&push.to, &message).await))
+    }
+
     /// An administrator's test push to a device's apps: what each push did,
     /// or `None` when this node has no `[push]` (or no registrar).
     pub async fn push_test_device(

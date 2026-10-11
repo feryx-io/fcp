@@ -605,6 +605,7 @@ async fn main() -> Result<()> {
             ingest,
             requests: Arc::clone(&site_requests),
             firmware: firmware_files.clone(),
+            pushes: None,
         })
     } else {
         info!("Sites cannot enroll here ([link] enabled is false)");
@@ -826,6 +827,16 @@ async fn main() -> Result<()> {
         storage: Some(cluster_storage),
     };
 
+    // A site's pushes are sent by a call manager with the publisher's keys
+    // (`docs/PUSH.md` §2.4).
+    let link_state = link_state.map(|mut state| {
+        state.pushes = call_supervision::NodeCallSupervisor::new(
+            config.call_manager.clone(),
+            cluster_state.reader.clone(),
+        )
+        .map(Arc::new);
+        state
+    });
     if let Some(state) = link_state {
         tokio::spawn(async move {
             if let Err(e) = site_link::serve(state).await {

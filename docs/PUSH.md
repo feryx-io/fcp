@@ -90,6 +90,24 @@ this on two nodes sharing a database and Redis: an awake app on node B
 answers a call placed on node A, with exactly one record; and an app asleep
 on node B is pushed on B's 430, re-registers at B, and answers through it.
 
+Phase P4b done (v0.25.381): a site's pushes go through its cloud. A site
+holds none of the publisher's keys: its call manager's `[push]` lists the
+same apps without them and adds `[push.relay]` (the link's `/push` and a
+token), so its registrar accepts the apps' push bindings and its
+`fcp_push::PushSender` relays each push instead of sending it. The link
+(`[site] push_token`, or `FCP_LINK_PUSH_TOKEN`) sends it up its mutual-TLS
+link as `POST /link/v1/push`; the cloud admin refuses a message for any
+tenant but the site's and hands it to the first call manager with keys
+(`POST /push` on the node, 503 from one without, which is passed over);
+the outcome (`fcp_core::push::RelayedPushAnswer`) comes back down the same
+way, so a token the provider no longer knows is taken off the site's
+binding as at any node. A site cut off from the cloud cannot wake an app;
+the push fails at once and the call goes on to the user's other devices.
+`fcp-link/tests/push.rs` proves it: a sleeping app at a site woken through
+the cloud's stand-in APNs and answering there, a gone token let go at the
+site, a push without the link's token refused, and one for another tenant
+refused by the cloud.
+
 ## 1. What FCP has, and what it lacks
 
 Nothing of push exists in FCP or siphon-rs: no `pn-*` parameter, no
@@ -294,7 +312,21 @@ shows and ends at once). `[push] payload = "minimal"` leaves out
 - **Sites.** A site's phones register at the site, and its call manager
   rings them. A site does not hold the publisher's push keys: it asks the
   cloud to push, over its link (§6 Q4). A site cut off from the cloud
-  cannot wake a sleeping app; its awake phones ring as before.
+  cannot wake a sleeping app; its awake phones ring as before. The site's
+  call manager lists the apps without their keys and relays:
+
+  ```toml
+  [push.relay]
+  url = "http://127.0.0.1:18096/push"   # the link's /push
+  token = "${FCP_PUSH_RELAY_TOKEN}"     # the link's [site] push_token
+
+  [[push.apns]]
+  team_id = "ABCDE12345"
+  topics = ["com.thevoiceguy.anvil.voip"]
+
+  [[push.fcm]]
+  project_id = "anvil-12345"
+  ```
 
 ### 2.5 Anvil's side
 

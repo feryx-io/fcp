@@ -188,6 +188,11 @@ pub struct CloudOptions<'a> {
     /// fills from it (`docs/PROVISIONING.md` §11).
     pub cloud_firmware_dir: Option<String>,
     pub site_firmware_dir: Option<String>,
+    /// The cloud's call manager, which the admin asks to send a site's
+    /// pushes (`docs/PUSH.md` §2.4).
+    pub call_manager_url: Option<String>,
+    /// What the site's call managers carry to the link's `/push`.
+    pub site_push_token: Option<String>,
 }
 
 /// As [`cloud_with_site_at`], with everything a cloud may be started with.
@@ -203,6 +208,10 @@ pub async fn cloud_with_site_opts(opts: CloudOptions<'_>) -> Option<Cloud> {
     };
     let firmware_section = match &opts.cloud_firmware_dir {
         Some(d) => format!("\n[api.firmware]\ndirectory = \"{d}\"\n"),
+        None => String::new(),
+    };
+    let call_manager_section = match &opts.call_manager_url {
+        Some(url) => format!("\n[call_manager]\nurl = \"{url}\"\n"),
         None => String::new(),
     };
     let db = TestDatabase::create().await?;
@@ -230,7 +239,7 @@ node_id = "link-test-admin"
 bind_address = "127.0.0.1:{http}"
 auth_enabled = true
 auth_token = "{ADMIN_TOKEN}"
-{firmware_section}
+{firmware_section}{call_manager_section}
 [storage]
 database_url = "{db}"
 
@@ -291,6 +300,9 @@ format = "compact"
     }
     if let Some(url) = &opts.site_redis_url {
         site_section.push_str(&format!("redis_url = \"{url}\"\nheartbeat_ttl_secs = 5\n"));
+    }
+    if let Some(t) = &opts.site_push_token {
+        site_section.push_str(&format!("push_token = \"{t}\"\n"));
     }
     if let Some(d) = &opts.site_firmware_dir {
         site_section.push_str(&format!("firmware_dir = \"{d}\"\n"));

@@ -653,6 +653,45 @@ impl Link {
         })
     }
 
+    /// What the site's call managers must carry to `/push`.
+    pub fn push_token(&self) -> Option<&str> {
+        self.config.site.push_token.as_deref().map(str::trim)
+    }
+
+    /// A site's push, sent up to the cloud (`POST /link/v1/push`): the
+    /// cloud's status and answer, as they are.
+    pub async fn push(
+        &self,
+        push: &fcp_core::push::RelayedPush,
+    ) -> Result<(u16, serde_json::Value)> {
+        let secret = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .enrollment
+            .as_ref()
+            .map(|e| e.secret.clone())
+            .context("not enrolled")?;
+        let url = format!(
+            "{}/link/v1/push",
+            self.config.link.link_url.trim_end_matches('/')
+        );
+        let response = self
+            .client(true)?
+            .post(&url)
+            .bearer_auth(secret)
+            .json(push)
+            .send()
+            .await
+            .context("reaching the cloud's link listener")?;
+        let status = response.status().as_u16();
+        let body = response
+            .json::<serde_json::Value>()
+            .await
+            .unwrap_or_else(|_| serde_json::json!({}));
+        Ok((status, body))
+    }
+
     async fn heartbeat(&self) -> Result<Duration> {
         let secret = self
             .inner
