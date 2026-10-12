@@ -14,7 +14,8 @@ forge-media. This document designs how Anvil becomes FCP's own client:
 
 Agreed 2026-10-05: the first target is Anvil as an FCP client on the
 desktop, with mobile push later. Work in the anvil repo is a branch and PR
-per phase, merged by the owner, as in FCP. The questions in §6 are open.
+per phase, merged by the owner, as in FCP. Every phase was built on the
+recommendations of §6.
 
 Progress: every phase's work is done on both sides. Anvil's PRs are #1–#9,
 and §7 is the guide to running it. Phase A5 in FCP: an encrypted caller
@@ -461,10 +462,10 @@ API, which has the same bus. It carries:
 
 ## 5. What this does not do
 
-- **Mobile push and the background.** RFC 8599 push parameters in REGISTER,
-  an APNs and FCM sender in FCP, and holding an INVITE until the woken app
-  registers are the next project, with Anvil's phase 4. They need Apple and
-  Google developer accounts to prove on devices.
+- **Mobile push and the background.** Its own project since: RFC 8599
+  push addresses, the APNs and FCM senders and a call held for the woken
+  app are `docs/PUSH.md`, done in FCP (P1–P4) and Anvil (A1–A3); delivery
+  on devices waits for the publisher's Apple and Google accounts.
 - **ICE** for SIP legs. FCP latches RTP, which serves a desktop behind most
   NATs. Strict NATs and mobile networks come with the mobile project.
 - **A UI.** Anvil's roadmap puts the UI last (Flutter recommended). This
@@ -590,5 +591,6 @@ What it found wrong in FCP was fixed in FCP:
 - the events document (v0.25.365);
 - a caller's SRTP key handed to the callee (v0.25.366).
 
-Not done here (§5): mobile push, ICE, a UI, video.
+Not done here (§5): ICE, video. Mobile push is `docs/PUSH.md`; the UI is
+Anvil's app (its `docs/APP.md`).
 

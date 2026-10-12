@@ -3271,15 +3271,33 @@ async fn voicemail_mailboxes_crud() {
 
     // Messages deleted through the API, one by one or with their mailbox,
     // are in the deletion log under whoever asked, their audio queued.
-    let (one, two) = (
+    let (mut one, mut two) = (
         fcp_core::VoicemailMessage::new(id.clone(), "+15550002222".into(), 3, "/vm/one.wav".into()),
         fcp_core::VoicemailMessage::new(id.clone(), "+15550003333".into(), 4, "/vm/two.wav".into()),
     );
+    (one.size_bytes, two.size_bytes) = (Some(48_044), Some(64_044));
     {
         use fcp_core::storage::VoicemailStore;
         app.storage.put_message(one.clone()).await.unwrap();
         app.storage.put_message(two.clone()).await.unwrap();
     }
+
+    // The mailbox's storage is its messages' sizes.
+    let stats = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/voicemail/mailboxes/{id}/stats"),
+            None,
+        )
+        .await;
+    assert_eq!(stats.status, StatusCode::OK, "{}", stats.text);
+    assert_eq!(stats.json["total_messages"], 2, "{}", stats.text);
+    assert_eq!(
+        stats.json["storage_used"],
+        48_044 + 64_044,
+        "{}",
+        stats.text
+    );
     let gone = app
         .admin(
             Method::DELETE,

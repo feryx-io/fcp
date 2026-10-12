@@ -3,9 +3,9 @@
 **The single source of truth for what is done, partial, or absent.**
 Update this file when feature status changes; keep other docs describing scope, not status.
 
-- **Last reviewed:** 2026-09-01 (full code audit against ARCHITECTURE-v0.2.md)
-- **Version:** v0.25.206 · 39 workspace crates
-- **Submodules:** siphon-rs `v2026.09.20` · forge-media `v2026.09.17` (both at their repos' current release tips)
+- **Last reviewed:** 2026-10-12 (header and push entries; the full code audit against ARCHITECTURE-v0.2.md was 2026-09-01)
+- **Version:** v0.25.383 · 42 workspace crates
+- **Submodules:** siphon-rs `v2026.10.09` · forge-media `v2026.10.07`
 - **Health:** CI green (fmt, clippy `-D warnings`, tests, cargo-audit) · 0 Dependabot alerts · 0 future-incompat warnings
 
 ## Phase scoreboard
@@ -785,7 +785,8 @@ found that the shipped `routing.yaml` listed no users and the YAML
 routing store knows only the users it lists, so the compose call
 manager had answered every INVITE with 500: the stack could not have
 carried a call. The file is gone from the stack; that a caller missing
-from a YAML routing store is a 500 rather than a refusal is noted.
+from a YAML routing store is a 500 rather than a refusal is noted
+(refused, 403, since the production stack's phase 5).
 Phase 5 done (v0.25.248): the single-node guide and the runbook,
 rewritten from the binaries — their `--help`, their `--check-config`
 defaults, their routers and their log lines — rather than from the old
@@ -2150,6 +2151,32 @@ rung; the caller hears ringing; the woken app's REGISTER (any node, by
 time still governs; apps that never came back get a cancel push; a user
 whose apps cannot be woken is unreachable at once. Proved by
 `fcp-call-manager/tests/push.rs` with the testkit's sleeping app.
+
+Push P4a, a flow on another node (v0.25.380): a binding whose RFC 5626 flow
+ends on another node is rung through that node (`X-FCP-Flow`,
+`X-FCP-Flow-Contact`, `X-FCP-Call-Id`; the receiving node's leg is
+`Call::relay_for`, writing no record), a gone flow is 430 Flow Failed, and
+an app with a push address behind it is pushed only on that 430. Proved on
+two nodes sharing a database and Redis.
+
+Push P4b, a site's pushes through its cloud (v0.25.381): a site's call
+manager holds no publisher keys and relays each push up its link
+(`[push.relay]`, `POST /link/v1/push`, held to the site's tenant); the
+cloud's call manager sends it and the outcome comes back down, so a gone
+token is let go at the site (`fcp-link/tests/push.rs`).
+
+v0.25.382: every INVITE to a registered phone names its call in
+`X-FCP-Call-Id`, as the push did, so a woken app knows which INVITE is the
+call on its screen. Anvil's A1 (#25), A2 Android (#26) and A3 iOS (#27) are
+merged; push is done but for delivery on devices (TestFlight, a Play test
+track), which waits for the publisher's Apple and Firebase accounts.
+
+Loose ends (v0.25.383): a mailbox's `storage_used` was always 0 — messages
+now keep their file's size (`size_bytes`, migration 112) and the stats sum
+it (messages saved before count as nothing). A caller missing from a YAML
+routing store, noted in ship-and-operate phase 4 as a 500, has been refused
+(403) since the production stack's phase 5 checked every caller as a user
+of the call's tenant before evaluating; the notes are corrected.
 
 ## Historical documents
 

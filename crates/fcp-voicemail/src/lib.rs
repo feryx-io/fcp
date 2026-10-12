@@ -420,6 +420,10 @@ impl VoicemailService {
         let duration = recording_start.elapsed().as_secs() as u32;
 
         info!(duration_secs = duration, "Recording completed");
+        let size_bytes = tokio::fs::metadata(&recording_path)
+            .await
+            .ok()
+            .map(|m| m.len());
 
         // Create message record
         let message = VoicemailMessage {
@@ -431,6 +435,7 @@ impl VoicemailService {
             priority: MessagePriority::Normal,
             duration,
             recording_path,
+            size_bytes,
             site_id: None,
             transcription: None,
             created_at: SystemTime::now(),

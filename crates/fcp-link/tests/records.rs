@@ -162,6 +162,7 @@ async fn what_a_site_writes_reaches_the_cloud_and_its_files_are_reached_through_
         priority: MessagePriority::Normal,
         duration: 7,
         recording_path: vm_file.clone(),
+        size_bytes: Some(14),
         site_id: None,
         transcription: None,
         created_at: SystemTime::now(),

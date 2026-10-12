@@ -72,6 +72,10 @@ pub struct VoicemailMessage {
     /// File path to the audio recording
     pub recording_path: PathBuf,
 
+    /// The recording's size in bytes, when it was known at saving.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+
     /// The site holding the file, at the cloud: the row came up its link
     /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3), and the file is fetched
     /// through it.
@@ -100,6 +104,7 @@ impl VoicemailMessage {
             priority: MessagePriority::Normal,
             duration,
             recording_path,
+            size_bytes: None,
             site_id: None,
             transcription: None,
             created_at: SystemTime::now(),
@@ -467,7 +472,8 @@ pub struct VoicemailStats {
     /// Saved messages
     pub saved_messages: u32,
 
-    /// Total storage used in bytes
+    /// Total storage used in bytes, summed over the messages whose size is
+    /// known (every message saved since v0.25.383)
     pub storage_used: u64,
 
     /// Average message duration
