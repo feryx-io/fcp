@@ -397,6 +397,28 @@ for holds, `subject_request_manage` for subject requests, `audit_view` for
 the audit and deletion logs. Other admin roles,
 `read_only` included, are refused.
 
+## In the admin UI
+
+The **Compliance** page (`/admin/compliance`, under Advanced) does all of
+this without the API:
+
+- **Policy:** the retention days per class (blank keeps forever),
+  `cdr_archive_required` with how far the archive is confirmed, recording
+  consent with its prompt, what happens when the announcement fails and
+  the notice tone, the days to answer a subject request and what an
+  erasure does to call records.
+- **Retention runs:** the daily sweep's reports, and a run now.
+- **Legal holds:** active (or every) hold with its scope; placing one by
+  matter, dates, people, call ids and classes; what one holds now; a
+  release with its reason.
+- **Subject requests:** filing an export or an erasure for a person named
+  every way they are known; a request's progress, report and deadline; an
+  export's bundle downloaded (audited) with its checksum and the files to
+  review; an erasure's preview and its confirmation, then what it did.
+
+Each tab asks for its own permission (above); a person without it sees the
+API's refusal on that tab. The deletion log is on the **Audit Log** page.
+
 ## Admin audit log
 
 A middleware inside the API's auth layer records every request that is not
@@ -461,7 +483,8 @@ recorded. The admin UI's **Recordings** page lists them with a player.
    the notice must continue.
 3. If records must outlive the table, have the operator enable the CDR
    archive, then set `cdr_archive_required` so retention waits for it.
-4. Run `POST /compliance/retention/run` once and read the report.
+4. Run `POST /compliance/retention/run` (or **Run now** on the Compliance
+   page) once and read the report.
 5. Give your compliance officer `GET /audit-log` and `GET /cdrs/export`, and
    `subject_request_manage` for the requests people make; set
    `subject_request_days` to your regime's deadline, and `cdr_erasure` to

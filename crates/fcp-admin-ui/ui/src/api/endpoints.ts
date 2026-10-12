@@ -144,6 +144,13 @@ import type {
   WebhookDelivery,
   WebhookDeliveryOutcome,
   WebhookEventType,
+  CompliancePolicy,
+  UpdateCompliancePolicy,
+  RetentionRun,
+  LegalHold,
+  PlaceHoldRequest,
+  SubjectRequest,
+  FileSubjectRequest,
   UserDevice,
 } from '@/types'
 
@@ -749,6 +756,30 @@ export const auditLog = {
 }
 
 // Emergency calling (E911), docs/E911.md
+export const compliance = {
+  policy: () => apiClient.get<CompliancePolicy>('/compliance/policy'),
+  updatePolicy: (data: UpdateCompliancePolicy) =>
+    apiClient.put<CompliancePolicy>('/compliance/policy', data),
+  runRetention: () => apiClient.post<RetentionRun>('/compliance/retention/run', {}),
+  retentionRuns: () =>
+    apiClient.getPage<RetentionRun>('/compliance/retention/runs?limit=50').then((p) => p.data),
+  holds: (all: boolean) => apiClient.getAll<LegalHold>(`/compliance/holds${all ? '?all=true' : ''}`),
+  hold: (id: string) => apiClient.get<LegalHold>(`/compliance/holds/${encodeURIComponent(id)}`),
+  placeHold: (data: PlaceHoldRequest) => apiClient.post<LegalHold>('/compliance/holds', data),
+  releaseHold: (id: string, reason: string) =>
+    apiClient.post<LegalHold>(`/compliance/holds/${encodeURIComponent(id)}/release`, { reason }),
+  subjectRequests: () => apiClient.getAll<SubjectRequest>('/compliance/subject-requests'),
+  subjectRequest: (id: string) =>
+    apiClient.get<SubjectRequest>(`/compliance/subject-requests/${encodeURIComponent(id)}`),
+  fileSubjectRequest: (data: FileSubjectRequest) =>
+    apiClient.post<SubjectRequest>('/compliance/subject-requests', data),
+  confirmErasure: (id: string) =>
+    apiClient.post<SubjectRequest>(`/compliance/subject-requests/${encodeURIComponent(id)}/confirm`, {}),
+  /** The export's bundle (a gzipped tar), as an object URL; each download is audited. */
+  bundleUrl: (id: string) =>
+    apiClient.fetchBlobUrl(`/compliance/subject-requests/${encodeURIComponent(id)}/bundle`),
+}
+
 export const emergency = {
   config: () => apiClient.get<EmergencyConfig>('/emergency/config'),
   updateConfig: (data: UpdateEmergencyConfigRequest) =>
