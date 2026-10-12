@@ -1420,6 +1420,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/encryption/rewrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/system/encryption/rewrap — Move every data encryption key
+         *     the previous KEK wrapped to the current one, after the master key or KMS
+         *     key changed (`docs/ENCRYPTION.md`).
+         */
+        post: operations["encryption_rewrap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/encryption/seal": {
         parameters: {
             query?: never;
@@ -11056,6 +11077,24 @@ export interface components {
             total_deleted: number;
             errors: string[];
         };
+        /** @description Outcome of moving the key ring to a new KEK. */
+        RewrapReport: {
+            /**
+             * Format: int64
+             * @description Keys the previous KEK wrapped, now wrapped by the current one.
+             */
+            rewrapped: number;
+            /**
+             * Format: int64
+             * @description Keys the current KEK already wrapped.
+             */
+            already_current: number;
+            /**
+             * @description Keys neither KEK here wraps (ids): values sealed with them cannot be
+             *     read until a node with their KEK rewraps them.
+             */
+            unreadable: string[];
+        };
         /**
          * @description How far a target has rolled out.
          * @enum {string}
@@ -15655,6 +15694,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReencryptReport"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    encryption_rewrap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RewrapReport"];
                 };
             };
             /** @description An error */

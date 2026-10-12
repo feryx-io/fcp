@@ -52,6 +52,19 @@ pub struct ReencryptReport {
     pub by_column: Vec<(String, u64)>,
 }
 
+/// Outcome of moving the key ring to a new KEK.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RewrapReport {
+    /// Keys the previous KEK wrapped, now wrapped by the current one.
+    pub rewrapped: u64,
+    /// Keys the current KEK already wrapped.
+    pub already_current: u64,
+    /// Keys neither KEK here wraps (ids): values sealed with them cannot be
+    /// read until a node with their KEK rewraps them.
+    pub unreadable: Vec<String>,
+}
+
 /// Key-ring management for a storage backend.
 #[async_trait]
 pub trait EncryptionStore: Send + Sync {
@@ -66,6 +79,11 @@ pub trait EncryptionStore: Send + Sync {
     /// non-active DEK using the active one. Fails when encryption is
     /// disabled.
     async fn reencrypt_secrets(&self) -> anyhow::Result<ReencryptReport>;
+
+    /// Move every data encryption key the previous KEK wrapped
+    /// (`FCP_PREVIOUS_MASTER_KEY`, `FCP_PREVIOUS_AWS_KMS_KEY_ID`) to the
+    /// current one. Fails when encryption is disabled.
+    async fn rewrap_encryption_keys(&self) -> anyhow::Result<RewrapReport>;
 
     /// Seal one value with the active DEK, for a credential that lives in
     /// a configuration file rather than a column (the E911 validator's

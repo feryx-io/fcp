@@ -114,6 +114,7 @@ use utoipa::{Modify, OpenApi};
         crate::v1::encryption::status,
         crate::v1::encryption::rotate,
         crate::v1::encryption::reencrypt,
+        crate::v1::encryption::rewrap,
         crate::v1::encryption::seal,
         crate::v1::emergency::get_config,
         crate::v1::emergency::update_config,

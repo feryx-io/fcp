@@ -86,7 +86,7 @@ pub use crate::config_store::{
     ConfigEntry, ConfigStore, ConfigWatcher,
 };
 pub use crate::device::{Device, DeviceType, LineKey, LineKeyKind, RegistrationState};
-pub use crate::encryption::{EncryptionStatus, EncryptionStore, ReencryptReport};
+pub use crate::encryption::{EncryptionStatus, EncryptionStore, ReencryptReport, RewrapReport};
 pub use crate::error::{
     DialogError, Error, MediaError, ParseError, Result, StorageError, TransactionError,
     TransportError,

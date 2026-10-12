@@ -4,7 +4,7 @@
 Update this file when feature status changes; keep other docs describing scope, not status.
 
 - **Last reviewed:** 2026-10-12 (header and push entries; the full code audit against ARCHITECTURE-v0.2.md was 2026-09-01)
-- **Version:** v0.25.385 · 42 workspace crates
+- **Version:** v0.25.386 · 42 workspace crates
 - **Submodules:** siphon-rs `v2026.10.09` · forge-media `v2026.10.07`
 - **Health:** CI green (fmt, clippy `-D warnings`, tests, cargo-audit) · 0 Dependabot alerts · 0 future-incompat warnings
 
@@ -32,7 +32,7 @@ Update this file when feature status changes; keep other docs describing scope, 
 | Policy engine (`fcp-policy`) | ✅ Extracted (2026-09-01) | Dedicated crate: rule model, evaluator, YAML store with hot reload. `fcp-routing` re-exports everything (no consumer changes). Extraction also fixed the ignored `TimeWindow.timezone` (rules now evaluate in their own timezone, overnight windows supported) and added per-tenant feature toggles (`require_features` on rules + `feature_toggles` in YAML). SBC admission stays in `fcp-sbc-core` (it is rate/capacity control, a different concern); number manipulation remains future (SBC transform stage) |
 | Billing | ✅ Done (2026-09-01) | Dedicated `fcp-billing` crate (rating, balance admission, settlement, hooks; model stays in `fcp-core/src/billing.rs`). Rate plans + longest-prefix rates (migration 047, `/v1/rate-plans`); answered calls rated and **settled** at CDR creation (atomic debit, one charge per call). **Balance enforcement** per tenant (migration 048, `/v1/billing/balance`): 402 at admission when the first billing increment is unaffordable, mid-call cut-off when the affordable duration runs out, fail-open on storage errors. **External hooks**: `billing.*` platform events (`call_rated`, `balance_changed`, `balance_low`, `balance_depleted`, `call_rejected`, `call_cut_off`) → webhooks/WebSocket, plus the `BillingHook` trait for in-process integrations; credits/adjustments via `/v1/billing/balance/transactions`. See `docs/BILLING.md`. Not yet: multi-currency, sub-balances, invoicing |
 | SBC pipeline stages 3–5 | ✅ Done (2026-09-01) | **Reachability**: classified route resolution (`RouteResolution`) — unroutable destinations now get 404 (nothing configured) vs 503 (trunks exist but unavailable) instead of generic 480/500. **Routing**: trunk selection/failover/LB already existed (`TrunkRouter` + LCR); fixed a concurrency-accounting leak that recorded every failover candidate as a started call. **Transform**: headers via HMR (pre-existing) + new per-trunk egress number transforms (`egress_number_transform`: strip prefixes / prepend, applied at route build) |
-| Encryption at rest / KMS | ✅ Done (2026-09-01) | `fcp-crypto` crate: AES-256-GCM field cipher, envelope-wrapped DEKs (`data_encryption_keys`, migration 049), KEK providers `local` (env master key) and `aws-kms` (feature-gated, GenerateDataKey/Decrypt). Postgres backend seals SIP digest/HA1/provisioning passwords, trunk passwords, conference PINs and webhook secrets; legacy plaintext reads through, writes always seal. Platform-admin API: status / rotate / reencrypt at `/v1/system/encryption`. See `docs/ENCRYPTION.md`. Not yet: rewrapping DEKs under a new KEK, media-file encryption |
+| Encryption at rest / KMS | ✅ Done (2026-09-01; moving to a new KEK v0.25.386) | `fcp-crypto` crate: AES-256-GCM field cipher, envelope-wrapped DEKs (`data_encryption_keys`, migration 049), KEK providers `local` (env master key) and `aws-kms` (feature-gated, GenerateDataKey/Decrypt). Postgres backend seals SIP digest/HA1/provisioning passwords, trunk passwords, conference PINs and webhook secrets; legacy plaintext reads through, writes always seal. Platform-admin API: status / rotate / reencrypt at `/v1/system/encryption`. See `docs/ENCRYPTION.md`. Moving to a new KEK (v0.25.386): `FCP_PREVIOUS_MASTER_KEY` / `FCP_PREVIOUS_AWS_KMS_KEY_ID` and `POST /system/encryption/rewrap`. Not yet: media-file encryption |
 
 ## Phase 5 reality check
 
@@ -2194,6 +2194,16 @@ with the site's ELIN as the callback. Proved in `fcp-link/tests/calls.rs`:
 Alice dials 911 at a site with no emergency carrier and the cloud's carrier
 receives her office's address as a PIDF-LO, named by `Geolocation`, from
 the office's ELIN.
+
+Moving to a new master key (v0.25.386): a node holds its KEK and, while a
+deployment moves, the previous one (`FCP_PREVIOUS_MASTER_KEY`,
+`FCP_PREVIOUS_MASTER_KEY_FILE`, `FCP_PREVIOUS_AWS_KMS_KEY_ID`), and reads
+the DEKs either wraps; `POST /api/v1/system/encryption/rewrap` (platform
+admin) unwraps each DEK the previous KEK wrapped and wraps it with the
+current one (`Kek::wrap_dek`, KMS `Encrypt` for AWS), leaving the sealed
+values as they are. Proved by `fcp-storage-postgres/tests/rewrap.rs`: the
+new key alone is refused, both read and rewrap two keys, then the new key
+alone reads what both sealed and the old one no longer opens the ring.
 
 ## Historical documents
 

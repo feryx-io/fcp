@@ -72,6 +72,7 @@ POST /api/v1/system/encryption/reencrypt      # platform admin
 | `GET /api/v1/system/encryption` | provider, KEK id, active DEK, all DEK ids, sealed columns |
 | `POST /api/v1/system/encryption/rotate` | new DEK becomes active; old ones stay for reads |
 | `POST /api/v1/system/encryption/reencrypt` | rewrite every plaintext or old-DEK value with the active DEK; returns counts per column |
+| `POST /api/v1/system/encryption/rewrap` | move every DEK the previous KEK wraps to the current one; returns `rewrapped`, `already_current` and the ids of any key neither KEK here unwraps (`unreadable`) |
 | `POST /api/v1/system/encryption/seal` | seal one value (`{"value": "…"}` → `{"sealed": "enc:v1:…"}`) for a credential that lives in a configuration file rather than a column — today the E911 validator's bearer token (`docs/E911.md`). The value is neither stored nor logged |
 
 **Rotation** is two steps: rotate, then reencrypt once every node has picked
@@ -80,10 +81,25 @@ restart). Old DEKs can be deleted from `data_encryption_keys` only after a
 re-encrypt pass reports `already_current` for everything.
 
 **Changing the master key / KMS key** is not a rotate: existing DEKs are
-wrapped by the old KEK, and this version cannot rewrap them (a node holds one
-KEK at a time). Choose the KEK up front. With AWS KMS, use KMS automatic key
-rotation, which keeps older key versions decryptable behind the same key id.
-Rewrap support (`FCP_PREVIOUS_MASTER_KEY` + a rewrap endpoint) is a follow-up.
+wrapped by the old KEK. A node also given the KEK it is moving from —
+`FCP_PREVIOUS_MASTER_KEY` (or `FCP_PREVIOUS_MASTER_KEY_FILE`) for a local
+key, `FCP_PREVIOUS_AWS_KMS_KEY_ID` for KMS — reads the keys either wraps.
+The move:
+
+1. Give every node the new key (`FCP_MASTER_KEY` or `FCP_AWS_KMS_KEY_ID`)
+   and the old one as the previous, and restart them. A node with the new
+   key alone refuses to start while the active DEK is wrapped by the old.
+2. `POST /api/v1/system/encryption/rewrap` once: each old DEK is unwrapped
+   with the previous KEK and wrapped with the new one. The values sealed
+   with them are not touched — a DEK's material does not change, only what
+   wraps it — so this is quick however many secrets there are. Its answer
+   lists any key neither KEK unwraps.
+3. Remove the previous key from every node's environment and restart.
+
+The old key is needed until step 2 has run; keep it in the recovery plan
+until then. With AWS KMS, KMS automatic key rotation keeps older key
+versions decryptable behind the same key id and needs none of this; moving
+to another KMS key, or between local and KMS, does.
 
 **Backups**: the database alone is not enough to read secrets. Keep the master
 key (or KMS key access) in your recovery plan.
@@ -94,4 +110,3 @@ key (or KMS key access) in your recovery plan.
   object-store encryption is the deployment's responsibility.
 - Redis (registrations, presence, cluster state) — no long-lived secrets.
 - Transport encryption (TLS/SRTP) is separate and already supported.
-- Rewrapping DEKs under a new KEK (see above).
