@@ -303,6 +303,14 @@ async fn enroll(
 /// tenant trunk per site, the cloud's end, toward `[link] sip_host`, with
 /// credentials minted here. Made at the first enrollment and kept across
 /// re-enrollments with a fresh password, since the link that held the old
+/// How a site's emergency call goes up its link: with the location the
+/// site resolved for its caller (a PIDF-LO, which the cloud places the call
+/// by) and its ELIN as the caller (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+const LINK_EMERGENCY_LOCATION: [fcp_core::e911::LocationDelivery; 2] = [
+    fcp_core::e911::LocationDelivery::PidfLo,
+    fcp_core::e911::LocationDelivery::Elin,
+];
+
 /// one is gone. Nothing is made when the cloud names no SIP address.
 async fn provision_link_trunk(state: &LinkState, site: &mut Site) -> Result<(), LinkError> {
     let Some(sip_host) = state
@@ -331,6 +339,7 @@ async fn provision_link_trunk(state: &LinkState, site: &mut Site) -> Result<(), 
         Some(mut trunk) => {
             trunk.hosts = vec![sip_host.to_string()];
             trunk.credentials = Some(credentials);
+            trunk.emergency_location = LINK_EMERGENCY_LOCATION.to_vec();
             trunk.enabled = true;
             trunk.updated_at = now;
             trunk
@@ -353,6 +362,7 @@ async fn provision_link_trunk(state: &LinkState, site: &mut Site) -> Result<(), 
             // After the site's own carriers, which are its first choice.
             trunk.priority = 100;
             trunk.emergency_capable = true;
+            trunk.emergency_location = LINK_EMERGENCY_LOCATION.to_vec();
             trunk.failover.health_check_enabled = false;
             trunk.created_at = now;
             trunk.updated_at = now;

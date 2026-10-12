@@ -9374,7 +9374,17 @@ impl SipMessageHandler {
                     }
                 }
             };
-            let info = self.call_manager.get_call(&call_id)?.emergency?;
+            let call = self.call_manager.get_call(&call_id)?;
+            let info = call.emergency.clone()?;
+            // Up a site's link, the location goes on by value whatever the
+            // next hop's trunk takes: the next hop is the cloud's call
+            // manager, which places the call by it (§3.6 of
+            // `docs/HYBRID_CONTROL_PLANE.md`).
+            let attempt = if call.link_site.is_some() {
+                attempt.with_pidf_lo()
+            } else {
+                attempt
+            };
             let (options, delivered) = crate::emergency::attempt_invite(
                 &info,
                 &attempt,
@@ -11549,7 +11559,14 @@ impl SipMessageHandler {
         // any (§6.3, used only from a device the tenant trusts).
         let client_address = self.trusted_edges.client_address(request, peer.ip());
         let supplied = crate::emergency::supplied_location(request);
-        crate::emergency::detect(
+        // A site's call: named so by a trusted edge (at the call manager),
+        // or up a site's link (at the cloud SBC).
+        let from_site = edge_caller.is_some_and(|e| e.is_site())
+            || self
+                .link_peers
+                .from_peer(peer, &self.flow_registry)
+                .is_some();
+        let mut info = crate::emergency::detect(
             self.storage.as_ref(),
             tenant_id,
             &destination,
@@ -11558,7 +11575,18 @@ impl SipMessageHandler {
             client_address,
             supplied.as_ref(),
         )
-        .await
+        .await?;
+        // A site's call has no user or device here: it is placed where the
+        // site, which knows its caller, says (`docs/HYBRID_CONTROL_PLANE.md`
+        // §3.6), and called back on the number the site sent as its caller.
+        if from_site && info.location.is_none() {
+            info.location = crate::emergency::site_location(supplied, request, client_address);
+            info.callback_number = info
+                .location
+                .as_ref()
+                .and_then(|l| l.callback_number.clone());
+        }
+        Some(info)
     }
 
     /// Who an emergency call is from: the user a trusted edge named, else

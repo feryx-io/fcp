@@ -319,10 +319,19 @@ by the exact connection its REGISTER came on; a call on a fresh
 connection, before the next refresh re-binds, is not the site's. Media
 over the link is RTP, signalling TLS: SRTP on the link trunk waits on
 inbound SDES at the SBC. An emergency call from a site leaves on the
-link trunk with ELIN delivery when the site has no emergency-capable
-trunk of its own, and the cloud places it as a site's call with no
-location of its own: the site's PIDF-LO is not yet carried through, and
-the cloud does not yet place the call by the site's E911 location. The
+link trunk when the site has no emergency-capable trunk of its own, and
+since v0.25.385 it is placed where the site says its caller is: the link
+trunk takes the location by value as well as the ELIN (migration 113
+moves the trunks made before), so the site sends the PIDF-LO it resolved
+for its caller — device, user, network, DID, as at any node — with its
+ELIN as the caller; the cloud SBC, which knows the call came up a link,
+takes that location as the call's (`LocationSource::SiteSupplied`) and
+passes it on by value to the cloud's call manager whatever its trunk
+there takes; the call manager, told by a trusted edge that it is a
+site's call, does the same and delivers it to the tenant's emergency
+carrier as any located call (`fcp-link/tests/calls.rs`). A site whose
+caller has no location sends none, and the cloud has none either: a
+site-wide default location on the site record is a possible follow-up. The
 cloud's BYE to a site goes down the flow, as its INVITE does; that no
 other in-dialog request dials the site's private contact is to be
 proved with the partition harness in phase 6.

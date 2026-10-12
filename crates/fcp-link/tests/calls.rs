@@ -6,13 +6,17 @@
 //! through the cloud — the SBC, then the cloud's call manager as the
 //! tenant's own call, then the tenant's carrier — and a site whose call
 //! manager is gone is unbound, so its numbers answer 480 rather than
-//! ring nothing. Gated on `FCP_TEST_DATABASE_URL`; skipped with a notice
+//! ring nothing. A site phone's 911 leaves through the cloud too, placed
+//! where the site says its caller is: the PIDF-LO the site resolved goes
+//! up the link and on to the carrier, with the site's ELIN as the caller. Gated on `FCP_TEST_DATABASE_URL`; skipped with a notice
 //! when unset.
 
 mod common;
 
 use common::{cloud_with_site_opts, CloudOptions};
-use fcp_core::storage::{CredentialStore, DeviceStore, LineBindingStore, PhoneNumberStore};
+use fcp_core::storage::{
+    CredentialStore, DeviceStore, LineBindingStore, PhoneNumberStore, SiteLocationStore,
+};
 use fcp_testkit::media::allocate_port_pair;
 use fcp_testkit::smoke::{free_port, http_request, loopback, toml_path};
 use fcp_testkit::{bins, Phone, Service, TestDatabase};
@@ -27,6 +31,9 @@ const SITE_NUMBER: &str = "+15125550111";
 /// A number of nobody's here: the outside, reached through the carrier.
 const OUTSIDE_NUMBER: &str = "+15125550999";
 const ALICE_PASSWORD: &str = "Alice-at-the-site-2026!";
+/// The callback number (ELIN) of Alice's office, which the carrier maps
+/// to its address.
+const OFFICE_ELIN: &str = "+15125550123";
 const SOON: Duration = Duration::from_secs(10);
 
 /// Register until the registrar answers 200, or give up.
@@ -252,6 +259,12 @@ async fn calls_cross_a_sites_link_both_ways() {
         carrier_trunk.transport.protocol = fcp_core::transport::TransportType::Udp;
         carrier_trunk.transport.port = Some(carrier.local_addr.port());
         carrier_trunk.failover.health_check_enabled = false;
+        // The tenant's emergency carrier too, taking the location by value.
+        carrier_trunk.emergency_capable = true;
+        carrier_trunk.emergency_location = vec![
+            fcp_core::e911::LocationDelivery::PidfLo,
+            fcp_core::e911::LocationDelivery::Elin,
+        ];
         storage
             .put_trunk(carrier_trunk)
             .await
@@ -289,6 +302,17 @@ async fn calls_cross_a_sites_link_both_ways() {
     );
     device.owner_user_id = Some(alice_user.id);
     device.sip_uri = Some(format!("sip:alice@{REALM}"));
+    // Where Alice's phone is: an office of the tenant's, synced to the
+    // site with the rest of the tenant's E911 places.
+    let mut office = fcp_core::SiteLocation::new("Austin office".to_string(), tenant_id);
+    office.address_line1 = Some("600 Congress Ave".to_string());
+    office.city = Some("Austin".to_string());
+    office.state = Some("TX".to_string());
+    office.postal_code = Some("78701".to_string());
+    office.country = Some("US".to_string());
+    office.e911_callback_number = Some(OFFICE_ELIN.to_string());
+    device.location_id = Some(office.id);
+    storage.put_location(office).await.expect("alice's office");
     let device_id = device.id;
     storage.put_device(device).await.expect("alice's device");
     let mut number = fcp_core::PhoneNumber::new(SITE_NUMBER.to_string(), tenant_id).unwrap();
@@ -549,6 +573,58 @@ max_concurrent_calls = 0
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
     }
+
+    // Alice's 911 at the site, which has no emergency carrier of its own,
+    // leaves up the link and on to the tenant's carrier, placed where the
+    // site says she is: her office, by value, with its ELIN as the caller.
+    let emergency = alice.call("911").await.unwrap();
+    let Some(at_psap) = carrier.incoming(SOON).await else {
+        nodes
+            .fail("the carrier was never asked for Alice's 911")
+            .await;
+    };
+    let location = at_psap
+        .multipart()
+        .and_then(|m| {
+            m.part_by_type(fcp_core::pidf_lo::CONTENT_TYPE)
+                .map(|p| String::from_utf8_lossy(p.body()).into_owned())
+        })
+        .and_then(|xml| fcp_core::pidf_lo::parse(&xml))
+        .and_then(|parsed| parsed.address);
+    check!(
+        nodes,
+        location
+            .as_ref()
+            .is_some_and(|a| a.address1.contains("600") && a.city == "Austin"),
+        "the carrier is told where Alice is, as the site resolved it: {location:?}"
+    );
+    check!(
+        nodes,
+        at_psap.header("Geolocation").is_some(),
+        "the location is named by Geolocation"
+    );
+    let caller = format!(
+        "{} {}",
+        at_psap.header("From").unwrap_or_default(),
+        at_psap.header("P-Asserted-Identity").unwrap_or_default()
+    );
+    check!(
+        nodes,
+        caller.contains(OFFICE_ELIN),
+        "the PSAP calls back the office's ELIN: {caller}"
+    );
+    let psap_leg = at_psap.answer().await.unwrap();
+    if let Err(e) = emergency.answered(SOON).await {
+        nodes
+            .fail(&format!("Alice's 911 was not answered: {e}"))
+            .await;
+    }
+    emergency.hangup().await.unwrap();
+    check!(
+        nodes,
+        psap_leg.ended(SOON).await,
+        "Alice's hangup reaches the PSAP"
+    );
 
     // The site's call manager gone, its connection closes and the site is
     // unbound: a carrier's call to its number is refused, not rung into
