@@ -108,6 +108,15 @@ the cloud's stand-in APNs and answering there, a gone token let go at the
 site, a push without the link's token refused, and one for another tenant
 refused by the cloud.
 
+v0.25.382: every INVITE to a registered phone names its call in
+`X-FCP-Call-Id`, as the call's push did, so a woken app knows which INVITE
+is the call already on its screen.
+
+Anvil's phases are done too: A1 (anvil #25), A2 Android (#26) and A3 iOS
+(#27). What is left is delivery on devices — TestFlight and a Play test
+track — which waits for the publisher's Apple Developer and Firebase
+accounts and their keys in `[push]`.
+
 ## 1. What FCP has, and what it lacks
 
 Nothing of push exists in FCP or siphon-rs: no `pn-*` parameter, no
@@ -410,11 +419,22 @@ shows and ends at once). `[push] payload = "minimal"` leaves out
 ### Phase A2: Android (anvil)
 - FCM, the call push to Telecom and the call's service, the phone started
   without the UI, the cancel push; the emulator test against a stand-in.
+- Done (anvil #26): the publisher's Firebase project given at build time,
+  the call push to Telecom at once, the phone started without the UI
+  through JNI, the INVITE matched by `X-FCP-Call-Id`, the cancel push;
+  Telecom fed by the Rust core rather than Dart; proved on the emulator
+  with pushes handed in as FCM would hand them.
 
 ### Phase A3: iOS (anvil)
 - PushKit, the `voip` background mode, CallKit from the payload, the phone
   started without the UI; then TestFlight and a Play test track, with the
   owner's accounts.
+- Done (anvil #27): PushKit under the signing team's topic, CallKit told
+  of every push (a call that cannot ring is reported and ended, as Apple
+  requires), the phone started without the UI through a C ABI, the INVITE
+  matched by `X-FCP-Call-Id`, the cancel push; proved on the simulator
+  with pushes handed in as PushKit would hand them. TestFlight and the
+  Play test track wait for the owner's accounts.
 
 ## 5. What this does not do
 

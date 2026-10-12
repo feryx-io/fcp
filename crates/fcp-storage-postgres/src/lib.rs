@@ -7357,6 +7357,11 @@ impl PostgresStorage {
             priority,
             duration: duration as u32,
             recording_path: std::path::PathBuf::from(recording_path),
+            size_bytes: row
+                .try_get::<Option<i64>, _>("size_bytes")
+                .ok()
+                .flatten()
+                .map(|n| n as u64),
             site_id: row
                 .try_get::<Option<String>, _>("site_id")
                 .ok()
@@ -7578,7 +7583,7 @@ impl VoicemailStore for PostgresStorage {
     async fn get_message(&self, id: &str) -> Result<Option<fcp_core::VoicemailMessage>> {
         let row = sqlx::query(
             "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
-                    recording_path, transcription, created_at, accessed_at, site_id
+                    recording_path, transcription, created_at, accessed_at, site_id, size_bytes
              FROM voicemail_messages WHERE id = $1",
         )
         .bind(id)
@@ -7594,7 +7599,7 @@ impl VoicemailStore for PostgresStorage {
     async fn list_messages(&self, mailbox_id: &str) -> Result<Vec<fcp_core::VoicemailMessage>> {
         let rows = sqlx::query(
             "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
-                    recording_path, transcription, created_at, accessed_at, site_id
+                    recording_path, transcription, created_at, accessed_at, site_id, size_bytes
              FROM voicemail_messages
              WHERE mailbox_id = $1 AND status != 'deleted'
              ORDER BY created_at DESC",
@@ -7617,8 +7622,8 @@ impl VoicemailStore for PostgresStorage {
         sqlx::query(
             "INSERT INTO voicemail_messages
              (id, mailbox_id, caller, caller_name, status, priority, duration,
-              recording_path, transcription, created_at, accessed_at, site_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+              recording_path, transcription, created_at, accessed_at, site_id, size_bytes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              ON CONFLICT (id) DO UPDATE SET
                  mailbox_id = EXCLUDED.mailbox_id,
                  caller = EXCLUDED.caller,
@@ -7629,7 +7634,8 @@ impl VoicemailStore for PostgresStorage {
                  recording_path = EXCLUDED.recording_path,
                  transcription = EXCLUDED.transcription,
                  accessed_at = EXCLUDED.accessed_at,
-                 site_id = EXCLUDED.site_id",
+                 site_id = EXCLUDED.site_id,
+                 size_bytes = COALESCE(EXCLUDED.size_bytes, voicemail_messages.size_bytes)",
         )
         .bind(&message.id)
         .bind(&message.mailbox_id)
@@ -7646,6 +7652,7 @@ impl VoicemailStore for PostgresStorage {
         .bind(created_at)
         .bind(accessed_at)
         .bind(message.site_id.map(|s| s.to_string()))
+        .bind(message.size_bytes.map(|n| n as i64))
         .execute(self.writes())
         .await?;
 
@@ -7659,7 +7666,7 @@ impl VoicemailStore for PostgresStorage {
     ) -> Result<Vec<(i64, fcp_core::VoicemailMessage)>> {
         let rows = sqlx::query(
             "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
-                    recording_path, transcription, created_at, accessed_at, site_id, ship_seq
+                    recording_path, transcription, created_at, accessed_at, site_id, size_bytes, ship_seq
              FROM voicemail_messages
              WHERE ship_seq > $1 ORDER BY ship_seq LIMIT $2",
         )
@@ -7761,7 +7768,7 @@ impl VoicemailStore for PostgresStorage {
     ) -> Result<Vec<fcp_core::VoicemailMessage>> {
         let rows = sqlx::query(
             "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
-                    recording_path, transcription, created_at, accessed_at, site_id
+                    recording_path, transcription, created_at, accessed_at, site_id, size_bytes
              FROM voicemail_messages
              WHERE mailbox_id = $1 AND status = $2
              ORDER BY created_at DESC",
@@ -7819,7 +7826,8 @@ impl VoicemailStore for PostgresStorage {
                 COUNT(CASE WHEN status = 'new' THEN 1 END) as new_count,
                 COUNT(CASE WHEN status = 'heard' THEN 1 END) as heard,
                 COUNT(CASE WHEN status = 'saved' THEN 1 END) as saved,
-                COALESCE(AVG(duration)::FLOAT8, 0.0) as avg_duration
+                COALESCE(AVG(duration)::FLOAT8, 0.0) as avg_duration,
+                COALESCE(SUM(size_bytes), 0)::BIGINT as storage_used
              FROM voicemail_messages
              WHERE mailbox_id = $1 AND status != 'deleted'",
         )
@@ -7832,13 +7840,14 @@ impl VoicemailStore for PostgresStorage {
         let heard: i64 = row.try_get("heard")?;
         let saved: i64 = row.try_get("saved")?;
         let avg_duration: f64 = row.try_get("avg_duration")?;
+        let storage_used: i64 = row.try_get("storage_used")?;
 
         Ok(fcp_core::VoicemailStats {
             total_messages: total as u32,
             new_messages: new_count as u32,
             heard_messages: heard as u32,
             saved_messages: saved as u32,
-            storage_used: 0, // TODO: Calculate actual storage from file sizes
+            storage_used: storage_used as u64,
             avg_duration: avg_duration as u32,
         })
     }
