@@ -492,11 +492,23 @@ impl PostgresStorage {
             .await
             .context("Failed to initialize encryption key provider")?
         {
-            Some(kek) => Some(Arc::new(
-                EncryptionState::load(&pool, kek, settings.provider_name())
-                    .await
-                    .context("Failed to load data encryption keys")?,
-            )),
+            Some(kek) => {
+                // The KEK this deployment is moving from, while it moves.
+                let previous = match EncryptionSettings::previous_from_env()
+                    .context("Invalid previous encryption key")?
+                {
+                    Some(previous) => previous
+                        .kek()
+                        .await
+                        .context("Failed to initialize the previous encryption key provider")?,
+                    None => None,
+                };
+                Some(Arc::new(
+                    EncryptionState::load(&pool, kek, previous, settings.provider_name())
+                        .await
+                        .context("Failed to load data encryption keys")?,
+                ))
+            }
             None => {
                 info!("Encryption at rest disabled (FCP_ENCRYPTION_PROVIDER not set)");
                 None
@@ -2812,6 +2824,14 @@ impl EncryptionStore for PostgresStorage {
             .as_ref()
             .context("encryption at rest is not enabled (set FCP_ENCRYPTION_PROVIDER)")?;
         enc.reencrypt(self.writes()).await
+    }
+
+    async fn rewrap_encryption_keys(&self) -> Result<fcp_core::encryption::RewrapReport> {
+        let enc = self
+            .encryption
+            .as_ref()
+            .context("encryption at rest is not enabled (set FCP_ENCRYPTION_PROVIDER)")?;
+        enc.rewrap(self.writes()).await
     }
 
     async fn seal_secret(&self, plaintext: &str) -> Result<String> {

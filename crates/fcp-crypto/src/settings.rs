@@ -7,6 +7,9 @@
 //! | `FCP_MASTER_KEY` | `local`: base64 of 32 random bytes |
 //! | `FCP_MASTER_KEY_FILE` | `local`: path to a file holding the base64 key (alternative) |
 //! | `FCP_AWS_KMS_KEY_ID` | `aws-kms`: KMS key id, ARN, or alias |
+//! | `FCP_PREVIOUS_MASTER_KEY` | while moving to a new KEK: the old local master key (base64) |
+//! | `FCP_PREVIOUS_MASTER_KEY_FILE` | the same, from a file |
+//! | `FCP_PREVIOUS_AWS_KMS_KEY_ID` | while moving to a new KEK: the old KMS key |
 //!
 //! Setting `FCP_MASTER_KEY` (or the file variant) without a provider selects
 //! `local`. Generate a key with `openssl rand -base64 32`.
@@ -121,17 +124,38 @@ impl EncryptionSettings {
     }
 }
 
+impl EncryptionSettings {
+    /// The KEK a deployment is moving from, while it moves: what still
+    /// unwraps the keys the old KEK wrapped, until they are rewrapped
+    /// (`docs/ENCRYPTION.md`). `None` when no previous key is set.
+    pub fn previous_from_env() -> Result<Option<Self>> {
+        if let Some(master_key) =
+            read_key_from_env("FCP_PREVIOUS_MASTER_KEY", "FCP_PREVIOUS_MASTER_KEY_FILE")?
+        {
+            return Ok(Some(Self::Local { master_key }));
+        }
+        Ok(std::env::var("FCP_PREVIOUS_AWS_KMS_KEY_ID")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .map(|key_id| Self::AwsKms { key_id }))
+    }
+}
+
 fn read_master_key_from_env() -> Result<Option<Zeroizing<Vec<u8>>>> {
-    if let Ok(encoded) = std::env::var("FCP_MASTER_KEY") {
+    read_key_from_env("FCP_MASTER_KEY", "FCP_MASTER_KEY_FILE")
+}
+
+/// A master key from `var`, else from the file `file_var` names.
+fn read_key_from_env(var: &str, file_var: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
+    if let Ok(encoded) = std::env::var(var) {
         if !encoded.trim().is_empty() {
             return decode_master_key(&encoded).map(Some);
         }
     }
-    if let Ok(path) = std::env::var("FCP_MASTER_KEY_FILE") {
+    if let Ok(path) = std::env::var(file_var) {
         if !path.trim().is_empty() {
-            let encoded = std::fs::read_to_string(&path).map_err(|e| {
-                CryptoError::Config(format!("cannot read FCP_MASTER_KEY_FILE {path}: {e}"))
-            })?;
+            let encoded = std::fs::read_to_string(&path)
+                .map_err(|e| CryptoError::Config(format!("cannot read {file_var} {path}: {e}")))?;
             return decode_master_key(&encoded).map(Some);
         }
     }

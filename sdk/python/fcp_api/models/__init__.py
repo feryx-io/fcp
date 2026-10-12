@@ -406,6 +406,7 @@ from .required_claim import RequiredClaim
 from .resource_counts import ResourceCounts
 from .resync_response import ResyncResponse
 from .retention_run_response import RetentionRunResponse
+from .rewrap_report import RewrapReport
 from .rollout_stage import RolloutStage
 from .rotate_api_token_request import RotateApiTokenRequest
 from .rotate_webhook_secret_request import RotateWebhookSecretRequest
@@ -937,6 +938,7 @@ __all__ = (
     "ResourceCounts",
     "ResyncResponse",
     "RetentionRunResponse",
+    "RewrapReport",
     "RolloutStage",
     "RotateApiTokenRequest",
     "RotateWebhookSecretRequest",

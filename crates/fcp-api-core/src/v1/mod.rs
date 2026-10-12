@@ -269,6 +269,7 @@ pub fn router() -> Router<ApiState> {
         .route("/system/encryption", get(encryption::status))
         .route("/system/encryption/rotate", post(encryption::rotate))
         .route("/system/encryption/reencrypt", post(encryption::reencrypt))
+        .route("/system/encryption/rewrap", post(encryption::rewrap))
         .route("/system/encryption/seal", post(encryption::seal))
         // Emergency calling (E911)
         .route(

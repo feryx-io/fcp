@@ -106,6 +106,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/system/encryption", Needs(SystemConfig)),
     (POST, "/system/encryption/rotate", Needs(SystemConfig)),
     (POST, "/system/encryption/reencrypt", Needs(SystemConfig)),
+    (POST, "/system/encryption/rewrap", Needs(SystemConfig)),
     (POST, "/system/encryption/seal", Needs(SystemConfig)),
     // Emergency calling.
     (GET, "/emergency/config", Needs(EmergencyRead)),

@@ -3632,6 +3632,37 @@
         }
       }
     },
+    "/api/v1/system/encryption/rewrap": {
+      "post": {
+        "tags": [
+          "encryption"
+        ],
+        "summary": "POST /api/v1/system/encryption/rewrap — Move every data encryption key\nthe previous KEK wrapped to the current one, after the master key or KMS\nkey changed (`docs/ENCRYPTION.md`).",
+        "operationId": "encryption_rewrap",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RewrapReport"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/encryption/seal": {
       "post": {
         "tags": [
@@ -35761,6 +35792,36 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "RewrapReport": {
+        "type": "object",
+        "description": "Outcome of moving the key ring to a new KEK.",
+        "required": [
+          "rewrapped",
+          "already_current",
+          "unreadable"
+        ],
+        "properties": {
+          "rewrapped": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Keys the previous KEK wrapped, now wrapped by the current one.",
+            "minimum": 0
+          },
+          "already_current": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Keys the current KEK already wrapped.",
+            "minimum": 0
+          },
+          "unreadable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Keys neither KEK here wraps (ids): values sealed with them cannot be\nread until a node with their KEK rewraps them."
           }
         }
       },

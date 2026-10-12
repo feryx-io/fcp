@@ -115,6 +115,44 @@ pub async fn reencrypt(
     Ok(Json(report))
 }
 
+/// POST /api/v1/system/encryption/rewrap — Move every data encryption key
+/// the previous KEK wrapped to the current one, after the master key or KMS
+/// key changed (`docs/ENCRYPTION.md`).
+#[utoipa::path(
+    post,
+    path = "/api/v1/system/encryption/rewrap",
+    tag = "encryption",
+    operation_id = "encryption_rewrap",
+    responses(
+        (status = 200, description = "OK", body = fcp_core::RewrapReport),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn rewrap(
+    State(state): State<ApiState>,
+    identity: Option<Extension<AuthIdentity>>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_platform(identity.as_ref().map(|e| &e.0))?;
+    let store = state
+        .storage
+        .as_ref()
+        .and_then(|s| s.encryption_store())
+        .ok_or_else(|| {
+            ApiError::Conflict("Encryption at rest is not enabled on this deployment".to_string())
+        })?;
+    let report = store
+        .rewrap_encryption_keys()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Rewrapping the keys failed: {e}")))?;
+    info!(
+        rewrapped = report.rewrapped,
+        already_current = report.already_current,
+        unreadable = report.unreadable.len(),
+        "Data encryption keys rewrapped via API"
+    );
+    Ok(Json(report))
+}
+
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct SealRequest {
     /// The credential to seal, in plaintext.

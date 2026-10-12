@@ -6,7 +6,7 @@
 //! and which columns are sealed.
 
 use anyhow::{bail, Context, Result};
-use fcp_core::encryption::{EncryptionStatus, ReencryptReport};
+use fcp_core::encryption::{EncryptionStatus, ReencryptReport, RewrapReport};
 use fcp_crypto::{CryptoError, FieldCipher, Kek};
 use sqlx::{Pool, Postgres, Row};
 use std::sync::{Arc, RwLock};
@@ -112,6 +112,9 @@ pub(crate) const SEALED_COLUMNS: &[SealedColumn] = &[
 /// Live encryption state for one backend instance.
 pub(crate) struct EncryptionState {
     kek: Arc<dyn Kek>,
+    /// The KEK the deployment is moving from, while it moves: it unwraps
+    /// the keys it wrapped until [`EncryptionState::rewrap`] moves them.
+    previous: Option<Arc<dyn Kek>>,
     provider: &'static str,
     cipher: RwLock<FieldCipher>,
 }
@@ -130,13 +133,14 @@ impl EncryptionState {
     pub async fn load(
         pool: &Pool<Postgres>,
         kek: Arc<dyn Kek>,
+        previous: Option<Arc<dyn Kek>>,
         provider: &'static str,
     ) -> Result<Self> {
-        let cipher = match load_ring(pool, kek.as_ref()).await? {
+        let cipher = match load_ring(pool, kek.as_ref(), previous.as_deref()).await? {
             Some(cipher) => cipher,
             None => {
                 create_first_dek(pool, kek.as_ref()).await?;
-                load_ring(pool, kek.as_ref())
+                load_ring(pool, kek.as_ref(), previous.as_deref())
                     .await?
                     .context("data encryption key ring empty after creating the first key")?
             }
@@ -150,6 +154,7 @@ impl EncryptionState {
         );
         Ok(Self {
             kek,
+            previous,
             provider,
             cipher: RwLock::new(cipher),
         })
@@ -181,7 +186,7 @@ impl EncryptionState {
 
     /// Re-read the key ring from the database.
     pub async fn refresh(&self, pool: &Pool<Postgres>) -> Result<()> {
-        let cipher = load_ring(pool, self.kek.as_ref())
+        let cipher = load_ring(pool, self.kek.as_ref(), self.previous.as_deref())
             .await?
             .context("data encryption key ring is empty")?;
         *self.cipher.write().expect("cipher lock") = cipher;
@@ -206,6 +211,54 @@ impl EncryptionState {
             key_ids: cipher.key_ids(),
             sealed_columns: SEALED_COLUMNS.iter().map(|c| c.name()).collect(),
         }
+    }
+
+    /// Move every key the previous KEK wrapped to the current one: unwrapped
+    /// with the previous, wrapped with the current, the row's KEK id with
+    /// it, one key at a time. Values sealed with those keys are untouched —
+    /// a key's material does not change, only what wraps it.
+    pub async fn rewrap(&self, pool: &Pool<Postgres>) -> Result<RewrapReport> {
+        let rows = sqlx::query("SELECT id, kek_id, wrapped_key FROM data_encryption_keys")
+            .fetch_all(pool)
+            .await?;
+        let mut report = RewrapReport::default();
+        for row in rows {
+            let id: String = row.get("id");
+            let kek_id: String = row.get("kek_id");
+            if kek_id == self.kek.id() {
+                report.already_current += 1;
+                continue;
+            }
+            let Some(previous) = self.previous.as_ref().filter(|p| p.id() == kek_id) else {
+                warn!(key_id = %id, wrapped_by = %kek_id, "A data encryption key no KEK here can unwrap");
+                report.unreadable.push(id);
+                continue;
+            };
+            let wrapped: Vec<u8> = row.get("wrapped_key");
+            let dek = previous
+                .unwrap_dek(&wrapped)
+                .await
+                .with_context(|| format!("unwrapping data encryption key {id}"))?;
+            let rewrapped = self
+                .kek
+                .wrap_dek(&dek)
+                .await
+                .with_context(|| format!("wrapping data encryption key {id}"))?;
+            sqlx::query(
+                "UPDATE data_encryption_keys SET wrapped_key = $1, kek_id = $2
+                  WHERE id = $3 AND kek_id = $4",
+            )
+            .bind(&rewrapped)
+            .bind(self.kek.id())
+            .bind(&id)
+            .bind(&kek_id)
+            .execute(pool)
+            .await?;
+            info!(key_id = %id, from = %kek_id, to = self.kek.id(), "Data encryption key rewrapped");
+            report.rewrapped += 1;
+        }
+        self.refresh(pool).await?;
+        Ok(report)
     }
 
     /// Re-seal every stored secret that is plaintext or uses a non-active DEK.
@@ -272,9 +325,13 @@ impl EncryptionState {
     }
 }
 
-/// Read every DEK, unwrap with `kek`, and build the cipher. `None` when the
-/// table is empty.
-async fn load_ring(pool: &Pool<Postgres>, kek: &dyn Kek) -> Result<Option<FieldCipher>> {
+/// Read every DEK, unwrap with `kek` (or, for a key it wrapped, with
+/// `previous`), and build the cipher. `None` when the table is empty.
+async fn load_ring(
+    pool: &Pool<Postgres>,
+    kek: &dyn Kek,
+    previous: Option<&dyn Kek>,
+) -> Result<Option<FieldCipher>> {
     let rows = sqlx::query(
         "SELECT id, kek_id, wrapped_key, active FROM data_encryption_keys ORDER BY created_at",
     )
@@ -292,7 +349,12 @@ async fn load_ring(pool: &Pool<Postgres>, kek: &dyn Kek) -> Result<Option<FieldC
         let wrapped: Vec<u8> = row.get("wrapped_key");
         let is_active: bool = row.get("active");
 
-        if kek_id != kek.id() {
+        // A key the previous KEK wrapped, while the deployment moves.
+        let unwrapper = match previous {
+            Some(previous) if kek_id == previous.id() => previous,
+            _ => kek,
+        };
+        if kek_id != unwrapper.id() {
             if is_active {
                 bail!(
                     "active data encryption key {id} was wrapped by KEK {kek_id} but this process \
@@ -308,7 +370,7 @@ async fn load_ring(pool: &Pool<Postgres>, kek: &dyn Kek) -> Result<Option<FieldC
             continue;
         }
 
-        let dek = kek
+        let dek = unwrapper
             .unwrap_dek(&wrapped)
             .await
             .with_context(|| format!("unwrapping data encryption key {id}"))?;

@@ -30,6 +30,10 @@ pub trait Kek: Send + Sync {
 
     /// Recover a DEK from its wrapped form.
     async fn unwrap_dek(&self, wrapped: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
+
+    /// Wrap an existing DEK: what moving a key ring to a new KEK does with
+    /// each key the previous KEK unwrapped (`docs/ENCRYPTION.md`).
+    async fn wrap_dek(&self, dek: &[u8]) -> Result<Vec<u8>>;
 }
 
 /// Wraps DEKs with a 32-byte master key held in memory (AES-256-GCM).
@@ -73,6 +77,16 @@ impl Kek for LocalKek {
 
     async fn generate_dek(&self) -> Result<(Zeroizing<Vec<u8>>, Vec<u8>)> {
         let dek = generate_dek();
+        let wrapped = self.wrap_dek(&dek).await?;
+        Ok((dek, wrapped))
+    }
+
+    async fn wrap_dek(&self, dek: &[u8]) -> Result<Vec<u8>> {
+        if dek.len() != DEK_LEN {
+            return Err(CryptoError::Kek(
+                "a key to wrap has the wrong length".into(),
+            ));
+        }
         let mut nonce_bytes = [0u8; 12];
         rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from(nonce_bytes);
@@ -81,7 +95,7 @@ impl Kek for LocalKek {
             .encrypt(
                 &nonce,
                 aes_gcm::aead::Payload {
-                    msg: &dek,
+                    msg: dek,
                     aad: self.id.as_bytes(),
                 },
             )
@@ -89,7 +103,7 @@ impl Kek for LocalKek {
         let mut wrapped = Vec::with_capacity(12 + ct.len());
         wrapped.extend_from_slice(&nonce_bytes);
         wrapped.extend_from_slice(&ct);
-        Ok((dek, wrapped))
+        Ok(wrapped)
     }
 
     async fn unwrap_dek(&self, wrapped: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
@@ -202,6 +216,22 @@ pub mod aws {
                 .as_ref()
                 .to_vec();
             Ok(Zeroizing::new(dek))
+        }
+
+        async fn wrap_dek(&self, dek: &[u8]) -> Result<Vec<u8>> {
+            let out = self
+                .client
+                .encrypt()
+                .key_id(&self.key_id)
+                .plaintext(Blob::new(dek))
+                .send()
+                .await
+                .map_err(|e| CryptoError::Kek(format!("Encrypt: {e}")))?;
+            Ok(out
+                .ciphertext_blob()
+                .ok_or_else(|| CryptoError::Kek("Encrypt returned no ciphertext".into()))?
+                .as_ref()
+                .to_vec())
         }
     }
 }
