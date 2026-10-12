@@ -171,6 +171,40 @@ pub fn supplied_location(request: &sip_core::Request) -> Option<fcp_core::E911Ad
     parsed.address.filter(|a| !a.address1.trim().is_empty())
 }
 
+/// Where a site's emergency call is: the location the site sent, with the
+/// callback number it sent as the caller — a site places an emergency call
+/// as its ELIN (`outbound_identity`). `None` when the site sent none.
+pub fn site_location(
+    supplied: Option<fcp_core::E911Address>,
+    request: &sip_core::Request,
+    client_address: Option<IpAddr>,
+) -> Option<fcp_core::e911::DispatchableLocation> {
+    let address = supplied?;
+    let callback_number = sip_parse::header(request.headers(), "P-Asserted-Identity")
+        .or_else(|| sip_parse::header(request.headers(), "From"))
+        .and_then(|value| {
+            let value = value.as_str();
+            let uri = value
+                .split('<')
+                .nth(1)
+                .and_then(|s| s.split('>').next())
+                .unwrap_or(value);
+            let user = uri.split(':').nth(1)?.split(['@', ';']).next()?.to_string();
+            let digits = user.trim_start_matches('+');
+            (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then_some(user)
+        });
+    Some(fcp_core::e911::DispatchableLocation {
+        address,
+        callback_number,
+        source: fcp_core::e911::LocationSource::SiteSupplied,
+        location_id: None,
+        location_name: None,
+        point: None,
+        client_address: client_address.map(|a| a.to_string()),
+        declared_age: None,
+    })
+}
+
 /// The tenant's emergency configuration, or the US defaults.
 pub async fn config_for(
     storage: Option<&Arc<fcp_core::DynStorage>>,
@@ -327,6 +361,16 @@ impl EmergencyAttempt {
             ..self.clone()
         })
     }
+
+    /// This attempt carrying the location by value too: a site's call
+    /// going on to the cloud's call manager, which places it by the
+    /// location (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+    pub fn with_pidf_lo(mut self) -> Self {
+        if !self.delivery.contains(&LocationDelivery::PidfLo) {
+            self.delivery.push(LocationDelivery::PidfLo);
+        }
+        self
+    }
 }
 
 /// The INVITE options one attempt goes out with, and the delivery methods
@@ -387,42 +431,18 @@ pub fn attempt_invite(
     let body = match pidf {
         Some(document) => {
             let content_id = format!("{}.location@{}", call_id.as_uuid(), host);
-            let part = sip_core::BodyPart::new(fcp_core::pidf_lo::CONTENT_TYPE, document)
-                .and_then(|p| p.with_content_id(&content_id));
-            match part {
-                Ok(pidf_part) => {
-                    let mut multipart = sip_core::MultipartBody::mixed();
-                    let sdp_part =
-                        sdp.map(|s| sip_core::BodyPart::new("application/sdp", s.to_string()));
-                    let built = match sdp_part {
-                        Some(Ok(p)) => multipart.push(p).and_then(|_| multipart.push(pidf_part)),
-                        Some(Err(e)) => Err(e),
-                        None => multipart.push(pidf_part),
-                    };
-                    match built.and_then(|_| {
-                        sip_core::Uri::parse(&format!("cid:{content_id}"))
-                            .map_err(|e| sip_core::MultipartError::InvalidHeader(e.to_string()))
-                    }) {
-                        Ok(uri) => {
-                            let geolocation = sip_core::GeolocationHeader::single(
-                                sip_core::GeolocationValue::new(uri),
-                            );
-                            let _ = extra.push("Geolocation", geolocation.to_string());
-                            let _ = extra.push(
-                                "Geolocation-Routing",
-                                sip_core::GeolocationRoutingHeader::allowed(true).to_string(),
-                            );
-                            delivered.push(LocationDelivery::PidfLo);
-                            Some(sip_uac::InviteBody::multipart(&multipart))
-                        }
-                        Err(e) => {
-                            warn!(call_id = %call_id, error = %e, "Could not build the location body; sending without it");
-                            sdp.map(sip_uac::InviteBody::sdp)
-                        }
-                    }
+            match located_body(sdp, document, &content_id) {
+                Ok((body, geolocation)) => {
+                    let _ = extra.push("Geolocation", geolocation);
+                    let _ = extra.push(
+                        "Geolocation-Routing",
+                        sip_core::GeolocationRoutingHeader::allowed(true).to_string(),
+                    );
+                    delivered.push(LocationDelivery::PidfLo);
+                    Some(body)
                 }
                 Err(e) => {
-                    warn!(call_id = %call_id, error = %e, "Could not build the location part; sending without it");
+                    warn!(call_id = %call_id, error = %e, "Could not build the location body; sending without it");
                     sdp.map(sip_uac::InviteBody::sdp)
                 }
             }
@@ -439,6 +459,29 @@ pub fn attempt_invite(
         },
         delivered,
     )
+}
+
+/// A `multipart/mixed` body of `sdp` and the PIDF-LO `document` under
+/// `content_id`, and the `Geolocation` header value naming it (RFC 6442).
+pub fn located_body(
+    sdp: Option<&str>,
+    document: String,
+    content_id: &str,
+) -> Result<(sip_uac::InviteBody, String), sip_core::MultipartError> {
+    let pidf_part = sip_core::BodyPart::new(fcp_core::pidf_lo::CONTENT_TYPE, document)?
+        .with_content_id(content_id)?;
+    let mut multipart = sip_core::MultipartBody::mixed();
+    if let Some(sdp) = sdp {
+        multipart.push(sip_core::BodyPart::new("application/sdp", sdp.to_string())?)?;
+    }
+    multipart.push(pidf_part)?;
+    let uri = sip_core::Uri::parse(&format!("cid:{content_id}"))
+        .map_err(|e| sip_core::MultipartError::InvalidHeader(e.to_string()))?;
+    let geolocation = sip_core::GeolocationHeader::single(sip_core::GeolocationValue::new(uri));
+    Ok((
+        sip_uac::InviteBody::multipart(&multipart),
+        geolocation.to_string(),
+    ))
 }
 
 /// What a response said about the location it was sent: its

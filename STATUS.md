@@ -4,7 +4,7 @@
 Update this file when feature status changes; keep other docs describing scope, not status.
 
 - **Last reviewed:** 2026-10-12 (header and push entries; the full code audit against ARCHITECTURE-v0.2.md was 2026-09-01)
-- **Version:** v0.25.383 · 42 workspace crates
+- **Version:** v0.25.385 · 42 workspace crates
 - **Submodules:** siphon-rs `v2026.10.09` · forge-media `v2026.10.07`
 - **Health:** CI green (fmt, clippy `-D warnings`, tests, cargo-audit) · 0 Dependabot alerts · 0 future-incompat warnings
 
@@ -1124,8 +1124,8 @@ IP alone, so a leg learning its peer from a named address went deaf
 beside a peer on the same address (forge-media v2026.09.26 classifies
 by exact address first). Left for later: a site binds at one SBC and is
 known by the exact connection it registered on; the link carries RTP,
-not SRTP; a site's emergency call reaches the cloud without its
-location; in-dialog requests other than BYE to a site behind NAT are
+not SRTP; a site's emergency call reached the cloud without its
+location (carried since v0.25.385); in-dialog requests other than BYE to a site behind NAT are
 proved in phase 6.
 Phase 5 done (v0.25.272): records up. Migration 081 gives `cdrs`,
 `call_recordings`, `conference_recordings`, `voicemail_mailboxes` and
@@ -2177,6 +2177,23 @@ it (messages saved before count as nothing). A caller missing from a YAML
 routing store, noted in ship-and-operate phase 4 as a 500, has been refused
 (403) since the production stack's phase 5 checked every caller as a user
 of the call's tenant before evaluating; the notes are corrected.
+
+v0.25.384: hickory-resolver 0.26.3, clearing three advisories (DNSSEC
+failures obscured, an unbounded TC-retry loop, irrelevant CNAMEs followed).
+
+A site's emergency call carries its caller's location (v0.25.385): a site
+phone's 911 leaving on the link trunk went to the cloud with ELIN only, and
+the cloud, which has no user or device of the site's, placed it with no
+location at all. The link trunk now takes the location by value too
+(migration 113 moves existing link trunks; the journal takes it to their
+sites), so the site sends the PIDF-LO it resolved; the cloud SBC takes it as
+the call's location (`LocationSource::SiteSupplied`) and always passes it on
+by value to the cloud's call manager, which does the same for a site's call
+its trusted edge names and delivers it to the tenant's emergency carrier,
+with the site's ELIN as the callback. Proved in `fcp-link/tests/calls.rs`:
+Alice dials 911 at a site with no emergency carrier and the cloud's carrier
+receives her office's address as a PIDF-LO, named by `Geolocation`, from
+the office's ELIN.
 
 ## Historical documents
 

@@ -193,6 +193,10 @@ pub enum LocationSource {
     Declared,
     /// The E911 address registered on the caller's phone number (DID).
     PhoneNumber,
+    /// The location a site resolved for its own caller and sent up its
+    /// link with the call (`docs/HYBRID_CONTROL_PLANE.md` §3.6): the cloud
+    /// has no user or device of the site's to place the call by.
+    SiteSupplied,
 }
 
 impl std::fmt::Display for LocationSource {
@@ -205,6 +209,7 @@ impl std::fmt::Display for LocationSource {
             LocationSource::UserLocation => "user_location",
             LocationSource::Declared => "declared",
             LocationSource::PhoneNumber => "phone_number",
+            LocationSource::SiteSupplied => "site_supplied",
         };
         write!(f, "{s}")
     }
