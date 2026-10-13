@@ -504,6 +504,17 @@ export interface DeletionQueryParams {
   limit?: number
 }
 
+// Compliance (docs/COMPLIANCE.md, docs/COMPLIANCE_FOLLOWUPS.md)
+export type CompliancePolicy = S['PolicyResponse']
+export type UpdateCompliancePolicy = S['UpdatePolicyRequest']
+export type RetentionRun = S['RetentionRunResponse']
+export type LegalHold = S['HoldResponse']
+export type PlaceHoldRequest = S['PlaceHoldRequest']
+export type SubjectIdentifier = S['SubjectIdentifier']
+export type DataClass = S['DataClass']
+export type SubjectRequest = S['SubjectRequestResponse']
+export type FileSubjectRequest = S['FileSubjectRequest']
+
 // Conference Recordings
 export type ConferenceRecording = S['RecordingResponse']
 
