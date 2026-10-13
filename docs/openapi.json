@@ -37284,6 +37284,13 @@
             "format": "int32",
             "description": "How long a hoteling guest stays logged in on a host phone\n(`docs/ENTERPRISE_CALLING.md` §3.8); unset is\n[`crate::hoteling::DEFAULT_SESSION_HOURS`].",
             "minimum": 0
+          },
+          "hold_music": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The tenant's hold music (`docs/ENTERPRISE_CALLING.md` §3.3.1): a\nprompt of the tenant, or [`HOLD_MUSIC_NONE`](crate::calling::HOLD_MUSIC_NONE)\nfor silence; unset is the tenant's first hold-music prompt, else\nthe node's built-in music. A holder's or a number's own choice\ncomes first."
           }
         }
       },

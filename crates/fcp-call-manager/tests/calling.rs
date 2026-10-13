@@ -1309,6 +1309,104 @@ async fn a_numbers_hold_music_plays_to_its_callers_unless_the_holder_chose_their
     stack.finish().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tenants_chosen_hold_music_or_silence_plays_to_every_held_caller() {
+    use fcp_core::prompt::{Prompt, PromptCategory, PromptStore};
+    use fcp_core::storage::TenantStore;
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    // The tenant's hold-music prompt (700 Hz), which plays when the tenant
+    // chooses nothing, and the one it chooses: a greeting at 1100 Hz.
+    music_prompt(&stack, "hold-music", 700.0).await;
+    let path = stack._dir.path().join("chosen.wav");
+    tone_wav(&path, 1100.0, 4.0);
+    let chosen = Prompt::new_file(
+        stack.seed.tenant_id,
+        "chosen",
+        PromptCategory::Greeting,
+        "en",
+        path,
+    );
+    let chosen_id = chosen.id.to_string();
+    fcp_storage_postgres::prompt::PostgresPromptStore::new(stack.seed.storage().pool().clone())
+        .put_prompt(chosen)
+        .await
+        .expect("seed prompt");
+    let choose = |music: &'static str, id: String| {
+        let storage = stack.seed.storage();
+        let tenant_id = stack.seed.tenant_id;
+        async move {
+            let mut tenant = storage.get_tenant(&tenant_id).await.unwrap().unwrap();
+            tenant.calling.hold_music = Some(if music.is_empty() {
+                id
+            } else {
+                music.to_string()
+            });
+            storage.put_tenant(tenant).await.unwrap();
+        }
+    };
+
+    // The tenant chooses its greeting: Alice hears it, not the hold-music
+    // prompt.
+    choose("", chosen_id.clone()).await;
+    let bob_phone = stack.phone(&bob).await;
+    let alice_phone = stack.phone(&alice).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    if !alice_call.media().heard(1100, SOON).await {
+        stack
+            .fail("Alice hears no music the tenant chose", &alice_phone)
+            .await;
+    }
+    assert!(
+        !alice_call
+            .media()
+            .heard(700, Duration::from_millis(500))
+            .await,
+        "the tenant's first hold-music prompt played over its choice"
+    );
+    alice_call.hangup().await.unwrap();
+
+    // The tenant chooses silence: neither its prompts nor the built-in.
+    choose(fcp_core::calling::HOLD_MUSIC_NONE, String::new()).await;
+    let alice_phone = stack.phone(&alice).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    let mut heard = false;
+    for hz in [1100, 700, DEFAULT_MUSIC_HZ] {
+        heard |= alice_call
+            .media()
+            .heard(hz, Duration::from_millis(700))
+            .await;
+    }
+    if heard {
+        stack
+            .fail(
+                "Alice hears music though the tenant chose silence",
+                &alice_phone,
+            )
+            .await;
+    }
+    assert_eq!(bob_call.resume().await.unwrap(), 200);
+    alice_call.hangup().await.unwrap();
+
+    // Bob's own choice still comes first.
+    stack
+        .calling(&bob, |s| s.hold_music = Some(chosen_id.clone()))
+        .await;
+    let alice_phone = stack.phone(&alice).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    if !alice_call.media().heard(1100, SOON).await {
+        stack
+            .fail("Bob's own music lost to the tenant's silence", &alice_phone)
+            .await;
+    }
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
 // ─── Call waiting (docs/ENTERPRISE_CALLING.md §3.4) ──────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

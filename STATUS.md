@@ -1419,6 +1419,13 @@ no binary enabled it. Media runs in-process on each node; dedicated media
 and conference nodes are how it scales. A configuration still naming
 `remote` is now refused when it is read rather than when it is checked.
 
+Leftover done in v0.25.392: the tenant's hold music — `calling.hold_music`
+on the tenant (a prompt of the tenant, `none` for silence, unset for its
+first `moh` prompt), checked by the API and set on the Tenants page,
+heard after the holder's and the number's choice
+(`docs/ENTERPRISE_CALLING.md` §3.3.1). Proved by `calling.rs` and
+`api_postgres.rs`.
+
 ## What is next (chosen 2026-09-29, after the nightly stack closed)
 
 **Developer surface** — design in `docs/DEVELOPER_SURFACE.md`

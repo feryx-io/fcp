@@ -537,12 +537,17 @@ export type CreatePromptRequest = components['schemas']['CreatePromptRequest']
 export type UpdatePromptRequest = components['schemas']['UpdatePromptRequest']
 
 export const prompts = {
-  list: (params?: { category?: string; language?: string }) => {
+  // `tenantId` names another tenant than the session's, for a platform
+  // admin editing it (the tenant header).
+  list: (params?: { category?: string; language?: string; tenantId?: string }) => {
     const query = new URLSearchParams()
     if (params?.category) query.set('category', params.category)
     if (params?.language) query.set('language', params.language)
     const qs = query.toString()
-    return apiClient.getAll<PromptResponse>(`/prompts${qs ? `?${qs}` : ''}`)
+    return apiClient.getAll<PromptResponse>(
+      `/prompts${qs ? `?${qs}` : ''}`,
+      params?.tenantId ? { 'x-fcp-tenant-id': params.tenantId } : undefined,
+    )
   },
   get: (id: string) => apiClient.get<PromptResponse>(`/prompts/${encodeURIComponent(id)}`),
   create: (data: CreatePromptRequest) => apiClient.post<PromptResponse>('/prompts', data),

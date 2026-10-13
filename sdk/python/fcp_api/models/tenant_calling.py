@@ -36,12 +36,18 @@ class TenantCalling:
             hoteling_session_hours (int | None | Unset): How long a hoteling guest stays logged in on a host phone
                 (`docs/ENTERPRISE_CALLING.md` §3.8); unset is
                 [`crate::hoteling::DEFAULT_SESSION_HOURS`].
+            hold_music (None | str | Unset): The tenant's hold music (`docs/ENTERPRISE_CALLING.md` §3.3.1): a
+                prompt of the tenant, or [`HOLD_MUSIC_NONE`](crate::calling::HOLD_MUSIC_NONE)
+                for silence; unset is the tenant's first hold-music prompt, else
+                the node's built-in music. A holder's or a number's own choice
+                comes first.
      """
 
     country: None | str | Unset = UNSET
     timezone: None | str | Unset = UNSET
     destination_overrides: list[DestinationOverride] | Unset = UNSET
     hoteling_session_hours: int | None | Unset = UNSET
+    hold_music: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -77,6 +83,12 @@ class TenantCalling:
         else:
             hoteling_session_hours = self.hoteling_session_hours
 
+        hold_music: None | str | Unset
+        if isinstance(self.hold_music, Unset):
+            hold_music = UNSET
+        else:
+            hold_music = self.hold_music
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -90,6 +102,8 @@ class TenantCalling:
             field_dict["destination_overrides"] = destination_overrides
         if hoteling_session_hours is not UNSET:
             field_dict["hoteling_session_hours"] = hoteling_session_hours
+        if hold_music is not UNSET:
+            field_dict["hold_music"] = hold_music
 
         return field_dict
 
@@ -141,11 +155,22 @@ class TenantCalling:
         hoteling_session_hours = _parse_hoteling_session_hours(d.pop("hoteling_session_hours", UNSET))
 
 
+        def _parse_hold_music(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        hold_music = _parse_hold_music(d.pop("hold_music", UNSET))
+
+
         tenant_calling = cls(
             country=country,
             timezone=timezone,
             destination_overrides=destination_overrides,
             hoteling_session_hours=hoteling_session_hours,
+            hold_music=hold_music,
         )
 
 

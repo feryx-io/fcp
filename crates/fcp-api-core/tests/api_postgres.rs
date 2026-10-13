@@ -8573,6 +8573,40 @@ async fn schedules_are_the_tenants_and_say_their_state() {
     assert_eq!(after.status, StatusCode::NOT_FOUND, "{}", after.text);
 }
 
+#[tokio::test]
+async fn a_tenants_hold_music_is_silence_a_prompt_of_its_own_or_unset() {
+    let app = require_app!();
+    let path = format!("/api/v1/tenants/{}", app.tenant_a);
+    let set = |music: &str| json!({ "calling": { "hold_music": music } });
+
+    let silent = app.admin(Method::PUT, &path, Some(set("none"))).await;
+    assert_eq!(silent.status, StatusCode::OK, "{}", silent.text);
+    assert_eq!(silent.json["calling"]["hold_music"], "none");
+    let read = app.admin(Method::GET, &path, None).await;
+    assert_eq!(read.json["calling"]["hold_music"], "none", "{}", read.text);
+
+    let unset = app.admin(Method::PUT, &path, Some(set(""))).await;
+    assert_eq!(unset.status, StatusCode::OK, "{}", unset.text);
+    assert!(
+        unset.json["calling"]["hold_music"].is_null(),
+        "{}",
+        unset.text
+    );
+
+    for bad in [
+        "prompt-00000000-0000-0000-0000-000000000000",
+        "not a prompt",
+    ] {
+        let refused = app.admin(Method::PUT, &path, Some(set(bad))).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{bad}: {}",
+            refused.text
+        );
+    }
+}
+
 // ─── Class of service (docs/ENTERPRISE_CALLING.md §3.7) ──────────────────
 
 #[tokio::test]
