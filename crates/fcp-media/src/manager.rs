@@ -48,19 +48,6 @@ impl MediaManager {
                     "Embedded backend requested but 'embedded' feature not enabled".into(),
                 ));
             }
-
-            #[cfg(feature = "remote")]
-            BackendType::Remote { .. } => {
-                let remote = crate::backend::RemoteBackend::new(&config).await?;
-                Arc::new(remote)
-            }
-
-            #[cfg(not(feature = "remote"))]
-            BackendType::Remote { .. } => {
-                return Err(Error::Config(
-                    "Remote backend requested but 'remote' feature not enabled".into(),
-                ));
-            }
         };
 
         info!(
