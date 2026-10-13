@@ -185,10 +185,18 @@ jobs:
         working-directory: sdk/typescript
         run: npm ci
       - uses: astral-sh/setup-uv@v6
+      # Every request that reaches an /api/v1 route, in this test process or
+      # an admin binary a test starts, is logged to FCP_ROUTE_LOG
+      # (fcp_api_core::route_log) for the step after.
       - name: Tests
         env:
           FCP_SDK_TESTS: required
+          FCP_ROUTE_LOG: ${{ runner.temp }}/routes.log
         run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/video-openh264,fcp-api-core/saml
+      # docs/DEEP_TESTING.md D1: every operation in the contract is called
+      # by a test, or listed in scripts/routes-uncalled.txt with a reason.
+      - name: Every operation is called
+        run: scripts/check-routes-called.py "$RUNNER_TEMP/routes.log"
 
   # The packaging: the compose file, alone and with the GPU overlay, must
   # be a valid stack with the shipped .env (docs/SHIP_AND_OPERATE.md phase

@@ -1,0 +1,114 @@
+# Operations in docs/openapi.json that no test calls (docs/DEEP_TESTING.md D1).
+#
+# scripts/check-routes-called.py fails CI when an operation is neither called
+# by a test nor listed here, and when one listed here is called. A route is
+# called when a request reached its handler: a 401, 403, 405 or 429 does not
+# count. Each line is `METHOD PATH  reason`. D3 writes the tests and empties
+# this list; what stays names the provider or device it waits for.
+#
+# Measured 2026-10-13 (v0.25.395): 325 of 412 called.
+
+# Sign-in and the caller's own account
+POST   /api/v1/auth/change-expired-password                D3: no test
+POST   /api/v1/auth/signup                                 D3: no test (public sign-up is off in the suite's config)
+POST   /api/v1/me/api-tokens/{id}/rotate                   D3: no test (admin token rotation is tested)
+POST   /api/v1/me/totp/recovery-codes                      D3: no test
+POST   /api/v1/me/totp/disable                             D3: only refused
+DELETE /api/v1/users/{username}/identities/{provider_id}   D3: no test
+PUT    /api/v1/users/{username}/digest-password            D3: no test
+DELETE /api/v1/users/{username}/digest-password            D3: no test
+
+# Calls, through the admin API (the node's own routes are tested)
+POST   /api/v1/calls                                       D3: no test
+GET    /api/v1/calls/{call_id}                             D3: no test
+DELETE /api/v1/calls/{call_id}                             D3: no test
+POST   /api/v1/calls/{call_id}/recording/start             D3: no test
+POST   /api/v1/calls/{call_id}/recording/stop              D3: no test
+POST   /api/v1/calls/{call_id}/whisper                     D3: only refused
+GET    /api/v1/calls/{call_id}/supervisor                  D3: only refused
+DELETE /api/v1/calls/{call_id}/supervisor                  D3: only refused
+
+# Conferences: meetings by id, the caller's own, live video
+GET    /api/v1/conferences/meetings/{id}                   D3: no test
+PATCH  /api/v1/conferences/meetings/{id}                   D3: no test
+DELETE /api/v1/conferences/meetings/{id}                   D3: no test
+POST   /api/v1/conferences/meetings/{id}/enable            D3: no test
+POST   /api/v1/conferences/meetings/{id}/disable           D3: no test
+POST   /api/v1/conferences/meetings/{id}/join-tokens       D3: no test
+GET    /api/v1/me/conferences                              D3: no test
+GET    /api/v1/me/conferences/{id}                         D3: no test
+PATCH  /api/v1/me/conferences/{id}                         D3: no test
+POST   /api/v1/me/conferences/{id}/join-tokens             D3: no test
+PUT    /api/v1/conferences/live/{room}/video/content-layout  D3: no test (needs a conference server)
+POST   /api/v1/conferences/live/{room}/video/content/stop  D3: no test (needs a conference server)
+
+# Voicemail
+GET    /api/v1/voicemail/mailboxes                         D3: no test
+POST   /api/v1/voicemail/mailboxes/{id}/enable             D3: no test
+GET    /api/v1/voicemail/mailboxes/{mailbox_id}/messages   D3: no test
+GET    /api/v1/voicemail/messages/{id}                     D3: no test
+PUT    /api/v1/voicemail/messages/{id}                     D3: no test
+PUT    /api/v1/me/voicemail                                D3: no test
+DELETE /api/v1/me/voicemail/messages/{id}                  D3: no test
+PUT    /api/v1/me/voicemail/messages/{id}                  D3: no test
+GET    /api/v1/me/voicemail/messages/{id}/audio            D3: no test
+PUT    /api/v1/me/voicemail/greetings/{greeting_type}/active  D3: no test
+POST   /api/v1/me/voicemail/greetings/synthesize           D3: no test (needs a TTS server; a stand-in will do)
+PUT    /api/v1/prompts/{id}                                D3: no test
+POST   /api/v1/prompts/{id}/synthesize                     D3: no test (needs a TTS server; a stand-in will do)
+
+# Configuration and templates
+GET    /api/v1/config                                      D3: no test
+GET    /api/v1/config/audit                                D3: no test
+GET    /api/v1/config/{service}                            D3: no test
+DELETE /api/v1/config/{service}/{section}                  D3: no test
+POST   /api/v1/config/{service}/{section}/validate         D3: no test
+GET    /api/v1/config-templates                            D3: no test
+GET    /api/v1/config-templates/{id}                       D3: no test
+PATCH  /api/v1/config-templates/{id}                       D3: no test
+DELETE /api/v1/config-templates/{id}                       D3: no test
+
+# Numbers, extensions, lines, locations
+GET    /api/v1/phone-numbers/available                     D3: no test (asks a number provider; a stand-in will do)
+POST   /api/v1/phone-numbers/{id}/purchase                 D3: no test (a number provider)
+POST   /api/v1/phone-numbers/{id}/activate                 D3: no test
+POST   /api/v1/phone-numbers/{id}/release                  D3: no test
+DELETE /api/v1/phone-numbers/{id}                          D3: no test
+GET    /api/v1/extensions                                  D3: no test
+GET    /api/v1/extensions/{number}                         D3: no test
+PATCH  /api/v1/extensions/{number}                         D3: no test
+DELETE /api/v1/extensions/{number}                         D3: no test
+GET    /api/v1/line-bindings                               D3: no test
+GET    /api/v1/line-bindings/{id}                          D3: no test
+DELETE /api/v1/line-bindings/{id}                          D3: no test
+GET    /api/v1/locations                                   D3: no test
+DELETE /api/v1/locations/{id}                              D3: no test
+
+# Routing, trunks, rating
+GET    /api/v1/routing/rules/{id}                          D3: no test
+PATCH  /api/v1/routing/rules/{id}                          D3: only refused
+DELETE /api/v1/routing/rules/{id}                          D3: no test
+DELETE /api/v1/lcr-routes/{id}                             D3: no test
+POST   /api/v1/trunks/{id}/test                            D3: no test (sends OPTIONS; a stand-in will do)
+POST   /api/v1/trunks/{id}/clone                           D3: no test
+GET    /api/v1/trunks/{id}/stats                           D3: no test
+GET    /api/v1/rate-plans                                  D3: no test
+PUT    /api/v1/classes-of-service/{id}                     D3: no test
+
+# Queues, groups, presence
+GET    /api/v1/queues/stats                                D3: no test
+PATCH  /api/v1/queues/{name}/agents/{id}                   D3: no test
+PATCH  /api/v1/queue-configs/{id}                          D3: no test
+PUT    /api/v1/groups/{id}                                 D3: no test
+PUT    /api/v1/presence/{aor}/pres-rules                   D3: no test
+DELETE /api/v1/presence/{aor}/watchers/{subscription_id}   D3: no test
+
+# The platform
+GET    /api/v1/dashboard/summary                           D3: no test
+GET    /api/v1/usage/by-number                             D3: no test
+POST   /api/v1/emergency/notify-call                       D3: no test (a call manager places it)
+DELETE /api/v1/provisioning/redirection/{service}          D3: no test
+POST   /api/v1/system/encryption/rotate                    D3: no test
+POST   /api/v1/system/encryption/reencrypt                 D3: no test
+POST   /api/v1/system/encryption/rewrap                    D3: no test
+POST   /api/v1/system/encryption/seal                      D3: no test

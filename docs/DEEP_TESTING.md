@@ -53,7 +53,7 @@ found by reading vendor documents, not by a device.
 
 The OpenAPI contract has 412 operations. Searching every test, the SDKs'
 examples and their suites by path finds about 65 that are never named.
-That is an estimate, and §5's D1 makes it exact. The groups:
+That is an estimate, and §5's D1 makes it exact: measured, it is 87 (§8, D1). The estimate's groups:
 
 | Group | Never called |
 |---|---|
@@ -343,3 +343,11 @@ D8. Anvil's own deep testing would be its own pass.
 | The weekly audit failed on three `quinn-proto` advisories (RUSTSEC-2026-0338, -0340, -0343; a remote peer can panic the QUIC stack) | S2 | Already fixed: the lock has 0.11.18. This PR's audit job confirms it. |
 | The live stack failed 2026-10-07 to 10-09 because `fcp-admin` overflowed a runtime worker's stack at startup, and restarted until compose gave up. It passed again from 10-10 with no change aimed at it. The cause: the images were built with Rust 1.92, which CI never uses. utoipa's generated `openapi()` built by 1.92 in release with SAML needs about 2.1 MiB of stack (53 KiB under 1.98), and the admin built it inside a spawned task on a 2 MiB worker, so startup sat on the edge. | S1 (the admin does not start) | The spec is built on a thread of its own with a 64 MiB stack (`api_docs::spec_json`), tested from a 128 KiB caller. The sixteen Dockerfiles moved to `rust:1.98`, the toolchain CI tests. Only main moves the `nightly` tag, so the Images workflow can run on a branch. |
 | A failed scheduled run told nobody | S2 | `scripts/scheduled-run-report.sh`, the last job of the CI and Images workflows, opens an issue labelled `nightly-failure`, comments on it while the run fails, and closes it when it passes. |
+
+### D1. Measured
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| The survey's ~65 uncalled operations were 87. Searching the tests for a path's text counts a list `GET` as called when a `POST` to the same path is, and a route as called when a test only names it in a refusal. Measured by the server, 325 of 412 operations are called. Uncalled operations include the list endpoints of rate plans, extensions, locations, line bindings, config templates and voicemail mailboxes. | S3 (a measure, not a bug) | `fcp_api_core::route_log` logs every request that reaches an `/api/v1` route when `FCP_ROUTE_LOG` names a file: in the Postgres suite's in-process router, and in every admin binary another suite starts. `scripts/check-routes-called.py` fails CI on an operation that is neither called nor in `scripts/routes-uncalled.txt`, and on one listed there that is called. All 87 are listed, each with its reason, for D3. |
+| Five operations are reached only to be refused (401, 403): `PATCH /routing/rules/{id}`, `POST /me/totp/disable`, `POST /calls/{id}/whisper`, and `GET` and `DELETE /calls/{id}/supervisor`. Their handlers have never run. | S3 | Counted as uncalled and listed for D3. |
+| Line coverage was never measured. | S3 | `.github/workflows/coverage.yml` runs the workspace's tests under `cargo llvm-cov` each Sunday. It publishes the HTML report and a per-crate table, the most uncovered first. It is a report, not a gate. |
