@@ -176,6 +176,7 @@ from .location_response import LocationResponse
 from .location_validation_response import LocationValidationResponse
 from .login_request import LoginRequest
 from .login_response import LoginResponse
+from .logout_answer import LogoutAnswer
 from .mailbox_response import MailboxResponse
 from .mailbox_stats_response import MailboxStatsResponse
 from .me_greeting_response import MeGreetingResponse
@@ -708,6 +709,7 @@ __all__ = (
     "LocationValidationResponse",
     "LoginRequest",
     "LoginResponse",
+    "LogoutAnswer",
     "MailboxResponse",
     "MailboxStatsResponse",
     "MediaPreferences",

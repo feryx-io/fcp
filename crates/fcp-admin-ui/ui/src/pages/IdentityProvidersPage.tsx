@@ -37,6 +37,7 @@ interface Form {
   group_roles: string
   jit: boolean
   link_by_email: boolean
+  sign_out_at_provider: boolean
   email_verified_claim: string
   required_claims: string
 }
@@ -45,7 +46,7 @@ const blank: Form = {
   kind: 'oidc', metadata: '', metadata_url: '', trust_email: false,
   name: '', enabled: true, issuer: '', client_id: '', client_secret: '', scopes: 'profile email',
   username_claim: 'preferred_username', email_claim: 'email', name_claim: 'name', groups_claim: 'groups',
-  group_roles: '', jit: false, link_by_email: true, email_verified_claim: 'email_verified', required_claims: '',
+  group_roles: '', jit: false, link_by_email: true, sign_out_at_provider: false, email_verified_claim: 'email_verified', required_claims: '',
 }
 
 function formOf(p: IdentityProvider): Form {
@@ -60,6 +61,7 @@ function formOf(p: IdentityProvider): Form {
     name_claim: s.claims?.display_name ?? 'name', groups_claim: s.claims?.groups ?? 'groups',
     group_roles: (s.group_roles ?? []).map((g) => `${g.group} ${g.role}`).join('\n'),
     jit: s.jit ?? false, link_by_email: s.link_by_email ?? true,
+    sign_out_at_provider: s.sign_out_at_provider ?? false,
     email_verified_claim: s.email_verified_claim ?? 'email_verified',
     required_claims: (s.required_claims ?? []).map((r) => `${r.claim} ${r.value}`).join('\n'),
   }
@@ -107,6 +109,7 @@ function requestOf(f: Form, editing: boolean): IdentityProviderRequest {
       group_roles: parseGroupRoles(f.group_roles),
       jit: f.jit,
       link_by_email: f.link_by_email,
+      sign_out_at_provider: f.sign_out_at_provider,
       email_verified_claim: f.email_verified_claim.trim() || 'email_verified',
       required_claims: parseRequiredClaims(f.required_claims),
     },
@@ -240,6 +243,9 @@ export function IdentityProvidersPage() {
               <>
                 <div>Client id: <span className="font-mono">{p.settings.client_id}</span>{p.has_client_secret ? ' · secret set' : ' · public client'}</div>
                 {p.redirect_uri && <div>Redirect URI to register: <span className="break-all font-mono">{p.redirect_uri}</span></div>}
+                {p.redirect_uri && p.settings.sign_out_at_provider && (
+                  <div>Post-logout redirect URI to register: <span className="break-all font-mono">{p.redirect_uri.replace(/\/api\/v1\/auth\/sso\/callback$/, '/login')}</span></div>
+                )}
               </>
             )}
             {!p.redirect_uri && (
@@ -355,6 +361,7 @@ export function IdentityProvidersPage() {
             </div>
             <div className="flex items-center justify-between"><Label htmlFor="idp-jit">Create users at their first sign-in</Label><Switch id="idp-jit" checked={form.jit} onCheckedChange={(v) => setForm({ ...form, jit: v })} /></div>
             <div className="flex items-center justify-between"><Label htmlFor="idp-link">Link existing users by verified email</Label><Switch id="idp-link" checked={form.link_by_email} onCheckedChange={(v) => setForm({ ...form, link_by_email: v })} /></div>
+            <div className="flex items-center justify-between"><Label htmlFor="idp-signout">Signing out of FCP signs out at the provider too</Label><Switch id="idp-signout" checked={form.sign_out_at_provider} onCheckedChange={(v) => setForm({ ...form, sign_out_at_provider: v })} /></div>
             <div className="flex items-center justify-between"><Label htmlFor="idp-on">Enabled</Label><Switch id="idp-on" checked={form.enabled} onCheckedChange={(v) => setForm({ ...form, enabled: v })} /></div>
             <Button type="submit" className="w-full" disabled={save.isPending}>Save</Button>
           </form>

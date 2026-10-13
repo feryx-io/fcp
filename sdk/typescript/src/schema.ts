@@ -7840,6 +7840,14 @@ export interface components {
             /** @description Recovery codes, shown once, when a second factor was just set up. */
             recovery_codes?: string[] | null;
         };
+        /** @description Where the browser goes next to sign out at the identity provider too. */
+        LogoutAnswer: {
+            /**
+             * @description The provider's logout address, with what it needs; the browser is
+             *     sent there and comes back to the login page (`docs/SSO.md` §5).
+             */
+            logout_url: string;
+        };
         /** @description Voicemail mailbox response. */
         MailboxResponse: {
             id: string;
@@ -10693,6 +10701,14 @@ export interface components {
              *     Entra's `tid`. A claim that is a list must contain the value.
              */
             required_claims?: components["schemas"]["RequiredClaim"][];
+            /**
+             * @description Signing out of FCP signs out at the provider too: the browser is
+             *     sent to its logout (OIDC's `end_session_endpoint`, a SAML
+             *     `LogoutRequest`). Off, signing out ends FCP's session alone — the
+             *     provider's, which may be the person's whole workplace sign-in,
+             *     stays.
+             */
+            sign_out_at_provider?: boolean;
         };
         /** @description The tenant's provisioning URL. */
         ProvisioningKeyResponse: {
@@ -11159,9 +11175,14 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
-        /** @description What a SAML provider posts to ask for a logout (the HTTP-POST binding). */
+        /**
+         * @description What a SAML provider posts to ask for a logout, or to answer FCP's
+         *     (the HTTP-POST binding).
+         */
         SamlLogoutPost: {
-            SAMLRequest: string;
+            SAMLRequest?: string | null;
+            /** @description The provider's answer to a logout FCP asked for. */
+            SAMLResponse?: string | null;
             RelayState?: string | null;
         };
         /** @description What a SAML provider posts back (the HTTP-POST binding). */
@@ -13739,7 +13760,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Back to the provider with FCP's signed LogoutResponse */
+            /** @description Back to the provider with FCP's signed LogoutResponse, or to the login page after the provider answers FCP's own logout */
             303: {
                 headers: {
                     [name: string]: unknown;
@@ -13780,7 +13801,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Back to the provider with FCP's signed LogoutResponse */
+            /** @description Back to the provider with FCP's signed LogoutResponse, or to the login page after the provider answers FCP's own logout */
             303: {
                 headers: {
                     [name: string]: unknown;
@@ -14157,6 +14178,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Logged out here; the browser goes on to sign out at the identity provider */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogoutAnswer"];
+                };
+            };
             /** @description Logged out: the client discards its token */
             204: {
                 headers: {

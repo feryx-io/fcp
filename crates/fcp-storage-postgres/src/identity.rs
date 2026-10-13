@@ -290,14 +290,16 @@ impl IdentityStore for PostgresStorage {
             .await
             .map_err(store_error)?;
         sqlx::query(
-            "INSERT INTO sso_handoffs (code_hash, user_id, provider_id, idp_sid, created_at)
-             VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO sso_handoffs (code_hash, user_id, provider_id, idp_sid, created_at,
+                 idp_logout_hint)
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(&h.code_hash)
         .bind(h.user_id.to_string())
         .bind(h.provider_id.to_string())
         .bind(&h.idp_sid)
         .bind(at(now))
+        .bind(&h.idp_logout_hint)
         .execute(&self.pool)
         .await
         .map_err(store_error)?;
@@ -334,7 +336,7 @@ impl IdentityStore for PostgresStorage {
     ) -> fcp_core::Result<Option<SsoHandoff>> {
         let row = sqlx::query(
             "DELETE FROM sso_handoffs WHERE code_hash = $1 AND created_at >= $2
-             RETURNING code_hash, user_id, provider_id, idp_sid",
+             RETURNING code_hash, user_id, provider_id, idp_sid, idp_logout_hint",
         )
         .bind(code_hash)
         .bind(at(now - SSO_HANDOFF_TTL))
@@ -353,6 +355,7 @@ impl IdentityStore for PostgresStorage {
                 .parse()
                 .map_err(store_error)?,
             idp_sid: row.get("idp_sid"),
+            idp_logout_hint: row.get("idp_logout_hint"),
         }))
     }
 }

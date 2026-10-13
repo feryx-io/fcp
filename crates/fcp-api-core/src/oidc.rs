@@ -298,7 +298,8 @@ impl OidcClient {
         Ok(url.into())
     }
 
-    /// Trade the callback's code for the ID token, and verify it.
+    /// Trade the callback's code for the ID token, and verify it: its
+    /// claims, and the token itself (for `id_token_hint` at sign-out).
     #[allow(clippy::too_many_arguments)]
     pub async fn sign_in(
         &self,
@@ -308,7 +309,7 @@ impl OidcClient {
         code_verifier: &str,
         redirect_uri: &str,
         nonce: &str,
-    ) -> Result<Map<String, Value>, OidcError> {
+    ) -> Result<(Map<String, Value>, String), OidcError> {
         let discovery = self.discovery(&settings.issuer).await?;
         self.check_url(&discovery.token_endpoint)
             .map_err(OidcError::Provider)?;
@@ -352,14 +353,43 @@ impl OidcClient {
         let id_token = body["id_token"]
             .as_str()
             .ok_or_else(|| OidcError::Provider("the token endpoint gave no id_token".into()))?;
-        self.verify(
-            &discovery,
-            &settings.client_id,
-            id_token,
-            nonce,
-            SystemTime::now(),
-        )
-        .await
+        let claims = self
+            .verify(
+                &discovery,
+                &settings.client_id,
+                id_token,
+                nonce,
+                SystemTime::now(),
+            )
+            .await?;
+        Ok((claims, id_token.to_string()))
+    }
+
+    /// Where to send the browser to sign out at the provider (OpenID
+    /// Connect RP-Initiated Logout 1.0): its `end_session_endpoint` with
+    /// the ID token as the hint, the client, and the page to come back to.
+    /// `None` when the provider has no such endpoint.
+    pub async fn end_session_url(
+        &self,
+        settings: &fcp_core::identity::ProviderSettings,
+        id_token: Option<&str>,
+        post_logout_redirect_uri: &str,
+    ) -> Result<Option<String>, OidcError> {
+        let discovery = self.discovery(&settings.issuer).await?;
+        let Some(endpoint) = discovery.end_session_endpoint.as_deref() else {
+            return Ok(None);
+        };
+        let mut url = url::Url::parse(endpoint).map_err(|e| OidcError::Provider(e.to_string()))?;
+        {
+            let mut query = url.query_pairs_mut();
+            if let Some(token) = id_token {
+                query.append_pair("id_token_hint", token);
+            }
+            query
+                .append_pair("client_id", &settings.client_id)
+                .append_pair("post_logout_redirect_uri", post_logout_redirect_uri);
+        }
+        Ok(Some(url.into()))
     }
 
     /// The claims of an ID token from `discovery`'s issuer for

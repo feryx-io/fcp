@@ -1121,7 +1121,7 @@
             "description": "Signed out, where the provider has no logout address"
           },
           "303": {
-            "description": "Back to the provider with FCP's signed LogoutResponse"
+            "description": "Back to the provider with FCP's signed LogoutResponse, or to the login page after the provider answers FCP's own logout"
           },
           "default": {
             "description": "An error",
@@ -1167,7 +1167,7 @@
             "description": "Signed out, where the provider has no logout address"
           },
           "303": {
-            "description": "Back to the provider with FCP's signed LogoutResponse"
+            "description": "Back to the provider with FCP's signed LogoutResponse, or to the login page after the provider answers FCP's own logout"
           },
           "default": {
             "description": "An error",
@@ -1665,6 +1665,16 @@
         "summary": "POST /api/v1/auth/logout",
         "operationId": "auth_session_logout",
         "responses": {
+          "200": {
+            "description": "Logged out here; the browser goes on to sign out at the identity provider",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutAnswer"
+                }
+              }
+            }
+          },
           "204": {
             "description": "Logged out: the client discards its token"
           },
@@ -25608,6 +25618,19 @@
           }
         }
       },
+      "LogoutAnswer": {
+        "type": "object",
+        "description": "Where the browser goes next to sign out at the identity provider too.",
+        "required": [
+          "logout_url"
+        ],
+        "properties": {
+          "logout_url": {
+            "type": "string",
+            "description": "The provider's logout address, with what it needs; the browser is\nsent there and comes back to the login page (`docs/SSO.md` §5)."
+          }
+        }
+      },
       "MailboxResponse": {
         "type": "object",
         "description": "Voicemail mailbox response.",
@@ -34625,6 +34648,10 @@
               "$ref": "#/components/schemas/RequiredClaim"
             },
             "description": "Claims a token must carry to sign anyone in: Google's `hd` (the\nWorkspace domain), so a personal Google account is turned away;\nEntra's `tid`. A claim that is a list must contain the value."
+          },
+          "sign_out_at_provider": {
+            "type": "boolean",
+            "description": "Signing out of FCP signs out at the provider too: the browser is\nsent to its logout (OIDC's `end_session_endpoint`, a SAML\n`LogoutRequest`). Off, signing out ends FCP's session alone — the\nprovider's, which may be the person's whole workplace sign-in,\nstays."
           }
         },
         "additionalProperties": false
@@ -35994,13 +36021,20 @@
       },
       "SamlLogoutPost": {
         "type": "object",
-        "description": "What a SAML provider posts to ask for a logout (the HTTP-POST binding).",
-        "required": [
-          "SAMLRequest"
-        ],
+        "description": "What a SAML provider posts to ask for a logout, or to answer FCP's\n(the HTTP-POST binding).",
         "properties": {
           "SAMLRequest": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "SAMLResponse": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The provider's answer to a logout FCP asked for."
           },
           "RelayState": {
             "type": [

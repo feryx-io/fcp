@@ -10621,6 +10621,90 @@ async fn a_providers_back_channel_logout_ends_the_sessions_it_names() {
 }
 
 #[tokio::test]
+async fn signing_out_signs_out_at_the_provider_only_when_it_says_so() {
+    let app = require_app!();
+    let idp = StandInIdp::start(IDP_CLIENT, Some(IDP_SECRET))
+        .await
+        .unwrap();
+    let provider = app.make_provider(&idp, json!({"jit": true})).await;
+    let sign_in = |sid: &'static str| {
+        let (app, idp, provider) = (&app, &idp, provider.clone());
+        async move {
+            let landing = app
+                .sso_landing(
+                    idp,
+                    &provider,
+                    json!({"sub": "noor-1", "preferred_username": "noor", "sid": sid}),
+                )
+                .await;
+            let signed_in = app.sso_exchange(&landing).await;
+            assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.text);
+            (
+                signed_in.json["token"].as_str().unwrap().to_string(),
+                refresh_cookie(&signed_in).unwrap(),
+            )
+        }
+    };
+
+    // Off, the default: signing out ends FCP's session alone.
+    let (token, cookie) = sign_in("s-1").await;
+    let out = app
+        .send_as(&token, Method::POST, "/api/v1/auth/logout", None)
+        .await;
+    assert_eq!(out.status, StatusCode::NO_CONTENT, "{}", out.text);
+    let refreshed = app
+        .with_cookie(Method::POST, "/api/v1/auth/refresh", &cookie)
+        .await;
+    assert_eq!(refreshed.status, StatusCode::UNAUTHORIZED);
+
+    // On: the browser is sent on to the provider's end_session_endpoint
+    // with the ID token it signed in with, and back to the login page.
+    let set = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/identity-providers/{provider}"),
+            Some(json!({"name": "Acme SSO", "settings": {
+                "issuer": idp.issuer, "client_id": IDP_CLIENT, "jit": true,
+                "sign_out_at_provider": true,
+            }})),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let (token, cookie) = sign_in("s-2").await;
+    let out = app
+        .send_as(&token, Method::POST, "/api/v1/auth/logout", None)
+        .await;
+    assert_eq!(out.status, StatusCode::OK, "{}", out.text);
+    let to = out.json["logout_url"].as_str().unwrap().to_string();
+    assert!(to.starts_with(&format!("{}/logout?", idp.issuer)), "{to}");
+    assert_eq!(query_param(&to, "client_id").as_deref(), Some(IDP_CLIENT));
+    assert_eq!(
+        query_param(&to, "post_logout_redirect_uri"),
+        Some(format!("{SSO_PUBLIC_URL}/login"))
+    );
+    let hint = query_param(&to, "id_token_hint").expect("the ID token as the hint");
+    let claims: Value = serde_json::from_slice(
+        &base64::Engine::decode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            hint.split('.').nth(1).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(claims["sid"], "s-2", "{claims}");
+    let refreshed = app
+        .with_cookie(Method::POST, "/api/v1/auth/refresh", &cookie)
+        .await;
+    assert_eq!(
+        refreshed.status,
+        StatusCode::UNAUTHORIZED,
+        "FCP's session ends before the browser leaves"
+    );
+
+    app.finish().await;
+}
+
+#[tokio::test]
 async fn a_provider_signs_in_only_the_people_its_tenant_meant() {
     let app = require_app!();
     let idp = StandInIdp::start(IDP_CLIENT, Some(IDP_SECRET))
@@ -11472,6 +11556,113 @@ async fn fcp_signs_its_saml_requests_and_ends_sessions_the_provider_logs_out() {
 
 #[cfg(feature = "saml")]
 #[tokio::test]
+async fn signing_out_asks_the_saml_provider_to_end_its_session() {
+    use saml::{Assertion, SamlIdp, IDP_SLO};
+    use std::io::Read;
+    let app = require_app!();
+    let idp = SamlIdp::new();
+    let (provider, entity) = app
+        .make_saml_provider(&idp, json!({"jit": true, "sign_out_at_provider": true}))
+        .await;
+    let shown = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/identity-providers/{provider}"),
+            None,
+        )
+        .await;
+    let sp_cert = shown.json["settings"]["saml"]["sp_certificate"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (request_id, relay, cookie) = app.saml_start(&provider).await;
+    let mut said = Assertion::new(&request_id, &entity, "omar@acme.test");
+    said.session_index = "idp-session-9".to_string();
+    let landing = app
+        .saml_post(&provider, &said.signed_by(&idp), &relay, &cookie)
+        .await;
+    let signed_in = app.sso_exchange(&landing).await;
+    assert_eq!(
+        signed_in.status,
+        StatusCode::OK,
+        "{landing} {}",
+        signed_in.text
+    );
+    let token = signed_in.json["token"].as_str().unwrap().to_string();
+    let refresh = refresh_cookie(&signed_in).unwrap();
+
+    // FCP's session ends, and the browser carries FCP's signed
+    // LogoutRequest for that person and session to the provider.
+    let out = app
+        .send_as(&token, Method::POST, "/api/v1/auth/logout", None)
+        .await;
+    assert_eq!(out.status, StatusCode::OK, "{}", out.text);
+    let to = out.json["logout_url"].as_str().unwrap().to_string();
+    assert!(to.starts_with(IDP_SLO), "{to}");
+    let verifier = samael::crypto::UrlVerifier::from_x509(&samael::crypto::CertificateDer::from(
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &sp_cert).unwrap(),
+    ))
+    .unwrap();
+    assert!(
+        verifier
+            .verify_signed_request_url(&to.parse().unwrap())
+            .unwrap(),
+        "{to}"
+    );
+    let deflated = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        query_param(&to, "SAMLRequest").unwrap(),
+    )
+    .unwrap();
+    let mut xml = String::new();
+    flate2::read::DeflateDecoder::new(&deflated[..])
+        .read_to_string(&mut xml)
+        .unwrap();
+    assert!(xml.contains("<samlp:LogoutRequest"), "{xml}");
+    assert!(
+        xml.contains(r#"Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">omar@acme.test</saml:NameID>"#),
+        "{xml}"
+    );
+    assert!(
+        xml.contains("<samlp:SessionIndex>idp-session-9</samlp:SessionIndex>"),
+        "{xml}"
+    );
+    assert!(
+        xml.contains(&format!("<saml:Issuer>{entity}</saml:Issuer>")),
+        "{xml}"
+    );
+    let refreshed = app
+        .with_cookie(Method::POST, "/api/v1/auth/refresh", &refresh)
+        .await;
+    assert_eq!(refreshed.status, StatusCode::UNAUTHORIZED);
+
+    // The provider's answer brings the browser to the login page.
+    let back = app
+        .send(
+            Method::GET,
+            &format!("/api/v1/auth/saml/{provider}/slo?SAMLResponse=abc&RelayState="),
+            &[],
+            None,
+        )
+        .await;
+    assert_eq!(back.status, StatusCode::SEE_OTHER, "{}", back.text);
+    assert_eq!(location(&back), format!("{SSO_PUBLIC_URL}/login"));
+    let posted = app
+        .send_raw(
+            "unused",
+            Method::POST,
+            &format!("/api/v1/auth/saml/{provider}/slo"),
+            "application/x-www-form-urlencoded",
+            b"SAMLResponse=abc".to_vec(),
+        )
+        .await;
+    assert_eq!(posted.status, StatusCode::SEE_OTHER, "{}", posted.text);
+
+    app.finish().await;
+}
+
+#[cfg(feature = "saml")]
+#[tokio::test]
 async fn a_saml_providers_metadata_is_fetched_from_its_url() {
     use saml::SamlIdp;
     let app = require_app!();
@@ -11529,6 +11720,30 @@ async fn a_saml_providers_metadata_is_fetched_from_its_url() {
         refreshed.json["settings"]["saml"]["idp_metadata_xml"],
         rotated.metadata.as_str()
     );
+
+    // The daily refresh follows the next rotation without anyone asking,
+    // and keeps what it has when the provider serves something unusable.
+    let metadata_now = || async {
+        app.admin(
+            Method::GET,
+            &format!("/api/v1/identity-providers/{provider}"),
+            None,
+        )
+        .await
+        .json["settings"]["saml"]["idp_metadata_xml"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let state = app.state.clone().with_sso_config(&test_api_config().sso);
+    let again = SamlIdp::new();
+    *served.lock().unwrap() = again.metadata.clone();
+    assert_eq!(fcp_api_core::v1::sso::refresh_all_metadata(&state).await, 1);
+    assert_eq!(metadata_now().await, again.metadata);
+    assert_eq!(fcp_api_core::v1::sso::refresh_all_metadata(&state).await, 0);
+    *served.lock().unwrap() = "<html>maintenance</html>".to_string();
+    assert_eq!(fcp_api_core::v1::sso::refresh_all_metadata(&state).await, 0);
+    assert_eq!(metadata_now().await, again.metadata);
 
     server.abort();
     app.finish().await;

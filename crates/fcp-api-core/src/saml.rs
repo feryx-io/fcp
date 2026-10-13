@@ -101,6 +101,23 @@ pub struct Accepted {
     pub claims: Map<String, Value>,
     pub assertion_id: String,
     pub expires: SystemTime,
+    /// The subject as FCP's own `LogoutRequest` must name it: its NameID
+    /// with its format ([`name_id_hint`]).
+    pub logout_hint: String,
+}
+
+/// A NameID and its format as one string, kept with a session so FCP can
+/// ask the provider to end it: the format, a tab, the value.
+pub fn name_id_hint(format: Option<&str>, value: &str) -> String {
+    format!("{}\t{value}", format.unwrap_or_default())
+}
+
+/// The format and value [`name_id_hint`] kept.
+pub fn split_name_id_hint(hint: &str) -> (Option<&str>, &str) {
+    match hint.split_once('\t') {
+        Some((format, value)) => (Some(format).filter(|f| !f.is_empty()), value),
+        None => (None, hint),
+    }
 }
 
 /// A logout the provider asks for: whom, which of its sessions, and what
@@ -398,6 +415,7 @@ mod imp {
             claims,
             assertion_id: assertion.id.clone(),
             expires: until.into(),
+            logout_hint: name_id_hint(name_id.format.as_deref(), &name_id.value),
         })
     }
 
@@ -601,12 +619,6 @@ mod imp {
         let Some(destination) = sp.slo_binding_location(REDIRECT_BINDING) else {
             return Ok(None);
         };
-        let escape = |s: &str| {
-            s.replace('&', "&amp;")
-                .replace('<', "&lt;")
-                .replace('>', "&gt;")
-                .replace('"', "&quot;")
-        };
         let xml = format!(
             r#"<samlp:LogoutResponse xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_{id}" Version="2.0" IssueInstant="{at}" Destination="{dest}" InResponseTo="{irt}"><saml:Issuer>{issuer}</saml:Issuer><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status></samlp:LogoutResponse>"#,
             id = uuid::Uuid::new_v4().simple(),
@@ -615,6 +627,54 @@ mod imp {
             irt = escape(in_response_to),
             issuer = escape(&endpoints.entity_id),
         );
+        redirect_with(&sp, &destination, "SAMLResponse", &xml, relay_state).map(Some)
+    }
+
+    fn escape(s: &str) -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    }
+
+    pub(super) fn logout_request(
+        settings: &fcp_core::identity::SamlSettings,
+        endpoints: &Endpoints,
+        sp_key: Option<&str>,
+        hint: &str,
+        session_index: Option<&str>,
+    ) -> Result<Option<String>, SamlError> {
+        let sp = service_provider(settings, endpoints, sp_key)?;
+        let Some(destination) = sp.slo_binding_location(REDIRECT_BINDING) else {
+            return Ok(None);
+        };
+        let (format, name_id) = split_name_id_hint(hint);
+        let format = format
+            .map(|f| format!(r#" Format="{}""#, escape(f)))
+            .unwrap_or_default();
+        let index = session_index
+            .map(|i| format!("<samlp:SessionIndex>{}</samlp:SessionIndex>", escape(i)))
+            .unwrap_or_default();
+        let xml = format!(
+            r#"<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_{id}" Version="2.0" IssueInstant="{at}" Destination="{dest}"><saml:Issuer>{issuer}</saml:Issuer><saml:NameID{format}>{name_id}</saml:NameID>{index}</samlp:LogoutRequest>"#,
+            id = uuid::Uuid::new_v4().simple(),
+            at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
+            dest = escape(&destination),
+            issuer = escape(&endpoints.entity_id),
+            name_id = escape(name_id),
+        );
+        redirect_with(&sp, &destination, "SAMLRequest", &xml, None).map(Some)
+    }
+
+    /// `destination` with `xml` deflated under `param` (HTTP-Redirect),
+    /// signed with FCP's key where it has one.
+    fn redirect_with(
+        sp: &ServiceProvider,
+        destination: &str,
+        param: &str,
+        xml: &str,
+        relay_state: Option<&str>,
+    ) -> Result<String, SamlError> {
         let mut deflated = Vec::new();
         {
             let mut encoder =
@@ -627,7 +687,7 @@ mod imp {
             .parse()
             .map_err(|_| SamlError::Metadata("its logout address is not a URL".to_string()))?;
         url.query_pairs_mut()
-            .append_pair("SAMLResponse", &STANDARD.encode(&deflated));
+            .append_pair(param, &STANDARD.encode(&deflated));
         if let Some(relay) = relay_state.filter(|r| !r.is_empty()) {
             url.query_pairs_mut().append_pair("RelayState", relay);
         }
@@ -636,7 +696,7 @@ mod imp {
                 .map_err(|e| SamlError::Metadata(e.to_string()))?,
             None => url,
         };
-        Ok(Some(url.into()))
+        Ok(url.into())
     }
 }
 
@@ -780,5 +840,27 @@ pub fn logout_response(
         key,
         in_response_to,
         relay_state
+    )
+}
+
+/// Where to send the browser to sign out at the provider: its logout
+/// address with FCP's signed `LogoutRequest` for the subject `hint` names
+/// ([`name_id_hint`]) and its session, or `None` where its metadata names
+/// no logout address.
+pub fn logout_request(
+    provider: &IdentityProvider,
+    endpoints: &Endpoints,
+    hint: &str,
+    session_index: Option<&str>,
+) -> Result<Option<String>, SamlError> {
+    let settings = settings(provider)?;
+    let key = provider.client_secret.as_deref();
+    with_saml!(
+        imp::logout_request(settings, endpoints, key, hint, session_index),
+        settings,
+        endpoints,
+        key,
+        hint,
+        session_index
     )
 }

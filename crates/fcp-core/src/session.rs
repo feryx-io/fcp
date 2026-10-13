@@ -163,11 +163,15 @@ pub struct LoginSession {
     pub device_id: Option<crate::DeviceId>,
 }
 
-/// A session's provider: its id, and the `sid` its ID token carried.
+/// A session's provider: its id, the `sid` its ID token carried (a SAML
+/// assertion's `SessionIndex`), and what signing out there needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdpSession {
     pub provider_id: String,
     pub sid: Option<String>,
+    /// The ID token for OIDC's `id_token_hint`, or the SAML NameID; kept
+    /// only where the provider signs out at the provider.
+    pub logout_hint: Option<String>,
 }
 
 impl LoginSession {

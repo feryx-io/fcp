@@ -512,8 +512,9 @@ Each phase is one PR based on main, with its admin UI and its docs.
      - Metadata by URL: `saml.idp_metadata_url`, fetched through the
        guard on save and on `POST …/refresh-metadata`.
      - SAML guides for Entra ID, Okta and Google Workspace.
-     - Not done: logout started from FCP, and refreshing metadata on a
-       schedule.
+     - Logout started from FCP and metadata refreshed daily followed in
+       v0.25.390 (`docs/SSO.md` §5, §8), behind each provider's
+       `sign_out_at_provider`.
      - Phase 4 is complete.
 5. **A user's lifecycle.**
    - One status: Active, Suspended, Deprovisioned. `enabled` is read

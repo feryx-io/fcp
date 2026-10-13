@@ -1205,6 +1205,14 @@ async fn sign_in(
     after_password(state, headers, user).await
 }
 
+/// Where the browser goes next to sign out at the identity provider too.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct LogoutAnswer {
+    /// The provider's logout address, with what it needs; the browser is
+    /// sent there and comes back to the login page (`docs/SSO.md` §5).
+    pub logout_url: String,
+}
+
 /// POST /api/v1/auth/logout
 #[utoipa::path(
     post,
@@ -1213,6 +1221,7 @@ async fn sign_in(
     operation_id = "auth_session_logout",
     responses(
         (status = 204, description = "Logged out: the client discards its token"),
+        (status = 200, description = "Logged out here; the browser goes on to sign out at the identity provider", body = LogoutAnswer),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
     ),
 )]
@@ -1229,7 +1238,17 @@ pub async fn logout(State(state): State<ApiState>, headers: HeaderMap) -> Respon
                 .ok()
         }),
     };
+    let mut provider_logout = None;
     if let (Some(id), Some(store)) = (session, session_store(&state)) {
+        // A session begun at an identity provider that signs out there
+        // too sends the browser on to it (`docs/SSO.md` §5).
+        let idp = match store.get_login_session(&id).await {
+            Ok(found) => found.filter(|s| s.revoked_at.is_none()).and_then(|s| s.idp),
+            Err(e) => {
+                tracing::warn!(session = %id, error = %e, "Failed to read a session");
+                None
+            }
+        };
         match store
             .revoke_login_session(&id, "signed out", SystemTime::now())
             .await
@@ -1237,8 +1256,14 @@ pub async fn logout(State(state): State<ApiState>, headers: HeaderMap) -> Respon
             Ok(_) => tracing::info!(session = %id, "Signed out"),
             Err(e) => tracing::warn!(session = %id, error = %e, "Failed to revoke a session"),
         }
+        if let Some(idp) = idp {
+            provider_logout = crate::v1::sso::provider_sign_out_url(&state, &idp).await;
+        }
     }
-    let mut response = StatusCode::NO_CONTENT.into_response();
+    let mut response = match provider_logout {
+        Some(logout_url) => Json(LogoutAnswer { logout_url }).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    };
     response
         .headers_mut()
         .append(header::SET_COOKIE, clear_cookie(&headers));

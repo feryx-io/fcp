@@ -49,6 +49,11 @@ class ProviderSettings:
             required_claims (list[RequiredClaim] | Unset): Claims a token must carry to sign anyone in: Google's `hd` (the
                 Workspace domain), so a personal Google account is turned away;
                 Entra's `tid`. A claim that is a list must contain the value.
+            sign_out_at_provider (bool | Unset): Signing out of FCP signs out at the provider too: the browser is
+                sent to its logout (OIDC's `end_session_endpoint`, a SAML
+                `LogoutRequest`). Off, signing out ends FCP's session alone — the
+                provider's, which may be the person's whole workplace sign-in,
+                stays.
      """
 
     issuer: str | Unset = UNSET
@@ -61,6 +66,7 @@ class ProviderSettings:
     link_by_email: bool | Unset = UNSET
     email_verified_claim: str | Unset = UNSET
     required_claims: list[RequiredClaim] | Unset = UNSET
+    sign_out_at_provider: bool | Unset = UNSET
 
 
 
@@ -117,6 +123,8 @@ class ProviderSettings:
 
 
 
+        sign_out_at_provider = self.sign_out_at_provider
+
 
         field_dict: dict[str, Any] = {}
 
@@ -142,6 +150,8 @@ class ProviderSettings:
             field_dict["email_verified_claim"] = email_verified_claim
         if required_claims is not UNSET:
             field_dict["required_claims"] = required_claims
+        if sign_out_at_provider is not UNSET:
+            field_dict["sign_out_at_provider"] = sign_out_at_provider
 
         return field_dict
 
@@ -221,6 +231,8 @@ class ProviderSettings:
                 required_claims.append(required_claims_item)
 
 
+        sign_out_at_provider = d.pop("sign_out_at_provider", UNSET)
+
         provider_settings = cls(
             issuer=issuer,
             client_id=client_id,
@@ -232,6 +244,7 @@ class ProviderSettings:
             link_by_email=link_by_email,
             email_verified_claim=email_verified_claim,
             required_claims=required_claims,
+            sign_out_at_provider=sign_out_at_provider,
         )
 
         return provider_settings
