@@ -8,7 +8,7 @@
 # toolkit at run time (`runtime: nvidia`, or `--gpus all`), which injects
 # libcuda, libnvcuvid and libnvidia-encode for the capabilities asked in
 # NVIDIA_DRIVER_CAPABILITIES.
-FROM rust:1.92-bookworm AS builder
+FROM rust:1.98-bookworm AS builder
 
 ARG FFMPEG_TAG=n7.1
 ARG NV_CODEC_HEADERS_TAG=n12.2.72.0

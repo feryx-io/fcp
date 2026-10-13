@@ -1,6 +1,6 @@
 # Deep testing
 
-*Drafted 2026-10-13, after the last open FCP gap (#303) was merged. Under discussion. Nothing in it is agreed yet.*
+*Drafted 2026-10-13, after the last open FCP gap (#303) was merged. Agreed 2026-10-13: all phases, every question on its recommendation. Q9, which real-world accounts and devices exist, is still open; it is needed only for D8.*
 
 The features are built. This project looks for the bugs that the tests
 written alongside each feature could not find, and fixes them.
@@ -333,3 +333,13 @@ for push, and devices for Anvil.
 FCP?
 *Recommendation:* FCP's server side here, with Anvil only as a client in
 D8. Anvil's own deep testing would be its own pass.
+
+## 8. Findings
+
+### D0. The nightly green and watched
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| The weekly audit failed on three `quinn-proto` advisories (RUSTSEC-2026-0338, -0340, -0343; a remote peer can panic the QUIC stack) | S2 | Already fixed: the lock has 0.11.18. This PR's audit job confirms it. |
+| The live stack failed 2026-10-07 to 10-09 because `fcp-admin` overflowed a runtime worker's stack at startup, and restarted until compose gave up. It passed again from 10-10 with no change aimed at it. The cause: the images were built with Rust 1.92, which CI never uses. utoipa's generated `openapi()` built by 1.92 in release with SAML needs about 2.1 MiB of stack (53 KiB under 1.98), and the admin built it inside a spawned task on a 2 MiB worker, so startup sat on the edge. | S1 (the admin does not start) | The spec is built on a thread of its own with a 64 MiB stack (`api_docs::spec_json`), tested from a 128 KiB caller. The sixteen Dockerfiles moved to `rust:1.98`, the toolchain CI tests. Only main moves the `nightly` tag, so the Images workflow can run on a branch. |
+| A failed scheduled run told nobody | S2 | `scripts/scheduled-run-report.sh`, the last job of the CI and Images workflows, opens an issue labelled `nightly-failure`, comments on it while the run fails, and closes it when it passes. |

@@ -4,7 +4,7 @@
 # (docs/DEVELOPER_SURFACE.md phase 6). The image is large — `kokoro` brings PyTorch — which is why the
 # compose stack runs it under the `tts` profile. CPU-only PyTorch; the
 # model itself is fetched from the Hugging Face hub on first use.
-FROM rust:1.92 AS builder
+FROM rust:1.98 AS builder
 
 RUN apt-get update && apt-get install -y \
     cmake \

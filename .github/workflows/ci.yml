@@ -352,3 +352,26 @@ jobs:
         with:
           name: security-audit-report
           path: audit-report.json
+
+  # A failed scheduled run opens an issue, or comments on the one open, and
+  # a passing one closes it (docs/DEEP_TESTING.md D0, Q8): the security audit failed
+  # for nights before anyone looked.
+  report:
+    name: Report the scheduled run
+    needs: [test, submodule-nightlies, sdks, admin-ui, packaging, security-audit]
+    if: ${{ always() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
+          WORKFLOW: ${{ github.workflow }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/scheduled-run-report.sh

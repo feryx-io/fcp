@@ -1,5 +1,5 @@
 # Multi-stage build for fcp-jobs
-FROM rust:1.92 as builder
+FROM rust:1.98 as builder
 
 RUN apt-get update && apt-get install -y \
     cmake \
