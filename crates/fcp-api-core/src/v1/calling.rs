@@ -171,6 +171,33 @@ pub async fn settings_of(state: &ApiState, user: &User) -> Result<CallingSetting
 
 /// Apply a request to a user's settings, store them and announce the
 /// change (`user.calling_changed`).
+/// A hold-music choice as given (a prompt of the tenant, `none` for
+/// silence, empty for the tenant's) as it is kept.
+pub(crate) async fn hold_music_choice(
+    state: &ApiState,
+    tenant: &fcp_core::TenantId,
+    given: &str,
+) -> Result<Option<String>, ApiError> {
+    Ok(match given.trim() {
+        "" => None,
+        fcp_core::calling::HOLD_MUSIC_NONE => Some(fcp_core::calling::HOLD_MUSIC_NONE.to_string()),
+        id => {
+            let prompt_id = id
+                .parse::<fcp_core::PromptId>()
+                .map_err(|_| ApiError::BadRequest(format!("hold_music: not a prompt id: {id}")))?;
+            let prompt = require_storage!(state)
+                .prompt_store()
+                .ok_or_else(|| ApiError::BadRequest("hold_music: no prompt store".into()))?
+                .get_prompt(&prompt_id)
+                .await
+                .map_err(|e| ApiError::Internal(e.to_string()))?
+                .filter(|p| &p.tenant_id == tenant)
+                .ok_or_else(|| ApiError::BadRequest(format!("hold_music: no prompt {id}")))?;
+            Some(prompt.id.to_string())
+        }
+    })
+}
+
 pub async fn apply(
     state: &ApiState,
     user: &User,
@@ -214,26 +241,7 @@ pub async fn apply(
         settings.find_me = Some(find_me);
     }
     if let Some(music) = req.hold_music {
-        settings.hold_music = match music.trim() {
-            "" => None,
-            fcp_core::calling::HOLD_MUSIC_NONE => {
-                Some(fcp_core::calling::HOLD_MUSIC_NONE.to_string())
-            }
-            id => {
-                let prompt_id = id.parse::<fcp_core::PromptId>().map_err(|_| {
-                    ApiError::BadRequest(format!("hold_music: not a prompt id: {id}"))
-                })?;
-                let prompt = storage
-                    .prompt_store()
-                    .ok_or_else(|| ApiError::BadRequest("hold_music: no prompt store".into()))?
-                    .get_prompt(&prompt_id)
-                    .await
-                    .map_err(|e| ApiError::Internal(e.to_string()))?
-                    .filter(|p| p.tenant_id == user.tenant_id)
-                    .ok_or_else(|| ApiError::BadRequest(format!("hold_music: no prompt {id}")))?;
-                Some(prompt.id.to_string())
-            }
-        };
+        settings.hold_music = hold_music_choice(state, &user.tenant_id, &music).await?;
     }
     if let Some(given) = req.class_of_service_id {
         if by != "admin" {

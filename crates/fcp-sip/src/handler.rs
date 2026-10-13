@@ -5320,6 +5320,7 @@ impl SipMessageHandler {
                                     let callee = destination_aor.to_string();
                                     let _ = self.call_manager.update_call(&call_id, |call| {
                                         call.line_binding_id = Some(lb_id);
+                                        call.number_binding_id = Some(lb_id);
                                         call.original_callee = Some(callee);
                                     });
                                 }
@@ -6027,6 +6028,7 @@ impl SipMessageHandler {
                                                         &call_id,
                                                         |call| {
                                                             call.line_binding_id = Some(lb_id);
+                                                            call.number_binding_id = Some(lb_id);
                                                             call.original_callee = Some(callee);
                                                         },
                                                     );
