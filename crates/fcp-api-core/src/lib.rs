@@ -22,6 +22,7 @@ pub mod openapi;
 pub mod page;
 pub mod rate_limit;
 pub mod redirection;
+pub mod route_log;
 pub mod route_permissions;
 pub mod saml;
 pub mod scim;
@@ -233,7 +234,9 @@ pub fn create_router_with(
                 .layer(middleware::from_fn_with_state(
                     state.clone(),
                     managed::refuse_synced_writes,
-                )),
+                ))
+                // Outermost, so it logs the status the caller saw.
+                .layer(middleware::from_fn(route_log::record)),
         );
 
     // SCIM 2.0 (`docs/SCIM.md`): the tenant's provisioner, by an API token
@@ -327,11 +330,18 @@ pub fn create_router_with(
             "Public signup requested but auth_token/JWT secret is unavailable; signup route disabled"
         );
     }
+    router = router.merge(
+        Router::new().nest(
+            "/api/v1",
+            v1::pre_auth_router(enable_signup)
+                .layer(audit_layer)
+                .layer(middleware::from_fn(route_log::record)),
+        ),
+    );
     router = router.merge(Router::new().nest(
         "/api/v1",
-        v1::pre_auth_router(enable_signup).layer(audit_layer),
+        v1::ws_router().layer(middleware::from_fn(route_log::record)),
     ));
-    router = router.merge(Router::new().nest("/api/v1", v1::ws_router()));
     // A tenant's phones fetch their files by the key in the path
     // (`docs/PROVISIONING.md`): no bearer token, which a phone cannot send.
     router = router.merge(

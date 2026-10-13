@@ -1428,9 +1428,16 @@ heard after the holder's and the number's choice
 
 ## What is next (drafted 2026-10-13, after the last FCP gap closed)
 
-**Deep testing** — design in `docs/DEEP_TESTING.md` (v0.25.393), under
-discussion: finding the bugs per-feature tests could not, with phases
-D0–D8 and ten questions.
+**Deep testing** — design in `docs/DEEP_TESTING.md` (v0.25.393), agreed
+2026-10-13 on every recommendation: finding the bugs per-feature tests
+could not, with phases D0–D8. D0 done (v0.25.394): the admin's startup
+stack overflow under the images' Rust 1.92 fixed, the images on Rust
+1.98, failed scheduled runs opening a `nightly-failure` issue. D1 done
+(v0.25.395): every request reaching an `/api/v1` route logged under
+`FCP_ROUTE_LOG` (`fcp_api_core::route_log`), CI failing on an operation
+no test calls unless `scripts/routes-uncalled.txt` names why (325 of 412
+called; the 87 listed are D3's), and a weekly line-coverage report
+(`.github/workflows/coverage.yml`).
 
 ## What is next (chosen 2026-09-29, after the nightly stack closed)
 

@@ -1,0 +1,128 @@
+# Line coverage of the workspace's tests, weekly (docs/DEEP_TESTING.md D1).
+#
+# A report, not a gate: the HTML report and a per-crate table, the most
+# uncovered lines first, point the later deep-testing phases at code no
+# test reaches. The test job in ci.yml is the gate; a test that fails only
+# under instrumentation is listed in this run's summary, not failed on.
+name: Coverage
+
+on:
+  schedule:
+    # Sunday 05:00 UTC, clear of the nightly Images run and Monday's CI.
+    - cron: '0 5 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  coverage:
+    name: Line coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FCP_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      FCP_TEST_REDIS_URL: redis://localhost:6379
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Install native video codec libraries
+        uses: ./external/forge-media/.github/actions/video-codecs
+      - name: Install xmlsec for SAML
+        run: sudo apt-get update && sudo apt-get install -y libxmlsec1-dev libclang-dev
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      # The binary suites start the workspace's binaries, which
+      # `cargo llvm-cov` builds instrumented beside the tests, so the lines
+      # those processes run count too.
+      - name: Tests, instrumented
+        id: tests
+        run: |
+          set +e
+          cargo llvm-cov --no-report --no-fail-fast --workspace --all-targets \
+            --features fcp-api-core/saml 2>&1 | tee "$RUNNER_TEMP/tests.log"
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: The report
+        run: |
+          ignore='external/|/tests/|fcp-testkit/'
+          cargo llvm-cov report --html --ignore-filename-regex "$ignore"
+          cargo llvm-cov report --json --summary-only --ignore-filename-regex "$ignore" \
+            --output-path "$RUNNER_TEMP/coverage.json"
+          {
+            echo "## Line coverage"
+            echo
+            scripts/coverage-by-crate.py "$RUNNER_TEMP/coverage.json"
+            if [ "${{ steps.tests.outputs.status }}" != 0 ]; then
+              echo
+              echo "## Failed under instrumentation"
+              echo
+              echo '```'
+              grep -E '^test .* FAILED$|^error: test failed' "$RUNNER_TEMP/tests.log" || true
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            target/llvm-cov/html
+            ${{ runner.temp }}/coverage.json
+
+  report:
+    name: Report the scheduled run
+    needs: [coverage]
+    if: ${{ always() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
+          WORKFLOW: ${{ github.workflow }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/scheduled-run-report.sh
