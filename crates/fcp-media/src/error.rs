@@ -33,10 +33,6 @@ pub enum Error {
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
-    #[cfg(feature = "remote")]
-    #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
-
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

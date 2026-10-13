@@ -418,7 +418,7 @@ Integration layer bridging SIP signaling with the `forge-media` engine. Supports
 | Module | Purpose |
 |--------|---------|
 | `manager.rs` | `MediaManager` — deployment-agnostic API for media operations |
-| `backend.rs` | `MediaBackend` trait with `EmbeddedBackend` and `RemoteBackend` |
+| `backend.rs` | `MediaBackend` trait and `EmbeddedBackend` (forge-media in-process; the never-built `RemoteBackend` was removed in v0.25.391) |
 | `session.rs` | `MediaSession` — per-call media state and lifecycle |
 | `decision.rs` | Media anchoring decision logic |
 | `sdp.rs` | SDP parsing, codec extraction, SDES crypto line parsing |

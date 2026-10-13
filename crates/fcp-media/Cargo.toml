@@ -9,10 +9,6 @@ description = "Media integration layer for FCP - bridges SIP signaling with forg
 default = ["embedded", "g722", "opus"]
 # Embedded mode: forge-media runs in-process (Phase 1)
 embedded = []
-# Remote mode: forge-media runs as separate service (Future)
-remote = []
-# Enable both modes
-full = ["embedded", "remote"]
 # Audio codec features
 g722 = ["forge-codecs/g722"]
 # Opus is on by default (softphones and browsers offer it first). It pulls in

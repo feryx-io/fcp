@@ -89,6 +89,3 @@ pub use stt::{
     SttConfig, SttOptions, SttProvider, SttProviderConfig, SttService, SttStream, Transcript,
 };
 pub use tts::{TtsConfig, TtsProvider, TtsProviderConfig, TtsService, VoiceInfo};
-
-#[cfg(feature = "remote")]
-pub use backend::RemoteBackend;

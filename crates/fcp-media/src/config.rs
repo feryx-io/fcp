@@ -93,29 +93,6 @@ pub enum BackendType {
     /// Best for: Single-box PBX, simple deployments, development
     #[default]
     Embedded,
-
-    /// Remote mode: forge-media runs as separate service
-    /// Best for: Distributed scaling, dedicated media servers, conferencing
-    Remote {
-        /// Base URL of forge-media server
-        endpoint: String,
-
-        /// Optional authentication token
-        #[serde(skip_serializing_if = "Option::is_none")]
-        auth_token: Option<String>,
-
-        /// Connection timeout in milliseconds
-        #[serde(default = "default_timeout_ms")]
-        timeout_ms: u64,
-
-        /// Enable retry on failure
-        #[serde(default = "default_true")]
-        retry_enabled: bool,
-
-        /// Maximum retry attempts
-        #[serde(default = "default_max_retries")]
-        max_retries: u32,
-    },
 }
 
 impl std::fmt::Debug for MediaConfig {
@@ -204,21 +181,6 @@ impl MediaConfig {
             reject_crlf("turn_server", turn)?;
         }
 
-        match &self.backend {
-            BackendType::Embedded => {}
-            BackendType::Remote {
-                endpoint: _,
-                auth_token: _,
-                timeout_ms: _,
-                retry_enabled: _,
-                max_retries: _,
-            } => {
-                return Err(Error::Config(
-                    "backend.type = \"remote\" is not production-ready yet; use the embedded media backend".to_string(),
-                ));
-            }
-        }
-
         if let Some(tts) = &self.tts {
             match &tts.provider {
                 crate::tts::TtsProviderConfig::GoogleCloud { .. }
@@ -258,14 +220,6 @@ fn default_rtp_port_end() -> u16 {
 
 fn default_true() -> bool {
     true
-}
-
-fn default_timeout_ms() -> u64 {
-    5000
-}
-
-fn default_max_retries() -> u32 {
-    3
 }
 
 fn default_recording_dir() -> String {
@@ -310,26 +264,10 @@ mod tests {
 
     #[test]
     fn test_config_serialization() {
-        let config = MediaConfig {
-            backend: BackendType::Remote {
-                endpoint: "http://forge:8080".into(),
-                auth_token: Some("secret".into()),
-                timeout_ms: 5000,
-                retry_enabled: true,
-                max_retries: 3,
-            },
-            ..Default::default()
-        };
-
+        let config = MediaConfig::default();
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: MediaConfig = serde_json::from_str(&json).unwrap();
-
-        match deserialized.backend {
-            BackendType::Remote { endpoint, .. } => {
-                assert_eq!(endpoint, "http://forge:8080");
-            }
-            _ => panic!("Expected Remote backend"),
-        }
+        assert!(matches!(deserialized.backend, BackendType::Embedded));
     }
 
     #[test]
@@ -343,19 +281,9 @@ mod tests {
     }
 
     #[test]
-    fn test_remote_backend_rejected() {
-        let config = MediaConfig {
-            backend: BackendType::Remote {
-                endpoint: "http://forge:8080".into(),
-                auth_token: Some("secret".into()),
-                timeout_ms: 5000,
-                retry_enabled: true,
-                max_retries: 3,
-            },
-            ..Default::default()
-        };
-
-        assert!(config.validate().is_err());
+    fn test_remote_backend_is_not_a_backend() {
+        let json = r#"{"backend":{"type":"remote","endpoint":"http://forge:8080"}}"#;
+        assert!(serde_json::from_str::<MediaConfig>(json).is_err());
     }
 
     #[test]

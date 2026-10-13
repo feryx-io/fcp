@@ -3,7 +3,7 @@
 //! These tests verify that security validations are working correctly
 //! across configuration, session management, and recording operations.
 
-use fcp_media::{BackendType, MediaConfig, MediaSessionConfig};
+use fcp_media::{MediaConfig, MediaSessionConfig};
 
 #[test]
 fn test_crlf_injection_in_recording_dir() {
@@ -66,60 +66,6 @@ fn test_crlf_injection_in_turn_server() {
 }
 
 #[test]
-fn test_crlf_injection_in_backend_endpoint() {
-    let config = MediaConfig {
-        backend: BackendType::Remote {
-            endpoint: "http://example.com\r\ninjection".to_string(),
-            auth_token: None,
-            timeout_ms: 5000,
-            retry_enabled: false,
-            max_retries: 3,
-        },
-        ..Default::default()
-    };
-    assert!(
-        config.validate().is_err(),
-        "Should reject CRLF in backend endpoint"
-    );
-}
-
-#[test]
-fn test_crlf_injection_in_backend_auth_token() {
-    let config = MediaConfig {
-        backend: BackendType::Remote {
-            endpoint: "http://example.com".to_string(),
-            auth_token: Some("token\ninjection".to_string()),
-            timeout_ms: 5000,
-            retry_enabled: false,
-            max_retries: 3,
-        },
-        ..Default::default()
-    };
-    assert!(
-        config.validate().is_err(),
-        "Should reject CRLF in auth token"
-    );
-}
-
-#[test]
-fn test_invalid_backend_url_scheme() {
-    let config = MediaConfig {
-        backend: BackendType::Remote {
-            endpoint: "ftp://malicious.com".to_string(),
-            auth_token: None,
-            timeout_ms: 5000,
-            retry_enabled: false,
-            max_retries: 3,
-        },
-        ..Default::default()
-    };
-    assert!(
-        config.validate().is_err(),
-        "Should reject non-HTTP(S) URL schemes"
-    );
-}
-
-#[test]
 fn test_invalid_port_range_reversed() {
     let config = MediaConfig {
         rtp_port_start: 20000,
@@ -155,86 +101,6 @@ fn test_excessive_port_range() {
     assert!(
         config.validate().is_err(),
         "Should reject excessive port range"
-    );
-}
-
-#[test]
-fn test_timeout_bounds() {
-    // Zero timeout
-    let mut config = MediaConfig {
-        backend: BackendType::Remote {
-            endpoint: "http://example.com".to_string(),
-            auth_token: None,
-            timeout_ms: 0,
-            retry_enabled: false,
-            max_retries: 3,
-        },
-        ..Default::default()
-    };
-    assert!(config.validate().is_err(), "Should reject zero timeout");
-
-    // Excessive timeout (> 2 minutes)
-    config.backend = BackendType::Remote {
-        endpoint: "http://example.com".to_string(),
-        auth_token: None,
-        timeout_ms: 121_000,
-        retry_enabled: false,
-        max_retries: 3,
-    };
-    assert!(
-        config.validate().is_err(),
-        "Should reject excessive timeout"
-    );
-}
-
-#[test]
-fn test_retry_limits() {
-    // Zero retries when enabled
-    let mut config = MediaConfig {
-        backend: BackendType::Remote {
-            endpoint: "http://example.com".to_string(),
-            auth_token: None,
-            timeout_ms: 5000,
-            retry_enabled: true,
-            max_retries: 0,
-        },
-        ..Default::default()
-    };
-    assert!(
-        config.validate().is_err(),
-        "Should reject zero retries when retry enabled"
-    );
-
-    // Excessive retries
-    config.backend = BackendType::Remote {
-        endpoint: "http://example.com".to_string(),
-        auth_token: None,
-        timeout_ms: 5000,
-        retry_enabled: true,
-        max_retries: 11,
-    };
-    assert!(
-        config.validate().is_err(),
-        "Should reject excessive retries"
-    );
-}
-
-#[test]
-fn test_valid_remote_backend_config() {
-    let config = MediaConfig {
-        backend: BackendType::Remote {
-            endpoint: "https://example.com".to_string(),
-            auth_token: Some("valid-token".to_string()),
-            timeout_ms: 10000,
-            retry_enabled: true,
-            max_retries: 5,
-        },
-        ..Default::default()
-    };
-    // Remote backend is deliberately rejected until production-ready
-    assert!(
-        config.validate().is_err(),
-        "Remote backend should be rejected as not production-ready"
     );
 }
 
