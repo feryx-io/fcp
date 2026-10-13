@@ -2403,6 +2403,103 @@ async fn a_users_class_decides_what_leaves_and_under_which_caller_id() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forward_to_a_number_names_the_user_it_was_diverted_from() {
+    use fcp_core::storage::CredentialStore;
+    use fcp_core::CallingStore;
+    let carrier = Carrier::new("divert-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    stack
+        .seed
+        .trunk_with(acme, "divert-carrier", carrier.port(), |_| {})
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+    let alice_phone = stack.phone(&alice).await;
+    let alice_caller = Caller::new(acme, "alice");
+    line_and_class(&stack, &bob, "+15185550144", None).await;
+    let storage = stack.seed.storage();
+    let bob_id = storage
+        .get_user_in_tenant(&bob.username, &acme)
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    let mobile = fcp_core::CallTarget::Number("+15125559999".into());
+
+    // Bob forwards everything to his mobile: the carrier sees Alice's call
+    // diverted from Bob's number, unconditionally.
+    let mut settings = fcp_core::CallingSettings::defaults(acme, bob_id);
+    settings.forward_all = Some(mobile.clone());
+    storage.put_calling_settings(settings).await.unwrap();
+    let call = alice_phone
+        .call_with_headers(&bob.extension, &alice_caller.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the forward never left; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    let target = incoming.request_uri();
+    assert!(target.contains("+15125559999"), "R-URI: {target}");
+    let diversion = incoming.header("Diversion").unwrap_or_default();
+    assert!(
+        diversion.contains("+15185550144@")
+            && diversion.contains("reason=unconditional")
+            && diversion.contains("counter=1"),
+        "Diversion: {diversion:?}"
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    let _ = call.failed(SOON).await;
+
+    // A find-me step to the mobile, with none of Bob's phones up, says so.
+    let mut settings = fcp_core::CallingSettings::defaults(acme, bob_id);
+    settings.find_me = Some(
+        serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "steps": [{ "targets": [mobile.to_string()], "ring_secs": 10 }],
+        }))
+        .unwrap(),
+    );
+    storage.put_calling_settings(settings).await.unwrap();
+    let call = alice_phone
+        .call_with_headers(&bob.extension, &alice_caller.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!(
+            "the find-me step never left; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let diversion = incoming.header("Diversion").unwrap_or_default();
+    assert!(
+        diversion.contains("+15185550144@") && diversion.contains("reason=follow-me"),
+        "Diversion: {diversion:?}"
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    let _ = call.failed(SOON).await;
+
+    // A call Bob places himself names no one.
+    let bob_phone = stack.phone(&bob).await;
+    let call = bob_phone
+        .call_with_headers("+15125559999", &Caller::new(acme, "bob").headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("Bob's own call never left; it is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert_eq!(incoming.header("Diversion"), None);
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert_eq!(call.failed(SOON).await, Some(486));
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_assistant_calls_for_the_executive_under_the_executives_number() {
     use fcp_core::storage::CredentialStore;
     use fcp_core::CallingStore;

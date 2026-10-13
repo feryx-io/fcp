@@ -1317,7 +1317,7 @@ a `confirm` step's answerer hears a prompt alone and is connected only on
 a 1, so a mobile's voicemail cannot take the call; `*60`/`*61`; the
 Calling page's editor. Proved by `calling.rs` (the next step after the
 phones, confirmation by 1 and refusal by 2, an unregistered user). The
-`Diversion` header is not sent.
+`Diversion` header followed in v0.25.389.
 Phase 7 done (v0.25.282): class of service — numbers classified by the
 tenant's country (US, CA, GB, DE, FR, AU, NZ; the tenant's `calling`,
 migration 084) and its prefix overrides into internal, emergency,
@@ -1394,6 +1394,13 @@ enterprise calling project is complete: all eleven phases.
 Leftover done in v0.25.388: a number's own hold music (`hold_music` on
 its line binding: a prompt, or `none`), played to its callers unless the
 holder chose their own (`docs/ENTERPRISE_CALLING.md` §3.3.1).
+
+Leftover done in v0.25.389: a forward or a find-me step that leaves by a
+trunk carries `Diversion` (RFC 5806) naming the number the caller dialed,
+else the forwarding user's first number, with the reason
+(`unconditional`, `user-busy`, `no-answer`, `unavailable`,
+`time-of-day`, `follow-me`) — the caller's own identity in the From, as
+Q7 agreed (`docs/ENTERPRISE_CALLING.md` §3.6.1). Proved by `trunks.rs`.
 
 ## What is next (chosen 2026-09-29, after the nightly stack closed)
 

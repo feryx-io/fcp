@@ -3523,6 +3523,11 @@ impl SipMessageHandler {
         // Refer-To this B2BUA relayed (see handle_refer).
         call.correlation_id = sip_parse::header(request.headers(), TRANSFERRED_FROM_HEADER)
             .and_then(|v| v.as_str().trim().parse::<fcp_core::CallId>().ok());
+        // A leg this node placed to itself for a forward names the call it
+        // forwards for (believed only then, `claims`): its `Diversion`.
+        call.forwarded_for = sip_parse::header(request.headers(), FORWARDED_FOR_HEADER)
+            .and_then(|v| v.as_str().trim().parse::<fcp_core::CallId>().ok())
+            .map(|id| fcp_b2bua_core::CallId::from_uuid(*id.as_uuid()));
         // A relayed leg: its call's node records and announces the call.
         if let Some(relay) = &flow_relay {
             call.relay_for = Some(relay.for_call.unwrap_or_default());
@@ -7302,6 +7307,13 @@ impl SipMessageHandler {
                 } else {
                     self.caller_presentation(&call_id, caller.as_deref()).await
                 };
+                // A forward or a find-me step leaving by a trunk names the
+                // number it was diverted from (§3.6, Q7).
+                let diversion = if emergency {
+                    None
+                } else {
+                    self.diversion_of(&call_id).await
+                };
                 for target in &mut target_contacts {
                     if let Some(route) = answering_trunk(&route_trunks, &target.uri) {
                         target.egress = crate::trunk_egress::TrunkEgress::of(
@@ -7314,6 +7326,14 @@ impl SipMessageHandler {
                         }
                         if withheld {
                             target.egress.withhold(caller.as_deref());
+                        }
+                        if let Some((number, reason)) = &diversion {
+                            target.egress.divert(
+                                &route.trunk,
+                                number,
+                                reason,
+                                self.uas.local_uri.host(),
+                            );
                         }
                         // The numbers the carrier will see are the ones the
                         // call is signed over (RFC 8224).
@@ -15677,6 +15697,9 @@ impl SipMessageHandler {
             let caller_from_uri = extract_from_uri(request).ok().map(normalize_from_uri);
             uac.inner().set_display_name(caller_display_name).await;
             uac.inner().set_from_uri(caller_from_uri).await;
+            let _ = self
+                .call_manager
+                .update_call(&call_id, |c| c.forward_reason = Some("follow-me"));
             let mut legs = Vec::new();
             for (uri, _) in &uris {
                 match self
@@ -15814,6 +15837,44 @@ impl SipMessageHandler {
             .unwrap_or_else(|| self.uas.local_uri.host().to_string());
         let line = number.map(|n| format!("sip:{}@{host}", n.trim()));
         (line, withheld)
+    }
+
+    /// The number a leg this node placed for a forward was diverted from,
+    /// and why (`docs/ENTERPRISE_CALLING.md` §3.6): the number the caller
+    /// dialed, else the first number of the user the call was for. `None`
+    /// for a call that forwards for nobody, or a user with no number.
+    async fn diversion_of(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+    ) -> Option<(String, &'static str)> {
+        let storage = self.storage.as_ref()?;
+        let forwarded_for = self.call_manager.get_call(call_id)?.forwarded_for?;
+        let original = self.call_manager.get_call(&forwarded_for)?;
+        let reason = original.forward_reason.unwrap_or("unknown");
+        let dialed = match original.number_binding_id {
+            Some(id) => storage.get_line_binding(&id).await.ok().flatten(),
+            None => None,
+        };
+        let binding = match (dialed, original.callee_user_id) {
+            (Some(binding), _) => Some(binding),
+            (None, Some(user)) => match storage.list_line_bindings_by_user(&user).await {
+                Ok(bindings) => bindings
+                    .into_iter()
+                    .find(|b| b.tenant_id == original.tenant_id),
+                Err(e) => {
+                    warn!(call_id = %call_id, user_id = %user, error = %e, "Failed to read the forwarding user's lines");
+                    None
+                }
+            },
+            (None, None) => None,
+        }?;
+        match storage.get_phone_number(&binding.phone_number_id).await {
+            Ok(number) => number.map(|n| (n.e164, reason)),
+            Err(e) => {
+                warn!(call_id = %call_id, error = %e, "Failed to read the diverting number");
+                None
+            }
+        }
     }
 
     /// Whether the class of service of the user `caller` names refuses
@@ -16752,6 +16813,12 @@ impl SipMessageHandler {
                 .uac
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("UAC not configured — cannot route CFNA"))?;
+            if let Some(reason) = reason {
+                let reason = crate::trunk_egress::diversion_reason(reason);
+                let _ = self
+                    .call_manager
+                    .update_call(&call_id, |c| c.forward_reason = Some(reason));
+            }
 
             // Resolve the target URI
             let target_uri = if destination.eq_ignore_ascii_case("voicemail") {
