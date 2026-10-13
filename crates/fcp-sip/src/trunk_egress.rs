@@ -154,6 +154,24 @@ impl TrunkEgress {
         self.anonymous = true;
     }
 
+    /// Name the user a forwarded call was meant for (RFC 5806): the
+    /// carrier sees the original caller in the From and, here, the number
+    /// that diverted it and why (`docs/ENTERPRISE_CALLING.md` §3.6, Q7).
+    /// The URI's host is the trunk's `from_domain` when it names one,
+    /// else `host`.
+    pub fn divert(&mut self, trunk: &Trunk, number: &str, reason: &str, host: &str) {
+        let host = trunk
+            .from_domain
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .unwrap_or(host);
+        self.headers.push((
+            "Diversion".to_string(),
+            format!("<sip:{number}@{host}>;reason={reason};counter=1"),
+        ));
+    }
+
     /// Nothing: a leg that no trunk carries.
     pub fn none() -> Self {
         Self {
@@ -238,6 +256,20 @@ fn anonymous_display(request: &mut sip_core::Request) {
         smol_str::SmolStr::new("From"),
         smol_str::SmolStr::new(value),
     );
+}
+
+/// The RFC 5806 `Diversion` reason for why a call was forwarded, as the
+/// ring plan, a schedule or find-me says it.
+pub fn diversion_reason(reason: &str) -> &'static str {
+    match reason {
+        "unconditional" => "unconditional",
+        "busy" => "user-busy",
+        "no-answer" => "no-answer",
+        "unreachable" => "unavailable",
+        "after-hours" | "closed" | "holiday" => "time-of-day",
+        "follow-me" => "follow-me",
+        _ => "unknown",
+    }
 }
 
 /// The content type SIP INFO carries a digit in.
@@ -465,6 +497,27 @@ mod tests {
         );
         assert!(egress.anonymous);
         assert!(egress.request_filter(None).is_some(), "the From is renamed");
+    }
+
+    #[test]
+    fn a_forwarded_leg_names_the_number_that_diverted_it() {
+        let mut egress = TrunkEgress::of(&trunk(), Some("sip:+15125550199@pbx.local"), false);
+        egress.divert(&trunk(), "+15125550811", "follow-me", "pbx.local");
+        assert_eq!(
+            header(&egress, "Diversion"),
+            Some("<sip:+15125550811@pbx.local>;reason=follow-me;counter=1")
+        );
+        let mut t = trunk();
+        t.from_domain = Some("carrier.example".into());
+        let mut egress = TrunkEgress::of(&t, Some("sip:+15125550199@pbx.local"), false);
+        egress.divert(&t, "+15125550811", diversion_reason("busy"), "pbx.local");
+        assert_eq!(
+            header(&egress, "Diversion"),
+            Some("<sip:+15125550811@carrier.example>;reason=user-busy;counter=1")
+        );
+        assert_eq!(diversion_reason("unreachable"), "unavailable");
+        assert_eq!(diversion_reason("holiday"), "time-of-day");
+        assert_eq!(diversion_reason("something-new"), "unknown");
     }
 
     fn header<'a>(egress: &'a TrunkEgress, name: &str) -> Option<&'a str> {

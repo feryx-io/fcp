@@ -531,6 +531,18 @@ pub struct Call {
     /// (`docs/ENTERPRISE_CALLING.md` §3.3).
     pub number_binding_id: Option<fcp_core::LineBindingId>,
 
+    /// Why this call is being forwarded away from `callee_user_id`, when
+    /// it is — an RFC 5806 reason (`unconditional`, `user-busy`,
+    /// `no-answer`, `unavailable`, `time-of-day`, `follow-me`): what the
+    /// `Diversion` header on the forwarded leg says
+    /// (`docs/ENTERPRISE_CALLING.md` §3.6).
+    pub forward_reason: Option<&'static str>,
+
+    /// The call a leg this node placed to itself forwards for
+    /// (`X-FCP-Forwarded-For`): whose user and reason its `Diversion`
+    /// names when it leaves by a trunk.
+    pub forwarded_for: Option<CallId>,
+
     /// Per-user ring-no-answer timeout from the line binding.
     /// When set, overrides the global B2BUA forking timeout.
     pub no_answer_timeout: Option<Duration>,
@@ -691,6 +703,8 @@ impl Call {
             parker_extension: None,
             line_binding_id: None,
             number_binding_id: None,
+            forward_reason: None,
+            forwarded_for: None,
             no_answer_timeout: None,
             original_callee: None,
             callee_user_id: None,
@@ -809,6 +823,8 @@ impl Call {
             parker_extension: None,
             line_binding_id: None,
             number_binding_id: None,
+            forward_reason: None,
+            forwarded_for: None,
             no_answer_timeout: None,
             original_callee: None,
             callee_user_id: None,
