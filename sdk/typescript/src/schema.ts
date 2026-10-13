@@ -11613,6 +11613,14 @@ export interface components {
              *     [`crate::hoteling::DEFAULT_SESSION_HOURS`].
              */
             hoteling_session_hours?: number | null;
+            /**
+             * @description The tenant's hold music (`docs/ENTERPRISE_CALLING.md` §3.3.1): a
+             *     prompt of the tenant, or [`HOLD_MUSIC_NONE`](crate::calling::HOLD_MUSIC_NONE)
+             *     for silence; unset is the tenant's first hold-music prompt, else
+             *     the node's built-in music. A holder's or a number's own choice
+             *     comes first.
+             */
+            hold_music?: string | null;
         };
         /** @description What a tenant's people see of each other through `/me/directory`. */
         TenantDirectory: {

@@ -261,10 +261,17 @@ async fn normalize_offboarding(
 }
 
 /// A tenant's calling defaults as stored: the country upper-cased, blanks
-/// cleared, and the whole validated.
-fn normalize_calling(
+/// cleared, the hold music a prompt of the tenant or `none`, and the whole
+/// validated.
+async fn normalize_calling(
+    state: &ApiState,
+    tenant: &fcp_core::TenantId,
     mut calling: fcp_core::TenantCalling,
 ) -> Result<fcp_core::TenantCalling, ApiError> {
+    calling.hold_music = match calling.hold_music.take() {
+        Some(given) => super::calling::hold_music_choice(state, tenant, &given).await?,
+        None => None,
+    };
     calling.country = calling
         .country
         .map(|c| c.trim().to_ascii_uppercase())
@@ -524,8 +531,11 @@ pub async fn create_tenant(
         .trial_expires_at
         .map(|secs| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs));
 
+    // A new tenant has no prompts yet: its hold music is `none` or unset.
+    let id = TenantId::new();
+    let calling = normalize_calling(&state, &id, req.calling.clone().unwrap_or_default()).await?;
     let tenant = Tenant {
-        id: TenantId::new(),
+        id,
         name: req.name,
         description: req.description,
         status,
@@ -541,7 +551,7 @@ pub async fn create_tenant(
         metadata: req.metadata,
         sip_domains,
         platform_trunk_fallback: req.platform_trunk_fallback.unwrap_or(true),
-        calling: normalize_calling(req.calling.unwrap_or_default())?,
+        calling,
         login_domains,
         sign_in,
         offboarding,
@@ -694,7 +704,7 @@ pub async fn update_tenant(
     }
 
     if let Some(calling) = req.calling {
-        tenant.calling = normalize_calling(calling)?;
+        tenant.calling = normalize_calling(&state, &tenant.id, calling).await?;
     }
 
     if let Some(offboarding) = req.offboarding {

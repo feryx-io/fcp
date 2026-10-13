@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { tenants } from '@/api/endpoints'
+import { tenants, prompts } from '@/api/endpoints'
 import type { Tenant, CreateTenantRequest, DestinationClass, DestinationOverride } from '@/types'
 import { formatDateTime } from '@/lib/utils'
 import { useIsPlatformAdmin } from '@/components/TenantSelector'
@@ -50,6 +50,7 @@ const editSchema = z.object({
   calling_timezone: z.string().optional(),
   calling_overrides: z.string().optional(),
   hoteling_session_hours: z.coerce.number().int().min(0).max(168).optional(),
+  hold_music: z.string().optional(),
   grace_days: z.coerce.number().int().min(0).max(3650).optional(),
   require_device_credentials: z.boolean().optional(),
   provisioning_networks: z.string().optional(),
@@ -98,6 +99,12 @@ export function TenantsPage() {
   const { data: items = [], isLoading } = useQuery({
     queryKey: ['tenants'],
     queryFn: tenants.list,
+  })
+  // The edited tenant's prompts, for its hold music.
+  const { data: promptList = [] } = useQuery({
+    queryKey: ['prompts', 'hold-music', editItem?.id],
+    queryFn: () => prompts.list({ tenantId: editItem?.id }),
+    enabled: !!editItem,
   })
 
   const createMutation = useMutation({
@@ -231,6 +238,7 @@ export function TenantsPage() {
         .map((o) => `${o.prefix} ${o.class}`)
         .join('\n'),
       hoteling_session_hours: editItem.calling?.hoteling_session_hours ?? undefined,
+      hold_music: editItem.calling?.hold_music ?? '',
       grace_days: editItem.offboarding?.grace_days ?? 30,
       require_device_credentials: editItem.provisioning?.require_device_credentials ?? false,
       provisioning_networks: (editItem.provisioning?.networks ?? []).join('\n'),
@@ -259,6 +267,7 @@ export function TenantsPage() {
       calling_timezone,
       calling_overrides,
       hoteling_session_hours,
+      hold_music,
       require_totp,
       password_login,
       scim,
@@ -278,6 +287,7 @@ export function TenantsPage() {
           timezone: calling_timezone || null,
           destination_overrides: parseOverrides(calling_overrides),
           hoteling_session_hours: hoteling_session_hours || null,
+          hold_music: hold_music || null,
         },
         description: data.description || undefined,
         contact_email: data.contact_email || undefined,
@@ -616,6 +626,23 @@ export function TenantsPage() {
               />
               <p className="text-xs text-muted-foreground">
                 A user who logs in on a host phone with *88 is logged out after this long.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="e-hold_music">Hold music</Label>
+              <select
+                id="e-hold_music"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                {...editForm.register('hold_music')}
+              >
+                <option value="">The first hold-music prompt, else the built-in music</option>
+                <option value="none">Silence</option>
+                {promptList.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.category})</option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                What a held caller hears, unless the number they called or the person holding them chose otherwise.
               </p>
             </div>
             <div className="flex items-center justify-between rounded-md border p-3">

@@ -368,6 +368,13 @@ pub struct TenantCalling {
     /// [`crate::hoteling::DEFAULT_SESSION_HOURS`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hoteling_session_hours: Option<u32>,
+    /// The tenant's hold music (`docs/ENTERPRISE_CALLING.md` §3.3.1): a
+    /// prompt of the tenant, or [`HOLD_MUSIC_NONE`](crate::calling::HOLD_MUSIC_NONE)
+    /// for silence; unset is the tenant's first hold-music prompt, else
+    /// the node's built-in music. A holder's or a number's own choice
+    /// comes first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_music: Option<String>,
 }
 
 impl TenantCalling {

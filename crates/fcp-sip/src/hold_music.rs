@@ -3,11 +3,12 @@
 //! — the music stops or starts, looped into the held leg with the other
 //! leg's audio held back. The music is the holder's own choice (a prompt,
 //! or none), else the music of the number the call came in on, else the
-//! tenant's hold-music prompt, else the node's built-in default,
+//! tenant's choice (a prompt, or none), else the tenant's first
+//! hold-music prompt, else the node's built-in default,
 //! synthesised at startup so no licensed audio ships.
 
 use fcp_b2bua_core::{Call, CallId, CallManager, LegSide};
-use fcp_core::storage::LineBindingStore;
+use fcp_core::storage::{LineBindingStore, TenantStore};
 use fcp_core::{DynStorage, PromptCategory};
 use fcp_media::{AudioTarget, MediaManager};
 use std::path::{Path, PathBuf};
@@ -93,8 +94,9 @@ impl HoldMusic {
     }
 
     /// The music for a leg held in `call`: the holder's choice, the music
-    /// of the number the call came in on, the tenant's hold-music prompt,
-    /// the node's default. `None` for silence.
+    /// of the number the call came in on, the tenant's choice, the
+    /// tenant's first hold-music prompt, the node's default. `None` for
+    /// silence.
     async fn music_for(&self, call: &Call, held: LegSide) -> Option<String> {
         if let Some(storage) = &self.storage {
             // The holder: the parker of a parked call, the callee the plan
@@ -153,6 +155,23 @@ impl HoldMusic {
                     Err(e) => {
                         warn!(call_id = %call.id, error = %e, "Could not read the number's hold music")
                     }
+                }
+            }
+            // The tenant's choice.
+            match storage.get_tenant(&call.tenant_id).await {
+                Ok(Some(tenant)) => match tenant.calling.hold_music.as_deref() {
+                    Some(fcp_core::calling::HOLD_MUSIC_NONE) => return None,
+                    Some(id) => {
+                        if let Some(path) = self.prompt_audio(storage, call, id).await {
+                            return Some(path);
+                        }
+                        warn!(call_id = %call.id, prompt = %id, "The tenant's hold music has no audio; using its first hold-music prompt");
+                    }
+                    None => {}
+                },
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(call_id = %call.id, error = %e, "Could not read the tenant's hold music choice")
                 }
             }
             if let Some(prompts) = storage.prompt_store() {
