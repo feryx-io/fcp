@@ -1426,6 +1426,12 @@ heard after the holder's and the number's choice
 (`docs/ENTERPRISE_CALLING.md` §3.3.1). Proved by `calling.rs` and
 `api_postgres.rs`.
 
+## What is next (drafted 2026-10-13, after the last FCP gap closed)
+
+**Deep testing** — design in `docs/DEEP_TESTING.md` (v0.25.393), under
+discussion: finding the bugs per-feature tests could not, with phases
+D0–D8 and ten questions.
+
 ## What is next (chosen 2026-09-29, after the nightly stack closed)
 
 **Developer surface** — design in `docs/DEVELOPER_SURFACE.md`
