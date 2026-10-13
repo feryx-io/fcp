@@ -753,6 +753,10 @@ async fn main() -> Result<()> {
         format!("fcp-admin:{}", config.service.node_id),
     );
 
+    // SAML providers' metadata fetched again from its URL once a day, so a
+    // rotated certificate is followed (docs/SSO.md §8).
+    fcp_api_core::v1::sso::spawn_metadata_refresh(api_state.clone(), &api_config.sso);
+
     // Initialize cluster reader (optional — only when Redis is configured)
     let mut trunk_reports: Option<std::sync::Arc<dyn fcp_api_core::TrunkNodeReports>> = None;
     let mut rate_counter: Option<std::sync::Arc<dyn fcp_api_core::rate_limit::RateCounter>> = None;

@@ -58,8 +58,14 @@ export const useAuthStore = create<AuthState>()(
       set({ token, user, isAuthenticated: true, restoring: false })
     },
     logout: () => {
-      // The server ends the session and clears the cookie.
-      auth.logout().catch(() => {})
+      // The server ends the session and clears the cookie; a session from
+      // an identity provider that signs out there too goes on to it.
+      auth
+        .logout()
+        .then((answer) => {
+          if (answer?.logout_url) window.location.assign(answer.logout_url)
+        })
+        .catch(() => {})
       signedOut(set)
     },
     setUser: (user: AuthUser) => {

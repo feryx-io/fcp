@@ -112,6 +112,13 @@ pub struct ProviderSettings {
     /// Entra's `tid`. A claim that is a list must contain the value.
     #[serde(default)]
     pub required_claims: Vec<RequiredClaim>,
+    /// Signing out of FCP signs out at the provider too: the browser is
+    /// sent to its logout (OIDC's `end_session_endpoint`, a SAML
+    /// `LogoutRequest`). Off, signing out ends FCP's session alone — the
+    /// provider's, which may be the person's whole workplace sign-in,
+    /// stays.
+    #[serde(default)]
+    pub sign_out_at_provider: bool,
 }
 
 fn default_email_verified_claim() -> String {
@@ -333,6 +340,10 @@ pub struct SsoHandoff {
     pub provider_id: IdentityProviderId,
     /// The provider's session (`sid`), when its ID token named one.
     pub idp_sid: Option<String>,
+    /// What signing out at the provider needs, when the provider signs
+    /// out there: the ID token (OIDC's `id_token_hint`), or the NameID
+    /// (SAML).
+    pub idp_logout_hint: Option<String>,
 }
 
 /// How long a sign-in may take at the provider.
@@ -421,6 +432,7 @@ mod tests {
             link_by_email: true,
             email_verified_claim: default_email_verified_claim(),
             required_claims: Vec::new(),
+            sign_out_at_provider: false,
         }
     }
 

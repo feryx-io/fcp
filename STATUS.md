@@ -1402,6 +1402,16 @@ else the forwarding user's first number, with the reason
 `time-of-day`, `follow-me`) — the caller's own identity in the From, as
 Q7 agreed (`docs/ENTERPRISE_CALLING.md` §3.6.1). Proved by `trunks.rs`.
 
+Leftover done in v0.25.390: signing out at the identity provider — a
+provider's `sign_out_at_provider` (off by default) sends the browser on
+from `POST /auth/logout` (200 `{logout_url}`) to OIDC's
+`end_session_endpoint` with `id_token_hint`, or with FCP's signed SAML
+`LogoutRequest` naming the NameID and `SessionIndex`; what each needs is
+kept with the session (migration 115); the provider's `LogoutResponse`
+at `…/slo` lands on the login page. SAML metadata given by URL is fetched
+again daily by `fcp-admin`, keeping what it had on a failure
+(`docs/SSO.md` §5, §8). Proved by `api_postgres.rs`.
+
 ## What is next (chosen 2026-09-29, after the nightly stack closed)
 
 **Developer surface** — design in `docs/DEVELOPER_SURFACE.md`

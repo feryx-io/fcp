@@ -186,6 +186,7 @@ async fn discovery(State(idp): State<Arc<Inner>>) -> Json<Value> {
         "authorization_endpoint": format!("{base}/authorize"),
         "token_endpoint": format!("{base}/token"),
         "jwks_uri": format!("{base}/jwks"),
+        "end_session_endpoint": format!("{base}/logout"),
         "response_types_supported": ["code"],
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"],

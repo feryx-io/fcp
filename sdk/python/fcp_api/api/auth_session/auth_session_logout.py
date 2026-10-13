@@ -9,6 +9,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error_response import ErrorResponse
+from ...models.logout_answer import LogoutAnswer
 from typing import cast
 
 
@@ -32,7 +33,14 @@ def _get_kwargs(
 
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Any | ErrorResponse:
+def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Any | ErrorResponse | LogoutAnswer:
+    if response.status_code == 200:
+        response_200 = LogoutAnswer.from_dict(response.json())
+
+
+
+        return response_200
+
     if response.status_code == 204:
         response_204 = cast(Any, None)
         return response_204
@@ -45,7 +53,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
 
 
 
-def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Response[Any | ErrorResponse]:
+def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Response[Any | ErrorResponse | LogoutAnswer]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -58,7 +66,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 
-) -> Response[Any | ErrorResponse]:
+) -> Response[Any | ErrorResponse | LogoutAnswer]:
     """ POST /api/v1/auth/logout
 
     Raises:
@@ -66,7 +74,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | ErrorResponse]
+        Response[Any | ErrorResponse | LogoutAnswer]
      """
 
 
@@ -84,7 +92,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
 
-) -> Any | ErrorResponse | None:
+) -> Any | ErrorResponse | LogoutAnswer | None:
     """ POST /api/v1/auth/logout
 
     Raises:
@@ -92,7 +100,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | ErrorResponse
+        Any | ErrorResponse | LogoutAnswer
      """
 
 
@@ -105,7 +113,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 
-) -> Response[Any | ErrorResponse]:
+) -> Response[Any | ErrorResponse | LogoutAnswer]:
     """ POST /api/v1/auth/logout
 
     Raises:
@@ -113,7 +121,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | ErrorResponse]
+        Response[Any | ErrorResponse | LogoutAnswer]
      """
 
 
@@ -131,7 +139,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
 
-) -> Any | ErrorResponse | None:
+) -> Any | ErrorResponse | LogoutAnswer | None:
     """ POST /api/v1/auth/logout
 
     Raises:
@@ -139,7 +147,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | ErrorResponse
+        Any | ErrorResponse | LogoutAnswer
      """
 
 

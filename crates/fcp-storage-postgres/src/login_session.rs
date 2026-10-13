@@ -15,7 +15,8 @@ use std::time::SystemTime;
 
 const COLUMNS: &str = "id, tenant_id, user_id, method, created_at, refreshed_at, expires_at, \
      revoked_at, revoked_reason, ip, user_agent, refresh_hash, previous_refresh_hash, \
-     idp_provider_id, idp_sid, app_name, app_install_id, app_platform, app_version, device_id";
+     idp_provider_id, idp_sid, idp_logout_hint, app_name, app_install_id, app_platform, app_version, \
+     device_id";
 
 const AUTHORIZATION_COLUMNS: &str = "id, client_id, redirect_uri, code_challenge, state, \
      created_at, expires_at, user_id, tenant_id, code_hash, code_expires_at";
@@ -73,6 +74,7 @@ fn parse(row: &sqlx::postgres::PgRow) -> fcp_core::Result<LoginSession> {
             .map(|provider_id| fcp_core::session::IdpSession {
                 provider_id,
                 sid: row.get("idp_sid"),
+                logout_hint: row.get("idp_logout_hint"),
             }),
         app: match (
             row.get::<Option<String>, _>("app_name"),
@@ -128,8 +130,9 @@ impl LoginSessionStore for PostgresLoginSessionStore {
         sqlx::query(
             "INSERT INTO login_sessions (id, tenant_id, user_id, method, created_at,
                  refreshed_at, expires_at, ip, user_agent, refresh_hash, idp_provider_id, idp_sid,
-                 app_name, app_install_id, app_platform, app_version, device_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+                 app_name, app_install_id, app_platform, app_version, device_id, idp_logout_hint)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                 $18)",
         )
         .bind(s.id.to_string())
         .bind(s.tenant_id.to_string())
@@ -148,6 +151,7 @@ impl LoginSessionStore for PostgresLoginSessionStore {
         .bind(s.app.as_ref().and_then(|a| a.platform.clone()))
         .bind(s.app.as_ref().and_then(|a| a.version.clone()))
         .bind(s.device_id.map(|d| d.to_string()))
+        .bind(s.idp.as_ref().and_then(|i| i.logout_hint.clone()))
         .execute(&self.pool)
         .await
         .map_err(store_error)?;

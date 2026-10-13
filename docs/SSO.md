@@ -187,6 +187,39 @@ Register the provider's back-channel logout URI, which the page shows:
 - **The effect** is at once: an ended session's access token is refused
   at its next request, and its refresh cookie no longer refreshes.
 
+### Signing out at the provider
+
+Signing out of FCP ends FCP's session. With **Signing out of FCP signs
+out at the provider too** (`sign_out_at_provider`, off by default), it
+also sends the browser to the provider to end the person's session
+there.
+
+- **Why it is off by default.** A provider's session is often the
+  person's whole workplace sign-in: signing out at Entra ID signs them
+  out of Microsoft 365 as well. Turn it on where that is wanted.
+- **OpenID Connect** (RP-Initiated Logout 1.0). The browser goes to the
+  `end_session_endpoint` from the provider's discovery document with
+  `id_token_hint` (the ID token of that sign-in), `client_id` and
+  `post_logout_redirect_uri` = `<public_url>/login`. Register that
+  address with the provider as a post-logout redirect URI; the page
+  shows it. A provider whose discovery names no `end_session_endpoint`
+  (Google) is not signed out.
+- **SAML.** The browser carries FCP's `LogoutRequest` to the provider's
+  HTTP-Redirect single logout address, signed with FCP's key and naming
+  the NameID (with its format) and `SessionIndex` of that sign-in. The
+  provider's `LogoutResponse` comes back to `…/{id}/slo` and lands on the
+  login page. A provider whose metadata names no logout address is not
+  signed out.
+- **What is kept.** For a provider set this way, each sign-in keeps the
+  ID token, or the NameID, with its session (migration 115) until the
+  session ends. A session begun before the setting was turned on goes
+  to an OIDC provider without the hint, and is not signed out at a SAML
+  provider.
+- **The order.** FCP's session is ended before the browser leaves: if
+  the provider fails or the person closes the window, FCP is signed out
+  anyway. `POST /api/v1/auth/logout` answers 204 as before, or 200 with
+  `{"logout_url": …}` when the browser should go on to the provider.
+
 ## 6. Sites
 
 A site signs its people in through its tenant's provider itself, so
@@ -297,8 +330,12 @@ is described by its metadata, which every SAML provider publishes.
      - the certificate it signs with.
 
      Metadata naming no signing certificate is refused: nothing could be
-     verified against it. **Refresh metadata** fetches it again, after
-     the provider rotates its certificate.
+     verified against it. Metadata given by URL is fetched again once a
+     day by `fcp-admin` (one replica at a time; not at a site, whose
+     providers are the cloud's), so a rotated certificate is followed;
+     a fetch that fails, or metadata that is unusable, keeps what the
+     provider had and is logged. **Refresh metadata** fetches it at
+     once.
   2. The page then shows what to give the identity provider:
      - FCP's entity id, `<public_url>/api/v1/auth/saml/{id}`, which
        serves FCP's metadata for import (most providers take its URL);
@@ -430,11 +467,5 @@ is described by its metadata, which every SAML provider publishes.
 
 ## 9. Not yet
 
-- **Logging out at the provider.** Signing out of FCP ends the FCP
-  session only; it does not send the browser to the provider's
-  end-session endpoint.
-- **SAML logout started from FCP.** Signing out of FCP does not send a
-  LogoutRequest to the provider; only the provider's logout reaches FCP.
-- **SAML metadata refreshed by itself.** It is fetched again on
-  **Refresh metadata**, not on a schedule.
-- **SCIM provisioning** is phase 6.
+Nothing on sign-in itself. SCIM provisioning, once listed here, is in
+`docs/SCIM.md`.

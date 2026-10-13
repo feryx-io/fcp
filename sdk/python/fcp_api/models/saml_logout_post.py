@@ -22,14 +22,17 @@ T = TypeVar("T", bound="SamlLogoutPost")
 
 @_attrs_define
 class SamlLogoutPost:
-    """ What a SAML provider posts to ask for a logout (the HTTP-POST binding).
+    """ What a SAML provider posts to ask for a logout, or to answer FCP's
+    (the HTTP-POST binding).
 
         Attributes:
-            saml_request (str):
+            saml_request (None | str | Unset):
+            saml_response (None | str | Unset): The provider's answer to a logout FCP asked for.
             relay_state (None | str | Unset):
      """
 
-    saml_request: str
+    saml_request: None | str | Unset = UNSET
+    saml_response: None | str | Unset = UNSET
     relay_state: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -38,7 +41,17 @@ class SamlLogoutPost:
 
 
     def to_dict(self) -> dict[str, Any]:
-        saml_request = self.saml_request
+        saml_request: None | str | Unset
+        if isinstance(self.saml_request, Unset):
+            saml_request = UNSET
+        else:
+            saml_request = self.saml_request
+
+        saml_response: None | str | Unset
+        if isinstance(self.saml_response, Unset):
+            saml_response = UNSET
+        else:
+            saml_response = self.saml_response
 
         relay_state: None | str | Unset
         if isinstance(self.relay_state, Unset):
@@ -50,8 +63,11 @@ class SamlLogoutPost:
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
-            "SAMLRequest": saml_request,
         })
+        if saml_request is not UNSET:
+            field_dict["SAMLRequest"] = saml_request
+        if saml_response is not UNSET:
+            field_dict["SAMLResponse"] = saml_response
         if relay_state is not UNSET:
             field_dict["RelayState"] = relay_state
 
@@ -62,7 +78,25 @@ class SamlLogoutPost:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        saml_request = d.pop("SAMLRequest")
+        def _parse_saml_request(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        saml_request = _parse_saml_request(d.pop("SAMLRequest", UNSET))
+
+
+        def _parse_saml_response(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        saml_response = _parse_saml_response(d.pop("SAMLResponse", UNSET))
+
 
         def _parse_relay_state(data: object) -> None | str | Unset:
             if data is None:
@@ -76,6 +110,7 @@ class SamlLogoutPost:
 
         saml_logout_post = cls(
             saml_request=saml_request,
+            saml_response=saml_response,
             relay_state=relay_state,
         )
 

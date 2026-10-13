@@ -173,7 +173,8 @@ export const auth = {
   /** Grant an app's sign-in (docs/SOFTPHONE.md §2.2): where to send the browser back. */
   appApprove: (request: string) =>
     apiClient.post<{ redirect_url: string; client_id: string }>('/auth/app/approve', { request }),
-  logout: () => apiClient.post<void>('/auth/logout'),
+  /** Ends the session; a provider that signs out there too names where the browser goes next (docs/SSO.md §5). */
+  logout: () => apiClient.post<{ logout_url?: string } | undefined>('/auth/logout'),
   refresh: () => apiClient.post<LoginResponse>('/auth/refresh'),
   me: () => apiClient.get<AuthUser>('/auth/me'),
   changeExpiredPassword: (data: ChangeExpiredPasswordRequest) =>

@@ -296,17 +296,25 @@ pub async fn saml_acs(
             Value::Bool(true),
         );
     }
-    match hand_off(&state, &store, &provider, &claims).await? {
+    let hint = provider
+        .settings
+        .sign_out_at_provider
+        .then_some(accepted.logout_hint);
+    match hand_off(&state, &store, &provider, &claims, hint).await? {
         Ok(handoff) => Ok(landing("sso_code", &handoff)),
         Err(Refusal(reason, username)) => Ok(fail(reason, username.as_deref())),
     }
 }
 
-/// What a SAML provider posts to ask for a logout (the HTTP-POST binding).
+/// What a SAML provider posts to ask for a logout, or to answer FCP's
+/// (the HTTP-POST binding).
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SamlLogoutPost {
-    #[serde(rename = "SAMLRequest")]
-    pub saml_request: String,
+    #[serde(rename = "SAMLRequest", default)]
+    pub saml_request: Option<String>,
+    /// The provider's answer to a logout FCP asked for.
+    #[serde(rename = "SAMLResponse", default)]
+    pub saml_response: Option<String>,
     #[serde(rename = "RelayState", default)]
     pub relay_state: Option<String>,
 }
@@ -366,6 +374,14 @@ async fn saml_logout(
     }
 }
 
+/// The provider's answer to a logout FCP asked for: FCP's session ended
+/// before the browser left, so whatever the answer says, the browser goes
+/// to the login page.
+fn signed_out_at_provider(sso: &SsoRuntime, provider: &IdentityProvider) -> Response {
+    tracing::info!(provider = %provider.id, "Back from signing out at the SAML provider");
+    no_store_redirect(&format!("{}/login", sso.public_url))
+}
+
 fn no_store_redirect(url: &str) -> Response {
     let mut response = Redirect::to(url).into_response();
     response
@@ -391,7 +407,7 @@ fn no_store_page(text: &'static str) -> Response {
     operation_id = "auth_session_saml_slo",
     params(("id" = String, Path, description = "The identity provider")),
     responses(
-        (status = 303, description = "Back to the provider with FCP's signed LogoutResponse"),
+        (status = 303, description = "Back to the provider with FCP's signed LogoutResponse, or to the login page after the provider answers FCP's own logout"),
         (status = 200, description = "Signed out, where the provider has no logout address"),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
     ),
@@ -405,6 +421,10 @@ pub async fn saml_slo_redirect(
     let provider = saml_provider(&state, &id).await?;
     let endpoints = crate::saml::Endpoints::new(&sso.public_url, &provider);
     let query = query.unwrap_or_default();
+    let has = |name: &str| query.split('&').any(|p| p.starts_with(&format!("{name}=")));
+    if has("SAMLResponse") && !has("SAMLRequest") {
+        return Ok(signed_out_at_provider(&sso, &provider));
+    }
     let asked = crate::saml::logout_redirect(&provider, &endpoints, &query).map_err(|e| {
         tracing::warn!(provider = %provider.id, error = %e, "A SAML logout request refused");
         ApiError::BadRequest(e.to_string())
@@ -426,7 +446,7 @@ pub async fn saml_slo_redirect(
     params(("id" = String, Path, description = "The identity provider")),
     request_body(content = SamlLogoutPost, content_type = "application/x-www-form-urlencoded"),
     responses(
-        (status = 303, description = "Back to the provider with FCP's signed LogoutResponse"),
+        (status = 303, description = "Back to the provider with FCP's signed LogoutResponse, or to the login page after the provider answers FCP's own logout"),
         (status = 200, description = "Signed out, where the provider has no logout address"),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
     ),
@@ -439,11 +459,16 @@ pub async fn saml_slo_post(
     let sso = sso(&state)?.clone();
     let provider = saml_provider(&state, &id).await?;
     let endpoints = crate::saml::Endpoints::new(&sso.public_url, &provider);
-    let asked =
-        crate::saml::logout_post(&provider, &endpoints, &post.saml_request).map_err(|e| {
-            tracing::warn!(provider = %provider.id, error = %e, "A SAML logout request refused");
-            ApiError::BadRequest(e.to_string())
-        })?;
+    let Some(saml_request) = post.saml_request.as_deref() else {
+        if post.saml_response.is_some() {
+            return Ok(signed_out_at_provider(&sso, &provider));
+        }
+        return Err(ApiError::BadRequest("No SAMLRequest".to_string()));
+    };
+    let asked = crate::saml::logout_post(&provider, &endpoints, saml_request).map_err(|e| {
+        tracing::warn!(provider = %provider.id, error = %e, "A SAML logout request refused");
+        ApiError::BadRequest(e.to_string())
+    })?;
     saml_logout(&state, &sso, &provider, asked, post.relay_state.as_deref()).await
 }
 
@@ -558,7 +583,7 @@ pub async fn callback(
         return Ok(fail("provider_refused", None));
     };
 
-    let claims = match sso
+    let (claims, id_token) = match sso
         .client
         .sign_in(
             &provider.settings,
@@ -570,13 +595,14 @@ pub async fn callback(
         )
         .await
     {
-        Ok(claims) => claims,
+        Ok(signed_in) => signed_in,
         Err(e) => {
             tracing::warn!(provider = %provider.id, error = %e, "Single sign-on failed");
             return Ok(fail(e.reason(), None));
         }
     };
-    match hand_off(&state, &store, &provider, &claims).await? {
+    let hint = provider.settings.sign_out_at_provider.then_some(id_token);
+    match hand_off(&state, &store, &provider, &claims, hint).await? {
         Ok(handoff) => Ok(landing("sso_code", &handoff)),
         Err(Refusal(reason, username)) => Ok(fail(reason, username.as_deref())),
     }
@@ -625,6 +651,7 @@ async fn hand_off(
     store: &Arc<dyn IdentityStore>,
     provider: &IdentityProvider,
     claims: &Map<String, Value>,
+    logout_hint: Option<String>,
 ) -> Result<Result<String, Refusal>, ApiError> {
     let user = match resolve_user(state, provider, claims).await {
         Ok(user) => user,
@@ -638,6 +665,7 @@ async fn hand_off(
                 user_id: user.id,
                 provider_id: provider.id,
                 idp_sid: claim_str(claims, "sid"),
+                idp_logout_hint: logout_hint,
             },
             SystemTime::now(),
         )
@@ -934,6 +962,7 @@ pub async fn exchange(
     let idp = session::IdpSession {
         provider_id: handoff.provider_id.to_string(),
         sid: handoff.idp_sid,
+        logout_hint: handoff.idp_logout_hint,
     };
     let mut response =
         complete_sign_in_through(&state, &headers, user, method, None, Some(idp)).await?;
@@ -1789,4 +1818,157 @@ pub async fn unlink_identity(
         return Err(ApiError::NotFound("No such identity".to_string()));
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Where a signed-out session's browser goes to sign out at its provider
+/// too (`docs/SSO.md` §5), when the provider says it should: OIDC's
+/// `end_session_endpoint`, or the SAML provider's logout address with
+/// FCP's signed `LogoutRequest`. `None` when it should not, or cannot.
+pub(crate) async fn provider_sign_out_url(
+    state: &ApiState,
+    idp: &session::IdpSession,
+) -> Option<String> {
+    let sso = state.sso.as_ref()?;
+    let id: IdentityProviderId = idp.provider_id.parse().ok()?;
+    let provider = identity_store(state)
+        .ok()?
+        .get_identity_provider(&id)
+        .await
+        .ok()
+        .flatten()?;
+    if !provider.settings.sign_out_at_provider {
+        return None;
+    }
+    let url = match provider.kind {
+        ProviderKind::Oidc => sso
+            .client
+            .end_session_url(
+                &provider.settings,
+                idp.logout_hint.as_deref(),
+                &format!("{}/login", sso.public_url),
+            )
+            .await
+            .map_err(|e| e.to_string()),
+        ProviderKind::Saml => {
+            // FCP names whom to sign out; a session begun before the
+            // setting was turned on kept nobody to name.
+            let hint = idp.logout_hint.as_deref()?;
+            let endpoints = crate::saml::Endpoints::new(&sso.public_url, &provider);
+            crate::saml::logout_request(&provider, &endpoints, hint, idp.sid.as_deref())
+                .map_err(|e| e.to_string())
+        }
+    };
+    match url {
+        Ok(url) => url,
+        Err(e) => {
+            tracing::warn!(provider = %provider.id, error = %e, "Cannot sign out at the identity provider");
+            None
+        }
+    }
+}
+
+/// How often SAML providers' metadata is fetched again from its URL.
+const METADATA_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Fetch every SAML provider's metadata again from its URL, keeping what
+/// it had when the fetch fails or the new metadata is unusable: a
+/// provider that rotates its certificate is followed without an
+/// administrator's refresh (`docs/SSO.md` §8). Returns how many changed.
+pub async fn refresh_all_metadata(state: &ApiState) -> usize {
+    let (Some(storage), Ok(store)) = (state.storage.as_ref(), identity_store(state)) else {
+        return 0;
+    };
+    let tenants = match storage.list_tenants().await {
+        Ok(tenants) => tenants,
+        Err(e) => {
+            tracing::warn!(error = %e, "SAML metadata refresh: failed to list tenants");
+            return 0;
+        }
+    };
+    let mut changed = 0;
+    for tenant in tenants {
+        let providers = match store.list_identity_providers(&tenant.id).await {
+            Ok(providers) => providers,
+            Err(e) => {
+                tracing::warn!(tenant_id = %tenant.id, error = %e, "SAML metadata refresh: failed to list providers");
+                continue;
+            }
+        };
+        for mut provider in providers {
+            let Some(before) = provider
+                .settings
+                .saml
+                .as_ref()
+                .filter(|s| {
+                    s.idp_metadata_url
+                        .as_deref()
+                        .is_some_and(|u| !u.trim().is_empty())
+                })
+                .map(|s| s.idp_metadata_xml.clone())
+            else {
+                continue;
+            };
+            if let Err(e) = fetch_metadata(state, &mut provider.settings).await {
+                tracing::warn!(provider = %provider.id, error = ?e, "SAML metadata refresh: the fetch failed; keeping what it had");
+                continue;
+            }
+            let after = provider
+                .settings
+                .saml
+                .as_ref()
+                .map(|s| s.idp_metadata_xml.clone())
+                .unwrap_or_default();
+            if after == before {
+                continue;
+            }
+            match crate::saml::summarize(&after) {
+                Ok(_) | Err(crate::saml::SamlError::Unavailable) => {}
+                Err(e) => {
+                    tracing::warn!(provider = %provider.id, error = %e, "SAML metadata refresh: the new metadata is unusable; keeping what it had");
+                    continue;
+                }
+            }
+            provider.updated_at = SystemTime::now();
+            match store.put_identity_provider(&provider).await {
+                Ok(()) => {
+                    tracing::info!(provider = %provider.id, tenant_id = %tenant.id, "SAML metadata refreshed: it changed");
+                    changed += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(provider = %provider.id, error = %e, "SAML metadata refresh: failed to save")
+                }
+            }
+        }
+    }
+    changed
+}
+
+/// [`refresh_all_metadata`] once a day, by one admin replica at a time,
+/// fetching as `[api.sso]` allows. A site's admin takes its providers from
+/// the cloud and refreshes none.
+pub fn spawn_metadata_refresh(state: ApiState, sso: &fcp_core::ApiSsoConfig) {
+    if state.managed_by.is_some() {
+        return;
+    }
+    let state = state.with_sso_config(sso);
+    tokio::spawn(async move {
+        use fcp_core::storage::CdrStore;
+        let mut interval = tokio::time::interval(METADATA_REFRESH_INTERVAL);
+        loop {
+            interval.tick().await;
+            let Some(storage) = state.storage.clone() else {
+                continue;
+            };
+            let lock = match storage.try_maintenance_lock("fcp:saml-metadata").await {
+                Ok(Some(lock)) => lock,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::warn!(error = %e, "SAML metadata refresh: could not take the lock");
+                    continue;
+                }
+            };
+            refresh_all_metadata(&state).await;
+            lock.release().await;
+        }
+    });
 }
