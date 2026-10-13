@@ -1,5 +1,5 @@
 # Multi-stage build for fcp-ivr (fcp-ivr)
-FROM rust:1.92 AS builder
+FROM rust:1.98 AS builder
 
 RUN apt-get update && apt-get install -y \
     cmake \

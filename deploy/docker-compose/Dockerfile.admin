@@ -1,5 +1,5 @@
 # Multi-stage build for fcp-admin
-FROM rust:1.92 as builder
+FROM rust:1.98 as builder
 
 # Install build dependencies
 # libxmlsec1-dev and libclang for SAML sign-in (the `saml` feature, docs/SSO.md)

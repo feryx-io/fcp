@@ -18,9 +18,28 @@ pub fn spec() -> utoipa::openapi::OpenApi {
     doc
 }
 
+/// The stack the spec is built on. utoipa's generated `openapi()` is one
+/// enormous function: built by Rust 1.92 in release with SAML it needs
+/// about 2.1 MiB, more than a tokio worker's 2 MiB, and the admin
+/// overflowed at startup on three nights (docs/DEEP_TESTING.md §8, D0);
+/// Rust 1.98 needs 53 KiB. Its own thread keeps startup independent of
+/// what a compiler makes of it.
+const SPEC_STACK: usize = 64 * 1024 * 1024;
+
+/// The contract as JSON, built on a thread of its own with [`SPEC_STACK`].
+pub fn spec_json() -> String {
+    std::thread::Builder::new()
+        .name("openapi-spec".into())
+        .stack_size(SPEC_STACK)
+        .spawn(|| fcp_api_core::openapi::json(&spec()))
+        .expect("spawn the thread that builds the API contract")
+        .join()
+        .expect("build the API contract")
+}
+
 /// `GET /api/v1/openapi.json` and `GET /admin/api`.
 pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
-    let json = fcp_api_core::openapi::json(&spec());
+    let json = spec_json();
     Router::new()
         // Nested like the core API's other public routes, beside its nest.
         .nest(
@@ -73,7 +92,7 @@ mod tests {
     #[test]
     fn docs_openapi_json_is_the_spec() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/openapi.json");
-        let generated = fcp_api_core::openapi::json(&spec());
+        let generated = spec_json();
         if std::env::var_os("FCP_WRITE_OPENAPI").is_some() {
             std::fs::write(path, &generated).expect("write docs/openapi.json");
             return;
@@ -87,9 +106,22 @@ mod tests {
         );
     }
 
+    /// The router is built inside a spawned task, on a worker's stack;
+    /// building it from a stack far smaller than that must not reach the
+    /// spec's own needs.
+    #[test]
+    fn the_router_builds_the_spec_off_the_callers_stack() {
+        std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(|| drop(router::<()>()))
+            .unwrap()
+            .join()
+            .expect("the router overflowed a 128 KiB stack");
+    }
+
     #[test]
     fn the_cluster_routes_are_in_the_contract() {
-        let spec = serde_json::to_value(spec()).unwrap();
+        let spec: serde_json::Value = serde_json::from_str(&spec_json()).unwrap();
         for path in [
             "/api/v1/cluster/nodes",
             "/api/v1/cluster/stats",
