@@ -48,6 +48,9 @@ class PageLineBindingResponseDataItem:
                 holiday (`docs/ENTERPRISE_CALLING.md` §3.5).
             closed_target (None | str | Unset):
             holiday_target (None | str | Unset):
+            hold_music (None | str | Unset): What a caller to this number hears on hold unless the holder chose
+                their own: a prompt id, or `none` for silence; `null` for the
+                tenant's hold music (`docs/ENTERPRISE_CALLING.md` §3.3).
      """
 
     id: str
@@ -68,6 +71,7 @@ class PageLineBindingResponseDataItem:
     schedule_id: None | str | Unset = UNSET
     closed_target: None | str | Unset = UNSET
     holiday_target: None | str | Unset = UNSET
+    hold_music: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -145,6 +149,12 @@ class PageLineBindingResponseDataItem:
         else:
             holiday_target = self.holiday_target
 
+        hold_music: None | str | Unset
+        if isinstance(self.hold_music, Unset):
+            hold_music = UNSET
+        else:
+            hold_music = self.hold_music
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -175,6 +185,8 @@ class PageLineBindingResponseDataItem:
             field_dict["closed_target"] = closed_target
         if holiday_target is not UNSET:
             field_dict["holiday_target"] = holiday_target
+        if hold_music is not UNSET:
+            field_dict["hold_music"] = hold_music
 
         return field_dict
 
@@ -290,6 +302,16 @@ class PageLineBindingResponseDataItem:
         holiday_target = _parse_holiday_target(d.pop("holiday_target", UNSET))
 
 
+        def _parse_hold_music(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        hold_music = _parse_hold_music(d.pop("hold_music", UNSET))
+
+
         page_line_binding_response_data_item = cls(
             id=id,
             phone_number_id=phone_number_id,
@@ -309,6 +331,7 @@ class PageLineBindingResponseDataItem:
             schedule_id=schedule_id,
             closed_target=closed_target,
             holiday_target=holiday_target,
+            hold_music=hold_music,
         )
 
 

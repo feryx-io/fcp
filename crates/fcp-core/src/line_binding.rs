@@ -84,6 +84,14 @@ pub struct LineBinding {
     #[serde(default)]
     pub barge_in: bool,
 
+    // ===== Music on hold (docs/ENTERPRISE_CALLING.md §3.3) =====
+    /// What a caller to this number hears on hold, unless the holder chose
+    /// their own: a prompt of the tenant by id, or
+    /// [`HOLD_MUSIC_NONE`](crate::calling::HOLD_MUSIC_NONE) for silence.
+    /// `None`: the tenant's hold music, else the node's built-in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_music: Option<String>,
+
     // ===== Audit =====
     /// When this binding was created
     pub created_at: SystemTime,
@@ -119,6 +127,7 @@ impl LineBinding {
             shared: false,
             max_appearances: DEFAULT_MAX_APPEARANCES,
             barge_in: false,
+            hold_music: None,
             created_at: now,
             updated_at: now,
         }

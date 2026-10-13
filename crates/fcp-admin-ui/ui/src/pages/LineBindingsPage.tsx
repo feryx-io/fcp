@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { lineBindings, users, devices, phoneNumbers, flows, tenants, schedules } from '@/api/endpoints'
+import { lineBindings, users, devices, phoneNumbers, flows, tenants, schedules, prompts } from '@/api/endpoints'
 import type { LineBinding, DeviceBinding, UpdateLineBindingRequest } from '@/types'
 import { formatDateTime } from '@/lib/utils'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
@@ -66,6 +66,7 @@ const editSchema = z.object({
   holiday_target: z.string().optional(),
   shared: z.boolean().optional(),
   barge_in: z.boolean().optional(),
+  hold_music: z.string().optional(),
   max_appearances: z.coerce.number().int().min(1, 'At least 1').max(24, 'At most 24').optional(),
   tenant_id: z.string().optional(),
 })
@@ -261,6 +262,11 @@ export function LineBindingsPage() {
   ]
 
   const { data: scheduleList = [] } = useQuery({ queryKey: ['schedules'], queryFn: schedules.list })
+  const { data: promptList = [] } = useQuery({
+    queryKey: ['prompts', 'hold-music'],
+    queryFn: () => prompts.list(),
+    enabled: !!editItem,
+  })
   const effectiveTenantId = useEffectiveTenantId()
   const createForm = useForm<CreateForm>({
     resolver: zodResolver(createSchema),
@@ -281,6 +287,7 @@ export function LineBindingsPage() {
       holiday_target: editItem.holiday_target || '',
       shared: editItem.shared ?? false,
       barge_in: editItem.barge_in ?? false,
+      hold_music: editItem.hold_music ?? '',
       max_appearances: editItem.max_appearances ?? 4,
       tenant_id: editItem.tenant_id ?? '',
     })
@@ -316,6 +323,7 @@ export function LineBindingsPage() {
         shared: editItem.binding_type === 'user' ? (data.shared ?? false) : undefined,
         max_appearances: editItem.binding_type === 'user' ? data.max_appearances : undefined,
         barge_in: editItem.binding_type === 'user' ? (data.barge_in ?? false) : undefined,
+        hold_music: data.hold_music ?? '',
       },
     })
   }
@@ -644,6 +652,24 @@ export function LineBindingsPage() {
                   <Input id="e-holiday" placeholder="as when closed" {...editForm.register('holiday_target')} />
                 </div>
               </div>
+            </div>
+
+            <div className="border-t pt-4 mt-2">
+              <h4 className="text-sm font-medium mb-1">Hold music</h4>
+              <p className="text-xs text-muted-foreground mb-3">
+                What a caller to this number hears on hold, unless the person holding them chose their own.
+              </p>
+              <select
+                id="e-hold-music"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                {...editForm.register('hold_music')}
+              >
+                <option value="">The tenant&apos;s hold music</option>
+                <option value="none">Silence</option>
+                {promptList.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.category})</option>
+                ))}
+              </select>
             </div>
 
             <div className="border-t pt-4 mt-2">

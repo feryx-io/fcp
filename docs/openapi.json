@@ -21159,6 +21159,13 @@
               "null"
             ],
             "description": "A phone on the shared line may barge into an active appearance."
+          },
+          "hold_music": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The number's hold music: a prompt of the tenant, `none` for\nsilence, or empty for the tenant's."
           }
         }
       },
@@ -25255,6 +25262,13 @@
             "type": "boolean",
             "description": "A phone on the shared line may barge into an active appearance\n(§3.11)."
           },
+          "hold_music": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What a caller to this number hears on hold unless the holder chose\ntheir own: a prompt id, or `none` for silence; `null` for the\ntenant's hold music (`docs/ENTERPRISE_CALLING.md` §3.3)."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -29326,6 +29340,13 @@
                 "barge_in": {
                   "type": "boolean",
                   "description": "A phone on the shared line may barge into an active appearance\n(§3.11)."
+                },
+                "hold_music": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "What a caller to this number hears on hold unless the holder chose\ntheir own: a prompt id, or `none` for silence; `null` for the\ntenant's hold music (`docs/ENTERPRISE_CALLING.md` §3.3)."
                 },
                 "created_at": {
                   "type": "string",
@@ -38657,6 +38678,13 @@
               "null"
             ],
             "description": "A phone on the shared line may barge into an active appearance."
+          },
+          "hold_music": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The number's hold music: a prompt of the tenant, `none` for\nsilence, or empty for the tenant's."
           }
         }
       },

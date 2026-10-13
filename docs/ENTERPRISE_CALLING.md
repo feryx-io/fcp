@@ -372,9 +372,18 @@ slow C-major arpeggio synthesised at startup. The holder is the call's
 callee from the plan when it is the B leg, the parker of a parked call,
 else the user the leg's address names.
 
-**Not built.** The number's `moh_prompt_id` and the tenant's
-`hold_music = false` switch (the holder's `none` and the node's switch
-cover the cases met so far); the queue naming a prompt as its music —
+**The number's music (v0.25.388).** A number's line binding carries
+`hold_music` (a prompt of the tenant, `none` for silence, unset for the
+tenant's; migration 114, on the line binding API and its page). An inbound
+call remembers its number's binding for its whole life
+(`Call.number_binding_id`, which a forward does not clear), and the
+resolver's order is the holder's choice, the number's, the tenant's
+`moh` prompt, the built-in default. Test: `calling.rs`
+`a_numbers_hold_music_plays_to_its_callers_unless_the_holder_chose_their_own`.
+
+**Not built.** The tenant's `hold_music = false` switch (the holder's
+`none`, the number's `none` and the node's switch cover the cases met so
+far); the queue naming a prompt as its music —
 the queue pre-encodes node-local files and its database configurations
 drop their prompt fields, which is a change of its own; the periodic
 tone in silence. The flow `Play` node's `loop_count` repeats the prompt

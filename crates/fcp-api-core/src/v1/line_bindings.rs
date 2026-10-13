@@ -50,6 +50,10 @@ pub struct LineBindingResponse {
     /// A phone on the shared line may barge into an active appearance
     /// (§3.11).
     pub barge_in: bool,
+    /// What a caller to this number hears on hold unless the holder chose
+    /// their own: a prompt id, or `none` for silence; `null` for the
+    /// tenant's hold music (`docs/ENTERPRISE_CALLING.md` §3.3).
+    pub hold_music: Option<String>,
     #[serde(with = "crate::time::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
@@ -111,6 +115,7 @@ impl From<LineBinding> for LineBindingResponse {
             shared: binding.shared,
             max_appearances: binding.max_appearances,
             barge_in: binding.barge_in,
+            hold_music: binding.hold_music,
             created_at: binding.created_at,
             updated_at: binding.updated_at,
         }
@@ -140,6 +145,9 @@ pub struct CreateLineBindingRequest {
     pub max_appearances: Option<u8>,
     /// A phone on the shared line may barge into an active appearance.
     pub barge_in: Option<bool>,
+    /// The number's hold music: a prompt of the tenant, `none` for
+    /// silence, or empty for the tenant's.
+    pub hold_music: Option<String>,
 }
 
 fn default_tenant_id() -> TenantId {
@@ -178,6 +186,9 @@ pub struct UpdateLineBindingRequest {
     pub max_appearances: Option<u8>,
     /// A phone on the shared line may barge into an active appearance.
     pub barge_in: Option<bool>,
+    /// The number's hold music: a prompt of the tenant, `none` for
+    /// silence, or empty for the tenant's.
+    pub hold_music: Option<String>,
 }
 
 /// List line bindings.
@@ -347,6 +358,10 @@ pub async fn create_line_binding(
     if let Some(barge_in) = req.barge_in {
         binding.barge_in = barge_in;
     }
+    if let Some(music) = req.hold_music {
+        binding.hold_music =
+            crate::v1::calling::hold_music_choice(&state, &binding.tenant_id, &music).await?;
+    }
 
     // Store the line binding
     storage
@@ -445,6 +460,10 @@ pub async fn update_line_binding(
     apply_shared_fields(&mut binding, req.shared, req.max_appearances)?;
     if let Some(barge_in) = req.barge_in {
         binding.barge_in = barge_in;
+    }
+    if let Some(music) = req.hold_music {
+        binding.hold_music =
+            crate::v1::calling::hold_music_choice(&state, &binding.tenant_id, &music).await?;
     }
 
     // Update timestamp

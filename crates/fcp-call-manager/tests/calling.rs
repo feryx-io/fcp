@@ -1218,6 +1218,97 @@ async fn a_tenants_hold_music_plays_unless_the_holder_chose_silence() {
     stack.finish().await;
 }
 
+/// A hold-music prompt of the tenant: a steady `hz` tone.
+async fn music_prompt(stack: &Stack, name: &str, hz: f32) -> String {
+    use fcp_core::prompt::{Prompt, PromptCategory, PromptStore};
+    let path = stack._dir.path().join(format!("{name}.wav"));
+    tone_wav(&path, hz, 4.0);
+    let prompt = Prompt::new_file(stack.seed.tenant_id, name, PromptCategory::Moh, "en", path);
+    let id = prompt.id.to_string();
+    fcp_storage_postgres::prompt::PostgresPromptStore::new(stack.seed.storage().pool().clone())
+        .put_prompt(prompt)
+        .await
+        .expect("seed prompt");
+    id
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_numbers_hold_music_plays_to_its_callers_unless_the_holder_chose_their_own() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let sales = music_prompt(&stack, "sales-music", 700.0).await;
+    let own = music_prompt(&stack, "bobs-music", 1100.0).await;
+
+    // Bob's number plays the sales music.
+    scheduled_number(&stack, &bob, "+15125550811", None, None, None).await;
+    let storage = stack.seed.storage();
+    let number = PhoneNumberStore::get_phone_number_by_e164(storage, "+15125550811")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut binding = storage
+        .get_line_binding_by_phone_number(&number.id)
+        .await
+        .unwrap()
+        .unwrap();
+    binding.hold_music = Some(sales.clone());
+    storage.put_line_binding(binding).await.unwrap();
+
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    // Alice calls the number; Bob holds her: the number's music, not the
+    // built-in.
+    let call = alice_phone.call("+15125550811").await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack
+            .fail("the number did not ring Bob", &alice_phone)
+            .await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    call.answered(SOON).await.expect("answered");
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    if !call.media().heard(700, SOON).await {
+        stack
+            .fail("Alice hears no music of the number", &alice_phone)
+            .await;
+    }
+    assert!(
+        !call
+            .media()
+            .heard(DEFAULT_MUSIC_HZ, Duration::from_millis(500))
+            .await,
+        "the built-in music played over the number's"
+    );
+    call.hangup().await.unwrap();
+
+    // Bob chooses his own: it wins over the number's.
+    stack
+        .calling(&bob, |s| s.hold_music = Some(own.clone()))
+        .await;
+    let alice_phone = stack.phone(&alice).await;
+    let call = alice_phone.call("+15125550811").await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack
+            .fail("the number did not ring Bob again", &alice_phone)
+            .await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    call.answered(SOON).await.expect("answered");
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    if !call.media().heard(1100, SOON).await {
+        stack
+            .fail("Alice does not hear Bob's own music", &alice_phone)
+            .await;
+    }
+    assert!(
+        !call.media().heard(700, Duration::from_millis(500)).await,
+        "the number's music played over Bob's own"
+    );
+    call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
 // ─── Call waiting (docs/ENTERPRISE_CALLING.md §3.4) ──────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -6490,6 +6490,11 @@ export interface components {
             max_appearances?: number | null;
             /** @description A phone on the shared line may barge into an active appearance. */
             barge_in?: boolean | null;
+            /**
+             * @description The number's hold music: a prompt of the tenant, `none` for
+             *     silence, or empty for the tenant's.
+             */
+            hold_music?: string | null;
         };
         /** @description Create location request. */
         CreateLocationRequest: {
@@ -7716,6 +7721,12 @@ export interface components {
              *     (§3.11).
              */
             barge_in: boolean;
+            /**
+             * @description What a caller to this number hears on hold unless the holder chose
+             *     their own: a prompt id, or `none` for silence; `null` for the
+             *     tenant's hold music (`docs/ENTERPRISE_CALLING.md` §3.3).
+             */
+            hold_music?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -9023,6 +9034,12 @@ export interface components {
                  *     (§3.11).
                  */
                 barge_in: boolean;
+                /**
+                 * @description What a caller to this number hears on hold unless the holder chose
+                 *     their own: a prompt id, or `none` for silence; `null` for the
+                 *     tenant's hold music (`docs/ENTERPRISE_CALLING.md` §3.3).
+                 */
+                hold_music?: string | null;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -12109,6 +12126,11 @@ export interface components {
             max_appearances?: number | null;
             /** @description A phone on the shared line may barge into an active appearance. */
             barge_in?: boolean | null;
+            /**
+             * @description The number's hold music: a prompt of the tenant, `none` for
+             *     silence, or empty for the tenant's.
+             */
+            hold_music?: string | null;
         };
         /** @description Update location request. */
         UpdateLocationRequest: {

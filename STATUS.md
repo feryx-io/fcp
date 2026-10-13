@@ -1391,6 +1391,10 @@ active appearance. The Active Calls page supervises. Proved by the engine,
 mixer and queue-bridge unit tests, `calling.rs` and `api_postgres.rs`. The
 enterprise calling project is complete: all eleven phases.
 
+Leftover done in v0.25.388: a number's own hold music (`hold_music` on
+its line binding: a prompt, or `none`), played to its callers unless the
+holder chose their own (`docs/ENTERPRISE_CALLING.md` §3.3.1).
+
 ## What is next (chosen 2026-09-29, after the nightly stack closed)
 
 **Developer surface** — design in `docs/DEVELOPER_SURFACE.md`

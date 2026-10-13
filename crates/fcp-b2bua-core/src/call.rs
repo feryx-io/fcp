@@ -526,6 +526,11 @@ pub struct Call {
     /// Line binding ID for the callee (used for CFNA lookup).
     pub line_binding_id: Option<fcp_core::LineBindingId>,
 
+    /// The line binding of the number the call came in on, kept for the
+    /// call's life (a forward clears `line_binding_id`): its hold music
+    /// (`docs/ENTERPRISE_CALLING.md` §3.3).
+    pub number_binding_id: Option<fcp_core::LineBindingId>,
+
     /// Per-user ring-no-answer timeout from the line binding.
     /// When set, overrides the global B2BUA forking timeout.
     pub no_answer_timeout: Option<Duration>,
@@ -685,6 +690,7 @@ impl Call {
             parked_orbit: None,
             parker_extension: None,
             line_binding_id: None,
+            number_binding_id: None,
             no_answer_timeout: None,
             original_callee: None,
             callee_user_id: None,
@@ -802,6 +808,7 @@ impl Call {
             parked_orbit: None,
             parker_extension: None,
             line_binding_id: None,
+            number_binding_id: None,
             no_answer_timeout: None,
             original_callee: None,
             callee_user_id: None,

@@ -39,6 +39,8 @@ class UpdateLineBindingRequest:
             shared (bool | None | Unset): A shared line: its devices share its appearances (§3.9).
             max_appearances (int | None | Unset): How many calls a shared line carries at once (1 to 24).
             barge_in (bool | None | Unset): A phone on the shared line may barge into an active appearance.
+            hold_music (None | str | Unset): The number's hold music: a prompt of the tenant, `none` for
+                silence, or empty for the tenant's.
      """
 
     devices: list[DeviceBindingResponse] | None | Unset = UNSET
@@ -52,6 +54,7 @@ class UpdateLineBindingRequest:
     shared: bool | None | Unset = UNSET
     max_appearances: int | None | Unset = UNSET
     barge_in: bool | None | Unset = UNSET
+    hold_music: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -133,6 +136,12 @@ class UpdateLineBindingRequest:
         else:
             barge_in = self.barge_in
 
+        hold_music: None | str | Unset
+        if isinstance(self.hold_music, Unset):
+            hold_music = UNSET
+        else:
+            hold_music = self.hold_music
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -160,6 +169,8 @@ class UpdateLineBindingRequest:
             field_dict["max_appearances"] = max_appearances
         if barge_in is not UNSET:
             field_dict["barge_in"] = barge_in
+        if hold_music is not UNSET:
+            field_dict["hold_music"] = hold_music
 
         return field_dict
 
@@ -294,6 +305,16 @@ class UpdateLineBindingRequest:
         barge_in = _parse_barge_in(d.pop("barge_in", UNSET))
 
 
+        def _parse_hold_music(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        hold_music = _parse_hold_music(d.pop("hold_music", UNSET))
+
+
         update_line_binding_request = cls(
             devices=devices,
             ring_strategy=ring_strategy,
@@ -306,6 +327,7 @@ class UpdateLineBindingRequest:
             shared=shared,
             max_appearances=max_appearances,
             barge_in=barge_in,
+            hold_music=hold_music,
         )
 
 
