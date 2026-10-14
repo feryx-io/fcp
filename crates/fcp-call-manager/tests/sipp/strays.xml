@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!-- Requests inside dialogs that do not exist: each answered 481 (RFC 3261 §12.2.2), a re-INVITE 481 or challenged as a new call, a CANCEL for nothing 481 or 200, an ACK for nothing not at all. Keys: user, domain, callee. -->
+<scenario name="strays">
+  <send retrans="500">
+    <![CDATA[
+      BYE sip:[callee]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[callee]@[domain]>;tag=no-such-dialog
+      Call-ID: [call_id]
+      CSeq: 1 BYE
+      Contact: <sip:[user]@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="481"/>
+  <send retrans="500">
+    <![CDATA[
+      INFO sip:[callee]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[callee]@[domain]>;tag=no-such-dialog
+      Call-ID: [call_id]
+      CSeq: 2 INFO
+      Contact: <sip:[user]@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="481"/>
+  <send retrans="500">
+    <![CDATA[
+      UPDATE sip:[callee]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[callee]@[domain]>;tag=no-such-dialog
+      Call-ID: [call_id]
+      CSeq: 3 UPDATE
+      Contact: <sip:[user]@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv
+    ]]>
+  </send>
+  <recv response="481"/>
+  <send retrans="500">
+    <![CDATA[
+      INVITE sip:[callee]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[callee]@[domain]>;tag=no-such-dialog
+      Call-ID: [call_id]
+      CSeq: 4 INVITE
+      Contact: <sip:[user]@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="481" optional="true" next="refused"/>
+  <recv response="407" optional="true" next="refused"/>
+  <recv response="401"/>
+  <label id="refused"/>
+  <send>
+    <![CDATA[
+      ACK sip:[callee]@[remote_ip]:[remote_port] SIP/2.0
+      [last_Via:]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      [last_To:]
+      Call-ID: [call_id]
+      CSeq: 4 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send>
+    <![CDATA[
+      ACK sip:[callee]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[callee]@[domain]>;tag=no-such-dialog
+      Call-ID: [call_id]
+      CSeq: 7 ACK
+      Contact: <sip:[user]@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send retrans="500">
+    <![CDATA[
+      CANCEL sip:[callee]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[callee]@[domain]>
+      Call-ID: [call_id]
+      CSeq: 5 CANCEL
+      Contact: <sip:[user]@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="481" optional="true" next="after_cancel"/>
+  <recv response="200"/>
+  <label id="after_cancel"/>
+  <send retrans="500">
+    <![CDATA[
+      OPTIONS sip:[callee]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[callee]@[domain]>
+      Call-ID: [call_id]
+      CSeq: 6 OPTIONS
+      Contact: <sip:[user]@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200"/>
+</scenario>

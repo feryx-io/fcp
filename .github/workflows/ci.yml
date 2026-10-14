@@ -185,12 +185,18 @@ jobs:
         working-directory: sdk/typescript
         run: npm ci
       - uses: astral-sh/setup-uv@v6
+      # SIPp, a SIP implementation that is not ours, for the call manager's
+      # crates/fcp-call-manager/tests/sipp.rs (docs/DEEP_TESTING.md D2);
+      # FCP_SIPP_TESTS=required makes its absence a failure, not a skip.
+      - name: SIPp
+        run: sudo apt-get install -y sip-tester && sipp -v | head -2
       # Every request that reaches an /api/v1 route, in this test process or
       # an admin binary a test starts, is logged to FCP_ROUTE_LOG
       # (fcp_api_core::route_log) for the step after.
       - name: Tests
         env:
           FCP_SDK_TESTS: required
+          FCP_SIPP_TESTS: required
           FCP_ROUTE_LOG: ${{ runner.temp }}/routes.log
         run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/video-openh264,fcp-api-core/saml
       # docs/DEEP_TESTING.md D1: every operation in the contract is called
