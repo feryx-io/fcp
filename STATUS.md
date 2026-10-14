@@ -1437,7 +1437,16 @@ stack overflow under the images' Rust 1.92 fixed, the images on Rust
 `FCP_ROUTE_LOG` (`fcp_api_core::route_log`), CI failing on an operation
 no test calls unless `scripts/routes-uncalled.txt` names why (325 of 412
 called; the 87 listed are D3's), and a weekly line-coverage report
-(`.github/workflows/coverage.yml`).
+(`.github/workflows/coverage.yml`; 72.2% on its first run). D2a
+(v0.25.396, siphon-rs sip-uac 0.8.0): SIPp against the call manager
+(`fcp-call-manager/tests/sipp.rs`, `fcp_testkit::sipp`, scenarios from
+`tests/sipp/scenarios.py`) found and fixed:
+- a CANCEL crossing the callee's 200 leaving the callee answered alone;
+- a CANCEL before the call was set up being forgotten, so the call was put
+  through;
+- a CANCEL after the answer tearing the call down;
+- a BYE for no dialog answered 200 and other in-dialog requests 500,
+  where RFC 3261 says 481.
 
 ## What is next (chosen 2026-09-29, after the nightly stack closed)
 

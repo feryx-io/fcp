@@ -85,11 +85,11 @@ jobs:
           ignore='external/|/tests/|fcp-testkit/'
           cargo llvm-cov report --html --ignore-filename-regex "$ignore"
           cargo llvm-cov report --json --summary-only --ignore-filename-regex "$ignore" \
-            --output-path "$RUNNER_TEMP/coverage.json"
+            --output-path target/llvm-cov/coverage.json
           {
             echo "## Line coverage"
             echo
-            scripts/coverage-by-crate.py "$RUNNER_TEMP/coverage.json"
+            scripts/coverage-by-crate.py target/llvm-cov/coverage.json
             if [ "${{ steps.tests.outputs.status }}" != 0 ]; then
               echo
               echo "## Failed under instrumentation"
@@ -99,13 +99,15 @@ jobs:
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+      # Both files inside the workspace: one uploaded from outside it is
+      # stored under a `..` path that `gh run download` refuses.
       - name: Keep the report
         uses: actions/upload-artifact@v4
         with:
           name: coverage
           path: |
             target/llvm-cov/html
-            ${{ runner.temp }}/coverage.json
+            target/llvm-cov/coverage.json
 
   report:
     name: Report the scheduled run

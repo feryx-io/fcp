@@ -30,6 +30,7 @@ pub mod redirection;
 pub mod seed;
 pub mod service;
 pub mod sinks;
+pub mod sipp;
 pub mod smoke;
 pub mod stt;
 pub mod tls;

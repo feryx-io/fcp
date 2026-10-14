@@ -677,6 +677,13 @@ pub struct SipMessageHandler {
     sip_call_id_map: Arc<dashmap::DashMap<String, String>>,
     /// Emergency calls' untried routes (see [`EmergencyFallback`]).
     emergency_fallbacks: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, EmergencyFallback>>,
+    /// CANCELs that arrived before their INVITE's call existed, by the
+    /// INVITE's Via branch (RFC 3261 §9.2 matches a CANCEL to the INVITE's
+    /// transaction, not to a call): the INVITE handler, having made the
+    /// call, finds its branch here and answers 487 instead of ringing
+    /// anyone (`docs/DEEP_TESTING.md` D2). Kept no longer than an INVITE
+    /// transaction may last.
+    early_cancels: Arc<dashmap::DashMap<String, std::time::Instant>>,
     /// Ordinary calls' trunk routes not tried yet (`docs/TENANT_TRUNKS.md`
     /// §5).
     trunk_fallbacks: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, TrunkFallback>>,
@@ -1070,6 +1077,7 @@ impl SipMessageHandler {
             sip_trace_tx: None,
             sip_call_id_map: Arc::new(dashmap::DashMap::new()),
             emergency_fallbacks: Arc::new(dashmap::DashMap::new()),
+            early_cancels: Arc::new(dashmap::DashMap::new()),
             trunk_fallbacks: Arc::new(dashmap::DashMap::new()),
             b_leg_srtp: Arc::new(dashmap::DashMap::new()),
             b_leg_keys: Arc::new(dashmap::DashMap::new()),
@@ -2846,62 +2854,79 @@ impl SipMessageHandler {
             {
                 info!(call_id = %call.id, "CANCEL matched call; marking as failed");
 
-                // Signal the parallel forking task to cancel all B-legs immediately.
-                // This wakes up the select! in handle_parallel_forking which then
-                // CANCELs every B-leg it owns.
-                if let Some(notify) = &call.cancel_notify {
+                // One update marks the call cancelled and takes what the
+                // forking task left on it: its wake-up and the leg it chose.
+                // The forking task stores each in an update that reads the
+                // mark, so whichever runs second sees the other — a fork
+                // never starts unwoken, and an answer that crossed this
+                // CANCEL is ended by exactly one side (`docs/DEEP_TESTING.md`
+                // D2).
+                //
+                // An answered call is past CANCEL (RFC 3261 §9.2: a CANCEL
+                // for a request that has its final response has no effect):
+                // the forking task marks it established before it sends the
+                // caller the 200, in an update that also reads the mark, so
+                // the caller either has, or will be sent, the answer and
+                // hangs up with BYE.
+                let dialog_manager = Arc::clone(&self.dialog_manager);
+                let mut notify = None;
+                let mut chosen = None;
+                let mut answered = false;
+                let _ = self.call_manager.update_call(&call.id, |c| {
+                    if c.state == fcp_b2bua_core::CallState::Established {
+                        answered = true;
+                        return;
+                    }
+                    c.caller_cancelled = true;
+                    notify = c.cancel_notify.clone();
+                    if let Some(b) = &mut c.b_leg {
+                        if let Some(dialog) = b.dialog.take() {
+                            info!(
+                                call_id = %c.id,
+                                dialog_id = ?dialog.id(),
+                                "Removing stored B-leg dialog due to CANCEL"
+                            );
+                            dialog_manager.remove(dialog.id());
+                            self.session_timer_manager.stop_timer(dialog.id());
+                        }
+                        chosen = b
+                            .outbound_handle
+                            .take()
+                            .map(|handle| (handle, b.remote_uri.clone()));
+                    }
+                });
+
+                if answered {
+                    info!(call_id = %call.id, "CANCEL after the call was answered: no effect");
+                    return Ok(());
+                }
+
+                // Wake the forking task, which CANCELs every leg it owns
+                // (or BYEs one that answered).
+                if let Some(notify) = notify {
                     info!(call_id = %call.id, "Signaling forking task to CANCEL all B-legs via cancel_notify");
                     notify.notify_one();
-                    info!(call_id = %call.id, "cancel_notify.notify_one() called successfully");
                 } else {
-                    warn!(
+                    debug!(
                         call_id = %call.id,
                         call_state = ?call.state,
-                        "CANCEL received but cancel_notify is None - B-legs may not be cancelled immediately"
+                        "CANCEL before any B-leg was rung; the forking step will see the mark"
                     );
                 }
 
-                // Also try the direct outbound handle path (for established calls
-                // where the forking task has already completed and stored the handle)
-                let dialog_manager = Arc::clone(&self.dialog_manager);
-                if let Some(b_leg) = &call.b_leg {
-                    let outbound_handle_clone = b_leg.outbound_handle.clone();
-
-                    // Clean any stored B-leg dialog in CallManager
-                    let _ = self.call_manager.update_call(&call.id, |c| {
-                        if let Some(b) = &mut c.b_leg {
-                            if let Some(dialog) = b.dialog.take() {
-                                info!(
-                                    call_id = %c.id,
-                                    dialog_id = ?dialog.id(),
-                                    "Removing stored B-leg dialog due to CANCEL"
-                                );
-                                dialog_manager.remove(dialog.id());
-                                self.session_timer_manager.stop_timer(dialog.id());
-                            }
-                            if b.outbound_handle.is_some() {
-                                info!(call_id = %c.id, "Clearing B-leg outbound handle due to CANCEL");
-                                b.outbound_handle = None;
-                            }
-                        }
-                    });
-
-                    // Send CANCEL via direct outbound handle (works for established calls)
-                    if let Some(outbound) = outbound_handle_clone {
-                        info!(call_id = %call.id, "Sending CANCEL to B-leg via outbound handle");
-                        let call_id_log = call.id;
-
-                        tokio::spawn(async move {
-                            match outbound.cancel().await {
-                                Ok(_response) => {
-                                    info!(call_id = %call_id_log, "Successfully sent CANCEL to B-leg");
-                                }
-                                Err(e) => {
-                                    warn!(call_id = %call_id_log, error = %e, "Failed to send CANCEL to B-leg");
-                                }
-                            }
-                        });
-                    }
+                // The leg the forking task already chose: CANCEL it, or BYE
+                // it if it answered.
+                if let Some((outbound, target)) = chosen {
+                    info!(call_id = %call.id, "Ending the chosen B-leg: CANCEL, or BYE if it answered");
+                    tokio::spawn(Self::cancel_or_bye_fork_leg_with(
+                        self.uac.clone(),
+                        Arc::clone(&self.dialog_manager),
+                        call.id,
+                        target,
+                        0,
+                        outbound,
+                        "Caller CANCEL".to_string(),
+                    ));
                 }
 
                 // Send 487 to the original INVITE transaction on A-leg if we still have it
@@ -2921,7 +2946,19 @@ impl SipMessageHandler {
                     "CANCEL",
                 );
             } else {
-                debug!("CANCEL received but no matching call found");
+                // Its INVITE may still be on its way to a call: the 100 is
+                // sent first, then the caller is authenticated and routed.
+                // That INVITE answers 487 when it finds this.
+                let now = std::time::Instant::now();
+                self.early_cancels
+                    .retain(|_, at| now.duration_since(*at) < Duration::from_secs(32));
+                // Strays (a CANCEL for no INVITE) are kept as long; a flood
+                // of them stops being kept rather than growing this.
+                if self.early_cancels.len() < 10_000 {
+                    self.early_cancels
+                        .insert(handle.key().branch().to_string(), now);
+                }
+                debug!("CANCEL arrived before its call; kept for its INVITE");
             }
         } else {
             debug!("CANCEL missing Call-ID header; cannot match call");
@@ -3535,6 +3572,17 @@ impl SipMessageHandler {
 
         // Store call in CallManager
         let call_id = self.call_manager.create_call(call);
+        // A CANCEL from now on finds the call; one that came before it was
+        // kept by its branch.
+        if self.early_cancels.remove(handle.key().branch()).is_some() {
+            info!(call_id = %call_id, "The caller cancelled before the call was set up");
+            let response = self.create_cancelled_response(request, None);
+            handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call_with(&call_id, fcp_cdr::TerminationReason::Cancelled);
+            return Ok(());
+        }
         if let Some(relay) = &flow_relay {
             info!(call_id = %call_id, for_call = ?relay.for_call, "A call relayed down a flow this node holds");
             self.flow_relay_targets
@@ -4906,9 +4954,10 @@ impl SipMessageHandler {
     /// but the INVITE remains answered and the callee still believes it is
     /// on a live call. To guarantee cleanup we therefore:
     ///
-    /// 1. Send the CANCEL (best effort; may or may not reach in time).
-    /// 2. Unconditionally re-read the dialog state afterwards.
-    /// 3. If the dialog is `Confirmed`, send BYE to tear it down — whether
+    /// 1. Send the CANCEL, unless the leg has already answered.
+    /// 2. Wait for the INVITE's own final response: the CANCEL's answer
+    ///    can come first, and the callee's 200 after it.
+    /// 3. If the INVITE was answered, send BYE to tear it down — whether
     ///    the CANCEL returned `Ok` or `Err`.
     ///
     /// This fixes a race window where pickup rebinds the call the instant a
@@ -4951,7 +5000,16 @@ impl SipMessageHandler {
         b_leg_handle: Arc<crate::uac::OutboundCall>,
         context: String,
     ) {
-        let cancel_result = b_leg_handle.cancel().await;
+        // A leg that has already answered is past CANCEL (RFC 3261 §9.1:
+        // a client does not cancel a request that has its final response);
+        // it is ended with a BYE alone.
+        let confirmed =
+            b_leg_handle.dialog.read().await.state() == sip_dialog::DialogStateType::Confirmed;
+        let cancel_result = if confirmed {
+            Ok(())
+        } else {
+            b_leg_handle.cancel().await.map(|_| ())
+        };
         if let Err(ref e) = cancel_result {
             warn!(
                 call_id = %call_id,
@@ -4963,23 +5021,30 @@ impl SipMessageHandler {
             );
         }
 
-        // Always check dialog state, not just in the error path. A "successful"
-        // CANCEL transaction does not mean the INVITE was actually cancelled if
-        // the UAS had already answered 200 OK before the CANCEL arrived.
-        let dialog = b_leg_handle.dialog.read().await.clone();
-        if dialog.state() != sip_dialog::DialogStateType::Confirmed {
+        // A CANCEL answered 200 says nothing of the INVITE: the callee's 200
+        // may have crossed it, and may reach this node after the CANCEL's
+        // own answer (`docs/DEEP_TESTING.md` D2). So wait for the INVITE's
+        // outcome, for as long as its transaction may last (Timer B). A
+        // 2xx is its outcome only once it is ACKed, so the BYE below never
+        // overtakes the ACK — which a confirmed dialog alone does not
+        // promise.
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(32), b_leg_handle.invite_outcome()).await;
+        let answered = matches!(outcome, Ok(sip_uac::InviteOutcome::Final(code)) if (200..300).contains(&code));
+        if !answered {
             if cancel_result.is_err() {
                 debug!(
                     call_id = %call_id,
                     target = %target,
-                    dialog_state = ?dialog.state(),
-                    "{}: fork {} is not confirmed, skipping BYE cleanup",
+                    outcome = ?outcome,
+                    "{}: fork {} did not answer, skipping BYE cleanup",
                     context,
                     leg_index
                 );
             }
             return;
         }
+        let dialog = b_leg_handle.dialog.read().await.clone();
 
         // Dialog is confirmed — the callee already answered 200 OK. CANCEL is
         // ineffective (or was already ineffective when we sent it); send BYE.
@@ -7373,11 +7438,20 @@ impl SipMessageHandler {
         // Create cancel_notify BEFORE sending B-leg INVITEs so CANCEL handler can
         // signal the forking task even if CANCEL arrives while INVITEs are being sent.
         // This fixes a race condition where CANCEL could arrive during the INVITE loop.
+        // Stored in the same update that reads whether the caller has
+        // already cancelled: a CANCEL between the call's creation and here
+        // answered the caller 487 and ended the call, and no one is rung.
         let cancel_notify = Arc::new(tokio::sync::Notify::new());
         let cancel_notify_clone = Arc::clone(&cancel_notify);
+        let mut already_cancelled = false;
         match self.call_manager.update_call(&call_id, |call| {
+            already_cancelled = call.caller_cancelled;
             call.cancel_notify = Some(cancel_notify_clone);
         }) {
+            Ok(_) if already_cancelled => {
+                info!(call_id = %call_id, "The caller cancelled before anyone was rung");
+                return Ok(());
+            }
             Ok(_) => {
                 debug!(
                     call_id = %call_id,
@@ -7385,11 +7459,12 @@ impl SipMessageHandler {
                 );
             }
             Err(e) => {
-                error!(
+                info!(
                     call_id = %call_id,
                     error = %e,
-                    "Failed to store cancel_notify - CANCELs may not be delivered"
+                    "The call ended before anyone was rung"
                 );
+                return Ok(());
             }
         }
 
@@ -8820,7 +8895,15 @@ impl SipMessageHandler {
             // Store the winning B-leg handle and flow token (RFC 5626)
             let winning_flow_token_clone = winning_flow_token.clone();
             let winner_uri = target.to_string();
+            // Stored only if the caller has not cancelled: the CANCEL
+            // handler sets the flag and takes the handle in one update, so
+            // a cancel that crossed this answer is seen here or there.
+            let mut caller_cancelled = true;
             let _ = self.call_manager.update_call(&call_id, |call| {
+                if call.caller_cancelled {
+                    return;
+                }
+                caller_cancelled = false;
                 if let Some(b_leg) = &mut call.b_leg {
                     b_leg.outbound_handle = Some(Arc::clone(&handle));
                     b_leg.flow_token = winning_flow_token_clone;
@@ -8832,6 +8915,23 @@ impl SipMessageHandler {
                     call.trunk_id = Some(answered.id());
                 }
             });
+            if caller_cancelled {
+                info!(
+                    call_id = %call_id,
+                    winner = %target,
+                    "The callee answered as the caller cancelled; hanging up the answered leg"
+                );
+                tokio::spawn(Self::cancel_or_bye_fork_leg_with(
+                    self.uac.clone(),
+                    Arc::clone(&self.dialog_manager),
+                    call_id,
+                    target.to_string(),
+                    winning_index.unwrap_or(0),
+                    handle,
+                    "Answer crossed the caller's CANCEL".to_string(),
+                ));
+                return Ok(());
+            }
 
             // Extract SDP from winning B-leg response
             let mut b_leg_sdp = if !response.body().is_empty() {
@@ -9725,10 +9825,21 @@ impl SipMessageHandler {
         let response = if let Some(dialog) = dialog_opt {
             // A-leg BYE: use UAS helper
             self.uas.handle_bye(request, &dialog)?
-        } else {
+        } else if self
+            .call_for_request(request, dialog_call_id.as_str())
+            .is_some()
+        {
             // B-leg BYE: create simple 200 OK response
             debug!("BYE dialog not in dialog_manager (likely B-leg UAC), creating simple 200 OK");
             self.create_simple_response(request, 200, "OK")
+        } else {
+            // No dialog and no call: RFC 3261 §12.2.2.
+            debug!(call_id = %dialog_call_id, "BYE for no dialog; 481");
+            return Ok(self.create_simple_response(
+                request,
+                481,
+                "Call/Transaction Does Not Exist",
+            ));
         };
 
         // Now that we've responded, proceed with forwarding and cleanup
@@ -12303,7 +12414,7 @@ impl SipMessageHandler {
 
         let call = self
             .call_for_request(request, dialog_call_id.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Dialog not found"))?;
+            .ok_or(NoSuchDialog)?;
 
         let is_a_leg = call
             .a_leg
@@ -18066,9 +18177,15 @@ impl InboundMessageHandler for SipMessageHandler {
                 )
                 .await
             {
-                error!("Failed to handle request: {}", e);
-                // Send error response
-                let response = self.create_simple_response(&req, 500, "Internal Server Error");
+                // A request inside a dialog this node does not have is the
+                // sender's mistake, not this node's (RFC 3261 §12.2.2).
+                let response = if e.downcast_ref::<NoSuchDialog>().is_some() {
+                    debug!(method = %req.method().as_str(), "In-dialog request for no dialog; 481");
+                    self.create_simple_response(&req, 481, "Call/Transaction Does Not Exist")
+                } else {
+                    error!("Failed to handle request: {}", e);
+                    self.create_simple_response(&req, 500, "Internal Server Error")
+                };
                 handle.send_final(response).await;
             }
         } else if let Some(resp) = sip_parse::parse_response(&payload) {
@@ -18951,6 +19068,12 @@ fn find_call_and_dialog(
     }
     None
 }
+
+/// A request inside a dialog this node does not have: answered 481, not
+/// 500 (RFC 3261 §12.2.2; `docs/DEEP_TESTING.md` D2).
+#[derive(Debug, thiserror::Error)]
+#[error("no such dialog")]
+struct NoSuchDialog;
 
 fn stop_timers_for_call(session_timer_manager: &SessionTimerManager, call: &fcp_b2bua_core::Call) {
     if let Some(a) = &call.a_leg.dialog {

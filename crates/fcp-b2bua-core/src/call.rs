@@ -509,6 +509,13 @@ pub struct Call {
     /// notifies this to wake up the forking task so it can CANCEL all B-legs immediately.
     pub cancel_notify: Option<Arc<Notify>>,
 
+    /// The caller cancelled the call. Set in the same `update_call` that
+    /// reads the chosen B-leg's handle, and read in the same one that
+    /// stores it, so an answer crossing the CANCEL is ended by exactly one
+    /// of the CANCEL handler and the forking task (`docs/DEEP_TESTING.md`
+    /// D2).
+    pub caller_cancelled: bool,
+
     /// Cap on the answered duration imposed by balance enforcement; the
     /// handler hangs the call up when it is reached.
     pub max_duration: Option<std::time::Duration>,
@@ -697,6 +704,7 @@ impl Call {
             trunk_id: None,
             outbound_allowed_codecs: None,
             cancel_notify: None,
+            caller_cancelled: false,
             max_duration: None,
             custom_data: None,
             parked_orbit: None,
@@ -817,6 +825,7 @@ impl Call {
             trunk_id: None,
             outbound_allowed_codecs: None,
             cancel_notify: None,
+            caller_cancelled: false,
             max_duration: None,
             custom_data: None,
             parked_orbit: None,

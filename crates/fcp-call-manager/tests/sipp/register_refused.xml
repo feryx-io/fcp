@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!-- Two REGISTERs that must not bind. First, credentials on a nonce the
+     node never issued, unasked: it challenges afresh, it does not answer
+     500 or 200. Then the digest of -au/-ap, here the wrong password: 401
+     or 403, never 200. Keys: user, domain, contact. -->
+<scenario name="register_refused">
+  <send retrans="500">
+    <![CDATA[
+      REGISTER sip:[domain] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[user]@[domain]>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:[user]@[contact]>
+      Authorization: Digest username="[user]",realm="[domain]",nonce="bm90LWlzc3VlZC1oZXJl",uri="sip:[domain]",response="00000000000000000000000000000000",algorithm=MD5,qop=auth,nc=00000001,cnonce="abcdef01"
+      Max-Forwards: 70
+      Expires: 300
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="401" auth="true"/>
+  <send retrans="500">
+    <![CDATA[
+      REGISTER sip:[domain] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[user]@[domain]>
+      Call-ID: [call_id]
+      CSeq: 2 REGISTER
+      Contact: <sip:[user]@[contact]>
+      [authentication]
+      Max-Forwards: 70
+      Expires: 300
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="403" optional="true" next="refused"/>
+  <recv response="401"/>
+  <label id="refused"/>
+</scenario>
