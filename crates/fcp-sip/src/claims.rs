@@ -43,6 +43,8 @@ use tracing::debug;
 /// - `X-FCP-Forwarded-For` spares a leg the node placed to itself the
 ///   caller's class of service; believed, like a transfer origin, only
 ///   when it names a call this node has.
+/// - `X-FCP-Own-Leg` admits an INVITE as one this node placed to itself
+///   ([`crate::own_leg`]); kept only when it carries this process's token.
 pub const CLAIMED_HEADERS: &[&str] = &[
     fcp_core::CALL_ID_HEADER,
     crate::handler::TRANSFERRED_FROM_HEADER,
@@ -53,6 +55,7 @@ pub const CLAIMED_HEADERS: &[&str] = &[
     "Alert-Info",
     "Call-Info",
     "X-FCP-Intercom-Mode",
+    crate::own_leg::OWN_LEG_HEADER,
 ];
 
 /// Whether this node believes what a peer says about a request.
@@ -157,6 +160,9 @@ impl<'a> Claims<'a> {
             }
             return any;
         }
+        if name.eq_ignore_ascii_case(crate::own_leg::OWN_LEG_HEADER) {
+            return crate::own_leg::proves(request);
+        }
         if !name.eq_ignore_ascii_case(crate::handler::TRANSFERRED_FROM_HEADER)
             && !name.eq_ignore_ascii_case(crate::handler::FORWARDED_FOR_HEADER)
         {
@@ -190,6 +196,20 @@ mod tests {
         assert!(!has(&stripped, "Call-Info"));
         let sneaking = request(&["Call-Info: <sip:10.0.0.1>;appearance-index=2;answer-after=0"]);
         assert!(claims.strip(&sneaking).is_some());
+    }
+
+    /// A leg this node placed to itself keeps its own-leg token; one that
+    /// guessed at it does not, and is not admitted as the node's own.
+    #[test]
+    fn only_this_process_s_own_leg_token_survives() {
+        let claims = Claims::from(PeerTrust::Untrusted);
+        let own = request(&[&format!("X-FCP-Own-Leg: {}", crate::own_leg::token())]);
+        assert!(claims.strip(&own).is_none());
+        assert!(crate::own_leg::proves(&own));
+        let forged = request(&["X-FCP-Own-Leg: 0123456789abcdef"]);
+        let stripped = claims.strip(&forged).expect("stripped");
+        assert!(!has(&stripped, "X-FCP-Own-Leg"));
+        assert!(!crate::own_leg::proves(&forged));
     }
 
     /// A request carrying `headers`, each a `Name: value` line.

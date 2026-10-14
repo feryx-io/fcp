@@ -213,6 +213,14 @@ Every local file already says this; here is the map.
   The conference server lists the call manager's address in `[sip]
   trusted_edges` so the call manager may name the record each leg
   belongs to.
+- **Who may INVITE the call manager.** `[registrar] auth_invites` is on
+  by default: a phone proves who placed a call with the same digest as
+  its REGISTER, and a carrier on an enabled trunk is admitted by its
+  address. The binaries that INVITE the call manager from this machine
+  (the WebRTC gateway; the conference, voicemail and IVR servers) hold
+  no user's password, so `fcp-call-manager-local.toml` trusts loopback
+  in `[e911] trusted_edges = ["127.0.0.0/8"]`. Move any of them to
+  another machine and add its address there.
 - **Speech.** The call manager and IVR ask `fcp-tts` at
   `tts_remote_url` (`http://localhost:8093`) with `tts_remote_token` =
   one of the TTS server's `[auth] tokens`.

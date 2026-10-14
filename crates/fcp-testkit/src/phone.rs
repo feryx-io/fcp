@@ -324,13 +324,16 @@ impl Inner {
             };
             match outcome {
                 Ok(resp) if (200..300).contains(&resp.start_line().code()) => {
-                    // Let the transaction finish (the ACK go out) before the
-                    // call counts as answered, or an immediate re-INVITE
-                    // beats the ACK to the far end and draws a 481.
-                    let _ = tokio::time::timeout(Duration::from_secs(1), async {
-                        while handle.await_provisional().await.is_some() {}
-                    })
-                    .await;
+                    // The ACK out before the call counts as answered, or an
+                    // immediate re-INVITE beats it to the far end and draws a
+                    // 481. A 2xx is the INVITE's outcome once it is ACKed.
+                    // (Waiting for the provisional stream to close waited the
+                    // whole second after an authenticated retry, whose
+                    // challenged first attempt holds the stream open: a far
+                    // end that answered and hung up at once ended the call
+                    // before it was answered here.)
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(1), handle.invite_outcome()).await;
                     let dialog = handle.dialog.read().await.clone();
                     *st.dialog.write().await = Some(dialog);
                     let answer = String::from_utf8_lossy(resp.body()).to_string();

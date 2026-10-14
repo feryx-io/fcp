@@ -244,9 +244,12 @@ async fn with_aliases_the_second_call_costs_nothing_either() {
         0,
         "the second call went to the store: {second:?}"
     );
+    // Every lookup the first call made — to the store, or already to the
+    // cache when its INVITE was challenged and sent again — is a hit on the
+    // second.
     assert_eq!(
         second.cached,
-        first.round_trips(),
+        first.round_trips() + first.cached,
         "each lookup the first call made should be a hit on the second"
     );
 }

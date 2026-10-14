@@ -25,6 +25,9 @@ pub struct SipUserAgentClient {
     inner: Arc<IntegratedUAC>,
     transcript_dir: Option<PathBuf>,
     _metrics: crate::metrics::MetricsHandle,
+    /// This node's own SIP address: an INVITE to it carries the node's
+    /// own-leg token ([`crate::own_leg`]), and no other INVITE does.
+    own: Option<crate::own_leg::OwnAddress>,
 }
 
 impl SipUserAgentClient {
@@ -37,7 +40,29 @@ impl SipUserAgentClient {
             inner: integrated_uac,
             transcript_dir: None,
             _metrics: crate::metrics::noop_metrics(),
+            own: None,
         }
+    }
+
+    /// INVITEs to `own`, this node itself, carry its own-leg token, so
+    /// they are admitted without a user's password
+    /// (`docs/EDGE_SECURITY.md` §2.1).
+    pub fn with_own_address(mut self, own: crate::own_leg::OwnAddress) -> Self {
+        self.own = Some(own);
+        self
+    }
+
+    /// The own-leg header for an INVITE to `target`, when it is this node.
+    fn own_leg_headers(&self, target: &str, mut headers: Headers) -> Headers {
+        if self.own.as_ref().is_some_and(|own| own.is_target(target))
+            && !headers.contains(crate::own_leg::OWN_LEG_HEADER)
+        {
+            let _ = headers.push(
+                smol_str::SmolStr::new(crate::own_leg::OWN_LEG_HEADER),
+                smol_str::SmolStr::new(crate::own_leg::token()),
+            );
+        }
+        headers
     }
 
     /// Create a new UAC with a transcript directory for SIP logging.
@@ -49,6 +74,7 @@ impl SipUserAgentClient {
             inner: integrated_uac,
             transcript_dir,
             _metrics: crate::metrics::noop_metrics(),
+            own: None,
         }
     }
 
@@ -57,6 +83,7 @@ impl SipUserAgentClient {
             inner: integrated_uac,
             transcript_dir: settings.transcript_dir.clone(),
             _metrics: settings.metrics.clone(),
+            own: None,
         }
     }
 
@@ -99,7 +126,14 @@ impl SipUserAgentClient {
     /// # }
     /// ```
     pub async fn invite(&self, target: &str, sdp_body: Option<&str>) -> Result<CallHandle> {
-        self.inner.invite(target, sdp_body).await
+        let headers = self.own_leg_headers(target, Headers::new());
+        if headers.is_empty() {
+            self.inner.invite(target, sdp_body).await
+        } else {
+            self.inner
+                .invite_with_headers(target, sdp_body, headers)
+                .await
+        }
     }
 
     /// INVITE with extra headers when given, plain INVITE otherwise.
@@ -122,6 +156,7 @@ impl SipUserAgentClient {
         sdp_body: Option<&str>,
         extra_headers: Headers,
     ) -> Result<CallHandle> {
+        let extra_headers = self.own_leg_headers(target, extra_headers);
         self.inner
             .invite_with_headers(target, sdp_body, extra_headers)
             .await
@@ -133,8 +168,9 @@ impl SipUserAgentClient {
     pub async fn invite_with_options(
         &self,
         target: &str,
-        options: sip_uac::InviteOptions,
+        mut options: sip_uac::InviteOptions,
     ) -> Result<CallHandle> {
+        options.extra_headers = self.own_leg_headers(target, options.extra_headers);
         self.inner.invite_with_options(target, options).await
     }
 

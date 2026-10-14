@@ -1448,6 +1448,13 @@ called; the 87 listed are D3's), and a weekly line-coverage report
 - a BYE for no dialog answered 200 and other in-dialog requests 500,
   where RFC 3261 says 481.
 
+Then (v0.25.397) `[registrar] auth_invites` went on by default, as
+`EDGE_SECURITY.md` Q1 had agreed and never done:
+- legs the node INVITEs to itself (queues, a flow's Dial) carry a
+  per-process token (`fcp_sip::own_leg`);
+- the single-node file trusts loopback;
+- an upgrade note is in `BACKUP_AND_RESTORE.md` §5.4.1.
+
 ## What is next (chosen 2026-09-29, after the nightly stack closed)
 
 **Developer surface** — design in `docs/DEVELOPER_SURFACE.md`

@@ -3303,6 +3303,7 @@ impl SipMessageHandler {
         let peer_ip = peer.ip();
         let is_trusted_edge = edge_caller.is_some()
             || own_leg_tenant.is_some()
+            || crate::own_leg::proves(request)
             || self.trusted_edges.contains(peer_ip);
         let invite_auth = match (&self.registrar, is_trusted_edge) {
             (Some(registrar), false) => registrar.authenticate_invite(request).await,

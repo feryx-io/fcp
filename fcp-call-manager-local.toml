@@ -51,3 +51,11 @@ enabled = true
 enabled = true
 heartbeat_interval_secs = 5
 heartbeat_ttl_secs = 15
+
+# Every binary of the single-node setup runs on this machine, and the ones
+# that INVITE this node (the WebRTC gateway, the conference, voicemail and
+# IVR servers) do it from loopback with no user's password: trusted, as
+# `[registrar] auth_invites` (on by default) challenges everything else
+# (docs/EDGE_SECURITY.md §2.1).
+[e911]
+trusted_edges = ["127.0.0.0/8"]

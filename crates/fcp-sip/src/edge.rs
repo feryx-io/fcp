@@ -169,6 +169,12 @@ pub struct EdgeConfig {
     /// a second, and this is several times that. A carrier trunk that
     /// legitimately exceeds it is either listed in `[e911] trusted_edges`,
     /// which is exempt, or given a higher limit here.
+    ///
+    /// Every INVITE counts, before anything is checked of it: a call
+    /// challenged under `[registrar] auth_invites` costs two, the challenged
+    /// attempt and the retry with credentials. Not counting an INVITE that
+    /// carries credentials would mean checking them first, a database read
+    /// for every packet of a flood.
     pub max_invite_cps_per_source: u32,
 }
 
