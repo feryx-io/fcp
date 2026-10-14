@@ -59,8 +59,12 @@ it, a carrier-grade NAT pool — can place calls **as that user**, at that
 tenant's cost. This is the ordinary toll-fraud shape, and challenging
 INVITEs (RFC 3261 §22) is the ordinary answer.
 
-Since v0.25.224 it is challenged, under `[registrar] auth_invites`. What
-the flag changes:
+Since v0.25.224 it is challenged, under `[registrar] auth_invites`. The
+flag was to be off for one release and then on (Q1). It stayed off until
+v0.25.397, when deep testing found the flip had never been made
+(`docs/DEEP_TESTING.md` D2): it is on by default now, in the shipped
+compose configurations too. A node that turns it off is warned about at
+every start. What the flag changes:
 
 - **The digest decides, instead of the source address.** A carrier
   arriving on an enabled trunk and a peer in `[e911] trusted_edges` keep
@@ -96,8 +100,8 @@ was, which is *before* emergency detection, so with the flag on a caller
 who cannot answer a challenge cannot dial 911 either. That is what the
 source-based gate already did to an unadmitted source, so it is not a
 regression — but it is the reason Q2's `401` matters, and a deployment
-that wants emergency calls to survive lost credentials should say so
-before the default flips. `auth_invites` lives on the call manager, which
+that wants emergency calls to survive lost credentials turns the flag off
+(and is warned). `auth_invites` lives on the call manager, which
 is the edge of every default deployment; the standalone registrar handles
 no INVITEs and the SBC has its own admission.
 
@@ -444,7 +448,7 @@ One PR each, in order.
 |---|---|
 | 1 ✅ | **The registration check, and a test that fails today.** Compare the binding contact's parsed host, and prefer the stored `source_address` where there is one (Q3); a contact's port or parameters can no longer authorise a stranger. Cheap, contained, and the clearest defect found. |
 | 2a ✅ | **The nonce is the node's.** Challenges issued from a tracked `NonceManager`, verified with the nonce-count and the request's identity, `stale=true` where the credentials are right and only the nonce is not — so that the digest phase 2b adds to INVITE is worth adding (§2.7). |
-| 2b ✅ | **Authenticate INVITE.** Digest challenge on INVITE, with the credentials the registrar already uses; `[registrar] auth_invites`, off by default for one release and warned about, then on (Q1). An unauthenticated INVITE is answered `401` with a challenge, not `403` (Q2), so a phone that has lost its credentials can recover. Source-based admission remains for trunks and trusted edges, which have their own proof; loopback loses its bypass, and the digest replaces the registration check for everyone challenged (§2.1). |
+| 2b ✅ | **Authenticate INVITE.** Digest challenge on INVITE, with the credentials the registrar already uses; `[registrar] auth_invites`, off by default for one release and warned about, then on (Q1; on since v0.25.397). An unauthenticated INVITE is answered `401` with a challenge, not `403` (Q2), so a phone that has lost its credentials can recover. Source-based admission remains for trunks and trusted edges, which have their own proof; loopback loses its bypass, and the digest replaces the registration check for everyone challenged (§2.1). |
 | 3 ✅ | **One gate for what a peer claims.** `fcp-sip/src/claims.rs` strips at ingress what an untrusted peer has no standing to assert, so every reader is gated by construction (§2.3): the two record ids, the carrier identity headers, and the auto-answer headers the platform's own intercom uses. Trusted edges and mutual-TLS trunks keep what they send; the conference server gains `[sip] trusted_edges` for the call manager and the gateway beside it. |
 | 4 ✅ | **The edge defended.** `fcp-sip/src/edge.rs` in the shared handler: an address list, a message-size bound and a "is this SIP at all" check before the parser, each dropping rather than answering; a per-source call rate refused `503` on a parsed request. `[security]` on the call manager, `max_invite_cps_per_source = 20` by default, trusted edges exempt (§2.4). |
 | 5a ✅ | **The rest of the survey.** §2.6 finished: the HTTP surfaces, token strength and what reaches the logs are sound; the carrier's identity headers are already stripped and re-asserted, and the attestation hazard is named. One finding fixed — three binaries compared the API token with `==` — and the nine duplicate copies of the comparison consolidated into `fcp_core::secret`. |

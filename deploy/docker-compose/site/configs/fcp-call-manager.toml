@@ -25,7 +25,10 @@ max_invite_cps_per_source = 20
 
 [registrar]
 auth_enabled = true     # Required on a public SIP bind; users come down the link
-auth_invites = false
+# An INVITE proves who placed it with the same digest as REGISTER
+# (docs/EDGE_SECURITY.md §2.1); trunks and `[e911] trusted_edges` are
+# admitted by source.
+auth_invites = true
 realm = "fcp.local"
 default_expires = 3600
 min_expires = 60

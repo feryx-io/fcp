@@ -329,6 +329,22 @@ files — and start the previous release. A new node's calls and
 recordings since the backup are lost with it; the CDR spool on each
 node re-ships what it holds.
 
+### 5.4.1 Behaviour an upgrade changes
+
+Changes that need something of a configuration the operator keeps:
+
+- **v0.25.397: `[registrar] auth_invites` is on by default**
+  (`docs/EDGE_SECURITY.md` §2.1). A call manager with `auth_enabled`
+  challenges every INVITE except a carrier's on an enabled trunk and a
+  peer's in `[e911] trusted_edges`, loopback included. Before upgrading,
+  list in `trusted_edges` every binary that INVITEs the call manager
+  without a user's password: the SBC in front of it, the WebRTC gateway,
+  and the conference, voicemail and IVR servers. The shipped compose and
+  single-node configurations trust `127.0.0.0/8`, since everything there
+  runs on one host. Phones answer the challenge with the credentials they
+  register with. Setting `auth_invites = false` keeps the old behaviour,
+  and is warned about at every start.
+
 ### 5.5 Proved
 
 - `crates/fcp-storage-postgres/tests/upgrade.rs`: this release opens an

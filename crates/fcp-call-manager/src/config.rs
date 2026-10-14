@@ -300,18 +300,21 @@ pub struct RegistrarSection {
     /// Require a digest on INVITE as well as on REGISTER
     /// (`docs/EDGE_SECURITY.md` §2.1).
     ///
-    /// Off by default for one release, with a warning at startup: without
-    /// it a call is authorised by the address it came from, so anything
-    /// that can source packets from a registered device's address — the
-    /// same NAT, the same office LAN, a compromised handset beside it —
-    /// places calls as that user, at that tenant's cost.
+    /// On by default since v0.25.397 (off for v0.25.224–396, with a warning
+    /// at startup; `docs/DEEP_TESTING.md` D2 found the promised flip never
+    /// made). Off, a call is authorised by the address it came from, so
+    /// anything that can source packets from a registered device's address
+    /// — the same NAT, the same office LAN, a compromised handset beside it
+    /// — places calls as that user, at that tenant's cost; a warning says so
+    /// at startup. Without `auth_enabled` there are no credentials to
+    /// check, and nothing is challenged either way.
     ///
     /// When it is on, a carrier arriving on an enabled trunk and a peer in
     /// `[e911] trusted_edges` are still admitted by source; everything
     /// else, loopback included, is challenged. An embedded component that
     /// INVITEs this node over loopback therefore needs a place in
     /// `trusted_edges` or credentials of its own.
-    #[serde(default)]
+    #[serde(default = "default_auth_invites")]
     pub auth_invites: bool,
 
     /// Authentication realm
@@ -391,10 +394,14 @@ impl Default for RegistrarSection {
             max_expires: default_max_expires(),
             domain_aliases: Vec::new(),
             provisioning_url: None,
-            auth_invites: false,
+            auth_invites: default_auth_invites(),
             cache_ttl_secs: default_registration_cache_ttl(),
         }
     }
+}
+
+fn default_auth_invites() -> bool {
+    true
 }
 
 /// Storage backend configuration.
@@ -998,15 +1005,15 @@ fn validate_registrar_config(sip: &SipSection, registrar: &RegistrarSection) -> 
         anyhow::bail!("sip.wss_bind requires sip.tls_cert_path and sip.tls_key_path");
     }
 
-    // One release of warning before the default flips
-    // (`docs/EDGE_SECURITY.md` §4, Q1).
-    if !registrar.auth_invites {
+    // On by default; turned off, it is said at every start
+    // (`docs/EDGE_SECURITY.md` §2.1).
+    if registrar.auth_enabled && !registrar.auth_invites {
         warn!(
             "registrar.auth_invites is off: an INVITE is authorised by the address it came from \
              and never asked to prove who placed it, so anything that can source packets from a \
              registered device's address — the same NAT, the same LAN, a compromised handset \
-             beside it — places calls as that user. Set registrar.auth_invites = true; it becomes \
-             the default in the next release (docs/EDGE_SECURITY.md §2.1)"
+             beside it — places calls as that user. Remove registrar.auth_invites = false \
+             (docs/EDGE_SECURITY.md §2.1)"
         );
     }
 

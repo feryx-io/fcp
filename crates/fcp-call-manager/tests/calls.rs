@@ -489,7 +489,17 @@ async fn one_source_cannot_spend_the_whole_node() {
     // nothing about the node. A per-source rate is what the SBC had and
     // the call manager, the edge of every single-binary deployment, did
     // not.
-    let Some(stack) = Stack::start_with("[security]\nmax_invite_cps_per_source = 2\n", 40).await
+    // Without INVITE challenges: each would cost a second INVITE against
+    // the same per-source budget (`fcp_sip::edge`), and eight calls fired
+    // at once would spend it all before any retry, which is the limit
+    // working, not this test's question.
+    let Some(stack) = Stack::start_registrar(
+        "auth_invites = false",
+        "",
+        "[security]\nmax_invite_cps_per_source = 2\n",
+        40,
+    )
+    .await
     else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;

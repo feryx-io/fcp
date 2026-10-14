@@ -2533,7 +2533,16 @@ async fn create_uac(
 
     let integrated_uac = builder.build().context("Failed to build IntegratedUAC")?;
 
-    Ok(Arc::new(SipUserAgentClient::new(Arc::new(integrated_uac))))
+    // The queue and other features ring through this node itself; those
+    // INVITEs carry its own-leg token (`fcp_sip::own_leg`).
+    let own = fcp_sip::own_leg::OwnAddress::new(
+        local_uri.host(),
+        local_uri.port().unwrap_or(5060),
+        config.sip.udp_bind.parse().ok(),
+    );
+    Ok(Arc::new(
+        SipUserAgentClient::new(Arc::new(integrated_uac)).with_own_address(own),
+    ))
 }
 
 /// Create a local SIP URI from configuration.
