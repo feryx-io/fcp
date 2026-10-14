@@ -376,9 +376,31 @@ D8. Anvil's own deep testing would be its own pass.
 | A CANCEL for no INVITE at all is answered 200, not 481 (RFC 3261 §9.2 SHOULD); it is kept like an early one. | S3 | Left: telling it from an INVITE still being set up needs the INVITE's server transaction looked up by branch. |
 | Nine kinds of broken message, sent at the node, all left it answering: no SIP at all, a bad Request-URI without a Via, a header without a colon, a Content-Length too long and negative, seventy Vias, a 30 KB header, a stray response, a CSeq that is not a number. | — (passed) | `messages_no_parser_should_accept_are_survived`. |
 
+### D2b. Requests inside a call: UPDATE, PRACK, REFER, session timers
+
+The same suite, `fcp-call-manager/tests/sipp.rs`, with SIPp on both ends:
+- UPDATE with a new offer in an answered call (RFC 3311);
+- a callee that rings reliably (RFC 3262), to callers with and without
+  100rel;
+- a blind transfer by the caller (REFER, RFC 3515), carried out by the
+  node, with a third SIPp as the target;
+- session timers (RFC 4028) under `[b2bua.session_timer] enabled`: an
+  interval under Min-SE, a session the node refreshes, and one the caller
+  was to refresh and never does.
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| Session expiry hung up one leg. When a session expired, the node sent a BYE on the leg whose timer ran out and ended the call record, but never hung up the other party. That party stayed in a call with nobody, and the call's media session and recording were never closed. | S2 | Fixed: an expired session ends the call through the hangup every other path uses (`hangup_call_by_id_saying`): BYE on both legs with `Reason: SIP;cause=408`, then the media closed. The session timer listener reaches the handler through `serving`, a copy the first request sets once the builders are done. `a_session_nobody_refreshes_is_ended`. |
+| A callee that needed 100rel could not be called. The node's INVITE never said `Supported: 100rel`, so a compliant callee never rang reliably, and one that requires it refuses the call (421). Had a callee rung reliably anyway, the node copied its `RSeq` and `Require: 100rel` to a caller that never offered 100rel. It also forwarded a caller's PRACK, which PRACKs the callee a second time, since siphon-rs's INVITE transaction already does. The callee's 481 to that second PRACK tore the dialog down. | S2 | Fixed, one leg at a time: siphon-rs's `IntegratedUAC` adds `100rel` to every INVITE's Supported, since its transaction PRACKs every reliable provisional. The node relays a callee's ringing to the caller as an ordinary provisional (no RSeq, no `Require: 100rel`), and answers a PRACK 481, since it sent nothing reliably. `the_node_pracks_a_callee_that_rings_reliably`. |
+| A caller that *requires* 100rel still gets ordinary provisionals. RFC 3262 obliges the node to send them reliably, and neither siphon-rs's server transaction nor the node can. | S3 | #310. |
+| An INVITE asking for a session shorter than the Min-SE was put through, not refused 422. siphon-rs's `validate_session_timer` read the header with the typed parser, which refuses an interval under 90 s and returns nothing. "Nothing" was taken for "no header", so the one case 422 exists for was never refused. | S3 | Fixed in siphon-rs: the interval is read as a number before any range check. `a_session_shorter_than_min_se_is_refused_422`. |
+| Every session timer was answered `1800;refresher=uas`, whatever the caller asked. RFC 4028 §9: the answer keeps the request's interval (it may shorten it, never below Min-SE) and its refresher. A caller that asked to refresh every 90 s was told the node would, every 900 s. | S3 | Fixed: `session_timer_answer`. The caller's interval is kept within the node's own and either side's Min-SE, and the caller's refresher is kept when it names one. `a_session_the_node_refreshes_is_refreshed` checks the answer, and that the node refreshes within it. |
+| The side that does not refresh hung up at the moment the session expired. RFC 4028 §10 recommends the BYE slightly before: the minimum of 32 s and a third of the interval earlier. | S4 | Fixed in siphon-rs (`non_refresher_expiry`). The test wants the BYE within 75 s of a 90 s session, and it comes at 60. |
+| UPDATE is relayed and answered, and a blind transfer is carried out: the referrer gets 202, a NOTIFY with 200 and a BYE; the target is dialled back through the node (with its own-leg token) and the transferred party moved to it. | — (passed) | `sipp_updates_an_answered_call`, `sipp_transfers_a_call_blind`. |
+
 Still to come in D2:
 - SIPp against the SBC;
-- UPDATE, PRACK, REFER and session timers;
+- an attended transfer (REFER with Replaces);
 - a REGISTER and INVITE flood against admission;
 - baresip for media.
 

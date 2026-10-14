@@ -5,7 +5,6 @@
 //! as separate SIP dialogs but logically connected.
 
 use sip_core::Request;
-use sip_core::Response;
 use sip_dialog::Dialog;
 use sip_transaction::TransactionKey;
 use sip_uac::integrated::CallHandle;
@@ -127,9 +126,6 @@ pub struct CallLeg {
     /// Since await_final() and cancel() both take &self, we only need Arc (no Mutex or Option)
     pub outbound_handle: Option<Arc<CallHandle>>,
 
-    /// Reliable provisional responses by RSeq (for PRACK forwarding)
-    pub reliable_provisionals: Vec<Response>,
-
     /// Remote party URI (From/To)
     pub remote_uri: String,
 
@@ -166,7 +162,6 @@ impl CallLeg {
             direction: CallDirection::Inbound,
             dialog: None,
             outbound_handle: None,
-            reliable_provisionals: Vec::new(),
             remote_uri,
             remote_display_name,
             contact: Some(peer),
@@ -182,7 +177,6 @@ impl CallLeg {
             direction: CallDirection::Outbound,
             dialog: None,
             outbound_handle: None,
-            reliable_provisionals: Vec::new(),
             remote_uri,
             remote_display_name,
             contact: None,
@@ -626,7 +620,6 @@ impl fmt::Debug for CallLeg {
             .field("direction", &self.direction)
             .field("dialog", &self.dialog)
             .field("has_outbound_handle", &self.outbound_handle.is_some())
-            .field("reliable_prov_count", &self.reliable_provisionals.len())
             .field("remote_uri", &self.remote_uri)
             .field("remote_display_name", &self.remote_display_name)
             .field("contact", &self.contact)

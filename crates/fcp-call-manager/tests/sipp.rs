@@ -22,6 +22,7 @@ struct Stack {
     _db: TestDatabase,
     alice: SeededUser,
     bob: SeededUser,
+    carol: SeededUser,
     sip: SocketAddr,
     http: u16,
     _dir: tempfile::TempDir,
@@ -29,6 +30,11 @@ struct Stack {
 
 impl Stack {
     async fn start() -> Option<Self> {
+        Self::start_with("").await
+    }
+
+    /// A stack whose configuration ends with `extra` (whole sections).
+    async fn start_with(extra: &str) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -73,22 +79,27 @@ tts_cache_dir = "{dir}/tts-cache"
 recording_dir = "{dir}/recordings"
 
 [logging]
-level = "info"
+level = "{log}"
 format = "compact"
+{extra}
 "#,
             db = db.url(),
             rtp_end = rtp_start + 40,
             dir = dir.path().display(),
+            // `FCP_SIPP_LOG=debug` for a failure the info log does not explain.
+            log = std::env::var("FCP_SIPP_LOG").unwrap_or_else(|_| "info".into()),
         );
         let service =
             Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
         let alice = seed.user("alice", "alice-pw", "1001").await;
         let bob = seed.user("bob", "bob-pw", "1002").await;
+        let carol = seed.user("carol", "carol-pw", "1003").await;
         Some(Self {
             service: tokio::sync::Mutex::new(Some(service)),
             _db: db,
             alice,
             bob,
+            carol,
             sip: SocketAddr::from(([127, 0, 0, 1], sip_port)),
             http,
             _dir: dir,
@@ -109,6 +120,19 @@ impl Stack {
         };
         eprintln!("--- call manager ---\n{logs}");
         out.assert_passed(what);
+    }
+
+    /// [`Stack::passed`] for both ends of a call: either failing shows
+    /// both.
+    async fn both_passed(&self, uac: &SippOutcome, uas: &SippOutcome, what: &str) {
+        if uac.code != Some(0) || uas.code != Some(0) {
+            eprintln!(
+                "--- callee ({:?}) errors ---\n{}\n--- callee messages ---\n{}",
+                uas.code, uas.errors, uas.messages
+            );
+        }
+        self.passed(uac, &format!("{what}: caller")).await;
+        self.passed(uas, &format!("{what}: callee")).await;
     }
 
     async fn get(&self, path: &str) -> serde_json::Value {
@@ -234,21 +258,42 @@ impl Stack {
     /// A call from SIPp's `caller` scenario as alice to bob's extension,
     /// bob being SIPp's `callee` scenario. Returns both outcomes.
     async fn call(&self, sipp: &Sipp, caller: &str, callee: &str) -> (SippOutcome, SippOutcome) {
+        self.call_within(sipp, caller, callee, Duration::from_secs(30))
+            .await
+    }
+
+    /// [`Stack::call`] for a scenario that runs up to `within`.
+    async fn call_within(
+        &self,
+        sipp: &Sipp,
+        caller: &str,
+        callee: &str,
+        within: Duration,
+    ) -> (SippOutcome, SippOutcome) {
         let (alice, bob) = (&self.alice, &self.bob);
-        let uas = sipp.start(&scenario(callee), None, &[], &[]);
+        let timeout = format!("{}s", within.as_secs());
+        let uas = sipp.start(&scenario(callee), None, &[], &["-timeout", &timeout]);
         self.register(sipp, &bob.username, &bob.password, uas.addr())
             .await;
         let uac = sipp
-            .run(
+            .start(
                 &scenario(caller),
-                self.sip,
+                Some(self.sip),
                 &[
                     ("user", &alice.username),
                     ("domain", REALM),
                     ("callee", &bob.extension),
                 ],
-                &["-au", &alice.username, "-ap", &alice.password],
+                &[
+                    "-au",
+                    &alice.username,
+                    "-ap",
+                    &alice.password,
+                    "-timeout",
+                    &timeout,
+                ],
             )
+            .wait(within + Duration::from_secs(10))
             .await;
         let uas = uas.wait(Duration::from_secs(10)).await;
         (uac, uas)
@@ -425,4 +470,138 @@ async fn messages_no_parser_should_accept_are_survived() {
     stack.no_calls_up("junk").await;
     let (code, body) = http_get(&loopback(stack.http, "/health")).await.unwrap();
     assert_eq!(code, 200, "{body}");
+}
+
+/// UPDATE in an answered call (RFC 3311) is relayed to the callee and its
+/// answer back.
+#[tokio::test]
+async fn sipp_updates_an_answered_call() {
+    let Some((sipp, stack)) = setup().await else {
+        return;
+    };
+    let (uac, uas) = stack.call(&sipp, "uac_update", "uas_until_bye").await;
+    stack.both_passed(&uac, &uas, "call").await;
+    assert!(uas.received_request("UPDATE"), "{}", uas.messages);
+    stack.no_calls_up("UPDATE").await;
+}
+
+/// A callee that rings reliably (RFC 3262), to a caller that supports
+/// 100rel and to one that does not: the node offers 100rel, PRACKs the
+/// callee itself, and relays the ringing as an ordinary 180.
+#[tokio::test]
+async fn the_node_pracks_a_callee_that_rings_reliably() {
+    let Some((sipp, stack)) = setup().await else {
+        return;
+    };
+    for caller in ["uac_prack", "uac_answered"] {
+        let (uac, uas) = stack.call(&sipp, caller, "uas_prack").await;
+        stack.both_passed(&uac, &uas, caller).await;
+        stack.no_calls_up(caller).await;
+    }
+}
+
+/// A blind transfer by the caller (REFER, RFC 3515), carried out by the
+/// node: it dials carol back through itself, moves bob onto her, NOTIFYs
+/// alice and hangs her up. Carol hangs up later and bob is hung up too.
+#[tokio::test]
+async fn sipp_transfers_a_call_blind() {
+    let Some((sipp, stack)) = setup().await else {
+        return;
+    };
+    let (alice, bob, carol) = (&stack.alice, &stack.bob, &stack.carol);
+    let target = sipp.start(&scenario("uas_answer_then_bye"), None, &[], &[]);
+    stack
+        .register(&sipp, &carol.username, &carol.password, target.addr())
+        .await;
+    let uas = sipp.start(&scenario("uas_until_bye"), None, &[], &[]);
+    stack
+        .register(&sipp, &bob.username, &bob.password, uas.addr())
+        .await;
+    let uac = sipp
+        .run(
+            &scenario("uac_refer"),
+            stack.sip,
+            &[
+                ("user", &alice.username),
+                ("domain", REALM),
+                ("callee", &bob.extension),
+                ("target", &carol.extension),
+            ],
+            &["-au", &alice.username, "-ap", &alice.password],
+        )
+        .await;
+    stack.passed(&uac, "referrer").await;
+    let target = target.wait(Duration::from_secs(10)).await;
+    stack.passed(&target, "target").await;
+    let uas = uas.wait(Duration::from_secs(10)).await;
+    stack.passed(&uas, "transferred").await;
+    assert!(uac.received_request("NOTIFY"), "{}", uac.messages);
+    stack.no_calls_up("transfer").await;
+}
+
+const SESSION_TIMERS: &str = r#"
+[b2bua.session_timer]
+enabled = true
+"#;
+
+/// An INVITE asking for less than the node's Min-SE is refused 422 with
+/// the Min-SE (RFC 4028 §7.4) and rings no one.
+#[tokio::test]
+async fn a_session_shorter_than_min_se_is_refused_422() {
+    let Some(sipp) = Sipp::find() else {
+        return;
+    };
+    let Some(stack) = Stack::start_with(SESSION_TIMERS).await else {
+        return;
+    };
+    let (uac, uas) = stack
+        .call(&sipp, "uac_session_too_short", "uas_answer")
+        .await;
+    stack.passed(&uac, "caller").await;
+    assert!(!uas.received_request("INVITE"), "{}", uas.messages);
+    stack.no_calls_up("422").await;
+}
+
+/// A 90 s session the node refreshes: the answer keeps the caller's
+/// interval and refresher (RFC 4028 §9), and the node refreshes within it.
+#[tokio::test]
+async fn a_session_the_node_refreshes_is_refreshed() {
+    let Some(sipp) = Sipp::find() else {
+        return;
+    };
+    let Some(stack) = Stack::start_with(SESSION_TIMERS).await else {
+        return;
+    };
+    let (uac, uas) = stack
+        .call_within(
+            &sipp,
+            "uac_session_refreshed",
+            "uas_until_bye",
+            Duration::from_secs(90),
+        )
+        .await;
+    stack.both_passed(&uac, &uas, "call").await;
+    stack.no_calls_up("refreshed").await;
+}
+
+/// A 90 s session the caller was to refresh and never does: the node ends
+/// the call on both legs before the session expires (RFC 4028 §10).
+#[tokio::test]
+async fn a_session_nobody_refreshes_is_ended() {
+    let Some(sipp) = Sipp::find() else {
+        return;
+    };
+    let Some(stack) = Stack::start_with(SESSION_TIMERS).await else {
+        return;
+    };
+    let (uac, uas) = stack
+        .call_within(
+            &sipp,
+            "uac_session_expires",
+            "uas_until_bye",
+            Duration::from_secs(110),
+        )
+        .await;
+    stack.both_passed(&uac, &uas, "call").await;
+    stack.no_calls_up("expired").await;
 }

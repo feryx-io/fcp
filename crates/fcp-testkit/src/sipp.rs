@@ -101,7 +101,8 @@ impl Sipp {
     }
 
     /// Start `scenario` (a SIPp XML file) against `target` over UDP on
-    /// loopback: one call (`-m 1`) unless `args` say otherwise. `keys` are
+    /// loopback: one call (`-m 1`) failing after 30 s (`-timeout`) unless
+    /// `args` say otherwise. `keys` are
     /// SIPp `-key` values, read in the scenario as `[name]`.
     pub fn start(
         &self,
@@ -128,7 +129,10 @@ impl Sipp {
             .arg(dir.path().join("errors.log"))
             .arg("-message_file")
             .arg(dir.path().join("messages.log"))
-            .args(["-timeout", "30s", "-timeout_error"]);
+            .arg("-timeout_error");
+        if !args.contains(&"-timeout") {
+            cmd.args(["-timeout", "30s"]);
+        }
         if !args.contains(&"-m") {
             cmd.args(["-m", "1"]);
         }

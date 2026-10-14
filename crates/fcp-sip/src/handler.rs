@@ -722,6 +722,12 @@ pub struct SipMessageHandler {
     /// Calls being redirected into a flow by the API, until their
     /// dial-back arrives (`docs/DEVELOPER_SURFACE.md` phase 8).
     redirect_tickets: Arc<crate::call_control::RedirectTickets>,
+    /// This handler as it serves requests, set by the first one. Built in
+    /// `new` and finished by its builders, it exists whole only from then:
+    /// the session timer listener, started in `new`, ends an expired call
+    /// through it, both legs and the media as any hangup does. Never
+    /// dropped, like the handler itself.
+    serving: Arc<std::sync::OnceLock<SipMessageHandler>>,
 }
 
 #[derive(Clone)]
@@ -1090,6 +1096,7 @@ impl SipMessageHandler {
             call_signer: None,
             conference_migrations: Arc::new(dashmap::DashMap::new()),
             redirect_tickets: Arc::new(crate::call_control::RedirectTickets::default()),
+            serving: Arc::new(std::sync::OnceLock::new()),
         };
 
         // Start session timer event loop
@@ -2591,6 +2598,7 @@ impl SipMessageHandler {
     ) -> Result<()> {
         use sip_core::Method;
 
+        self.serving.get_or_init(|| self.clone());
         match request.method() {
             Method::Invite => {
                 // If this is an in-dialog re-INVITE, handle separately
@@ -4838,7 +4846,7 @@ impl SipMessageHandler {
         }
 
         self.ensure_response_hygiene(request, &mut response);
-        inject_session_timer_headers(&self.b2bua_config, &mut response);
+        inject_session_timer_headers(&self.b2bua_config, request, &mut response);
         Ok(response)
     }
 
@@ -7942,15 +7950,6 @@ impl SipMessageHandler {
                     "Relaying provisional response to A-leg"
                 );
 
-                if provisional.headers().get("RSeq").is_some() {
-                    let _ = self.call_manager.update_call(&call_id, |call| {
-                        if let Some(b) = &mut call.b_leg {
-                            b.reliable_provisionals.push(provisional.clone());
-                        }
-                        call.a_leg.reliable_provisionals.push(provisional.clone());
-                    });
-                }
-
                 // Create provisional response using UAS helper to ensure proper To-tag generation
                 // CRITICAL: We MUST use the same To-tag for both provisional and final responses (RFC 3261 §12.1.1)
                 let response = if a_leg_to_tag.is_none() {
@@ -8301,7 +8300,7 @@ impl SipMessageHandler {
             };
 
             // Inject RFC 4028 session timer headers into A-leg 200 OK
-            inject_session_timer_headers(&self.b2bua_config, &mut a_leg_response);
+            inject_session_timer_headers(&self.b2bua_config, &request, &mut a_leg_response);
 
             // Create A-leg dialog from the 200 OK response
             let a_leg_dialog = match sip_dialog::Dialog::new_uas(
@@ -9158,7 +9157,7 @@ impl SipMessageHandler {
             self.ensure_response_hygiene(&request, &mut ok_response);
 
             // Inject RFC 4028 session timer headers into forked 200 OK
-            inject_session_timer_headers(&self.b2bua_config, &mut ok_response);
+            inject_session_timer_headers(&self.b2bua_config, &request, &mut ok_response);
 
             // Create A-leg dialog from the 200 OK response
             let a_leg_dialog = match sip_dialog::Dialog::new_uas(
@@ -9597,7 +9596,7 @@ impl SipMessageHandler {
                 self.ensure_response_hygiene(request, &mut response);
 
                 // Inject RFC 4028 session timer headers into single-leg 200 OK
-                inject_session_timer_headers(&self.b2bua_config, &mut response);
+                inject_session_timer_headers(&self.b2bua_config, request, &mut response);
 
                 // Update call with A-leg dialog
                 let _ = self.call_manager.update_call(&call_id, |call| {
@@ -11021,128 +11020,17 @@ impl SipMessageHandler {
         Ok(self.build_in_dialog_response(request, &peer_resp))
     }
 
-    /// Handle in-dialog PRACK by forwarding to the opposite leg.
+    /// An in-dialog PRACK (RFC 3262). The node sends no provisional
+    /// reliably: a callee's reliable ones are PRACKed by the B-leg's own
+    /// INVITE transaction (siphon-rs) and relayed to the caller as ordinary
+    /// ones. So a PRACK acknowledges nothing the node sent: 481 (§3), and
+    /// the call is left as it is. Relaying it would PRACK the callee twice,
+    /// and its 481 to the second used to tear the dialog down.
     async fn handle_prack(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
         debug!("Handling PRACK");
-        let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
-        let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
-        let mut target_dialog = target_dialog.clone();
-        let _guard = self.acquire_mid_dialog_lock(target_dialog.id()).await;
-        let cseq = sip_parse::header(request.headers(), "CSeq");
-        let src_dialog_id = if is_a_leg {
-            call.a_leg.dialog.as_ref().map(|d| d.id().clone())
-        } else {
-            call.b_leg
-                .as_ref()
-                .and_then(|b| b.dialog.as_ref().map(|d| d.id().clone()))
-        };
-        let span = tracing::info_span!(
-            "mid_dialog_forward",
-            method = "PRACK",
-            call_id = %call.id,
-            src_dialog = ?src_dialog_id,
-            dst_dialog = ?target_dialog.id(),
-            cseq = ?cseq
-        );
-        let _guard_span = span.enter();
-        let start = std::time::Instant::now();
-
-        let uac = self
-            .uac
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No UAC configured for PRACK forwarding"))?;
-
-        // Need the reliable provisional we forwarded earlier to build PRACK
-        let reliable = self
-            .get_opposite_reliable_provisional(&call, is_a_leg)
-            .ok_or_else(|| anyhow::anyhow!("No reliable provisional to PRACK"))?;
-
-        if self.check_rate_limit(
-            "PRACK",
-            src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
-            self.settings.update_rate_limit,
-        ) {
-            warn!(call_id = %call.id, "PRACK rate limited");
-            let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-            let _ = resp.headers_mut().push(
-                SmolStr::new("Retry-After"),
-                SmolStr::new(self.settings.rate_window.as_secs().to_string()),
-            );
-            return Ok(resp);
-        }
-        self.log_sip_message(
-            "outbound",
-            "PRACK",
-            Some(call.id.to_string().as_str()),
-            Some(target_dialog.id()),
-            cseq.as_ref().map(|v| v.as_str()),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        let peer_resp = match uac.send_prack(&mut target_dialog, &reliable).await {
-            Ok(r) => {
-                info!(status = r.start_line().code(), "Forwarded PRACK to peer");
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "PRACK"), ("result", "ok")],
-                );
-                self.metrics.observe_ms(
-                    "fcp_sip_mid_dialog_forward_ms",
-                    start.elapsed().as_millis(),
-                    &[("method", "PRACK"), ("result", "ok")],
-                );
-                r
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to forward PRACK to peer");
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "PRACK"), ("result", "error")],
-                );
-                cleanup_after_forward_failure(
-                    &self.call_manager,
-                    &self.dialog_manager,
-                    &self.session_timer_manager,
-                    &self.rate_limits,
-                    &self.mid_dialog_lock,
-                    &self.subscription_index,
-                    &self.subscription_created_at,
-                    &call.id,
-                    target_dialog.id(),
-                    "PRACK forward failed",
-                );
-                return Ok(self.create_simple_response(
-                    request,
-                    481,
-                    "Call/Transaction Does Not Exist",
-                ));
-            }
-        };
-
-        if peer_resp.start_line().code() == 481 {
-            cleanup_after_forward_failure(
-                &self.call_manager,
-                &self.dialog_manager,
-                &self.session_timer_manager,
-                &self.rate_limits,
-                &self.mid_dialog_lock,
-                &self.subscription_index,
-                &self.subscription_created_at,
-                &call.id,
-                target_dialog.id(),
-                "Peer returned 481 to PRACK",
-            );
-            self.metrics.inc_counter(
-                "fcp_sip_mid_dialog_forward_total",
-                &[("method", "PRACK"), ("result", "481")],
-            );
-        }
-        self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
-
-        Ok(self.build_in_dialog_response(request, &peer_resp))
+        // No dialog at all is `NoSuchDialog`, answered 481 by the loop.
+        self.lookup_call_for_in_dialog(request)?;
+        Ok(self.create_simple_response(request, 481, "Call/Transaction Does Not Exist"))
     }
 
     /// Handle in-dialog INFO by forwarding to the opposite leg.
@@ -12033,8 +11921,6 @@ impl SipMessageHandler {
                                 call.a_leg.dialog = None;
                             } else if let Some(b) = &mut call.b_leg {
                                 b.dialog = None;
-                                // Clean subscriptions for B-leg dialog
-                                b.reliable_provisionals.clear();
                             }
                         });
 
@@ -12236,16 +12122,31 @@ impl SipMessageHandler {
             let _ = headers.push(SmolStr::new("Record-Route"), rr);
         }
 
-        // Propagate capability/signaling headers
+        // Propagate capability/signaling headers. A reliable provisional
+        // was PRACKed by the B-leg's own INVITE transaction and reaches the
+        // A-leg as an ordinary one: no RSeq, no `Require: 100rel`
+        // (`handle_prack`).
         for name in [
             "Require",
             "Supported",
             "Allow",
-            "RSeq",
             "Session-Expires",
             "Content-Type",
         ] {
             for val in b_leg_resp.headers().get_all(name) {
+                let val = if name == "Require" {
+                    let rest: Vec<&str> = val
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty() && !t.eq_ignore_ascii_case("100rel"))
+                        .collect();
+                    if rest.is_empty() {
+                        continue;
+                    }
+                    SmolStr::new(rest.join(", "))
+                } else {
+                    SmolStr::new(val)
+                };
                 let _ = headers.push(SmolStr::new(name), val);
             }
         }
@@ -12444,28 +12345,6 @@ impl SipMessageHandler {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("No A-leg dialog available"))
         }
-    }
-
-    /// Get the opposite leg's last reliable provisional.
-    fn get_opposite_reliable_provisional(
-        &self,
-        call: &fcp_b2bua_core::Call,
-        is_a_leg: bool,
-    ) -> Option<sip_core::Response> {
-        let list = if is_a_leg {
-            call.b_leg.as_ref().map(|b| &b.reliable_provisionals)
-        } else {
-            Some(&call.a_leg.reliable_provisionals)
-        }?;
-
-        // Use the latest reliable provisional (highest RSeq)
-        list.iter()
-            .max_by_key(|resp| {
-                sip_parse::header(resp.headers(), "RSeq")
-                    .and_then(|v| v.parse::<u32>().ok())
-                    .unwrap_or(0)
-            })
-            .cloned()
     }
 
     /// Persist updated dialog to CallManager and dialog_manager.
@@ -12731,6 +12610,7 @@ impl SipMessageHandler {
         let cm = self.call_manager.clone();
         let dm = self.dialog_manager.clone();
         let uac = self.uac.clone();
+        let serving = Arc::clone(&self.serving);
         tokio::spawn(async move {
             let mut rx = stm.subscribe().await;
             while let Some(evt) = rx.recv().await {
@@ -12744,9 +12624,15 @@ impl SipMessageHandler {
                         }
                     }
                     SessionTimerEvent::SessionExpired(dialog_id) => {
-                        if let Err(e) =
-                            handle_session_expired(&cm, &dm, &stm, uac.clone(), dialog_id.clone())
-                                .await
+                        if let Err(e) = handle_session_expired(
+                            &cm,
+                            &dm,
+                            &stm,
+                            uac.clone(),
+                            serving.get(),
+                            dialog_id.clone(),
+                        )
+                        .await
                         {
                             warn!(error = %e, dialog_id = ?dialog_id, "Session expired handling failed");
                         }
@@ -18760,15 +18646,32 @@ async fn handle_refresh_needed(
     Ok(())
 }
 
+/// A session nobody refreshed (RFC 4028 §10): the call ends, both legs
+/// hung up and its media closed as any hangup's, through the serving
+/// handler. Before a first request there is none, and nothing can have
+/// expired; the fallback hangs up the expired leg alone.
 async fn handle_session_expired(
     call_manager: &fcp_b2bua_core::CallManager,
     dialog_manager: &sip_dialog::DialogManager,
     session_timer_manager: &SessionTimerManager,
     uac: Option<Arc<SipUserAgentClient>>,
+    serving: Option<&SipMessageHandler>,
     dialog_id: sip_dialog::DialogId,
 ) -> Result<()> {
     let (dialog, call_id, _is_a_leg) = find_call_and_dialog(call_manager, &dialog_id)
         .ok_or_else(|| anyhow::anyhow!("Dialog not found"))?;
+    if let Some(handler) = serving {
+        info!(call_id = %call_id, dialog_id = ?dialog_id, "Session expired; ending the call");
+        session_timer_manager.stop_timer(&dialog_id);
+        return handler.hangup_call_by_id_saying(
+            &call_id,
+            fcp_cdr::TerminationReason::system(
+                fcp_cdr::SystemCause::SessionExpired,
+                "Session expired",
+            ),
+            Some(SESSION_EXPIRED_REASON),
+        );
+    }
     // Attempt BYE to remote
     if let Some(uac) = uac {
         let _ = uac.bye(&dialog).await;
@@ -18782,6 +18685,9 @@ async fn handle_session_expired(
     );
     Ok(())
 }
+
+/// The `Reason` on the BYEs of a call whose session expired (RFC 3326).
+const SESSION_EXPIRED_REASON: &str = "SIP;cause=408;text=\"session expired\"";
 
 fn terminate_dialog(
     call_manager: &fcp_b2bua_core::CallManager,
@@ -19252,16 +19158,18 @@ fn extract_uri_from_header(header_value: &str) -> &str {
 ///
 /// Adds `Session-Expires`, `Min-SE`, and ensures `Supported: timer` when
 /// session timer enforcement is enabled and the headers are not already present.
-fn inject_session_timer_headers(config: &B2buaConfig, response: &mut sip_core::Response) {
+fn inject_session_timer_headers(
+    config: &B2buaConfig,
+    request: &sip_core::Request,
+    response: &mut sip_core::Response,
+) {
     if !config.session_timer.enabled {
         return;
     }
 
     if response.headers().get("Session-Expires").is_none() {
-        let se_value = format!(
-            "{};refresher=uas",
-            config.session_timer.session_expires_secs
-        );
+        let (secs, refresher) = session_timer_answer(config, request);
+        let se_value = format!("{secs};refresher={refresher}");
         let _ = response
             .headers_mut()
             .push(SmolStr::new("Session-Expires"), SmolStr::new(&se_value));
@@ -19275,6 +19183,35 @@ fn inject_session_timer_headers(config: &B2buaConfig, response: &mut sip_core::R
     }
 
     ensure_supported_timer(response);
+}
+
+/// The session interval and refresher the node answers `request` with
+/// (RFC 4028 §9): the caller's interval when it asked for one, no longer
+/// than the node's own and no shorter than either side's Min-SE, and the
+/// caller's refresher when it named one; otherwise the node's interval,
+/// refreshed by the node.
+fn session_timer_answer(config: &B2buaConfig, request: &sip_core::Request) -> (u32, &'static str) {
+    let own = config.session_timer.session_expires_secs;
+    let floor = sip_parse::header(request.headers(), "Min-SE")
+        .and_then(|v| v.split(';').next()?.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+        .max(config.session_timer.min_se_secs);
+    let Some(asked) = sip_parse::header(request.headers(), "Session-Expires") else {
+        return (own, "uas");
+    };
+    let mut parts = asked.split(';');
+    let Some(secs) = parts.next().and_then(|d| d.trim().parse::<u32>().ok()) else {
+        return (own, "uas");
+    };
+    let refresher = parts
+        .filter_map(|p| p.split_once('='))
+        .find(|(name, _)| name.trim().eq_ignore_ascii_case("refresher"))
+        .map(|(_, value)| value.trim());
+    let refresher = match refresher {
+        Some(r) if r.eq_ignore_ascii_case("uac") => "uac",
+        _ => "uas",
+    };
+    (secs.min(own).max(floor), refresher)
 }
 
 /// Ensure the `Supported` header includes "timer".
@@ -19710,6 +19647,45 @@ mod tests {
     }
     use super::*;
     use crate::registrar::FcpRegistrar;
+
+    /// The node answers a caller's session timer with the caller's interval
+    /// and refresher (RFC 4028 §9), within its own interval and Min-SE.
+    #[test]
+    fn a_session_timer_is_answered_as_the_caller_asked() {
+        let mut config = B2buaConfig::default();
+        config.session_timer.enabled = true;
+        let invite = |headers: &[(&str, &str)]| {
+            let mut h = sip_core::Headers::new();
+            for (name, value) in headers {
+                h.push(SmolStr::new(*name), SmolStr::new(*value)).unwrap();
+            }
+            sip_core::Request::new(
+                sip_core::RequestLine::new(
+                    sip_core::Method::Invite,
+                    sip_core::SipUri::parse("sip:1002@pbx").unwrap(),
+                ),
+                h,
+                Bytes::new(),
+            )
+            .unwrap()
+        };
+        let answer = |headers: &[(&str, &str)]| session_timer_answer(&config, &invite(headers));
+        assert_eq!(answer(&[]), (1800, "uas"));
+        assert_eq!(
+            answer(&[("Session-Expires", "90;refresher=uac")]),
+            (90, "uac")
+        );
+        assert_eq!(answer(&[("Session-Expires", "120")]), (120, "uas"));
+        assert_eq!(
+            answer(&[("Session-Expires", "7200;refresher=uas")]),
+            (1800, "uas")
+        );
+        assert_eq!(
+            answer(&[("Session-Expires", "100"), ("Min-SE", "150")]),
+            (150, "uas")
+        );
+        assert_eq!(answer(&[("Session-Expires", "nonsense")]), (1800, "uas"));
+    }
 
     #[test]
     fn a_transfer_origin_is_added_as_a_uri_header_and_survives_parsing() {

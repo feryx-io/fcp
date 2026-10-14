@@ -1455,6 +1455,20 @@ Then (v0.25.397) `[registrar] auth_invites` went on by default, as
 - the single-node file trusts loopback;
 - an upgrade note is in `BACKUP_AND_RESTORE.md` §5.4.1.
 
+D2b (v0.25.398, siphon-rs v2026.10.14): SIPp inside a call (UPDATE,
+reliable ringing, a node-run blind transfer, session timers) found and
+fixed:
+- an expired session hanging up one leg and leaving the other party, the
+  media and the recording up;
+- a callee needing 100rel unreachable, since the node never offered it,
+  and a caller's PRACK forwarded as a second one that tore the call down.
+  Now the stack offers 100rel and PRACKs, and the node relays ringing as
+  ordinary provisionals;
+- a Session-Expires under Min-SE put through instead of refused 422;
+- every session timer answered `1800;refresher=uas` instead of as asked.
+
+A caller that requires 100rel is #310.
+
 ## What is next (chosen 2026-09-29, after the nightly stack closed)
 
 **Developer surface** — design in `docs/DEVELOPER_SURFACE.md`
