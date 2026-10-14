@@ -41,7 +41,12 @@ AUTH = """
       [authentication]"""
 
 
-def invite(cseq, auth, txn=None):
+def headers(extra):
+    """Extra header lines, each on its own line of the message."""
+    return "".join(f"\n      {line}" for line in extra.splitlines() if line)
+
+
+def invite(cseq, auth, txn=None, extra=""):
     start = f' start_txn="{txn}"' if txn else ""
     return f"""  <send retrans="500"{start}>
     <![CDATA[
@@ -53,7 +58,7 @@ def invite(cseq, auth, txn=None):
       CSeq: {cseq} INVITE
       Contact: <sip:[user]@[local_ip]:[local_port]>{AUTH if auth else ""}
       Max-Forwards: 70
-      User-Agent: SIPp
+      User-Agent: SIPp{headers(extra)}
 {body(True)}
     ]]>
   </send>
@@ -64,9 +69,9 @@ def invite(cseq, auth, txn=None):
 # INVITE again with the digest of -au/-ap at CSeq 2; `txn` names that
 # INVITE's transaction for a scenario that must tell its responses from a
 # CANCEL's.
-def uac_invite(txn=None, trying=True):
+def uac_invite(txn=None, trying=True, extra=""):
     return (
-        invite(1, False)
+        invite(1, False, extra=extra)
         + """  <recv response="100" optional="true"/>
   <recv response="407" optional="true" auth="true" next="challenged"/>
   <recv response="401" auth="true"/>
@@ -85,7 +90,7 @@ def uac_invite(txn=None, trying=True):
     ]]>
   </send>
 """
-        + invite(2, True, txn)
+        + invite(2, True, txn, extra)
         + (
             f"""  <recv response="100" optional="true"{' response_txn="' + txn + '"' if txn else ""}/>
 """
@@ -98,11 +103,12 @@ def uac_invite(txn=None, trying=True):
 UAC_INVITE = uac_invite()
 
 
-def in_dialog(method, cseq, sdp=False, txn=None):
-    """A request inside the caller's dialog, to the callee's Contact."""
+def in_dialog(method, cseq, sdp=False, txn=None, extra=""):
+    """A request inside the caller's dialog, to the callee's Contact.
+    `txn` names the transaction it starts, or for an ACK the INVITE's."""
     retrans = "" if method == "ACK" else ' retrans="500"'
     if txn:
-        retrans += f' start_txn="{txn}"'
+        retrans += f' {"ack_txn" if method == "ACK" else "start_txn"}="{txn}"'
     return f"""  <send{retrans}>
     <![CDATA[
       {method} [next_url] SIP/2.0
@@ -113,7 +119,7 @@ def in_dialog(method, cseq, sdp=False, txn=None):
       CSeq: {cseq} {method}
       Contact: <sip:[user]@[local_ip]:[local_port]>
       [routes]
-      Max-Forwards: 70
+      Max-Forwards: 70{headers(extra)}
 {body(sdp)}
     ]]>
   </send>
@@ -158,20 +164,26 @@ def ack_failure(txn=None):
 """
 
 
-def reply(code, reason, sdp=False, tag=True, cseq=None):
+def reply(code, reason, sdp=False, tag=True, cseq=None, via=None, extra="", next=None):
     """The callee's reply to the request it last received. `tag` adds its
-    To tag (a dialog-forming reply); `cseq` overrides the CSeq."""
+    To tag (a dialog-forming reply); `cseq` overrides the CSeq and `via`
+    the Via (both for a reply to an earlier request than the last). `next`
+    jumps from the send itself: SIPp takes a message that arrives while its
+    next step is not a receive for an unexpected one, so nothing may stand
+    between a reply and the receives it goes back to."""
     to = "[last_To:];tag=[pid]SIPpTag01[call_number]" if tag else "[last_To:]"
     cs = f"CSeq: {cseq}" if cseq else "[last_CSeq:]"
-    return f"""  <send>
+    via = f"Via: {via}" if via else "[last_Via:]"
+    jump = f' next="{next}"' if next else ""
+    return f"""  <send{jump}>
     <![CDATA[
       SIP/2.0 {code} {reason}
-      [last_Via:]
+      {via}
       [last_From:]
       {to}
       [last_Call-ID:]
       {cs}
-      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>{headers(extra)}
 {body(sdp)}
     ]]>
   </send>
@@ -499,6 +511,283 @@ SCENARIOS["junk"] = (
     + stray("OPTIONS", 1, to_tag=False)
     + """  <recv response="200"/>
 """,
+)
+
+# Mid-call requests (D2b): UPDATE, PRACK, REFER and session timers.
+
+# The callee keeps its caller's identity, to send a request of its own in
+# the dialog (a BYE): From and To as the INVITE had them, and its Contact.
+REMEMBER_CALLER = """    <action>
+      <ereg regexp=".*" search_in="hdr" header="From:" assign_to="caller"/>
+      <ereg regexp=".*" search_in="hdr" header="To:" assign_to="callee"/>
+      <ereg regexp="sip:[^>]*" search_in="hdr" header="Contact:" assign_to="contact"/>
+    </action>
+"""
+
+
+def uas_bye(cseq=1):
+    """The callee hangs up: a BYE to the INVITE's Contact."""
+    return f"""  <send retrans="500">
+    <![CDATA[
+      BYE [$contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: [$callee];tag=[pid]SIPpTag01[call_number]
+      To: [$caller]
+      Call-ID: [call_id]
+      CSeq: {cseq} BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200"/>
+"""
+
+
+# The callee answers and then takes whatever the node sends in the dialog
+# (re-INVITEs, UPDATEs: session refreshes, a transfer's new media) until
+# it is hung up on.
+UAS_IN_DIALOG_UNTIL_BYE = (
+    """  <label id="in_dialog"/>
+  <recv request="INVITE" optional="true" next="reinvited"/>
+  <recv request="UPDATE" optional="true" next="updated"/>
+  <recv request="BYE" next="bye"/>
+  <label id="reinvited"/>
+"""
+    + reply(200, "OK", sdp=True, tag=False)
+    + """  <recv request="ACK" next="in_dialog"/>
+  <label id="updated"/>
+"""
+    + reply(200, "OK", sdp=True, tag=False, next="in_dialog")
+    + """  <label id="bye"/>
+"""
+    + reply(200, "OK", tag=False)
+)
+
+UAS_ANSWERED = (
+    UAS_RING
+    + reply(200, "OK", sdp=True)
+    + """  <recv request="ACK" crlf="true"/>
+"""
+)
+
+SCENARIOS.update(
+    {
+        "uac_update": (
+            "A call answered, UPDATEd with a new offer (RFC 3311), then hung "
+            "up. Keys: user, domain, callee.",
+            UAC_INVITE
+            + """  <recv response="180" optional="true"/>
+  <recv response="183" optional="true"/>
+  <recv response="200" rrs="true"/>
+"""
+            + in_dialog("ACK", 2)
+            + """  <pause milliseconds="300"/>
+"""
+            + in_dialog("UPDATE", 3, sdp=True)
+            + """  <recv response="200">
+    <action>
+      <ereg regexp="m=audio" search_in="body" check_it="true" assign_to="answer"/>
+      <log message="answer: [$answer]"/>
+    </action>
+  </recv>
+  <pause milliseconds="300"/>
+"""
+            + in_dialog("BYE", 4)
+            + """  <recv response="200"/>
+""",
+        ),
+        "uas_until_bye": (
+            "The callee: answers, takes re-INVITEs and UPDATEs, and is hung "
+            "up on.",
+            UAS_ANSWERED + UAS_IN_DIALOG_UNTIL_BYE,
+        ),
+        "uac_prack": (
+            "A caller supporting 100rel (RFC 3262) called by a callee that "
+            "rings reliably: the node PRACKs the callee itself, and the 180 "
+            "reaches the caller as an ordinary one (no RSeq, no Require: "
+            "100rel). Keys: user, domain, callee.",
+            uac_invite(extra="Supported: 100rel")
+            + """  <recv response="183" optional="true"/>
+  <recv response="180">
+    <action>
+      <ereg regexp="[0-9]" search_in="hdr" header="RSeq:" check_it_inverse="true" assign_to="rseq"/>
+      <log message="rseq: [$rseq]"/>
+    </action>
+  </recv>
+  <recv response="200" rrs="true"/>
+"""
+            + in_dialog("ACK", 2)
+            + """  <pause milliseconds="300"/>
+"""
+            + in_dialog("BYE", 3)
+            + """  <recv response="200"/>
+""",
+        ),
+        "uas_prack": (
+            "The callee: offered 100rel, rings reliably (Require: 100rel, "
+            "RSeq 1), waits for the PRACK, answers it, then answers the INVITE "
+            "and is hung up on.",
+            """  <recv request="INVITE" crlf="true">
+    <action>
+      <ereg regexp=".*" search_in="hdr" header="Via:" assign_to="invite_via"/>
+      <ereg regexp="[0-9]+" search_in="hdr" header="CSeq:" assign_to="invite_cseq"/>
+      <ereg regexp="100rel" search_in="hdr" header="Supported:" check_it="true" assign_to="supported"/>
+      <log message="supported: [$supported]"/>
+    </action>
+  </recv>
+"""
+            + reply(180, "Ringing", extra="Require: 100rel\nRSeq: 1")
+            + """  <recv request="PRACK" crlf="true">
+    <action>
+      <ereg regexp="1 [0-9]+ INVITE" search_in="hdr" header="RAck:" check_it="true" assign_to="rack"/>
+      <log message="rack: [$rack]"/>
+    </action>
+  </recv>
+"""
+            + reply(200, "OK", tag=False)
+            + """  <pause milliseconds="200"/>
+"""
+            + reply(
+                200, "OK", sdp=True, tag=False, cseq="[$invite_cseq] INVITE", via="[$invite_via]"
+            )
+            + """  <recv request="ACK" crlf="true"/>
+"""
+            + UAS_IN_DIALOG_UNTIL_BYE,
+        ),
+        "uac_refer": (
+            "A call answered, then the caller transfers the callee blind "
+            "(REFER, RFC 3515) to [target]: accepted, the outcome NOTIFYed, "
+            "and the caller hung up on by the node. Keys: user, domain, "
+            "callee, target.",
+            UAC_INVITE
+            + """  <recv response="180" optional="true"/>
+  <recv response="183" optional="true"/>
+  <recv response="200" rrs="true"/>
+"""
+            + in_dialog("ACK", 2)
+            + """  <pause milliseconds="300"/>
+"""
+            + in_dialog(
+                "REFER",
+                3,
+                txn="refer",
+                extra="Refer-To: <sip:[target]@[domain]>\nReferred-By: <sip:[user]@[domain]>",
+            )
+            + """  <recv response="202" response_txn="refer"/>
+  <label id="waiting"/>
+  <recv request="NOTIFY" optional="true" next="notified"/>
+  <recv request="BYE" next="bye"/>
+  <label id="notified"/>
+"""
+            + reply(200, "OK", tag=False, next="waiting")
+            + """  <label id="bye"/>
+"""
+            + reply(200, "OK", tag=False),
+        ),
+        "uas_answer_then_bye": (
+            "The callee: answers, and hangs up a second later.",
+            """  <recv request="INVITE" crlf="true">
+"""
+            + REMEMBER_CALLER
+            + """  </recv>
+"""
+            + reply(180, "Ringing")
+            + reply(200, "OK", sdp=True)
+            + """  <recv request="ACK" crlf="true"/>
+  <pause milliseconds="1000"/>
+"""
+            + uas_bye(),
+        ),
+        "uac_session_too_short": (
+            "An INVITE asking for a 30 s session (RFC 4028): refused 422 with "
+            "the node's Min-SE, before it is challenged. Keys: user, domain, "
+            "callee.",
+            invite(1, False, extra="Supported: timer\nSession-Expires: 30")
+            + """  <recv response="100" optional="true"/>
+  <recv response="422">
+    <action>
+      <ereg regexp="[0-9]+" search_in="hdr" header="Min-SE:" check_it="true" assign_to="min_se"/>
+      <log message="min_se: [$min_se]"/>
+    </action>
+  </recv>
+"""
+            + raw("""      ACK sip:[callee]@[domain] SIP/2.0
+      [last_Via:]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      [last_To:]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+""")
+            + """""",
+        ),
+    }
+)
+
+
+def uac_session(refresher, refreshes):
+    """A call asking for a 90 s session with `refresher` refreshing it. The
+    answer must keep the request's interval and refresher (RFC 4028 §9).
+    `refreshes`: the node refreshes and the caller answers, then hangs up;
+    otherwise the caller never refreshes, and the node must end the call
+    before the session expires."""
+    answer_checks = f"""    <action>
+      <ereg regexp="^ *90 *;.*refresher=?{refresher}" search_in="hdr" header="Session-Expires:" check_it="true" assign_to="se"/>
+      <log message="se: [$se]"/>
+    </action>
+"""
+    head = (
+        uac_invite(extra=f"Supported: timer\nSession-Expires: 90;refresher={refresher}")
+        + f"""  <recv response="180" optional="true"/>
+  <recv response="183" optional="true"/>
+  <recv response="200" rrs="true">
+{answer_checks}  </recv>
+"""
+        + in_dialog("ACK", 2)
+    )
+    if refreshes:
+        tail = (
+            """  <recv request="UPDATE" optional="true" next="updated"/>
+  <recv request="INVITE" timeout="70000" next="reinvited"/>
+  <label id="updated"/>
+"""
+            + reply(200, "OK", tag=False, extra="Supported: timer\nSession-Expires: 90;refresher=uas", next="refreshed")
+            + """  <label id="reinvited"/>
+"""
+            + reply(200, "OK", sdp=True, tag=False, extra="Supported: timer\nSession-Expires: 90;refresher=uas")
+            + """  <recv request="ACK"/>
+  <label id="refreshed"/>
+"""
+            + in_dialog("BYE", 3)
+            + """  <recv response="200"/>
+"""
+        )
+    else:
+        tail = (
+            """  <recv request="BYE" timeout="75000"/>
+"""
+            + reply(200, "OK", tag=False)
+        )
+    return head + tail
+
+
+SCENARIOS.update(
+    {
+        "uac_session_refreshed": (
+            "A call asking for a 90 s session refreshed by the node "
+            "(refresher=uas): the node refreshes it within the interval. "
+            "Keys: user, domain, callee.",
+            uac_session("uas", True),
+        ),
+        "uac_session_expires": (
+            "A call asking for a 90 s session refreshed by the caller "
+            "(refresher=uac), which never refreshes: the node ends it before "
+            "it expires. Keys: user, domain, callee.",
+            uac_session("uac", False),
+        ),
+    }
 )
 
 RACE_DELAYS = (0, 50)
