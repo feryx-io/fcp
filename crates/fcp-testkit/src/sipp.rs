@@ -7,7 +7,7 @@
 //! without it is skipped, unless `FCP_SIPP_TESTS=required` (as CI sets
 //! it), which makes the absence a failure.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -23,6 +23,8 @@ pub struct SippRun {
     name: String,
     child: tokio::process::Child,
     dir: tempfile::TempDir,
+    /// The address SIPp is bound to.
+    ip: Ipv4Addr,
     /// The UDP port SIPp is bound to.
     pub port: u16,
 }
@@ -111,6 +113,20 @@ impl Sipp {
         keys: &[(&str, &str)],
         args: &[&str],
     ) -> SippRun {
+        self.start_at(Ipv4Addr::LOCALHOST, scenario, target, keys, args)
+    }
+
+    /// [`Sipp::start`] from another loopback address (`127.0.0.2`, …), so
+    /// the node sees a source of its own: a limit per source address
+    /// counts it apart from the rest.
+    pub fn start_at(
+        &self,
+        ip: Ipv4Addr,
+        scenario: &Path,
+        target: Option<SocketAddr>,
+        keys: &[(&str, &str)],
+        args: &[&str],
+    ) -> SippRun {
         let name = scenario
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -123,7 +139,7 @@ impl Sipp {
         let mut cmd = tokio::process::Command::new(&self.bin);
         cmd.arg("-sf")
             .arg(scenario)
-            .args(["-i", "127.0.0.1", "-p", &port.to_string(), "-t", "u1"])
+            .args(["-i", &ip.to_string(), "-p", &port.to_string(), "-t", "u1"])
             .args(["-nostdin", "-trace_err", "-trace_msg"])
             .arg("-error_file")
             .arg(dir.path().join("errors.log"))
@@ -156,6 +172,7 @@ impl Sipp {
             name,
             child,
             dir,
+            ip,
             port,
         }
     }
@@ -177,7 +194,7 @@ impl Sipp {
 impl SippRun {
     /// This run's address, for a Contact that points at it.
     pub fn addr(&self) -> SocketAddr {
-        SocketAddr::from(([127, 0, 0, 1], self.port))
+        SocketAddr::from((self.ip, self.port))
     }
 
     /// Wait for SIPp to exit, killing it after `within`.

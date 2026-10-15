@@ -9,7 +9,7 @@ use fcp_testkit::seed::SeededUser;
 use fcp_testkit::sipp::{Sipp, SippOutcome};
 use fcp_testkit::smoke::{http_get, loopback};
 use fcp_testkit::{free_port, Seed, Service, TestDatabase};
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -222,11 +222,25 @@ async fn sipp_is_refused_on_a_forged_nonce_and_a_wrong_password() {
 impl Stack {
     /// `user` registered by SIPp with its Contact at `contact`.
     async fn register(&self, sipp: &Sipp, user: &str, password: &str, contact: SocketAddr) {
+        self.register_from(sipp, Ipv4Addr::LOCALHOST, user, password, contact)
+            .await;
+    }
+
+    /// [`Stack::register`] sent from `ip`.
+    async fn register_from(
+        &self,
+        sipp: &Sipp,
+        ip: Ipv4Addr,
+        user: &str,
+        password: &str,
+        contact: SocketAddr,
+    ) {
         let contact = contact.to_string();
         let out = sipp
-            .run(
+            .start_at(
+                ip,
                 &scenario("register"),
-                self.sip,
+                Some(self.sip),
                 &[
                     ("user", user),
                     ("domain", REALM),
@@ -235,6 +249,7 @@ impl Stack {
                 ],
                 &["-au", user, "-ap", password],
             )
+            .wait(Duration::from_secs(40))
             .await;
         self.passed(&out, &format!("register {user}")).await;
     }
@@ -244,7 +259,7 @@ impl Stack {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             let live = self.get("/calls").await;
-            if live["count"].as_u64().unwrap_or(0) == 0 {
+            if live["calls"].as_array().expect("calls").is_empty() {
                 return;
             }
             assert!(
@@ -537,6 +552,192 @@ async fn sipp_transfers_a_call_blind() {
     stack.passed(&uas, "transferred").await;
     assert!(uac.received_request("NOTIFY"), "{}", uac.messages);
     stack.no_calls_up("transfer").await;
+}
+
+/// An attended transfer (REFER with Replaces, RFC 3891), carried out by
+/// the node: alice calls bob, then carol, and REFERs bob to carol naming
+/// her call to carol. The node dials carol back through itself with the
+/// Replaces, which takes alice's leg of the second call; alice is hung up
+/// on both calls and bob and carol are left talking, until carol hangs up.
+#[tokio::test]
+async fn sipp_transfers_a_call_attended() {
+    let Some((sipp, stack)) = setup().await else {
+        return;
+    };
+    let (alice, bob, carol) = (&stack.alice, &stack.bob, &stack.carol);
+    let transferred = sipp.start(&scenario("uas_until_bye"), None, &[], &[]);
+    stack
+        .register(&sipp, &bob.username, &bob.password, transferred.addr())
+        .await;
+    let target = sipp.start(&scenario("uas_hangs_up_after_3000"), None, &[], &[]);
+    stack
+        .register(&sipp, &carol.username, &carol.password, target.addr())
+        .await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let calls = dir.path().join("calls.csv");
+    std::fs::write(
+        &calls,
+        format!(
+            "SEQUENTIAL\n{bob};{carol};\n{carol};{carol};\n",
+            bob = bob.extension,
+            carol = carol.extension
+        ),
+    )
+    .expect("injection file");
+    let calls = calls.display().to_string();
+    let uac = sipp
+        .run(
+            &scenario("uac_attended"),
+            stack.sip,
+            &[("user", &alice.username), ("domain", REALM)],
+            &[
+                "-au",
+                &alice.username,
+                "-ap",
+                &alice.password,
+                "-inf",
+                &calls,
+                "-m",
+                "2",
+                "-cid_str",
+                "%u-%p-attended",
+            ],
+        )
+        .await;
+    stack.passed(&uac, "referrer").await;
+    assert!(uac.received_request("NOTIFY"), "{}", uac.messages);
+    // Alice is on no call; bob and carol are joined, through the node's
+    // own leg to carol (a call of its own).
+    let live = stack.get("/calls").await;
+    let calls = live["calls"].as_array().expect("calls");
+    assert!(!calls.is_empty(), "after the transfer: {live}");
+    for call in calls {
+        assert_eq!(call["state"], "Established", "{live}");
+        for party in ["caller", "callee"] {
+            let party = call[party].as_str().unwrap_or_default();
+            assert!(!party.contains(&alice.username), "alice still up: {live}");
+        }
+    }
+    let target = target.wait(Duration::from_secs(15)).await;
+    stack.passed(&target, "target").await;
+    let transferred = transferred.wait(Duration::from_secs(15)).await;
+    stack.passed(&transferred, "transferred").await;
+    stack.no_calls_up("attended transfer").await;
+}
+
+/// The node's `/metrics`, as text.
+async fn metrics(stack: &Stack) -> String {
+    let (code, body) = http_get(&loopback(stack.http, "/metrics"))
+        .await
+        .expect("GET /metrics");
+    assert_eq!(code, 200, "{body}");
+    body
+}
+
+/// How many of a flood's requests were answered `code`.
+fn answered(out: &SippOutcome, code: u16) -> usize {
+    out.messages
+        .split("-----------------------------------------------")
+        .filter(|m| m.contains("message received") && m.contains(&format!("SIP/2.0 {code} ")))
+        .count()
+}
+
+/// A REGISTER flood from one address, then an INVITE flood from it, each
+/// at 200 a second with no credentials: admission refuses what is over
+/// the source's limit (`[admission] max_register_cps_per_source`,
+/// `[security] max_invite_cps_per_source`) before any credential work,
+/// while phones at other addresses register and call as if nothing were
+/// happening. Nothing the floods sent rings anyone or stays up.
+#[tokio::test]
+async fn a_flood_from_one_source_costs_that_source() {
+    let Some(sipp) = Sipp::find() else {
+        return;
+    };
+    let Some(stack) = Stack::start_with(
+        "\n[admission]\nmax_register_cps_per_source = 10\n\n[security]\nmax_invite_cps_per_source = 20\n",
+    )
+    .await
+    else {
+        return;
+    };
+    let (alice, bob, carol) = (&stack.alice, &stack.bob, &stack.carol);
+    let flooder = Ipv4Addr::LOCALHOST;
+    let (caller_ip, callee_ip) = (Ipv4Addr::new(127, 0, 0, 2), Ipv4Addr::new(127, 0, 0, 3));
+
+    // REGISTERs: bob registers mid-flood from his own address.
+    let flood = sipp.start_at(
+        flooder,
+        &scenario("flood_register"),
+        Some(stack.sip),
+        &[("user", &alice.username), ("domain", REALM)],
+        &["-r", "200", "-m", "400", "-timeout", "20s"],
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let callee = sipp.start_at(callee_ip, &scenario("uas_answer"), None, &[], &[]);
+    stack
+        .register_from(
+            &sipp,
+            callee_ip,
+            &bob.username,
+            &bob.password,
+            callee.addr(),
+        )
+        .await;
+    let flood = flood.wait(Duration::from_secs(30)).await;
+    let (challenged, refused) = (answered(&flood, 401), answered(&flood, 503));
+    eprintln!("REGISTER flood: {challenged} challenged, {refused} refused");
+    assert!(
+        refused > 300,
+        "400 REGISTERs in 2 s, {refused} refused: {}",
+        flood.errors
+    );
+    assert!(challenged > 0, "the limit refused every REGISTER");
+    let text = metrics(&stack).await;
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("fcp_admission_refused_total") && l.contains("register_rate")),
+        "{text}"
+    );
+
+    // INVITEs: carol calls bob mid-flood from her own address.
+    let flood = sipp.start_at(
+        flooder,
+        &scenario("flood_invite"),
+        Some(stack.sip),
+        &[
+            ("user", &alice.username),
+            ("domain", REALM),
+            ("callee", &bob.extension),
+        ],
+        &["-r", "200", "-m", "400", "-timeout", "20s"],
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let caller = sipp
+        .start_at(
+            caller_ip,
+            &scenario("uac_answered"),
+            Some(stack.sip),
+            &[
+                ("user", &carol.username),
+                ("domain", REALM),
+                ("callee", &bob.extension),
+            ],
+            &["-au", &carol.username, "-ap", &carol.password],
+        )
+        .wait(Duration::from_secs(40))
+        .await;
+    let callee = callee.wait(Duration::from_secs(10)).await;
+    stack.both_passed(&caller, &callee, "carol's call").await;
+    let flood = flood.wait(Duration::from_secs(30)).await;
+    let (challenged, refused) = (answered(&flood, 401), answered(&flood, 503));
+    eprintln!("INVITE flood: {challenged} challenged, {refused} refused");
+    assert!(
+        refused > 300,
+        "400 INVITEs in 2 s, {refused} refused: {}",
+        flood.errors
+    );
+    assert!(challenged > 0, "the limit refused every INVITE");
+    stack.no_calls_up("flood").await;
 }
 
 const SESSION_TIMERS: &str = r#"

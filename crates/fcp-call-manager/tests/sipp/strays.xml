@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="ISO-8859-1" ?>
 <!DOCTYPE scenario SYSTEM "sipp.dtd">
-<!-- Requests inside dialogs that do not exist: each answered 481 (RFC 3261 §12.2.2), a re-INVITE 481 or challenged as a new call, a CANCEL for nothing 481 or 200, an ACK for nothing not at all. Keys: user, domain, callee. -->
+<!-- Requests inside dialogs that do not exist: each answered 481 (RFC 3261 §12.2.2), a re-INVITE among them, a CANCEL for nothing 481 or 200, an ACK for nothing not at all. Keys: user, domain, callee. -->
 <scenario name="strays">
   <send retrans="500">
     <![CDATA[
@@ -82,10 +82,7 @@
     ]]>
   </send>
   <recv response="100" optional="true"/>
-  <recv response="481" optional="true" next="refused"/>
-  <recv response="407" optional="true" next="refused"/>
-  <recv response="401"/>
-  <label id="refused"/>
+  <recv response="481"/>
   <send>
     <![CDATA[
       ACK sip:[callee]@[remote_ip]:[remote_port] SIP/2.0

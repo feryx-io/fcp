@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="ISO-8859-1" ?>
 <!DOCTYPE scenario SYSTEM "sipp.dtd">
-<!-- The caller cancels on the callee's 180 while the callee answers: either the call is cancelled (487) or answered (200, then hung up). Keys: user, domain, callee. -->
+<!-- The caller cancels on the callee's 180 while the callee answers: either the call is cancelled (487) or answered (200, then hung up). A 200 with no 180 before it (the node may handle the callee's 200 first and drop the 180 after it) is answered too, with no CANCEL. A CANCEL shares its INVITE's branch, so SIPp cannot tell the two 200s apart by transaction: each 200's Contact and To are kept, and the INVITE's chosen by its CSeq. Keys: user, domain, callee. -->
 <scenario name="uac_cancel_race">
   <send retrans="500">
     <![CDATA[
@@ -72,6 +72,12 @@
   </send>
   <recv response="100" optional="true" response_txn="invite2"/>
   <recv response="183" optional="true" response_txn="invite2"/>
+  <recv response="200" optional="true" response_txn="invite2" next="early">
+    <action>
+      <ereg regexp="sip:[^>;]*" search_in="hdr" header="Contact:" assign_to="contact0"/>
+      <ereg regexp=".*" search_in="hdr" header="To:" assign_to="to0"/>
+    </action>
+  </recv>
   <recv response="180" response_txn="invite2"/>
   <send retrans="500" start_txn="cancel">
     <![CDATA[
@@ -86,20 +92,57 @@
 
     ]]>
   </send>
-  <recv response="200" response_txn="cancel" optional="true"/>
+  <recv response="200" response_txn="cancel" optional="true">
+    <action>
+      <ereg regexp="sip:[^>;]*" search_in="hdr" header="Contact:" assign_to="contact1"/>
+      <ereg regexp=".*" search_in="hdr" header="To:" assign_to="to1"/>
+      <ereg regexp="[A-Z]+" search_in="hdr" header="CSeq:" assign_to="method1"/>
+    </action>
+  </recv>
   <recv response="481" response_txn="cancel" optional="true"/>
   <recv response="487" response_txn="invite2" optional="true" next="cancelled"/>
-  <recv response="200" response_txn="invite2" rrs="true"/>
+  <recv response="200" response_txn="invite2">
+    <action>
+      <ereg regexp="sip:[^>;]*" search_in="hdr" header="Contact:" assign_to="contact2"/>
+      <ereg regexp=".*" search_in="hdr" header="To:" assign_to="to2"/>
+    </action>
+  </recv>
+  <nop>
+    <action>
+      <strcmp assign_to="first_is_invite" variable="method1" value="INVITE"/>
+      <test assign_to="first" variable="first_is_invite" compare="equal" value="0"/>
+    </action>
+  </nop>
+  <nop next="first_answer" test="first"/>
+  <nop next="answered">
+    <action>
+      <assignstr assign_to="answer_contact" value="[$contact2]"/>
+      <assignstr assign_to="answer_to" value="[$to2]"/>
+    </action>
+  </nop>
+  <label id="first_answer"/>
+  <nop next="answered">
+    <action>
+      <assignstr assign_to="answer_contact" value="[$contact1]"/>
+      <assignstr assign_to="answer_to" value="[$to1]"/>
+    </action>
+  </nop>
+  <label id="early"/>
+  <nop>
+    <action>
+      <assignstr assign_to="answer_contact" value="[$contact0]"/>
+      <assignstr assign_to="answer_to" value="[$to0]"/>
+    </action>
+  </nop>
+  <label id="answered"/>
   <send>
     <![CDATA[
-      ACK [next_url] SIP/2.0
+      ACK [$answer_contact] SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
       From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
-      To: <sip:[callee]@[domain]>[peer_tag_param]
+      To: [$answer_to]
       Call-ID: [call_id]
       CSeq: 2 ACK
-      Contact: <sip:[user]@[local_ip]:[local_port]>
-      [routes]
       Max-Forwards: 70
       Content-Length: 0
 
@@ -107,14 +150,12 @@
   </send>
   <send retrans="500" start_txn="bye">
     <![CDATA[
-      BYE [next_url] SIP/2.0
+      BYE [$answer_contact] SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
       From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
-      To: <sip:[callee]@[domain]>[peer_tag_param]
+      To: [$answer_to]
       Call-ID: [call_id]
       CSeq: 3 BYE
-      Contact: <sip:[user]@[local_ip]:[local_port]>
-      [routes]
       Max-Forwards: 70
       Content-Length: 0
 

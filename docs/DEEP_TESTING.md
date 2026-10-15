@@ -398,9 +398,42 @@ The same suite, `fcp-call-manager/tests/sipp.rs`, with SIPp on both ends:
 | The side that does not refresh hung up at the moment the session expired. RFC 4028 §10 recommends the BYE slightly before: the minimum of 32 s and a third of the interval earlier. | S4 | Fixed in siphon-rs (`non_refresher_expiry`). The test wants the BYE within 75 s of a 90 s session, and it comes at 60. |
 | UPDATE is relayed and answered, and a blind transfer is carried out: the referrer gets 202, a NOTIFY with 200 and a BYE; the target is dialled back through the node (with its own-leg token) and the transferred party moved to it. | — (passed) | `sipp_updates_an_answered_call`, `sipp_transfers_a_call_blind`. |
 
+### D2c. The SBC, an attended transfer, floods
+
+`crates/fcp-sbc/tests/sipp.rs` puts the SBC between two SIPp trunks: a
+carrier at `127.0.0.2` (a second one at `127.0.0.4`) and a SIPp callee
+standing in for the core at `127.0.0.3`. The SBC runs without a database,
+with its trunks from configuration. The carrier's scenarios are the call
+manager's callers without the challenge (`trunk()` in `scenarios.py`).
+The tests cover:
+- calls answered, refused busy, cancelled while ringing, re-INVITEd and
+  UPDATEd;
+- requests for dialogs that do not exist;
+- messages no parser should accept;
+- an INVITE flood from one carrier address, with the request limits as
+  shipped.
+
+The call manager's suite gained:
+- an attended transfer (REFER with Replaces). One SIPp caller holds both
+  calls (`-m 2`), and the second call hands its dialog to the first
+  through SIPp globals;
+- a REGISTER flood and an INVITE flood from `127.0.0.1` at 200 a second,
+  while phones at `127.0.0.2` and `127.0.0.3` register and call
+  (`Sipp::start_at`).
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| siphon-rs's transport drops everything over 200 packets a second from one IP address (UDP, and frames on TCP, TLS and WebSocket), before the message is parsed. No FCP binary configures that limit, and `[e911] trusted_edges` does not exempt anyone from it. Measured: 1,200 OPTIONS at 400 a second from a trusted edge, 581 answered. The SBC in front of a call manager, a call manager in front of a conference server, and a carrier trunk all hit it at about 30 calls a second, with nothing in FCP's own counters. | S2 | Open: to be fixed in its own PR. The rate becomes configurable, and trusted edges, the SBC's trunk sources and cluster peers are exempt. |
+| Inbound packets are each handled on a task of their own (`fcp-sip/src/listener.rs`), so two messages of one dialog that arrive back to back can be handled in either order, over TCP too. Seen: a callee's 180 and 200, sent together, handled 200 first, and the 180 dropped. Any pair could be swapped: INFO digits, an ACK and a BYE, a NOTIFY and the next one. | S3 | Open (issue). The CANCEL race's caller now accepts a 200 with no 180 before it, which UDP allows anyway. |
+| An INVITE carrying a To tag that names no dialog was taken as a new call. At the SBC it rang the core, and the 180 sent back to the carrier carried two To tags (`tag=no-such-dialog;tag=…`). The call manager challenged it instead, but would have done the same for a caller with credentials. | S3 | Fixed: the shared handler answers 481 (RFC 3261 §12.2.2, the node not recreating the dialog). `strays` requires the 481 at both binaries. |
+| `[admission] max_register_cps_per_source` defaults to unlimited on the call manager, while `[security] max_invite_cps_per_source` defaults to 20. `EDGE_SECURITY.md` says REGISTER floods are bounded; they are only when an operator sets the key. With it set to 10, a flood of 400 REGISTERs in 2 s had 370 refused 503, and a phone at another address registered in the middle of it. | S3 | Open: the default is a decision about admission's "unset is unlimited" rule (`CAPACITY_AND_SURVIVABILITY.md`). |
+| Every refusal at the edge is stateful. An INVITE refused 503 by `max_invite_cps_per_source`, or challenged 401, holds a server transaction, and retransmits its answer about 11 times over 32 s unless it is ACKed. A flood from a spoofed address, which never ACKs, is answered roughly ten times over. | S4 | Open: a refusal at the edge could be sent statelessly. |
+| The CANCEL race's caller sometimes ACKed its answer to an empty Request-URI. A CANCEL shares its INVITE's branch, so SIPp cannot tell the CANCEL's 200 from the INVITE's by transaction. When the INVITE's 200 came first, the CANCEL's 200 landed on the receive that records the route set, and blanked it. | — (tests only) | The scenario keeps each 200's Contact and To and picks the INVITE's by its CSeq method. |
+| The SIPp tests' `no_calls_up` read a `count` field that the call manager's `/calls` does not have, so it passed whatever was up. Two assertions in `calls.rs` read the same field. | S3 (tests only) | Fixed: all three count the `calls` array. Every SIPp test passes with the real check. |
+| Attended transfer: the referrer gets 202, a NOTIFY and a BYE on both calls. The node dials the target back with the Replaces, which takes the referrer's leg of the second call. The transferred party and the target are left on calls that do not include the referrer, until the target hangs up and both are hung up. | — (passed) | `sipp_transfers_a_call_attended`. |
+| Floods: the call manager refused 370 of 400 REGISTERs (limit 10) and most of 400 INVITEs (limit 20), while a call from another address went through. The SBC refused the flood 429 while the other carrier's call reached the core. Nothing the floods sent was left up. | — (passed) | `a_flood_from_one_source_costs_that_source`, `a_flood_from_one_carrier_costs_that_carrier`. |
+| The SBC carries calls answered, refused, cancelled, re-INVITEd and UPDATEd between two SIPp trunks. The core sees a dialog of the SBC's own, with nothing of the carrier's Call-ID or tags, and the SBC survives the nine broken messages. | — (passed) | `crates/fcp-sbc/tests/sipp.rs`. |
+
 Still to come in D2:
-- SIPp against the SBC;
-- an attended transfer (REFER with Replaces);
-- a REGISTER and INVITE flood against admission;
 - baresip for media.
 

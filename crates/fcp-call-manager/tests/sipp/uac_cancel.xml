@@ -71,8 +71,8 @@
     ]]>
   </send>
   <recv response="100" optional="true" response_txn="invite2"/>
-  <recv response="183" optional="true"/>
-  <recv response="180"/>
+  <recv response="183" optional="true" response_txn="invite2"/>
+  <recv response="180" response_txn="invite2"/>
   <pause milliseconds="300"/>
   <send retrans="500" start_txn="cancel">
     <![CDATA[
