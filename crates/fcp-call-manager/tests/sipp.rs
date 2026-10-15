@@ -35,6 +35,11 @@ impl Stack {
 
     /// A stack whose configuration ends with `extra` (whole sections).
     async fn start_with(extra: &str) -> Option<Self> {
+        Self::start_configured("", extra).await
+    }
+
+    /// [`Stack::start_with`], with `sip_extra` (keys) added to `[sip]`.
+    async fn start_configured(sip_extra: &str, extra: &str) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -50,6 +55,7 @@ node_id = "sipp-call-manager"
 udp_bind = "127.0.0.1:{sip_port}"
 tcp_bind = "127.0.0.1:{sip_port}"
 local_ip = "127.0.0.1"
+{sip_extra}
 
 [registrar]
 auth_enabled = true
@@ -738,6 +744,64 @@ async fn a_flood_from_one_source_costs_that_source() {
     );
     assert!(challenged > 0, "the limit refused every INVITE");
     stack.no_calls_up("flood").await;
+}
+
+/// OPTIONS at 400 a second, 1,200 of them, from `from`: how many were
+/// answered.
+async fn options_at_400(sipp: &Sipp, stack: &Stack, from: Ipv4Addr) -> usize {
+    let out = sipp
+        .start_at(
+            from,
+            &scenario("flood_options"),
+            Some(stack.sip),
+            &[("user", "probe"), ("domain", REALM)],
+            &["-r", "400", "-m", "1200", "-timeout", "20s"],
+        )
+        .wait(Duration::from_secs(30))
+        .await;
+    answered(&out, 200)
+}
+
+/// siphon-rs drops, unread, what one address sends over `[sip]
+/// max_messages_per_source` (200 a second by default). A peer that carries
+/// many parties' traffic passes that with ordinary load, so the sources a
+/// node trusts are exempt: here one in `[sip] trusted_sources`. It gets all
+/// 1,200 OPTIONS at 400 a second answered, where it got about half; an
+/// address not listed still loses what is over the limit.
+#[tokio::test]
+async fn trusted_sources_are_not_limited_per_source() {
+    let Some(sipp) = Sipp::find() else {
+        return;
+    };
+    let Some(stack) = Stack::start_configured("trusted_sources = [\"127.0.0.2/32\"]", "").await
+    else {
+        return;
+    };
+    let trusted = options_at_400(&sipp, &stack, Ipv4Addr::new(127, 0, 0, 2)).await;
+    let other = options_at_400(&sipp, &stack, Ipv4Addr::new(127, 0, 0, 3)).await;
+    eprintln!("OPTIONS at 400/s: trusted {trusted} of 1200 answered, other {other}");
+    assert!(
+        trusted >= 1190,
+        "a trusted source was limited: {trusted} of 1200"
+    );
+    assert!(other < 1000, "the limit no longer applies: {other} of 1200");
+}
+
+/// `[sip] max_messages_per_source` is the node's to set: at 1,000 a second
+/// an address it does not trust gets 400 a second through.
+#[tokio::test]
+async fn the_per_source_limit_is_configurable() {
+    let Some(sipp) = Sipp::find() else {
+        return;
+    };
+    let Some(stack) = Stack::start_configured("max_messages_per_source = 1000", "").await else {
+        return;
+    };
+    let answered = options_at_400(&sipp, &stack, Ipv4Addr::new(127, 0, 0, 3)).await;
+    assert!(
+        answered >= 1190,
+        "{answered} of 1200 answered under a limit of 1000"
+    );
 }
 
 const SESSION_TIMERS: &str = r#"

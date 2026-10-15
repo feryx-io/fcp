@@ -56,6 +56,17 @@ pub struct SecurityConfig {
 
     /// Maximum number of tracked source IPs for rate limiting/ACLs.
     pub max_tracked_sources: usize,
+
+    /// Messages a second one source address may send the SBC's SIP ports
+    /// (UDP packets, TCP/TLS/WebSocket frames), dropped unread over it;
+    /// `0` is no limit. Exempt: `trusted_sources`, `[core.e911]
+    /// trusted_edges`, every trunk's inbound sources and live cluster
+    /// members — a carrier or the core behind the SBC passes this rate with
+    /// ordinary load. Under it, `[core.rate_limit]` counts requests.
+    pub max_messages_per_source: u32,
+
+    /// Addresses and CIDR ranges exempt from `max_messages_per_source`.
+    pub trusted_sources: Vec<String>,
 }
 
 impl Default for SecurityConfig {
@@ -70,6 +81,8 @@ impl Default for SecurityConfig {
             block_suspicious_uris: true,
             validate_source_ip: true,
             max_tracked_sources: 100_000,
+            max_messages_per_source: fcp_sip::ingress::DEFAULT_MESSAGES_PER_SOURCE,
+            trusted_sources: Vec::new(),
         }
     }
 }
@@ -101,6 +114,8 @@ impl SecurityConfig {
         if self.max_tracked_sources > 10_000_000 {
             return Err("max_tracked_sources must not exceed 10,000,000".into());
         }
+        fcp_sip::emergency::TrustedEdges::parse(&self.trusted_sources)
+            .map_err(|e| format!("trusted_sources: {e}"))?;
         Ok(())
     }
 }

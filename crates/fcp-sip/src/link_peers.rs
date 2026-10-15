@@ -112,6 +112,16 @@ impl LinkPeers {
             .map(|b| Arc::clone(&b.trunk))
     }
 
+    /// Whether a site is bound from `ip` and its registration has not run
+    /// out: a site's link carries all its phones' traffic, so it is exempt
+    /// from a limit meant for one device (`fcp_sip::ingress`).
+    pub fn has_address(&self, ip: std::net::IpAddr) -> bool {
+        let now = Instant::now();
+        self.bound
+            .iter()
+            .any(|b| b.peer.ip() == ip && now < b.expires_at)
+    }
+
     /// The flow the site bound from exactly `peer` is reached on, if it
     /// registered over one: what a call that came up it is answered and
     /// re-invited down.

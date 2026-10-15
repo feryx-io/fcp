@@ -827,6 +827,19 @@ async fn main() -> Result<()> {
         wss_bind,
     };
 
+    // What one source may send, and the peers that carry many parties'
+    // traffic and are exempt (`docs/DEEP_TESTING.md` D2c).
+    fcp_sip::ingress::set_limit(config.sip.max_messages_per_source)?;
+    let mut exempt = fcp_sip::ingress::Exemptions::new().networks(
+        "[sip] trusted_sources",
+        fcp_sip::emergency::TrustedEdges::parse(&config.sip.trusted_sources)
+            .context("[sip] trusted_sources")?,
+    );
+    if let Some(cm) = &_cluster_manager {
+        exempt = exempt.check("cluster members", cm.sip_peer_check());
+    }
+    exempt.install();
+
     let handler_dyn: Arc<dyn InboundMessageHandler> =
         Arc::clone(&handler) as Arc<dyn InboundMessageHandler>;
     let mut listener = TransportListener::new(listener_config, handler_dyn);
