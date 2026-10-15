@@ -436,6 +436,31 @@ The call manager's suite gained:
 | Floods: the call manager refused 370 of 400 REGISTERs (limit 10) and most of 400 INVITEs (limit 20), while a call from another address went through. The SBC refused the flood 429 while the other carrier's call reached the core. Nothing the floods sent was left up. | — (passed) | `a_flood_from_one_source_costs_that_source`, `a_flood_from_one_carrier_costs_that_carrier`. |
 | The SBC carries calls answered, refused, cancelled, re-INVITEd and UPDATEd between two SIPp trunks. The core sees a dialog of the SBC's own, with nothing of the carrier's Call-ID or tags, and the SBC survives the nine broken messages. | — (passed) | `crates/fcp-sbc/tests/sipp.rs`. |
 
-Still to come in D2:
-- baresip for media.
+### D2d. baresip: real media from a phone that is not ours
+
+`fcp_testkit::baresip` runs baresip, a softphone that shares no code with
+FCP, and drives it over its `ctrl_tcp` module:
+- its microphone is a WAV file of a tone, and what it hears is written to
+  another WAV file, which the test listens to with the testkit's tone
+  detector;
+- its media stays on loopback;
+- codecs, SRTP, DTMF mode, TLS and auto-answer are set per account.
+
+`crates/fcp-call-manager/tests/baresip.rs` puts the call manager between
+two baresip phones. In each call both hear the other's tone and neither
+hears its own. The tests cover:
+- PCMU, and G.722 at both ends;
+- Opus at one end and PCMA at the other, transcoded;
+- DTMF as RFC 4733 events and as SIP INFO;
+- both phones registered over TLS with SDES SRTP required;
+- hold with the node's music, then resume.
+
+`rooms.rs` puts two baresip phones in a conference room. CI installs
+`baresip-core` and sets `FCP_BARESIP_TESTS=required`.
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| Two baresip phones hear each other through the node in every case listed above. With PCMU, G.722, Opus↔PCMA, RFC 4733 and INFO digits, SDES SRTP over TLS, hold music and resume, and a room, each phone hears exactly the other's tone. | — (passed) | `crates/fcp-call-manager/tests/baresip.rs`, `two_baresip_phones_in_a_room_hear_each_other`. |
+| A phone that requires SRTP but registered over UDP gets a call it cannot accept: the node offers SRTP only to devices whose signalling is encrypted, so the phone answers 488. | — (by design) | SDES puts the key in the SDP, which over UDP anyone on the path reads (`docs/SOFTPHONE.md` A5). The test registers both phones over TLS. |
+| baresip 1.1 resumes a held call and then answers the `resume` command with "Invalid argument". | — (not ours) | The test judges resume by what the held party hears. |
 

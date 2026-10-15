@@ -393,6 +393,52 @@ async fn a_caller_who_hangs_up_on_the_answer_leaves_nobody_behind() {
     stack.wait_participants(0).await;
 }
 
+/// Two baresip phones, a softphone that is not ours, in one room
+/// (`docs/DEEP_TESTING.md` D2): each hears the other's tone through the
+/// mixer, and the room empties as they leave. Skipped without baresip
+/// unless `FCP_BARESIP_TESTS=required`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_baresip_phones_in_a_room_hear_each_other() {
+    use fcp_testkit::baresip::{Baresip, PhoneSetup};
+    let Some(baresip) = Baresip::find() else {
+        return;
+    };
+    let stack = stack_or_skip!();
+    stack.seed.meeting(ROOM, None, None).await;
+    let setup = |user: &str, hz: f32| PhoneSetup {
+        register: false,
+        codecs: vec!["PCMU".into()],
+        ..PhoneSetup::new(user, "x", REALM, stack.sip, hz)
+    };
+    let alice = baresip.phone(setup("alice", 440.0)).await.expect("alice");
+    let bob = baresip.phone(setup("bob", 880.0)).await.expect("bob");
+    let room = format!("sip:{ROOM}@{}", stack.sip);
+    for phone in [&alice, &bob] {
+        phone.dial(&room).await.expect("dial");
+        if let Err(e) = phone.event(&["CALL_ESTABLISHED"], SOON).await {
+            panic!("{}: {e}\n{}", phone.user, phone.log());
+        }
+    }
+    stack.wait_participants(2).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        alice.heard_tone(880, 1500),
+        "Alice hears Bob\n{}",
+        alice.log()
+    );
+    assert!(bob.heard_tone(440, 1500), "Bob hears Alice\n{}", bob.log());
+    assert!(!alice.heard_tone(440, 1500), "Alice hears herself");
+
+    for (phone, left) in [(&alice, 1), (&bob, 0)] {
+        phone.hangup().await.expect("hangup");
+        phone
+            .event(&["CALL_CLOSED"], SOON)
+            .await
+            .unwrap_or_else(|e| panic!("{}: {e}", phone.user));
+        stack.wait_participants(left).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pin_protected_room_admits_the_right_pin_and_hangs_up_on_the_wrong_one() {
     let stack = stack_or_skip!();
