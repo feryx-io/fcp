@@ -1041,8 +1041,37 @@ FLOOD_INVITE = (
 """)
 )
 
+FLOOD_OPTIONS = """  <send>
+    <![CDATA[
+      OPTIONS sip:[domain] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[domain]>
+      Call-ID: [call_id]
+      CSeq: 1 OPTIONS
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200" timeout="5000" ontimeout="lost"/>
+  <nop next="end"/>
+  <label id="lost"/>
+  <nop>
+    <action>
+      <log message="lost"/>
+    </action>
+  </nop>
+  <label id="end"/>
+"""
+
 SCENARIOS.update(
     {
+        "flood_options": (
+            "One OPTIONS per call, for a rate (-r): answered 200, or logged "
+            "as lost after 5 s. Keys: user, domain.",
+            FLOOD_OPTIONS,
+        ),
         "flood_register": (
             "One REGISTER with no credentials per call, for a flood (-r): "
             "challenged 401 or refused 503. Keys: user, domain.",

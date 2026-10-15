@@ -155,6 +155,16 @@ async fn main() -> Result<()> {
         tls_cert_path: config.sip.tls_cert_path.clone(),
         tls_key_path: config.sip.tls_key_path.clone(),
     };
+    // What one source may send, and the sources exempt
+    // (`docs/DEEP_TESTING.md` D2c).
+    fcp_sip::ingress::set_limit(config.sip.max_messages_per_source)?;
+    fcp_sip::ingress::Exemptions::new()
+        .networks(
+            "[sip] trusted_sources",
+            fcp_sip::emergency::TrustedEdges::parse(&config.sip.trusted_sources)
+                .map_err(|e| anyhow::anyhow!("[sip] trusted_sources: {e}"))?,
+        )
+        .install();
     let (transport_dispatcher, _udp_socket) =
         transport::start_transports(&transport_config, tx).await?;
 

@@ -788,6 +788,24 @@ impl ClusterManager {
     pub fn members_map(&self) -> &Arc<DashMap<String, ClusterMember>> {
         &self.members
     }
+
+    /// Whether an address is a live member's SIP address (plain or TLS),
+    /// asked of the members as they are at the time: for a node exempting
+    /// its peers from a limit meant for one device.
+    pub fn sip_peer_check(&self) -> Arc<dyn Fn(std::net::IpAddr) -> bool + Send + Sync> {
+        let members = Arc::clone(&self.members);
+        Arc::new(move |ip| {
+            let ip = match ip {
+                std::net::IpAddr::V6(v6) => {
+                    v6.to_ipv4_mapped().map(std::net::IpAddr::V4).unwrap_or(ip)
+                }
+                v4 => v4,
+            };
+            members.iter().any(|m| {
+                m.sip_address.ip() == ip || m.sip_tls_address.is_some_and(|a| a.ip() == ip)
+            })
+        })
+    }
 }
 
 /// Remove this node's heartbeat key from Redis (graceful shutdown), and

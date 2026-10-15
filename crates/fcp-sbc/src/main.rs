@@ -719,6 +719,33 @@ async fn main() -> Result<()> {
         ws_bind: ws_bind_addr,
         wss_bind: wss_bind_addr,
     };
+    // What one source may send, and the peers that carry many parties'
+    // traffic and are exempt (`docs/DEEP_TESTING.md` D2c): installed now,
+    // and again with the cluster's members once membership starts.
+    fcp_sip::ingress::set_limit(sbc_config.security.max_messages_per_source)?;
+    let exemptions = {
+        let trusted_sources =
+            fcp_sip::emergency::TrustedEdges::parse(&sbc_config.security.trusted_sources)
+                .context("[core.security] trusted_sources")?;
+        let trusted_edges = fcp_sip::emergency::TrustedEdges::parse(&sbc_config.e911.trusted_edges)
+            .context("[core.e911] trusted_edges")?;
+        let trunk_set = Arc::clone(&trunk_set);
+        let sites = Arc::clone(&link_peers.0);
+        move |cluster: Option<&fcp_cluster::ClusterManager>| {
+            let sites = Arc::clone(&sites);
+            let mut exempt = fcp_sip::ingress::Exemptions::new()
+                .networks("[core.security] trusted_sources", trusted_sources.clone())
+                .networks("[core.e911] trusted_edges", trusted_edges.clone())
+                .trunks(Arc::clone(&trunk_set) as Arc<dyn fcp_sip::trunk_ingress::InboundTrunks>)
+                .check("bound sites", Arc::new(move |ip| sites.has_address(ip)));
+            if let Some(cm) = cluster {
+                exempt = exempt.check("cluster members", cm.sip_peer_check());
+            }
+            exempt
+        }
+    };
+    exemptions(None).install();
+
     let enforcement_for_tcp = Arc::clone(&enforcement_handler);
     let handler_dyn: Arc<dyn InboundMessageHandler> =
         enforcement_handler as Arc<dyn InboundMessageHandler>;
@@ -820,6 +847,10 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+
+    if let Some(cm) = &_cluster_manager {
+        exemptions(Some(cm)).install();
+    }
 
     // 21b. Leaving service without dropping calls
     // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6): the same sequence the call

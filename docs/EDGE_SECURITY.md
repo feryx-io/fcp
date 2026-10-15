@@ -252,6 +252,33 @@ that legitimately exceeds 20 cps from a single address is throttled until
 it is listed or the limit is raised, and what it gets is a `503` with a
 `Retry-After` rather than a silent drop.
 
+**Below all of this, siphon-rs limits messages per source address.** It
+drops, unread, whatever one address sends over a rate: UDP packets, and
+frames on TCP, TLS and WebSocket. The rate is 200 a second, and until
+v0.25.401 no binary set it or exempted anyone from it. Deep testing D2c
+measured the cost: a trusted edge sending 400 OPTIONS a second had 581 of
+1,200 answered, and the rest vanished with nothing in FCP's own counters.
+That rate is about 30 calls a second, so the SBC in front of a call
+manager, a call manager in front of a conference server, or a carrier
+trunk reached it with ordinary load.
+
+The rate is now each binary's to set: `[sip] max_messages_per_source`, or
+`[core.security]` on the SBC. The default stays 200, and `0` turns the
+limit off. The limit does not apply to the peers a node already trusts:
+- `trusted_sources` in the same section, a list of addresses and CIDR
+  ranges;
+- `[e911] trusted_edges`, on the call manager, the SBC and the conference
+  server;
+- the addresses its trunks take calls from (call manager and SBC), as the
+  trunks are loaded;
+- the sites bound at the SBC;
+- live cluster members' SIP addresses.
+
+The shipped single-node and compose configurations list `127.0.0.0/8`,
+since their siblings talk over loopback on one host. The exemption is
+consulted only for a message that would be dropped (`fcp_sip::ingress`;
+siphon-rs `set_ingress_rate_exemption`).
+
 The address list is `Allow` by default with no rules, and the malformed
 policy is log-and-drop, which is exactly what the handler did before
 there was a policy — so nothing changes for a deployment that sets
