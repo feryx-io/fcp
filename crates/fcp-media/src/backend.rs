@@ -2299,6 +2299,30 @@ pub mod embedded {
         }
         forge_session.set_payload_type_map(pt_map).await;
 
+        // A transcoder is built once and kept, so one made for a pair the
+        // legs no longer have — the session started as PCMU, and the
+        // callee's answer said PCMA — would go on decoding A-law as µ-law
+        // (`docs/DEEP_TESTING.md` D2d). Drop it; the one for the pair the
+        // legs have now is built below.
+        let pair = (
+            ForgeMediaSession::to_transcoder_codec(a_codec),
+            ForgeMediaSession::to_transcoder_codec(b_codec),
+        );
+        for (slot, wanted) in [
+            (forge_session.transcoder_a_to_b(), pair.0.zip(pair.1)),
+            (forge_session.transcoder_b_to_a(), pair.1.zip(pair.0)),
+        ] {
+            let mut transcoder = slot.lock().await;
+            let stale = transcoder.as_ref().is_some_and(|t| {
+                a_codec == b_codec
+                    || wanted != Some((t.src_codec(), t.dst_codec()))
+                    || *t.pt_map() != pt_map
+            });
+            if stale {
+                *transcoder = None;
+            }
+        }
+
         if a_codec == b_codec {
             debug!(
                 ?call_id,

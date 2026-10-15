@@ -149,7 +149,18 @@ impl Baresip {
         let ctrl_port = crate::smoke::free_port();
         crate::wav::write_tone(&dir.path().join("tone.wav"), setup.tone_hz, 120_000)?;
 
-        let mut modules = vec!["g711.so", "aufile.so", "menu.so", "account.so"];
+        // What the phone hears: decoded audio is dumped by the `sndfile`
+        // filter, and decoding happens only as a player pulls it, so the
+        // player is ALSA's `null` device (an `aufile` player exists only
+        // from baresip 1.1).
+        let mut modules = vec![
+            "g711.so",
+            "aufile.so",
+            "alsa.so",
+            "sndfile.so",
+            "menu.so",
+            "account.so",
+        ];
         for (name, module) in [("G722", "g722.so"), ("opus", "opus.so")] {
             if setup.codecs.is_empty() || setup.codecs.iter().any(|c| c.starts_with(name)) {
                 modules.push(module);
@@ -164,18 +175,18 @@ impl Baresip {
              sip_listen\t127.0.0.1:{sip_port}\n\
              net_interface\t127.0.0.1\n\
              call_local_timeout\t120\n\
-             audio_player\taufile,{heard}\n\
+             audio_player\talsa,null\n\
              audio_source\taufile,{tone}\n\
-             audio_alert\taufile,{alert}\n\
+             audio_alert\talsa,null\n\
+             snd_path\t{dir}\n\
              ausrc_srate\t8000\n\
              auplay_srate\t8000\n\
              ausrc_channels\t1\n\
              auplay_channels\t1\n\
              module_path\t{modules}\n\
              ctrl_tcp_listen\t127.0.0.1:{ctrl_port}\n",
-            heard = path("heard.wav"),
             tone = path("tone.wav"),
-            alert = path("alert.wav"),
+            dir = dir.path().display(),
             modules = self.modules.display(),
         );
         for module in &modules {
@@ -399,10 +410,23 @@ impl BaresipPhone {
             .collect()
     }
 
-    /// The 8 kHz samples the phone has heard, from its player's file.
+    /// The 8 kHz samples the phone has heard on its latest call, from the
+    /// `sndfile` filter's dump of what it decoded.
     pub fn heard(&self) -> Vec<i16> {
-        crate::wav::read_pcm(&self.dir.path().join("heard.wav"))
-            .map(|(_, samples)| samples)
+        let latest = std::fs::read_dir(self.dir.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("dump-") && n.ends_with("-dec.wav"))
+            })
+            .max_by_key(|p| p.metadata().and_then(|m| m.created().or(m.modified())).ok());
+        // Written at the decoder's rate: 48 kHz stereo for Opus.
+        latest
+            .and_then(|p| crate::wav::read_as_8k_mono(&p).ok())
             .unwrap_or_default()
     }
 

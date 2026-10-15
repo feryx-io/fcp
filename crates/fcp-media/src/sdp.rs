@@ -1736,6 +1736,83 @@ pub fn filter_sdp_codecs(original_sdp: &str, allowed_codecs: &[&str]) -> String 
     result
 }
 
+/// The same offer with each of `codecs` in its first audio section: those
+/// it lacks are added after the ones it has, G.711, G.722 and G.729 at
+/// their static payload types and Opus at a free dynamic one. A name not
+/// known here is left out.
+///
+/// An anchored leg offers what the node can transcode to, not only what
+/// the caller offered (`docs/DEEP_TESTING.md` D2d): [`filter_sdp_codecs`]
+/// keeps codecs, so a codec the caller never offered has to be added
+/// first.
+pub fn ensure_audio_codecs(sdp_body: &str, codecs: &[&str]) -> String {
+    let present = parse_sdp_codecs(sdp_body);
+    let mut used: Vec<u8> = present.iter().map(|c| c.payload_type).collect();
+    used.extend(extract_telephone_event_pt(sdp_body));
+    let mut added: Vec<(u8, &str)> = Vec::new();
+    for name in codecs {
+        if present
+            .iter()
+            .any(|c| c.encoding_name.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        let (pt, rtpmap) = match name.to_ascii_uppercase().as_str() {
+            "PCMU" => (0, "PCMU/8000"),
+            "PCMA" => (8, "PCMA/8000"),
+            "G722" => (9, "G722/8000"),
+            "G729" => (18, "G729/8000"),
+            "OPUS" => match (96u8..=127).find(|pt| !used.contains(pt)) {
+                Some(pt) => (pt, "opus/48000/2"),
+                None => continue,
+            },
+            _ => continue,
+        };
+        if used.contains(&pt) {
+            continue;
+        }
+        used.push(pt);
+        added.push((pt, rtpmap));
+    }
+    if added.is_empty() {
+        return sdp_body.to_string();
+    }
+
+    let rtpmaps: String = added
+        .iter()
+        .map(|(pt, map)| format!("a=rtpmap:{pt} {map}\r\n"))
+        .collect();
+    let mut result = String::new();
+    let mut audio_seen = false;
+    let mut in_audio = false;
+    for line in sdp_body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("m=") {
+            if in_audio {
+                // The audio section ends here: its new rtpmaps close it.
+                result.push_str(&rtpmaps);
+                in_audio = false;
+            }
+            if trimmed.starts_with("m=audio ") && !audio_seen {
+                audio_seen = true;
+                in_audio = true;
+                result.push_str(trimmed);
+                for (pt, _) in &added {
+                    result.push_str(&format!(" {pt}"));
+                }
+                result.push_str("\r\n");
+                continue;
+            }
+        }
+        result.push_str(line);
+        result.push_str("\r\n");
+    }
+    if in_audio {
+        result.push_str(&rtpmaps);
+    }
+    result
+}
+
 /// The same offer with RFC 2833 taken out of it: the `telephone-event`
 /// payload type leaves the audio `m=` line and its `a=rtpmap`/`a=fmtp`
 /// lines go with it.
@@ -3173,5 +3250,54 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
             video_codec_to_forge(fcp_core::VideoCodec::Av1),
             VideoCodec::AV1
         );
+    }
+}
+
+#[cfg(test)]
+mod ensure_audio_codecs_tests {
+    use super::*;
+
+    const OPUS_ONLY: &str =
+        "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n\
+        m=audio 4000 RTP/AVP 96 101\r\na=rtpmap:96 opus/48000/2\r\n\
+        a=rtpmap:101 telephone-event/8000\r\na=sendrecv\r\n\
+        m=video 4002 RTP/AVP 97\r\na=rtpmap:97 VP8/90000\r\n";
+
+    #[test]
+    fn a_codec_the_offer_lacks_is_added_to_its_audio_section() {
+        let sdp = ensure_audio_codecs(OPUS_ONLY, &["opus", "PCMU", "PCMA"]);
+        let names: Vec<String> = parse_sdp_codecs(&sdp)
+            .into_iter()
+            .map(|c| c.encoding_name)
+            .collect();
+        assert!(names.iter().any(|n| n == "PCMU"), "{sdp}");
+        assert!(names.iter().any(|n| n == "PCMA"), "{sdp}");
+        assert!(sdp.contains("m=audio 4000 RTP/AVP 96 101 0 8\r\n"), "{sdp}");
+        // The rtpmaps stay in the audio section, before the video one.
+        let audio_end = sdp.find("m=video").unwrap();
+        assert!(
+            sdp.find("a=rtpmap:8 PCMA/8000").unwrap() < audio_end,
+            "{sdp}"
+        );
+        assert!(sdp.contains("m=video 4002 RTP/AVP 97\r\n"), "{sdp}");
+    }
+
+    #[test]
+    fn filtered_after_adding_the_offer_is_what_was_asked_for() {
+        let sdp = filter_sdp_codecs(
+            &ensure_audio_codecs(OPUS_ONLY, &["opus", "PCMU"]),
+            &["opus", "PCMU"],
+        );
+        assert!(sdp.contains("m=audio 4000 RTP/AVP 96 101 0\r\n"), "{sdp}");
+    }
+
+    #[test]
+    fn opus_takes_a_free_dynamic_payload_type_and_nothing_is_added_twice() {
+        let pcmu = "v=0\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 4000 RTP/AVP 0 96\r\n\
+            a=rtpmap:0 PCMU/8000\r\na=rtpmap:96 telephone-event/8000\r\n";
+        let sdp = ensure_audio_codecs(pcmu, &["PCMU", "opus", "AMR"]);
+        assert!(sdp.contains("m=audio 4000 RTP/AVP 0 96 97\r\n"), "{sdp}");
+        assert!(sdp.contains("a=rtpmap:97 opus/48000/2"), "{sdp}");
+        assert_eq!(ensure_audio_codecs(pcmu, &["PCMU"]), pcmu);
     }
 }

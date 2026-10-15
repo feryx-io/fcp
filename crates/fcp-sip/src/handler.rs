@@ -7240,6 +7240,21 @@ impl SipMessageHandler {
                         allowed.push(name.clone());
                     }
                 }
+                // With the media through the node, G.711 is offered even
+                // when the caller did not: the node transcodes from the
+                // caller's codec, so an Opus-only softphone reaches a
+                // G.711-only desk phone (`docs/DEEP_TESTING.md` D2d). Only
+                // for a codec the media pipeline transcodes.
+                let transcodable = ["PCMU", "PCMA", "opus", "L16"]
+                    .iter()
+                    .any(|c| preferred.encoding_name.eq_ignore_ascii_case(c));
+                if anchored && transcodable {
+                    for g711 in ["PCMU", "PCMA"] {
+                        if !allowed.iter().any(|a| a.eq_ignore_ascii_case(g711)) {
+                            allowed.push(g711.to_string());
+                        }
+                    }
+                }
                 info!(
                     call_id = %call_id,
                     preferred_codec = %preferred.encoding_name,
@@ -7253,7 +7268,15 @@ impl SipMessageHandler {
 
             if !allowed_owned.is_empty() {
                 let allowed_refs: Vec<&str> = allowed_owned.iter().map(|s| s.as_str()).collect();
-                let filtered = fcp_media::sdp::filter_sdp_codecs(sdp, &allowed_refs);
+                // A codec chosen above that the caller did not offer (a
+                // trunk's, or G.711 to transcode to) is added before the
+                // filter, which only keeps.
+                let offered = if anchored {
+                    fcp_media::sdp::ensure_audio_codecs(sdp, &allowed_refs)
+                } else {
+                    sdp.clone()
+                };
+                let filtered = fcp_media::sdp::filter_sdp_codecs(&offered, &allowed_refs);
                 a_leg_sdp = Some(filtered);
             }
         }
