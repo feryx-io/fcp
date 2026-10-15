@@ -16,6 +16,7 @@
 //!   users, extensions and rooms such a test needs; [`bins`] finds another
 //!   crate's binary.
 
+pub mod baresip;
 pub mod bins;
 pub mod certs;
 pub mod cluster;

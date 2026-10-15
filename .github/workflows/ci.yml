@@ -189,8 +189,16 @@ jobs:
       # crates/fcp-call-manager/tests/sipp.rs and crates/fcp-sbc/tests/sipp.rs
       # (docs/DEEP_TESTING.md D2);
       # FCP_SIPP_TESTS=required makes its absence a failure, not a skip.
-      - name: SIPp
-        run: sudo apt-get install -y sip-tester && sipp -v | head -2
+      # baresip, a softphone that is not ours with real media, for
+      # crates/fcp-call-manager/tests/baresip.rs and the conference room in
+      # rooms.rs (docs/DEEP_TESTING.md D2d); FCP_BARESIP_TESTS=required too.
+      - name: SIPp and baresip
+        run: |
+          sudo apt-get install -y sip-tester baresip-core
+          sipp -v | head -2
+          baresip -h 2>&1 | head -1
+          ls /usr/lib/baresip/modules | tr '\n' ' '
+          echo "FCP_BARESIP_MODULES=/usr/lib/baresip/modules" >> "$GITHUB_ENV"
       # Every request that reaches an /api/v1 route, in this test process or
       # an admin binary a test starts, is logged to FCP_ROUTE_LOG
       # (fcp_api_core::route_log) for the step after.
@@ -198,6 +206,7 @@ jobs:
         env:
           FCP_SDK_TESTS: required
           FCP_SIPP_TESTS: required
+          FCP_BARESIP_TESTS: required
           FCP_ROUTE_LOG: ${{ runner.temp }}/routes.log
         run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/video-openh264,fcp-api-core/saml
       # docs/DEEP_TESTING.md D1: every operation in the contract is called

@@ -436,6 +436,35 @@ The call manager's suite gained:
 | Floods: the call manager refused 370 of 400 REGISTERs (limit 10) and most of 400 INVITEs (limit 20), while a call from another address went through. The SBC refused the flood 429 while the other carrier's call reached the core. Nothing the floods sent was left up. | — (passed) | `a_flood_from_one_source_costs_that_source`, `a_flood_from_one_carrier_costs_that_carrier`. |
 | The SBC carries calls answered, refused, cancelled, re-INVITEd and UPDATEd between two SIPp trunks. The core sees a dialog of the SBC's own, with nothing of the carrier's Call-ID or tags, and the SBC survives the nine broken messages. | — (passed) | `crates/fcp-sbc/tests/sipp.rs`. |
 
-Still to come in D2:
-- baresip for media.
+### D2d. baresip: real media from a phone that is not ours
+
+`fcp_testkit::baresip` runs baresip, a softphone that shares no code with
+FCP, and drives it over its `ctrl_tcp` module:
+- its microphone is a WAV file of a tone;
+- what it hears is the `sndfile` filter's dump of what it decoded, with
+  ALSA's `null` device as the player, since baresip decodes only as a
+  player pulls and Ubuntu's 1.0 has no file player. The test reads the dump
+  at 8 kHz mono and listens with the testkit's tone detector;
+- its media stays on loopback;
+- codecs, SRTP, DTMF mode, TLS and auto-answer are set per account.
+
+`crates/fcp-call-manager/tests/baresip.rs` puts the call manager between
+two baresip phones. In each call both hear the other's tone and neither
+hears its own. The tests cover:
+- PCMU, and G.722 at both ends;
+- Opus at one end and PCMA at the other, transcoded;
+- DTMF as RFC 4733 events and as SIP INFO;
+- both phones registered over TLS with SDES SRTP required;
+- hold with the node's music, then resume.
+
+`rooms.rs` puts two baresip phones in a conference room. CI installs
+`baresip-core` and sets `FCP_BARESIP_TESTS=required`.
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| Apart from the two fixed below, two baresip phones hear each other through the node in every case listed above. With PCMU, G.722, RFC 4733 and INFO digits, SDES SRTP over TLS, hold music and resume, and a room, each phone hears exactly the other's tone. | — (passed) | `crates/fcp-call-manager/tests/baresip.rs`, `two_baresip_phones_in_a_room_hear_each_other`. |
+| An Opus-only softphone could not call a G.711-only phone: the node answered 488. With no trunk codec list, the node offered the callee only the caller's preferred codec, plus whichever of PCMU and PCMA the caller had also offered. A callee with none of those refused, though the node can transcode Opus to G.711. The offer is built by `filter_sdp_codecs`, which only keeps codecs. So the trunk branch's "no overlap: offer the trunk's codecs and transcode" filtered the caller's offer down to codecs it never had, leaving no audio codec. | S2 | Fixed: `fcp_media::sdp::ensure_audio_codecs` adds the chosen codecs a caller lacks (G.711, G.722 and G.729 at their static payload types, Opus at a free dynamic one) before the filter. An anchored call whose caller's codec is transcodable is offered PCMU and PCMA as well. `opus_and_pcma_are_transcoded`. |
+| A transcoder built for a codec pair the legs no longer have was kept. The media session starts by assuming PCMU; with an Opus caller it armed Opus↔µ-law transcoders at once. The callee's answer then said PCMA, and "transcoding armed" was logged, but `ensure_transcoder_*` build only where there is none. The callee's A-law went on being decoded as µ-law, and the caller heard nothing of them. | S2 | Fixed in `sync_transcoding_state`: a transcoder whose pair or payload-type map differs from the legs' is dropped before arming. Without the fix, `opus_and_pcma_are_transcoded` fails every time ("Alice does not hear Bob"). |
+| A phone that requires SRTP but registered over UDP gets a call it cannot accept: the node offers SRTP only to devices whose signalling is encrypted, so the phone answers 488. | — (by design) | SDES puts the key in the SDP, which over UDP anyone on the path reads (`docs/SOFTPHONE.md` A5). The test registers both phones over TLS. |
+| baresip 1.1 resumes a held call and then answers the `resume` command with "Invalid argument". | — (not ours) | The test judges resume by what the held party hears. |
 
