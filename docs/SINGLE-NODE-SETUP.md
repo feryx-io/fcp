@@ -221,6 +221,13 @@ Every local file already says this; here is the map.
   no user's password, so `fcp-call-manager-local.toml` trusts loopback
   in `[e911] trusted_edges = ["127.0.0.0/8"]`. Move any of them to
   another machine and add its address there.
+- **How much one address may send.** Each binary with a SIP port drops,
+  unread, what one address sends over `[sip] max_messages_per_source`
+  (200 messages a second; `[core.security]` on the SBC). The siblings on
+  this machine carry many parties' traffic, so every local file exempts
+  loopback with `[sip] trusted_sources = ["127.0.0.0/8"]`. Trusted edges,
+  trunk sources and live cluster members are exempt without being
+  listed (`EDGE_SECURITY.md` §2.4).
 - **Speech.** The call manager and IVR ask `fcp-tts` at
   `tts_remote_url` (`http://localhost:8093`) with `tts_remote_token` =
   one of the TTS server's `[auth] tokens`.

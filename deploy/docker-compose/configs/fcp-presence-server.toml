@@ -7,6 +7,10 @@ node_id = "presence-docker-01"
 shutdown_timeout_secs = 10
 
 [sip]
+# Siblings on this host reach each other over loopback; they carry many
+# parties' traffic, so the per-source message limit
+# (max_messages_per_source, default 200 a second) does not apply to them.
+trusted_sources = ["127.0.0.0/8"]
 udp_bind = "0.0.0.0:5076"
 tcp_bind = "0.0.0.0:5076"
 

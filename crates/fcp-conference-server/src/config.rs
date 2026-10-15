@@ -233,6 +233,22 @@ impl Default for ServiceSection {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SipSection {
+    /// Messages a second one source address may send this node's SIP
+    /// ports (UDP packets, TCP/TLS/WebSocket frames); over it the rest of
+    /// the second is dropped unread. `0` is no limit. The sources in
+    /// `trusted_sources` are exempt, and so are this node's other trusted
+    /// peers (live cluster members; where the node has them, its trusted
+    /// edges and trunks) — a peer that carries many parties' traffic
+    /// passes this rate with ordinary load.
+    #[serde(default = "fcp_sip::ingress::default_messages_per_source")]
+    pub max_messages_per_source: u32,
+
+    /// Addresses and CIDR ranges exempt from `max_messages_per_source`:
+    /// the nodes and edges in front of this one that the cluster does not
+    /// list (an SBC, a load balancer, the containers of one host).
+    #[serde(default)]
+    pub trusted_sources: Vec<String>,
+
     #[serde(default = "default_sip_bind")]
     pub udp_bind: String,
 
@@ -347,6 +363,8 @@ impl SipSection {
 impl Default for SipSection {
     fn default() -> Self {
         Self {
+            max_messages_per_source: fcp_sip::ingress::DEFAULT_MESSAGES_PER_SOURCE,
+            trusted_sources: Vec::new(),
             udp_bind: default_sip_bind(),
             tcp_bind: default_sip_bind(),
             ws_bind: None,

@@ -305,3 +305,44 @@ async fn a_flood_from_one_carrier_costs_that_carrier() {
     let _ = core.wait(Duration::from_secs(1)).await;
     sbc.no_calls_up("flood").await;
 }
+
+/// OPTIONS at 400 a second, 1,200 of them, from `from`: how many were
+/// answered.
+async fn options_at_400(sipp: &Sipp, sbc: &Sbc, from: Ipv4Addr) -> usize {
+    let domain = sbc.sip.to_string();
+    let out = sipp
+        .start_at(
+            from,
+            &scenario("flood_options"),
+            Some(sbc.sip),
+            &[("user", "probe"), ("domain", &domain)],
+            &["-r", "400", "-m", "1200", "-timeout", "20s"],
+        )
+        .wait(Duration::from_secs(30))
+        .await;
+    answered(&out, 200)
+}
+
+/// A carrier carries many parties' traffic, so the address its trunk
+/// takes calls from is exempt from the per-source message limit with no
+/// configuration: 1,200 OPTIONS at 400 a second all answered. An address
+/// no trunk names loses what is over 200 a second.
+#[tokio::test]
+async fn a_trunk_source_is_not_limited_per_source() {
+    let Some(sipp) = Sipp::find() else {
+        return;
+    };
+    let core = sipp.start_at(CORE, &scenario("uas_answer"), None, &[], &[]);
+    let sbc = Sbc::start(core.addr(), false).await;
+    let carrier = options_at_400(&sipp, &sbc, CARRIER).await;
+    let stranger = options_at_400(&sipp, &sbc, Ipv4Addr::new(127, 0, 0, 5)).await;
+    eprintln!("OPTIONS at 400/s: carrier {carrier} of 1200 answered, stranger {stranger}");
+    assert!(
+        carrier >= 1190,
+        "a trunk's source was limited: {carrier} of 1200"
+    );
+    assert!(
+        stranger < 1000,
+        "the limit no longer applies: {stranger} of 1200"
+    );
+}
