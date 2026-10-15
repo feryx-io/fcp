@@ -219,6 +219,8 @@ The stand-ins are faithful to the documents, not to the services.
   2xx.
 - A role matrix: each route called with a token of each built-in role,
   checked against the permission table.
+- Done in two parts: D3a the generated probes (the tenant probe and the
+  role matrix), D3b a test for each route §2.2 lists.
 
 **D4. Feature interactions.**
 - A table-driven call suite in `fcp-call-manager/tests/interactions.rs`.
@@ -468,3 +470,61 @@ hears its own. The tests cover:
 | A phone that requires SRTP but registered over UDP gets a call it cannot accept: the node offers SRTP only to devices whose signalling is encrypted, so the phone answers 488. | — (by design) | SDES puts the key in the SDP, which over UDP anyone on the path reads (`docs/SOFTPHONE.md` A5). The test registers both phones over TLS. |
 | baresip 1.1 resumes a held call and then answers the `resume` command with "Invalid argument". | — (not ours) | The test judges resume by what the held party hears. |
 
+
+### D3a. Every tenant, every role: the generated probes
+
+`crates/fcp-api-core/tests/api_postgres/route_matrix.rs` probes every route
+in `route_permissions::ROUTES`. A route added to the table is probed with
+no new test. Both probes collect every disagreement and fail once with the
+whole list.
+
+**Another tenant's ids.** `no_route_reaches_another_tenants_objects`
+seeds tenant B with one of everything that has an id in a path: user,
+group, site, network, device, trunk, number, line, extension, mailbox,
+message, flow, prompt, template, class of service, schedule, LCR route,
+routing rule, queue, rate plan and rate, hybrid site, meeting, hold,
+identity provider, subject request, webhook, firmware target, brand asset,
+pending phone, hoteling session, API token, CDR, SIP trace, recording,
+emergency call and notification, calling settings and a presence policy.
+Then tenant A's administrator calls every route naming an object with B's
+ids. The rules:
+- nothing answers 2xx or 5xx (503, "not configured here", is allowed);
+- a list asked for B with the platform's tenant header shows none of B's
+  ids or names;
+- B's objects read the same afterwards, compared as B sees them;
+- the live conference routes reach the conference server naming tenant
+  A, whatever the request says.
+
+Three kinds of answer are allowed 2xx, each proved:
+- a sub-list filtered by tenant (a call's emergency notifications, its SIP
+  messages) must be empty, and B has rows there;
+- a presence policy is kept per tenant by AOR, which no tenant owns, so
+  A's write lands in A's namespace, and B's view is compared;
+- a route's echo of what the request itself carried is not a leak.
+
+A route whose parameter tenant B has no value for fails the test, and the
+routes left out are named with the reason (`/me`, node configuration by
+service, redirection services and template starters by name, the runtime
+queues).
+
+**Every role.** `every_role_reaches_what_the_table_gives_it_*` runs once
+per deployment mode. A user of each of the seven built-in roles calls
+every gated route with ids that name nothing:
+- a role the table refuses must get 403;
+- a role the table admits must get anything but 401 or 403, unless
+  `handler_refuses` names the handler's own further check;
+- nothing may answer 5xx.
+
+That is 2,352 checks per mode. The probes' requests carry
+`route_log::PROBE_HEADER`, so they count toward no route's coverage: a
+route is called by a test of what it does (D3b).
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| No route gives tenant A's administrator anything of tenant B's. Across 269 probes with B's ids or B's tenant header, every answer was a refusal, a 404, an empty filtered list or A's own namespace, and B's objects were unchanged. | — (passed) | `no_route_reaches_another_tenants_objects`. |
+| The end-user role held `user_read`, `device_read`, `phone_number_read` and `call_view` ("only their own"), but every admin route refuses an end user (`require_admin`), and their own objects come through `/me`. The grants could never be used. They told the CLI's menus and anything reading the model that an end user could list the tenant's users, devices, numbers and calls. | S3 | Fixed: the end user holds none of them, which matches `docs/API_TOKENS.md` ("None; an end user reaches `/me`"). |
+| At a service provider the telecom admin held `tenant_create`, `tenant_update` and `tenant_delete`, though the role is tenant-scoped and the tenant handlers refuse anyone below the platform administrator. | S3 | Fixed: it keeps `tenant_read` there, as `read_only` does. |
+| `GET /config…` with no config store, and `POST /prompts/{id}/synthesize` with no TTS service, answered 500, where an unconfigured dependency answers 503 elsewhere (`/calls/…` without a call manager). | S3 | Fixed: both answer 503. |
+| `GET /voicemail/messages/{id}` returns a plain UUID as its id. This is correct, since a message id has no prefixed type, but the shape check did not know it, because no test had called the route. | — (by design) | Listed with the unprefixed resources in `check_shape` and `docs/API_TOKENS.md`. |
+| Two handlers ask more than the table: `GET /tenants/{id}/deletion` (table: `tenant_read`) and `POST /users/{username}/purge` before the grace period (table: `user_delete`) refuse anyone below the platform administrator. | — (by design) | Named in `handler_refuses`. |
+| The role probe sends `{}` as a write's body, so a write whose body fails to parse answers 422 before a handler's own further check runs. The probe proves the table, not the handlers' extra checks. | — (limit) | D3b's per-route tests. |

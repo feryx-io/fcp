@@ -1129,8 +1129,8 @@ fn is_time_key(key: &str) -> bool {
 }
 
 /// Resources whose ids no `fcp_core::identifiers` type prefixes: an audit
-/// entry, a billing transaction, a rate plan, a voicemail mailbox, a
-/// webhook delivery. Their ids are plain UUIDs (`docs/API_TOKENS.md` §6).
+/// entry, a billing transaction, a rate plan, a voicemail mailbox or
+/// message, a webhook delivery. Their ids are plain UUIDs (`docs/API_TOKENS.md` §6).
 fn unprefixed_resource(path: &str, key: &str) -> bool {
     (key == "id" && path.starts_with("/api/v1/webhooks/") && path.contains("/deliveries"))
         || (key == "id"
@@ -1139,6 +1139,7 @@ fn unprefixed_resource(path: &str, key: &str) -> bool {
                 "/api/v1/billing/balance/transactions",
                 "/api/v1/rate-plans",
                 "/api/v1/voicemail/mailboxes",
+                "/api/v1/voicemail/messages",
                 "/api/v1/me/voicemail",
             ]
             .iter()
@@ -16116,3 +16117,6 @@ async fn a_users_event_stream_carries_only_their_own() {
     assert!(!got.iter().any(|t| t.contains(&theirs)), "{got:#?}");
     app.finish().await;
 }
+
+#[path = "api_postgres/route_matrix.rs"]
+mod route_matrix;

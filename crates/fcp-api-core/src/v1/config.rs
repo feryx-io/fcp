@@ -21,7 +21,7 @@ fn get_store(
     state
         .config_store
         .as_ref()
-        .ok_or_else(|| ApiError::Internal("config store not available".into()))
+        .ok_or_else(|| ApiError::ServiceUnavailable("config store not available".into()))
 }
 
 fn scoped_config_tenant_id(

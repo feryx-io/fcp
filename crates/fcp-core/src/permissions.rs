@@ -776,11 +776,10 @@ impl UserRole {
                 TrunkCreate | TrunkRead | TrunkUpdate | TrunkDelete,
                 DeploymentMode::Enterprise,
             ) => false,
-            (
-                TelecomAdmin,
-                TenantCreate | TenantRead | TenantUpdate | TenantDelete,
-                DeploymentMode::ServiceProvider,
-            ) => true,
+            // Making, changing and deleting tenants is the platform
+            // administrator's (the handlers refuse anyone else); at a
+            // service provider a telecom admin may see its tenant.
+            (TelecomAdmin, TenantRead, DeploymentMode::ServiceProvider) => true,
             (TelecomAdmin, TenantCreate | TenantRead | TenantUpdate | TenantDelete, _) => false,
             (TelecomAdmin, DebugView, _) => true,
 
@@ -858,9 +857,13 @@ impl UserRole {
 
             // EndUser - very limited, personal settings only
             (EndUser, SystemConfig | SystemViewLogs, _) => false,
-            (EndUser, UserRead, _) => true, // Only their own profile
-            (EndUser, UserCreate | UserUpdate | UserDelete | UserSetPassword, _) => false,
-            (EndUser, PhoneNumberRead | DeviceRead, _) => true, // Only their assigned resources
+            // An end user's own profile, numbers, devices and calls come
+            // through `/me`; every admin route refuses them (`require_admin`),
+            // so the role holds none of the admin read permissions.
+            (EndUser, UserRead | UserCreate | UserUpdate | UserDelete | UserSetPassword, _) => {
+                false
+            }
+            (EndUser, PhoneNumberRead | DeviceRead, _) => false,
             (
                 EndUser,
                 PhoneNumberCreate
@@ -870,8 +873,7 @@ impl UserRole {
                 _,
             ) => false,
             (EndUser, DeviceCreate | DeviceUpdate | DeviceDelete, _) => false,
-            (EndUser, CallView, _) => true, // Only their own calls
-            (EndUser, CallControl | CallRecordingAccess | CallSupervise, _) => false,
+            (EndUser, CallView | CallControl | CallRecordingAccess | CallSupervise, _) => false,
             (EndUser, RegistrationView | RegistrationManage, _) => false,
             (EndUser, TrunkCreate | TrunkRead | TrunkUpdate | TrunkDelete, _) => false,
             (EndUser, TenantCreate | TenantRead | TenantUpdate | TenantDelete, _) => false,
@@ -1037,12 +1039,25 @@ mod tests {
     fn test_tenant_permissions_only_in_service_provider() {
         let role = UserRole::TelecomAdmin;
 
-        // Only in ServiceProvider mode
-        assert!(role.has_permission(Permission::TenantCreate, DeploymentMode::ServiceProvider));
+        // It sees its tenant only in ServiceProvider mode
+        assert!(role.has_permission(Permission::TenantRead, DeploymentMode::ServiceProvider));
+        assert!(!role.has_permission(Permission::TenantRead, DeploymentMode::Carrier));
+        assert!(!role.has_permission(Permission::TenantRead, DeploymentMode::Enterprise));
 
-        // Not in other modes
-        assert!(!role.has_permission(Permission::TenantCreate, DeploymentMode::Carrier));
-        assert!(!role.has_permission(Permission::TenantCreate, DeploymentMode::Enterprise));
+        // and never makes, changes or deletes one: that is the platform's
+        for mode in [
+            DeploymentMode::ServiceProvider,
+            DeploymentMode::Carrier,
+            DeploymentMode::Enterprise,
+        ] {
+            for perm in [
+                Permission::TenantCreate,
+                Permission::TenantUpdate,
+                Permission::TenantDelete,
+            ] {
+                assert!(!role.has_permission(perm, mode), "{perm:?} in {mode:?}");
+            }
+        }
     }
 
     #[test]
