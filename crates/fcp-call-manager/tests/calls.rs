@@ -759,11 +759,7 @@ async fn a_call_is_answered_heard_both_ways_and_recorded() {
     // The call is visible while it is up.
     let calls = stack.get("/calls").await;
     assert!(
-        calls["calls"]
-            .as_array()
-            .map(|c| !c.is_empty())
-            .unwrap_or(false)
-            || calls["count"].as_u64().unwrap_or(0) > 0,
+        calls["calls"].as_array().is_some_and(|c| !c.is_empty()),
         "{calls}"
     );
 
@@ -1210,7 +1206,7 @@ extension = "7000"
 
     // And the call is gone from the live calls.
     let live = stack.get("/calls").await;
-    assert_eq!(live["count"].as_u64().unwrap_or(0), 0, "{live}");
+    assert_eq!(live["calls"].as_array().map(Vec::len), Some(0), "{live}");
     stack.finish().await;
 }
 

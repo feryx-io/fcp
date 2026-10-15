@@ -197,6 +197,57 @@ def scenario(name, doc, steps):
 """
 
 
+def keep_answer(slot, method=False):
+    """Actions keeping a 200's Contact and To (and CSeq method) in
+    variables of their own, for a receive that may get either of two."""
+    m = (
+        f"""      <ereg regexp="[A-Z]+" search_in="hdr" header="CSeq:" assign_to="method{slot}"/>
+"""
+        if method
+        else ""
+    )
+    return f"""    <action>
+      <ereg regexp="sip:[^>;]*" search_in="hdr" header="Contact:" assign_to="contact{slot}"/>
+      <ereg regexp=".*" search_in="hdr" header="To:" assign_to="to{slot}"/>
+{m}    </action>
+"""
+
+
+def use_answer(slot, next=None):
+    """The INVITE's 200 is the one kept in `slot`."""
+    jump = f' next="{next}"' if next else ""
+    return f"""  <nop{jump}>
+    <action>
+      <assignstr assign_to="answer_contact" value="[$contact{slot}]"/>
+      <assignstr assign_to="answer_to" value="[$to{slot}]"/>
+    </action>
+  </nop>
+"""
+
+
+def answered_hangup():
+    """ACK the INVITE's 200 (CSeq 2) and hang up, to the Contact and To
+    kept by `use_answer`."""
+    return "".join(
+        f"""  <send{attrs}>
+    <![CDATA[
+      {method} [$answer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: [$answer_to]
+      Call-ID: [call_id]
+      CSeq: {cseq} {method}
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+"""
+        for method, cseq, attrs in (("ACK", 2, ""), ("BYE", 3, ' retrans="500" start_txn="bye"'))
+    )
+
+
+
 SCENARIOS = {
     "uac_answered": (
         "A call answered, then hung up by the caller. Keys: user, domain, callee.",
@@ -260,8 +311,8 @@ SCENARIOS.update(
         "uac_cancel": (
             "A call the caller cancels while it rings. Keys: user, domain, callee.",
             uac_invite("invite2")
-            + """  <recv response="183" optional="true"/>
-  <recv response="180"/>
+            + """  <recv response="183" optional="true" response_txn="invite2"/>
+  <recv response="180" response_txn="invite2"/>
   <pause milliseconds="300"/>
 """
             + cancel()
@@ -283,19 +334,49 @@ SCENARIOS.update(
         "uac_cancel_race": (
             "The caller cancels on the callee's 180 while the callee answers: "
             "either the call is cancelled (487) or answered (200, then hung "
-            "up). Keys: user, domain, callee.",
+            "up). A 200 with no 180 before it (the node may handle the "
+            "callee's 200 first and drop the 180 after it) is answered too, "
+            "with no CANCEL. A CANCEL shares its INVITE's branch, so SIPp "
+            "cannot tell the two 200s apart by transaction: each 200's "
+            "Contact and To are kept, and the INVITE's chosen by its CSeq. "
+            "Keys: user, domain, callee.",
             uac_invite("invite2")
             + """  <recv response="183" optional="true" response_txn="invite2"/>
+  <recv response="200" optional="true" response_txn="invite2" next="early">
+"""
+            + keep_answer("0")
+            + """  </recv>
   <recv response="180" response_txn="invite2"/>
 """
             + cancel()
-            + """  <recv response="200" response_txn="cancel" optional="true"/>
+            + """  <recv response="200" response_txn="cancel" optional="true">
+"""
+            + keep_answer("1", method=True)
+            + """  </recv>
   <recv response="481" response_txn="cancel" optional="true"/>
   <recv response="487" response_txn="invite2" optional="true" next="cancelled"/>
-  <recv response="200" response_txn="invite2" rrs="true"/>
+  <recv response="200" response_txn="invite2">
 """
-            + in_dialog("ACK", 2)
-            + in_dialog("BYE", 3, txn="bye")
+            + keep_answer("2")
+            + """  </recv>
+  <nop>
+    <action>
+      <strcmp assign_to="first_is_invite" variable="method1" value="INVITE"/>
+      <test assign_to="first" variable="first_is_invite" compare="equal" value="0"/>
+    </action>
+  </nop>
+  <nop next="first_answer" test="first"/>
+"""
+            + use_answer("2", next="answered")
+            + """  <label id="first_answer"/>
+"""
+            + use_answer("1", next="answered")
+            + """  <label id="early"/>
+"""
+            + use_answer("0")
+            + """  <label id="answered"/>
+"""
+            + answered_hangup()
             + """  <recv response="200" response_txn="cancel" optional="true"/>
   <recv response="481" response_txn="cancel" optional="true"/>
   <recv response="200" response_txn="bye"/>
@@ -435,7 +516,7 @@ def raw(text):
 
 SCENARIOS["strays"] = (
     "Requests inside dialogs that do not exist: each answered 481 (RFC 3261 "
-    "§12.2.2), a re-INVITE 481 or challenged as a new call, a CANCEL for "
+    "§12.2.2), a re-INVITE among them, a CANCEL for "
     "nothing 481 or 200, an ACK for nothing not at all. Keys: user, domain, "
     "callee.",
     stray("BYE", 1)
@@ -448,14 +529,11 @@ SCENARIOS["strays"] = (
     + """  <recv response="481"/>
 """
     # A re-INVITE for a dialog the node does not have may be refused 481 or
-    # taken as a new call (RFC 3261 §12.2.2), here challenged as one; it is
-    # never connected unasked.
+    # taken as a new call (RFC 3261 §12.2.2). Taken as one, it rang the
+    # callee and answered with two To tags; the node refuses it.
     + stray("INVITE", 4, sdp=True)
     + """  <recv response="100" optional="true"/>
-  <recv response="481" optional="true" next="refused"/>
-  <recv response="407" optional="true" next="refused"/>
-  <recv response="401"/>
-  <label id="refused"/>
+  <recv response="481"/>
   <send>
     <![CDATA[
       ACK sip:[callee]@[remote_ip]:[remote_port] SIP/2.0
@@ -787,6 +865,221 @@ SCENARIOS.update(
             "it expires. Keys: user, domain, callee.",
             uac_session("uac", False),
         ),
+    }
+)
+
+
+# The attended transfer's caller holds two calls in one SIPp run (`-m 2`,
+# callees from an injection file: field0 the call's callee, field1 the
+# transfer target). The second call hands its dialog to the first through
+# globals; the first REFERs its callee to the target with Replaces naming
+# that dialog. `-cid_str` must keep `@` out of the Call-ID, since the
+# Replaces value is not escaped.
+ATTENDED_WAIT = """  <label id="wait"/>
+  <pause milliseconds="100"/>
+  <nop>
+    <action>
+      <test assign_to="ready" variable="g_ready" compare="equal" value="1"/>
+    </action>
+  </nop>
+  <nop next="refer" test="ready"/>
+  <nop next="wait"/>
+  <label id="refer"/>
+"""
+
+
+def uac_attended():
+    head = """  <Global variables="g_cid,g_ftag,g_ttag,g_ready"/>
+  <nop>
+    <action>
+      <assignstr assign_to="cn" value="[call_number]"/>
+      <todouble assign_to="n" variable="cn"/>
+      <test assign_to="first" variable="n" compare="equal" value="1"/>
+    </action>
+  </nop>
+"""
+    answered = """  <recv response="180" optional="true"/>
+  <recv response="183" optional="true"/>
+  <recv response="200" rrs="true">
+    <action>
+      <ereg regexp="tag=([^;>]*)" search_in="hdr" header="To:" assign_to="to,ttag"/>
+      <log message="answered: [$to] [$ttag]"/>
+    </action>
+  </recv>
+"""
+    second = """  <nop>
+    <action>
+      <assignstr assign_to="g_cid" value="[call_id]"/>
+      <assignstr assign_to="g_ftag" value="[pid]SIPpTag00[call_number]"/>
+      <assignstr assign_to="g_ttag" value="[$ttag]"/>
+      <assign assign_to="g_ready" value="1"/>
+    </action>
+  </nop>
+  <recv request="BYE"/>
+""" + reply(200, "OK", tag=False) + """  <nop next="end"/>
+  <label id="referrer"/>
+"""
+    refer = in_dialog(
+        "REFER",
+        3,
+        txn="refer",
+        extra="Refer-To: <sip:[field1]@[domain]?Replaces=[$g_cid]%3Bto-tag%3D[$g_ttag]%3Bfrom-tag%3D[$g_ftag]>\n"
+        "Referred-By: <sip:[user]@[domain]>",
+    )
+    tail = """  <recv response="202" response_txn="refer"/>
+  <label id="waiting"/>
+  <recv request="NOTIFY" optional="true" next="notified"/>
+  <recv request="BYE" next="bye"/>
+  <label id="notified"/>
+""" + reply(200, "OK", tag=False, next="waiting") + """  <label id="bye"/>
+""" + reply(200, "OK", tag=False) + """  <label id="end"/>
+"""
+    steps = (
+        head
+        + UAC_INVITE
+        + answered
+        + in_dialog("ACK", 2)
+        + """  <nop next="referrer" test="first"/>
+"""
+        + second
+        + ATTENDED_WAIT
+        + refer
+        + tail
+    )
+    return steps.replace("[callee]", "[field0]")
+
+
+def uas_hangs_up_after(ms):
+    """The callee: answers, takes what the node sends in the dialog, and
+    hangs up once `ms` pass with nothing. SIPp reads a timeout from the
+    receive it is waiting at, the first of a group, so each one has it."""
+    loop = UAS_IN_DIALOG_UNTIL_BYE
+    for recv in (
+        '<recv request="INVITE" optional="true" next="reinvited"',
+        '<recv request="UPDATE" optional="true" next="updated"',
+        '<recv request="BYE" next="bye"',
+    ):
+        assert recv in loop
+        loop = loop.replace(recv, f'{recv} timeout="{ms}" ontimeout="hangup"', 1)
+    answered = (
+        """  <recv request="INVITE" crlf="true">
+"""
+        + REMEMBER_CALLER
+        + """  </recv>
+"""
+        + reply(180, "Ringing")
+        + reply(200, "OK", sdp=True)
+        + """  <recv request="ACK" crlf="true"/>
+"""
+    )
+    return answered + loop + """  <nop next="end"/>
+  <label id="hangup"/>
+""" + uas_bye() + """  <label id="end"/>
+"""
+
+
+SCENARIOS.update(
+    {
+        "uac_attended": (
+            "Two calls, to [field0] of each line of the injection file: the "
+            "second hands its dialog to the first, which REFERs its callee to "
+            "[field1] with Replaces naming it (RFC 3891). Both calls are hung "
+            "up on by the node. Keys: user, domain.",
+            uac_attended(),
+        ),
+        "uas_hangs_up_after_3000": (
+            "The callee: answers, takes re-INVITEs and UPDATEs, and hangs up "
+            "after three quiet seconds.",
+            uas_hangs_up_after(3000),
+        ),
+    }
+)
+
+# A flood: each SIPp "call" is one request from one source with no
+# credentials, answered by a challenge or by admission's 503. Nothing is
+# retransmitted, so the rate is the rate asked for.
+FLOOD_REGISTER = """  <send>
+    <![CDATA[
+      REGISTER sip:[domain] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[user]@[domain]>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:[user]@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Expires: 300
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="401" optional="true" next="end"/>
+  <recv response="503"/>
+  <label id="end"/>
+"""
+
+FLOOD_INVITE = (
+    invite(1, False).replace(' retrans="500"', "")
+    + """  <recv response="100" optional="true"/>
+  <recv response="180" optional="true"/>
+  <recv response="401" optional="true" next="refused"/>
+  <recv response="407" optional="true" next="refused"/>
+  <recv response="429" optional="true" next="refused"/>
+  <recv response="486" optional="true" next="refused"/>
+  <recv response="503"/>
+  <label id="refused"/>
+"""
+    + raw("""      ACK sip:[callee]@[domain] SIP/2.0
+      [last_Via:]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      [last_To:]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+""")
+)
+
+SCENARIOS.update(
+    {
+        "flood_register": (
+            "One REGISTER with no credentials per call, for a flood (-r): "
+            "challenged 401 or refused 503. Keys: user, domain.",
+            FLOOD_REGISTER,
+        ),
+        "flood_invite": (
+            "One INVITE with no credentials per call, for a flood (-r): "
+            "challenged, refused (429, 503) or, past an SBC, refused busy by "
+            "the callee, and ACKed. Keys: user, domain, callee.",
+            FLOOD_INVITE,
+        ),
+    }
+)
+
+
+def trunk(steps):
+    """A caller scenario as a trunk sends it: the same INVITE at CSeq 2 and
+    everything after it, without the first INVITE, its challenge and its
+    ACK, since a trunk is not challenged (the SBC knows it by its source
+    address)."""
+    start = steps.index("  <send")
+    end = steps.index("CSeq: 1 ACK")
+    end = steps.index("  </send>\n", end) + len("  </send>\n")
+    assert "CSeq: 1 INVITE" in steps[start:end]
+    plain = steps[:start] + steps[end:]
+    assert "CSeq: 1 " not in plain
+    return plain.replace("\n      [authentication]", "")
+
+
+TRUNK_CALLERS = ("uac_answered", "uac_busy", "uac_cancel", "uac_reinvite", "uac_update")
+SCENARIOS.update(
+    {
+        "trunk_" + name[len("uac_"):]: (
+            SCENARIOS[name][0].replace("Keys:", "From a trunk, unchallenged. Keys:"),
+            trunk(SCENARIOS[name][1]),
+        )
+        for name in TRUNK_CALLERS
     }
 )
 

@@ -2616,6 +2616,22 @@ impl SipMessageHandler {
                     // Fall through to B2BUA re-INVITE
                     let response = self.handle_reinvite(request).await?;
                     handle.send_final(response).await;
+                } else if sip_parse::header(request.headers(), "To")
+                    .and_then(|to| crate::sca::tag_of(to.as_str()))
+                    .is_some()
+                {
+                    // A re-INVITE for a dialog this node does not hold.
+                    // Taken as a new call, it rang the callee and answered
+                    // with the request's To tag and a second one of its own
+                    // (`docs/DEEP_TESTING.md` D2c). RFC 3261 §12.2.2: 481,
+                    // the node not recreating the dialog.
+                    debug!(peer = %peer, "Refusing an INVITE for a dialog that does not exist");
+                    let response = self.create_simple_response(
+                        request,
+                        481,
+                        "Call/Transaction Does Not Exist",
+                    );
+                    handle.send_final(response).await;
                 } else {
                     // One source may not spend the whole node's budget
                     // (`docs/EDGE_SECURITY.md` §2.4). Counted only where a

@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!-- The callee: answers, takes re-INVITEs and UPDATEs, and hangs up after three quiet seconds. -->
+<scenario name="uas_hangs_up_after_3000">
+  <recv request="INVITE" crlf="true">
+    <action>
+      <ereg regexp=".*" search_in="hdr" header="From:" assign_to="caller"/>
+      <ereg regexp=".*" search_in="hdr" header="To:" assign_to="callee"/>
+      <ereg regexp="sip:[^>]*" search_in="hdr" header="Contact:" assign_to="contact"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]SIPpTag01[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv
+    ]]>
+  </send>
+  <recv request="ACK" crlf="true"/>
+  <label id="in_dialog"/>
+  <recv request="INVITE" optional="true" next="reinvited" timeout="3000" ontimeout="hangup"/>
+  <recv request="UPDATE" optional="true" next="updated" timeout="3000" ontimeout="hangup"/>
+  <recv request="BYE" next="bye" timeout="3000" ontimeout="hangup"/>
+  <label id="reinvited"/>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv
+    ]]>
+  </send>
+  <recv request="ACK" next="in_dialog"/>
+  <label id="updated"/>
+  <send next="in_dialog">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv
+    ]]>
+  </send>
+  <label id="bye"/>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <nop next="end"/>
+  <label id="hangup"/>
+  <send retrans="500">
+    <![CDATA[
+      BYE [$contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: [$callee];tag=[pid]SIPpTag01[call_number]
+      To: [$caller]
+      Call-ID: [call_id]
+      CSeq: 1 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200"/>
+  <label id="end"/>
+</scenario>

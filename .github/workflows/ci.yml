@@ -185,8 +185,9 @@ jobs:
         working-directory: sdk/typescript
         run: npm ci
       - uses: astral-sh/setup-uv@v6
-      # SIPp, a SIP implementation that is not ours, for the call manager's
-      # crates/fcp-call-manager/tests/sipp.rs (docs/DEEP_TESTING.md D2);
+      # SIPp, a SIP implementation that is not ours, for
+      # crates/fcp-call-manager/tests/sipp.rs and crates/fcp-sbc/tests/sipp.rs
+      # (docs/DEEP_TESTING.md D2);
       # FCP_SIPP_TESTS=required makes its absence a failure, not a skip.
       - name: SIPp
         run: sudo apt-get install -y sip-tester && sipp -v | head -2
