@@ -476,8 +476,18 @@ async fn a_drain_over_http_moves_the_callers_and_can_be_called_off() {
             .await;
     }
 
-    assert_eq!(carol_again.hangup().await.unwrap(), 200);
-    assert_eq!(alice_call.hangup().await.unwrap(), 200);
-    assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    // Through `fail`, so a hang-up refused shows the nodes' logs (#318).
+    for (name, call, phone) in [
+        ("carol", &carol_again, &carol),
+        ("alice", &alice_call, &alice),
+        ("bob", &bob_call, &bob),
+    ] {
+        let code = call.hangup().await;
+        if !matches!(code, Ok(200)) {
+            cluster
+                .fail(&format!("{name}'s hang-up: {code:?}"), phone)
+                .await;
+        }
+    }
     cluster.finish().await;
 }
