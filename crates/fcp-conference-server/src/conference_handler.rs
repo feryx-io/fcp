@@ -325,6 +325,12 @@ pub struct ConferenceCallHandler {
     content_claims: DashMap<String, (ContentClaim, Instant)>,
     /// Calls that have been answered and are waiting for PIN input.
     pending_pin_auth: DashMap<String, PendingPinAuth>,
+    /// Calls answered and not yet sessions, by Call-ID: `true` once a BYE
+    /// has come for one. Between the 200 and the session (the PIN, the
+    /// welcome message) a BYE found nothing — answered 481, the caller
+    /// then added to the room and left there (`docs/DEEP_TESTING.md`
+    /// D2c, #318). Now it is answered and the join, once done, undone.
+    joining: Arc<DashMap<String, bool>>,
     /// Where leg records go (`docs/CDR_PIPELINE.md`), and the region they
     /// name.
     cdr: Option<fcp_sip::CdrWriter>,
@@ -794,6 +800,7 @@ impl ConferenceCallHandler {
             speaker_claims: DashMap::new(),
             content_claims: DashMap::new(),
             pending_pin_auth: DashMap::new(),
+            joining: Arc::new(DashMap::new()),
             cdr: None,
             region: None,
             migrations: migration::Migrations::default(),
@@ -6141,7 +6148,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let _ = response.headers_mut().push("Require", "timer");
         }
 
-        // 9. Send 200 OK
+        // 9. Send 200 OK. From here until its session is stored, the call
+        // is joining: a BYE is taken, and the join undone when it is done.
+        let joining = Joining::start(&self.joining, extract_call_id(request));
         handle.send_final(response).await;
 
         // 10. Create RTP socket pair (deallocate port on failure to prevent leak)
@@ -7113,6 +7122,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     record: LegRecord::from_request(request, None),
                 },
             );
+            joining.undo_if_hung_up(self);
 
             self.handler_latency.record(
                 &self.handler_latency.invite_count,
@@ -7428,6 +7438,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 ),
             },
         );
+        joining.undo_if_hung_up(self);
 
         self.handler_latency.record(
             &self.handler_latency.invite_count,
@@ -7837,6 +7848,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             Ok(())
         } else if self.pending_pin_auth.remove(call_id).is_some() {
             info!(call_id = %call_id, "BYE received during conference PIN collection");
+            Ok(())
+        } else if let Some(mut hung_up) = self.joining.get_mut(call_id) {
+            info!(call_id = %call_id, "BYE received while the participant was joining");
+            *hung_up = true;
             Ok(())
         } else {
             anyhow::bail!("No conference session for call_id: {}", call_id)
@@ -8686,6 +8701,41 @@ impl FloorNotifier for ConferenceCallHandler {
             let notice = notice.clone();
             tokio::spawn(async move { me.send_floor_info(call_id, notice, mine).await });
         }
+    }
+}
+
+/// A call answered and not yet a session (`ConferenceCallHandler::joining`),
+/// for as long as the join runs: cleared however it ends.
+struct Joining {
+    map: Arc<DashMap<String, bool>>,
+    call_id: String,
+}
+
+impl Joining {
+    fn start(map: &Arc<DashMap<String, bool>>, call_id: String) -> Self {
+        map.insert(call_id.clone(), false);
+        Self {
+            map: Arc::clone(map),
+            call_id,
+        }
+    }
+
+    /// The session is stored: if the caller hung up while joining, end
+    /// it now. A BYE from here on finds the session itself.
+    fn undo_if_hung_up(&self, handler: &ConferenceCallHandler) {
+        if self.map.get(&self.call_id).is_some_and(|hung_up| *hung_up) {
+            info!(call_id = %self.call_id, "The caller hung up while joining; leaving");
+            handler.remove_session_for(
+                &self.call_id,
+                fcp_sip::TerminationReason::Hangup { by: None },
+            );
+        }
+    }
+}
+
+impl Drop for Joining {
+    fn drop(&mut self) {
+        self.map.remove(&self.call_id);
     }
 }
 

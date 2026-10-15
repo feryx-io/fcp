@@ -364,6 +364,35 @@ async fn two_phones_in_a_room_hear_each_other_and_leave() {
     stack.finish().await;
 }
 
+/// A caller who hangs up the moment they are answered leaves nobody in
+/// the room. The node answers before the participant is a session (the
+/// welcome message plays in between); a BYE then found nothing, was
+/// answered 481, and the participant joined afterwards and stayed
+/// (`docs/DEEP_TESTING.md` D2c, #318).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_who_hangs_up_on_the_answer_leaves_nobody_behind() {
+    let stack = stack_or_skip!();
+    stack.seed.meeting(ROOM, None, None).await;
+    let alice = stack.phone("alice").await;
+    let bob = stack.phone("bob").await;
+    let alice_call = join(&stack, &alice).await;
+    stack.wait_participants(1).await;
+
+    let bob_call = join(&stack, &bob).await;
+    let code = bob_call.hangup().await;
+    if !matches!(code, Ok(200)) {
+        stack
+            .fail(&format!("Bob's hang-up on the answer: {code:?}"), &bob)
+            .await;
+    }
+    // Long enough for a join that outlived its caller to land.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(stack.wait_participants(1).await.len(), 1);
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    stack.wait_participants(0).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pin_protected_room_admits_the_right_pin_and_hangs_up_on_the_wrong_one() {
     let stack = stack_or_skip!();
