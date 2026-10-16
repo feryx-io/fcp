@@ -1022,7 +1022,7 @@ pub async fn get_trunk_stats(
     }
 
     let stats = storage
-        .get_trunk_stats(&trunk.name)
+        .get_trunk_stats(&tenant.0, &trunk.name)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk stats: {}", e)))?;
 

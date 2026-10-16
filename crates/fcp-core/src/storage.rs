@@ -2072,10 +2072,17 @@ pub trait TrunkStore: Send + Sync {
     /// Delete a trunk by ID
     async fn delete_trunk(&self, id: &crate::TrunkId) -> Result<()>;
 
-    /// Get aggregated stats for a trunk from CDRs (last 24h).
-    async fn get_trunk_stats(&self, trunk_name: &str) -> Result<crate::TrunkStats> {
+    /// Get aggregated stats for a tenant's trunk from its CDRs (last 24h).
+    /// A record names its trunk by name, which is the tenant's alone: the
+    /// tenant is part of the question, or a trunk of the same name in
+    /// another tenant would count.
+    async fn get_trunk_stats(
+        &self,
+        tenant_id: &crate::TenantId,
+        trunk_name: &str,
+    ) -> Result<crate::TrunkStats> {
         // Default: return empty stats (override in implementations with CDR access)
-        let _ = trunk_name;
+        let _ = (tenant_id, trunk_name);
         Ok(crate::TrunkStats::default())
     }
 
@@ -4745,8 +4752,14 @@ impl TrunkStore for DynStorage {
         self.trunk_store.delete_trunk(id).await
     }
 
-    async fn get_trunk_stats(&self, trunk_name: &str) -> Result<crate::TrunkStats> {
-        self.trunk_store.get_trunk_stats(trunk_name).await
+    async fn get_trunk_stats(
+        &self,
+        tenant_id: &crate::TenantId,
+        trunk_name: &str,
+    ) -> Result<crate::TrunkStats> {
+        self.trunk_store
+            .get_trunk_stats(tenant_id, trunk_name)
+            .await
     }
 
     async fn get_lcr_route(&self, id: &crate::LcrRouteId) -> Result<Option<crate::LcrRoute>> {

@@ -335,7 +335,7 @@ async fn seed_tenant_b(app: &App) -> Seeded {
         make_in_b(
             app,
             "/api/v1/queue-configs",
-            json!({"name": "bravo-queue", "extension": "2700", "strategy": "ring_all"}),
+            json!({"name": "bravo-queue", "extension": "2700", "strategy": "longest_idle"}),
             "id",
         )
         .await,
@@ -645,6 +645,20 @@ async fn seed_tenant_b(app: &App) -> Seeded {
     ids.insert("/recordings", recording.id.to_string());
     ids.insert("/tenants", b.to_string());
 
+    // A configuration section of B's own (the platform writes them).
+    fcp_core::config_store::ConfigStore::set_config(
+        app.storage.as_ref(),
+        "bravo-svc",
+        "bravo-section",
+        &b.to_string(),
+        json!({"key": "bravo-config-secret"}),
+        Some("seed"),
+    )
+    .await
+    .expect("config");
+    ids.insert("/config", "bravo-svc".into());
+    ids.insert("/config/:service", "bravo-section".into());
+
     let aor = format!("{user}@{REALM}");
     ids.insert("/registrations", aor.clone());
     ids.insert("/presence", aor);
@@ -674,6 +688,7 @@ async fn seed_tenant_b(app: &App) -> Seeded {
     secrets.insert(user_id);
     secrets.insert("sip:bravo-friend@bravo.example".into());
     secrets.insert("guard@bravo.example".into());
+    secrets.insert("bravo-config-secret".into());
     Seeded { ids, secrets }
 }
 
@@ -681,9 +696,6 @@ async fn seed_tenant_b(app: &App) -> Seeded {
 fn not_cross_tenant(method: &str, path: &str) -> Option<&'static str> {
     if path.starts_with("/me/") || path.starts_with("/auth/") {
         return Some("the caller's own; a /me route names the caller's objects");
-    }
-    if path.starts_with("/config/") {
-        return Some("node configuration by service name, not a tenant's object");
     }
     if path.starts_with("/provisioning/redirection/") {
         return Some("a redirection service by name: the caller's own tenant's account");
@@ -859,7 +871,7 @@ async fn no_route_reaches_another_tenants_objects() {
             })
             .collect();
         let fine = match res.status {
-            // Not configured here: no call manager, no TTS, no config store.
+            // Not configured here: no call manager, no TTS.
             StatusCode::SERVICE_UNAVAILABLE => true,
             s if s.is_server_error() => false,
             s if s.is_success() => match per_tenant_answer(template) {

@@ -65,8 +65,8 @@ def sync_detailed(
 ) -> Response[Any | ErrorResponse]:
     """ DELETE /presence/:aor/watchers/:subscription_id — Force-terminate a specific watcher subscription.
 
-     Removes the watcher from the manager. The presence NOTIFY dispatcher will send
-    `terminated;reason=forced` if the SipPresenceHandler is wired up.
+     Removes the watcher from the manager and announces `presence.watcher_removed`.
+    No NOTIFY is sent from here.
 
     Args:
         aor (str):
@@ -102,8 +102,8 @@ def sync(
 ) -> Any | ErrorResponse | None:
     """ DELETE /presence/:aor/watchers/:subscription_id — Force-terminate a specific watcher subscription.
 
-     Removes the watcher from the manager. The presence NOTIFY dispatcher will send
-    `terminated;reason=forced` if the SipPresenceHandler is wired up.
+     Removes the watcher from the manager and announces `presence.watcher_removed`.
+    No NOTIFY is sent from here.
 
     Args:
         aor (str):
@@ -134,8 +134,8 @@ async def asyncio_detailed(
 ) -> Response[Any | ErrorResponse]:
     """ DELETE /presence/:aor/watchers/:subscription_id — Force-terminate a specific watcher subscription.
 
-     Removes the watcher from the manager. The presence NOTIFY dispatcher will send
-    `terminated;reason=forced` if the SipPresenceHandler is wired up.
+     Removes the watcher from the manager and announces `presence.watcher_removed`.
+    No NOTIFY is sent from here.
 
     Args:
         aor (str):
@@ -171,8 +171,8 @@ async def asyncio(
 ) -> Any | ErrorResponse | None:
     """ DELETE /presence/:aor/watchers/:subscription_id — Force-terminate a specific watcher subscription.
 
-     Removes the watcher from the manager. The presence NOTIFY dispatcher will send
-    `terminated;reason=forced` if the SipPresenceHandler is wired up.
+     Removes the watcher from the manager and announces `presence.watcher_removed`.
+    No NOTIFY is sent from here.
 
     Args:
         aor (str):

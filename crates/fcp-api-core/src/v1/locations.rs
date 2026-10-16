@@ -7,7 +7,9 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::storage::SiteLocationStore;
+use fcp_core::storage::{
+    CredentialStore, DeviceStore, ExtensionStore, PhoneNumberStore, SiteLocationStore, UserFilter,
+};
 use fcp_core::{LocationId, SiteLocation, TenantId};
 use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
@@ -456,6 +458,12 @@ pub async fn delete_location(
         .ok_or_else(|| ApiError::NotFound(format!("Location {} not found", id)))
         .and_then(|location| ensure_location_in_tenant(location, &tenant.0, &id))?;
 
+    if let Some(user) = location_in_use(storage, &location).await? {
+        return Err(ApiError::Conflict(format!(
+            "Location {id} is still the location of {user}; move it elsewhere first"
+        )));
+    }
+
     storage
         .delete_location(&id)
         .await
@@ -474,4 +482,59 @@ pub async fn delete_location(
 
     info!("Deleted location {}", id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// What still has `location` as its site, if anything: a user, device,
+/// extension or number placed there, or a network mapped to it. Deleting
+/// the site would leave each pointing at nothing, and an emergency call
+/// from there without the address the tenant gave it.
+async fn location_in_use(
+    storage: &fcp_core::DynStorage,
+    location: &SiteLocation,
+) -> Result<Option<String>, ApiError> {
+    let (tenant, id) = (&location.tenant_id, Some(location.id));
+    if let Some(u) = storage
+        .list_users_in_tenant(tenant, &UserFilter::default())
+        .await?
+        .into_iter()
+        .find(|u| u.location_id == id)
+    {
+        return Ok(Some(format!("user {}", u.username)));
+    }
+    if let Some(d) = storage
+        .list_devices(tenant)
+        .await?
+        .into_iter()
+        .find(|d| d.location_id == id)
+    {
+        return Ok(Some(format!("device {}", d.id)));
+    }
+    if let Some(x) = storage
+        .list_extensions(tenant)
+        .await?
+        .into_iter()
+        .find(|x| x.location_id == id)
+    {
+        return Ok(Some(format!("extension {}", x.number)));
+    }
+    if let Some(n) = storage
+        .list_phone_numbers(tenant)
+        .await?
+        .into_iter()
+        .find(|n| n.location_id == id)
+    {
+        return Ok(Some(format!("number {}", n.e164)));
+    }
+    if let Some(emergency) = storage.emergency_store() {
+        if let Some(n) = emergency
+            .list_emergency_networks(tenant)
+            .await
+            .map_err(ApiError::storage)?
+            .into_iter()
+            .find(|n| Some(n.location_id) == id)
+        {
+            return Ok(Some(format!("network {}", n.cidr)));
+        }
+    }
+    Ok(None)
 }

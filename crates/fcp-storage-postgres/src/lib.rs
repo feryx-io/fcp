@@ -5612,7 +5612,11 @@ impl TrunkStore for PostgresStorage {
         Ok(())
     }
 
-    async fn get_trunk_stats(&self, trunk_name: &str) -> Result<fcp_core::TrunkStats> {
+    async fn get_trunk_stats(
+        &self,
+        tenant_id: &TenantId,
+        trunk_name: &str,
+    ) -> Result<fcp_core::TrunkStats> {
         let cutoff = system_time_to_datetime(
             std::time::SystemTime::now() - std::time::Duration::from_secs(86400),
         );
@@ -5622,20 +5626,21 @@ impl TrunkStore for PostgresStorage {
             "SELECT
                 COUNT(*) as total,
                 COUNT(*) FILTER (WHERE disposition = 'answered') as answered,
-                COALESCE(AVG(call_duration_ms) FILTER (WHERE disposition = 'answered'), 0) as avg_duration_ms,
-                COALESCE(AVG(setup_duration_ms) FILTER (WHERE disposition = 'answered'), 0) as avg_setup_ms
+                COALESCE(AVG(call_duration_ms) FILTER (WHERE disposition = 'answered'), 0)::float8 as avg_duration_ms,
+                COALESCE(AVG(setup_duration_ms) FILTER (WHERE disposition = 'answered'), 0)::float8 as avg_setup_ms
              FROM cdrs
-             WHERE gateway_id = $1 AND start_time >= $2",
+             WHERE gateway_id = $1 AND start_time >= $2 AND tenant_id = $3",
         )
         .bind(trunk_name)
         .bind(cutoff)
+        .bind(tenant_id.to_string())
         .fetch_one(self.reads())
         .await?;
 
         let total: i64 = row.try_get("total").unwrap_or(0);
         let answered: i64 = row.try_get("answered").unwrap_or(0);
-        let avg_duration_ms: f64 = row.try_get::<f64, _>("avg_duration_ms").unwrap_or(0.0);
-        let avg_setup_ms: f64 = row.try_get::<f64, _>("avg_setup_ms").unwrap_or(0.0);
+        let avg_duration_ms: f64 = row.try_get("avg_duration_ms")?;
+        let avg_setup_ms: f64 = row.try_get("avg_setup_ms")?;
 
         let asr = if total > 0 {
             (answered as f64 / total as f64) * 100.0
@@ -5649,12 +5654,13 @@ impl TrunkStore for PostgresStorage {
                 date_trunc('hour', start_time) as bucket,
                 COUNT(*) as cnt
              FROM cdrs
-             WHERE gateway_id = $1 AND start_time >= $2
+             WHERE gateway_id = $1 AND start_time >= $2 AND tenant_id = $3
              GROUP BY bucket
              ORDER BY bucket",
         )
         .bind(trunk_name)
         .bind(cutoff)
+        .bind(tenant_id.to_string())
         .fetch_all(self.reads())
         .await?;
 

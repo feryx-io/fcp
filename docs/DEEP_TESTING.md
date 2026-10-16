@@ -219,8 +219,10 @@ The stand-ins are faithful to the documents, not to the services.
   2xx.
 - A role matrix: each route called with a token of each built-in role,
   checked against the permission table.
-- Done in two parts: D3a the generated probes (the tenant probe and the
-  role matrix), D3b a test for each route §2.2 lists.
+- Done in parts: D3a the generated probes (the tenant probe and the role
+  matrix), D3b a test for each route §2.2 lists, in two PRs (D3b1 the
+  stores' routes, D3b2 sign-in, calls, conferences, voicemail and the
+  platform's).
 
 **D4. Feature interactions.**
 - A table-driven call suite in `fcp-call-manager/tests/interactions.rs`.
@@ -503,9 +505,9 @@ Three kinds of answer are allowed 2xx, each proved:
 - a route's echo of what the request itself carried is not a leak.
 
 A route whose parameter tenant B has no value for fails the test, and the
-routes left out are named with the reason (`/me`, node configuration by
-service, redirection services and template starters by name, the runtime
-queues).
+routes left out are named with the reason (`/me`, redirection services
+and template starters by name, the runtime queues). D3b1 put the services'
+configuration back in: it is kept per tenant too.
 
 **Every role.** `every_role_reaches_what_the_table_gives_it_*` runs once
 per deployment mode. A user of each of the seven built-in roles calls
@@ -528,3 +530,37 @@ route is called by a test of what it does (D3b).
 | `GET /voicemail/messages/{id}` returns a plain UUID as its id. This is correct, since a message id has no prefixed type, but the shape check did not know it, because no test had called the route. | — (by design) | Listed with the unprefixed resources in `check_shape` and `docs/API_TOKENS.md`. |
 | Two handlers ask more than the table: `GET /tenants/{id}/deletion` (table: `tenant_read`) and `POST /users/{username}/purge` before the grace period (table: `user_delete`) refuse anyone below the platform administrator. | — (by design) | Named in `handler_refuses`. |
 | The role probe sends `{}` as a write's body, so a write whose body fails to parse answers 422 before a handler's own further check runs. The probe proves the table, not the handlers' extra checks. | — (limit) | D3b's per-route tests. |
+
+### D3b1. The stores' routes, one by one
+
+D3b1 tests 38 of the 87 routes D1 found uncalled, against what each says
+it does: numbers, extensions, lines and sites
+(`tests/api_postgres/numbers.rs`); routing rules, least-cost routes,
+trunks, rate plans and classes of service (`routing.rs`); queues, groups
+and presence (`queues_presence.rs`); the services' configuration and phone
+templates (`config.rs`). Each test also checks what the route must refuse,
+another tenant's call included. The suite's app now has the config store,
+so `/config` answers rather than 503. `scripts/routes-uncalled.txt` holds
+the 49 left for D3b2.
+
+D3a's probe puts another tenant's id in the path. Five of the cross-tenant
+bugs below were out of its reach:
+- an id in a request body;
+- a record found by a name the tenant chose;
+- a key the manager scopes by address alone;
+- a tenant named in the query.
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| Any administrator of any tenant could read the platform's service configuration. `GET /config…` took `system_view_logs`, which tenant admins, telecom admins and read-only users hold, and the nodes seed that configuration with their own credentials: the media server's API tokens (`media/auth`), the conference server's AI key (`conference/ai`), the events server's Redis URL. `?tenant_id=` also read another tenant's entries, for any session that was not an end user. | S1 | Fixed: reading `/config` takes `system_config`, as writing does, which only a super admin holds. A session that does not see every tenant reads its own tenant's entries, whatever tenant it names. `docs/API_TOKENS.md` says so. |
+| An extension's target was not checked to be the tenant's. Tenant A's extension could dial B's user, device or number by id, and the call manager rings whatever the id names, in any tenant. Its site was not checked either. | S1 | Fixed: create and update refuse a target or site outside the tenant (400). |
+| A line's `flow_id` was not checked. The call manager loads a flow by id alone, so A's IVR number could run B's flow. | S1 | Fixed: a line takes only a flow of its own tenant's, and an empty value clears it. |
+| A trunk's stats counted every call record carrying its name, in any tenant. Trunk names are the tenant's own choice, so two tenants with a trunk called `carrier` saw each other's volume, ASR and ACD. | S1 | Fixed: `TrunkStore::get_trunk_stats` takes the tenant, and the SQL filters on it. |
+| A number given back with `/release` kept what its tenant set on it: the emergency address and callback, caller name, site, hybrid site, allow and block lists, tags, recording. The next tenant to buy it from the pool got all of it, A's site id included. A number still bound to a line could also be released, and its line kept routing the next owner's calls to A's people. | S1 | Fixed: release refuses a number with a line binding (409) and clears the tenant's fields, keeping the carrier's. |
+| `DELETE /presence/{aor}/watchers/{id}` removed the watcher from any tenant watching that address: the handler used the manager's unscoped removal. It also removed it twice over, so the second, eventful removal found nothing: no `presence.watcher_removed` went out and the watcher gauge was not updated. | S2 | Fixed: one removal, scoped to the tenant, which counts and announces. The comment promising a `terminated` NOTIFY is gone, since none is sent. |
+| A trunk's average call duration and post-dial delay were always 0. Postgres's `AVG` of an integer column is `numeric`, and the read as `f64` failed into an `unwrap_or(0.0)`. | S2 | Fixed: the averages are cast to `float8`, and a failed read is an error, not 0. |
+| A site could be deleted while users, devices, extensions, numbers or emergency networks named it. Each was left pointing at nothing, and an emergency call from there lost the address the tenant had given. | S2 | Fixed: `DELETE /locations/{id}` answers 409, naming what still uses the site. |
+| A phone template a device named could be deleted. The device's next fetch was given no configuration: a named template that is gone is not replaced by one picked by vendor. | S2 | Fixed: 409 while a device names it. |
+| A queue's strategy was any string. The node reads one it does not know as round robin, so a typo, or `ring_all` (which the suite used), changed how calls were handed out without a word. `PATCH /queue-configs/{id}` also took an empty name or extension, which create refuses. | S3 | Fixed: create and update share one check: a name, an extension, and one of the seven strategies the node and the UI know. |
+| `POST /config/{service}/{section}/validate` checks only that the value is a non-empty object. It does not know a section's fields, since those are defined in each service's crate. | S4 | Left as it is: the test pins what it does. A schema per section is a feature of its own. |
+| `/phone-numbers/available` and `/purchase` are the platform's pool, but only `/release` puts a number in it: no route adds one, and nothing documents the pool. | S4 | Tested as built. Noted for the number-provider work. |

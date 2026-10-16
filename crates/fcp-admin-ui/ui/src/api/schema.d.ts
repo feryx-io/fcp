@@ -3772,8 +3772,8 @@ export interface paths {
         post?: never;
         /**
          * DELETE /presence/:aor/watchers/:subscription_id — Force-terminate a specific watcher subscription.
-         * @description Removes the watcher from the manager. The presence NOTIFY dispatcher will send
-         *     `terminated;reason=forced` if the SipPresenceHandler is wired up.
+         * @description Removes the watcher from the manager and announces `presence.watcher_removed`.
+         *     No NOTIFY is sent from here.
          */
         delete: operations["presence_delete_subscription"];
         options?: never;

@@ -8,7 +8,7 @@ use axum::{
     Extension, Json,
 };
 use fcp_core::permissions::Permission;
-use fcp_core::storage::{PhoneNumberStore, SiteLocationStore};
+use fcp_core::storage::{LineBindingStore, PhoneNumberStore, SiteLocationStore};
 use fcp_core::SiteStore;
 use fcp_core::{E911Address, LocationId, PhoneNumber, PhoneNumberId, TenantId};
 use serde::{Deserialize, Serialize};
@@ -786,8 +786,37 @@ pub async fn release_phone_number(
         return Err(ApiError::NotFound("Phone number not found".into()));
     }
 
+    // A number still answering a line goes back only once its line is
+    // gone: its binding, the per-number settings on it and the mailbox
+    // under it are the tenant's, and would route the next owner's calls
+    // to this tenant's people.
+    if storage
+        .get_line_binding_by_phone_number(&number.id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .is_some()
+    {
+        return Err(ApiError::Conflict(
+            "Phone number is bound to a line; delete its line binding first".into(),
+        ));
+    }
+
+    // What the tenant set on the number goes with the tenant; what the
+    // carrier says about it stays with the number.
     number.tenant_id = TenantId::nil();
     number.state = fcp_core::NumberState::Available;
+    number.e911_address = None;
+    number.e911_callback = None;
+    number.cnam = None;
+    number.activated_at = None;
+    number.recording_enabled = false;
+    number.block_anonymous = false;
+    number.allow_list.clear();
+    number.block_list.clear();
+    number.tags.clear();
+    number.location_id = None;
+    number.site_id = None;
+    number.updated_at = SystemTime::now();
 
     storage
         .put_phone_number(number.clone())

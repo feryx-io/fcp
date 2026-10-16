@@ -629,8 +629,8 @@ pub async fn set_pres_rules(
 
 /// DELETE /presence/:aor/watchers/:subscription_id — Force-terminate a specific watcher subscription.
 ///
-/// Removes the watcher from the manager. The presence NOTIFY dispatcher will send
-/// `terminated;reason=forced` if the SipPresenceHandler is wired up.
+/// Removes the watcher from the manager and announces `presence.watcher_removed`.
+/// No NOTIFY is sent from here.
 #[utoipa::path(
     delete,
     path = "/api/v1/presence/{aor}/watchers/{subscription_id}",
@@ -656,17 +656,21 @@ pub async fn delete_subscription(
         )));
     }
 
-    // Force-terminate the watcher (returns the removed watcher for potential NOTIFY)
-    let removed = pm.force_terminate_watcher(&aor, &subscription_id);
-    if removed.is_none() {
+    // This tenant's watcher only: the same address may be a presentity in
+    // another tenant, with watchers of its own.
+    let watching = pm
+        .get_watchers_for_tenant(&aor, &tenant.0)
+        .iter()
+        .any(|w| w.subscription_id == subscription_id);
+    if !watching {
         return Err(ApiError::NotFound(format!(
             "Subscription '{}' not found for '{}'",
             subscription_id, aor
         )));
     }
-
-    // Clean up from persistent store
-    pm.remove_watcher(&aor, &subscription_id).await;
+    // Removed, counted and announced as an unsubscribe is.
+    pm.remove_watcher_for_tenant(&aor, &subscription_id, &tenant.0)
+        .await;
 
     info!(
         aor = %aor,

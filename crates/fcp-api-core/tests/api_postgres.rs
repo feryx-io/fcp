@@ -326,6 +326,7 @@ impl App {
             tenant_a,
         )
         .with_deployment_mode(mode)
+        .with_config_store(Arc::clone(&storage) as Arc<dyn fcp_core::config_store::ConfigStore>)
         .with_managed_by(managed_by)
         .with_conference_server_url(conference_url)
         .with_conference_server_auth_token(Some(CONFERENCE_TOKEN.to_string()))
@@ -3093,7 +3094,7 @@ async fn queue_configs_crud_and_runtime_absent() {
             Some(json!({
                 "name": "billing",
                 "extension": "7100",
-                "strategy": "ring_all",
+                "strategy": "longest_idle",
                 "max_wait_time_secs": 120,
                 "agents": [agent],
             })),
@@ -16120,3 +16121,15 @@ async fn a_users_event_stream_carries_only_their_own() {
 
 #[path = "api_postgres/route_matrix.rs"]
 mod route_matrix;
+
+#[path = "api_postgres/numbers.rs"]
+mod numbers;
+
+#[path = "api_postgres/routing.rs"]
+mod routing;
+
+#[path = "api_postgres/queues_presence.rs"]
+mod queues_presence;
+
+#[path = "api_postgres/config.rs"]
+mod config;
