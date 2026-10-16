@@ -564,3 +564,41 @@ bugs below were out of its reach:
 | A queue's strategy was any string. The node reads one it does not know as round robin, so a typo, or `ring_all` (which the suite used), changed how calls were handed out without a word. `PATCH /queue-configs/{id}` also took an empty name or extension, which create refuses. | S3 | Fixed: create and update share one check: a name, an extension, and one of the seven strategies the node and the UI know. |
 | `POST /config/{service}/{section}/validate` checks only that the value is a non-empty object. It does not know a section's fields, since those are defined in each service's crate. | S4 | Left as it is: the test pins what it does. A schema per section is a feature of its own. |
 | `/phone-numbers/available` and `/purchase` are the platform's pool, but only `/release` puts a number in it: no route adds one, and nothing documents the pool. | S4 | Tested as built. Noted for the number-provider work. |
+
+### D3b2. Sign-in, calls, conferences, voicemail and the platform
+
+D3b2 tests the other 48 of D1's uncalled routes and removes one: sign-in
+and the caller's own account (`tests/api_postgres/sign_in.rs`); calls
+through the admin API, against an in-process call manager
+(`calls.rs`); meetings, the caller's own and live video
+(`conferences.rs`); voicemail and prompts, with a TTS stand-in on loopback
+(`voicemail.rs`); the dashboard, usage by number, notification calls,
+redirection accounts and encryption at rest (`platform.rs`). Where a route
+is the API's front for a node, the node's side is proved against the
+binary: the call view and recording in `fcp-call-manager/tests/calls.rs`,
+the notification call end to end in `emergency.rs`, message waiting in
+`mwi.rs`, the admin's forwarding in `fcp-admin/tests/call_control.rs`.
+`scripts/routes-uncalled.txt` is empty: every operation in the contract is
+called by a test.
+
+Four of the findings are not in the route a test called but in what it
+fronts: the call routes, the notification call and message waiting were
+never connected to the node that does the work, and nothing had followed
+a request that far.
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| Anyone who could make or change users could give any role. A tenant administrator could make a `super_admin` — a platform administrator over every tenant — and a user administrator could set a tenant administrator's password, or SIP password, and sign in as them, or promote themselves. | S1 | Fixed: a role is given, and a user holding one is acted on (role, password, SIP password, second factor, identity, unlock, delete, restore), only by someone whose roles hold everything that role does, and `super_admin` only by the platform (`fcp_core::permissions::roles_may_assign`, `docs/USERS.md` §8). A group's role is held to the same rule. |
+| The E911 call channel never placed a call. The events server posted to `/api/v1/emergency/notify-call` on the call manager, which has no such route; the admin API's route tried to place the call itself, and the admin has no SIP client. An extension was looked up at the node's own address, not in the tenant. `fcp-notify`'s test spoke only to a stand-in. | S1 | Fixed: the call manager's `POST /emergency/notify-call` rings one of the tenant's users or extensions at a registered phone and speaks the notice; `fcp-notify` posts there; the admin's route puts the call to a call manager. Proved end to end: a test call makes the events server ring the contact's phone, which hears the notice, and the attempt is recorded as delivered. |
+| Message waiting never followed a new message. The call manager tells subscribed phones on `voicemail.mwi_updated`, which nothing published: the voicemail flow publishes `message_recorded`, and the API published nothing when a message was heard, saved or deleted. `mwi.rs` passed because it published the event itself. | S2 | Fixed: the call manager recounts on any voicemail event naming a mailbox (left, played, deleted, or `mwi_updated`), the recording event names the mailbox by id, and the API announces the counts after a status change or a delete. |
+| Voicemail PINs were kept in plain text and compared with `==`, though the migration's own comment says "hashed PIN". Nothing checked them: `PUT /me/voicemail` took any string. | S2 | Fixed: four to eight digits, kept as a bcrypt hash, as a user's PIN is; a mailbox written before keeps working with its plain PIN, compared in constant time, until it is next set. |
+| `GET` and `DELETE /calls/{id}` and the recording routes looked only in the admin process, which holds no calls: every one answered 404 in a real deployment. The call times were Rust debug output, not RFC 3339. | S2 | Fixed: put to the call manager holding the call, as live call control is; the node gained `GET /calls/{id}`, and its recording routes are scoped to the tenant named. |
+| `POST /calls` (click-to-call) could never place a call from the admin, and on a node it dialed whatever SIP address it was given — outside trunks, class of service and billing — with both legs offered one fixed RTP port and nothing bridging them. | S2 | Removed, with its code; nothing used it. A routed click-to-call is a feature of its own. |
+| Changing a spoken prompt's text with no TTS service, or when synthesis failed, dropped its audio and answered 200: calls then played silence. | S2 | Fixed: the new words are spoken before anything is saved; otherwise 503 and the prompt is as it was. |
+| A temporary greeting's lifetime overflowed: `expires_in_hours` was multiplied and added unchecked, and a large one panicked the handler. A missing TTS service was a 500. | S3 | Fixed: one to 8,760 hours, greeting text at most 2,000 characters; 503 without TTS or when it fails. |
+| A meeting's `owner_id` was any string. A meeting could not have a PIN cleared: `null` in a PATCH meant "unchanged". An owner's PATCH dropped fields it may not change without a word. | S3 | Fixed: the owner is one of the tenant's users (by username or id, kept as the username `/me/conferences` matches); `null` clears; an owner's unknown field is refused. |
+| The dashboard swallowed every storage error into a zero, counted calls only in the admin process (none), and counted today's calls over a capped list. | S3 | Fixed: errors are errors, active calls come from where the call list finds them, and today's calls are counted in SQL. |
+| Usage by number kept the hundred busiest numbers, then paged over them. | S3 | Fixed: every number, paged. |
+| Public sign-up did not check the username as every other way of making a user does: a CRLF or a `/` went in. | S3 | Fixed: the same check. |
+| A content layout was passed to the conference server unchecked. Leaving supervision answered 200 where the contract said 204. Another user's voicemail message was 403, telling it existed. A SIP password was removed under `user_delete`, not `user_set_password`. | S4 | Fixed each. |
+| Under password expiry, a user an administrator made has never reset their password, so their first sign-in asks for a change. | — | As designed; pinned by the test. |

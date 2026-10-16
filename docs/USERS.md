@@ -238,3 +238,34 @@ string). A number that already dials something else (another user, a
 number, a device, a service) is refused with 409, a malformed one with
 400, before anything is saved. Before v0.25.354 the field was a label only,
 and an extension had to be made separately (`/api/v1/extensions`).
+
+## 8. Who may give a role
+
+Making a user, changing their role, setting their password or SIP
+password, removing their SIP password, resetting their second factor,
+unlinking their identity, unlocking, deleting or restoring them all need
+two things: the route's permission, and that the user's role — and any
+role being given — holds nothing the caller does not hold
+(`fcp_core::permissions::roles_may_assign`). The platform administrator
+may give any role; no one else may give `super_admin`. A caller's roles
+are their own and their groups' together (§5).
+
+What that comes to, by role:
+
+| Caller | May give, and act on users holding |
+|---|---|
+| `super_admin` | every role |
+| `tenant_admin` | every role but `super_admin` |
+| `telecom_admin` | `telecom_admin`, `end_user` |
+| `user_admin` | `user_admin`, `end_user` |
+| `department_admin` | `department_admin`, `end_user` |
+| `read_only` | `read_only`, `end_user` |
+
+An API token is held to its own permissions the same way, and never gives
+`super_admin`; a personal token gives nothing. A group's role is checked
+when the group is made or changed and when someone is added to it.
+Refusals are 403, naming the role.
+
+Before v0.25.405 a user administrator could set a tenant administrator's
+password and sign in as them, and a tenant administrator could make a
+`super_admin` — a platform administrator over every tenant.

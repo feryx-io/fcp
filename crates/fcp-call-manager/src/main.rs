@@ -3518,11 +3518,16 @@ fn spawn_mwi_subscription_listener(
                 return;
             }
         };
+        // Whatever changes a mailbox's counts: a message left, heard,
+        // deleted, or a status set through the API (`voicemail.mwi_updated`).
         while let Some(event) = stream.next().await {
-            if let fcp_events::PlatformEvent::Voicemail(fcp_events::VoicemailEvent::MwiUpdated {
-                mailbox_id,
-                ..
-            }) = &event
+            use fcp_events::VoicemailEvent as V;
+            if let fcp_events::PlatformEvent::Voicemail(
+                V::MwiUpdated { mailbox_id, .. }
+                | V::MessageRecorded { mailbox_id, .. }
+                | V::MessagePlayed { mailbox_id, .. }
+                | V::MessageDeleted { mailbox_id, .. },
+            ) = &event
             {
                 subs.mailbox_changed(mailbox_id).await;
             }

@@ -97,11 +97,13 @@ uuid = { workspace = true }
 # Prometheus metrics
 prometheus = { version = "0.13", default-features = false }
 
+# RFC 3339 times on the node's call view
+chrono = { version = "0.4", features = ["serde"] }
+
 # HTTP client for event forwarding
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
-chrono = { version = "0.4", features = ["serde"] }
 fcp-testkit = { path = "../fcp-testkit" }
 tempfile = "3"
 # A signing key for the STIR/SHAKEN wire test, made on the spot, and the

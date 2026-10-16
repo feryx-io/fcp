@@ -422,7 +422,14 @@ pub struct HangupResponse {
 #[allow(dead_code)]
 pub struct RecordingResponse {
     pub call_id: String,
-    pub message: String,
+    /// `recording` or `stopped`.
+    pub status: String,
+    #[serde(default)]
+    pub recording_id: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub consent: Option<String>,
 }
 
 /// Start recording request

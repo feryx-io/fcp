@@ -139,8 +139,9 @@ format = "compact"
     assert!(body.contains("Messages-Waiting: yes"), "{body}");
     assert!(body.contains("Voice-Message: 2/0"), "{body}");
 
-    // A third message, announced on the bus as the voicemail server does.
-    storage.put_message(message(3)).await.unwrap();
+    // A third message, announced on the bus as the voicemail flow does.
+    let third = message(3);
+    storage.put_message(third.clone()).await.unwrap();
     let bus = fcp_storage_redis::event_bus::RedisEventBus::new(
         fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
             url: redis.clone(),
@@ -150,17 +151,48 @@ format = "compact"
         .unwrap(),
         "e2e-voicemail".into(),
     );
-    bus.publish(PlatformEvent::Voicemail(VoicemailEvent::MwiUpdated {
+    bus.publish(PlatformEvent::Voicemail(VoicemailEvent::MessageRecorded {
         tenant_id: Some(seed.tenant_id),
+        call_id: fcp_core::CallId::new(),
         mailbox_id: mailbox_id.clone(),
-        new_messages: 3,
-        old_messages: 0,
+        message_id: third.id.clone(),
+        caller: third.caller.clone(),
+        duration_secs: 10,
         timestamp: SystemTime::now(),
     }))
     .await
     .unwrap();
     let body = summary(&phone).await.expect("told of the new message");
     assert!(body.contains("Voice-Message: 3/0"), "{body}");
+
+    // Heard through the API, which announces the counts.
+    let mut heard = third.clone();
+    heard.status = fcp_core::MessageStatus::Heard;
+    storage.put_message(heard).await.unwrap();
+    bus.publish(PlatformEvent::Voicemail(VoicemailEvent::MwiUpdated {
+        tenant_id: Some(seed.tenant_id),
+        mailbox_id: mailbox_id.clone(),
+        new_messages: 2,
+        old_messages: 1,
+        timestamp: SystemTime::now(),
+    }))
+    .await
+    .unwrap();
+    let body = summary(&phone).await.expect("told it was heard");
+    assert!(body.contains("Voice-Message: 2/1"), "{body}");
+
+    // Deleted.
+    storage.delete_message(&third.id).await.unwrap();
+    bus.publish(PlatformEvent::Voicemail(VoicemailEvent::MessageDeleted {
+        tenant_id: Some(seed.tenant_id),
+        mailbox_id: mailbox_id.clone(),
+        message_id: third.id.clone(),
+        timestamp: SystemTime::now(),
+    }))
+    .await
+    .unwrap();
+    let body = summary(&phone).await.expect("told it was deleted");
+    assert!(body.contains("Voice-Message: 2/0"), "{body}");
 
     // Ended: one last NOTIFY.
     assert_eq!(phone.resubscribe(&mut sub, 0, None).await.unwrap(), 200);

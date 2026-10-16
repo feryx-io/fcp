@@ -68,6 +68,8 @@ pub enum SupervisionRequest {
     },
     /// The call's supervisor.
     Get,
+    /// The call itself, as the node sees it (`GET /calls/:call_id`).
+    Show,
     /// Take the supervisor off.
     Leave,
     /// Live call control (`docs/DEVELOPER_SURFACE.md` phase 8): `action`
@@ -102,6 +104,19 @@ pub trait CallSupervisor: Send + Sync {
     ) -> std::result::Result<(u16, serde_json::Value), String> {
         let _ = (tenant, device_id);
         Err("no call manager can resync a phone".to_string())
+    }
+
+    /// Ring someone and speak an emergency notice to them
+    /// (`docs/E911_BLOCK_2.md` §8.1), through a node that can place calls:
+    /// the node's status and body (`{"outcome", "to"}`), or why no node
+    /// could.
+    async fn notify_call(
+        &self,
+        tenant: fcp_core::TenantId,
+        request: serde_json::Value,
+    ) -> std::result::Result<(u16, serde_json::Value), String> {
+        let _ = (tenant, request);
+        Err("no call manager can place a notification call".to_string())
     }
 
     /// Send a device's apps a test push (`docs/PUSH.md` §2.3), through a

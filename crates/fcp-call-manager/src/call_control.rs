@@ -1,6 +1,8 @@
 //! Live call control on the node (`docs/DEVELOPER_SURFACE.md` phase 8):
 //! `/calls/:id/{hold,resume,transfer,redirect,play,say,hangup}`, which the
-//! admin API forwards to the node holding the call. Behind the node's API
+//! admin API forwards to the node holding the call; and the calls the node
+//! places for others: a phone's resync, a test push, an emergency
+//! notification call. Behind the node's API
 //! token, like the supervision routes, and scoped to the tenant the caller
 //! names (the node's default tenant otherwise).
 
@@ -30,6 +32,75 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/devices/:id/resync", post(resync_device))
         .route("/devices/:id/push-test", post(push_test_device))
         .route("/push", post(relayed_push))
+        .route("/emergency/notify-call", post(notify_call))
+}
+
+/// What a notification call is asked to do (`fcp_notify::call`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotifyCallBody {
+    /// One of the tenant's users or extensions, or a SIP URI.
+    to: String,
+    /// What is spoken once it is answered.
+    text: String,
+    #[serde(default)]
+    tenant_id: Option<TenantId>,
+    /// How long to ring, in seconds (5 to 120; 30 when unsaid).
+    #[serde(default)]
+    ring_timeout_secs: Option<u64>,
+    /// How often the notice is spoken (1 to 5; twice when unsaid).
+    #[serde(default)]
+    repeat: Option<u32>,
+    /// Caller ID, the emergency call it is about, and whether that was a
+    /// test: for the log.
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    call_id: Option<String>,
+    #[serde(default)]
+    test: bool,
+}
+
+/// POST /emergency/notify-call — ring a contact and speak an emergency
+/// notice to them (`docs/E911_BLOCK_2.md` §8.1): the events server's call
+/// channel, which has no SIP stack. What became of the call comes back;
+/// only `answered` told anybody anything.
+async fn notify_call(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<NotifyCallBody>,
+) -> Response {
+    let (to, text) = (body.to.trim(), body.text.trim());
+    if to.is_empty() || text.is_empty() {
+        return error(CallControlError::bad_request(
+            "a notification call needs `to` and `text`",
+        ));
+    }
+    let Some(handler) = state.sip_handler.clone() else {
+        return error(CallControlError::new(
+            503,
+            "notification calls are not available on this node",
+        ));
+    };
+    let tenant = body.tenant_id.unwrap_or(state.default_tenant_id);
+    let ring = std::time::Duration::from_secs(body.ring_timeout_secs.unwrap_or(30).clamp(5, 120));
+    let repeat = body.repeat.unwrap_or(2).clamp(1, 5);
+    match handler.announce_call(&tenant, to, text, ring, repeat).await {
+        Ok(outcome) => {
+            tracing::info!(
+                tenant_id = %tenant, to, from = ?body.from, call_id = ?body.call_id,
+                test = body.test, outcome = %outcome, "Emergency notification call"
+            );
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "outcome": outcome.to_string(), "to": to })),
+            )
+                .into_response()
+        }
+        Err(e) => error(CallControlError::new(
+            503,
+            format!("the call could not be placed: {e}"),
+        )),
+    }
 }
 
 /// POST /push — a site's push, sent with this node's keys (`docs/PUSH.md`

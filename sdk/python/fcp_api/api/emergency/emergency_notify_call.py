@@ -73,8 +73,9 @@ def sync_detailed(
 
 ) -> Response[ErrorResponse | NotifyCallResponse]:
     """ `POST /emergency/notify-call` — ring someone and speak the notice to
-    them: the call channel of on-site notification, which the events
-    server asks this node for (`docs/E911_BLOCK_2.md` §8.1).
+    them, as the events server's call channel has a call manager do
+    (`docs/E911_BLOCK_2.md` §8.1): put to a call manager, whose answer
+    comes back — for an administrator to try a contact.
 
     Args:
         body (NotifyCallRequest):
@@ -106,8 +107,9 @@ def sync(
 
 ) -> ErrorResponse | NotifyCallResponse | None:
     """ `POST /emergency/notify-call` — ring someone and speak the notice to
-    them: the call channel of on-site notification, which the events
-    server asks this node for (`docs/E911_BLOCK_2.md` §8.1).
+    them, as the events server's call channel has a call manager do
+    (`docs/E911_BLOCK_2.md` §8.1): put to a call manager, whose answer
+    comes back — for an administrator to try a contact.
 
     Args:
         body (NotifyCallRequest):
@@ -134,8 +136,9 @@ async def asyncio_detailed(
 
 ) -> Response[ErrorResponse | NotifyCallResponse]:
     """ `POST /emergency/notify-call` — ring someone and speak the notice to
-    them: the call channel of on-site notification, which the events
-    server asks this node for (`docs/E911_BLOCK_2.md` §8.1).
+    them, as the events server's call channel has a call manager do
+    (`docs/E911_BLOCK_2.md` §8.1): put to a call manager, whose answer
+    comes back — for an administrator to try a contact.
 
     Args:
         body (NotifyCallRequest):
@@ -167,8 +170,9 @@ async def asyncio(
 
 ) -> ErrorResponse | NotifyCallResponse | None:
     """ `POST /emergency/notify-call` — ring someone and speak the notice to
-    them: the call channel of on-site notification, which the events
-    server asks this node for (`docs/E911_BLOCK_2.md` §8.1).
+    them, as the events server's call channel has a call manager do
+    (`docs/E911_BLOCK_2.md` §8.1): put to a call manager, whose answer
+    comes back — for an administrator to try a contact.
 
     Args:
         body (NotifyCallRequest):

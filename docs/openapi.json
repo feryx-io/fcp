@@ -4072,7 +4072,7 @@
         "tags": [
           "emergency"
         ],
-        "summary": "`POST /emergency/notify-call` — ring someone and speak the notice to\nthem: the call channel of on-site notification, which the events\nserver asks this node for (`docs/E911_BLOCK_2.md` §8.1).",
+        "summary": "`POST /emergency/notify-call` — ring someone and speak the notice to\nthem, as the events server's call channel has a call manager do\n(`docs/E911_BLOCK_2.md` §8.1): put to a call manager, whose answer\ncomes back — for an administrator to try a contact.",
         "operationId": "emergency_notify_call",
         "requestBody": {
           "content": {
@@ -6721,46 +6721,6 @@
             }
           }
         }
-      },
-      "post": {
-        "tags": [
-          "media"
-        ],
-        "summary": "POST /v1/calls\nOriginate a new call (click-to-call).",
-        "description": "Rings the `from` party first; when they answer, rings the `to` party.\nReturns immediately with a call ID — poll GET /v1/calls/:id for status.",
-        "operationId": "media_originate_call",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OriginateCallRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OriginateCallResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "An error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/v1/calls/{call_id}": {
@@ -6768,7 +6728,7 @@
         "tags": [
           "media"
         ],
-        "summary": "GET /v1/calls/:call_id\nGet details of a specific call",
+        "summary": "GET /v1/calls/:call_id\nA call, as the node holding it sees it.",
         "operationId": "media_get_call",
         "parameters": [
           {
@@ -6807,7 +6767,7 @@
         "tags": [
           "media"
         ],
-        "summary": "DELETE /v1/calls/:call_id\nHangup an active call",
+        "summary": "DELETE /v1/calls/:call_id\nHang up a call: `POST /calls/:call_id/hangup` by another name.",
         "operationId": "media_hangup_call",
         "parameters": [
           {
@@ -6821,10 +6781,12 @@
         ],
         "responses": {
           "200": {
-            "description": "OK",
+            "description": "Ended",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CallControlResponse"
+                }
               }
             }
           },
@@ -6859,9 +6821,19 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRecordingRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
-            "description": "OK",
+            "description": "Recording",
             "content": {
               "application/json": {
                 "schema": {
@@ -6902,7 +6874,7 @@
         ],
         "responses": {
           "200": {
-            "description": "OK",
+            "description": "Stopped",
             "content": {
               "application/json": {
                 "schema": {
@@ -7463,8 +7435,13 @@
           }
         ],
         "responses": {
-          "204": {
-            "description": "Left"
+          "200": {
+            "description": "Left: the node's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
           },
           "default": {
             "description": "An error",
@@ -26432,7 +26409,7 @@
         "properties": {
           "to": {
             "type": "string",
-            "description": "The extension or SIP URI to ring."
+            "description": "One of the tenant's users or extensions, or a SIP URI, to ring."
           },
           "text": {
             "type": "string",
@@ -26548,52 +26525,6 @@
               "null"
             ],
             "format": "date-time"
-          }
-        }
-      },
-      "OriginateCallRequest": {
-        "type": "object",
-        "required": [
-          "from",
-          "to"
-        ],
-        "properties": {
-          "from": {
-            "type": "string",
-            "description": "Extension or SIP URI of the party to ring first (caller)."
-          },
-          "to": {
-            "type": "string",
-            "description": "Extension or SIP URI of the destination party (callee)."
-          },
-          "from_display_name": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional display name for the caller."
-          },
-          "tenant_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional tenant ID (uses server default if omitted)."
-          }
-        }
-      },
-      "OriginateCallResponse": {
-        "type": "object",
-        "required": [
-          "call_id",
-          "status"
-        ],
-        "properties": {
-          "call_id": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
           }
         }
       },
@@ -36847,6 +36778,18 @@
           }
         }
       },
+      "StartRecordingRequest": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the recording is written, under the tenant's directory; the\nextension picks the format (`.wav` or `.opus`). Absent: a WAV file\nunder the tenant and the day, named for the call."
+          }
+        }
+      },
       "StatusResponse": {
         "type": "object",
         "description": "System status response.",
@@ -38925,7 +38868,7 @@
       },
       "UpdateMeetingRequest": {
         "type": "object",
-        "description": "Update meeting request body (all fields optional).",
+        "description": "Update meeting request body (all fields optional; `null` clears one\nthat may be empty).",
         "properties": {
           "name": {
             "type": [
@@ -39137,6 +39080,7 @@
       },
       "UpdateMyConferenceRequest": {
         "type": "object",
+        "description": "What an owner may change on their meeting; anything else is refused\n(an administrator's, on `/conferences/meetings/{id}`). `null` clears a\nPIN or the welcome.",
         "properties": {
           "name": {
             "type": [
@@ -39193,7 +39137,8 @@
               "null"
             ]
           }
-        }
+        },
+        "additionalProperties": false
       },
       "UpdateMyExecutive": {
         "type": "object",
@@ -41681,16 +41626,18 @@
       },
       "media.RecordingResponse": {
         "type": "object",
+        "description": "What the node answered a recording request with.",
         "required": [
           "call_id",
-          "message"
+          "status"
         ],
         "properties": {
           "call_id": {
             "type": "string"
           },
-          "message": {
-            "type": "string"
+          "status": {
+            "type": "string",
+            "description": "`recording` or `stopped`."
           },
           "recording_id": {
             "type": [
@@ -41699,16 +41646,19 @@
             ],
             "description": "The recording's id, when one started."
           },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The file it is written to, when one started."
+          },
           "consent": {
             "type": [
               "string",
               "null"
             ],
             "description": "What the parties were told: `announced`, `failed` or `not_required`."
-          },
-          "consent_announced": {
-            "type": "boolean",
-            "description": "True when a recording-consent announcement was played first."
           }
         }
       }

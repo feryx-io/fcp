@@ -16133,3 +16133,18 @@ mod queues_presence;
 
 #[path = "api_postgres/config.rs"]
 mod config;
+
+#[path = "api_postgres/sign_in.rs"]
+mod sign_in;
+
+#[path = "api_postgres/calls.rs"]
+mod calls;
+
+#[path = "api_postgres/conferences.rs"]
+mod conferences;
+
+#[path = "api_postgres/voicemail.rs"]
+mod voicemail;
+
+#[path = "api_postgres/platform.rs"]
+mod platform;

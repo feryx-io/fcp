@@ -1634,6 +1634,33 @@ async fn the_api_records_an_anchored_call_once_its_announcement_has_played() {
     let call_id = calls["calls"][0]["call_id"].as_str().unwrap().to_string();
     let start = format!("/calls/{call_id}/recording/start");
 
+    // The call as the admin API shows it; another tenant's request finds
+    // neither it nor its recorder.
+    let shown = stack.get(&format!("/calls/{call_id}")).await;
+    assert_eq!(shown["id"], call_id.as_str(), "{shown}");
+    assert_eq!(shown["state"], "Established", "{shown}");
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(shown["established_at"].as_str().unwrap()).is_ok(),
+        "{shown}"
+    );
+    let stranger = fcp_core::TenantId::new();
+    let (code, body) = fcp_testkit::smoke::http_get(&loopback(
+        stack.http,
+        &format!("/calls/{call_id}?tenant_id={stranger}"),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(code, 404, "{body}");
+    let theirs = format!(r#"{{"tenant_id": "{stranger}"}}"#);
+    assert_eq!(stack.post(&start, &theirs).await.0, 404);
+    assert_eq!(
+        stack
+            .post(&format!("/calls/{call_id}/recording/stop"), &theirs)
+            .await
+            .0,
+        404
+    );
+
     // The route returns once the parties have heard the announcement.
     let (started, alice_heard, bob_heard) = tokio::join!(
         stack.post(&start, ""),

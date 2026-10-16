@@ -8,6 +8,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.call_control_response import CallControlResponse
 from ...models.error_response import ErrorResponse
 from typing import cast
 
@@ -33,9 +34,12 @@ def _get_kwargs(
 
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Any | ErrorResponse:
+def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> CallControlResponse | ErrorResponse:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = CallControlResponse.from_dict(response.json())
+
+
+
         return response_200
 
     response_default = ErrorResponse.from_dict(response.json())
@@ -46,7 +50,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
 
 
 
-def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Response[Any | ErrorResponse]:
+def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Response[CallControlResponse | ErrorResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -60,9 +64,9 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 
-) -> Response[Any | ErrorResponse]:
+) -> Response[CallControlResponse | ErrorResponse]:
     """ DELETE /v1/calls/:call_id
-    Hangup an active call
+    Hang up a call: `POST /calls/:call_id/hangup` by another name.
 
     Args:
         call_id (str):
@@ -72,7 +76,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | ErrorResponse]
+        Response[CallControlResponse | ErrorResponse]
      """
 
 
@@ -92,9 +96,9 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
 
-) -> Any | ErrorResponse | None:
+) -> CallControlResponse | ErrorResponse | None:
     """ DELETE /v1/calls/:call_id
-    Hangup an active call
+    Hang up a call: `POST /calls/:call_id/hangup` by another name.
 
     Args:
         call_id (str):
@@ -104,7 +108,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | ErrorResponse
+        CallControlResponse | ErrorResponse
      """
 
 
@@ -119,9 +123,9 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 
-) -> Response[Any | ErrorResponse]:
+) -> Response[CallControlResponse | ErrorResponse]:
     """ DELETE /v1/calls/:call_id
-    Hangup an active call
+    Hang up a call: `POST /calls/:call_id/hangup` by another name.
 
     Args:
         call_id (str):
@@ -131,7 +135,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | ErrorResponse]
+        Response[CallControlResponse | ErrorResponse]
      """
 
 
@@ -151,9 +155,9 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
 
-) -> Any | ErrorResponse | None:
+) -> CallControlResponse | ErrorResponse | None:
     """ DELETE /v1/calls/:call_id
-    Hangup an active call
+    Hang up a call: `POST /calls/:call_id/hangup` by another name.
 
     Args:
         call_id (str):
@@ -163,7 +167,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | ErrorResponse
+        CallControlResponse | ErrorResponse
      """
 
 

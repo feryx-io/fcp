@@ -22,20 +22,21 @@ T = TypeVar("T", bound="MediaRecordingResponse")
 
 @_attrs_define
 class MediaRecordingResponse:
-    """ 
+    """ What the node answered a recording request with.
+
         Attributes:
             call_id (str):
-            message (str):
+            status (str): `recording` or `stopped`.
             recording_id (None | str | Unset): The recording's id, when one started.
+            path (None | str | Unset): The file it is written to, when one started.
             consent (None | str | Unset): What the parties were told: `announced`, `failed` or `not_required`.
-            consent_announced (bool | Unset): True when a recording-consent announcement was played first.
      """
 
     call_id: str
-    message: str
+    status: str
     recording_id: None | str | Unset = UNSET
+    path: None | str | Unset = UNSET
     consent: None | str | Unset = UNSET
-    consent_announced: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -45,7 +46,7 @@ class MediaRecordingResponse:
     def to_dict(self) -> dict[str, Any]:
         call_id = self.call_id
 
-        message = self.message
+        status = self.status
 
         recording_id: None | str | Unset
         if isinstance(self.recording_id, Unset):
@@ -53,27 +54,31 @@ class MediaRecordingResponse:
         else:
             recording_id = self.recording_id
 
+        path: None | str | Unset
+        if isinstance(self.path, Unset):
+            path = UNSET
+        else:
+            path = self.path
+
         consent: None | str | Unset
         if isinstance(self.consent, Unset):
             consent = UNSET
         else:
             consent = self.consent
 
-        consent_announced = self.consent_announced
-
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
             "call_id": call_id,
-            "message": message,
+            "status": status,
         })
         if recording_id is not UNSET:
             field_dict["recording_id"] = recording_id
+        if path is not UNSET:
+            field_dict["path"] = path
         if consent is not UNSET:
             field_dict["consent"] = consent
-        if consent_announced is not UNSET:
-            field_dict["consent_announced"] = consent_announced
 
         return field_dict
 
@@ -84,7 +89,7 @@ class MediaRecordingResponse:
         d = dict(src_dict)
         call_id = d.pop("call_id")
 
-        message = d.pop("message")
+        status = d.pop("status")
 
         def _parse_recording_id(data: object) -> None | str | Unset:
             if data is None:
@@ -94,6 +99,16 @@ class MediaRecordingResponse:
             return cast(None | str | Unset, data)
 
         recording_id = _parse_recording_id(d.pop("recording_id", UNSET))
+
+
+        def _parse_path(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        path = _parse_path(d.pop("path", UNSET))
 
 
         def _parse_consent(data: object) -> None | str | Unset:
@@ -106,14 +121,12 @@ class MediaRecordingResponse:
         consent = _parse_consent(d.pop("consent", UNSET))
 
 
-        consent_announced = d.pop("consent_announced", UNSET)
-
         media_recording_response = cls(
             call_id=call_id,
-            message=message,
+            status=status,
             recording_id=recording_id,
+            path=path,
             consent=consent,
-            consent_announced=consent_announced,
         )
 
 

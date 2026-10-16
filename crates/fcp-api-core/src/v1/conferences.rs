@@ -13,6 +13,7 @@ use fcp_core::meeting::{
     default_video_max_resolution, default_video_passthrough,
 };
 use fcp_core::storage::ConferenceStore;
+use fcp_core::CredentialStore;
 use fcp_core::{Meeting, MeetingId, VideoCodec};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -225,11 +226,59 @@ async fn room_number_exists_in_tenant(
         .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
-/// Update meeting request body (all fields optional).
+/// Tell "absent" from "present and null", so a field can be cleared.
+pub(crate) fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// The meeting's owner, when it names one: a user of the tenant, by
+/// username or id, kept as the username — what `/me/conferences` matches
+/// the caller by, and what a rename moves.
+async fn owner_of(
+    state: &ApiState,
+    tenant_id: &fcp_core::TenantId,
+    owner: Option<&str>,
+) -> Result<Option<String>, ApiError> {
+    let Some(owner) = owner else {
+        return Ok(None);
+    };
+    let storage = require_storage!(state);
+    let internal = |e: anyhow::Error| ApiError::Internal(e.to_string());
+    let by_name = storage
+        .get_user_in_tenant(owner, tenant_id)
+        .await
+        .map_err(internal)?;
+    let found = match by_name {
+        Some(user) => Some(user),
+        None => match owner.parse::<fcp_core::UserId>() {
+            Ok(id) => storage
+                .get_user_by_id(&id)
+                .await
+                .map_err(internal)?
+                .filter(|u| u.tenant_id == *tenant_id),
+            Err(_) => None,
+        },
+    };
+    match found {
+        Some(user) if !user.is_deprovisioned() => Ok(Some(user.username)),
+        _ => Err(ApiError::BadRequest(format!(
+            "owner_id '{owner}' is not a user of the tenant"
+        ))),
+    }
+}
+
+/// Update meeting request body (all fields optional; `null` clears one
+/// that may be empty).
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateMeetingRequest {
     pub name: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
     pub guest_pin: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub host_pin: Option<Option<String>>,
     pub require_guest_pin: Option<bool>,
     pub max_participants: Option<usize>,
@@ -238,16 +287,25 @@ pub struct UpdateMeetingRequest {
     pub auto_record: Option<bool>,
     pub default_locked: Option<bool>,
     pub permanent: Option<bool>,
+    #[serde(default, deserialize_with = "double_option")]
     pub owner_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub pin_prompt_sound: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub invalid_pin_sound: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub moh_sound: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub pin_prompt_tts: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub invalid_pin_tts: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub welcome_tts: Option<Option<String>>,
     pub play_entry_tone: Option<bool>,
     pub play_exit_tone: Option<bool>,
+    #[serde(default, deserialize_with = "double_option")]
     pub join_sound: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub exit_sound: Option<Option<String>>,
     pub video_enabled: Option<bool>,
     pub video_layout: Option<String>,
@@ -322,6 +380,7 @@ pub async fn create_meeting(
         return Err(ApiError::BadRequest("name is required".to_string()));
     }
 
+    let owner_id = owner_of(&state, &tenant_id, req.owner_id.as_deref()).await?;
     if room_number_exists_in_tenant(&state, &tenant_id, &req.room_number).await? {
         return Err(ApiError::Conflict(format!(
             "A meeting with room number '{}' already exists",
@@ -344,7 +403,7 @@ pub async fn create_meeting(
         auto_record: req.auto_record,
         default_locked: req.default_locked,
         permanent: req.permanent,
-        owner_id: req.owner_id,
+        owner_id,
         pin_prompt_sound: req.pin_prompt_sound,
         invalid_pin_sound: req.invalid_pin_sound,
         moh_sound: req.moh_sound,
@@ -487,7 +546,7 @@ pub async fn update_meeting(
         meeting.permanent = v;
     }
     if let Some(v) = req.owner_id {
-        meeting.owner_id = v;
+        meeting.owner_id = owner_of(&state, &tenant.0, v.as_deref()).await?;
     }
     if let Some(v) = req.pin_prompt_sound {
         meeting.pin_prompt_sound = v;

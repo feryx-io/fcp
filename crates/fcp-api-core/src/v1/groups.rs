@@ -118,6 +118,20 @@ async fn owned(state: &ApiState, tenant: &TenantId, id: &str) -> Result<Group, A
         .ok_or_else(|| ApiError::NotFound(format!("Group {id} not found")))
 }
 
+/// Refuses a caller making a group that gives, or putting someone in a
+/// group that gives, a role holding more than the caller does
+/// (`crate::v1::users::ensure_may_act_on`).
+fn gives_nothing_beyond(
+    identity: &AuthIdentity,
+    group: &Group,
+    state: &ApiState,
+) -> Result<(), ApiError> {
+    match group.role {
+        Some(role) => crate::v1::users::ensure_may_act_on(identity, role, state.deployment_mode),
+        None => Ok(()),
+    }
+}
+
 /// The group a request describes, checked: a role a group may give, and
 /// a name no other group of the tenant has.
 async fn written(state: &ApiState, mut group: Group, req: GroupRequest) -> Result<Group, ApiError> {
@@ -268,6 +282,7 @@ pub async fn create_group(
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(&identity, Permission::GroupManage, state.deployment_mode)?;
     let group = written(&state, Group::new(tenant.0, String::new()), req).await?;
+    gives_nothing_beyond(&identity, &group, &state)?;
     groups(&state)?.put_group(&group).await.map_err(internal)?;
     announce(&state, &group).await;
     Ok((StatusCode::CREATED, Json(response(group, 0))))
@@ -296,6 +311,7 @@ pub async fn update_group(
     crate::auth::check_permission(&identity, Permission::GroupManage, state.deployment_mode)?;
     let before = owned(&state, &tenant.0, &id).await?;
     let group = written(&state, before, req).await?;
+    gives_nothing_beyond(&identity, &group, &state)?;
     let store = groups(&state)?;
     store.put_group(&group).await.map_err(internal)?;
     announce(&state, &group).await;
@@ -418,6 +434,7 @@ pub async fn add_member(
     let group = owned(&state, &tenant.0, &id).await?;
     let user = member_user(&state, &tenant.0, &req.username).await?;
     crate::v1::users::refuse_deprovisioned(&user)?;
+    gives_nothing_beyond(&identity, &group, &state)?;
     let added = groups(&state)?
         .add_member(&GroupMember {
             group_id: group.id,

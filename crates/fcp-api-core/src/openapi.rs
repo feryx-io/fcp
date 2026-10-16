@@ -183,7 +183,6 @@ use utoipa::{Modify, OpenApi};
         crate::v1::registrations::delete_registrations,
         crate::v1::registrations::delete_registration,
         crate::v1::media::list_calls,
-        crate::v1::media::originate_call,
         crate::v1::media::get_call,
         crate::v1::media::hangup_call,
         crate::v1::media::start_recording,

@@ -24,7 +24,7 @@ T = TypeVar("T", bound="NotifyCallRequest")
 class NotifyCallRequest:
     """ 
         Attributes:
-            to (str): The extension or SIP URI to ring.
+            to (str): One of the tenant's users or extensions, or a SIP URI, to ring.
             text (str): What to say once it is answered.
             ring_timeout_secs (int | Unset): How long to ring.
             repeat (int | Unset): How often the notice is spoken.

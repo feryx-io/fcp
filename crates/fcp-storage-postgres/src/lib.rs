@@ -2044,7 +2044,7 @@ impl CdrStore for PostgresStorage {
         let (from_dt, to_dt) = (system_time_to_datetime(from), system_time_to_datetime(to));
         let Some((lo, hi)) = cdr_volume::rollup_span(&self.pool, from_dt, to_dt).await? else {
             return self
-                .live_usage_by_number(tenant_id, from_dt, to_dt, Some(100))
+                .live_usage_by_number(tenant_id, from_dt, to_dt, None)
                 .await;
         };
         let mut by_number: HashMap<String, NumberUsage> = HashMap::new();
@@ -2077,7 +2077,7 @@ impl CdrStore for PostgresStorage {
                 .cmp(&a.total_calls)
                 .then(a.number.cmp(&b.number))
         });
-        out.truncate(100);
+        // Every number: the API pages them.
         Ok(out)
     }
 

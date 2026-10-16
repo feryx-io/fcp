@@ -1805,6 +1805,7 @@ pub async fn unlink_identity(
 ) -> Result<StatusCode, ApiError> {
     crate::auth::check_permission(&identity, Permission::UserUpdate, state.deployment_mode)?;
     let user = tenant_user(&state, &tenant.0, &username).await?;
+    crate::v1::users::ensure_may_act_on(&identity, user.role, state.deployment_mode)?;
     let store = identity_store(&state)?;
     let mut removed = false;
     for i in store.list_user_identities(&user.id).await? {

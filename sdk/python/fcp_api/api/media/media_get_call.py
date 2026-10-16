@@ -66,7 +66,7 @@ def sync_detailed(
 
 ) -> Response[CallInfo | ErrorResponse]:
     """ GET /v1/calls/:call_id
-    Get details of a specific call
+    A call, as the node holding it sees it.
 
     Args:
         call_id (str):
@@ -98,7 +98,7 @@ def sync(
 
 ) -> CallInfo | ErrorResponse | None:
     """ GET /v1/calls/:call_id
-    Get details of a specific call
+    A call, as the node holding it sees it.
 
     Args:
         call_id (str):
@@ -125,7 +125,7 @@ async def asyncio_detailed(
 
 ) -> Response[CallInfo | ErrorResponse]:
     """ GET /v1/calls/:call_id
-    Get details of a specific call
+    A call, as the node holding it sees it.
 
     Args:
         call_id (str):
@@ -157,7 +157,7 @@ async def asyncio(
 
 ) -> CallInfo | ErrorResponse | None:
     """ GET /v1/calls/:call_id
-    Get details of a specific call
+    A call, as the node holding it sees it.
 
     Args:
         call_id (str):

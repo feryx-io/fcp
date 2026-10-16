@@ -272,6 +272,7 @@ pub async fn reset_totp(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("User '{username}' not found")))?;
+    crate::v1::users::ensure_may_act_on(&identity, user.role, state.deployment_mode)?;
     store(&state)?
         .delete_user_totp(&user.id)
         .await

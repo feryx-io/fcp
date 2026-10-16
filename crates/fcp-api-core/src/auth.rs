@@ -79,6 +79,30 @@ impl AuthIdentity {
         }
     }
 
+    /// Whether this caller may give `role` to a user, or act on a user who
+    /// holds it (`fcp_core::permissions::roles_may_assign`): the static
+    /// token any role; a session what its roles allow; an admin token a
+    /// role holding nothing the token lacks, never the platform's; a
+    /// personal token none.
+    pub fn may_assign_role(&self, role: UserRole, mode: DeploymentMode) -> bool {
+        match self {
+            Self::StaticToken => true,
+            Self::Session { .. } => fcp_core::permissions::roles_may_assign(
+                &self.session_roles().unwrap_or_default(),
+                role,
+                mode,
+            ),
+            Self::ApiToken { .. } => {
+                !role.is_platform_admin()
+                    && role
+                        .permissions(mode)
+                        .into_iter()
+                        .all(|p| self.has_permission(p.as_str()))
+            }
+            Self::Personal { .. } => false,
+        }
+    }
+
     /// A signed-in user's roles: their own and their groups'.
     pub fn session_roles(&self) -> Option<Vec<UserRole>> {
         match self {

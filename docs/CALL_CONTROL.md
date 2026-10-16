@@ -38,9 +38,20 @@ The errors come in the API's one shape (`code`, `error`, `details`):
   not a user, an extension or a number (a URI to elsewhere is refused:
   the target is dialed at the node).
 
-`DELETE /api/v1/calls/{call_id}` still ends a call on the node the admin
-API runs beside; `POST …/hangup` reaches the node holding the call
-wherever the API runs.
+The call's other routes go the same way (since v0.25.405; before, they
+looked only in the admin process, which holds no calls, and found none):
+
+| Route | Permission | On the node | Answer |
+|---|---|---|---|
+| `GET /api/v1/calls/{call_id}` | `call_view` | `GET /calls/{id}?tenant_id=` | the call: parties, state, times (RFC 3339), whether its media is anchored |
+| `DELETE /api/v1/calls/{call_id}` | `call_control` | `POST /calls/{id}/hangup` | as `hangup` |
+| `POST /api/v1/calls/{call_id}/recording/start` | `call_control` | `POST /calls/{id}/recording/start` | 200 `recording`, `recording_id`, `path`, `consent`; the body's optional `path` is under the tenant's directory |
+| `POST /api/v1/calls/{call_id}/recording/stop` | `call_control` | `POST /calls/{id}/recording/stop` | 200 `stopped` |
+
+`POST /api/v1/calls` (click-to-call) was removed in v0.25.405: the admin
+process has no SIP client, so it never placed a call, and on a node it
+dialed whatever address it was given, outside the tenant's trunks, class
+of service and billing, with neither party's media connected.
 
 ## 2. Where the call is
 
@@ -65,5 +76,12 @@ bits, so nothing but the node's own dial-back reaches a flow this way.
   - `the_api_holds_plays_into_and_hangs_up_a_call`;
   - `the_api_transfers_a_call_and_redirects_it_into_a_flow`.
 - `fcp-admin/tests/call_control.rs`: the admin binary forwarding each
-  control to a stand-in node, with its token, tenant and fields, and the
-  node's refusal in the API's error shape.
+  control, a call's details, its recording and `DELETE`, to a stand-in
+  node, with its token, tenant and fields, and the node's refusal in the
+  API's error shape.
+- `fcp-call-manager/tests/calls.rs`
+  (`the_api_records_an_anchored_call_once_its_announcement_has_played`):
+  the node's call view and recording, and another tenant's request for
+  them refused.
+- `fcp-api-core/tests/api_postgres/calls.rs`: each route put to the node
+  with the caller's tenant, what the API refuses never put to it.

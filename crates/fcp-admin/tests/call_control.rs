@@ -2,13 +2,15 @@
 //! (`docs/DEVELOPER_SURFACE.md` phase 8): `/api/v1/calls/:id/{hold,…}` is
 //! put to the node `[call_manager] url` names, with its token, the
 //! caller's tenant and the request's fields, and the node's answer comes
-//! back — its errors in the API's one shape. What the node then does is
-//! proved against the binary in `fcp-call-manager/tests/calling.rs`.
+//! back — its errors in the API's one shape. So are a call's details, its
+//! hangup by `DELETE` and its recording. What the node then does is
+//! proved against the binary in `fcp-call-manager/tests/calling.rs` and
+//! `calls.rs`.
 //! Skipped without `FCP_TEST_DATABASE_URL`.
 
-use axum::extract::Path;
+use axum::extract::{Path, Query};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use fcp_testkit::smoke::{self, free_port, loopback};
 use fcp_testkit::{Service, TestDatabase};
@@ -30,7 +32,64 @@ struct Asked {
 /// the callee with 409.
 async fn stand_in(asked: Arc<Mutex<Vec<Asked>>>) -> u16 {
     let port = free_port();
-    let app = Router::new().route(
+    let shown = Arc::clone(&asked);
+    let recorded = Arc::clone(&asked);
+    let app = Router::new()
+        .route(
+            "/calls/:id",
+            get(
+                move |Path(id): Path<String>,
+                      Query(query): Query<std::collections::HashMap<String, String>>| {
+                    let asked = Arc::clone(&shown);
+                    async move {
+                        asked.lock().unwrap().push(Asked {
+                            path: format!("/calls/{id}"),
+                            authorization: None,
+                            body: serde_json::json!({ "tenant_id": query.get("tenant_id") }),
+                        });
+                        if id != CALL {
+                            return (
+                                StatusCode::NOT_FOUND,
+                                Json(serde_json::json!({ "error": format!("Call not found: {id}") })),
+                            );
+                        }
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "id": id, "state": "Established", "from_uri": "sip:a@x",
+                                "to_uri": "sip:b@x", "from_display_name": null,
+                                "to_display_name": null,
+                                "created_at": "2026-10-16T09:00:00Z", "established_at": null,
+                                "ended_at": null, "duration_seconds": null,
+                                "media_anchored": true, "failure_reason": null,
+                            })),
+                        )
+                    }
+                },
+            ),
+        )
+        .route(
+            "/calls/:id/recording/:what",
+            post(
+                move |Path((id, what)): Path<(String, String)>,
+                      Json(body): Json<serde_json::Value>| {
+                    let asked = Arc::clone(&recorded);
+                    async move {
+                        asked.lock().unwrap().push(Asked {
+                            path: format!("/calls/{id}/recording/{what}"),
+                            authorization: None,
+                            body,
+                        });
+                        let status = if what == "start" { "recording" } else { "stopped" };
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({ "call_id": id, "status": status })),
+                        )
+                    }
+                },
+            ),
+        )
+        .route(
         "/calls/:id/:action",
         post(
             move |Path((id, action)): Path<(String, String)>,
@@ -195,6 +254,53 @@ format = "compact"
     // A call no node holds.
     let (status, text) = post("hangup", "call-00000000-0000-0000-0000-000000000000", None).await;
     assert_eq!(status, 404, "{text}");
+
+    // A call's details, its recording and its hangup by DELETE go the same
+    // way, for the caller's tenant.
+    let call_url = loopback(http, &format!("/api/v1/calls/{CALL}"));
+    let shown = client.get(&call_url).send().await.unwrap();
+    assert_eq!(shown.status(), 200);
+    let shown: serde_json::Value = shown.json().await.unwrap();
+    assert_eq!(shown["id"], CALL, "{shown}");
+    let tenant = asked.lock().unwrap().last().unwrap().body["tenant_id"].clone();
+    assert!(tenant.as_str().is_some_and(|t| !t.is_empty()), "{tenant}");
+    for (what, body, status) in [
+        (
+            "start",
+            Some(serde_json::json!({"path": "calls/x.wav"})),
+            "recording",
+        ),
+        ("stop", None, "stopped"),
+    ] {
+        let (code, text) = post(&format!("recording/{what}"), CALL, body.clone()).await;
+        assert_eq!(code, 200, "{what}: {text}");
+        assert!(text.contains(status), "{text}");
+        let seen = asked.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(seen.path, format!("/calls/{CALL}/recording/{what}"));
+        let bare = |v: &serde_json::Value| {
+            v.as_str()
+                .unwrap()
+                .trim_start_matches("tenant-")
+                .to_string()
+        };
+        assert_eq!(bare(&seen.body["tenant_id"]), bare(&tenant));
+        if what == "start" {
+            assert_eq!(seen.body["path"], "calls/x.wav");
+        }
+    }
+    let ended = client.delete(&call_url).send().await.unwrap();
+    assert_eq!(ended.status(), 200);
+    let seen = asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(seen.path, format!("/calls/{CALL}/hangup"));
+    let missing = client
+        .get(loopback(
+            http,
+            "/api/v1/calls/call-00000000-0000-0000-0000-000000000000",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
 
     // What the API refuses itself is not put to the node.
     let before = asked.lock().unwrap().len();
