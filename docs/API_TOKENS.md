@@ -263,11 +263,13 @@ An id whose type has a prefix is written with it: `tenant-…`, `user-…`,
 `dev-…`, `site-…` and so on (`fcp_core::identifiers`). A request may send
 a bare UUID or the prefixed form, and both are read.
 
-Four resources have ids with no prefixed type, and these are plain UUIDs:
+Six resources have ids with no prefixed type, and these are plain UUIDs:
 - audit-log entries;
 - billing transactions;
 - rate plans;
-- voicemail mailboxes.
+- voicemail mailboxes;
+- voicemail messages;
+- webhook deliveries.
 
 `api_postgres.rs` checks every response its tests receive against these
 two rules (`check_shape`).

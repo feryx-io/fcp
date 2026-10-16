@@ -24,6 +24,11 @@ use axum::{
 /// The environment variable naming the log file.
 pub const ENV: &str = "FCP_ROUTE_LOG";
 
+/// A request carrying this header is not logged: the D3 probes call every
+/// route with ids that name nothing to see who is refused, and reaching a
+/// handler that way is not testing it.
+pub const PROBE_HEADER: &str = "x-fcp-route-probe";
+
 struct Log {
     file: File,
     seen: HashSet<String>,
@@ -52,6 +57,9 @@ pub async fn record(req: Request, next: Next) -> Response {
     let Some(log) = log() else {
         return next.run(req).await;
     };
+    if req.headers().contains_key(PROBE_HEADER) {
+        return next.run(req).await;
+    }
     let method = req.method().clone();
     let template = req
         .extensions()

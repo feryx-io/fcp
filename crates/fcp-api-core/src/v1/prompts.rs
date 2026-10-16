@@ -584,7 +584,7 @@ pub async fn synthesize_prompt(
     let tts_service = state
         .tts_service
         .as_ref()
-        .ok_or_else(|| ApiError::Internal("TTS service not configured".to_string()))?;
+        .ok_or_else(|| ApiError::ServiceUnavailable("TTS service not configured".to_string()))?;
 
     let prompt_id: PromptId = id
         .parse()
