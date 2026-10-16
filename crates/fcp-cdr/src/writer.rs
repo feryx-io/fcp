@@ -5,6 +5,7 @@ use std::sync::Arc;
 use fcp_core::storage::CallDetailRecord;
 use tracing::{error, warn};
 
+use crate::open::OpenRecords;
 use crate::processor::Processor;
 use crate::spool::Spool;
 
@@ -16,6 +17,8 @@ use crate::spool::Spool;
 #[derive(Clone, Default)]
 pub struct CdrWriter {
     spool: Option<Spool>,
+    /// The records of calls still up, beside the spool.
+    open: Option<OpenRecords>,
     direct: Option<Arc<Processor>>,
     /// Records handed to the processor directly and not yet stored.
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
@@ -33,7 +36,15 @@ impl std::fmt::Debug for CdrWriter {
 impl CdrWriter {
     /// Records go to `spool`; `fallback` takes them if the spool cannot.
     pub fn spooled(spool: Spool, fallback: Option<Arc<Processor>>) -> Self {
+        let open = match OpenRecords::at(spool.dir()) {
+            Ok(open) => Some(open),
+            Err(e) => {
+                warn!(error = %e, "No open records: a call up when this node stops will have no record");
+                None
+            }
+        };
         Self {
+            open,
             spool: Some(spool),
             direct: fallback,
             in_flight: Arc::default(),
@@ -43,6 +54,7 @@ impl CdrWriter {
     /// No spool: records go straight to `processor`, each on its own task.
     pub fn direct(processor: Arc<Processor>) -> Self {
         Self {
+            open: None,
             spool: None,
             direct: Some(processor),
             in_flight: Arc::default(),
@@ -152,6 +164,27 @@ impl CdrWriter {
             out.push_str(&processor.stats().snapshot().prometheus(labels));
         }
         out
+    }
+
+    /// Keep `record` as what is written if this node stops before the
+    /// call ends (`crate::open`). Only with a spool; a file write, so off
+    /// the call path.
+    pub fn keep_open(&self, record: &CallDetailRecord) {
+        if let Some(open) = &self.open {
+            open.put(record);
+        }
+    }
+
+    /// Whether this writer keeps open records.
+    pub fn keeps_open(&self) -> bool {
+        self.open.is_some()
+    }
+
+    /// The call's record was written: its open record goes.
+    pub fn close_open(&self, call_id: &fcp_core::CallId) {
+        if let Some(open) = &self.open {
+            open.close(call_id);
+        }
     }
 
     /// Take the record. Never blocks on storage; never panics.

@@ -635,3 +635,42 @@ those that never ring, so the runner now refuses a row that does that.
 | A flow's `Dial` to a user ran a copy of the ring plan of its own. It rang the first registered phone only, with no call waiting, find-me, executive screening or push. A forward's target was dialed back into the node without the node's own-leg token, so since `auth_invites` became the default (D2a) every such forward was challenged and failed. Under several tenants it would also have landed in the default tenant. | S2 | Fixed: the leg goes back into the node at the user's extension, carrying the own-leg token, the flow's call (its tenant) and `X-FCP-Flow-Dial`. The node runs the whole plan, and its voicemail treatment answers 480, so the flow keeps its `busy` and `no_answer` branches (`ENTERPRISE_CALLING.md` §3.1.1). |
 | Two users forwarding to each other put calls into the node without end. Each hop was a new call with its own media session: 19 calls in 0.1 s, stopped only when the node's own rate limit (20 calls a second from its address) refused its own leg with 503. Forwards on no answer did the same, one ring time at a time. | S2 | Fixed: a call whose forwards reach a user they already reached is answered 482 Loop Detected, as is a chain of more than ten forwards. |
 | A forward to a user was cut off at the forwarding user's ring time, which had run out by then. The forward's leg kept the old timeout, so Carol rang only as long as Bob had. When the two times matched, her own voicemail or forward never applied. | S2 | Fixed: a forward placed into the node waits for the new call's own plan, with a ten-minute backstop. |
+
+### D5a. Faults at the call manager
+
+`fcp-call-manager/tests/faults.rs` takes a call manager's stores away
+while Alice talks to Bob, with Carol and Dave registered, and brings them
+back. The node reaches Postgres and Redis through
+`fcp_testkit::cut::CutLink`, which fails a link two ways:
+- **refused**: every connection is reset and new ones are refused, as
+  when the store's process has gone;
+- **silent**: connections stay open and new ones are accepted, but
+  nothing crosses, as across a partition.
+
+Five tests:
+- **Postgres away**, refused and silent;
+- **Redis away**, refused and silent, with Bob taking one call at a
+  time, so whether the cluster still counts his ended call is something
+  a caller hears;
+- **a killed node**: two call managers in a cluster, one killed with
+  `SIGKILL` while it carries Alice's call to Bob, and started again on
+  its spool.
+
+After each, the test checks:
+- that the call up lived, heard both ways, and that its BYE crossed;
+- that a REGISTER and a new call got a final answer within 8 s;
+- that the call's record was written;
+- that the node rejoined the cluster;
+- that the events raised while Redis was away reached the stream;
+- that Carol could register and call again, with no restart.
+
+The conference node, the events server and `fcp-jobs` are D5b. A replica
+failover and an upgrade over a populated database are D5c.
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| With Postgres away, a call manager answered no REGISTER and no new INVITE. Refused, each request waited for the pool's 30 s acquire timeout, and the phone had given up at 32 s with no answer. Silent, a query on an open connection waited until the network came back, however long that was. Calls already up were unaffected. | S2 | Fixed: `fcp_storage_postgres::primary_health::PrimaryHealth` asks the primary `SELECT 1` every second, and two missed answers mark it down. While it is down, the handler's store gate answers a REGISTER or a new INVITE at once with `503 Service Unavailable - store unreachable` and `Retry-After: 5`. A REGISTER already under way is cut off at five seconds with the same 503. The pool's acquire timeout is `[storage] acquire_timeout_secs` (5). `/ready` is 503 while the database is down, and `/status` and `/metrics` say so (`fcp_database_up`, `fcp_database_outages_total`). |
+| A call manager killed mid-call kept its users busy, and its tenants' and trunks' places taken, for three hours. Every call takes a lease in Redis, per user (for call waiting and `max_calls`), per tenant and per trunk. Only the node carrying the call refreshes or releases it, and the lease stood for three hours (`DEFAULT_LEASE_TTL_SECS`). Measured: Bob, who takes one call at a time, was still answered 486 Busy on the surviving node 13 s after the dead node's call to him ended with it. A shared line's appearance stood for half an hour. A release that failed while Redis was away stood just as long. | S2 | Fixed: `[cluster] lease_ttl_secs` (60) is the lease time for all four, refreshed every quarter of it, and the settling tick runs at least that often. Bob is reachable as soon as the lease lapses: within `lease_ttl_secs` of the node's death, and 2 s after Redis returned in the test. |
+| A call up when its node was killed had no record, ever: its talk time was never billed and nobody could find the call. | S2 | Fixed: every ten seconds, the node keeps each answered call's record as it would be written then, in `<spool_dir>/open/<call>.json` (`fcp_cdr::OpenRecords`). The call's end writes the real record and removes the file. A node that starts and finds files left writes them as answered and ended by `node_failed`. A call's record now has the call's own id as its `cdr_id`, so a node killed between the two writes is billed once. |
+| An emergency call cannot be put through while the database is away: the caller, the tenant, the emergency numbers and the location are all read from it. | S2 | #326. It is refused with the same 503 as any other call. That is faster than the 32 s wait it had before, but it is still not a call placed. |
+| Redis away, refused or silent: calls up and new calls carried on, and every `call.ended` raised meanwhile reached the stream once Redis was back. | — | No change needed; the tests keep it so. |

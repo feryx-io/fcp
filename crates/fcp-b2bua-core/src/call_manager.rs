@@ -845,6 +845,7 @@ impl CallManager {
         // relayed leg is its call's node's to record).
         if let (Some(writer), None) = (&self.cdr, &call.relay_for) {
             writer.write(self.record_for(&call));
+            writer.close_open(&fcp_core::CallId::from_uuid(*call.id.as_uuid()));
         }
 
         // Remove from active calls
@@ -877,11 +878,14 @@ impl CallManager {
             ),
         };
 
+        // The call's own id: the record written at its end and the one
+        // kept open while it was up are the same record (`fcp_cdr::open`).
         let mut builder = fcp_cdr::RecordBuilder::new(
             fcp_cdr::CdrKind::Call,
             fcp_core::CallId::from_uuid(*call.id.as_uuid()),
             call.tenant_id,
         )
+        .cdr_id(*call.id.as_uuid())
         .from(
             call.a_leg.remote_uri.clone(),
             call.a_leg.remote_display_name.clone(),
@@ -912,6 +916,36 @@ impl CallManager {
             builder = builder.sip_call_id(id);
         }
         builder.build()
+    }
+
+    /// Keep the record of every answered call this node carries as it
+    /// would be written if the node stopped now: ended now, by
+    /// `NodeFailed` (`docs/DEEP_TESTING.md` D5). A file write per call, so
+    /// called off the call path, on a tick.
+    pub fn keep_open_records(&self) -> usize {
+        let Some(writer) = self.cdr.as_ref().filter(|w| w.keeps_open()) else {
+            return 0;
+        };
+        let open: Vec<Call> = self
+            .calls
+            .iter()
+            .filter(|e| {
+                let call = e.value();
+                call.established_at.is_some()
+                    && !call.state.is_terminal()
+                    && call.relay_for.is_none()
+            })
+            .map(|e| e.value().clone())
+            .collect();
+        for mut call in open.iter().cloned() {
+            call.ended_at = None;
+            call.termination = Some(fcp_cdr::TerminationReason::system(
+                fcp_cdr::SystemCause::NodeFailed,
+                "the node stopped while the call was up",
+            ));
+            writer.keep_open(&self.record_for(&call));
+        }
+        open.len()
     }
 
     /// Get all active calls.

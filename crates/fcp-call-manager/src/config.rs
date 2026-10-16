@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::time::Duration;
 use tracing::{info, warn};
 
 /// Call manager server configuration.
@@ -445,6 +446,12 @@ pub struct StorageSection {
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
 
+    /// Seconds a request waits for a database connection before it fails.
+    /// A REGISTER or an INVITE that waits longer has been given up on by
+    /// the phone. Default: 5.
+    #[serde(default = "default_acquire_timeout_secs")]
+    pub acquire_timeout_secs: u64,
+
     /// Redis connection URL for registration store and cluster state.
     /// When set alongside `registration_backend = "redis"`, registrations
     /// are stored in Redis while other data remains in PostgreSQL.
@@ -467,6 +474,10 @@ fn default_database_url() -> String {
     "postgresql://localhost/fcp".to_string()
 }
 
+fn default_acquire_timeout_secs() -> u64 {
+    5
+}
+
 fn default_max_connections() -> u32 {
     50
 }
@@ -478,6 +489,7 @@ impl Default for StorageSection {
             read_replica_url: None,
             max_replica_lag_secs: default_max_replica_lag_secs(),
             max_connections: default_max_connections(),
+            acquire_timeout_secs: default_acquire_timeout_secs(),
             redis_url: None,
             registration_backend: None,
         }
@@ -803,6 +815,16 @@ pub struct ClusterSection {
     #[serde(default = "default_lease_settle_secs")]
     pub lease_settle_secs: u64,
 
+    /// Seconds a call's leases stand without their node refreshing them:
+    /// the tenant's and the trunk's places, a user's call (call waiting,
+    /// `max_calls`) and a shared line's appearance. A node killed mid-call
+    /// cannot give its leases back, so this is how long its calls go on
+    /// counting — a user who takes one call at a time is busy for it
+    /// (`docs/DEEP_TESTING.md` D5). Each is refreshed every quarter of it.
+    /// Default: 60.
+    #[serde(default = "default_lease_ttl_secs")]
+    pub lease_ttl_secs: u64,
+
     /// Heartbeat interval in seconds (default: 5).
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval_secs: u64,
@@ -826,12 +848,35 @@ pub struct ClusterSection {
     pub redis_circuit_breaker_cooldown_secs: u64,
 }
 
+impl ClusterSection {
+    /// How long a call's lease stands unrefreshed, at least 4 s.
+    pub fn lease_ttl(&self) -> Duration {
+        Duration::from_secs(self.lease_ttl_secs.max(4))
+    }
+
+    /// How often a node refreshes the leases of the calls it carries: a
+    /// quarter of their time, so three refreshes can miss before one
+    /// lapses.
+    pub fn lease_refresh(&self) -> Duration {
+        self.lease_ttl() / 4
+    }
+
+    /// The tick that gives back ended calls' leases and refreshes the rest.
+    pub fn lease_settle(&self) -> Duration {
+        Duration::from_secs(self.lease_settle_secs.max(1)).min(self.lease_refresh())
+    }
+}
+
 fn default_lease_tenant_calls() -> bool {
     true
 }
 
 fn default_lease_settle_secs() -> u64 {
     5
+}
+
+fn default_lease_ttl_secs() -> u64 {
+    60
 }
 
 fn default_heartbeat_interval() -> u64 {
@@ -862,6 +907,7 @@ impl Default for ClusterSection {
             lease_tenant_calls: default_lease_tenant_calls(),
             lease_trunk_channels: default_lease_tenant_calls(),
             lease_settle_secs: default_lease_settle_secs(),
+            lease_ttl_secs: default_lease_ttl_secs(),
             heartbeat_interval_secs: default_heartbeat_interval(),
             heartbeat_ttl_secs: default_heartbeat_ttl(),
             call_ttl_secs: default_call_ttl(),

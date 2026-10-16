@@ -132,6 +132,26 @@ pub fn start_node(
         segments = status.segments,
         "CDR spool open"
     );
+    // Calls that were up when the last run stopped: written now, ended
+    // when that run last looked (`crate::open`).
+    match crate::open::OpenRecords::at(dir) {
+        Ok(open) => {
+            let recovered = open.recover(|record| match spool.append(&record) {
+                Ok(()) => true,
+                Err(e) => {
+                    warn!(call_id = %record.call_id, error = %e, "An open record could not be spooled");
+                    false
+                }
+            });
+            if recovered > 0 {
+                warn!(
+                    recovered,
+                    "Calls were up when this node last stopped; their records are written as ended then"
+                );
+            }
+        }
+        Err(e) => warn!(error = %e, "The open records could not be read"),
+    }
     spool.start_fsync();
     spool.start_dead_letter_pruning(Duration::from_secs(
         u64::from(config.dead_letter_days.max(1)) * 86_400,

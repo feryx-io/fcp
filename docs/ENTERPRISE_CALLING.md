@@ -796,8 +796,10 @@ per line, `fcp:sca:<tenant>:<line>`, index → appearance
 cannot take an index. An appearance names its owner (`call:<id>` or
 `seize:<SIP Call-ID>`), state, node, the node's SIP URI, a handoff token,
 the phone and the far party, and carries its own expiry: a seize lapses
-in at most 30 seconds, a call's half an hour after its node last
-refreshed it (every five minutes), so a dead node frees its keys.
+in at most 30 seconds, a call's `[cluster] lease_ttl_secs` (60) after
+its node last refreshed it (every quarter of that), so a dead node frees
+its keys within a minute. It was half an hour, refreshed every five
+minutes, until deep testing D5 killed a node mid-call.
 
 **Subscriptions.** A SUBSCRIBE for `call-info` or `line-seize` goes to
 the node's `Sca` before presence. The line is found by the Request-URI's

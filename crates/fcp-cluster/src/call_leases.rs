@@ -17,10 +17,14 @@
 //!
 //! The score is what makes this safe to leave alone: a node that dies
 //! mid-call cannot release its leases, so every read drops the members
-//! whose time has passed before it counts. The lease outlives any
-//! reasonable call (`ttl`, three hours by default) and every node
-//! refreshes what it still holds on a tick, so a long call keeps its
-//! place and a dead node's calls fade rather than counting for ever.
+//! whose time has passed before it counts. A lease is short (`ttl`, a
+//! minute by default) and every node refreshes what it still holds every
+//! quarter of it, so a long call keeps its place and a dead node's calls
+//! stop counting within a minute. They were three hours until deep testing
+//! killed a node mid-call (`docs/DEEP_TESTING.md` D5): its users stayed
+//! busy, and its tenants' places taken, for all of them. A lease whose
+//! release failed while Redis was away lapses the same way, since nothing
+//! refreshes a call that has ended.
 //!
 //! Redis being unreachable must never stop a call: every method says what
 //! went wrong and the caller falls back to its own count, which is what
@@ -32,10 +36,9 @@ use redis::AsyncCommands;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
 
-/// How long a lease stands without being refreshed. Longer than any call
-/// anyone means to make; a call that outlives it is refreshed by its
-/// node's tick long before.
-pub const DEFAULT_LEASE_TTL_SECS: u64 = 3 * 60 * 60;
+/// How long a lease stands without being refreshed: what a dead node's
+/// calls go on counting for. Its node refreshes it every quarter of this.
+pub const DEFAULT_LEASE_TTL_SECS: u64 = 60;
 
 /// What a lease is counted against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

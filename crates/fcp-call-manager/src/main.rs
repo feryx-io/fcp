@@ -55,6 +55,10 @@ use fcp_sip::presence::{extract_aor, SipPresenceHandler};
 /// (`docs/ENTERPRISE_CALLING.md` phase 9). Eight leaves room.
 const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
+/// How often the records of calls still up are kept: the most talk time a
+/// node killed mid-call leaves off a record (`fcp_cdr::open`).
+const OPEN_RECORDS_EVERY: Duration = Duration::from_secs(10);
+
 fn main() -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -183,6 +187,7 @@ async fn run() -> Result<()> {
     // 4. Initialize storage
     let storage_result = storage::initialize_storage(&config.storage).await?;
     let replica_health = storage_result.replica.clone();
+    let primary_health = Arc::clone(&storage_result.primary);
     let config_store = storage_result.config_store;
     let pg_flow_store = storage_result.flow_store;
     #[allow(unused_mut)]
@@ -618,7 +623,10 @@ async fn run() -> Result<()> {
     if config.cluster.enabled && config.cluster.lease_tenant_calls {
         if let Some(redis) = redis_storage.clone() {
             controller = controller.with_cluster_calls(Arc::new(
-                fcp_sbc_core::admission::RedisCallLeases::new(fcp_cluster::CallLeases::new(redis)),
+                fcp_sbc_core::admission::RedisCallLeases::new(
+                    fcp_cluster::CallLeases::new(redis)
+                        .with_ttl(config.cluster.lease_ttl().as_secs()),
+                ),
             ));
             info!("Tenant call limits are counted across the cluster");
         }
@@ -629,7 +637,7 @@ async fn run() -> Result<()> {
     #[cfg(feature = "storage-redis")]
     {
         let admission = Arc::clone(&admission);
-        let every = Duration::from_secs(config.cluster.lease_settle_secs.max(1));
+        let every = config.cluster.lease_settle();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(every);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -667,9 +675,10 @@ async fn run() -> Result<()> {
     if config.cluster.enabled && config.cluster.lease_trunk_channels {
         if let Some(redis) = redis_storage.clone() {
             trunk_counter = trunk_counter.with_cluster(Arc::new(
-                fcp_sbc_core::trunk_calls::RedisTrunkChannels::new(fcp_cluster::CallLeases::new(
-                    redis,
-                )),
+                fcp_sbc_core::trunk_calls::RedisTrunkChannels::new(
+                    fcp_cluster::CallLeases::new(redis)
+                        .with_ttl(config.cluster.lease_ttl().as_secs()),
+                ),
             ));
             info!("Trunk channels are counted across the cluster");
         }
@@ -679,7 +688,7 @@ async fn run() -> Result<()> {
     #[cfg(feature = "storage-redis")]
     {
         let trunk_calls = Arc::clone(&trunk_calls);
-        let every = Duration::from_secs(config.cluster.lease_settle_secs.max(1));
+        let every = config.cluster.lease_settle();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(every);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -898,6 +907,23 @@ async fn run() -> Result<()> {
         }));
     }
     let call_manager = Arc::new(call_manager_inner);
+    // The records of the calls this node carries, kept as they would be
+    // written if it stopped now, so a node killed mid-call leaves them to
+    // its next start rather than to nobody (`docs/DEEP_TESTING.md` D5).
+    {
+        let call_manager = Arc::downgrade(&call_manager);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(OPEN_RECORDS_EVERY);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let Some(call_manager) = call_manager.upgrade() else {
+                    return;
+                };
+                let _ = tokio::task::spawn_blocking(move || call_manager.keep_open_records()).await;
+            }
+        });
+    }
     let supervisions = fcp_sip::supervision::Supervisions::new(
         Arc::clone(&call_manager),
         Arc::clone(&media_manager),
@@ -916,7 +942,10 @@ async fn run() -> Result<()> {
             match redis_storage.clone().filter(|_| config.cluster.enabled) {
                 Some(redis) => {
                     info!("Users' calls are counted across the cluster");
-                    Arc::new(RedisUserCalls(fcp_cluster::CallLeases::new(redis)))
+                    Arc::new(RedisUserCalls(
+                        fcp_cluster::CallLeases::new(redis)
+                            .with_ttl(config.cluster.lease_ttl().as_secs()),
+                    ))
                 }
                 None => Arc::new(fcp_sip::user_calls::LocalUserCalls::default()),
             }
@@ -927,7 +956,9 @@ async fn run() -> Result<()> {
         }
     };
     let user_calls = fcp_sip::user_calls::UserCalls::new(user_call_count, &call_manager);
-    user_calls.install(&call_manager, Duration::from_secs(600));
+    // A node killed mid-call leaves its users' leases to lapse, so they
+    // are short and refreshed often (`docs/DEEP_TESTING.md` D5).
+    user_calls.install(&call_manager, config.cluster.lease_refresh());
 
     // Shared lines' appearances (docs/ENTERPRISE_CALLING.md §3.9): in the
     // cluster's Redis where there is a cluster, so every node's phones see
@@ -967,7 +998,7 @@ async fn run() -> Result<()> {
             config.service.node_id.clone(),
             sip_address.to_string(),
         );
-        sca.install(&call_manager);
+        sca.install(&call_manager, config.cluster.lease_ttl());
         spawn_sca_listener(Arc::clone(&sca), Arc::clone(&event_bus));
         let mwi_subs = fcp_sip::mwi_subscriptions::MwiSubscriptions::new(
             Arc::clone(&dyn_storage),
@@ -1547,6 +1578,10 @@ async fn run() -> Result<()> {
     // What reaches this node's SIP port (`docs/EDGE_SECURITY.md` §2.4).
     // The edges trusted above carry other people's calls, so the
     // per-source call rate is not theirs to spend.
+    .with_store_gate({
+        let primary = Arc::clone(&primary_health);
+        Arc::new(move || primary.is_up())
+    })
     .with_edge_guard(std::sync::Arc::new(fcp_sip::edge::EdgeGuard::new(
         config.security.clone(),
         fcp_sip::emergency::TrustedEdges::parse(&config.e911.trusted_edges)?,
@@ -1809,6 +1844,7 @@ async fn run() -> Result<()> {
         call_manager: Arc::clone(&call_manager),
         storage: Arc::clone(&dyn_storage),
         replica: replica_health.clone(),
+        primary: Arc::clone(&primary_health),
         realm: config.registrar.realm.clone(),
         default_tenant_id,
         media_manager: Arc::clone(&media_manager),
