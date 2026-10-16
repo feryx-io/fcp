@@ -422,6 +422,11 @@ pub struct Call {
     /// (`docs/DISTRIBUTED_CONFERENCING.md`, phase 5b).
     pub conference_room: Option<String>,
 
+    /// The conference node's `host:port` the B-leg went to: what lets the
+    /// call manager see the caller is on a node that has gone and move
+    /// them to another (`docs/DEEP_TESTING.md` D5b).
+    pub conference_node: Option<String>,
+
     /// Time when call was created
     pub created_at: SystemTime,
 
@@ -676,6 +681,7 @@ impl Call {
             media_session_id: None,
             media_anchored: false,
             conference_room: None,
+            conference_node: None,
             created_at: SystemTime::now(),
             established_at: None,
             ended_at: None,
@@ -797,6 +803,7 @@ impl Call {
             media_session_id: None,
             media_anchored: false,
             conference_room: None,
+            conference_node: None,
             created_at: SystemTime::now(),
             established_at: None,
             ended_at: None,

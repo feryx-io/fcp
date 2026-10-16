@@ -227,9 +227,26 @@ impl EmergencyNotifier {
         self.notify(notice).await;
     }
 
-    /// Deliver one notice to every contact the tenant can be told at.
+    /// Deliver one notice to every contact the tenant can be told at and
+    /// has not yet been tried for this call. An events server killed
+    /// before it acknowledged a call's event is handed the event again
+    /// (`docs/DEEP_TESTING.md` D5b); the contacts it had reached by then
+    /// have their rows, and their retries are the retry processor's.
     pub async fn notify(&self, notice: EmergencyNotice) {
-        let contacts = self.contacts(&notice.tenant_id).await;
+        let mut contacts = self.contacts(&notice.tenant_id).await;
+        let tried = self.already_tried(&notice).await;
+        if !tried.is_empty() {
+            let before = contacts.len();
+            contacts.retain(|c| !tried.contains(&(c.kind, c.target.clone())));
+            if contacts.is_empty() {
+                info!(
+                    call_id = %notice.call_id,
+                    contacts = before,
+                    "Every contact was already tried for this emergency call"
+                );
+                return;
+            }
+        }
         if contacts.is_empty() {
             warn!(
                 tenant_id = %notice.tenant_id,
@@ -259,6 +276,29 @@ impl EmergencyNotifier {
             self.attempt(notification)
         });
         futures_util::future::join_all(attempts).await;
+    }
+
+    /// The contacts an attempt has already been recorded for, for this
+    /// call.
+    async fn already_tried(
+        &self,
+        notice: &EmergencyNotice,
+    ) -> std::collections::HashSet<(fcp_core::e911::notify::ContactKind, String)> {
+        match self
+            .store
+            .list_emergency_notifications(&notice.tenant_id, &notice.call_id)
+            .await
+        {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|row| (row.contact.kind, row.contact.target))
+                .collect(),
+            Err(e) => {
+                // Better told twice than not at all.
+                warn!(error = %e, call_id = %notice.call_id, "Earlier emergency notifications unreadable");
+                Default::default()
+            }
+        }
     }
 
     /// The contacts of this tenant that can be delivered to here: those

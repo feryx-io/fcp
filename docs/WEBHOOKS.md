@@ -108,8 +108,11 @@ and these headers:
 | `X-FCP-Event` | the event type |
 | `X-FCP-Signature` | `t=<unix seconds>,v1=<hex>` |
 
-`event_id` is unique per delivery; a replay carries the same one, so a
-receiver may drop an id it has seen. The spec's `webhooks` section
+`event_id` is unique per event; a replay carries the same one, so a
+receiver may drop an id it has seen. Delivery is at least once: an
+events server killed after it sent a webhook but before it recorded the
+answer sends it again when it starts, under the same `event_id` (since
+v0.25.408, `docs/DEEP_TESTING.md` D5b). The spec's `webhooks` section
 describes the body (`WebhookEvent`).
 
 ### Verifying

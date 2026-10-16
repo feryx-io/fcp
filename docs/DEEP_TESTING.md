@@ -664,8 +664,9 @@ After each, the test checks:
 - that the events raised while Redis was away reached the stream;
 - that Carol could register and call again, with no restart.
 
-The conference node, the events server and `fcp-jobs` are D5b. A replica
-failover and an upgrade over a populated database are D5c.
+The conference node, the events server and `fcp-jobs` are D5b
+(below). A replica failover and an upgrade over a populated database are
+D5c.
 
 | Finding | Severity | Dealt with |
 |---|---|---|
@@ -674,3 +675,34 @@ failover and an upgrade over a populated database are D5c.
 | A call up when its node was killed had no record, ever: its talk time was never billed and nobody could find the call. | S2 | Fixed: every ten seconds, the node keeps each answered call's record as it would be written then, in `<spool_dir>/open/<call>.json` (`fcp_cdr::OpenRecords`). The call's end writes the real record and removes the file. A node that starts and finds files left writes them as answered and ended by `node_failed`. A call's record now has the call's own id as its `cdr_id`, so a node killed between the two writes is billed once. |
 | An emergency call cannot be put through while the database is away: the caller, the tenant, the emergency numbers and the location are all read from it. | S2 | #326. It is refused with the same 503 as any other call. That is faster than the 32 s wait it had before, but it is still not a call placed. |
 | Redis away, refused or silent: calls up and new calls carried on, and every `call.ended` raised meanwhile reached the stream once Redis was back. | — | No change needed; the tests keep it so. |
+
+### D5b. Faults beside the call manager
+
+Three tests kill the processes that work beside the call managers, each
+with work in hand:
+- **a conference node** holding half a room
+  (`fcp-conference-server/tests/cluster.rs`,
+  `callers_on_a_killed_node_are_moved_to_another`): Alice on one node
+  and Bob on the other, both through a call manager. Alice's node is
+  killed with `SIGKILL`; she must hear Bob again, Bob her, and Carol,
+  who calls in afterwards, must land on the node that is left and hear
+  Bob;
+- **the events server** (`fcp-events-server/tests/faults.rs`): a
+  tenant's webhook endpoint in the test, which either answers or holds
+  every request open, and an emergency contact that is that endpoint.
+  Events raised while the server is down must arrive when it starts.
+  Events it has taken off the stream, with every request held open,
+  must arrive after it is killed and started again, each under one
+  `event_id`, and the emergency call's notice with them;
+- **`fcp-jobs`** (`fcp-jobs/tests/faults.rs`): five records on the CDR
+  stream while the processor's database is silent, so it holds the batch
+  on its insert. It is killed; the next processor must store each record
+  once, charge each call once and announce each record.
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| A caller on a killed conference node was left on dead air for as long as they would hold. The call manager kept the call up, billed it and counted its user busy: a conference call's media does not pass through the call manager, so nothing timed out, and nothing watched the node go. The docs said its callers were "gone with it". The rest of the room was unharmed: the other node hung up its trunk within 15 s, and a new caller was placed there. | S2 | Fixed: the call manager checks its conference calls every second. A call whose node has left the member list is moved into the room on a live node by the migration code with no ticket (a new B-leg with the caller's identity, the caller re-INVITEd) and nothing sent to the dead node. If no node will take it, the call ends with `Reason: SIP;cause=503;text="conference node gone"` and `node_failed`. Measured: moved within a second of the node leaving the member list. The caller joins afresh: a PIN room asks again. |
+| An events server killed with events in hand lost them. It acknowledged each batch on the Redis stream as soon as it had passed it to its in-process bus, and the webhooks and the emergency notifier took events from there. So an event taken and not yet delivered was gone, with no delivery row for the retry processor to find, and so was the on-site notice of an emergency call (Kari's Law). Each start used a new consumer name and claimed nothing, so anything delivered to a dead consumer and not acknowledged stayed pending for good. The in-process bus also drops what a slow follower falls behind on. | S1 | Fixed: with Redis as the bus, the stream consumer hands each event to `WebhookDispatcher::take` and the notifier before it acknowledges it. `take` writes the delivery rows first (`WebhookStore::log_delivery_once`), with ids and the payload's `event_id` derived from the stream entry, and then sends. The notifier skips contacts already tried for the call. Entries a consumer held past `[event_bus] claim_idle_secs` (60) are claimed. Measured before the fix: none of three webhooks or the notice arrived after the kill. |
+| An event handed over twice could reach a receiver twice under two `event_id`s, so the receiver could not tell it was one event. | S3 | Fixed with the above: the id is derived from the stream entry. |
+| A webhook or notice sent but not yet recorded when the events server dies is sent again when it starts. | — | As designed: delivery is at least once (`docs/WEBHOOKS.md`). |
+| Events raised while the events server was down reached it when it started: the consumer group keeps them. `fcp-jobs` killed holding a batch: the next processor stored, charged and announced each record once. | — | No change needed; the tests keep it so. |

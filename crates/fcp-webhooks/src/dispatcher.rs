@@ -67,6 +67,27 @@ impl DeliveryOutcome {
     }
 }
 
+/// How long past its first attempt's timeout a taken delivery waits
+/// before the retry processor may send it: the first attempt has its
+/// permit to wait for and its row to update.
+const TAKEN_GRACE: Duration = Duration::from_secs(10);
+
+/// An event's endpoints and payload.
+struct Prepared {
+    endpoints: Vec<WebhookEndpoint>,
+    event_type: &'static str,
+    payload_json: String,
+}
+
+/// A UUID that is the same each time for the same `key`.
+fn derived_uuid(key: &str) -> uuid::Uuid {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(key.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    uuid::Builder::from_random_bytes(bytes).into_uuid()
+}
+
 /// General-purpose webhook dispatcher that delivers platform events to registered endpoints.
 pub struct WebhookDispatcher {
     store: Arc<dyn WebhookStore>,
@@ -110,41 +131,111 @@ impl WebhookDispatcher {
 
     /// Dispatch a platform event to all matching webhook endpoints for the given tenant.
     pub async fn dispatch(&self, event: &fcp_events::PlatformEvent) {
-        let event_type = event.event_type_name();
-        let tenant_id = match event.tenant_id() {
-            Some(tid) => *tid,
-            None => return, // Events without tenant context are not dispatched
-        };
-
-        // Get all endpoints for this tenant
-        let endpoints = match self.store.list_endpoints(&tenant_id).await {
-            Ok(eps) => eps,
+        let prepared = match self.prepare(event, None).await {
+            Ok(Some(prepared)) => prepared,
+            Ok(None) => return,
             Err(e) => {
-                warn!(error = %e, tenant_id = %tenant_id, "Failed to list webhook endpoints");
+                warn!(error = %e, "Failed to list webhook endpoints");
                 return;
             }
         };
-
-        if endpoints.is_empty() {
-            return;
+        for endpoint in &prepared.endpoints {
+            self.deliver_to_endpoint(endpoint, prepared.event_type, &prepared.payload_json)
+                .await;
         }
+    }
 
-        // Build the webhook payload
-        let timestamp = event.timestamp();
-        let iso_timestamp = system_time_to_iso8601(timestamp);
+    /// Take `event` into the delivery log, one row per endpoint it is for,
+    /// and send each in the background. Returns once the rows are written,
+    /// so a caller that acknowledges the event only after this cannot lose
+    /// it: an events server killed before the rows are written has not
+    /// acknowledged the event and is handed it again, one killed after
+    /// leaves rows the retry processor sends (`docs/DEEP_TESTING.md` D5b).
+    ///
+    /// `key` names the event where it came from (its stream and entry id).
+    /// The rows' ids and the payload's `event_id` are derived from it, so
+    /// an event taken twice is logged once and a receiver given it twice
+    /// sees one event id.
+    pub async fn take(
+        self: &Arc<Self>,
+        key: &str,
+        event: &fcp_events::PlatformEvent,
+    ) -> anyhow::Result<()> {
+        let Some(prepared) = self.prepare(event, Some(key)).await? else {
+            return Ok(());
+        };
+        let now = SystemTime::now();
+        for endpoint in prepared.endpoints {
+            let log = WebhookDeliveryLog {
+                id: derived_uuid(&format!("{key}/{}", endpoint.id)).to_string(),
+                endpoint_id: endpoint.id,
+                event_type: prepared.event_type.to_string(),
+                payload: prepared.payload_json.clone(),
+                status_code: None,
+                attempts: 0,
+                last_attempt_at: None,
+                // Past the attempt made now: the retry processor takes the
+                // row only if that attempt never finished.
+                next_retry_at: Some(now + self.config.request_timeout + TAKEN_GRACE),
+                delivered: false,
+                error: None,
+                response_body: None,
+                response_headers: None,
+                created_at: now,
+            };
+            if !self.store.log_delivery_once(log.clone()).await? {
+                // Taken before, by a run that did not live to acknowledge
+                // it: its row is the retry processor's.
+                debug!(delivery_id = %log.id, "Webhook delivery already logged");
+                continue;
+            }
+            let this = Arc::clone(self);
+            tokio::spawn(async move {
+                this.attempt(&endpoint, log).await;
+            });
+        }
+        Ok(())
+    }
+
+    /// The endpoints `event` goes to, and its payload; `None` when it goes
+    /// nowhere. With `key`, the payload's `event_id` is derived from it.
+    async fn prepare(
+        &self,
+        event: &fcp_events::PlatformEvent,
+        key: Option<&str>,
+    ) -> anyhow::Result<Option<Prepared>> {
+        let event_type = event.event_type_name();
+        let tenant_id = match event.tenant_id() {
+            Some(tid) => *tid,
+            None => return Ok(None), // Events without tenant context are not dispatched
+        };
+
+        let endpoints: Vec<WebhookEndpoint> = self
+            .store
+            .list_endpoints(&tenant_id)
+            .await?
+            .into_iter()
+            .filter(|endpoint| endpoint.enabled && Self::matches_event(endpoint, event_type))
+            .collect();
+        if endpoints.is_empty() {
+            return Ok(None);
+        }
 
         let event_data = match serde_json::to_value(event) {
             Ok(v) => v,
             Err(e) => {
                 warn!(error = %e, "Failed to serialize event to JSON");
-                return;
+                return Ok(None);
             }
         };
 
         let payload = WebhookPayload {
-            event_id: uuid::Uuid::new_v4().to_string(),
+            event_id: key
+                .map(derived_uuid)
+                .unwrap_or_else(uuid::Uuid::new_v4)
+                .to_string(),
             event_type: event_type.to_string(),
-            timestamp: iso_timestamp,
+            timestamp: system_time_to_iso8601(event.timestamp()),
             tenant_id: Some(tenant_id.to_string()),
             data: event_data,
         };
@@ -153,22 +244,14 @@ impl WebhookDispatcher {
             Ok(json) => json,
             Err(e) => {
                 warn!(error = %e, "Failed to serialize webhook payload");
-                return;
+                return Ok(None);
             }
         };
-
-        // Dispatch to matching endpoints
-        for endpoint in &endpoints {
-            if !endpoint.enabled {
-                continue;
-            }
-            if !Self::matches_event(endpoint, event_type) {
-                continue;
-            }
-
-            self.deliver_to_endpoint(endpoint, event_type, &payload_json)
-                .await;
-        }
+        Ok(Some(Prepared {
+            endpoints,
+            event_type,
+            payload_json,
+        }))
     }
 
     /// Deliver one payload to one endpoint now, signed like any other
@@ -430,31 +513,43 @@ impl WebhookDispatcher {
                 continue;
             }
 
-            let _permit = match self.semaphore.acquire().await {
-                Ok(p) => p,
-                Err(_) => return,
-            };
+            self.attempt(&endpoint, log).await;
+        }
+    }
 
-            let outcome = self.send(&endpoint, &log.event_type, &log.payload).await;
-            let now = SystemTime::now();
-            log.attempts += 1;
-            log.last_attempt_at = Some(now);
-            log.status_code = outcome.status_code;
-            log.response_body = outcome.response_body;
-            log.response_headers = outcome.response_headers;
-            if outcome.delivered {
-                debug!(delivery_id = %log.id, attempts = log.attempts, "Webhook retry succeeded");
-                log.delivered = true;
-                log.next_retry_at = None;
-                log.error = None;
-            } else {
-                log.error = outcome.error;
-                log.next_retry_at = Some(now + self.compute_backoff(log.attempts));
-            }
+    /// Send a logged delivery once more and record how it went.
+    async fn attempt(&self, endpoint: &WebhookEndpoint, mut log: WebhookDeliveryLog) {
+        let _permit = match self.semaphore.acquire().await {
+            Ok(p) => p,
+            Err(_) => return,
+        };
 
-            if let Err(e) = self.store.update_delivery_log(log).await {
-                warn!(error = %e, "Failed to update delivery log after retry");
-            }
+        let outcome = self.send(endpoint, &log.event_type, &log.payload).await;
+        let now = SystemTime::now();
+        log.attempts += 1;
+        log.last_attempt_at = Some(now);
+        log.status_code = outcome.status_code;
+        log.response_body = outcome.response_body;
+        log.response_headers = outcome.response_headers;
+        if outcome.delivered {
+            debug!(delivery_id = %log.id, attempts = log.attempts, "Webhook delivered");
+            log.delivered = true;
+            log.next_retry_at = None;
+            log.error = None;
+        } else {
+            warn!(
+                endpoint_id = %endpoint.id,
+                event = %log.event_type,
+                attempts = log.attempts,
+                error = ?outcome.error,
+                "Webhook delivery failed, scheduling retry"
+            );
+            log.error = outcome.error;
+            log.next_retry_at = Some(now + self.compute_backoff(log.attempts));
+        }
+
+        if let Err(e) = self.store.update_delivery_log(log).await {
+            warn!(error = %e, "Failed to update delivery log after an attempt");
         }
     }
 

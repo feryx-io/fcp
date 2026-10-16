@@ -398,9 +398,21 @@ purpose — and what keeps the inter-node media private.
   with a 5 s bound, so a peer that will never answer cannot stall the
   reconciler (a BYE over TCP/TLS otherwise waits out the full transaction
   timer).
-- **Its callers** are gone with it. They redial and are placed on a
-  surviving node. Participant migration (moving a caller between nodes
-  without a redial) is not part of this phase.
+- **Its callers** are moved by the call manager that holds their legs
+  (since v0.25.408, `docs/DEEP_TESTING.md` D5b). A conference call's
+  media does not pass through the call manager, so nothing there times
+  out, and before this a caller on a killed node sat on dead air for as
+  long as they would hold. Now the call manager checks its conference
+  calls every second. A call whose node has left the member list is put
+  into the same room on a node still up, as phase 5b's migration does
+  it, but with no ticket and nothing sent to the dead node: a new B-leg
+  with the caller's identity, and the caller re-INVITEd with the new
+  node's answer. The room takes them as a new participant, so a PIN
+  room asks for the PIN again and a host comes back as a guest. If no
+  node will take the room or the move fails, the call is ended with
+  `Reason: SIP;cause=503;text="conference node gone"`, and its record
+  ends `node_failed`. A caller who dialed a conference node directly,
+  past the call manager, is still gone with the node.
 
 ### A trunk goes quiet
 

@@ -491,3 +491,112 @@ async fn a_drain_over_http_moves_the_callers_and_can_be_called_off() {
     }
     cluster.finish().await;
 }
+
+/// Deep testing D5b (`docs/DEEP_TESTING.md`): a node holding half a room
+/// is killed with `SIGKILL`, so nothing is drained or referred. Its caller
+/// is moved by the call manager to the room on the other node, and hears
+/// the room again; the other node's callers talk on, and a new caller
+/// joins them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn callers_on_a_killed_node_are_moved_to_another() {
+    let mut cluster = cluster_or_skip!();
+    cluster.seed.meeting(ROOM, None, None).await;
+    let alice = cluster.registered_phone("alice", "1001").await;
+    let bob = cluster.registered_phone("bob", "1002").await;
+    let carol = cluster.registered_phone("carol", "1003").await;
+
+    let alice_call = alice.call(ROOM).await.unwrap();
+    if let Err(e) = alice_call.answered(A_WHILE).await {
+        cluster
+            .fail(&format!("Alice was not admitted: {e}"), &alice)
+            .await;
+    }
+    let (a_node, _) = match cluster.where_is("alice").await {
+        Some(x) => x,
+        None => cluster.fail("Alice is on no node", &alice).await,
+    };
+    let bob_call = bob.call(ROOM).await.unwrap();
+    if let Err(e) = bob_call.answered(A_WHILE).await {
+        cluster
+            .fail(&format!("Bob was not admitted: {e}"), &bob)
+            .await;
+    }
+    let (b_node, _) = match cluster.where_is("bob").await {
+        Some(x) => x,
+        None => cluster.fail("Bob is on no node", &bob).await,
+    };
+    assert_ne!(a_node, b_node, "the room is spread");
+
+    // Alice's node dies.
+    let killed = cluster.nodes.nodes[a_node]
+        .service
+        .take()
+        .expect("running")
+        .kill()
+        .await;
+
+    // The call manager moves her: her phone is re-INVITEd with the other
+    // node's answer, and that node lists her.
+    if alice
+        .expect(A_WHILE, |e| matches!(e, PhoneEvent::ReInvite { .. }))
+        .await
+        .is_none()
+    {
+        let why = format!("Alice was never moved off the dead node\n--- killed node ---\n{killed}");
+        cluster.fail(&why, &alice).await;
+    }
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    while cluster.nodes.nodes[b_node]
+        .find(ROOM, "alice")
+        .await
+        .is_none()
+    {
+        if tokio::time::Instant::now() >= deadline {
+            cluster
+                .fail("Alice is not in the room on the live node", &alice)
+                .await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(
+        alice_call.phase(),
+        fcp_testkit::phone::CallPhase::Answered,
+        "Alice's call is still up"
+    );
+    alice_call.media().play_tone(440.0, 8000);
+    if !bob_call.media().heard(440, Duration::from_secs(10)).await {
+        cluster
+            .fail("Bob does not hear Alice after the move", &bob)
+            .await;
+    }
+    bob_call.media().play_tone(880.0, 8000);
+    if !alice_call.media().heard(880, Duration::from_secs(10)).await {
+        cluster
+            .fail("Alice does not hear Bob after the move", &alice)
+            .await;
+    }
+
+    // A new caller is placed on the node that is left.
+    let carol_call = carol.call(ROOM).await.unwrap();
+    if let Err(e) = carol_call.answered(A_WHILE).await {
+        cluster
+            .fail(&format!("Carol was not admitted: {e}"), &carol)
+            .await;
+    }
+    match cluster.where_is("carol").await {
+        Some((n, _)) if n == b_node => {}
+        other => {
+            let why = format!("Carol is not on the live node: {other:?}");
+            cluster.fail(&why, &carol).await;
+        }
+    }
+    bob_call.media().play_tone(660.0, 8000);
+    if !carol_call.media().heard(660, Duration::from_secs(10)).await {
+        cluster.fail("Carol does not hear Bob", &carol).await;
+    }
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    assert_eq!(carol_call.hangup().await.unwrap(), 200);
+    cluster.finish().await;
+}

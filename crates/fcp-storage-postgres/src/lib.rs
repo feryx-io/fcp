@@ -6762,6 +6762,25 @@ impl WebhookStore for PostgresStorage {
         Ok(())
     }
 
+    async fn log_delivery_once(&self, log: WebhookDeliveryLog) -> Result<bool> {
+        let delivery_json = serde_json::to_value(&log)?;
+        let inserted = sqlx::query(
+            "INSERT INTO webhook_delivery_logs (id, endpoint_id, delivery_json, delivered, next_retry_at, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(&log.id)
+        .bind(log.endpoint_id.to_string())
+        .bind(delivery_json)
+        .bind(log.delivered)
+        .bind(log.next_retry_at.map(system_time_to_datetime))
+        .bind(system_time_to_datetime(log.created_at))
+        .execute(self.writes())
+        .await?
+        .rows_affected();
+        Ok(inserted == 1)
+    }
+
     async fn get_pending_retries(&self, limit: usize) -> Result<Vec<WebhookDeliveryLog>> {
         let rows = sqlx::query(
             "SELECT delivery_json
