@@ -31,6 +31,10 @@ pub enum SystemCause {
     /// The node was draining and the call was still up at the deadline
     /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
     NodeDraining,
+    /// The node stopped — killed, crashed, its host gone — while the call
+    /// was up, and wrote the record at its next start from what it last
+    /// knew (`docs/DEEP_TESTING.md` D5). The end is when it last looked.
+    NodeFailed,
     /// Anything else the platform decided.
     Other,
 }
@@ -297,6 +301,7 @@ pub struct RtpStats {
 /// call. Every setter is optional; `build` derives the rest.
 #[derive(Debug, Clone)]
 pub struct RecordBuilder {
+    cdr_id: Option<uuid::Uuid>,
     kind: CdrKind,
     call_id: CallId,
     tenant_id: TenantId,
@@ -330,6 +335,7 @@ impl RecordBuilder {
     /// A record of `kind` for `call_id` in `tenant_id`.
     pub fn new(kind: CdrKind, call_id: CallId, tenant_id: TenantId) -> Self {
         Self {
+            cdr_id: None,
             kind,
             call_id,
             tenant_id,
@@ -451,6 +457,15 @@ impl RecordBuilder {
         self
     }
 
+    /// The record's id, when the node must mint the same one twice: a
+    /// call's record written at its end and the one its node left open
+    /// while it was up ([`crate::open::OpenRecords`]) are one record, and
+    /// the store keeps whichever lands first. Unset, a new one.
+    pub fn cdr_id(mut self, id: uuid::Uuid) -> Self {
+        self.cdr_id = Some(id);
+        self
+    }
+
     pub fn node(mut self, node_id: Option<String>, region: Option<String>) -> Self {
         self.node_id = node_id;
         self.region = region;
@@ -493,7 +508,7 @@ impl RecordBuilder {
             durations(start_time, self.answer_time, end_time);
 
         CallDetailRecord {
-            cdr_id: uuid::Uuid::new_v4(),
+            cdr_id: self.cdr_id.unwrap_or_else(uuid::Uuid::new_v4),
             kind: self.kind,
             schema_version: CDR_SCHEMA_VERSION,
             call_id: self.call_id,

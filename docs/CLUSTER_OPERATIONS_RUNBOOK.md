@@ -24,7 +24,8 @@ it uses is `[storage] redis_url` (the SBC's is the top-level
 adds `call_ttl_secs` (7200), the Redis circuit breaker
 (`redis_circuit_breaker_threshold` 5, `_cooldown_secs` 30) and the
 leases (`lease_tenant_calls`, `lease_trunk_channels`,
-`lease_settle_secs` 5); the conference server adds `secret` — required
+`lease_settle_secs` 5, `lease_ttl_secs` 60 — how long a killed node's
+calls go on counting, refreshed every quarter of it); the conference server adds `secret` — required
 for cross-node room control and participant migration — and
 `migration_timeout_secs` (15) and its trunk settings.
 
@@ -224,7 +225,35 @@ to a synced object there is refused with the cloud's address.
   manager's circuit breaker opens after `redis_circuit_breaker_threshold`
   failures and probes again after the cooldown. A reconnect takes about
   a second after the link returns (the redis-rs default of a minute was
-  fixed in v0.25.233).
+  fixed in v0.25.233). Calls up carry on and new calls are placed. A
+  lease a call could not give back while Redis was away lapses within
+  `lease_ttl_secs`, so a user who takes one call at a time is busy for
+  at most that long after Redis returns (`fcp-call-manager/tests/faults.rs`).
+- **Postgres is down.** Calls up carry on, and their BYEs cross. A
+  REGISTER or a new INVITE is answered at once with `503 Service
+  Unavailable - store unreachable` and `Retry-After: 5`, so a phone
+  tries again or tries another node instead of waiting 32 s for
+  nothing. The node finds out by asking the primary `SELECT 1` every
+  second (two missed answers make it down); until then a REGISTER is
+  cut off at five seconds and a request waits at most
+  `[storage] acquire_timeout_secs` (5) for a connection. `/ready` is
+  503 with `database.up: false` (send new traffic elsewhere), `/status`
+  shows `database`, `/metrics` has `fcp_database_up` and
+  `fcp_database_outages_total`, and the log says `The database does
+  not answer` and `The database answers again`. The records of calls
+  that end meanwhile wait in the spool and are written when it is back.
+  Nothing needs a restart. An emergency call is refused like any other
+  call while the store is away (#326).
+- **A call manager was killed** (`SIGKILL`, a crash, its host gone).
+  Its calls are gone; nothing tells their phones. Its leases lapse
+  within `lease_ttl_secs`, so their users and tenants are free again,
+  and it leaves the member list within `heartbeat_ttl_secs`. Started
+  again on the same `[cdr] spool_dir`, it ships the records it had
+  spooled, and writes one for each call it was carrying, answered and
+  ended by `node_failed` when it last looked (at most ten seconds before
+  it died). Started somewhere else, those records stay in the old
+  spool: move its `open/` directory and segments to the new node's
+  spool to have them written.
 - **A node's heartbeat is late.** Look at the node's clock first, then
   its Redis latency. `fcp_cluster_view_age_seconds` on `/metrics` is how
   old its member list is.

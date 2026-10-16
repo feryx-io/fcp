@@ -17,6 +17,9 @@ use crate::config::StorageSection;
 pub struct StorageResult {
     /// What `/status` says about the read replica.
     pub replica: fcp_storage_postgres::ReplicaHealth,
+    /// Whether the primary answers, probed every second: what the SIP
+    /// path reads before work that needs the store (`docs/DEEP_TESTING.md` D5).
+    pub primary: Arc<fcp_storage_postgres::primary_health::PrimaryHealth>,
     pub dyn_storage: Arc<DynStorage>,
     pub config_store: Arc<dyn fcp_core::config_store::ConfigStore>,
     pub flow_store: Arc<dyn fcp_flow::FlowStore>,
@@ -29,7 +32,9 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
         read_replica_url: config.read_replica_url.clone(),
         max_replica_lag: Duration::from_secs(config.max_replica_lag_secs),
         max_connections: config.max_connections,
-        connection_timeout: Duration::from_secs(30),
+        // A connection the call path waits for longer than this is one a
+        // phone has given up on (`docs/DEEP_TESTING.md` D5).
+        connection_timeout: Duration::from_secs(config.acquire_timeout_secs.max(1)),
         encryption: None,
     };
 
@@ -82,6 +87,7 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
     );
     Ok(StorageResult {
         replica: fcp_storage_postgres::ReplicaHealth::of(storage.clone()),
+        primary: fcp_storage_postgres::primary_health::PrimaryHealth::watch(storage.pool().clone()),
         dyn_storage: Arc::new(dyn_st),
         flow_store: storage.clone() as Arc<dyn fcp_flow::FlowStore>,
         config_store: storage,

@@ -42,6 +42,7 @@ mod holds;
 mod identity;
 pub mod login_session;
 mod offboarding;
+pub mod primary_health;
 pub mod prompt;
 mod provisioning;
 pub mod recording;

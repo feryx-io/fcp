@@ -899,6 +899,14 @@ lease's expiry. The queue is bounded: what it drops lapses on its own.
 the limit becomes correct rather than new, which decision 8 allows — and
 `lease_settle_secs` (5 s) paces the tick.
 
+*Since v0.25.407* a lease stands for `[cluster] lease_ttl_secs` (60 s)
+rather than three hours, refreshed every quarter of it, and the settling
+tick runs at least that often. Three hours was "longer than any call",
+but it was also how long a node killed mid-call went on taking its
+tenants' places and keeping its users busy (`docs/DEEP_TESTING.md` D5).
+A user's call (call waiting, `max_calls`) and a shared line's appearance
+take the same time.
+
 *Phase 5b shipped 2026-09-21 (v0.25.220), and with it the project.*
 
 **A carrier's channels are the platform's to fill.** `TrunkCallCounter`

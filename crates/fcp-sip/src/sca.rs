@@ -42,12 +42,9 @@ use tracing::{debug, info, warn};
 pub const NODE_HANDOFF_HEADER: &str = "X-FCP-Node-Handoff";
 
 /// How long a call's appearance stands in the table without its node
-/// refreshing it: a node that died mid-call frees its keys this long after.
-const CALL_LEASE_SECS: u64 = 30 * 60;
-
-/// How often this node refreshes its calls' appearances and forgets its
-/// lapsed subscriptions.
-const REFRESH_EVERY: Duration = Duration::from_secs(5 * 60);
+/// refreshing it, unless the node says otherwise ([`Sca::install`]): a
+/// node that died mid-call frees its keys this long after.
+pub const DEFAULT_CALL_LEASE: Duration = Duration::from_secs(60);
 
 /// A `call-info` subscription's length when the phone asks for none, and
 /// the most it is granted.
@@ -265,6 +262,9 @@ pub struct Sca {
     handoffs: DashMap<String, CallId>,
     /// The appearances of this node's calls, as last written.
     live: DashMap<CallId, (CallAppearance, AppearanceState)>,
+    /// How long a call's appearance stands unrefreshed, in seconds; it is
+    /// refreshed every quarter of it.
+    call_lease_secs: std::sync::atomic::AtomicU64,
     changes: std::sync::OnceLock<mpsc::UnboundedSender<Change>>,
     me: Weak<Sca>,
 }
@@ -290,15 +290,21 @@ impl Sca {
             seizes: DashMap::new(),
             handoffs: DashMap::new(),
             live: DashMap::new(),
+            call_lease_secs: std::sync::atomic::AtomicU64::new(DEFAULT_CALL_LEASE.as_secs()),
             changes: std::sync::OnceLock::new(),
             me: me.clone(),
         })
     }
 
     /// Follow the call manager's calls: their appearances written as they
-    /// move, in order, refreshed on a tick with lapsed subscriptions
-    /// forgotten.
-    pub fn install(self: &Arc<Self>, call_manager: &Arc<CallManager>) {
+    /// move, in order, refreshed every quarter of `call_lease` with lapsed
+    /// subscriptions forgotten. A node that dies mid-call leaves its
+    /// appearances to lapse `call_lease` after their last refresh
+    /// (`docs/DEEP_TESTING.md` D5).
+    pub fn install(self: &Arc<Self>, call_manager: &Arc<CallManager>, call_lease: Duration) {
+        let lease = call_lease.max(Duration::from_secs(4));
+        self.call_lease_secs
+            .store(lease.as_secs(), std::sync::atomic::Ordering::Relaxed);
         let _ = self.call_manager.set(Arc::downgrade(call_manager));
         let (tx, mut rx) = mpsc::unbounded_channel::<Change>();
         let _ = self.changes.set(tx.clone());
@@ -318,7 +324,7 @@ impl Sca {
         });
         let me = Arc::downgrade(self);
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(REFRESH_EVERY);
+            let mut tick = tokio::time::interval(lease / 4);
             tick.tick().await;
             loop {
                 tick.tick().await;
@@ -914,7 +920,10 @@ impl Sca {
             handoff: Some(handoff.to_string()),
             contact,
             remote,
-            expires_at: now_secs() + CALL_LEASE_SECS,
+            expires_at: now_secs()
+                + self
+                    .call_lease_secs
+                    .load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 

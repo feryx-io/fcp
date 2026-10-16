@@ -1767,7 +1767,10 @@ async fn a_flow_branches_on_a_schedule() {
     // once, so the phone may see the hangup before the answer settles.
     let call = alice.call("+15125550822").await.unwrap();
     let _ = call.answered(SOON).await;
-    assert!(call.ended(SOON).await, "the closed branch did not hang up");
+    if !call.ended(SOON).await {
+        let why = format!("the closed branch did not hang up: {:?}", call.phase());
+        stack.fail(&why, &alice).await;
+    }
     assert!(
         bob_phone
             .incoming(Duration::from_millis(300))

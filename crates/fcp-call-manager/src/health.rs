@@ -30,6 +30,10 @@ pub struct AppState {
     pub storage: Arc<DynStorage>,
     /// The read replica as of its last probe (`docs/DEPLOYMENT_GAPS.md` §1.7).
     pub replica: fcp_storage_postgres::ReplicaHealth,
+    /// Whether the primary answers (`docs/DEEP_TESTING.md` D5): a node
+    /// whose database is away is not ready, since it refuses new
+    /// registrations and calls.
+    pub primary: Arc<fcp_storage_postgres::primary_health::PrimaryHealth>,
     pub realm: String,
     pub default_tenant_id: TenantId,
     pub media_manager: Arc<MediaManager>,
@@ -378,6 +382,7 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
         // (docs/BACKUP_AND_RESTORE.md §5). Absent outside a cluster.
         "cluster_versions": cluster_versions(&state),
         "replica": state.replica.json(),
+        "database": state.primary.json(),
         "registration_cache": state.registration_cache.as_ref().map(|cache| {
             let stats = cache.stats();
             serde_json::json!({
@@ -426,7 +431,15 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
 /// §6). `/health` keeps answering `200` throughout, so a liveness probe
 /// does not kill the process mid-drain.
 async fn ready_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    answer(fcp_sip::drain::ready_body(&state.drain).await)
+    let (mut code, mut body) = fcp_sip::drain::ready_body(&state.drain).await;
+    // A node whose database is away refuses new registrations and calls
+    // (`docs/DEEP_TESTING.md` D5), so a balancer should send them elsewhere.
+    body["database"] = state.primary.json();
+    if !state.primary.is_up() {
+        code = 503;
+        body["ready"] = serde_json::Value::Bool(false);
+    }
+    answer((code, body))
 }
 
 /// Start a drain: this node takes no new calls, keeps the ones it has
@@ -1114,6 +1127,7 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
         &fcp_core::storage::RegistrationReads::global().prometheus(&format!("node=\"{node}\"")),
     );
     body.push_str(&state.replica.prometheus(&format!("node=\"{node}\"")));
+    body.push_str(&state.primary.prometheus(&format!("node=\"{node}\"")));
     // Emergency calls by kind, location source and delivery, the location
     // gaps, and the trunks' Geolocation-Error answers
     // (docs/E911_BLOCK_2.md §9).

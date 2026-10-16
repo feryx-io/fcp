@@ -321,6 +321,42 @@ format = "compact"
     }
 }
 
+/// Every event in the event streams of the Redis database at
+/// `redis_url`, oldest first, as each envelope's `event` (what a node
+/// published, `fcp_storage_redis::event_bus`). What a fault test reads to
+/// see that events raised while Redis was away arrived once it was back.
+pub async fn streamed_events(redis_url: &str) -> Vec<serde_json::Value> {
+    let client = redis::Client::open(redis_url).expect("a Redis URL");
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis answers");
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg("*event_stream*")
+        .query_async(&mut conn)
+        .await
+        .expect("KEYS");
+    let mut events = Vec::new();
+    for key in keys {
+        let reply: redis::streams::StreamRangeReply = redis::cmd("XRANGE")
+            .arg(&key)
+            .arg("-")
+            .arg("+")
+            .query_async(&mut conn)
+            .await
+            .expect("XRANGE");
+        for entry in reply.ids {
+            let data: Option<String> = entry.get("data");
+            if let Some(envelope) =
+                data.and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+            {
+                events.push(envelope["event"].clone());
+            }
+        }
+    }
+    events
+}
+
 #[cfg(test)]
 mod private_redis_tests {
     use super::*;

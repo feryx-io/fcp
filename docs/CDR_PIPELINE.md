@@ -327,12 +327,18 @@ The property, stage by stage:
 | Failure | What happens | What is lost |
 |---|---|---|
 | Node process crash | Spool segments are on disk; the shipper resumes from the cursor on restart | Nothing; records appended but not fsynced were in the page cache and survive |
+| Node process crash with calls up | Each answered call's record is kept as it would be written then, in `<spool_dir>/open/<call>.json`, every ten seconds; the next start writes those as answered and ended by `node_failed` (since v0.25.407, `docs/DEEP_TESTING.md` D5) | Up to ten seconds of each call's talk time; before v0.25.407, the whole call |
 | Node power loss | As above | Up to one `fsync_interval` of records (100 ms) |
 | Redis unreachable | Shipper backs off; spool grows; metric and log | Nothing; delay |
 | Postgres unreachable | Processor acknowledges nothing; stream (or spool, in-process) grows | Nothing; delay |
 | Processor crash mid-batch | Pending entries claimed by another consumer after `claim_idle`; `ON CONFLICT` skips stored rows; the ledger index skips charges; `cdr.written` may repeat | Nothing; a consumer may see one announcement twice |
 | A record the normalizer rejects | Dead-letter stream with the reason; metric | Nothing; an operator reads `fcp:cdrs:dead` |
 | Node disk lost before shipping | The unshipped tail of the spool | Those records; this is the floor, and it is the same floor every switch has |
+
+A call's record has the call's own id as its `cdr_id`, so the record
+written at its end and the one kept open while it was up are one record:
+a node killed between writing the first and removing the second is
+billed once.
 
 The exactly-once claim is precisely: a record reaches the `cdrs` table
 at most once, the ledger is charged at most once, and both happen at

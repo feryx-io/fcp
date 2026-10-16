@@ -580,6 +580,11 @@ pub struct SipMessageHandler {
     /// (`docs/EDGE_SECURITY.md` §2.4). Absent leaves the handler as it was
     /// before there was a guard: whatever arrives is parsed.
     edge_guard: Option<Arc<crate::edge::EdgeGuard>>,
+    /// Whether the store answers (`docs/DEEP_TESTING.md` D5). While it
+    /// says no, a REGISTER or a new INVITE is refused at once with a 503
+    /// rather than left waiting on a database that is not there. Absent is
+    /// always yes.
+    store_up: Option<StoreUp>,
     /// Whether this node tells the next hop where its caller is
     /// (`X-FCP-Client-Address`): an SBC in front of phones does.
     vouch_client_address: bool,
@@ -1049,6 +1054,7 @@ impl SipMessageHandler {
             flow_relays: Arc::new(dashmap::DashMap::new()),
             trusted_edges: Default::default(),
             edge_guard: None,
+            store_up: None,
             vouch_client_address: false,
             media_manager,
             media_config,
@@ -1244,6 +1250,33 @@ impl SipMessageHandler {
     pub fn with_edge_guard(mut self, guard: Arc<crate::edge::EdgeGuard>) -> Self {
         self.edge_guard = Some(guard);
         self
+    }
+
+    /// What says whether the store answers (`docs/DEEP_TESTING.md` D5).
+    pub fn with_store_gate(mut self, store_up: StoreUp) -> Self {
+        self.store_up = Some(store_up);
+        self
+    }
+
+    /// Whether work that needs the store may start.
+    fn store_answers(&self) -> bool {
+        self.store_up.as_ref().is_none_or(|up| up())
+    }
+
+    /// The 503 for a request the store is needed for while it is away:
+    /// the phone tries again, here or at another node, in a few seconds.
+    fn store_unavailable(&self, request: &sip_core::Request) -> sip_core::Response {
+        self.metrics.inc_counter(
+            "fcp_sip_store_refused_total",
+            &[("method", request.method().as_str())],
+        );
+        let mut response =
+            self.create_simple_response(request, 503, "Service Unavailable - store unreachable");
+        let _ = response.headers_mut().push(
+            SmolStr::new("Retry-After"),
+            SmolStr::new(STORE_RETRY_AFTER_SECS.to_string()),
+        );
+        response
     }
 
     pub fn with_trusted_edges(mut self, edges: crate::emergency::TrustedEdges) -> Self {
@@ -2655,6 +2688,12 @@ impl SipMessageHandler {
                         }
                     }
 
+                    if !self.store_answers() {
+                        info!(peer = %peer, "Refusing a call: the store does not answer");
+                        handle.send_final(self.store_unavailable(request)).await;
+                        return Ok(());
+                    }
+
                     // Spawn INVITE handling in separate task to avoid blocking server transaction
                     // This prevents B2BUA from blocking for 32 seconds waiting for B-leg responses
                     let handler = self.clone();
@@ -2820,9 +2859,25 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
             }
             Method::Register => {
-                let response = self
-                    .handle_register_internal(request, transport, stream, peer)
-                    .await;
+                // A registration is a write: with the store away it cannot
+                // be taken, and one already under way when it went is
+                // answered within the deadline (`docs/DEEP_TESTING.md` D5).
+                let response = if !self.store_answers() {
+                    self.store_unavailable(request)
+                } else {
+                    match tokio::time::timeout(
+                        REGISTER_DEADLINE,
+                        self.handle_register_internal(request, transport, stream, peer),
+                    )
+                    .await
+                    {
+                        Ok(response) => response,
+                        Err(_) => {
+                            warn!(peer = %peer, "A REGISTER outran its deadline; refused with 503");
+                            self.store_unavailable(request)
+                        }
+                    }
+                };
                 handle.send_final(response).await;
             }
             _ => {
@@ -18045,6 +18100,17 @@ fn spawn_provisional_listener(
 
 /// Where a node takes SIP, by node id (`docs/PUSH.md` §2.4).
 pub type NodeSipAddress = Arc<dyn Fn(&str) -> Option<std::net::SocketAddr> + Send + Sync>;
+
+/// Whether the node's store answers, as its probe last found
+/// (`docs/DEEP_TESTING.md` D5).
+pub type StoreUp = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// How long a REGISTER may take before it is answered 503: past it, the
+/// store is not answering, and a phone that hears nothing waits 32 s.
+const REGISTER_DEADLINE: Duration = Duration::from_secs(5);
+
+/// What a 503 for an unreachable store asks a phone to wait.
+const STORE_RETRY_AFTER_SECS: u32 = 5;
 
 /// A call's bindings reached through another node, by contact: that node's
 /// SIP address and the flow's token.
