@@ -206,6 +206,41 @@ async fn get_message_for_tenant(
     Ok((message, mailbox))
 }
 
+/// Tell message waiting a mailbox's counts changed
+/// (`voicemail.mwi_updated`): its phones' lamps follow a message heard,
+/// saved or deleted through the API as one left by a caller.
+pub(crate) async fn announce_counts(state: &ApiState, tenant_id: TenantId, mailbox_id: &str) {
+    let Some(storage) = state.storage.as_ref() else {
+        return;
+    };
+    let messages = match storage.list_messages(mailbox_id).await {
+        Ok(messages) => messages,
+        Err(e) => {
+            tracing::warn!(mailbox_id, error = %e, "Message waiting: the counts could not be read");
+            return;
+        }
+    };
+    let new_messages = messages
+        .iter()
+        .filter(|m| m.status == MessageStatus::New)
+        .count() as u32;
+    let old_messages = messages
+        .iter()
+        .filter(|m| matches!(m.status, MessageStatus::Heard | MessageStatus::Saved))
+        .count() as u32;
+    state
+        .publish_event(fcp_events::PlatformEvent::Voicemail(
+            fcp_events::VoicemailEvent::MwiUpdated {
+                tenant_id: Some(tenant_id),
+                mailbox_id: mailbox_id.to_string(),
+                new_messages,
+                old_messages,
+                timestamp: SystemTime::now(),
+            },
+        ))
+        .await;
+}
+
 /// List all mailboxes for a tenant.
 #[utoipa::path(
     get,
@@ -338,7 +373,7 @@ pub async fn create_mailbox(
         line_binding_id,
         // The mailbox answers the user's phones' name (`docs/USERS.md` §6).
         user.sip_name().to_string(),
-        req.pin,
+        VoicemailMailbox::hashed_pin(&req.pin).map_err(ApiError::BadRequest)?,
     );
 
     mailbox.enabled = req.enabled;
@@ -475,7 +510,7 @@ pub async fn update_mailbox(
 
     // Update fields if provided
     if let Some(pin) = req.pin {
-        mailbox.pin = pin;
+        mailbox.pin = VoicemailMailbox::hashed_pin(&pin).map_err(ApiError::BadRequest)?;
     }
     if let Some(enabled) = req.enabled {
         mailbox.enabled = enabled;
@@ -681,6 +716,7 @@ pub async fn update_message(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
+    announce_counts(&state, tenant.0, &message.mailbox_id).await;
     info!(message_id = %id, "Updated voicemail message");
 
     Ok(Json(MessageResponse::from(message)))
@@ -705,12 +741,13 @@ pub async fn delete_message(
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    get_message_for_tenant(&state, &id, &tenant.0).await?;
+    let (message, _) = get_message_for_tenant(&state, &id, &tenant.0).await?;
 
     storage
         .delete_message(&id)
         .await
         .map_err(ApiError::storage)?;
+    announce_counts(&state, tenant.0, &message.mailbox_id).await;
 
     info!(message_id = %id, "Deleted voicemail message");
 

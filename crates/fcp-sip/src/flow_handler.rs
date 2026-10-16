@@ -2162,10 +2162,12 @@ impl FlowCallHandler {
 
                 // Publish event
                 if let Some(events) = &self.events {
+                    // The mailbox's own id, as message waiting knows it
+                    // (the flow may have named it by extension).
                     let event = PlatformEvent::Voicemail(VoicemailEvent::MessageRecorded {
                         call_id: core_call_id,
                         tenant_id: self.tenant_of(&call_id),
-                        mailbox_id: mailbox,
+                        mailbox_id: message.mailbox_id.clone(),
                         message_id: message.id,
                         caller,
                         duration_secs: message.duration,

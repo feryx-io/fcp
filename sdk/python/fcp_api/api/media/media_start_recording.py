@@ -10,15 +10,19 @@ from ... import errors
 
 from ...models.error_response import ErrorResponse
 from ...models.media_recording_response import MediaRecordingResponse
+from ...models.start_recording_request import StartRecordingRequest
 from typing import cast
 
 
 
 def _get_kwargs(
     call_id: str,
+    *,
+    body: StartRecordingRequest,
 
 ) -> dict[str, Any]:
-    
+    headers: dict[str, Any] = {}
+
 
     
 
@@ -29,7 +33,11 @@ def _get_kwargs(
         "url": "/api/v1/calls/{call_id}/recording/start".format(call_id=quote(str(call_id), safe=""),),
     }
 
+    _kwargs["json"] = body.to_dict()
 
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
@@ -63,6 +71,7 @@ def sync_detailed(
     call_id: str,
     *,
     client: AuthenticatedClient | Client,
+    body: StartRecordingRequest,
 
 ) -> Response[ErrorResponse | MediaRecordingResponse]:
     """ POST /v1/calls/:call_id/recording/start
@@ -76,6 +85,7 @@ def sync_detailed(
 
     Args:
         call_id (str):
+        body (StartRecordingRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -88,6 +98,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         call_id=call_id,
+body=body,
 
     )
 
@@ -101,6 +112,7 @@ def sync(
     call_id: str,
     *,
     client: AuthenticatedClient | Client,
+    body: StartRecordingRequest,
 
 ) -> ErrorResponse | MediaRecordingResponse | None:
     """ POST /v1/calls/:call_id/recording/start
@@ -114,6 +126,7 @@ def sync(
 
     Args:
         call_id (str):
+        body (StartRecordingRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -127,6 +140,7 @@ def sync(
     return sync_detailed(
         call_id=call_id,
 client=client,
+body=body,
 
     ).parsed
 
@@ -134,6 +148,7 @@ async def asyncio_detailed(
     call_id: str,
     *,
     client: AuthenticatedClient | Client,
+    body: StartRecordingRequest,
 
 ) -> Response[ErrorResponse | MediaRecordingResponse]:
     """ POST /v1/calls/:call_id/recording/start
@@ -147,6 +162,7 @@ async def asyncio_detailed(
 
     Args:
         call_id (str):
+        body (StartRecordingRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -159,6 +175,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         call_id=call_id,
+body=body,
 
     )
 
@@ -172,6 +189,7 @@ async def asyncio(
     call_id: str,
     *,
     client: AuthenticatedClient | Client,
+    body: StartRecordingRequest,
 
 ) -> ErrorResponse | MediaRecordingResponse | None:
     """ POST /v1/calls/:call_id/recording/start
@@ -185,6 +203,7 @@ async def asyncio(
 
     Args:
         call_id (str):
+        body (StartRecordingRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -198,5 +217,6 @@ async def asyncio(
     return (await asyncio_detailed(
         call_id=call_id,
 client=client,
+body=body,
 
     )).parsed

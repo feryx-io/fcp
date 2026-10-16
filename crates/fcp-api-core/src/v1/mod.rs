@@ -442,7 +442,7 @@ pub fn router() -> Router<ApiState> {
             delete(registrations::delete_registration),
         )
         // Call management
-        .route("/calls", get(media::list_calls).post(media::originate_call))
+        .route("/calls", get(media::list_calls))
         .route(
             "/calls/:call_id",
             get(media::get_call).delete(media::hangup_call),

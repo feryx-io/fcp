@@ -1554,8 +1554,9 @@ export interface paths {
         put?: never;
         /**
          * `POST /emergency/notify-call` — ring someone and speak the notice to
-         *     them: the call channel of on-site notification, which the events
-         *     server asks this node for (`docs/E911_BLOCK_2.md` §8.1).
+         *     them, as the events server's call channel has a call manager do
+         *     (`docs/E911_BLOCK_2.md` §8.1): put to a call manager, whose answer
+         *     comes back — for an administrator to try a contact.
          */
         post: operations["emergency_notify_call"];
         delete?: never;
@@ -2390,13 +2391,7 @@ export interface paths {
          */
         get: operations["media_list_calls"];
         put?: never;
-        /**
-         * POST /v1/calls
-         *     Originate a new call (click-to-call).
-         * @description Rings the `from` party first; when they answer, rings the `to` party.
-         *     Returns immediately with a call ID — poll GET /v1/calls/:id for status.
-         */
-        post: operations["media_originate_call"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2412,14 +2407,14 @@ export interface paths {
         };
         /**
          * GET /v1/calls/:call_id
-         *     Get details of a specific call
+         *     A call, as the node holding it sees it.
          */
         get: operations["media_get_call"];
         put?: never;
         post?: never;
         /**
          * DELETE /v1/calls/:call_id
-         *     Hangup an active call
+         *     Hang up a call: `POST /calls/:call_id/hangup` by another name.
          */
         delete: operations["media_hangup_call"];
         options?: never;
@@ -8127,7 +8122,7 @@ export interface components {
             created_at: string;
         };
         NotifyCallRequest: {
-            /** @description The extension or SIP URI to ring. */
+            /** @description One of the tenant's users or extensions, or a SIP URI, to ring. */
             to: string;
             /** @description What to say once it is answered. */
             text: string;
@@ -8175,20 +8170,6 @@ export interface components {
             validated: boolean;
             /** Format: date-time */
             validated_at?: string | null;
-        };
-        OriginateCallRequest: {
-            /** @description Extension or SIP URI of the party to ring first (caller). */
-            from: string;
-            /** @description Extension or SIP URI of the destination party (callee). */
-            to: string;
-            /** @description Optional display name for the caller. */
-            from_display_name?: string | null;
-            /** @description Optional tenant ID (uses server default if omitted). */
-            tenant_id?: string | null;
-        };
-        OriginateCallResponse: {
-            call_id: string;
-            status: string;
         };
         /** @description A page of a list. */
         Page_AgentResponse: {
@@ -11472,6 +11453,14 @@ export interface components {
         SsoExchangeRequest: {
             code: string;
         };
+        StartRecordingRequest: {
+            /**
+             * @description Where the recording is written, under the tenant's directory; the
+             *     extension picks the format (`.wav` or `.opus`). Absent: a WAV file
+             *     under the tenant and the day, named for the call.
+             */
+            path?: string | null;
+        };
         /** @description System status response. */
         StatusResponse: {
             status: string;
@@ -12203,7 +12192,10 @@ export interface components {
              */
             retention_days?: number | null;
         };
-        /** @description Update meeting request body (all fields optional). */
+        /**
+         * @description Update meeting request body (all fields optional; `null` clears one
+         *     that may be empty).
+         */
         UpdateMeetingRequest: {
             name?: string | null;
             guest_pin?: string | null;
@@ -12243,6 +12235,11 @@ export interface components {
         UpdateMessageRequest: {
             status?: string | null;
         };
+        /**
+         * @description What an owner may change on their meeting; anything else is refused
+         *     (an administrator's, on `/conferences/meetings/{id}`). `null` clears a
+         *     PIN or the welcome.
+         */
         UpdateMyConferenceRequest: {
             name?: string | null;
             guest_pin?: string | null;
@@ -12891,15 +12888,17 @@ export interface components {
         "me.UpdateMessageRequest": {
             status?: string | null;
         };
+        /** @description What the node answered a recording request with. */
         "media.RecordingResponse": {
             call_id: string;
-            message: string;
+            /** @description `recording` or `stopped`. */
+            status: string;
             /** @description The recording's id, when one started. */
             recording_id?: string | null;
+            /** @description The file it is written to, when one started. */
+            path?: string | null;
             /** @description What the parties were told: `announced`, `failed` or `not_required`. */
             consent?: string | null;
-            /** @description True when a recording-consent announcement was played first. */
-            consent_announced?: boolean;
         };
     };
     responses: never;
@@ -18012,39 +18011,6 @@ export interface operations {
             };
         };
     };
-    media_originate_call: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OriginateCallRequest"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OriginateCallResponse"];
-                };
-            };
-            /** @description An error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
     media_get_call: {
         parameters: {
             query?: never;
@@ -18087,13 +18053,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description OK */
+            /** @description Ended */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["CallControlResponse"];
                 };
             };
             /** @description An error */
@@ -18116,9 +18082,13 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartRecordingRequest"];
+            };
+        };
         responses: {
-            /** @description OK */
+            /** @description Recording */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -18149,7 +18119,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description OK */
+            /** @description Stopped */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -18553,12 +18523,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Left */
-            204: {
+            /** @description Left: the node's answer, passed through */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": unknown;
+                };
             };
             /** @description An error */
             default: {

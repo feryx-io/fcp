@@ -7,9 +7,10 @@ use crate::error::ApiError;
 use crate::state::ApiState;
 use axum::{extract::State, response::IntoResponse, Json};
 use fcp_core::storage::{DeviceStore, ExtensionStore, PhoneNumberStore};
-use fcp_core::{CdrQuery, CdrStore, CredentialStore, RegistrationStore};
+use fcp_core::{CdrStore, CredentialStore, RegistrationStore};
 use serde::Serialize;
 use std::collections::HashSet;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DashboardSummary {
@@ -20,6 +21,11 @@ pub struct DashboardSummary {
     pub total_phone_numbers: usize,
     pub calls_today: usize,
     pub avg_call_duration_secs: f64,
+}
+
+/// A count that could not be read is an error, not a zero.
+fn failed<E: std::fmt::Display>(what: &'static str) -> impl Fn(E) -> ApiError {
+    move |e| ApiError::Internal(format!("Could not count {what}: {e}"))
 }
 
 /// GET /api/v1/dashboard/summary
@@ -47,82 +53,68 @@ pub async fn summary(
         avg_call_duration_secs: 0.0,
     };
 
-    summary.active_calls = state
-        .call_manager
-        .active_calls()
-        .into_iter()
-        .filter(|call| call.tenant_id == tenant.0)
-        .count();
+    // The calls up now, where the call list finds them: the cluster's.
+    summary.active_calls = crate::v1::media::active_calls(&state, &tenant.0, false)
+        .await
+        .len();
 
-    // Get counts from storage
     if let Some(storage) = &state.storage {
         let tenant_id = &tenant.0;
+        summary.total_users = storage
+            .count_users_in_tenant(tenant_id)
+            .await
+            .map_err(failed("users"))? as usize;
+        summary.total_extensions = storage
+            .list_extensions(tenant_id)
+            .await
+            .map_err(failed("extensions"))?
+            .len();
+        summary.total_phone_numbers = storage
+            .list_phone_numbers(tenant_id)
+            .await
+            .map_err(failed("phone numbers"))?
+            .len();
 
-        // Users
-        if let Ok(count) = storage.count_users_in_tenant(tenant_id).await {
-            summary.total_users = count as usize;
-        }
+        // Registered devices: registrations at a device's address.
+        let devices = storage
+            .list_devices(tenant_id)
+            .await
+            .map_err(failed("devices"))?;
+        let registrations = storage
+            .get_all_registrations_in_tenant(tenant_id)
+            .await
+            .map_err(failed("registrations"))?;
+        let device_aors: HashSet<String> = devices
+            .into_iter()
+            .filter_map(|device| device.sip_uri)
+            .filter_map(|sip_uri| fcp_sip::presence::extract_aor(&sip_uri))
+            .collect();
+        summary.registered_devices = registrations
+            .into_iter()
+            .filter(|registration| {
+                let aor = registration
+                    .aor
+                    .trim_start_matches("sip:")
+                    .trim_start_matches("sips:");
+                device_aors.contains(aor)
+            })
+            .count();
 
-        // Extensions
-        if let Ok(extensions) = storage.list_extensions(tenant_id).await {
-            summary.total_extensions = extensions.len();
-        }
-
-        // Phone numbers
-        if let Ok(numbers) = storage.list_phone_numbers(tenant_id).await {
-            summary.total_phone_numbers = numbers.len();
-        }
-
-        // Registered devices (from registrations)
-        if let (Ok(devices), Ok(registrations)) = (
-            storage.list_devices(tenant_id).await,
-            storage.get_all_registrations_in_tenant(tenant_id).await,
-        ) {
-            let device_aors: HashSet<String> = devices
-                .into_iter()
-                .filter_map(|device| device.sip_uri)
-                .filter_map(|sip_uri| fcp_sip::presence::extract_aor(&sip_uri))
-                .collect();
-
-            summary.registered_devices = registrations
-                .into_iter()
-                .filter(|registration| {
-                    let aor = registration
-                        .aor
-                        .trim_start_matches("sip:")
-                        .trim_start_matches("sips:");
-                    device_aors.contains(aor)
-                })
-                .count();
-        }
-
-        // CDR stats - calls today
-        let today_start = {
-            use std::time::{Duration, SystemTime};
-            let now = SystemTime::now();
-            let since_epoch = now.duration_since(std::time::UNIX_EPOCH).unwrap();
-            let day_secs = since_epoch.as_secs() % 86400;
-            now - Duration::from_secs(day_secs)
-        };
-        let query = CdrQuery {
-            tenant_id: Some(*tenant_id),
-            start_time_from: Some(today_start),
-            ..Default::default()
-        };
-        if let Ok(cdrs) = storage.query_cdrs(query).await {
-            summary.calls_today = cdrs.len();
-            if !cdrs.is_empty() {
-                let total_duration_ms: u64 =
-                    cdrs.iter().filter_map(|cdr| cdr.call_duration_ms).sum();
-                let calls_with_duration = cdrs
-                    .iter()
-                    .filter(|cdr| cdr.call_duration_ms.is_some())
-                    .count();
-                if calls_with_duration > 0 {
-                    summary.avg_call_duration_secs =
-                        (total_duration_ms as f64 / 1000.0) / calls_with_duration as f64;
-                }
-            }
+        // Today's calls (since midnight UTC), counted in the database
+        // rather than over a page of records.
+        let now = SystemTime::now();
+        let since_midnight = now
+            .duration_since(UNIX_EPOCH)
+            .map(|d| Duration::from_secs(d.as_secs() % 86_400))
+            .unwrap_or_default();
+        let usage = storage
+            .aggregate_usage(tenant_id, now - since_midnight, now)
+            .await
+            .map_err(failed("today's calls"))?;
+        summary.calls_today = usage.total_calls as usize;
+        if usage.answered_calls > 0 {
+            summary.avg_call_duration_secs =
+                (usage.total_duration_ms as f64 / 1000.0) / usage.answered_calls as f64;
         }
     }
 

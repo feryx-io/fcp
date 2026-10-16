@@ -119,6 +119,17 @@ impl Stack {
         trusted_edges: &[&str],
         ingest: Option<&str>,
     ) -> Option<Self> {
+        Self::start_speaking(carriers, trusted_edges, ingest, None).await
+    }
+
+    /// As [`Stack::start_with_events`], speaking through the TTS service
+    /// at `tts` (`[media] tts_remote_url`).
+    async fn start_speaking(
+        carriers: &[&Carrier],
+        trusted_edges: &[&str],
+        ingest: Option<&str>,
+        tts: Option<&str>,
+    ) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -166,6 +177,7 @@ rtp_port_end = {rtp_end}
 prompts_dir = "{dir}/prompts"
 tts_cache_dir = "{dir}/tts-cache"
 recording_dir = "{dir}/recordings"
+{tts}
 
 [logging]
 level = "info"
@@ -184,6 +196,11 @@ trusted_edges = [{edges}]
             db = db.url(),
             rtp_end = rtp_start + 60,
             dir = dir.path().display(),
+            tts = match tts {
+                Some(url) =>
+                    format!("tts_remote_url = \"{url}\"\ntts_remote_token = \"tts-token\""),
+                None => String::new(),
+            },
             events = match ingest {
                 Some(url) => format!("\n[events]\nserver_url = \"{url}\"\n"),
                 None => String::new(),
@@ -1314,5 +1331,191 @@ async fn a_tenants_own_emergency_trunk_carries_its_911_call() {
     call.answered(SOON).await.unwrap();
     assert_eq!(call.hangup().await.unwrap(), 200);
     assert!(answered.ended(SOON).await);
+    stack.finish().await;
+}
+
+/// A TTS service that speaks every text as a second of [`NOTICE_HZ`].
+async fn tone_tts() -> String {
+    use axum::routing::post;
+    let mut wav = Vec::new();
+    let mut phase = 0.0f32;
+    let samples: Vec<i16> = (0..50)
+        .flat_map(|_| fcp_testkit::media::tone_frame(NOTICE_HZ as f32, &mut phase))
+        .collect();
+    let data_len = (samples.len() * 2) as u32;
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&8000u32.to_le_bytes());
+    wav.extend_from_slice(&16000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for s in samples {
+        wav.extend_from_slice(&s.to_le_bytes());
+    }
+    let port = free_port();
+    let app = axum::Router::new().route(
+        "/v1/synthesize",
+        post(move || {
+            let wav = wav.clone();
+            async move { wav }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// What a notification call speaks, as the stand-in TTS says it.
+const NOTICE_HZ: u32 = 1100;
+
+/// The call channel end to end (`docs/E911_BLOCK_2.md` §8.1): a test call
+/// makes the events server ask this call manager to ring the tenant's
+/// contact, an extension; the contact's phone rings, is answered and hears
+/// the notice, and the attempt is recorded as delivered. Asked for a name
+/// the tenant has no user by, the node says it could not place the call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_notification_call_rings_the_contact_and_speaks_the_notice() {
+    use fcp_core::e911::notify::{ContactKind, NotifyContact};
+    use fcp_core::e911::{EmergencyConfig, EmergencyStore};
+
+    let carrier = Carrier::new("carrier-a", 10).await;
+    let events_port = free_port();
+    let ingest = loopback(events_port, "/ingest");
+    let tts = tone_tts().await;
+    let mut stack = match Stack::start_speaking(&[&carrier], &[], Some(&ingest), Some(&tts)).await {
+        Some(s) => s,
+        None => {
+            eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+            return;
+        }
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let guard = stack.seed.user("guard", "guard-pw", "1050").await;
+    stack.seed.site_for("alice", ALICE_ELIN).await;
+    let store = fcp_storage_postgres::emergency::PostgresEmergencyStore::new(
+        stack.seed.storage().pool().clone(),
+    );
+    let mut config = EmergencyConfig::defaults(stack.seed.tenant_id);
+    config.contacts = vec![NotifyContact::new(ContactKind::Call, "1050")];
+    store.put_emergency_config(&config).await.unwrap();
+
+    // Asked directly, for someone who is not the tenant's.
+    let client = reqwest::Client::new();
+    let refused = client
+        .post(loopback(stack.http, "/emergency/notify-call"))
+        .json(&serde_json::json!({
+            "to": "no-such-user", "text": "x", "tenant_id": stack.seed.tenant_id,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 503);
+    let why = refused.text().await.unwrap();
+    assert!(why.contains("not one of the tenant's"), "{why}");
+
+    let events_config = format!(
+        r#"
+[service]
+node_id = "e2e-events"
+
+[websocket]
+bind_address = "127.0.0.1:{events_port}"
+
+[event_bus]
+bus_type = "memory"
+
+[webhook]
+enabled = false
+database_url = "{db}"
+
+[notifications]
+enabled = true
+max_attempts = 1
+retry_interval_secs = 1
+
+[notifications.call]
+call_manager_url = "http://127.0.0.1:{http}"
+ring_timeout_secs = 15
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        db = stack.db_url(),
+        http = stack.http,
+    );
+    let events = Service::start(
+        "events-server",
+        fcp_testkit::bins::path("fcp-events-server", "fcp-events-server"),
+        &events_config,
+        &loopback(events_port, "/health"),
+    )
+    .await;
+
+    let guard_phone = stack.phone(&guard).await;
+    let phone = stack.phone(&alice).await;
+    let call = phone.call("933").await.unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the trunk never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    call.hangup().await.unwrap();
+
+    // The guard's phone rings with the notice.
+    let Some(ringing) = guard_phone.incoming(Duration::from_secs(25)).await else {
+        let logs = events.kill().await;
+        stack
+            .fail(&format!(
+                "the contact's phone never rang\nevents server:\n{logs}"
+            ))
+            .await;
+    };
+    let told = ringing.answer().await.unwrap();
+    assert!(
+        told.media().heard(NOTICE_HZ, SOON).await,
+        "the contact heard nothing"
+    );
+    assert!(
+        told.ended(Duration::from_secs(20)).await,
+        "the node hung up"
+    );
+
+    let records = stack
+        .seed
+        .emergency_calls(1, SOON, |r| r.ended_at.is_some())
+        .await;
+    let mut notifications = Vec::new();
+    for _ in 0..80 {
+        notifications = store
+            .list_emergency_notifications(&stack.seed.tenant_id, &records[0].call_id)
+            .await
+            .unwrap();
+        if notifications
+            .iter()
+            .any(|n| n.status == fcp_core::e911::notify::NotificationStatus::Delivered)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(notifications.len(), 1, "{notifications:?}");
+    assert_eq!(notifications[0].contact.target, "1050");
+    assert_eq!(
+        notifications[0].status,
+        fcp_core::e911::notify::NotificationStatus::Delivered,
+        "{notifications:?}"
+    );
+
+    events.stop().await;
     stack.finish().await;
 }

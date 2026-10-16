@@ -89,6 +89,8 @@ rust_decimal_macros.workspace = true
 tower = { version = "0.5", features = ["util"] }
 # Handler tests against a real PostgreSQL instance (tests/api_postgres.rs)
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+# A local master key, for the encryption-at-rest routes
+fcp-crypto = { path = "../fcp-crypto" }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
 bytes = { workspace = true }
 # WebSocket client for the /api/v1/events first-message auth test (matches axum 0.7's tungstenite)

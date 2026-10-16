@@ -363,43 +363,40 @@ pub async fn update_prompt(
         prompt.tts_voice = Some(voice);
     }
 
-    // Re-synthesize audio if TTS parameters changed
+    // New words are spoken before anything is saved: a prompt whose text
+    // changed and could not be spoken again is refused as it was, rather
+    // than kept with no audio, which a call would play as silence.
     if tts_changed && prompt.source_type == PromptSourceType::Tts {
-        if let (Some(tts_service), Some(prompts_dir)) = (&state.tts_service, &state.prompts_dir) {
-            let tts_text = prompt.tts_text.as_deref().unwrap_or("");
-            let voice = prompt.tts_voice.as_deref();
-            match tts_service
-                .synthesize(tts_text, Some(&prompt.language), voice)
+        let (Some(tts_service), Some(prompts_dir)) = (&state.tts_service, &state.prompts_dir)
+        else {
+            return Err(ApiError::ServiceUnavailable(
+                "TTS service not configured: the new text cannot be spoken".to_string(),
+            ));
+        };
+        let tts_text = prompt.tts_text.as_deref().unwrap_or("");
+        let voice = prompt.tts_voice.as_deref();
+        let cached_path = tts_service
+            .synthesize(tts_text, Some(&prompt.language), voice)
+            .await
+            .map_err(|e| ApiError::ServiceUnavailable(format!("TTS synthesis failed: {e}")))?;
+        let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
+        tokio::fs::create_dir_all(&tenant_dir)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to create prompts directory: {e}")))?;
+        let dest_path = tenant_dir.join(format!("{}.wav", prompt.id));
+        tokio::fs::copy(&cached_path, &dest_path)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to save audio file: {e}")))?;
+        prompt.file_size = Some(
+            tokio::fs::metadata(&dest_path)
                 .await
-            {
-                Ok(cached_path) => {
-                    let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
-                    let _ = tokio::fs::create_dir_all(&tenant_dir).await;
-                    let dest_path = tenant_dir.join(format!("{}.wav", prompt.id));
-                    if tokio::fs::copy(&cached_path, &dest_path).await.is_ok() {
-                        let file_size = tokio::fs::metadata(&dest_path)
-                            .await
-                            .map(|m| m.len())
-                            .unwrap_or(0);
-                        prompt.audio_path = Some(dest_path);
-                        prompt.audio_format = Some("wav".to_string());
-                        prompt.file_size = Some(file_size);
-                        info!(id = %id, "Re-synthesized TTS audio after text change");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(id = %id, error = ?e, "Re-synthesis failed, clearing audio");
-                    prompt.audio_path = None;
-                    prompt.file_size = None;
-                    prompt.duration_ms = None;
-                }
-            }
-        } else {
-            // No TTS service, just clear the old audio
-            prompt.audio_path = None;
-            prompt.file_size = None;
-            prompt.duration_ms = None;
-        }
+                .map(|m| m.len())
+                .unwrap_or(0),
+        );
+        prompt.audio_path = Some(dest_path);
+        prompt.audio_format = Some("wav".to_string());
+        prompt.duration_ms = None;
+        info!(id = %id, "Re-synthesized TTS audio after text change");
     }
 
     prompt.updated_at = SystemTime::now();
@@ -613,7 +610,7 @@ pub async fn synthesize_prompt(
     let cached_path = tts_service
         .synthesize(&tts_text, Some(language), voice)
         .await
-        .map_err(|e| ApiError::Internal(format!("TTS synthesis failed: {}", e)))?;
+        .map_err(|e| ApiError::ServiceUnavailable(format!("TTS synthesis failed: {}", e)))?;
 
     // Copy to permanent prompts directory
     let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());

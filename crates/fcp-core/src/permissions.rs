@@ -942,6 +942,23 @@ pub fn roles_token_permissions(roles: &[UserRole], mode: DeploymentMode) -> Vec<
         .collect()
 }
 
+/// Whether someone holding `roles` may give `role` to a user, or act on a
+/// user who holds it — set their password, change their role, delete them
+/// (`docs/USERS.md` §8): the platform's administrator any role; anyone
+/// else a role holding nothing they do not hold themselves, and never the
+/// platform's. Without it a user administrator could set a tenant
+/// administrator's password, or make a platform administrator.
+pub fn roles_may_assign(roles: &[UserRole], role: UserRole, mode: DeploymentMode) -> bool {
+    if roles.iter().any(UserRole::is_platform_admin) {
+        return true;
+    }
+    !role.is_platform_admin()
+        && role
+            .permissions(mode)
+            .into_iter()
+            .all(|p| roles_have_permission(roles, p, mode))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

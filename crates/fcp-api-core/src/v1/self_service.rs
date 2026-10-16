@@ -333,7 +333,7 @@ pub async fn update_voicemail(
     .await?;
 
     if let Some(pin) = body.pin {
-        mailbox.pin = pin;
+        mailbox.pin = fcp_core::VoicemailMailbox::hashed_pin(&pin).map_err(ApiError::BadRequest)?;
     }
     if let Some(email_notification) = body.email_notification {
         mailbox.email_notification = email_notification;
@@ -528,10 +528,9 @@ pub async fn update_voicemail_message(
         .ok_or_else(|| ApiError::NotFound("Message not found".to_string()))?;
 
     // Verify ownership
+    // Someone else's is not found, as a message that does not exist.
     if message.mailbox_id != mailbox.id {
-        return Err(ApiError::Forbidden(
-            "Message does not belong to your mailbox".to_string(),
-        ));
+        return Err(ApiError::NotFound("Message not found".to_string()));
     }
 
     if let Some(status_str) = body.status {
@@ -553,6 +552,7 @@ pub async fn update_voicemail_message(
         .put_message(message.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    super::voicemail::announce_counts(&state, mailbox.tenant_id, &mailbox.id).await;
 
     Ok(Json(message_to_response(message)))
 }
@@ -589,16 +589,16 @@ pub async fn delete_voicemail_message(
         .ok_or_else(|| ApiError::NotFound("Message not found".to_string()))?;
 
     // Verify ownership
+    // Someone else's is not found, as a message that does not exist.
     if message.mailbox_id != mailbox.id {
-        return Err(ApiError::Forbidden(
-            "Message does not belong to your mailbox".to_string(),
-        ));
+        return Err(ApiError::NotFound("Message not found".to_string()));
     }
 
     storage
         .delete_message(&message_id)
         .await
         .map_err(ApiError::storage)?;
+    super::voicemail::announce_counts(&state, mailbox.tenant_id, &mailbox.id).await;
 
     info!(username = %claims.sub, message_id = %message_id, "User deleted voicemail message");
 
@@ -637,10 +637,9 @@ pub async fn get_message_audio(
         .ok_or_else(|| ApiError::NotFound("Message not found".to_string()))?;
 
     // Verify ownership
+    // Someone else's is not found, as a message that does not exist.
     if message.mailbox_id != mailbox.id {
-        return Err(ApiError::Forbidden(
-            "Message does not belong to your mailbox".to_string(),
-        ));
+        return Err(ApiError::NotFound("Message not found".to_string()));
     }
 
     // A message a site holds is fetched through the site's link
@@ -806,6 +805,15 @@ pub async fn upload_voicemail_greeting(
     }
 
     let greeting_type = parse_greeting_type(&greeting_type_str)?;
+    let expires_at = greeting_expiry(
+        expires_in_str
+            .map(|h| {
+                h.trim().parse::<u64>().map_err(|_| {
+                    ApiError::BadRequest("expires_in must be a number of hours".to_string())
+                })
+            })
+            .transpose()?,
+    )?;
 
     // Create directory for this mailbox's greetings
     let mailbox_dir = greetings_dir.join(&mailbox.id);
@@ -820,14 +828,11 @@ pub async fn upload_voicemail_greeting(
         .map_err(|e| ApiError::Internal(format!("Failed to write greeting file: {}", e)))?;
 
     // Create greeting (with optional expiration for temporary greetings)
-    let greeting = if let Some(expires_in) = expires_in_str {
-        let hours: u64 = expires_in.parse().map_err(|_| {
-            ApiError::BadRequest("expires_in must be a number of hours".to_string())
-        })?;
-        let expires_at = SystemTime::now() + std::time::Duration::from_secs(hours * 3600);
-        VoicemailGreeting::with_expiration(greeting_type, file_path, expires_at)
-    } else {
-        VoicemailGreeting::new(greeting_type, file_path)
+    let greeting = match expires_at {
+        Some(expires_at) => {
+            VoicemailGreeting::with_expiration(greeting_type, file_path, expires_at)
+        }
+        None => VoicemailGreeting::new(greeting_type, file_path),
     };
 
     mailbox.add_greeting(greeting.clone());
@@ -881,13 +886,19 @@ pub async fn synthesize_voicemail_greeting(
     let tts_service = state
         .tts_service
         .as_ref()
-        .ok_or_else(|| ApiError::Internal("TTS service is not configured".to_string()))?;
+        .ok_or_else(|| ApiError::ServiceUnavailable("TTS service is not configured".to_string()))?;
 
     let greeting_type = parse_greeting_type(&body.greeting_type)?;
 
     if body.text.trim().is_empty() {
         return Err(ApiError::BadRequest("Text must not be empty".to_string()));
     }
+    if body.text.chars().count() > MAX_GREETING_TEXT {
+        return Err(ApiError::BadRequest(format!(
+            "Text must not exceed {MAX_GREETING_TEXT} characters"
+        )));
+    }
+    let expires_at = greeting_expiry(body.expires_in_hours)?;
 
     let language = body.language.as_deref().unwrap_or("en-US");
     let voice = body.voice.as_deref();
@@ -896,7 +907,7 @@ pub async fn synthesize_voicemail_greeting(
     let cached_path = tts_service
         .synthesize(&body.text, Some(language), voice)
         .await
-        .map_err(|e| ApiError::Internal(format!("TTS synthesis failed: {}", e)))?;
+        .map_err(|e| ApiError::ServiceUnavailable(format!("TTS synthesis failed: {}", e)))?;
 
     // Copy to greeting file location
     let mailbox_dir = greetings_dir.join(&mailbox.id);
@@ -910,11 +921,11 @@ pub async fn synthesize_voicemail_greeting(
         .map_err(|e| ApiError::Internal(format!("Failed to copy synthesized audio: {}", e)))?;
 
     // Create greeting (with optional expiration for temporary greetings)
-    let greeting = if let Some(hours) = body.expires_in_hours {
-        let expires_at = SystemTime::now() + std::time::Duration::from_secs(hours * 3600);
-        VoicemailGreeting::with_expiration(greeting_type, file_path, expires_at)
-    } else {
-        VoicemailGreeting::new(greeting_type, file_path)
+    let greeting = match expires_at {
+        Some(expires_at) => {
+            VoicemailGreeting::with_expiration(greeting_type, file_path, expires_at)
+        }
+        None => VoicemailGreeting::new(greeting_type, file_path),
     };
 
     mailbox.add_greeting(greeting.clone());
@@ -940,6 +951,25 @@ pub async fn synthesize_voicemail_greeting(
             expires_at: greeting.expires_at.map(system_time_to_epoch_secs),
         }),
     ))
+}
+
+/// The longest text a greeting is spoken from.
+const MAX_GREETING_TEXT: usize = 2000;
+/// The longest a temporary greeting lasts, in hours: a year.
+const MAX_GREETING_HOURS: u64 = 24 * 365;
+
+/// When a temporary greeting given `hours` ends: an absurd lifetime is
+/// refused, not overflowed.
+fn greeting_expiry(hours: Option<u64>) -> Result<Option<SystemTime>, ApiError> {
+    match hours {
+        None => Ok(None),
+        Some(hours) if hours == 0 || hours > MAX_GREETING_HOURS => Err(ApiError::BadRequest(
+            format!("A temporary greeting lasts between 1 and {MAX_GREETING_HOURS} hours"),
+        )),
+        Some(hours) => Ok(Some(
+            SystemTime::now() + std::time::Duration::from_secs(hours * 3600),
+        )),
+    }
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -2034,16 +2064,23 @@ pub async fn update_my_conference(
     Ok(Json(super::conferences::MeetingResponse::from(meeting)))
 }
 
+/// What an owner may change on their meeting; anything else is refused
+/// (an administrator's, on `/conferences/meetings/{id}`). `null` clears a
+/// PIN or the welcome.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateMyConferenceRequest {
     pub name: Option<String>,
+    #[serde(default, deserialize_with = "super::conferences::double_option")]
     pub guest_pin: Option<Option<String>>,
+    #[serde(default, deserialize_with = "super::conferences::double_option")]
     pub host_pin: Option<Option<String>>,
     pub require_guest_pin: Option<bool>,
     pub max_participants: Option<usize>,
     pub wait_for_moderator: Option<bool>,
     pub auto_record: Option<bool>,
     pub default_locked: Option<bool>,
+    #[serde(default, deserialize_with = "super::conferences::double_option")]
     pub welcome_tts: Option<Option<String>>,
 }
 

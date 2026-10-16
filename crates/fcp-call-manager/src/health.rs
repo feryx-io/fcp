@@ -196,6 +196,7 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
             get(crate::route_preview::route_preview_handler),
         )
         .route("/calls", get(calls_handler))
+        .route("/calls/:id", get(call_handler))
         .route(
             "/calls/:id/recording/start",
             post(start_call_recording_handler),
@@ -474,17 +475,64 @@ async fn calls_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::V
 }
 
 #[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct StartRecordingBody {
     /// Under the tenant's directory; absent, a dated file named for the call.
     #[serde(default)]
     path: Option<String>,
+    /// The call's tenant, when the caller scopes it (the admin API does);
+    /// the node's default tenant otherwise.
+    #[serde(default)]
+    tenant_id: Option<TenantId>,
 }
 
-/// The service tenant's call `id`, if there is one.
-fn service_call(state: &AppState, id: &str) -> Option<fcp_b2bua_core::CallId> {
-    let call_id = id.parse::<fcp_b2bua_core::CallId>().ok()?;
-    let call = state.call_manager.get_call(&call_id)?;
-    (call.tenant_id == state.default_tenant_id).then_some(call_id)
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct StopRecordingBody {
+    #[serde(default)]
+    tenant_id: Option<TenantId>,
+}
+
+/// GET /calls/:id — one of the tenant's calls (`?tenant_id=`, the node's
+/// default tenant otherwise), as the admin API's `GET /api/v1/calls/:id`
+/// shows it.
+async fn call_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(query): Query<SupervisorQuery>,
+) -> Response {
+    let Some(call) =
+        scoped_call(&state, &id, query.tenant_id).and_then(|id| state.call_manager.get_call(&id))
+    else {
+        return call_not_found(&id);
+    };
+    Json(call_view(&call)).into_response()
+}
+
+/// A call as `GET /calls/:id` answers it: the admin API's `CallInfo`.
+fn call_view(call: &fcp_b2bua_core::Call) -> serde_json::Value {
+    serde_json::json!({
+        "id": call.id.to_string(),
+        "state": format!("{:?}", call.state),
+        "from_uri": call.a_leg.remote_uri,
+        "to_uri": call
+            .b_leg
+            .as_ref()
+            .map(|leg| leg.remote_uri.clone())
+            .unwrap_or_else(|| call.callee().unwrap_or("").to_string()),
+        "from_display_name": call.a_leg.remote_display_name,
+        "to_display_name": call.b_leg.as_ref().and_then(|leg| leg.remote_display_name.clone()),
+        "created_at": rfc3339(call.created_at),
+        "established_at": call.established_at.map(rfc3339),
+        "ended_at": call.ended_at.map(rfc3339),
+        "duration_seconds": call.duration().map(|d| d.as_secs()),
+        "media_anchored": call.media_anchored,
+        "failure_reason": call.failure_reason,
+    })
+}
+
+fn rfc3339(time: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 fn call_not_found(id: &str) -> Response {
@@ -521,9 +569,6 @@ async fn start_call_recording_handler(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Response {
-    let Some(call_id) = service_call(&state, &id) else {
-        return call_not_found(&id);
-    };
     let req: StartRecordingBody = if body.iter().all(u8::is_ascii_whitespace) {
         StartRecordingBody::default()
     } else {
@@ -537,6 +582,9 @@ async fn start_call_recording_handler(
                     .into_response()
             }
         }
+    };
+    let Some(call_id) = scoped_call(&state, &id, req.tenant_id) else {
+        return call_not_found(&id);
     };
     let path = match req.path {
         Some(p) => fcp_sip::recording::RecordingPath::Supplied(p),
@@ -553,6 +601,7 @@ async fn start_call_recording_handler(
     {
         Ok(started) => Json(serde_json::json!({
             "call_id": id,
+            "status": "recording",
             "recording_id": started.recording_id.to_string(),
             "path": started.file,
             "consent": started.consent.as_str(),
@@ -566,8 +615,10 @@ async fn start_call_recording_handler(
 async fn stop_call_recording_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    body: Option<Json<StopRecordingBody>>,
 ) -> Response {
-    let Some(call_id) = service_call(&state, &id) else {
+    let tenant = body.and_then(|Json(b)| b.tenant_id);
+    let Some(call_id) = scoped_call(&state, &id, tenant) else {
         return call_not_found(&id);
     };
     match state.call_recorder.stop(&call_id).await {

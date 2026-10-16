@@ -182,6 +182,24 @@ fn ensure_user_in_tenant(
     }
 }
 
+/// Refuses a caller giving `role`, or acting on a user who holds it, when
+/// the role holds more than the caller does (`AuthIdentity::may_assign_role`,
+/// `docs/USERS.md` §8): a user administrator neither sets a tenant
+/// administrator's password nor makes a platform administrator.
+pub(crate) fn ensure_may_act_on(
+    identity: &AuthIdentity,
+    role: UserRole,
+    mode: fcp_core::permissions::DeploymentMode,
+) -> Result<(), ApiError> {
+    if identity.may_assign_role(role, mode) {
+        return Ok(());
+    }
+    Err(ApiError::Forbidden(format!(
+        "The role {} holds more than you do",
+        crate::v1::auth_session::role_to_string(&role)
+    )))
+}
+
 /// Parse role string to UserRole enum.
 fn parse_user_role(role_str: Option<&str>) -> Result<UserRole, ApiError> {
     match role_str {
@@ -480,6 +498,7 @@ pub async fn create_user(
 
     // Parse role from request
     let role = parse_user_role(req.role.as_deref())?;
+    ensure_may_act_on(&identity, role, state.deployment_mode)?;
 
     // Create user
     let mut user = User {
@@ -622,6 +641,7 @@ pub async fn update_user(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    ensure_may_act_on(&identity, user.role, state.deployment_mode)?;
     refuse_deprovisioned(&user)?;
     let before = user.clone();
 
@@ -645,6 +665,7 @@ pub async fn update_user(
     user.enabled = user.account_status != AccountStatus::Suspended;
     if let Some(role_str) = &req.role {
         let new_role = parse_user_role(Some(role_str.as_str()))?;
+        ensure_may_act_on(&identity, new_role, state.deployment_mode)?;
         let old_role = user.role;
         user.role = new_role;
 
@@ -816,6 +837,7 @@ pub async fn update_password(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    ensure_may_act_on(&identity, user.role, state.deployment_mode)?;
 
     // Hash new password
     let password_hash = password::hash_password(&req.password)
@@ -911,6 +933,7 @@ pub async fn update_digest_password(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    ensure_may_act_on(&identity, user.role, state.deployment_mode)?;
 
     // Hash new digest password for audit/display purposes
     let digest_password_hash = password::hash_password(&req.digest_password)
@@ -981,7 +1004,11 @@ pub async fn delete_digest_password(
     tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    crate::auth::check_permission(&identity, Permission::UserDelete, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::UserSetPassword,
+        state.deployment_mode,
+    )?;
     validation::validate_username(&username)?;
 
     // Get existing user
@@ -991,6 +1018,7 @@ pub async fn delete_digest_password(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    ensure_may_act_on(&identity, user.role, state.deployment_mode)?;
 
     // Check if digest password is set
     if user.digest_password.is_none() {
@@ -1068,6 +1096,7 @@ pub async fn unlock_user(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    ensure_may_act_on(&identity, user.role, state.deployment_mode)?;
     refuse_deprovisioned(&user)?;
 
     let before = user.clone();
@@ -1140,6 +1169,7 @@ pub async fn delete_user(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    ensure_may_act_on(&identity, user.role, state.deployment_mode)?;
     crate::offboarding::deprovision(&state, user, &identity.actor()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1174,6 +1204,7 @@ pub async fn restore_user(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    ensure_may_act_on(&identity, user.role, state.deployment_mode)?;
     let user = crate::offboarding::restore(&state, user).await?;
     Ok(Json(UserResponse::from(user)))
 }

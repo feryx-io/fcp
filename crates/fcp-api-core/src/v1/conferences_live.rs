@@ -388,6 +388,12 @@ pub async fn set_content_layout(
     Path(room): Path<String>,
     Json(req): Json<SetLayoutRequest>,
 ) -> Result<Proxied, ApiError> {
+    if !fcp_core::meeting::VIDEO_CONTENT_LAYOUTS.contains(&req.layout.as_str()) {
+        return Err(ApiError::BadRequest(format!(
+            "layout must be one of {}",
+            fcp_core::meeting::VIDEO_CONTENT_LAYOUTS.join(", ")
+        )));
+    }
     let meeting = scoped_meeting(&state, &tenant.0, &room).await?;
     let out = forward(
         &state,

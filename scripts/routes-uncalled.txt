@@ -7,63 +7,7 @@
 # this list; what stays names the provider or device it waits for.
 #
 # Measured 2026-10-13 (v0.25.395): 325 of 412 called. D3b1 (v0.25.404)
-# called 38 more.
-
-# Sign-in and the caller's own account
-POST   /api/v1/auth/change-expired-password                D3: no test
-POST   /api/v1/auth/signup                                 D3: no test (public sign-up is off in the suite's config)
-POST   /api/v1/me/api-tokens/{id}/rotate                   D3: no test (admin token rotation is tested)
-POST   /api/v1/me/totp/recovery-codes                      D3: no test
-POST   /api/v1/me/totp/disable                             D3: only refused
-DELETE /api/v1/users/{username}/identities/{provider_id}   D3: no test
-PUT    /api/v1/users/{username}/digest-password            D3: no test
-DELETE /api/v1/users/{username}/digest-password            D3: no test
-
-# Calls, through the admin API (the node's own routes are tested)
-POST   /api/v1/calls                                       D3: no test
-GET    /api/v1/calls/{call_id}                             D3: no test
-DELETE /api/v1/calls/{call_id}                             D3: no test
-POST   /api/v1/calls/{call_id}/recording/start             D3: no test
-POST   /api/v1/calls/{call_id}/recording/stop              D3: no test
-POST   /api/v1/calls/{call_id}/whisper                     D3: only refused
-GET    /api/v1/calls/{call_id}/supervisor                  D3: only refused
-DELETE /api/v1/calls/{call_id}/supervisor                  D3: only refused
-
-# Conferences: meetings by id, the caller's own, live video
-GET    /api/v1/conferences/meetings/{id}                   D3: no test
-PATCH  /api/v1/conferences/meetings/{id}                   D3: no test
-DELETE /api/v1/conferences/meetings/{id}                   D3: no test
-POST   /api/v1/conferences/meetings/{id}/enable            D3: no test
-POST   /api/v1/conferences/meetings/{id}/disable           D3: no test
-POST   /api/v1/conferences/meetings/{id}/join-tokens       D3: no test
-GET    /api/v1/me/conferences                              D3: no test
-GET    /api/v1/me/conferences/{id}                         D3: no test
-PATCH  /api/v1/me/conferences/{id}                         D3: no test
-POST   /api/v1/me/conferences/{id}/join-tokens             D3: no test
-PUT    /api/v1/conferences/live/{room}/video/content-layout  D3: no test (needs a conference server)
-POST   /api/v1/conferences/live/{room}/video/content/stop  D3: no test (needs a conference server)
-
-# Voicemail
-GET    /api/v1/voicemail/mailboxes                         D3: no test
-POST   /api/v1/voicemail/mailboxes/{id}/enable             D3: no test
-GET    /api/v1/voicemail/mailboxes/{mailbox_id}/messages   D3: no test
-GET    /api/v1/voicemail/messages/{id}                     D3: no test
-PUT    /api/v1/voicemail/messages/{id}                     D3: no test
-PUT    /api/v1/me/voicemail                                D3: no test
-DELETE /api/v1/me/voicemail/messages/{id}                  D3: no test
-PUT    /api/v1/me/voicemail/messages/{id}                  D3: no test
-GET    /api/v1/me/voicemail/messages/{id}/audio            D3: no test
-PUT    /api/v1/me/voicemail/greetings/{greeting_type}/active  D3: no test
-POST   /api/v1/me/voicemail/greetings/synthesize           D3: no test (needs a TTS server; a stand-in will do)
-PUT    /api/v1/prompts/{id}                                D3: no test
-POST   /api/v1/prompts/{id}/synthesize                     D3: no test (needs a TTS server; a stand-in will do)
-
-# The platform
-GET    /api/v1/dashboard/summary                           D3: no test
-GET    /api/v1/usage/by-number                             D3: no test
-POST   /api/v1/emergency/notify-call                       D3: no test (a call manager places it)
-DELETE /api/v1/provisioning/redirection/{service}          D3: no test
-POST   /api/v1/system/encryption/rotate                    D3: no test
-POST   /api/v1/system/encryption/reencrypt                 D3: no test
-POST   /api/v1/system/encryption/rewrap                    D3: no test
-POST   /api/v1/system/encryption/seal                      D3: no test
+# called 38 more; D3b2 (v0.25.405) the other 48, and removed one
+# (`POST /api/v1/calls`, which never placed a call). Every operation in the
+# contract is called; a new one needs its test, or a line here saying what
+# it waits for.

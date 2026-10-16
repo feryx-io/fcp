@@ -48,6 +48,9 @@ A token has a **scope**:
 - An unknown permission name is a 400. A permission the maker lacks is a
   403 that names it.
 - An API token cannot make another token.
+- A token that may make or change users gives a role, or acts on a user
+  holding one, only when the role holds nothing the token lacks, and never
+  gives `super_admin` (`USERS.md` §8).
 
 ### The maker answers for the token
 

@@ -23,7 +23,8 @@ T = TypeVar("T", bound="UpdateMeetingRequest")
 
 @_attrs_define
 class UpdateMeetingRequest:
-    """ Update meeting request body (all fields optional).
+    """ Update meeting request body (all fields optional; `null` clears one
+    that may be empty).
 
         Attributes:
             name (None | str | Unset):

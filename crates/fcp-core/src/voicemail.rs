@@ -397,9 +397,26 @@ impl VoicemailMailbox {
         self.updated_at = SystemTime::now();
     }
 
-    /// Verifies the PIN.
+    /// Verifies the PIN against its bcrypt hash; a mailbox written before
+    /// PINs were hashed keeps its plain one, compared in constant time
+    /// until it is next set.
     pub fn verify_pin(&self, pin: &str) -> bool {
-        self.pin == pin
+        if self.pin.starts_with("$2") {
+            return crate::storage::password::verify_pin(pin, &self.pin).unwrap_or(false);
+        }
+        let (stored, given) = (self.pin.as_bytes(), pin.as_bytes());
+        stored.len() == given.len()
+            && stored
+                .iter()
+                .zip(given)
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0
+    }
+
+    /// The PIN a caller enters, checked (four to eight digits) and kept as
+    /// its bcrypt hash, as a user's own PIN is.
+    pub fn hashed_pin(pin: &str) -> std::result::Result<String, String> {
+        crate::storage::password::hash_pin(pin).map_err(|e| e.to_string())
     }
 }
 
@@ -875,6 +892,18 @@ mod tests {
     fn test_verify_pin_correct() {
         let mailbox = test_mailbox();
         assert!(mailbox.verify_pin("1234"));
+    }
+
+    #[test]
+    fn a_hashed_pin_verifies_and_a_bad_one_is_refused() {
+        let mut mailbox = test_mailbox();
+        mailbox.pin = VoicemailMailbox::hashed_pin("2468").unwrap();
+        assert!(mailbox.pin.starts_with("$2"));
+        assert!(mailbox.verify_pin("2468"));
+        assert!(!mailbox.verify_pin("2469"));
+        assert!(VoicemailMailbox::hashed_pin("12").is_err());
+        assert!(VoicemailMailbox::hashed_pin("12ab").is_err());
+        assert!(VoicemailMailbox::hashed_pin("123456789").is_err());
     }
 
     #[test]

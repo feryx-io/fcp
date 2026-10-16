@@ -166,8 +166,6 @@ export interface ApiError {
 // Calls (matches media.rs CallInfo)
 export type CallInfo = S['CallInfo']
 
-export type OriginateCallRequest = S['OriginateCallRequest']
-
 // CDRs (matches cdrs.rs CdrResponse)
 export type CdrResponse = S['CdrResponse']
 

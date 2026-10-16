@@ -18,7 +18,7 @@ use crate::{error::ApiError, state::ApiState};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use fcp_core::e911::notify::{EmergencyNotification, NotifyContact};
@@ -813,7 +813,7 @@ pub async fn list_call_notifications(
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct NotifyCallRequest {
-    /// The extension or SIP URI to ring.
+    /// One of the tenant's users or extensions, or a SIP URI, to ring.
     pub to: String,
     /// What to say once it is answered.
     pub text: String,
@@ -848,8 +848,9 @@ pub struct NotifyCallResponse {
 }
 
 /// `POST /emergency/notify-call` — ring someone and speak the notice to
-/// them: the call channel of on-site notification, which the events
-/// server asks this node for (`docs/E911_BLOCK_2.md` §8.1).
+/// them, as the events server's call channel has a call manager do
+/// (`docs/E911_BLOCK_2.md` §8.1): put to a call manager, whose answer
+/// comes back — for an administrator to try a contact.
 #[utoipa::path(
     post,
     path = "/api/v1/emergency/notify-call",
@@ -865,35 +866,44 @@ pub async fn notify_call(
     State(state): State<ApiState>,
     tenant: TenantContext,
     Json(req): Json<NotifyCallRequest>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<Response, ApiError> {
     if req.to.trim().is_empty() {
         return Err(ApiError::BadRequest("to is required".to_string()));
     }
     if req.text.trim().is_empty() {
         return Err(ApiError::BadRequest("text is required".to_string()));
     }
-    let outcome = state
-        .handler
-        .announce_call(
-            req.to.trim(),
-            req.text.trim(),
-            std::time::Duration::from_secs(req.ring_timeout_secs.clamp(5, 120)),
-            req.repeat.clamp(1, 5),
-        )
+    // The call is placed by a call manager: this process has no phone line.
+    let supervisor = state.call_supervisor.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("no call manager can be reached".to_string())
+    })?;
+    let request = serde_json::json!({
+        "to": req.to.trim(),
+        "text": req.text.trim(),
+        "tenant_id": tenant.0,
+        "ring_timeout_secs": req.ring_timeout_secs,
+        "repeat": req.repeat,
+        "call_id": req.call_id,
+        "test": req.test,
+    });
+    let (status, body) = supervisor
+        .notify_call(tenant.0, request)
         .await
-        .map_err(|e| ApiError::Internal(format!("Notification call failed: {e}")))?;
+        .map_err(ApiError::ServiceUnavailable)?;
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    if !status.is_success() {
+        let error = crate::error::ErrorResponse::from_upstream(status, &body);
+        return Ok((status, Json(error)).into_response());
+    }
     info!(
         tenant_id = %tenant.0,
         to = %req.to,
         call_id = %req.call_id.as_deref().unwrap_or("-"),
         test = req.test,
-        outcome = %outcome,
+        outcome = %body["outcome"].as_str().unwrap_or("-"),
         "Emergency notification call"
     );
-    Ok(Json(NotifyCallResponse {
-        outcome: outcome.to_string(),
-        to: req.to,
-    }))
+    Ok((status, Json(body)).into_response())
 }
 
 // ─── Validation ──────────────────────────────────────────────────────────

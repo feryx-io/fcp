@@ -203,8 +203,6 @@ from .notify_call_request import NotifyCallRequest
 from .notify_call_response import NotifyCallResponse
 from .number_usage_response import NumberUsageResponse
 from .number_validation_response import NumberValidationResponse
-from .originate_call_request import OriginateCallRequest
-from .originate_call_response import OriginateCallResponse
 from .page_agent_response import PageAgentResponse
 from .page_agent_response_data_item import PageAgentResponseDataItem
 from .page_api_token_response import PageApiTokenResponse
@@ -440,6 +438,7 @@ from .softphone_config_feature_codes import SoftphoneConfigFeatureCodes
 from .softphone_media import SoftphoneMedia
 from .softphone_password import SoftphonePassword
 from .sso_exchange_request import SsoExchangeRequest
+from .start_recording_request import StartRecordingRequest
 from .status_response import StatusResponse
 from .subject_expansion import SubjectExpansion
 from .subject_identifier_type_0 import SubjectIdentifierType0
@@ -736,8 +735,6 @@ __all__ = (
     "NotifyCallResponse",
     "NumberUsageResponse",
     "NumberValidationResponse",
-    "OriginateCallRequest",
-    "OriginateCallResponse",
     "PageAgentResponse",
     "PageAgentResponseDataItem",
     "PageApiTokenResponse",
@@ -973,6 +970,7 @@ __all__ = (
     "SoftphoneMedia",
     "SoftphonePassword",
     "SsoExchangeRequest",
+    "StartRecordingRequest",
     "StatusResponse",
     "SubjectExpansion",
     "SubjectIdentifierType0",

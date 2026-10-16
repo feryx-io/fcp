@@ -104,6 +104,11 @@ pub async fn signup(
     if !req.email.contains('@') {
         return Err(ApiError::BadRequest("Valid email is required".into()));
     }
+    // The name a phone registers with and a request path carries: held to
+    // what every other way of making a user holds it to.
+    crate::validation::validate_username(&req.username)?;
+    crate::validation::reject_crlf("company_name", &req.company_name)?;
+    crate::validation::reject_crlf("email", &req.email)?;
 
     // Fail early if signing in is impossible — avoids orphaned rows
     if state.session_keys.is_none() {

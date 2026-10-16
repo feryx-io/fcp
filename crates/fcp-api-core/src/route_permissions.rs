@@ -256,7 +256,6 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     ),
     // Calls.
     (GET, "/calls", Needs(CallView)),
-    (POST, "/calls", Needs(CallControl)),
     (GET, "/calls/:call_id", Needs(CallView)),
     (DELETE, "/calls/:call_id", Needs(CallControl)),
     (POST, "/calls/:call_id/recording/start", Needs(CallControl)),

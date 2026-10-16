@@ -1,6 +1,6 @@
-//! A supervisor on a call (`docs/ENTERPRISE_CALLING.md` §3.11), and live
-//! call control (`docs/DEVELOPER_SURFACE.md` phase 8), asked of the call
-//! manager holding the call.
+//! A supervisor on a call (`docs/ENTERPRISE_CALLING.md` §3.11), live call
+//! control (`docs/DEVELOPER_SURFACE.md` phase 8), a call's details and its
+//! recording, asked of the call manager holding the call.
 //!
 //! The admin API holds no calls: a call lives on the call manager that
 //! placed it. The request is put to the node `[call_manager] url` names,
@@ -101,6 +101,7 @@ impl NodeCallSupervisor {
                 .http
                 .get(format!("{call}/supervisor"))
                 .query(&tenant_query),
+            SupervisionRequest::Show => self.http.get(&call).query(&tenant_query),
             SupervisionRequest::Leave => self
                 .http
                 .post(format!("{call}/supervisor/leave"))
@@ -223,6 +224,48 @@ impl CallSupervisor for NodeCallSupervisor {
                 serde_json::json!({ "error": format!("Device not found: {device_id}") }),
             ));
         }
+        Err(last_error.unwrap_or_else(|| "no call manager to ask".to_string()))
+    }
+
+    /// The first call manager that answers places it: any node can ring a
+    /// tenant's phone. One that cannot speak (503) passes it on.
+    async fn notify_call(
+        &self,
+        tenant: TenantId,
+        request: serde_json::Value,
+    ) -> Result<(u16, serde_json::Value), String> {
+        let mut last_error = None;
+        for base in self.nodes().await? {
+            let builder = self
+                .http
+                .post(format!("{base}/emergency/notify-call"))
+                .json(&request);
+            let builder = match &self.config.auth_token {
+                Some(token) => builder.bearer_auth(token),
+                None => builder,
+            };
+            match builder.send().await {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let body = response
+                        .json::<serde_json::Value>()
+                        .await
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    if status == 503 {
+                        last_error = Some(format!(
+                            "the call manager at {base}: {}",
+                            body["error"].as_str().unwrap_or("unavailable")
+                        ));
+                        continue;
+                    }
+                    return Ok((status, body));
+                }
+                Err(e) => {
+                    last_error = Some(format!("the call manager at {base} did not answer: {e}"))
+                }
+            }
+        }
+        let _ = tenant;
         Err(last_error.unwrap_or_else(|| "no call manager to ask".to_string()))
     }
 

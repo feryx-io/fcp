@@ -22,7 +22,10 @@ T = TypeVar("T", bound="UpdateMyConferenceRequest")
 
 @_attrs_define
 class UpdateMyConferenceRequest:
-    """ 
+    """ What an owner may change on their meeting; anything else is refused
+    (an administrator's, on `/conferences/meetings/{id}`). `null` clears a
+    PIN or the welcome.
+
         Attributes:
             name (None | str | Unset):
             guest_pin (None | str | Unset):
@@ -44,7 +47,6 @@ class UpdateMyConferenceRequest:
     auto_record: bool | None | Unset = UNSET
     default_locked: bool | None | Unset = UNSET
     welcome_tts: None | str | Unset = UNSET
-    additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
 
@@ -107,7 +109,7 @@ class UpdateMyConferenceRequest:
 
 
         field_dict: dict[str, Any] = {}
-        field_dict.update(self.additional_properties)
+
         field_dict.update({
         })
         if name is not UNSET:
@@ -238,22 +240,5 @@ class UpdateMyConferenceRequest:
             welcome_tts=welcome_tts,
         )
 
-
-        update_my_conference_request.additional_properties = d
         return update_my_conference_request
 
-    @property
-    def additional_keys(self) -> list[str]:
-        return list(self.additional_properties.keys())
-
-    def __getitem__(self, key: str) -> Any:
-        return self.additional_properties[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self.additional_properties[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        del self.additional_properties[key]
-
-    def __contains__(self, key: str) -> bool:
-        return key in self.additional_properties

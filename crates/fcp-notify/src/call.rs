@@ -2,7 +2,8 @@
 //! (`docs/E911_BLOCK_2.md` §8.1).
 //!
 //! The events server has no SIP stack of its own, so it asks a call
-//! manager to place the call: `POST /api/v1/emergency/notify-call`, which
+//! manager to place the call: the node's `POST /emergency/notify-call`
+//! (behind its `[http] api_token`), which
 //! rings the extension, speaks the notice when it is answered, and answers
 //! with what became of it. A call that is not answered is a failure, so
 //! the notifier's retries ring again.
@@ -43,7 +44,7 @@ impl CallChannel {
 
     fn url(&self) -> String {
         format!(
-            "{}/api/v1/emergency/notify-call",
+            "{}/emergency/notify-call",
             self.settings.call_manager_url.trim_end_matches('/')
         )
     }

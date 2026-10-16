@@ -56,7 +56,6 @@ import type {
   AuthUser,
   ChangeExpiredPasswordRequest,
   CallInfo,
-  OriginateCallRequest,
   CdrResponse,
   ListCdrsResponse,
   CdrQueryParams,
@@ -382,7 +381,6 @@ export const lineBindings = {
 export const calls = {
   list: () => apiClient.getAll<CallInfo>('/calls'),
   get: (callId: string) => apiClient.get<CallInfo>(`/calls/${encodeURIComponent(callId)}`),
-  originate: (data: OriginateCallRequest) => apiClient.post<CallInfo>('/calls', data),
   /** Live call control, put to the node holding the call (docs/DEVELOPER_SURFACE.md phase 8). */
   hangup: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/hangup`),
   hold: (callId: string, party: 'caller' | 'callee' = 'caller') =>

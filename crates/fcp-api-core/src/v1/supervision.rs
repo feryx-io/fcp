@@ -200,7 +200,7 @@ pub async fn get(
     operation_id = "supervision_leave",
     params(("call_id" = String, Path)),
     responses(
-        (status = 204, description = "Left"),
+        (status = 200, description = "Left: the node's answer, passed through", body = serde_json::Value),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
     ),
 )]
