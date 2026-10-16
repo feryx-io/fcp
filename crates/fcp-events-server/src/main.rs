@@ -377,6 +377,16 @@ async fn main() -> Result<()> {
     let registration_store = Arc::new(RegistrationStateStore::new());
     let node_registry = Arc::new(NodeRegistry::new());
 
+    // With Redis as the bus, the stream consumer hands each event to the
+    // webhooks and the notifier and acknowledges it only once they have
+    // it, so a server killed with events in hand is handed them again
+    // (`docs/DEEP_TESTING.md` D5b). The in-memory bus they would
+    // otherwise follow acknowledges nothing and drops what a slow
+    // follower falls behind on.
+    let stream_takes = cfg!(feature = "redis-events")
+        && config.event_bus.bus_type == "redis"
+        && config.event_bus.redis_url.is_some();
+
     // Create webhook dispatcher if enabled (requires PostgreSQL storage)
     let webhook_dispatcher = match storage_result.as_ref() {
         Some(storage) if config.webhook.enabled => {
@@ -402,10 +412,12 @@ async fn main() -> Result<()> {
             let dispatcher = Arc::new(WebhookDispatcher::new(webhook_store, dispatcher_config));
 
             // Spawn event consumer that dispatches to webhooks
-            fcp_webhooks::spawn_webhook_consumer(
-                event_bus.clone() as Arc<dyn EventSubscriber>,
-                dispatcher.clone(),
-            );
+            if !stream_takes {
+                fcp_webhooks::spawn_webhook_consumer(
+                    event_bus.clone() as Arc<dyn EventSubscriber>,
+                    dispatcher.clone(),
+                );
+            }
 
             // Spawn retry processor
             fcp_webhooks::dispatcher::spawn_retry_processor(dispatcher.clone());
@@ -434,10 +446,12 @@ async fn main() -> Result<()> {
             {
                 Ok(notifier) => {
                     let notifier = Arc::new(notifier);
-                    fcp_notify::spawn_event_consumer(
-                        event_bus.clone() as Arc<dyn EventSubscriber>,
-                        Arc::clone(&notifier),
-                    );
+                    if !stream_takes {
+                        fcp_notify::spawn_event_consumer(
+                            event_bus.clone() as Arc<dyn EventSubscriber>,
+                            Arc::clone(&notifier),
+                        );
+                    }
                     fcp_notify::spawn_retry_processor(
                         Arc::clone(&notifier),
                         Duration::from_secs(config.notifications.retry_interval_secs.max(1)),
@@ -505,6 +519,13 @@ async fn main() -> Result<()> {
                         let call_store_redis = call_store.clone();
                         let registration_store_redis = registration_store.clone();
                         let node_registry_redis = node_registry.clone();
+                        let takers = StreamTakers {
+                            webhooks: webhook_dispatcher.clone(),
+                            notifier: notifier.clone(),
+                            claim_idle: Duration::from_secs(
+                                config.event_bus.claim_idle_secs.max(1),
+                            ),
+                        };
 
                         tokio::spawn(async move {
                             redis_stream_consumer_task(
@@ -514,6 +535,7 @@ async fn main() -> Result<()> {
                                 call_store_redis,
                                 registration_store_redis,
                                 node_registry_redis,
+                                takers,
                             )
                             .await;
                         });
@@ -1658,6 +1680,22 @@ async fn stale_cleanup_task(
 /// (WebSocket clients and state, no webhooks); everything else to
 /// `event_bus`.
 #[cfg(feature = "redis-events")]
+/// What the stream consumer hands each event to before acknowledging
+/// it: the two consumers whose work nothing else would do.
+#[cfg(feature = "redis-events")]
+struct StreamTakers {
+    webhooks: Option<Arc<WebhookDispatcher>>,
+    notifier: Option<Arc<fcp_notify::EmergencyNotifier>>,
+    /// An entry delivered this long ago and not acknowledged belongs to
+    /// a consumer that has gone (`[event_bus] claim_idle_secs`).
+    claim_idle: Duration,
+}
+
+/// Batches handed over and not yet acknowledged, at most.
+#[cfg(feature = "redis-events")]
+const BATCHES_IN_HAND: usize = 16;
+
+#[cfg(feature = "redis-events")]
 async fn redis_stream_consumer_task(
     consumer: fcp_storage_redis::event_bus::RedisStreamConsumer,
     event_bus: Arc<InMemoryEventBus>,
@@ -1665,17 +1703,42 @@ async fn redis_stream_consumer_task(
     call_store: Arc<CallStateStore>,
     registration_store: Arc<RegistrationStateStore>,
     node_registry: Arc<NodeRegistry>,
+    takers: StreamTakers,
 ) {
     info!("Redis stream consumer task running");
+    let consumer = Arc::new(consumer);
+    let takers = Arc::new(takers);
+    let in_hand = Arc::new(tokio::sync::Semaphore::new(BATCHES_IN_HAND));
+    let claim_every = (takers.claim_idle / 2).max(Duration::from_secs(1));
+    // Claim at once: what a killed run of this server, or a peer that has
+    // gone, was handed and never acknowledged.
+    let mut last_claim = tokio::time::Instant::now() - claim_every;
 
     loop {
-        match consumer.read_entries(100, 2000).await {
+        let entries = if last_claim.elapsed() >= claim_every {
+            last_claim = tokio::time::Instant::now();
+            match consumer.claim_stale(takers.claim_idle, 100).await {
+                Ok(claimed) if !claimed.is_empty() => {
+                    warn!(
+                        count = claimed.len(),
+                        "Claimed events a consumer was handed and never acknowledged"
+                    );
+                    Ok(claimed)
+                }
+                Ok(_) => consumer.read_entries(100, 2000).await,
+                Err(e) => Err(e),
+            }
+        } else {
+            consumer.read_entries(100, 2000).await
+        };
+        match entries {
             Ok(entries) => {
                 if entries.is_empty() {
                     continue;
                 }
 
-                let mut ack_ids = Vec::with_capacity(entries.len());
+                let mut ack_now = Vec::new();
+                let mut handed = Vec::new();
 
                 for entry in entries {
                     let relayed = entry.envelope.relayed;
@@ -1691,23 +1754,46 @@ async fn redis_stream_consumer_task(
                         Some(&node_id),
                     );
 
-                    // Publish for WebSocket broadcast (and webhooks, if local)
-                    let bus = if relayed {
-                        &remote_event_bus
+                    // Publish for WebSocket broadcast; an event that
+                    // happened in this region also goes to its webhooks
+                    // and the notifier.
+                    if relayed {
+                        let _ = remote_event_bus.publish(event).await;
+                        ack_now.push(entry.id);
                     } else {
-                        &event_bus
-                    };
-                    let _ = bus.publish(event).await;
-
-                    ack_ids.push(entry.id);
+                        let _ = event_bus.publish(event.clone()).await;
+                        handed.push((entry.id, event));
+                    }
                 }
 
-                // Acknowledge processed events
-                if let Err(e) = consumer.ack(&ack_ids).await {
-                    error!(error = %e, "Failed to acknowledge Redis stream events");
-                } else {
-                    debug!(count = ack_ids.len(), "Acknowledged Redis stream events");
+                if !ack_now.is_empty() {
+                    if let Err(e) = consumer.ack(&ack_now).await {
+                        error!(error = %e, "Failed to acknowledge Redis stream events");
+                    }
                 }
+                if handed.is_empty() {
+                    continue;
+                }
+                // Hand the batch over beside the next read; at most
+                // BATCHES_IN_HAND at once, so a slow receiver holds the
+                // stream back rather than the server's memory.
+                let permit = match Arc::clone(&in_hand).acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => return,
+                };
+                let consumer = Arc::clone(&consumer);
+                let takers = Arc::clone(&takers);
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let done = hand_over(&consumer, &takers, handed).await;
+                    if let Err(e) = consumer.ack(&done).await {
+                        // Claimed and handed over again; neither consumer
+                        // delivers twice.
+                        error!(error = %e, "Failed to acknowledge Redis stream events");
+                    } else {
+                        debug!(count = done.len(), "Acknowledged Redis stream events");
+                    }
+                });
             }
             Err(e) => {
                 error!(error = %e, "Redis stream read failed, retrying in 2s...");
@@ -1715,6 +1801,36 @@ async fn redis_stream_consumer_task(
             }
         }
     }
+}
+
+/// Give each event to the webhooks and then the notifier; the ids of
+/// those both have. An event whose webhooks could not be logged is left
+/// unacknowledged, to be claimed and handed over again.
+#[cfg(feature = "redis-events")]
+async fn hand_over(
+    consumer: &fcp_storage_redis::event_bus::RedisStreamConsumer,
+    takers: &StreamTakers,
+    handed: Vec<(String, fcp_events::PlatformEvent)>,
+) -> Vec<String> {
+    let mut done = Vec::with_capacity(handed.len());
+    let mut kept = Vec::with_capacity(handed.len());
+    for (id, event) in handed {
+        if let Some(webhooks) = &takers.webhooks {
+            let key = format!("{}/{id}", consumer.stream_key());
+            if let Err(e) = webhooks.take(&key, &event).await {
+                warn!(error = %e, entry = %id, "Webhooks not logged for an event; it will be handed over again");
+                continue;
+            }
+        }
+        kept.push((id, event));
+    }
+    for (id, event) in kept {
+        if let Some(notifier) = &takers.notifier {
+            notifier.on_event(&event).await;
+        }
+        done.push(id);
+    }
+    done
 }
 
 /// Graceful shutdown signal handler

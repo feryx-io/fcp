@@ -118,7 +118,9 @@ WebSocket client connected to one events server sees only that server's
 share of the stream. Events servers in different groups each see every
 event, and each fires every webhook: a tenant gets one delivery per
 group. If WebSocket clients need the whole stream, run one events server
-(or one group) for the deployment and point them all at it.
+(or one group) for the deployment and point them all at it. An events
+server that dies with events in hand leaves them to the others in its
+group, which take them over after `[event_bus] claim_idle_secs` (60).
 
 **CDRs.** Call managers write `fcp:cdrs` on the shared Redis; run the
 `fcp-jobs` CDR processors anywhere, in one consumer group. Records are

@@ -543,6 +543,12 @@ pub struct EventBusConfig {
     #[serde(default = "default_consumer_name")]
     pub consumer_name: String,
 
+    /// An event handed to a consumer this long ago and not acknowledged
+    /// is taken over by another, or by this server when it starts again:
+    /// the consumer that had it has gone (`docs/DEEP_TESTING.md` D5b).
+    #[serde(default = "default_claim_idle_secs")]
+    pub claim_idle_secs: u64,
+
     /// Other regions' Redis instances to forward this region's events to
     /// (cross-region fan-out, `docs/MULTI_REGION.md`). Needs
     /// `bus_type = "redis"`. Every region should list every other region.
@@ -580,6 +586,10 @@ fn default_consumer_group() -> String {
     "fcp-events-server".to_string()
 }
 
+fn default_claim_idle_secs() -> u64 {
+    60
+}
+
 fn default_consumer_name() -> String {
     format!("consumer-{}", uuid::Uuid::new_v4())
 }
@@ -593,6 +603,7 @@ impl Default for EventBusConfig {
             redis_key_prefix: default_redis_key_prefix(),
             consumer_group: default_consumer_group(),
             consumer_name: default_consumer_name(),
+            claim_idle_secs: default_claim_idle_secs(),
             peer_regions: Vec::new(),
         }
     }

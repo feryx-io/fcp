@@ -2837,6 +2837,18 @@ pub trait WebhookStore: Send + Sync {
     /// Log a webhook delivery attempt.
     async fn log_delivery(&self, log: WebhookDeliveryLog) -> Result<()>;
 
+    /// Log a delivery unless one with its id is already logged; whether
+    /// this one was. A delivery's id is derived from the event it carries,
+    /// so an event handed over twice (an events server killed before it
+    /// acknowledged it) is delivered once (`docs/DEEP_TESTING.md` D5b).
+    async fn log_delivery_once(&self, log: WebhookDeliveryLog) -> Result<bool> {
+        if self.get_delivery_log(&log.id).await?.is_some() {
+            return Ok(false);
+        }
+        self.log_delivery(log).await?;
+        Ok(true)
+    }
+
     /// Get pending retries (undelivered, next_retry_at <= now, ordered by next_retry_at).
     async fn get_pending_retries(&self, limit: usize) -> Result<Vec<WebhookDeliveryLog>>;
 
@@ -5509,6 +5521,10 @@ impl WebhookStore for DynStorage {
 
     async fn log_delivery(&self, log: WebhookDeliveryLog) -> Result<()> {
         self.webhook_store.log_delivery(log).await
+    }
+
+    async fn log_delivery_once(&self, log: WebhookDeliveryLog) -> Result<bool> {
+        self.webhook_store.log_delivery_once(log).await
     }
 
     async fn get_pending_retries(&self, limit: usize) -> Result<Vec<WebhookDeliveryLog>> {

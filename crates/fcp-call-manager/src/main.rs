@@ -58,6 +58,8 @@ const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 /// How often the records of calls still up are kept: the most talk time a
 /// node killed mid-call leaves off a record (`fcp_cdr::open`).
 const OPEN_RECORDS_EVERY: Duration = Duration::from_secs(10);
+/// How often conference calls are checked for a node that has gone.
+const CONFERENCE_RESCUE_EVERY: Duration = Duration::from_secs(1);
 
 fn main() -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
@@ -1687,6 +1689,19 @@ async fn run() -> Result<()> {
     }
 
     let handler = Arc::new(handler);
+    // A conference node that has gone leaves its callers on dead air:
+    // move them to a node still up (`docs/DEEP_TESTING.md` D5b).
+    if config.cluster.enabled {
+        let handler = Arc::clone(&handler);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(CONFERENCE_RESCUE_EVERY);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                handler.rescue_conference_calls().await;
+            }
+        });
+    }
     // A woken app's REGISTER, on any node, reaches the call waiting for it
     // (docs/PUSH.md §2.2).
     if config.push.is_some() {

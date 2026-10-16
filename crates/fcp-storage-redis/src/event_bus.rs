@@ -335,6 +335,11 @@ impl RedisStreamConsumer {
         }
     }
 
+    /// The stream this consumer reads.
+    pub fn stream_key(&self) -> &str {
+        &self.stream_key
+    }
+
     /// Ensure the consumer group exists (idempotent).
     pub async fn ensure_group(&self) -> Result<()> {
         let mut conn = self.storage.connection();

@@ -304,6 +304,16 @@ pub trait ConferenceNodeSelector: Send + Sync {
         room_number: &str,
         video: Option<&ConferenceVideoNeed>,
     ) -> Option<String>;
+
+    /// Whether `host` (a `host:port` this selector placed a caller on) was
+    /// a conference node that has since left the cluster: killed, or its
+    /// heartbeat gone. A caller still on it hears nothing and is moved
+    /// (`docs/DEEP_TESTING.md` D5b). `false` for an address it never
+    /// placed on, such as the configured fallback server.
+    async fn conference_node_gone(&self, host: &str) -> bool {
+        let _ = host;
+        false
+    }
 }
 
 /// What a video meeting asks of a conference node: the SDP names of the
@@ -5627,6 +5637,7 @@ impl SipMessageHandler {
                                                     self.mark_conference_call(
                                                         &call_id,
                                                         room_number,
+                                                        host,
                                                     );
                                                     match sip_registrar::Binding::new(
                                                         SmolStr::new(destination_aor),
@@ -6607,7 +6618,11 @@ impl SipMessageHandler {
                                         if let Some(host) = conf_host.as_deref() {
                                             let target_uri =
                                                 format!("sip:{}@{}", extension_number, host);
-                                            self.mark_conference_call(&call_id, extension_number);
+                                            self.mark_conference_call(
+                                                &call_id,
+                                                extension_number,
+                                                host,
+                                            );
                                             info!(
                                                 call_id = %call_id,
                                                 room_number = %extension_number,
@@ -6721,7 +6736,7 @@ impl SipMessageHandler {
                                     if let Some(host) = conf_host.as_deref() {
                                         let target_uri =
                                             format!("sip:{}@{}", extension_number, host);
-                                        self.mark_conference_call(&call_id, extension_number);
+                                        self.mark_conference_call(&call_id, extension_number, host);
                                         info!(
                                             call_id = %call_id,
                                             room_number = %extension_number,
@@ -12884,9 +12899,10 @@ impl SipMessageHandler {
     }
 
     /// Remember that a call's B-leg is a conference node hosting `room`.
-    fn mark_conference_call(&self, call_id: &fcp_b2bua_core::CallId, room: &str) {
+    fn mark_conference_call(&self, call_id: &fcp_b2bua_core::CallId, room: &str, host: &str) {
         let _ = self.call_manager.update_call(call_id, |c| {
             c.conference_room = Some(room.to_string());
+            c.conference_node = Some(host.to_string());
         });
     }
 
@@ -12937,7 +12953,8 @@ impl SipMessageHandler {
             call_id: call.id,
             old_b_dialog,
             target: migration.target,
-            ticket: migration.ticket,
+            ticket: Some(migration.ticket),
+            old_node_gone: false,
         };
         tokio::spawn(ctx.run());
         self.create_simple_response(request, 202, "Accepted")
@@ -17650,6 +17667,120 @@ impl SipMessageHandler {
         Ok((media, session))
     }
 
+    /// Move every answered conference call whose node has gone to the room
+    /// on a node that is still up, or end it if none will have it
+    /// (`docs/DEEP_TESTING.md` D5b). A conference node killed outright
+    /// drains nothing and refers nobody, and a conference call's media
+    /// does not pass through this node, so without this its callers sit
+    /// on dead air for as long as they will hold. The caller joins the
+    /// room afresh: a PIN room asks for its PIN again. The call manager
+    /// runs this on a tick.
+    pub async fn rescue_conference_calls(self: &Arc<Self>) {
+        let Some(selector) = self.conference_node_selector.clone() else {
+            return;
+        };
+        for call in self.call_manager.active_calls() {
+            if call.state != fcp_b2bua_core::CallState::Established {
+                continue;
+            }
+            let (Some(room), Some(host)) =
+                (call.conference_room.clone(), call.conference_node.clone())
+            else {
+                continue;
+            };
+            if self.conference_migrations.contains_key(&call.id)
+                || !selector.conference_node_gone(&host).await
+            {
+                continue;
+            }
+            let Some(old_b_dialog) = call.b_leg.as_ref().and_then(|b| b.dialog.clone()) else {
+                continue;
+            };
+            let (Some(uac), Some(_)) = (self.uac.clone(), call.a_leg.dialog.as_ref()) else {
+                continue;
+            };
+            let new_host = selector
+                .select_conference_node(&call.tenant_id, &room, None)
+                .await
+                .filter(|h| *h != host);
+            let target = new_host
+                .as_deref()
+                .and_then(|h| sip_core::SipUri::parse(&format!("sip:{room}@{h}")).ok());
+            let Some(target) = target else {
+                warn!(call_id = %call.id, room = %room, node = %host, "A caller's conference node has gone and no other will take the room; ending the call");
+                self.end_rescued_call(&call.id);
+                continue;
+            };
+            if self.conference_migrations.insert(call.id, ()).is_some() {
+                continue;
+            }
+            warn!(
+                call_id = %call.id,
+                room = %room,
+                from = %host,
+                to = %target.as_str(),
+                "A caller's conference node has gone; moving them to another"
+            );
+            let ctx = ConferenceMigration {
+                uac,
+                local_uri: self.uas.local_uri.clone(),
+                call_manager: self.call_manager.clone(),
+                dialog_manager: Arc::clone(&self.dialog_manager),
+                session_timer_manager: Arc::clone(&self.session_timer_manager),
+                media_manager: self.media_manager.clone(),
+                sip_call_id_map: Arc::clone(&self.sip_call_id_map),
+                in_flight: Arc::clone(&self.conference_migrations),
+                b2bua_config: self.b2bua_config.clone(),
+                local_addr: self.local_addr.clone(),
+                call_id: call.id,
+                old_b_dialog,
+                target,
+                ticket: None,
+                old_node_gone: true,
+            };
+            let this = Arc::clone(self);
+            tokio::spawn(async move {
+                let call_id = ctx.call_id;
+                match ctx.rescue().await {
+                    Ok(()) => {
+                        info!(call_id = %call_id, "Conference caller moved off a node that has gone")
+                    }
+                    Err((code, _, why)) => {
+                        warn!(call_id = %call_id, code, error = %why, "Conference caller not moved off a node that has gone; ending the call");
+                        this.end_rescued_call(&call_id);
+                    }
+                }
+            });
+        }
+    }
+
+    /// End a call whose conference node has gone: a BYE to the caller
+    /// only, since the node's side of the leg went with the node.
+    fn end_rescued_call(&self, call_id: &fcp_b2bua_core::CallId) {
+        let Some(mut call) = self.call_manager.get_call(call_id) else {
+            return;
+        };
+        if let Some(b) = call.b_leg.as_mut() {
+            if let Some(dialog) = b.dialog.take() {
+                self.dialog_manager.remove(dialog.id());
+                self.session_timer_manager.stop_timer(dialog.id());
+            }
+        }
+        let _ = self.call_manager.update_call(call_id, |c| {
+            if let Some(b) = c.b_leg.as_mut() {
+                b.dialog = None;
+            }
+        });
+        let _ = self.hangup_call_by_id_saying(
+            call_id,
+            fcp_cdr::TerminationReason::system(
+                fcp_cdr::SystemCause::NodeFailed,
+                "conference node gone",
+            ),
+            Some("SIP;cause=503;text=\"conference node gone\""),
+        );
+    }
+
     /// Hangs up an active call by sending BYE on both legs and terminating the call.
     ///
     /// This method retrieves the call from CallManager, sends BYE on each leg that
@@ -19292,7 +19423,12 @@ struct ConferenceMigration {
     old_b_dialog: sip_dialog::Dialog,
     /// The room on the new node.
     target: sip_core::SipUri,
-    ticket: String,
+    /// The draining node's ticket; `None` when the old node is dead and
+    /// the caller joins the room on the new node afresh.
+    ticket: Option<String>,
+    /// The old node is gone (`docs/DEEP_TESTING.md` D5b): nothing is sent
+    /// to it, neither the NOTIFY nor the BYE.
+    old_node_gone: bool,
 }
 
 /// How long the new node may take to answer the INVITE.
@@ -19371,20 +19507,32 @@ impl ConferenceMigration {
 
         // The new B-leg, the ticket as a request header.
         let mut headers = sip_core::Headers::new();
-        headers
-            .push(
-                SmolStr::new(fcp_core::MIGRATION_TICKET_HEADER),
-                SmolStr::new(&self.ticket),
-            )
-            .map_err(|e| (500, "Server Internal Error", format!("ticket header: {e}")))?;
+        if let Some(ticket) = &self.ticket {
+            headers
+                .push(
+                    SmolStr::new(fcp_core::MIGRATION_TICKET_HEADER),
+                    SmolStr::new(ticket),
+                )
+                .map_err(|e| (500, "Server Internal Error", format!("ticket header: {e}")))?;
+        }
         let _ = headers.push(
             SmolStr::new(fcp_core::CALL_ID_HEADER),
             SmolStr::new(self.call_id.to_string()),
         );
         let target = self.target.as_str().to_string();
+        // Without a ticket the new node knows the caller only by the
+        // INVITE: as the old node knew them, by the old leg's From.
+        let options = sip_uac::InviteOptions {
+            from: self
+                .ticket
+                .is_none()
+                .then(|| self.old_b_dialog.local_uri().clone()),
+            extra_headers: headers,
+            ..sip_uac::InviteOptions::with_sdp(Some(&offer))
+        };
         let handle = tokio::time::timeout(
             Duration::from_secs(5),
-            self.uac.invite_with_headers(&target, Some(&offer), headers),
+            self.uac.invite_with_options(&target, options),
         )
         .await
         .map_err(|_| {
@@ -19508,7 +19656,9 @@ impl ConferenceMigration {
         let a_dialog_for_call = a_dialog.clone();
         let new_b_dialog_for_call = new_b_dialog.clone();
         let pass_through = anchored.is_none();
+        let new_host = self.target.as_str().rsplit('@').next().map(str::to_string);
         let swapped = self.call_manager.update_call(&self.call_id, |c| {
+            c.conference_node = new_host.clone();
             let mut leg = fcp_b2bua_core::CallLeg::new_outbound(target.clone(), None);
             leg.dialog = Some(new_b_dialog_for_call.clone());
             leg.sdp = Some(answer.clone());
@@ -19536,6 +19686,9 @@ impl ConferenceMigration {
             &new_b_dialog,
         );
 
+        if self.old_node_gone {
+            return Ok(());
+        }
         // Tell the old node, then drop its leg. Its own BYE may cross
         // ours; each side answers 481 to a dialog it no longer holds.
         self.notify_old_node(200, "OK").await;
@@ -19549,6 +19702,13 @@ impl ConferenceMigration {
 
     /// The REFER's implicit subscription, reported once: a sipfrag NOTIFY
     /// on the old leg (RFC 3515 §2.4.5), `Subscription-State: terminated`.
+    /// Move the caller off a node that has gone; what became of it.
+    async fn rescue(self) -> std::result::Result<(), MigrationFailure> {
+        let outcome = self.migrate().await;
+        self.in_flight.remove(&self.call_id);
+        outcome
+    }
+
     async fn notify_old_node(&self, code: u16, reason: &str) {
         let mut dialog = self.old_b_dialog.clone();
         if let Err(e) = crate::conference_migration::report_refer_outcome(

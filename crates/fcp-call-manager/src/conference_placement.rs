@@ -22,6 +22,9 @@ pub struct ClusterConferenceSelector {
     capacity: usize,
     /// This node's region: participants it places are joining from here.
     local_region: Option<String>,
+    /// Every address a participant was placed on: a conference node's,
+    /// so one no live member has is a node that has gone.
+    placed_on: DashMap<String, ()>,
 }
 
 impl ClusterConferenceSelector {
@@ -36,6 +39,7 @@ impl ClusterConferenceSelector {
             members,
             capacity,
             local_region,
+            placed_on: DashMap::new(),
         }
     }
 }
@@ -79,6 +83,16 @@ impl fcp_sip::ConferenceNodeSelector for ClusterConferenceSelector {
             capacity = self.capacity,
             "Conference participant placed"
         );
-        Some(pick.sip_address.to_string())
+        let host = pick.sip_address.to_string();
+        self.placed_on.insert(host.clone(), ());
+        Some(host)
+    }
+
+    async fn conference_node_gone(&self, host: &str) -> bool {
+        self.placed_on.contains_key(host)
+            && !self
+                .members
+                .iter()
+                .any(|m| m.value().sip_address.to_string() == host)
     }
 }

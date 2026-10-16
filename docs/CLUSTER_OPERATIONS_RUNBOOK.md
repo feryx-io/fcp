@@ -254,6 +254,27 @@ to a synced object there is refused with the cloud's address.
   it died). Started somewhere else, those records stay in the old
   spool: move its `open/` directory and segments to the new node's
   spool to have them written.
+- **A conference node was killed.** The other nodes hang up their
+  trunks to it once it leaves the member list (`heartbeat_ttl_secs`),
+  and its rooms carry on there. Each call manager moves the callers it
+  had on the dead node into the same room on a live one within a second
+  of seeing it gone; the log says `A caller's conference node has gone;
+  moving them to another`. They join as new participants, so a PIN room
+  asks again and a host must take the host PIN again. When no node will
+  take the room, the call is ended with `Reason: SIP;cause=503`.
+- **The events server was killed.** Events wait in the stream. With
+  `bus_type = "redis"` an event is acknowledged only once its webhooks
+  are in the delivery log and the emergency notifier has dealt with it;
+  a server that starts again, or another in the same consumer group,
+  takes over what the dead one held after `[event_bus]
+  claim_idle_secs` (60) and delivers it. The log says `Claimed events a
+  consumer was handed and never acknowledged`. A webhook sent but not
+  recorded is sent again under the same `event_id`; an emergency notice
+  sent but not recorded is sent again too, since telling someone twice
+  beats not telling them.
+- **`fcp-jobs` was killed.** CDRs it held unstored are claimed by the
+  next processor after `[cdr] claim_idle_secs` (60) and stored, charged
+  and announced once each.
 - **A node's heartbeat is late.** Look at the node's clock first, then
   its Redis latency. `fcp_cluster_view_age_seconds` on `/metrics` is how
   old its member list is.
