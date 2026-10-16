@@ -45,6 +45,8 @@ use tracing::debug;
 ///   when it names a call this node has.
 /// - `X-FCP-Own-Leg` admits an INVITE as one this node placed to itself
 ///   ([`crate::own_leg`]); kept only when it carries this process's token.
+/// - `X-FCP-Flow-Dial` turns a user's voicemail into a refusal; kept only
+///   on a leg that carries that token.
 pub const CLAIMED_HEADERS: &[&str] = &[
     fcp_core::CALL_ID_HEADER,
     crate::handler::TRANSFERRED_FROM_HEADER,
@@ -56,6 +58,7 @@ pub const CLAIMED_HEADERS: &[&str] = &[
     "Call-Info",
     "X-FCP-Intercom-Mode",
     crate::own_leg::OWN_LEG_HEADER,
+    crate::handler::FLOW_DIAL_HEADER,
 ];
 
 /// Whether this node believes what a peer says about a request.
@@ -160,7 +163,9 @@ impl<'a> Claims<'a> {
             }
             return any;
         }
-        if name.eq_ignore_ascii_case(crate::own_leg::OWN_LEG_HEADER) {
+        if name.eq_ignore_ascii_case(crate::own_leg::OWN_LEG_HEADER)
+            || name.eq_ignore_ascii_case(crate::handler::FLOW_DIAL_HEADER)
+        {
             return crate::own_leg::proves(request);
         }
         if !name.eq_ignore_ascii_case(crate::handler::TRANSFERRED_FROM_HEADER)

@@ -602,3 +602,36 @@ a request that far.
 | Public sign-up did not check the username as every other way of making a user does: a CRLF or a `/` went in. | S3 | Fixed: the same check. |
 | A content layout was passed to the conference server unchecked. Leaving supervision answered 200 where the contract said 204. Another user's voicemail message was 403, telling it existed. A SIP password was removed under `user_delete`, not `user_set_password`. | S4 | Fixed each. |
 | Under password expiry, a user an administrator made has never reset their password, so their first sign-in asks for a change. | — | As designed; pinned by the test. |
+
+### D4. Feature interactions
+
+`fcp-call-manager/tests/interactions.rs` is a table of 37 rows. Each row
+gives a callee's settings, an event and the outcome: the phones that ring
+first, how the caller's call ends, and the phones that never ring. Each
+row runs on a call manager and a database of its own, all with the same
+cast: Alice calls Bob, and Carol, Dave and Erin are the others. Where a
+row needs them, it also has a hoteling host, two desks on Bob's shared
+line, a sleeping app woken through the APNs stand-in, and a voicemail
+server.
+
+The settings are DND, call waiting, the four forwards, find-me, an
+executive with an assistant, a shared line, hoteling, a class of service,
+a user's after-hours schedule, a closed number and a push app. The events
+are a plain call, busy, no answer, already on a call, hold, park, a blind
+transfer, and a suspension after a park. The paths are an extension, a
+number, a shared line and a flow's `Dial`.
+
+The rows cover every pair §2.3 named. Each outcome was written from
+`ENTERPRISE_CALLING.md` before the row was run, and each row cites the
+section it comes from. Where the design is silent, the row says what was
+chosen: two users forwarding to each other end in 482.
+
+The harness was checked against itself: five rows given a wrong outcome
+must fail. One did not, because it listed the answering phone among
+those that never ring, so the runner now refuses a row that does that.
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| A flow's `Dial` to a user ran a copy of the ring plan of its own. It rang the first registered phone only, with no call waiting, find-me, executive screening or push. A forward's target was dialed back into the node without the node's own-leg token, so since `auth_invites` became the default (D2a) every such forward was challenged and failed. Under several tenants it would also have landed in the default tenant. | S2 | Fixed: the leg goes back into the node at the user's extension, carrying the own-leg token, the flow's call (its tenant) and `X-FCP-Flow-Dial`. The node runs the whole plan, and its voicemail treatment answers 480, so the flow keeps its `busy` and `no_answer` branches (`ENTERPRISE_CALLING.md` §3.1.1). |
+| Two users forwarding to each other put calls into the node without end. Each hop was a new call with its own media session: 19 calls in 0.1 s, stopped only when the node's own rate limit (20 calls a second from its address) refused its own leg with 503. Forwards on no answer did the same, one ring time at a time. | S2 | Fixed: a call whose forwards reach a user they already reached is answered 482 Loop Detected, as is a chain of more than ten forwards. |
+| A forward to a user was cut off at the forwarding user's ring time, which had run out by then. The forward's leg kept the old timeout, so Carol rang only as long as Bob had. When the two times matched, her own voicemail or forward never applied. | S2 | Fixed: a forward placed into the node waits for the new call's own plan, with a ten-minute backstop. |

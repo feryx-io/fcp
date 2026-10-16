@@ -16011,6 +16011,31 @@ impl SipMessageHandler {
         }
     }
 
+    /// Whether `user` was the callee of a call `call_id` forwards for,
+    /// directly or through the forwards before it, or the chain is longer
+    /// than [`MAX_FORWARD_HOPS`]: the forward has come back around.
+    fn forward_loop(&self, call_id: &fcp_b2bua_core::CallId, user: &fcp_core::UserId) -> bool {
+        let mut next = self
+            .call_manager
+            .get_call(call_id)
+            .and_then(|call| call.forwarded_for);
+        let mut hops = 0;
+        while let Some(id) = next {
+            hops += 1;
+            if hops > MAX_FORWARD_HOPS {
+                return true;
+            }
+            let Some(call) = self.call_manager.get_call(&id) else {
+                return false;
+            };
+            if call.callee_user_id.as_ref() == Some(user) {
+                return true;
+            }
+            next = call.forwarded_for;
+        }
+        false
+    }
+
     /// Ring a user by their plan (`docs/ENTERPRISE_CALLING.md` §3.1):
     /// `Some(contacts)` to fork, with the treatments and the ring time on
     /// the call; `None` when the plan applied at once and the call is
@@ -16026,6 +16051,24 @@ impl SipMessageHandler {
         contacts: Vec<sip_registrar::Binding>,
         callee: &str,
     ) -> Result<Option<Vec<sip_registrar::Binding>>> {
+        // A user this call's forwards already reached: two users forwarding
+        // to each other would place calls into this node without end.
+        if let Some(user) = user_id.filter(|user| self.forward_loop(&call_id, user)) {
+            warn!(call_id = %call_id, user_id = %user, "The call's forwards loop back to a user they reached: refused");
+            let _ = self.call_manager.update_call(&call_id, |call| {
+                call.callee_user_id = Some(user);
+            });
+            self.apply_treatment(
+                request,
+                a_leg_handle,
+                call_id,
+                fcp_core::Treatment::Refuse { code: 482 },
+                Some(callee),
+                "in a forward loop",
+            )
+            .await;
+            return Ok(None);
+        }
         let (settings, has_mailbox) = match (&self.storage, user_id) {
             (Some(storage), Some(user_id)) => (
                 crate::ring_plan::settings_for(storage, tenant_id, &user_id).await,
@@ -16230,6 +16273,15 @@ impl SipMessageHandler {
         callee: Option<&str>,
         reason: &str,
     ) {
+        // A flow's Dial hears that the user did not answer, and its flow
+        // decides what follows (`FLOW_DIAL_HEADER`).
+        let treatment = match treatment {
+            fcp_core::Treatment::Voicemail if request.headers().contains(FLOW_DIAL_HEADER) => {
+                info!(call_id = %call_id, reason, "A flow's Dial: the plan's voicemail answered as 480");
+                fcp_core::Treatment::Refuse { code: 480 }
+            }
+            other => other,
+        };
         let routed = match treatment {
             fcp_core::Treatment::Voicemail => {
                 self.route_cfna(
@@ -16857,6 +16909,11 @@ impl SipMessageHandler {
                     .update_call(&call_id, |c| c.forward_reason = Some(reason));
             }
 
+            // A number or an extension is a new call into this node, which
+            // rings it by its own plan and ring times.
+            let into_node = !destination.eq_ignore_ascii_case("voicemail")
+                && !destination.starts_with("sip:")
+                && !destination.starts_with("sips:");
             // Resolve the target URI
             let target_uri = if destination.eq_ignore_ascii_case("voicemail") {
                 // Read the runtime-reloadable override first, fall back to static config
@@ -16997,9 +17054,13 @@ impl SipMessageHandler {
             // Run parallel forking with the single CFNA B-leg. The forward's
             // own legs have no treatments: a forward that fails is the
             // caller's answer, not another forward.
+            // Nor the forwarding user's ring time, which has run out by
+            // now: a leg into this node gives up by its own plan, and any
+            // other rings for the node's time.
             let _ = self.call_manager.update_call(&call_id, |call| {
                 call.line_binding_id = None;
                 call.treatments = None;
+                call.no_answer_timeout = into_node.then_some(FORWARD_INTO_NODE_LIMIT);
             });
 
             self.handle_parallel_forking(
@@ -18610,6 +18671,21 @@ pub const TRANSFERRED_FROM_HEADER: &str = "X-FCP-Transferred-From";
 /// Believed only when it names a call this node has.
 pub const FORWARDED_FOR_HEADER: &str = "X-FCP-Forwarded-For";
 
+/// On a leg a flow's `Dial` placed into this node for a user: the user's
+/// plan answers its treatments as codes — busy as the busy code, voicemail
+/// as 480 — so the flow takes its own branches. A forward is still
+/// followed. Believed only on a leg that proves it is this node's.
+pub const FLOW_DIAL_HEADER: &str = "X-FCP-Flow-Dial";
+
+/// The most forwards one call follows, one into another, before the next
+/// is taken for a loop.
+const MAX_FORWARD_HOPS: usize = 10;
+
+/// How long a forward placed into this node may ring before the forwarding
+/// call gives up on it: a backstop, since the new call ends by its own
+/// plan (no-answer times are at most 300 seconds).
+const FORWARD_INTO_NODE_LIMIT: Duration = Duration::from_secs(600);
+
 /// `uri` with a URI header added (`?name=value`, or `&name=value` when it
 /// has headers already).
 fn with_uri_header(uri: &str, name: &str, value: &str) -> String {
@@ -19098,6 +19174,7 @@ fn reason_phrase(code: u16) -> &'static str {
         408 => "Request Timeout",
         410 => "Gone",
         480 => "Temporarily Unavailable",
+        482 => "Loop Detected",
         486 => "Busy Here",
         487 => "Request Terminated",
         488 => "Not Acceptable Here",

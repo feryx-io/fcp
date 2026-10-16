@@ -231,11 +231,30 @@ or for no answer applies through `apply_treatment`: `route_cfna` for a
 forward or voicemail — a number or an extension is a new call into this
 node, now at the port it listens on — and a final response otherwise, the
 callee's own code when there was one. A forward's own legs carry no
-treatments, so a forward that fails is the caller's answer. A flow's
-`Dial` to a user rings the plan's first contact, dials a forward's target,
-and for a plan that refuses or ends in voicemail reports `busy` or
-`no_answer` without a leg, for the flow's own branches. A flow or a queue
-as a target was refused by the API until phase 5 placed it.
+treatments, so a forward that fails is the caller's answer. A flow or a
+queue as a target was refused by the API until phase 5 placed it.
+
+Since v0.25.406 (deep testing D4, `docs/DEEP_TESTING.md`):
+- **A flow's `Dial` to a user runs the whole plan.** It used to run a
+  copy of its own: the first registered phone only, no call waiting, no
+  find-me, no executive screening, no push, and a forward's target dialed
+  into the node without its token, so `auth_invites` refused it. The leg
+  now goes back into this node at the user's extension, carrying the
+  node's own-leg token, the flow's call in `X-FCP-Forwarded-For` (its
+  tenant) and `X-FCP-Flow-Dial`. The plan rings the user as it would any
+  call; with `X-FCP-Flow-Dial` a voicemail treatment answers 480 and a
+  refusal its code, so the flow still takes its own `busy` and
+  `no_answer` branches.
+- **A forward loop is refused.** A call whose forwards reach a user they
+  already reached — two users forwarding to each other, at once or after
+  ringing — is answered 482 Loop Detected, as is a chain of more than ten
+  forwards. Before, each hop was a new call into the node, and they went
+  on until the node's own rate limit refused one.
+- **A forward rings for the target's time.** The forward's leg used to
+  keep the forwarding user's ring time, which had already run out: a
+  forward to a user was cut off as their own ring time began, so their
+  treatment (voicemail, their own forward) never applied. A leg into the
+  node now waits for the new call's own plan, up to ten minutes.
 
 The feature codes answer the INVITE 200 and end the call, as the agent
 login codes do; a spoken confirmation waits for the media work of phase 3.
@@ -429,8 +448,8 @@ treatment, as do not disturb is. With call waiting on, the second call
 rings the phones as any call and the phone presents it. `*56` turns
 call waiting on and `*57` off (the codes of §3.4 in on/off order, as
 every other pair), and the Calling page and dialog have the switch.
-A flow's `Dial` does not yet consult it. The class of service's
-`max_calls` is phase 7's.
+A flow's `Dial` consults it since v0.25.406 (§3.1.1). The class of
+service's `max_calls` is phase 7's.
 
 ### 3.5 Schedules
 
