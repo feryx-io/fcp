@@ -9,6 +9,7 @@ use axum::{
 };
 use fcp_core::config_template::{ConfigTemplate, PhoneVendor};
 use fcp_core::permissions::Permission;
+use fcp_core::storage::DeviceStore;
 use fcp_core::ConfigTemplateId;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -344,6 +345,22 @@ pub async fn delete_config_template(
         return Err(ApiError::NotFound(format!(
             "Config template {} not found",
             id
+        )));
+    }
+
+    // A phone that names the template would be given nothing at its next
+    // fetch, not a template picked for it: the device is moved first.
+    let id_str = id.to_string();
+    if let Some(device) = storage
+        .list_devices(&tenant.0)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to list devices: {}", e)))?
+        .into_iter()
+        .find(|d| d.config_template_id.as_deref() == Some(id_str.as_str()))
+    {
+        return Err(ApiError::Conflict(format!(
+            "Config template {id} is device {}'s ({}); give it another first",
+            device.id, device.name
         )));
     }
 

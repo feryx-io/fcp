@@ -68,6 +68,39 @@ async fn ensure_runtime_queue_name_available(
     Ok(())
 }
 
+/// The strategies a node's queue runs (`fcp-call-manager`'s
+/// `parse_distribution_strategy`), which reads any other as round robin.
+const STRATEGIES: [&str; 7] = [
+    "round_robin",
+    "longest_idle",
+    "fewest_calls",
+    "random",
+    "linear",
+    "skills_based",
+    "weighted",
+];
+
+/// A queue as written, created or changed: named, dialled, and run by a
+/// strategy a node knows rather than one it would quietly replace.
+fn check_queue_config(config: &QueueConfigRecord) -> Result<(), ApiError> {
+    if config.name.trim().is_empty() {
+        return Err(ApiError::BadRequest("Queue name is required".to_string()));
+    }
+    if config.extension.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "Queue extension is required".to_string(),
+        ));
+    }
+    if !STRATEGIES.contains(&config.strategy.trim().to_ascii_lowercase().as_str()) {
+        return Err(ApiError::BadRequest(format!(
+            "Unknown strategy '{}'; one of {}",
+            config.strategy,
+            STRATEGIES.join(", ")
+        )));
+    }
+    Ok(())
+}
+
 fn ensure_queue_config_tenant(
     config: QueueConfigRecord,
     tenant_id: &fcp_core::TenantId,
@@ -301,15 +334,6 @@ pub async fn create_queue_config(
     let storage = require_storage!(state);
     let tenant_id = tenant.0;
 
-    if req.name.trim().is_empty() {
-        return Err(ApiError::BadRequest("Queue name is required".to_string()));
-    }
-    if req.extension.trim().is_empty() {
-        return Err(ApiError::BadRequest(
-            "Queue extension is required".to_string(),
-        ));
-    }
-
     ensure_runtime_queue_name_available(&state, &tenant_id, &req.name, None).await?;
 
     let mut config = QueueConfigRecord::new(req.name, req.extension, tenant_id);
@@ -364,6 +388,7 @@ pub async fn create_queue_config(
     if let Some(v) = req.enabled {
         config.enabled = v;
     }
+    check_queue_config(&config)?;
 
     info!(queue_name = %config.name, queue_id = %config.id, "Creating queue config");
 
@@ -469,6 +494,7 @@ pub async fn update_queue_config(
     }
 
     config.updated_at = SystemTime::now();
+    check_queue_config(&config)?;
 
     ensure_runtime_queue_name_available(&state, &tenant.0, &config.name, Some(&config.id)).await?;
 

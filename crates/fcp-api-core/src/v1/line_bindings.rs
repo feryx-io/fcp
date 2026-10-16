@@ -345,7 +345,7 @@ pub async fn create_line_binding(
         binding.ring_strategy = parse_ring_strategy(&strategy)?;
     }
 
-    binding.flow_id = req.flow_id;
+    binding.flow_id = flow_for_line(&state, &tenant.0, req.flow_id).await?;
     apply_schedule_fields(
         &state,
         &mut binding,
@@ -447,7 +447,7 @@ pub async fn update_line_binding(
     }
 
     if req.flow_id.is_some() {
-        binding.flow_id = req.flow_id;
+        binding.flow_id = flow_for_line(&state, &tenant.0, req.flow_id).await?;
     }
     apply_schedule_fields(
         &state,
@@ -522,6 +522,33 @@ pub async fn delete_line_binding(
 }
 
 // Helper functions
+
+/// The flow a line runs, checked to be the tenant's: the call manager
+/// loads a flow by id alone, so another tenant's would run on this
+/// tenant's calls. Empty is none.
+async fn flow_for_line(
+    state: &ApiState,
+    tenant: &fcp_core::TenantId,
+    flow_id: Option<String>,
+) -> Result<Option<String>, ApiError> {
+    let Some(flow_id) = flow_id.filter(|f| !f.is_empty()) else {
+        return Ok(None);
+    };
+    let store = state
+        .flow_store
+        .as_ref()
+        .ok_or_else(|| ApiError::ServiceUnavailable("Flow store not available".to_string()))?;
+    let flow = store
+        .get_flow(&flow_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get flow: {e}")))?;
+    match flow {
+        Some(flow) if flow.tenant_id.as_deref() == Some(tenant.to_string().as_str()) => {
+            Ok(Some(flow_id))
+        }
+        _ => Err(ApiError::BadRequest(format!("Flow {flow_id} not found"))),
+    }
+}
 
 fn parse_binding_type(s: &str) -> Result<BindingType, ApiError> {
     match s.to_lowercase().as_str() {

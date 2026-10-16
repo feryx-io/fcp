@@ -7,7 +7,9 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::storage::ExtensionStore;
+use fcp_core::storage::{
+    CredentialStore, DeviceStore, ExtensionStore, PhoneNumberStore, SiteLocationStore,
+};
 use fcp_core::{
     DeviceId, Extension, ExtensionTarget, LocationId, PhoneNumberId, ServiceId, TenantId, UserId,
 };
@@ -143,6 +145,46 @@ pub struct UpdateExtensionRequest {
     pub enabled: Option<bool>,
 }
 
+/// An extension dials only what is the tenant's: the call manager rings
+/// whatever user, device or number the target names, in any tenant, so a
+/// target from elsewhere would ring another tenant's phones. A service has
+/// no store to check against and names nothing a call reaches today.
+async fn check_target(
+    storage: &fcp_core::DynStorage,
+    tenant: &TenantId,
+    target: &ExtensionTarget,
+) -> Result<(), ApiError> {
+    let owner = match target {
+        ExtensionTarget::User(id) => storage.get_user_by_id(id).await?.map(|u| u.tenant_id),
+        ExtensionTarget::Device(id) => storage.get_device(id).await?.map(|d| d.tenant_id),
+        ExtensionTarget::PhoneNumber(id) => {
+            storage.get_phone_number(id).await?.map(|n| n.tenant_id)
+        }
+        ExtensionTarget::Service(_) => return Ok(()),
+    };
+    if owner.as_ref() != Some(tenant) {
+        return Err(ApiError::BadRequest(format!("Target {target} not found")));
+    }
+    Ok(())
+}
+
+/// The extension's location, checked to be the tenant's; empty is none.
+async fn location_for(
+    storage: &fcp_core::DynStorage,
+    tenant: &TenantId,
+    location: &str,
+) -> Result<Option<LocationId>, ApiError> {
+    if location.is_empty() {
+        return Ok(None);
+    }
+    let id = LocationId::from_str(location)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?;
+    match storage.get_location(&id).await? {
+        Some(found) if &found.tenant_id == tenant => Ok(Some(id)),
+        _ => Err(ApiError::BadRequest(format!("Location {id} not found"))),
+    }
+}
+
 /// List extensions.
 #[utoipa::path(
     get,
@@ -230,6 +272,7 @@ pub async fn create_extension(
     let storage = require_storage!(state);
 
     let target = req.target.to_extension_target()?;
+    check_target(storage, &tenant.0, &target).await?;
 
     // SECURITY: Use authenticated tenant, not request body tenant_id
     let mut extension = Extension::new(req.number.clone(), target, tenant.0)
@@ -239,11 +282,8 @@ pub async fn create_extension(
         extension.set_description(desc);
     }
 
-    if let Some(location_id_str) = req.location_id {
-        extension.location_id = Some(
-            LocationId::from_str(&location_id_str)
-                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?,
-        );
+    if let Some(location) = req.location_id {
+        extension.location_id = location_for(storage, &tenant.0, &location).await?;
     }
 
     extension.set_enabled(req.enabled);
@@ -308,7 +348,9 @@ pub async fn update_extension(
 
     // Update fields if provided
     if let Some(target_resp) = req.target {
-        extension.target = target_resp.to_extension_target()?;
+        let target = target_resp.to_extension_target()?;
+        check_target(storage, &tenant_id, &target).await?;
+        extension.target = target;
     }
 
     if req.description.is_some() {
@@ -317,15 +359,8 @@ pub async fn update_extension(
         }
     }
 
-    if let Some(location_id_str) = req.location_id {
-        extension.location_id = if location_id_str.is_empty() {
-            None
-        } else {
-            Some(
-                LocationId::from_str(&location_id_str)
-                    .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?,
-            )
-        };
+    if let Some(location) = req.location_id {
+        extension.location_id = location_for(storage, &tenant_id, &location).await?;
     }
 
     if let Some(enabled) = req.enabled {

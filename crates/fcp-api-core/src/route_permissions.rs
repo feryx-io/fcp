@@ -465,18 +465,20 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (DELETE, "/presence/:aor/policy", Needs(PresenceManage)),
     (GET, "/presence/:aor/pres-rules", Needs(PresenceRead)),
     (PUT, "/presence/:aor/pres-rules", Needs(PresenceManage)),
-    // The services' configuration: read by those who read the system's
-    // logs, changed only by a platform's configuration permission.
-    (GET, "/config", Needs(SystemViewLogs)),
-    (GET, "/config/audit", Needs(SystemViewLogs)),
-    (GET, "/config/:service", Needs(SystemViewLogs)),
-    (GET, "/config/:service/:section", Needs(SystemViewLogs)),
+    // The services' configuration is the platform's, read and changed
+    // only by its configuration permission: the nodes seed it with their
+    // own credentials (the media server's API tokens, an AI key, a Redis
+    // URL), which no tenant's administrator may read.
+    (GET, "/config", Needs(SystemConfig)),
+    (GET, "/config/audit", Needs(SystemConfig)),
+    (GET, "/config/:service", Needs(SystemConfig)),
+    (GET, "/config/:service/:section", Needs(SystemConfig)),
     (PUT, "/config/:service/:section", Needs(SystemConfig)),
     (DELETE, "/config/:service/:section", Needs(SystemConfig)),
     (
         POST,
         "/config/:service/:section/validate",
-        Needs(SystemViewLogs),
+        Needs(SystemConfig),
     ),
     // Prompts.
     (GET, "/prompts", Needs(PromptRead)),

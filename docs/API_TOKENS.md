@@ -121,9 +121,10 @@ Where an existing permission already fitted, the route uses it:
   - monitor, whisper and barge take `call_supervise`.
 - **Least-cost routes** take the trunk permissions.
 - **Classes of service and schedules** take the routing-rule permissions.
-- **The services' configuration (`/config`)**:
-  - reading it takes `system_view_logs`;
-  - changing it takes `system_config`, which only a super admin holds.
+- **The services' configuration (`/config`)** takes `system_config`, which
+  only a super admin holds, to read as well as to change: the nodes seed it
+  with their own credentials (the media server's API tokens, an AI key, a
+  Redis URL). Until v0.25.404 reading it took `system_view_logs`.
 - **The cluster view (`/cluster/*`)**:
   - nodes and stats take `system_view_logs`;
   - sites take `site_read`.
