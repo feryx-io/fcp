@@ -341,7 +341,16 @@ impl Inner {
                     if let Err(e) = st.media.set_remote(&answer).await {
                         warn!(error = %e, "answer SDP unusable");
                     }
-                    st.phase.send_replace(CallPhase::Answered);
+                    // A far end that answers and hangs up at once can have
+                    // its BYE handled while this waited for the ACK: the
+                    // call stays ended.
+                    st.phase.send_if_modified(|phase| {
+                        if *phase == CallPhase::Ended {
+                            return false;
+                        }
+                        *phase = CallPhase::Answered;
+                        true
+                    });
                     inner.emit(PhoneEvent::Answered {
                         call_id: st.call_id.clone(),
                     });
