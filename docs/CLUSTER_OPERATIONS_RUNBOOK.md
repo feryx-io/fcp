@@ -233,8 +233,9 @@ to a synced object there is refused with the cloud's address.
   REGISTER or a new INVITE is answered at once with `503 Service
   Unavailable - store unreachable` and `Retry-After: 5`, so a phone
   tries again or tries another node instead of waiting 32 s for
-  nothing. The node finds out by asking the primary `SELECT 1` every
-  second (two missed answers make it down); until then a REGISTER is
+  nothing. The node finds out by asking the primary
+  `SELECT pg_is_in_recovery()` every second (two missed answers make it
+  down); until then a REGISTER is
   cut off at five seconds and a request waits at most
   `[storage] acquire_timeout_secs` (5) for a connection. `/ready` is
   503 with `database.up: false` (send new traffic elsewhere), `/status`
@@ -244,6 +245,24 @@ to a synced object there is refused with the cloud's address.
   that end meanwhile wait in the spool and are written when it is back.
   Nothing needs a restart. An emergency call is refused like any other
   call while the store is away (#326).
+- **The primary fails over to a standby.** Promotion is the database's
+  job (Patroni, a managed database); give the nodes an address that
+  moves with it (a VIP, a DNS name, a pooler). From the primary's death
+  to the promotion, the node behaves as with Postgres down. Once the
+  address leads to the promoted standby, the pool reconnects and
+  registrations, calls and records carry on, with no restart. What the
+  standby had not replayed is lost with an asynchronous standby.
+  Calls up live through it (`fcp-call-manager/tests/faults.rs`).
+- **The primary's address leads to a standby**: moved before the
+  promotion, or to an old primary come back as a standby while a node
+  still resolves the old address. The standby answers reads and refuses
+  writes. The node sees it in recovery: REGISTERs are answered `503
+  Service Unavailable - store read-only` with `Retry-After: 5`, and new
+  calls are still placed (they only read; their records wait in the
+  spool). `/ready` is 503 with `database.writable: false`, `/metrics`
+  has `fcp_database_writable` 0, and the log says `The database is a
+  standby (in recovery) and refuses writes` and, once promoted, `The
+  database takes writes again`.
 - **A call manager was killed** (`SIGKILL`, a crash, its host gone).
   Its calls are gone; nothing tells their phones. Its leases lapse
   within `lease_ttl_secs`, so their users and tenants are free again,

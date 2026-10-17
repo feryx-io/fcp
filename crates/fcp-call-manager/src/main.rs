@@ -1584,6 +1584,12 @@ async fn run() -> Result<()> {
         let primary = Arc::clone(&primary_health);
         Arc::new(move || primary.is_up())
     })
+    // A registration is a write; a standby at the primary's address
+    // answers it with an error (`docs/DEEP_TESTING.md` D5c).
+    .with_store_writable({
+        let primary = Arc::clone(&primary_health);
+        Arc::new(move || primary.is_writable())
+    })
     .with_edge_guard(std::sync::Arc::new(fcp_sip::edge::EdgeGuard::new(
         config.security.clone(),
         fcp_sip::emergency::TrustedEdges::parse(&config.e911.trusted_edges)?,

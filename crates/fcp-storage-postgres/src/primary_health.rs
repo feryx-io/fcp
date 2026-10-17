@@ -11,6 +11,14 @@
 //!
 //! Two failed probes in a row mark the primary down, so one slow answer
 //! under load does not refuse anyone; one good probe marks it up again.
+//!
+//! The probe also asks whether the server is in recovery. A standby
+//! answers every read and refuses every write, and the primary's address
+//! leads to one during a failover that has moved the address before the
+//! promotion, or to an old primary come back as a standby while a node
+//! still resolves the old address (D5c). Such a store is up and not
+//! writable: a node keeps placing calls, which only read, and refuses
+//! registrations, which write, with the same 503.
 
 use sqlx::{Pool, Postgres};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,6 +37,8 @@ const FAILURES_TO_DOWN: u32 = 2;
 #[derive(Debug)]
 pub struct PrimaryHealth {
     up: AtomicBool,
+    /// Whether the server takes writes: false while it is a standby.
+    writable: AtomicBool,
     /// Unix seconds when it went down; 0 while up.
     down_since: AtomicU64,
     /// Times it has gone down since the node started.
@@ -41,6 +51,7 @@ impl PrimaryHealth {
     pub fn always_up() -> Arc<Self> {
         Arc::new(Self {
             up: AtomicBool::new(true),
+            writable: AtomicBool::new(true),
             down_since: AtomicU64::new(0),
             outages: AtomicU64::new(0),
         })
@@ -57,20 +68,23 @@ impl PrimaryHealth {
             loop {
                 tick.tick().await;
                 let Some(health) = weak.upgrade() else { return };
-                let probe =
-                    tokio::time::timeout(PROBE_TIMEOUT, sqlx::query("SELECT 1").execute(&pool))
-                        .await;
-                let error = match probe {
-                    Ok(Ok(_)) => None,
-                    Ok(Err(e)) => Some(e.to_string()),
-                    Err(_) => Some(format!("no answer in {PROBE_TIMEOUT:?}")),
+                let probe = tokio::time::timeout(
+                    PROBE_TIMEOUT,
+                    sqlx::query_scalar::<_, bool>("SELECT pg_is_in_recovery()").fetch_one(&pool),
+                )
+                .await;
+                let outcome = match probe {
+                    Ok(Ok(in_recovery)) => Ok(in_recovery),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err(format!("no answer in {PROBE_TIMEOUT:?}")),
                 };
-                match error {
-                    None => {
+                match outcome {
+                    Ok(in_recovery) => {
                         failures = 0;
                         health.mark_up();
+                        health.mark_writable(!in_recovery);
                     }
-                    Some(error) => {
+                    Err(error) => {
                         failures += 1;
                         if failures >= FAILURES_TO_DOWN {
                             health.mark_down(&error);
@@ -103,9 +117,27 @@ impl PrimaryHealth {
         }
     }
 
+    fn mark_writable(&self, writable: bool) {
+        if self.writable.swap(writable, Ordering::AcqRel) != writable {
+            if writable {
+                info!("The database takes writes again; registrations are taken");
+            } else {
+                warn!(
+                    "The database is a standby (in recovery) and refuses writes; \
+                     new registrations are refused with 503"
+                );
+            }
+        }
+    }
+
     /// Whether the primary answered the last probes.
     pub fn is_up(&self) -> bool {
         self.up.load(Ordering::Acquire)
+    }
+
+    /// Whether it answered and takes writes: not a standby.
+    pub fn is_writable(&self) -> bool {
+        self.is_up() && self.writable.load(Ordering::Acquire)
     }
 
     /// What `/status` and `/ready` say under `database`.
@@ -113,6 +145,7 @@ impl PrimaryHealth {
         let since = self.down_since.load(Ordering::Acquire);
         serde_json::json!({
             "up": self.is_up(),
+            "writable": self.is_writable(),
             "down_for_secs": (since > 0).then(|| now().saturating_sub(since)),
             "outages": self.outages.load(Ordering::Relaxed),
         })
@@ -124,10 +157,14 @@ impl PrimaryHealth {
             "# HELP fcp_database_up Whether the primary database answered the last probes.\n\
              # TYPE fcp_database_up gauge\n\
              fcp_database_up{{{labels}}} {}\n\
+             # HELP fcp_database_writable Whether the primary database takes writes (0 while it is a standby).\n\
+             # TYPE fcp_database_writable gauge\n\
+             fcp_database_writable{{{labels}}} {}\n\
              # HELP fcp_database_outages_total Times the primary has stopped answering.\n\
              # TYPE fcp_database_outages_total counter\n\
              fcp_database_outages_total{{{labels}}} {}\n",
             u8::from(self.is_up()),
+            u8::from(self.is_writable()),
             self.outages.load(Ordering::Relaxed),
         )
     }
@@ -160,5 +197,24 @@ mod tests {
         assert!(health.json()["down_for_secs"].is_null());
         health.mark_down("refused");
         assert_eq!(health.json()["outages"], 2);
+    }
+
+    #[test]
+    fn a_standby_is_up_and_not_writable() {
+        let health = PrimaryHealth::always_up();
+        assert!(health.is_writable());
+        health.mark_writable(false);
+        assert!(health.is_up());
+        assert!(!health.is_writable());
+        assert_eq!(health.json()["writable"], false);
+        assert!(health
+            .prometheus("node=\"a\"")
+            .contains("fcp_database_writable{node=\"a\"} 0"));
+        // Down is not writable either, whatever the last answer said.
+        health.mark_writable(true);
+        health.mark_down("refused");
+        assert!(!health.is_writable());
+        health.mark_up();
+        assert!(health.is_writable());
     }
 }

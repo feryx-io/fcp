@@ -363,6 +363,14 @@ Changes that need something of a configuration the operator keeps:
   manager, clustered as its configuration ships, is on the admin's node
   list with this release, the stats and its own `/status` group it
   under it, and no skew.
+- The nightly's stack job (`.github/workflows/images.yml`,
+  `docs/DEEP_TESTING.md` D5c) does §5.3 with images every night: the
+  stack comes up on the previous release (the last good scheduled run on
+  main, its images and its compose project), carries a call that makes
+  the tenant, users, sealed passwords, registrations and a record, is
+  backed up, and is upgraded in place to the release just built. A call
+  through the upgraded stack finds all of it, the record read back by
+  the new release, and the call manager on the new version.
 - The CI step `The migration discipline` runs `scripts/check-migrations.sh
   --self-test` — an add passes, a drop, a rename and a type change fail
   without the marker and pass with it — before checking the migrations.

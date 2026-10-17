@@ -85,8 +85,12 @@ voicemail server and registrar) or `/ready` (the SBC and presence server),
 ### Not covered
 
 - Failover of the *primary* (promotion) is the database's job — Patroni,
-  or the cloud provider's managed failover. Nodes reconnect through the
-  pool; writes fail while the promotion runs.
+  or the cloud provider's managed failover — with the nodes given an
+  address that moves to the promoted standby. Nodes reconnect through
+  the pool; a call manager refuses registrations with 503 while there is
+  no primary, or while its address still leads to a standby, and keeps
+  the calls it has (`docs/CLUSTER_OPERATIONS_RUNBOOK.md` §7, proved in
+  `docs/DEEP_TESTING.md` D5c).
 - Getting a region's callers to that region's nodes in the first place:
   DNS (SRV per region, or geo-DNS), anycast, or the SBC's trunk routing —
   set out in `docs/MULTI_REGION_DEPLOYMENT.md` §4. Once a call is on a

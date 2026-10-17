@@ -706,3 +706,45 @@ with work in hand:
 | An event handed over twice could reach a receiver twice under two `event_id`s, so the receiver could not tell it was one event. | S3 | Fixed with the above: the id is derived from the stream entry. |
 | A webhook or notice sent but not yet recorded when the events server dies is sent again when it starts. | — | As designed: delivery is at least once (`docs/WEBHOOKS.md`). |
 | Events raised while the events server was down reached it when it started: the consumer group keeps them. `fcp-jobs` killed holding a batch: the next processor stored, charged and announced each record once. | — | No change needed; the tests keep it so. |
+
+### D5c. Failover and upgrade
+
+**The primary fails over to its standby.** `fcp-call-manager/tests/faults.rs`
+runs a Postgres primary and a streaming standby of its own
+(`fcp_testkit::pg_pair::PgPair`, from the server's binaries; CI's runner
+image ships them). The node is given the primary by an address the
+failover moves, as a VIP, a DNS name or a pooler does: a `CutLink` the
+test retargets. Two tests:
+- **the primary fails over mid-call**
+  (`the_primary_fails_over_to_its_standby_mid_call`): Alice talks to Bob,
+  with the node reading its configuration from the standby. The primary
+  is crashed (`pg_ctl stop -m immediate`), the standby promoted and the
+  address moved. The call must live and its BYE cross. While there is no
+  primary, a REGISTER must be answered 503. Afterwards, Carol must
+  register and call Dave, a call to Alice must find the registration
+  made before the failover, and every call's record must be written;
+- **a standby at the primary's address**
+  (`a_standby_behind_the_primary_address`): the address moves to the
+  standby before it is promoted, as when a failover moves it early, or
+  an old primary comes back as a standby while a node still resolves the
+  old address. A REGISTER must be answered 503 and `/ready` must say so.
+  A call must still be put through, and its record written once the
+  standby is promoted.
+
+**An upgrade over a populated database.** The nightly's stack job
+(`.github/workflows/images.yml`) starts the stack on the previous
+release: the last good scheduled run on main, its images and its
+compose project. `compose_live.rs` (`fresh`) makes the tenant and its
+users, registers two phones with sealed passwords and carries a call.
+The stack is then upgraded in place by `BACKUP_AND_RESTORE.md` §5.3:
+backed up, this release's compose project, pull, `up -d`. A call through
+the upgraded stack (`upgraded`) must find the tenant, the users and the
+earlier call's record, and the call manager must run this release. The
+backup, drop and restore that followed already continue from there.
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| A call manager whose primary's address led to a standby answered every REGISTER `500 Internal Server Error`, and `/ready` said it was ready. The probe asked `SELECT 1`, which a standby answers, and the write was then refused with `cannot execute INSERT in a read-only transaction`. A phone may not retry a 500, and a balancer kept sending registrations to the node. | S2 | Fixed: the probe asks `SELECT pg_is_in_recovery()`. A standby is up and not writable (`database.writable`, `fcp_database_writable`). A REGISTER is answered `503 Service Unavailable - store read-only` with `Retry-After: 5`, and `/ready` is 503. New calls are still placed: they only read, and their records wait in the spool. |
+| A REGISTER whose write the store refused, in the second before the probe noticed, was answered 500. | S3 | Fixed: the registrar answers a store failure `503 Service Unavailable - store error` with `Retry-After: 5`. |
+| The upgrade, first run on this branch (Images run 38987345367): from 0.25.403 to 0.25.409, the tenant, users, registrations and the earlier record were all found, and the call manager ran 0.25.409. No migration landed between the two, so that night proved the procedure and not a schema change; each night crosses whatever migrations landed since the last good one. | — | No change needed; the nightly keeps it so. |
+| The primary failed over mid-call: the call lived, REGISTERs were refused 503 until the promotion, and then registrations, calls and records carried on with no restart. | — | No change needed; the test keeps it so. |
