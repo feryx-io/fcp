@@ -2761,7 +2761,7 @@ impl ConferenceCallHandler {
             anyhow::bail!("Conference is disabled");
         }
 
-        let room = self.room_for_join(key).await?;
+        let (room, _joining) = self.room_for_join(key).await?;
 
         // Configure room from meeting settings (idempotent)
         let room_config = self.meeting_to_room_config(&meeting);
@@ -3723,8 +3723,14 @@ impl ConferenceCallHandler {
                             _ => true,
                         };
                         if should_destroy {
-                            debug!(room = %room_number, "Destroying empty conference room");
-                            let _ = bridge.delete_room(&key);
+                            // Still empty, and nobody on the way in: the
+                            // meeting read above is long enough for a
+                            // caller to have joined.
+                            if !bridge.delete_room_if_idle(&key) {
+                                debug!(room = %room_number, "Skipping auto-destroy: a caller joined");
+                                return;
+                            }
+                            debug!(room = %room_number, "Destroyed empty conference room");
 
                             let event = PlatformEvent::Conference(ConferenceEvent::RoomDestroyed {
                                 room_number,
@@ -4360,31 +4366,30 @@ pub async fn play_prompt_to_rtp(
 
 /// Inter-node conference trunks (see [`crate::trunks`]).
 impl ConferenceCallHandler {
-    /// Get or create a room and make sure its frame clock is running.
-    /// Every room this server mixes runs on the frame clock: it is what
-    /// lets each participant, the recorder, an AI tap and every trunk
-    /// read the same frame without consuming it from one another.
-    fn room_for(&self, key: &RoomKey) -> Result<Arc<forge_conference::ConferenceRoom>> {
-        let room = self
+    /// The room a caller joins, made if it is not here, with its frame
+    /// clock running. Every room this server mixes runs on the frame
+    /// clock: it is what lets each participant, the recorder, an AI tap
+    /// and every trunk read the same frame without consuming it from one
+    /// another. When this call creates the room on this node, the room inherits the cluster-wide
+    /// lock flag (phase 3), so a room locked on the nodes already hosting
+    /// it is locked here too before anyone is admitted.
+    ///
+    /// The [`Joining`](crate::rooms::Joining) keeps the room from being
+    /// removed as empty until the caller is in; hold it until then.
+    async fn room_for_join(
+        &self,
+        key: &RoomKey,
+    ) -> Result<(Arc<forge_conference::ConferenceRoom>, crate::rooms::Joining)> {
+        let room_number = key.room.as_str();
+        let tenant_id = &key.tenant;
+        let (room, created, joining) = self
             .bridge
-            .get_or_create_room(key, None)
+            .join(key, None)
             .context("Failed to create conference room")?;
         room.start_frame_clock()
             .context("Failed to start the room's frame clock")?;
-        Ok(room)
-    }
-
-    /// [`room_for`](Self::room_for) for a caller joining: when this call
-    /// creates the room on this node, the room inherits the cluster-wide
-    /// lock flag (phase 3), so a room locked on the nodes already hosting
-    /// it is locked here too before anyone is admitted.
-    async fn room_for_join(&self, key: &RoomKey) -> Result<Arc<forge_conference::ConferenceRoom>> {
-        let room_number = key.room.as_str();
-        let tenant_id = &key.tenant;
-        let existed = self.bridge.get_room(key).is_ok();
-        let room = self.room_for(key)?;
-        if existed {
-            return Ok(room);
+        if !created {
+            return Ok((room, joining));
         }
         let registry = self.room_registry.read().unwrap().clone();
         if let Some(registry) = registry {
@@ -4396,7 +4401,7 @@ impl ConferenceCallHandler {
                 info!(room = %room_number, "Room created locked: inherited the cluster-wide lock");
             }
         }
-        Ok(room)
+        Ok((room, joining))
     }
 
     /// Lock or unlock the room on this node only. `Err` when the room is
@@ -6311,7 +6316,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         };
 
         // 13. Get or create conference room, configure with meeting settings
-        let room = self.room_for_join(&key).await?;
+        let (room, _joining) = self.room_for_join(&key).await?;
 
         // Wire room configuration from meeting → forge-conference
         let room_config = self.meeting_to_room_config(&meeting);

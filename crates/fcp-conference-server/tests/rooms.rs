@@ -824,3 +824,60 @@ async fn two_tenants_with_one_room_number_meet_apart() {
     assert_eq!(bob_call.hangup().await.unwrap(), 200);
     stack.finish().await;
 }
+
+/// Two callers who join a room at the same moment, talk, leave and come
+/// back, round after round, hear each other every time
+/// (`docs/DEEP_TESTING.md` D6). The meeting is not permanent, so the
+/// room is removed when it empties and made again by the next caller.
+/// Before, two callers making the room at once could each make it — the
+/// second replacing the first's — and a caller joining while an emptied
+/// room was being removed was left in a room nobody else reached: the
+/// soak's two-caller room heard silence on two calls in three.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn callers_meet_in_a_room_made_again_round_after_round() {
+    let Some(stack) = Stack::start_trusting(r#"trusted_edges = ["127.0.0.1"]"#).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack.seed.meeting(ROOM, None, None).await;
+    stack
+        .seed
+        .execute("UPDATE conference_meetings SET permanent = false")
+        .await;
+    let cm = stack.start_call_manager().await;
+    let a = stack.seed.user("alice", "alice-pw", "1001").await;
+    let b = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice = Phone::new(&a.username, &a.password, REALM, cm)
+        .await
+        .unwrap();
+    let bob = Phone::new(&b.username, &b.password, REALM, cm)
+        .await
+        .unwrap();
+    assert_eq!(alice.register().await.unwrap(), 200);
+    assert_eq!(bob.register().await.unwrap(), 200);
+    for round in 0..5 {
+        let (alice_call, bob_call) = tokio::join!(alice.call(ROOM), bob.call(ROOM));
+        let (alice_call, bob_call) = (alice_call.unwrap(), bob_call.unwrap());
+        let (a_in, b_in) = tokio::join!(alice_call.answered(SOON), bob_call.answered(SOON));
+        if let Err(e) = a_in.and(b_in) {
+            stack
+                .fail(&format!("round {round}: not both put through: {e}"), &alice)
+                .await;
+        }
+        alice_call.media().play_tone(440.0, 3000);
+        bob_call.media().play_tone(880.0, 3000);
+        let (bob_hears, alice_hears) = tokio::join!(
+            bob_call.media().heard(440, SOON),
+            alice_call.media().heard(880, SOON)
+        );
+        assert!(
+            bob_hears && alice_hears,
+            "round {round}: Bob hears Alice {bob_hears}, Alice hears Bob {alice_hears}"
+        );
+        let _ = tokio::join!(alice_call.hangup(), bob_call.hangup());
+        // Back at once, and a little later each round: into the room as
+        // it is being removed, and after.
+        tokio::time::sleep(Duration::from_millis(10 * round)).await;
+    }
+    stack.finish().await;
+}
