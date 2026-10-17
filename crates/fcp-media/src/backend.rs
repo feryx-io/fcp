@@ -1319,12 +1319,21 @@ pub mod embedded {
                 // Listeners hear the session end.
                 self.bridge.detach_call(forge_call_id);
 
-                // Stop forwarding (terminate session)
-                session_info
-                    .forge_session
-                    .stop_forwarding()
-                    .await
-                    .map_err(|e| Error::ForgeMedia(e.to_string()))?;
+                // Stop forwarding and let the session go. Through the
+                // session manager, which holds the session too: stopping
+                // it alone returned its ports to the pool while its
+                // sockets stayed open in the manager's map, so the next
+                // call was given the same port and bound it beside the
+                // old socket (`docs/DEEP_TESTING.md` D6).
+                match self.session_manager.stop_session(forge_call_id).await {
+                    Ok(()) => {}
+                    Err(forge_core::ForgeError::SessionNotFound(_)) => session_info
+                        .forge_session
+                        .stop_forwarding()
+                        .await
+                        .map_err(|e| Error::ForgeMedia(e.to_string()))?,
+                    Err(e) => return Err(Error::ForgeMedia(e.to_string())),
+                }
 
                 info!(?call_id, "Media session terminated");
             } else {
@@ -2676,6 +2685,46 @@ pub mod embedded {
             assert_eq!(addr.port(), 6000);
 
             backend.terminate_session(&call_id).await.unwrap();
+        }
+
+        /// A terminated session lets its sockets go. Ending it only by
+        /// stopping its forwarding returned its ports to the pool while the
+        /// session manager kept the session and its sockets: a call manager
+        /// held two more open sockets for every call it had ever carried,
+        /// and the next call bound the "free" port beside the old socket
+        /// (`docs/DEEP_TESTING.md` D6).
+        #[tokio::test]
+        async fn a_terminated_session_lets_its_sockets_go() {
+            let config = crate::config::MediaConfig {
+                rtp_port_start: 43500,
+                rtp_port_end: 43600,
+                ..Default::default()
+            };
+            let backend = EmbeddedBackend::new(&config).await.unwrap();
+            let call_id = fcp_core::CallId::new();
+            backend
+                .create_session(
+                    call_id,
+                    fcp_core::DialogId::new(),
+                    crate::MediaSessionConfig::default(),
+                )
+                .await
+                .unwrap();
+            let session = Arc::downgrade(&backend.sessions.get(&call_id).unwrap().forge_session);
+            assert_eq!(backend.session_manager.session_count(), 1);
+
+            backend.terminate_session(&call_id).await.unwrap();
+
+            assert_eq!(backend.session_manager.session_count(), 0);
+            // Its tasks were aborted; once they are gone nothing holds the
+            // session, and its sockets close with it.
+            for _ in 0..100 {
+                if session.upgrade().is_none() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the terminated session (and its sockets) is still held");
         }
 
         #[tokio::test]
