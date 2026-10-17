@@ -5,8 +5,11 @@
 //! ports and is gated on `FCP_LIVE_STACK`, which the workflow's `stack`
 //! job sets — `fresh` for a stack that has never been used, when the
 //! test makes the tenant, the users and their extensions through the
-//! admin API; `restored` for the same stack after `backup.sh`,
-//! `down -v` and `restore.sh`, when they must all still be there. In
+//! admin API; `upgraded` for a stack that was `fresh` on the previous
+//! release and has been upgraded in place to this one
+//! (`docs/DEEP_TESTING.md` D5c), when they must all still be there and
+//! the call manager must run this release; `restored` for the same stack
+//! after `backup.sh`, `down -v` and `restore.sh`, likewise. In
 //! both, every service answers its health check, two phones register at
 //! the call manager (one over SIPS with the stack's own CA, given as
 //! `FCP_LIVE_CA`), one calls the other and a tone is heard through the
@@ -51,7 +54,18 @@ const SERVICES: [&str; 12] = [
 #[derive(PartialEq)]
 enum Mode {
     Fresh,
+    Upgraded,
     Restored,
+}
+
+impl Mode {
+    fn name(&self) -> &'static str {
+        match self {
+            Mode::Fresh => "fresh",
+            Mode::Upgraded => "upgraded",
+            Mode::Restored => "restored",
+        }
+    }
 }
 
 struct Admin {
@@ -84,7 +98,7 @@ impl Admin {
         )
     }
 
-    /// The live tenant's id: made in a fresh stack, found in a restored one.
+    /// The live tenant's id: made in a fresh stack, found in any other.
     async fn tenant(&self, mode: &Mode) -> String {
         if *mode == Mode::Fresh {
             let (code, made) = self
@@ -121,7 +135,12 @@ impl Admin {
             .find(|t| t["name"] == TENANT)
             .and_then(|t| t["id"].as_str())
             .map(str::to_string)
-            .unwrap_or_else(|| panic!("the restored stack has the tenant {TENANT}: {listed}"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the {} stack has the tenant {TENANT}: {listed}",
+                    mode.name()
+                )
+            })
     }
 
     /// A user with an extension that rings them.
@@ -194,8 +213,11 @@ impl Admin {
 async fn the_shipped_stack_carries_a_call() {
     let mode = match std::env::var("FCP_LIVE_STACK").as_deref() {
         Ok("fresh") => Mode::Fresh,
+        Ok("upgraded") => Mode::Upgraded,
         Ok("restored") => Mode::Restored,
-        Ok(other) => panic!("FCP_LIVE_STACK is {other:?}; it is `fresh` or `restored`"),
+        Ok(other) => {
+            panic!("FCP_LIVE_STACK is {other:?}; it is `fresh`, `upgraded` or `restored`")
+        }
         Err(_) => {
             eprintln!("FCP_LIVE_STACK not set; skipping the live stack test");
             return;
@@ -226,6 +248,15 @@ async fn the_shipped_stack_carries_a_call() {
         admin.user(&tenant, "alice", "1001").await;
         admin.user(&tenant, "bob", "1002").await;
     }
+
+    // The records the stack holds already: none in a fresh one, and in
+    // any other at least the fresh stack's call, read by this release.
+    let before = if mode == Mode::Fresh {
+        0
+    } else {
+        let records = admin.call_records(&tenant, 1).await;
+        records.len()
+    };
 
     // Two phones register with the sealed passwords, one of them over
     // SIPS with the CA the certs service made.
@@ -295,6 +326,15 @@ async fn the_shipped_stack_carries_a_call() {
     assert_eq!(code, 200, "{text}");
     let status: serde_json::Value = serde_json::from_str(&text).expect("status is JSON");
     assert_eq!(status["cluster_versions"]["skew"], false, "{status}");
+    // Upgraded, the call manager runs this release: the images were built
+    // from this checkout.
+    if mode == Mode::Upgraded {
+        assert_eq!(
+            version,
+            env!("CARGO_PKG_VERSION"),
+            "the upgraded call manager runs this release"
+        );
+    }
     assert!(
         status["cluster_versions"]["versions"][&version]
             .as_array()
@@ -303,21 +343,16 @@ async fn the_shipped_stack_carries_a_call() {
     );
 
     // The call's record crossed the stream to the job worker and the
-    // database: one in a fresh stack, and in a restored one the fresh
-    // stack's record beside it — the dump carried it.
-    let expected = if mode == Mode::Fresh { 1 } else { 2 };
-    let records = admin.call_records(&tenant, expected).await;
+    // database, beside those the stack held: carried by the upgrade's
+    // migrations, or by the dump.
+    let records = admin.call_records(&tenant, before + 1).await;
     assert!(
         records.iter().all(|r| r["node_id"] == CALL_MANAGER_NODE),
         "every record is this call manager's: {records:?}"
     );
     println!(
         "live stack ({}): {} on the node list, {} call record(s), release {version}",
-        if mode == Mode::Fresh {
-            "fresh"
-        } else {
-            "restored"
-        },
+        mode.name(),
         CALL_MANAGER_NODE,
         records.len()
     );

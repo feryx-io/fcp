@@ -1425,7 +1425,7 @@ impl FcpRegistrar {
                     }
                     Err(e) => {
                         tracing::error!("Failed to deregister: {}", e);
-                        return self.create_error_response(request, 500, "Internal Server Error");
+                        return self.store_error_response(request);
                     }
                 }
             }
@@ -1475,7 +1475,7 @@ impl FcpRegistrar {
                     }
                     Err(e) => {
                         tracing::error!("Failed to deregister contact: {}", e);
-                        return self.create_error_response(request, 500, "Internal Server Error");
+                        return self.store_error_response(request);
                     }
                 }
             }
@@ -1593,7 +1593,7 @@ impl FcpRegistrar {
                 }
                 Err(e) => {
                     tracing::error!("Failed to store registration: {}", e);
-                    return self.create_error_response(request, 500, "Internal Server Error");
+                    return self.store_error_response(request);
                 }
             }
         }
@@ -1611,7 +1611,7 @@ impl FcpRegistrar {
             }
             Err(e) => {
                 tracing::error!("Failed to lookup registrations: {}", e);
-                self.create_error_response(request, 500, "Internal Server Error")
+                self.store_error_response(request)
             }
         }
     }
@@ -1958,6 +1958,20 @@ impl FcpRegistrar {
     }
 
     /// Create an error response with proper headers copied from request
+    /// A registration the store failed: 503 with `Retry-After`, so the
+    /// phone tries again shortly, here or at another node, rather than a
+    /// 500 it may not retry. The store fails like this when it is away
+    /// before the node's probe has noticed, or when the primary's address
+    /// leads to a standby that refuses writes (`docs/DEEP_TESTING.md` D5c).
+    fn store_error_response(&self, request: &Request) -> Response {
+        let mut response =
+            self.create_error_response(request, 503, "Service Unavailable - store error");
+        let _ = response
+            .headers_mut()
+            .push(SmolStr::new("Retry-After"), SmolStr::new("5"));
+        response
+    }
+
     fn create_error_response(&self, request: &Request, code: u16, reason: &str) -> Response {
         let mut headers = sip_core::Headers::new();
         if let Some(via) = request.headers().get_smol("Via") {

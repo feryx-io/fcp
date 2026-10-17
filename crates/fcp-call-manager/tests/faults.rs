@@ -9,14 +9,20 @@
 //! network's: a refused store resets every connection and refuses new
 //! ones, a silent one holds them open and answers nothing.
 //!
+//! The primary failed over to its standby (D5c) runs its own pair of
+//! Postgres servers ([`PgPair`]), with the node given an address that
+//! moves to the promoted standby, as a VIP or a DNS name does.
+//!
 //! Skipped without `FCP_TEST_DATABASE_URL`; the Redis faults and the
-//! killed node also need `FCP_TEST_REDIS_URL`.
+//! killed node also need `FCP_TEST_REDIS_URL`, and the failover the
+//! Postgres server's binaries.
 
 use fcp_core::calling::CallingSettings;
 use fcp_core::storage::CdrKind;
 use fcp_testkit::cluster::private_redis_url;
 use fcp_testkit::cut::CutLink;
 use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::pg_pair::PgPair;
 use fcp_testkit::seed::SeededUser;
 use fcp_testkit::smoke::{http_get, loopback};
 use fcp_testkit::{free_port, Call, Phone, PhoneEvent, Seed, Service, TestDatabase};
@@ -66,9 +72,20 @@ impl Node {
     /// given. Its CDR spool is under `dir`, named for it, so the same
     /// node started again finds what it left.
     async fn start(name: &str, db: &str, redis: Option<&str>, dir: &Path) -> Self {
+        Self::start_with(name, db, redis, dir, "").await
+    }
+
+    /// As [`start`](Self::start), with more `[storage]` keys.
+    async fn start_with(
+        name: &str,
+        db: &str,
+        redis: Option<&str>,
+        dir: &Path,
+        storage: &str,
+    ) -> Self {
         let (sip, http) = (free_port(), free_port());
         Self {
-            service: Some(start_service(name, db, redis, dir, sip, http).await),
+            service: Some(start_service(name, db, redis, dir, sip, http, storage).await),
             sip: SocketAddr::from(([127, 0, 0, 1], sip)),
             http,
         }
@@ -76,7 +93,8 @@ impl Node {
 
     async fn restart(&mut self, name: &str, db: &str, redis: Option<&str>, dir: &Path) {
         assert!(self.service.is_none(), "{name} is still running");
-        self.service = Some(start_service(name, db, redis, dir, self.sip.port(), self.http).await);
+        self.service =
+            Some(start_service(name, db, redis, dir, self.sip.port(), self.http, "").await);
     }
 
     async fn kill(&mut self) -> String {
@@ -120,6 +138,7 @@ async fn start_service(
     dir: &Path,
     sip: u16,
     http: u16,
+    storage: &str,
 ) -> Service {
     let rtp_start = allocate_port_pair().rtp_port;
     let cluster = redis
@@ -172,6 +191,7 @@ format = "compact"
 
 [storage]
 database_url = "{db}"
+{storage}
 {cluster}
 "#,
         dir = dir.display(),
@@ -194,20 +214,27 @@ struct Cast {
 impl Cast {
     async fn new() -> Option<Self> {
         let db = TestDatabase::create().await?;
-        let seed = Seed::new(db.url(), REALM).await;
+        let mut cast = Self::on(db.url()).await;
+        cast.db = Some(db);
+        Some(cast)
+    }
+
+    /// The cast in a database the test made some other way.
+    async fn on(url: &str) -> Self {
+        let seed = Seed::new(url, REALM).await;
         let alice = seed.user("alice", "alice-pw", "1001").await;
         let bob = seed.user("bob", "bob-pw", "1002").await;
         let carol = seed.user("carol", "carol-pw", "1003").await;
         let dave = seed.user("dave", "dave-pw", "1004").await;
-        Some(Self {
-            db: Some(db),
+        Self {
+            db: None,
             seed,
             alice,
             bob,
             carol,
             dave,
             dir: tempfile::tempdir().unwrap(),
-        })
+        }
     }
 
     fn db_url(&self) -> &str {
@@ -692,4 +719,166 @@ async fn a_killed_node() {
     a.finish().await;
     b.finish().await;
     cast.finish().await;
+}
+
+/// A Postgres pair, or skip.
+macro_rules! pair_or_skip {
+    () => {
+        match PgPair::start().await {
+            Some(p) => p,
+            None => {
+                eprintln!("skipped: the Postgres server's binaries are not installed");
+                return;
+            }
+        }
+    };
+}
+
+/// Carol registers again, within [`CAUGHT_UP`].
+async fn registers_again(carol: &Phone, node: &mut Node, pair: &PgPair, when: &str) {
+    let deadline = Instant::now() + CAUGHT_UP;
+    loop {
+        match register_timed(carol).await {
+            (Some(200), _) => return,
+            _ if Instant::now() > deadline => {
+                let logs = node.logs().await;
+                panic!("Carol cannot register {when}\n{logs}\n{}", pair.logs());
+            }
+            _ => tokio::time::sleep(Duration::from_millis(500)).await,
+        }
+    }
+}
+
+/// The primary dies while Alice and Bob talk, and its standby is promoted
+/// in its place (D5c). The node is given the primary by an address the
+/// failover moves (a VIP, a DNS name, a pooler: here a [`CutLink`]), and
+/// reads its configuration from the standby, as a region does.
+///
+/// - The call lives, and its BYE crosses once the new primary is up.
+/// - While there is no primary, a REGISTER is answered 503 within
+///   [`ANSWERED_WITHIN`].
+/// - Once the standby is promoted and the address moved, Carol registers
+///   and calls Dave, a call to Alice finds the registration made before
+///   the failover, and the call's record is written, with no restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_primary_fails_over_to_its_standby_mid_call() {
+    let pair = pair_or_skip!();
+    // The address the node and the test write through moves with the
+    // failover.
+    let (link, primary) = CutLink::for_url(&pair.primary_url()).await;
+    let cast = Cast::on(&primary).await;
+    let mut node = Node::start_with(
+        "e2e-failover",
+        &primary,
+        None,
+        cast.dir.path(),
+        &format!("read_replica_url = \"{}\"", pair.standby_url()),
+    )
+    .await;
+    let alice = cast.phone(&cast.alice, &node).await;
+    let bob = cast.phone(&cast.bob, &node).await;
+    let carol = cast.phone(&cast.carol, &node).await;
+    let dave = cast.phone(&cast.dave, &node).await;
+    let (call, answered) = connected(&alice, &bob, &cast.bob.extension).await;
+
+    // Everything written so far is on the standby; the primary dies.
+    pair.caught_up(SOON).await;
+    pair.crash_primary().await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    both_ways(&call, &answered, "with no primary").await;
+    let (code, took) = register_timed(&carol).await;
+    let (ready_away, ready_body) = node.ready().await;
+
+    // The standby is promoted and the address moves to it.
+    pair.promote_standby().await;
+    link.retarget(pair.standby_addr());
+    both_ways(&call, &answered, "after the failover").await;
+    hung_up(&call, &bob, "after the failover").await;
+
+    registers_again(&carol, &mut node, &pair, "after the failover").await;
+    match try_call(&carol, &dave, &cast.dave.extension, SOON).await {
+        Ok(call) => {
+            call.hangup().await.unwrap();
+        }
+        Err(code) => {
+            let logs = node.logs().await;
+            panic!("Carol cannot call Dave after the failover: {code:?}\n{logs}");
+        }
+    }
+    // Alice registered before the failover; the new primary has it.
+    match try_call(&dave, &alice, &cast.alice.extension, SOON).await {
+        Ok(call) => {
+            call.hangup().await.unwrap();
+        }
+        Err(code) => {
+            let logs = node.logs().await;
+            panic!("Alice is not reachable after the failover: {code:?}\n{logs}");
+        }
+    }
+    let recorded = cast.calls_recorded(3, CAUGHT_UP).await;
+
+    if took > ANSWERED_WITHIN || code != Some(503) || ready_away != 503 {
+        let logs = node.logs().await;
+        panic!(
+            "with no primary, a REGISTER was answered {code:?} in {took:?}; \
+             /ready {ready_away} {ready_body}\n{logs}"
+        );
+    }
+    assert!(recorded >= 3, "{recorded} calls recorded");
+    let (ready_back, body) = node.ready().await;
+    assert_eq!(ready_back, 200, "ready after the failover: {body}");
+    node.finish().await;
+}
+
+/// The node's primary address leads to a standby: one the failover has
+/// not promoted yet, or the old primary come back as a standby while a
+/// node still resolves the old address (D5c). The standby answers every
+/// query and refuses every write.
+///
+/// - A REGISTER is answered 503 within [`ANSWERED_WITHIN`], as with no
+///   primary, and `/ready` says the database is not writable.
+/// - A call is still put through: it only reads, and its record waits
+///   in the spool for a primary.
+/// - Once the standby is promoted, Carol registers with no restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_standby_behind_the_primary_address() {
+    let pair = pair_or_skip!();
+    let (link, primary) = CutLink::for_url(&pair.primary_url()).await;
+    let cast = Cast::on(&primary).await;
+    let mut node = Node::start("e2e-standby", &primary, None, cast.dir.path()).await;
+    let carol = cast.phone(&cast.carol, &node).await;
+    let dave = cast.phone(&cast.dave, &node).await;
+    pair.caught_up(SOON).await;
+
+    // The address moves to the standby before it is promoted; the node's
+    // connections to the primary are dropped, as a moved VIP drops them.
+    link.retarget(pair.standby_addr());
+    link.cut();
+    link.restore().await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let (code, took) = register_timed(&carol).await;
+    let away_call = match try_call(&carol, &dave, &cast.dave.extension, ANSWERED_WITHIN).await {
+        Ok(c) => {
+            let _ = c.hangup().await;
+            "answered".to_string()
+        }
+        Err(code) => format!("{code:?}"),
+    };
+    let (ready_away, ready_body) = node.ready().await;
+
+    pair.promote_standby().await;
+    registers_again(&carol, &mut node, &pair, "once the standby is promoted").await;
+    let recorded = cast.calls_recorded(1, CAUGHT_UP).await;
+
+    if took > ANSWERED_WITHIN || code != Some(503) || ready_away != 503 || away_call != "answered" {
+        let logs = node.logs().await;
+        panic!(
+            "with a standby at the primary's address, a REGISTER was answered \
+             {code:?} in {took:?}; Carol to Dave: {away_call}; \
+             /ready {ready_away} {ready_body}\n{logs}"
+        );
+    }
+    assert_eq!(ready_body["database"]["writable"], false, "{ready_body}");
+    assert!(recorded >= 1, "the call's record is written once promoted");
+    node.finish().await;
 }

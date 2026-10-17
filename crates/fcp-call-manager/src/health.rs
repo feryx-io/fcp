@@ -433,9 +433,11 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
 async fn ready_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let (mut code, mut body) = fcp_sip::drain::ready_body(&state.drain).await;
     // A node whose database is away refuses new registrations and calls
-    // (`docs/DEEP_TESTING.md` D5), so a balancer should send them elsewhere.
+    // (`docs/DEEP_TESTING.md` D5), so a balancer should send them elsewhere;
+    // so does one whose primary's address leads to a standby (D5c), which
+    // refuses registrations.
     body["database"] = state.primary.json();
-    if !state.primary.is_up() {
+    if !state.primary.is_writable() {
         code = 503;
         body["ready"] = serde_json::Value::Bool(false);
     }

@@ -595,6 +595,7 @@ pub struct SipMessageHandler {
     /// rather than left waiting on a database that is not there. Absent is
     /// always yes.
     store_up: Option<StoreUp>,
+    store_writable: Option<StoreUp>,
     /// Whether this node tells the next hop where its caller is
     /// (`X-FCP-Client-Address`): an SBC in front of phones does.
     vouch_client_address: bool,
@@ -1065,6 +1066,7 @@ impl SipMessageHandler {
             trusted_edges: Default::default(),
             edge_guard: None,
             store_up: None,
+            store_writable: None,
             vouch_client_address: false,
             media_manager,
             media_config,
@@ -1268,9 +1270,21 @@ impl SipMessageHandler {
         self
     }
 
+    /// What says whether the store takes writes: false while the primary's
+    /// address leads to a standby (`docs/DEEP_TESTING.md` D5c).
+    pub fn with_store_writable(mut self, writable: StoreUp) -> Self {
+        self.store_writable = Some(writable);
+        self
+    }
+
     /// Whether work that needs the store may start.
     fn store_answers(&self) -> bool {
         self.store_up.as_ref().is_none_or(|up| up())
+    }
+
+    /// Whether work that writes to the store may start.
+    fn store_writes(&self) -> bool {
+        self.store_answers() && self.store_writable.as_ref().is_none_or(|w| w())
     }
 
     /// The 503 for a request the store is needed for while it is away:
@@ -1280,8 +1294,12 @@ impl SipMessageHandler {
             "fcp_sip_store_refused_total",
             &[("method", request.method().as_str())],
         );
-        let mut response =
-            self.create_simple_response(request, 503, "Service Unavailable - store unreachable");
+        let reason = if self.store_answers() {
+            "Service Unavailable - store read-only"
+        } else {
+            "Service Unavailable - store unreachable"
+        };
+        let mut response = self.create_simple_response(request, 503, reason);
         let _ = response.headers_mut().push(
             SmolStr::new("Retry-After"),
             SmolStr::new(STORE_RETRY_AFTER_SECS.to_string()),
@@ -2872,7 +2890,7 @@ impl SipMessageHandler {
                 // A registration is a write: with the store away it cannot
                 // be taken, and one already under way when it went is
                 // answered within the deadline (`docs/DEEP_TESTING.md` D5).
-                let response = if !self.store_answers() {
+                let response = if !self.store_writes() {
                     self.store_unavailable(request)
                 } else {
                     match tokio::time::timeout(

@@ -25,6 +25,7 @@ pub mod cut;
 pub mod db;
 pub mod media;
 pub mod oidc;
+pub mod pg_pair;
 pub mod phone;
 pub mod push;
 pub mod redirection;

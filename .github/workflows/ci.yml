@@ -108,6 +108,7 @@ jobs:
     env:
       FCP_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
       FCP_TEST_REDIS_URL: redis://localhost:6379
+      FCP_PG_PAIR_TESTS: required
     steps:
       # The hosted runner leaves ~14GB free, which a 32-crate workspace's
       # debug + test artifacts overflow (the run dies with SIGBUS in ld /
@@ -171,6 +172,15 @@ jobs:
         run: |
           command -v pg_dump >/dev/null || sudo apt-get install -y postgresql-client
           pg_dump --version
+      # The primary failed over to its standby (crates/fcp-call-manager/
+      # tests/faults.rs, docs/DEEP_TESTING.md D5c) runs a pair of Postgres
+      # servers of its own (fcp_testkit::pg_pair): the runner image ships
+      # the server, unstarted, under /usr/lib/postgresql/<major>/bin.
+      # FCP_PG_PAIR_TESTS=required makes its absence a failure.
+      - name: Postgres server binaries for the failover test
+        run: |
+          ls /usr/lib/postgresql/*/bin/pg_basebackup 2>/dev/null || sudo apt-get install -y postgresql
+          ls /usr/lib/postgresql/*/bin/initdb
       # The SDKs' own suites run against a live admin from
       # crates/fcp-admin/tests/sdks.rs (docs/DEVELOPER_SURFACE.md §3,
       # phase 4): Node and the TypeScript SDK's dependencies, and uv for

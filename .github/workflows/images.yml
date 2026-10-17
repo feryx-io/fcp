@@ -7,7 +7,10 @@
 # binaries cannot see — each image's entrypoint and filesystem,
 # depends_on and the health checks, the certs service as a container,
 # host networking, the proxy, the scripts against real volumes — is seen
-# here. Operators pull the same images: FCP_IMAGE_TAG=nightly in .env,
+# here. When the images were built by this run, the stack first runs the
+# previous release — the last good scheduled run on main, its images and
+# its compose project — and is upgraded in place over its database
+# (docs/DEEP_TESTING.md D5c). Operators pull the same images: FCP_IMAGE_TAG=nightly in .env,
 # `docker compose pull`, `up -d --no-build`.
 name: Images
 
@@ -90,6 +93,8 @@ jobs:
     permissions:
       contents: read
       packages: read
+      # The previous release is found from the workflow's runs.
+      actions: read
     env:
       CARGO_TERM_COLOR: always
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -115,12 +120,37 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # An upgrade over a populated database (docs/DEEP_TESTING.md D5c):
+      # the previous release is the last good scheduled run on main with
+      # another commit. Its images are under its sha, and its compose
+      # project is put in place of this one's, as the operator has it
+      # before `git pull`. A stack-only run (an image tag given), or one
+      # with no earlier release, starts on its own images.
+      - name: The previous release
+        id: previous
+        if: inputs.image_tag == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$(gh run list -R "$GITHUB_REPOSITORY" --workflow images.yml --branch main \
+            --event schedule --status success --limit 20 --json headSha \
+            --jq "[.[].headSha | select(. != \"$GITHUB_SHA\")][0] // \"\"")
+          if [ -z "$prev" ]; then
+            echo "no earlier release: the stack starts on this one"
+            exit 0
+          fi
+          git fetch --quiet --depth 1 origin "$prev"
+          git restore --source="$prev" --staged --worktree -- .
+          echo "sha=$prev" >> "$GITHUB_OUTPUT"
+          echo "starting on $prev, release $(git show "$prev:Cargo.toml" | grep -m1 '^version')"
       # The shipped .env, with this runner's address (what the phone's SDP
-      # names) and the images this run built.
+      # names) and the images to start on.
       - name: This runner's .env
+        env:
+          START_TAG: ${{ steps.previous.outputs.sha || env.IMAGE_TAG }}
         run: |
           ip=$(hostname -I | awk '{print $1}')
-          sed -i "s/^HOST_IP=.*/HOST_IP=$ip/; s/^FCP_IMAGE_TAG=.*/FCP_IMAGE_TAG=$IMAGE_TAG/" .env
+          sed -i "s/^HOST_IP=.*/HOST_IP=$ip/; s/^FCP_IMAGE_TAG=.*/FCP_IMAGE_TAG=$START_TAG/" .env
           grep -E '^(HOST_IP|FCP_IMAGE_TAG)=' .env
           docker compose config --quiet
       - name: Pull and start the stack
@@ -137,6 +167,28 @@ jobs:
         working-directory: .
         env:
           FCP_LIVE_STACK: fresh
+          FCP_LIVE_CA: ${{ runner.temp }}/ca.crt
+        run: cargo test -p fcp-call-manager --test compose_live -- --nocapture
+      # docs/BACKUP_AND_RESTORE.md §5.3 with images: back up, this release's
+      # compose project (`git pull`), its .env kept but for the tag, pull,
+      # `up -d`. The first service to open the database migrates it.
+      - name: Upgrade to this release
+        if: steps.previous.outputs.sha != ''
+        run: |
+          scripts/backup.sh "$RUNNER_TEMP/before-upgrade"
+          git restore --source="$GITHUB_SHA" --staged --worktree -- .
+          ip=$(hostname -I | awk '{print $1}')
+          sed -i "s/^HOST_IP=.*/HOST_IP=$ip/; s/^FCP_IMAGE_TAG=.*/FCP_IMAGE_TAG=$IMAGE_TAG/" .env
+          docker compose config --quiet
+          docker compose pull --quiet
+          docker compose up -d --no-build --remove-orphans
+          scripts/wait-healthy.sh 300
+          docker compose logs --no-color --since 10m 2>&1 | grep -i migrat | head -20 || true
+      - name: A call through the upgraded stack
+        if: steps.previous.outputs.sha != ''
+        working-directory: .
+        env:
+          FCP_LIVE_STACK: upgraded
           FCP_LIVE_CA: ${{ runner.temp }}/ca.crt
         run: cargo test -p fcp-call-manager --test compose_live -- --nocapture
       - name: Back up, drop, restore

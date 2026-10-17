@@ -10,6 +10,9 @@
 //! across a partition or to a host that has gone away without a reset.
 //! `restore` lets the held bytes through. Deep testing D5 takes Postgres
 //! and Redis away both ways (`docs/DEEP_TESTING.md`).
+//!
+//! `retarget` moves the far side: new connections go to another address,
+//! as a VIP or a DNS name moves to a promoted standby (D5c).
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -20,7 +23,7 @@ use tokio::task::JoinHandle;
 
 pub struct CutLink {
     port: u16,
-    target: SocketAddr,
+    target: Arc<Mutex<SocketAddr>>,
     tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     /// True while the link is silent.
     silent: watch::Sender<bool>,
@@ -33,7 +36,7 @@ impl CutLink {
         let port = listener.local_addr().unwrap().port();
         let link = Self {
             port,
-            target,
+            target: Arc::new(Mutex::new(target)),
             tasks: Arc::new(Mutex::new(Vec::new())),
             silent: watch::channel(false).0,
         };
@@ -83,12 +86,13 @@ impl CutLink {
     }
 
     fn serve(&self, listener: TcpListener) {
-        let target = self.target;
+        let target = Arc::clone(&self.target);
         let tasks = Arc::clone(&self.tasks);
         let silent = self.silent.subscribe();
         let accept = tokio::spawn(async move {
             while let Ok((inbound, _)) = listener.accept().await {
                 let silent = silent.clone();
+                let target = *target.lock().unwrap();
                 let pipe = tokio::spawn(async move {
                     if let Ok(outbound) = TcpStream::connect(target).await {
                         pipe(inbound, outbound, silent).await;
@@ -107,6 +111,12 @@ impl CutLink {
         }
     }
 
+    /// Send new connections to `target` from now on; those open stay
+    /// where they are.
+    pub fn retarget(&self, target: SocketAddr) {
+        *self.target.lock().unwrap() = target;
+    }
+
     /// Keep every connection, and accept new ones, but carry nothing
     /// either way until [`restore`](Self::restore).
     pub fn silence(&self) {
@@ -119,7 +129,19 @@ impl CutLink {
         if self.silent.send_replace(false) {
             return;
         }
-        let listener = TcpListener::bind(("127.0.0.1", self.port)).await.unwrap();
+        // A cut's listener is closed when its aborted task is dropped,
+        // which may not have happened yet.
+        let mut tries = 0;
+        let listener = loop {
+            match TcpListener::bind(("127.0.0.1", self.port)).await {
+                Ok(listener) => break listener,
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && tries < 50 => {
+                    tries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Err(e) => panic!("the link's port {}: {e}", self.port),
+            }
+        };
         self.serve(listener);
     }
 }
