@@ -127,9 +127,21 @@ impl Seed {
     /// given, is required of every caller; a host PIN makes its caller a
     /// moderator.
     pub async fn meeting(&self, room: &str, guest_pin: Option<&str>, host_pin: Option<&str>) {
+        self.meeting_in(self.tenant_id, room, guest_pin, host_pin)
+            .await
+    }
+
+    /// As [`Seed::meeting`], in `tenant`'s numbering.
+    pub async fn meeting_in(
+        &self,
+        tenant: TenantId,
+        room: &str,
+        guest_pin: Option<&str>,
+        host_pin: Option<&str>,
+    ) {
         let meeting: Meeting = serde_json::from_value(serde_json::json!({
             "id": MeetingId::new(),
-            "tenant_id": self.tenant_id,
+            "tenant_id": tenant,
             "room_number": room,
             "name": format!("Room {room}"),
             "guest_pin": guest_pin,

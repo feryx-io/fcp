@@ -24,6 +24,7 @@
 //! the session without a BYE, does not leave a dead trunk behind.
 
 use crate::conference_handler::ConferenceCallHandler;
+use crate::rooms::RoomKey;
 use dashmap::DashMap;
 use fcp_cluster::{ClusterMember, ConferenceRegistry, CONFERENCE_NODE_TYPE};
 use fcp_core::TenantId;
@@ -186,25 +187,30 @@ impl TrunkManager {
     /// Reconcile one room: dial the peers this node should be trunked to
     /// and hang up the trunks that no longer belong.
     pub async fn reconcile_room(self: &Arc<Self>, tenant_id: &str, room_number: &str) {
+        let Ok(tenant) = tenant_id.parse::<TenantId>() else {
+            warn!(tenant = %tenant_id, room = %room_number, "Bad tenant id; not reconciling the room");
+            return;
+        };
+        let room = RoomKey::new(tenant, room_number);
         // Dead trunks first, so the plan below sees them as missing and
         // dials again (if this is the dialing side; otherwise the peer's
         // next INVITE replaces what it thinks it still has).
         if let Some(timeout) = self.rtp_timeout {
-            for peer in self.handler.silent_trunks(room_number, timeout) {
+            for peer in self.handler.silent_trunks(&room, timeout) {
                 warn!(
                     room = %room_number,
                     peer = %peer,
                     timeout_secs = timeout.as_secs(),
                     "Conference trunk received no RTP; tearing it down"
                 );
-                self.handler.hangup_trunk(room_number, &peer).await;
+                self.handler.hangup_trunk(&room, &peer).await;
                 // Retry at once rather than waiting out a failed-dial backoff.
                 self.failed
                     .remove(&(tenant_id.to_string(), room_number.to_string(), peer));
             }
         }
-        let local = self.handler.countable_participants(room_number);
-        let trunked = self.handler.room_trunk_peers(room_number);
+        let local = self.handler.countable_participants(&room);
+        let trunked = self.handler.room_trunk_peers(&room);
         let hosting: Vec<String> = if local == 0 {
             Vec::new()
         } else {
@@ -236,7 +242,7 @@ impl TrunkManager {
         debug!(room = %room_number, local, ?hosting, ?trunked, ?plan, "Trunk reconcile");
         for peer in plan.hangup {
             info!(room = %room_number, peer = %peer, "Hanging up conference trunk");
-            self.handler.hangup_trunk(room_number, &peer).await;
+            self.handler.hangup_trunk(&room, &peer).await;
         }
         for peer in plan.dial {
             self.start_dial(tenant_id, room_number, peer);
@@ -276,7 +282,11 @@ impl TrunkManager {
         let this = Arc::clone(self);
         let room = room_number.to_string();
         tokio::spawn(async move {
-            match this.handler.dial_trunk(tenant, &room, &peer, target).await {
+            match this
+                .handler
+                .dial_trunk(&RoomKey::new(tenant, room.clone()), &peer, target)
+                .await
+            {
                 Ok(()) => {
                     this.failed.remove(&key);
                 }
@@ -291,13 +301,9 @@ impl TrunkManager {
 
     /// Reconcile every room this node hosts.
     pub async fn reconcile_all(self: &Arc<Self>) {
-        for (room, _) in self.handler.active_rooms() {
-            let tenant = self
-                .handler
-                .tenant_for_room(&room)
-                .unwrap_or(self.handler.default_tenant_id)
-                .to_string();
-            self.reconcile_room(&tenant, &room).await;
+        for (key, _) in self.handler.active_rooms() {
+            self.reconcile_room(&key.tenant.to_string(), &key.room)
+                .await;
         }
     }
 

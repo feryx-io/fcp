@@ -17,7 +17,7 @@ use fcp_core::{DynStorage, Meeting, MeetingId, TenantId};
 use fcp_events::{
     ConferenceEvent, EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus, PlatformEvent,
 };
-use forge_conference::{ConferenceBridge, ConferenceRoom};
+use forge_conference::ConferenceRoom;
 use futures::stream::Stream;
 use serde::Deserialize;
 use std::convert::Infallible;
@@ -29,10 +29,11 @@ use tracing::{info, warn};
 
 use crate::conference_handler::ConferenceCallHandler;
 use crate::control::{ClusterControl, PeerOutcome, NODE_HEADER};
+use crate::rooms::RoomKey;
 
 /// Shared state for the conference HTTP API.
 pub struct ConferenceState {
-    pub bridge: Arc<ConferenceBridge>,
+    pub bridge: Arc<crate::rooms::RoomBridge>,
     pub storage: Arc<DynStorage>,
     /// The read replica as of its last probe (`docs/DEPLOYMENT_GAPS.md` §1.7).
     pub replica: fcp_storage_postgres::ReplicaHealth,
@@ -1250,13 +1251,23 @@ async fn delete_meeting_handler(
 
 async fn list_conferences_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
 ) -> Json<serde_json::Value> {
+    // A request that names a tenant sees that tenant's rooms; one that
+    // names none (the node's own operator) sees every room, each with
+    // its tenant.
+    let only = headers
+        .get(PLATFORM_TENANT_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<TenantId>().ok());
     let rooms = state.conference_handler.active_rooms();
     let list: Vec<serde_json::Value> = rooms
         .iter()
-        .map(|(room_id, count)| {
+        .filter(|(key, _)| only.is_none_or(|t| key.tenant == t))
+        .map(|(key, count)| {
             serde_json::json!({
-                "room_number": room_id,
+                "room_number": key.room,
+                "tenant_id": key.tenant,
                 "participants": count,
             })
         })
@@ -1267,12 +1278,17 @@ async fn list_conferences_handler(
 
 async fn get_conference_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    match state.bridge.get_room(&room_number) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    match state.bridge.get_room(&key) {
         Ok(room) => {
             let participants = room.participants();
-            let trunks = state.conference_handler.room_trunk_peers(&room_number);
+            let trunks = state.conference_handler.room_trunk_peers(&key);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -1285,7 +1301,7 @@ async fn get_conference_handler(
                     // so a caller can follow it to the file.
                     "recording": state
                         .conference_handler
-                        .room_recording(&room_number)
+                        .room_recording(&key)
                         .as_ref()
                         .map(recording_json),
                     "node_id": state.conference_handler.node_id(),
@@ -1318,6 +1334,10 @@ async fn dial_out_handler(
     Path(room_number): Path<String>,
     Json(payload): Json<DialOutRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     let raw = payload.destination.trim().to_string();
     if raw.is_empty() {
         return (
@@ -1342,17 +1362,11 @@ async fn dial_out_handler(
         format!("sip:{}@{}", raw, domain)
     };
 
-    let tenant_id = match extract_tenant_id(&headers, &state).await {
-        Ok(tenant_id) => tenant_id,
-        Err(err) => return err,
-    };
-
     match state
         .conference_handler
         .dial_out(
-            &room_number,
+            &key,
             &dest,
-            tenant_id,
             payload.greeting_tts.as_deref(),
             payload.greeting_prompt.as_deref(),
         )
@@ -1401,14 +1415,15 @@ async fn start_recording_handler(
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
+    let key = RoomKey::new(tenant_id, room_number.to_string());
     // One recording per room, on the lowest-id hosting node — the rule
     // the trunks are dialled by. Without it a room hosted on two nodes,
     // started through each of them, would be recorded twice.
-    if let Some(peer) = lower_hosting_node(&state, &tenant_id, &room_number).await {
+    if let Some(peer) = lower_hosting_node(&state, &key).await {
         if let Some(control) = &state.control {
             if let Some(outcome) = control
                 .send_to_node(
@@ -1437,12 +1452,11 @@ async fn start_recording_handler(
             }
         }
     }
-    let local = local_recording_start(&state, &room_number).await;
+    let local = local_recording_start(&state, &key).await;
     let local_status = local.as_ref().err().map(|(s, _)| *s);
     let (status, body) = wherever_it_is(
         &state,
-        &tenant_id,
-        &room_number,
+        &key,
         local,
         reqwest::Method::POST,
         &format!("/conferences/{room_number}/recording/start"),
@@ -1459,11 +1473,9 @@ async fn start_recording_handler(
 
 /// The hosting node whose id sorts below this one's, when there is one:
 /// where a room's single recording belongs.
-async fn lower_hosting_node(
-    state: &ConferenceState,
-    tenant_id: &TenantId,
-    room_number: &str,
-) -> Option<String> {
+async fn lower_hosting_node(state: &ConferenceState, key: &RoomKey) -> Option<String> {
+    let room_number = key.room.as_str();
+    let tenant_id = &key.tenant;
     let control = state.control.as_ref()?;
     let peers = match control
         .hosting_peers(&tenant_id.to_string(), room_number)
@@ -1493,16 +1505,16 @@ async fn stop_recording_handler(
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    let local = local_recording_stop(&state, &room_number).await;
+    let key = RoomKey::new(tenant_id, room_number.to_string());
+    let local = local_recording_stop(&state, &key).await;
     let local_status = local.as_ref().err().map(|(s, _)| *s);
     let (ok, body) = room_wide(
         &state,
-        &tenant_id,
-        &room_number,
+        &key,
         local,
         reqwest::Method::POST,
         &format!("/conferences/{room_number}/recording/stop"),
@@ -1521,18 +1533,20 @@ async fn stop_recording_handler(
 
 async fn get_participant_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Invalid identifier" })),
         );
     }
-    match state
-        .conference_handler
-        .get_participant_details(&room_number, &pid)
-    {
+    match state.conference_handler.get_participant_details(&key, &pid) {
         Ok(details) => (StatusCode::OK, Json(details)),
         Err(e) => (
             StatusCode::NOT_FOUND,
@@ -1548,9 +1562,14 @@ struct SetGainRequest {
 
 async fn list_waiting_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    match state.conference_handler.list_waiting(&room_number) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    match state.conference_handler.list_waiting(&key) {
         Ok(waiting) => (
             StatusCode::OK,
             Json(serde_json::json!({ "room_number": room_number, "waiting": waiting })),
@@ -1564,18 +1583,20 @@ async fn list_waiting_handler(
 
 async fn promote_participant_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Invalid identifier" })),
         );
     }
-    match state
-        .conference_handler
-        .promote_participant(&room_number, &pid)
-    {
+    match state.conference_handler.promote_participant(&key, &pid) {
         Ok(()) => {
             info!(action = "promote", room = %room_number, participant = %pid, "AUDIT: participant promoted via API");
             (
@@ -1592,9 +1613,14 @@ async fn promote_participant_handler(
 
 async fn room_stats_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    match state.conference_handler.get_room_stats(&room_number) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    match state.conference_handler.get_room_stats(&key) {
         Ok(stats) => (StatusCode::OK, Json(stats)),
         Err(e) => (
             StatusCode::NOT_FOUND,
@@ -1605,8 +1631,13 @@ async fn room_stats_handler(
 
 async fn start_participant_recording_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return (
             StatusCode::BAD_REQUEST,
@@ -1615,7 +1646,7 @@ async fn start_participant_recording_handler(
     }
     match state
         .conference_handler
-        .start_participant_recording(&room_number, &pid)
+        .start_participant_recording(&key, &pid)
         .await
     {
         Ok(path) => (
@@ -1633,8 +1664,13 @@ async fn start_participant_recording_handler(
 
 async fn stop_participant_recording_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return (
             StatusCode::BAD_REQUEST,
@@ -1643,7 +1679,7 @@ async fn stop_participant_recording_handler(
     }
     match state
         .conference_handler
-        .stop_participant_recording(&room_number, &pid)
+        .stop_participant_recording(&key, &pid)
     {
         Ok(()) => (
             StatusCode::OK,
@@ -1681,10 +1717,11 @@ fn local_error(status: StatusCode, err: impl std::fmt::Display) -> (StatusCode, 
     (status, err.to_string())
 }
 
-fn local_set_locked(state: &ConferenceState, room_number: &str, locked: bool) -> LocalResult {
+fn local_set_locked(state: &ConferenceState, key: &RoomKey, locked: bool) -> LocalResult {
+    let room_number = key.room.as_str();
     state
         .conference_handler
-        .set_room_locked(room_number, locked)
+        .set_room_locked(key, locked)
         .map_err(|e| local_error(StatusCode::NOT_FOUND, e))?;
     Ok(serde_json::json!({
         "status": if locked { "locked" } else { "unlocked" },
@@ -1692,10 +1729,11 @@ fn local_set_locked(state: &ConferenceState, room_number: &str, locked: bool) ->
     }))
 }
 
-async fn local_destroy(state: &ConferenceState, room_number: &str) -> LocalResult {
+async fn local_destroy(state: &ConferenceState, key: &RoomKey) -> LocalResult {
+    let room_number = key.room.as_str();
     let removed = state
         .conference_handler
-        .destroy_conference(room_number)
+        .destroy_conference(key)
         .await
         .map_err(|e| local_error(StatusCode::NOT_FOUND, e))?;
     Ok(serde_json::json!({
@@ -1705,8 +1743,8 @@ async fn local_destroy(state: &ConferenceState, room_number: &str) -> LocalResul
     }))
 }
 
-async fn local_kick(state: &ConferenceState, room_number: &str, pid: &str) -> LocalResult {
-    if state.bridge.get_room(room_number).is_err() {
+async fn local_kick(state: &ConferenceState, key: &RoomKey, pid: &str) -> LocalResult {
+    if state.bridge.get_room(key).is_err() {
         return Err(local_error(
             StatusCode::NOT_FOUND,
             "Conference room not active",
@@ -1721,15 +1759,10 @@ async fn local_kick(state: &ConferenceState, room_number: &str, pid: &str) -> Lo
     Ok(serde_json::json!({ "status": "kicked", "participant": pid }))
 }
 
-fn local_set_muted(
-    state: &ConferenceState,
-    room_number: &str,
-    pid: &str,
-    muted: bool,
-) -> LocalResult {
+fn local_set_muted(state: &ConferenceState, key: &RoomKey, pid: &str, muted: bool) -> LocalResult {
     let room = state
         .bridge
-        .get_room(room_number)
+        .get_room(key)
         .map_err(|_| local_error(StatusCode::NOT_FOUND, "Conference room not active"))?;
     let target = if muted {
         forge_mixer::ParticipantState::Muted
@@ -1744,10 +1777,10 @@ fn local_set_muted(
     }))
 }
 
-fn local_set_gain(state: &ConferenceState, room_number: &str, pid: &str, gain: f32) -> LocalResult {
+fn local_set_gain(state: &ConferenceState, key: &RoomKey, pid: &str, gain: f32) -> LocalResult {
     state
         .conference_handler
-        .set_gain(room_number, pid, gain)
+        .set_gain(key, pid, gain)
         .map_err(|e| local_error(StatusCode::NOT_FOUND, e))?;
     Ok(serde_json::json!({ "status": "gain_set", "participant": pid, "gain": gain }))
 }
@@ -1757,12 +1790,9 @@ fn local_set_gain(state: &ConferenceState, room_number: &str, pid: &str, gain: f
 /// and so travels over the inter-node trunks. `NOT_FOUND` when the room
 /// is not active here; other failures (missing file, too large) are the
 /// caller's problem and are not forwarded.
-async fn local_announce(
-    state: &ConferenceState,
-    room_number: &str,
-    audio_path: &str,
-) -> LocalResult {
-    if state.bridge.get_room(room_number).is_err() {
+async fn local_announce(state: &ConferenceState, key: &RoomKey, audio_path: &str) -> LocalResult {
+    let room_number = key.room.as_str();
+    if state.bridge.get_room(key).is_err() {
         return Err(local_error(
             StatusCode::NOT_FOUND,
             "Conference room not active",
@@ -1777,7 +1807,7 @@ async fn local_announce(
     };
     state
         .conference_handler
-        .play_announcement(room_number, &resolved)
+        .play_announcement(key, &resolved)
         .await
         .map_err(|e| local_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(serde_json::json!({ "status": "announced", "room": room_number, "audio_path": resolved }))
@@ -1793,17 +1823,19 @@ fn valid_announcement_path(audio_path: &str) -> bool {
         || audio_path.starts_with('\\'))
 }
 
-/// The tenant a room belongs to for cluster purposes: the hosting
-/// tenant when the room is active here, else the request's tenant.
-async fn control_tenant(
+/// The room a request names: that number in the request's tenant, which
+/// the admin API and the peer nodes send in the platform tenant header.
+/// Another tenant's room of the same number is another room, never this
+/// one.
+async fn room_key(
     state: &ConferenceState,
     headers: &HeaderMap,
     room_number: &str,
-) -> Result<TenantId, (StatusCode, Json<serde_json::Value>)> {
-    if let Some(tenant) = state.conference_handler.tenant_for_room(room_number) {
-        return Ok(tenant);
-    }
-    extract_tenant_id(headers, state).await
+) -> Result<RoomKey, (StatusCode, Json<serde_json::Value>)> {
+    Ok(RoomKey::new(
+        extract_tenant_id(headers, state).await?,
+        room_number,
+    ))
 }
 
 /// Turn a local-only result into a response (no cluster, or an
@@ -1835,9 +1867,14 @@ struct SpeakerClaim {
 
 async fn internal_speaker_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
     Json(claim): Json<SpeakerClaim>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
@@ -1848,7 +1885,7 @@ async fn internal_speaker_handler(
         );
     }
     match state.conference_handler.apply_speaker_claim(
-        &room_number,
+        &key,
         &claim.node,
         claim.participant_id.as_deref(),
         claim.display_name.as_deref(),
@@ -1887,9 +1924,14 @@ struct ContentClaim {
 
 async fn internal_content_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
     Json(claim): Json<ContentClaim>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
@@ -1900,7 +1942,7 @@ async fn internal_content_handler(
         );
     }
     match state.conference_handler.apply_content_claim(
-        &room_number,
+        &key,
         &claim.node,
         claim.participant_id.as_deref(),
         claim.display_name.as_deref(),
@@ -1937,14 +1979,15 @@ fn recording_json(recording: &fcp_core::Recording) -> serde_json::Value {
 }
 
 /// Start recording the room on this node.
-async fn local_recording_start(state: &ConferenceState, room_number: &str) -> LocalResult {
-    if state.bridge.get_room(room_number).is_err() {
+async fn local_recording_start(state: &ConferenceState, key: &RoomKey) -> LocalResult {
+    let room_number = key.room.as_str();
+    if state.bridge.get_room(key).is_err() {
         return Err(local_error(
             StatusCode::NOT_FOUND,
             "Conference room not active",
         ));
     }
-    if state.conference_handler.is_room_recording(room_number) {
+    if state.conference_handler.is_room_recording(key) {
         return Err(local_error(
             StatusCode::CONFLICT,
             "The room is already being recorded",
@@ -1952,7 +1995,7 @@ async fn local_recording_start(state: &ConferenceState, room_number: &str) -> Lo
     }
     match state
         .conference_handler
-        .start_room_recording(room_number, fcp_core::RecordingTrigger::Api)
+        .start_room_recording(key, fcp_core::RecordingTrigger::Api)
         .await
     {
         Ok(recording) => {
@@ -1966,18 +2009,15 @@ async fn local_recording_start(state: &ConferenceState, room_number: &str) -> Lo
 }
 
 /// Stop the recording this node is making of the room.
-async fn local_recording_stop(state: &ConferenceState, room_number: &str) -> LocalResult {
-    if !state.conference_handler.is_room_recording(room_number) {
+async fn local_recording_stop(state: &ConferenceState, key: &RoomKey) -> LocalResult {
+    let room_number = key.room.as_str();
+    if !state.conference_handler.is_room_recording(key) {
         return Err(local_error(
             StatusCode::NOT_FOUND,
             "The room is not being recorded here",
         ));
     }
-    match state
-        .conference_handler
-        .stop_room_recording(room_number)
-        .await
-    {
+    match state.conference_handler.stop_room_recording(key).await {
         Ok(recording) => {
             info!(action = "stop_recording", room = %room_number, recording = %recording.id, "AUDIT: recording stopped via API");
             let mut body = recording_json(&recording);
@@ -1999,13 +2039,14 @@ fn local_response(result: LocalResult) -> (StatusCode, Json<serde_json::Value>) 
 /// Succeeds when any node applied it. `body` is what to forward.
 async fn room_wide(
     state: &ConferenceState,
-    tenant_id: &TenantId,
-    room_number: &str,
+    key: &RoomKey,
     local: LocalResult,
     method: reqwest::Method,
     path: &str,
     body: Option<serde_json::Value>,
 ) -> (bool, serde_json::Value) {
+    let room_number = key.room.as_str();
+    let tenant_id = &key.tenant;
     let Some(control) = &state.control else {
         return match local {
             Ok(body) => (true, body),
@@ -2046,13 +2087,14 @@ async fn room_wide(
 /// and when it is not here (`NOT_FOUND`) ask the hosting peers in turn.
 async fn wherever_it_is(
     state: &ConferenceState,
-    tenant_id: &TenantId,
-    room_number: &str,
+    key: &RoomKey,
     local: LocalResult,
     method: reqwest::Method,
     path: &str,
     body: Option<serde_json::Value>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let room_number = key.room.as_str();
+    let tenant_id = &key.tenant;
     let (control, err) = match (&state.control, local) {
         (_, Ok(body)) => return (StatusCode::OK, Json(body)),
         (Some(control), Err((StatusCode::NOT_FOUND, err))) => (control, err),
@@ -2095,16 +2137,16 @@ async fn set_locked_everywhere(
     room_number: &str,
     locked: bool,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let tenant_id = match control_tenant(state, headers, room_number).await {
+    let tenant_id = match extract_tenant_id(headers, state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
+    let key = RoomKey::new(tenant_id, room_number.to_string());
     let action = if locked { "lock" } else { "unlock" };
-    let local = local_set_locked(state, room_number, locked);
+    let local = local_set_locked(state, &key, locked);
     let (ok, mut body) = room_wide(
         state,
-        &tenant_id,
-        room_number,
+        &key,
         local,
         reqwest::Method::POST,
         &format!("/conferences/{room_number}/{action}"),
@@ -2174,11 +2216,12 @@ async fn destroy_conference_handler(
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    let local = local_destroy(&state, &room_number).await;
+    let key = RoomKey::new(tenant_id, room_number.to_string());
+    let local = local_destroy(&state, &key).await;
     let local_removed = local
         .as_ref()
         .ok()
@@ -2186,8 +2229,7 @@ async fn destroy_conference_handler(
         .unwrap_or(0);
     let (ok, mut body) = room_wide(
         &state,
-        &tenant_id,
-        &room_number,
+        &key,
         local,
         reqwest::Method::DELETE,
         &format!("/conferences/{room_number}"),
@@ -2228,15 +2270,15 @@ async fn kick_participant_handler(
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return invalid_identifier();
     }
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    let local = local_kick(&state, &room_number, &pid).await;
+    let key = RoomKey::new(tenant_id, room_number.to_string());
+    let local = local_kick(&state, &key, &pid).await;
     let resp = wherever_it_is(
         &state,
-        &tenant_id,
-        &room_number,
+        &key,
         local,
         reqwest::Method::POST,
         &format!("/conferences/{room_number}/kick/{pid}"),
@@ -2259,16 +2301,16 @@ async fn set_muted_wherever(
     if !is_valid_identifier(room_number) || !is_valid_identifier(pid) {
         return invalid_identifier();
     }
-    let tenant_id = match control_tenant(state, headers, room_number).await {
+    let tenant_id = match extract_tenant_id(headers, state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
+    let key = RoomKey::new(tenant_id, room_number.to_string());
     let action = if muted { "mute" } else { "unmute" };
-    let local = local_set_muted(state, room_number, pid, muted);
+    let local = local_set_muted(state, &key, pid, muted);
     let resp = wherever_it_is(
         state,
-        &tenant_id,
-        room_number,
+        &key,
         local,
         reqwest::Method::POST,
         &format!("/conferences/{room_number}/{action}/{pid}"),
@@ -2329,15 +2371,15 @@ async fn set_gain_handler(
     if !valid_gain(payload.gain) {
         return invalid_gain();
     }
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    let local = local_set_gain(&state, &room_number, &pid, payload.gain);
+    let key = RoomKey::new(tenant_id, room_number.to_string());
+    let local = local_set_gain(&state, &key, &pid, payload.gain);
     let resp = wherever_it_is(
         &state,
-        &tenant_id,
-        &room_number,
+        &key,
         local,
         reqwest::Method::POST,
         &format!("/conferences/{room_number}/participants/{pid}/gain"),
@@ -2365,18 +2407,18 @@ async fn announce_handler(
             Json(serde_json::json!({ "error": "Invalid audio_path" })),
         );
     }
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
+    let key = RoomKey::new(tenant_id, room_number.to_string());
     // Played on one hosting node; the trunks carry it to the rest. The
     // unresolved path is forwarded so the peer resolves it against its
     // own announcements_dir.
-    let local = local_announce(&state, &room_number, &payload.audio_path).await;
+    let local = local_announce(&state, &key, &payload.audio_path).await;
     wherever_it_is(
         &state,
-        &tenant_id,
-        &room_number,
+        &key,
         local,
         reqwest::Method::POST,
         &format!("/conferences/{room_number}/announce"),
@@ -2415,22 +2457,23 @@ fn video_control_status(err: &crate::video_bridge::VideoControlError) -> StatusC
 
 fn local_video_room(
     state: &ConferenceState,
-    room_number: &str,
+    key: &RoomKey,
 ) -> Result<Arc<ConferenceRoom>, (StatusCode, String)> {
     state
         .bridge
-        .get_room(room_number)
+        .get_room(key)
         .map_err(|_| local_error(StatusCode::NOT_FOUND, "Conference room not active"))
 }
 
 fn local_video_control(
     state: &ConferenceState,
-    room_number: &str,
+    key: &RoomKey,
     control: impl FnOnce(
         &ConferenceRoom,
     ) -> Result<serde_json::Value, crate::video_bridge::VideoControlError>,
 ) -> LocalResult {
-    let room = local_video_room(state, room_number)?;
+    let room_number = key.room.as_str();
+    let room = local_video_room(state, key)?;
     let mut json = control(&room).map_err(|e| (video_control_status(&e), e.to_string()))?;
     if let Some(map) = json.as_object_mut() {
         map.insert("room".into(), room_number.into());
@@ -2438,54 +2481,44 @@ fn local_video_control(
     Ok(json)
 }
 
-fn local_video_status(state: &ConferenceState, room_number: &str) -> LocalResult {
+fn local_video_status(state: &ConferenceState, key: &RoomKey) -> LocalResult {
     state
         .conference_handler
-        .get_room_video(room_number)
+        .get_room_video(key)
         .map_err(|_| local_error(StatusCode::NOT_FOUND, "Conference room not active"))
 }
 
-fn local_video_layout(state: &ConferenceState, room_number: &str, layout: &str) -> LocalResult {
-    local_video_control(state, room_number, |room| {
+fn local_video_layout(state: &ConferenceState, key: &RoomKey, layout: &str) -> LocalResult {
+    local_video_control(state, key, |room| {
         crate::video_bridge::set_layout(room, layout)
     })
 }
 
-fn local_video_pin(state: &ConferenceState, room_number: &str, pid: Option<&str>) -> LocalResult {
-    local_video_control(state, room_number, |room| {
-        crate::video_bridge::pin(room, pid)
-    })
+fn local_video_pin(state: &ConferenceState, key: &RoomKey, pid: Option<&str>) -> LocalResult {
+    local_video_control(state, key, |room| crate::video_bridge::pin(room, pid))
 }
 
-fn local_video_spotlight(
-    state: &ConferenceState,
-    room_number: &str,
-    pid: Option<&str>,
-) -> LocalResult {
-    local_video_control(state, room_number, |room| {
-        crate::video_bridge::spotlight(room, pid)
-    })
+fn local_video_spotlight(state: &ConferenceState, key: &RoomKey, pid: Option<&str>) -> LocalResult {
+    local_video_control(state, key, |room| crate::video_bridge::spotlight(room, pid))
 }
 
 fn local_participant_video(
     state: &ConferenceState,
-    room_number: &str,
+    key: &RoomKey,
     pid: &str,
     enabled: bool,
 ) -> LocalResult {
-    local_video_control(state, room_number, |room| {
+    local_video_control(state, key, |room| {
         crate::video_bridge::set_participant_video(room, pid, enabled)
     })
 }
 
-fn local_content_stop(state: &ConferenceState, room_number: &str) -> LocalResult {
-    local_video_control(state, room_number, |room| {
-        crate::video_bridge::stop_content(room)
-    })
+fn local_content_stop(state: &ConferenceState, key: &RoomKey) -> LocalResult {
+    local_video_control(state, key, crate::video_bridge::stop_content)
 }
 
-fn local_content_layout(state: &ConferenceState, room_number: &str, layout: &str) -> LocalResult {
-    local_video_control(state, room_number, |room| {
+fn local_content_layout(state: &ConferenceState, key: &RoomKey, layout: &str) -> LocalResult {
+    local_video_control(state, key, |room| {
         crate::video_bridge::set_content_layout(room, layout)
     })
 }
@@ -2517,12 +2550,13 @@ async fn video_status_handler(
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    let local = local_video_status(&state, &room_number);
-    merged_video_status(&state, &tenant_id, &room_number, local).await
+    let key = RoomKey::new(tenant_id, room_number.to_string());
+    let local = local_video_status(&state, &key);
+    merged_video_status(&state, &key, local).await
 }
 
 /// The room's video as the whole cluster sees it (§15.4, 5c).
@@ -2535,10 +2569,11 @@ async fn video_status_handler(
 /// because they all run the same rule over the same claims.
 async fn merged_video_status(
     state: &ConferenceState,
-    tenant_id: &TenantId,
-    room_number: &str,
+    key: &RoomKey,
     local: LocalResult,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let room_number = key.room.as_str();
+    let tenant_id = &key.tenant;
     let Some(control) = &state.control else {
         return local_response(local);
     };
@@ -2684,16 +2719,16 @@ async fn video_layout_handler(
             })),
         );
     }
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    let local = local_video_layout(&state, &room_number, &payload.layout);
+    let key = RoomKey::new(tenant_id, room_number.to_string());
+    let local = local_video_layout(&state, &key, &payload.layout);
     let local_status = local.as_ref().err().map(|(s, _)| *s);
     let (ok, body) = room_wide(
         &state,
-        &tenant_id,
-        &room_number,
+        &key,
         local,
         reqwest::Method::PUT,
         &format!("/conferences/{room_number}/video/layout"),
@@ -2718,15 +2753,15 @@ async fn video_pin_handler(
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return invalid_identifier();
     }
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    let local = local_video_pin(&state, &room_number, Some(&pid));
+    let key = RoomKey::new(tenant_id, room_number.to_string());
+    let local = local_video_pin(&state, &key, Some(&pid));
     let resp = wherever_it_is(
         &state,
-        &tenant_id,
-        &room_number,
+        &key,
         local,
         reqwest::Method::POST,
         &format!("/conferences/{room_number}/video/pin/{pid}"),
@@ -2757,15 +2792,15 @@ async fn video_spotlight_handler(
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return invalid_identifier();
     }
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    let local = local_video_spotlight(&state, &room_number, Some(&pid));
+    let key = RoomKey::new(tenant_id, room_number.to_string());
+    let local = local_video_spotlight(&state, &key, Some(&pid));
     let resp = wherever_it_is(
         &state,
-        &tenant_id,
-        &room_number,
+        &key,
         local,
         reqwest::Method::POST,
         &format!("/conferences/{room_number}/video/spotlight/{pid}"),
@@ -2796,19 +2831,19 @@ async fn clear_video_selection(
     if !is_valid_identifier(room_number) {
         return invalid_identifier();
     }
-    let tenant_id = match control_tenant(state, headers, room_number).await {
+    let tenant_id = match extract_tenant_id(headers, state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
+    let key = RoomKey::new(tenant_id, room_number.to_string());
     let local = match which {
-        "pin" => local_video_pin(state, room_number, None),
-        _ => local_video_spotlight(state, room_number, None),
+        "pin" => local_video_pin(state, &key, None),
+        _ => local_video_spotlight(state, &key, None),
     };
     let local_status = local.as_ref().err().map(|(s, _)| *s);
     let (ok, body) = room_wide(
         state,
-        &tenant_id,
-        room_number,
+        &key,
         local,
         reqwest::Method::DELETE,
         &format!("/conferences/{room_number}/video/{which}"),
@@ -2835,15 +2870,15 @@ async fn participant_video_handler(
     let Some(enabled) = parse_video_state(&video_state) else {
         return invalid_video_state();
     };
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    let local = local_participant_video(&state, &room_number, &pid, enabled);
+    let key = RoomKey::new(tenant_id, room_number.to_string());
+    let local = local_participant_video(&state, &key, &pid, enabled);
     let resp = wherever_it_is(
         &state,
-        &tenant_id,
-        &room_number,
+        &key,
         local,
         reqwest::Method::POST,
         &format!("/conferences/{room_number}/participants/{pid}/video/{video_state}"),
@@ -2867,16 +2902,16 @@ async fn content_stop_handler(
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    let local = local_content_stop(&state, &room_number);
+    let key = RoomKey::new(tenant_id, room_number.to_string());
+    let local = local_content_stop(&state, &key);
     let local_status = local.as_ref().err().map(|(s, _)| *s);
     let (ok, body) = room_wide(
         &state,
-        &tenant_id,
-        &room_number,
+        &key,
         local,
         reqwest::Method::POST,
         &format!("/conferences/{room_number}/video/content/stop"),
@@ -2910,16 +2945,16 @@ async fn content_layout_handler(
             })),
         );
     }
-    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    let local = local_content_layout(&state, &room_number, &payload.layout);
+    let key = RoomKey::new(tenant_id, room_number.to_string());
+    let local = local_content_layout(&state, &key, &payload.layout);
     let local_status = local.as_ref().err().map(|(s, _)| *s);
     let (ok, body) = room_wide(
         &state,
-        &tenant_id,
-        &room_number,
+        &key,
         local,
         reqwest::Method::PUT,
         &format!("/conferences/{room_number}/video/content-layout"),
@@ -2949,10 +2984,14 @@ async fn internal_destroy_handler(
     headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let resp = local_response(local_destroy(&state, &room_number).await);
+    let resp = local_response(local_destroy(&state, &key).await);
     if resp.0 == StatusCode::OK {
         info!(action = "destroy", room = %room_number, from = %forwarded_from(&headers), "AUDIT: conference destroyed on behalf of peer node");
     }
@@ -2964,10 +3003,14 @@ async fn internal_lock_handler(
     headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let resp = local_response(local_set_locked(&state, &room_number, true));
+    let resp = local_response(local_set_locked(&state, &key, true));
     if resp.0 == StatusCode::OK {
         info!(action = "lock", room = %room_number, from = %forwarded_from(&headers), "AUDIT: room locked on behalf of peer node");
     }
@@ -2979,10 +3022,14 @@ async fn internal_unlock_handler(
     headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let resp = local_response(local_set_locked(&state, &room_number, false));
+    let resp = local_response(local_set_locked(&state, &key, false));
     if resp.0 == StatusCode::OK {
         info!(action = "unlock", room = %room_number, from = %forwarded_from(&headers), "AUDIT: room unlocked on behalf of peer node");
     }
@@ -2994,10 +3041,14 @@ async fn internal_kick_handler(
     headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return invalid_identifier();
     }
-    let resp = local_response(local_kick(&state, &room_number, &pid).await);
+    let resp = local_response(local_kick(&state, &key, &pid).await);
     if resp.0 == StatusCode::OK {
         info!(action = "kick", room = %room_number, participant = %pid, from = %forwarded_from(&headers), "AUDIT: participant kicked on behalf of peer node");
     }
@@ -3009,10 +3060,14 @@ async fn internal_mute_handler(
     headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return invalid_identifier();
     }
-    let resp = local_response(local_set_muted(&state, &room_number, &pid, true));
+    let resp = local_response(local_set_muted(&state, &key, &pid, true));
     if resp.0 == StatusCode::OK {
         info!(action = "mute", room = %room_number, participant = %pid, from = %forwarded_from(&headers), "AUDIT: participant muted on behalf of peer node");
     }
@@ -3024,10 +3079,14 @@ async fn internal_unmute_handler(
     headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return invalid_identifier();
     }
-    let resp = local_response(local_set_muted(&state, &room_number, &pid, false));
+    let resp = local_response(local_set_muted(&state, &key, &pid, false));
     if resp.0 == StatusCode::OK {
         info!(action = "unmute", room = %room_number, participant = %pid, from = %forwarded_from(&headers), "AUDIT: participant unmuted on behalf of peer node");
     }
@@ -3040,13 +3099,17 @@ async fn internal_gain_handler(
     Path((room_number, pid)): Path<(String, String)>,
     Json(payload): Json<SetGainRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return invalid_identifier();
     }
     if !valid_gain(payload.gain) {
         return invalid_gain();
     }
-    let resp = local_response(local_set_gain(&state, &room_number, &pid, payload.gain));
+    let resp = local_response(local_set_gain(&state, &key, &pid, payload.gain));
     if resp.0 == StatusCode::OK {
         info!(action = "set_gain", room = %room_number, participant = %pid, gain = payload.gain, from = %forwarded_from(&headers), "AUDIT: participant gain set on behalf of peer node");
     }
@@ -3059,6 +3122,10 @@ async fn internal_announce_handler(
     Path(room_number): Path<String>,
     Json(payload): Json<AnnounceRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
@@ -3068,7 +3135,7 @@ async fn internal_announce_handler(
             Json(serde_json::json!({ "error": "Invalid audio_path" })),
         );
     }
-    let resp = local_response(local_announce(&state, &room_number, &payload.audio_path).await);
+    let resp = local_response(local_announce(&state, &key, &payload.audio_path).await);
     if resp.0 == StatusCode::OK {
         info!(action = "announce", room = %room_number, from = %forwarded_from(&headers), "Announcement played on behalf of peer node");
     }
@@ -3079,34 +3146,49 @@ async fn internal_announce_handler(
 /// a peer that has the request but not the room.
 async fn internal_recording_start_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    local_response(local_recording_start(&state, &room_number).await)
+    local_response(local_recording_start(&state, &key).await)
 }
 
 /// POST /internal/conferences/{room}/recording/stop — stop the recording
 /// this node is making, for a peer.
 async fn internal_recording_stop_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    local_response(local_recording_stop(&state, &room_number).await)
+    local_response(local_recording_stop(&state, &key).await)
 }
 
 async fn internal_video_status_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    local_response(local_video_status(&state, &room_number))
+    local_response(local_video_status(&state, &key))
 }
 
 async fn internal_video_layout_handler(
@@ -3115,10 +3197,14 @@ async fn internal_video_layout_handler(
     Path(room_number): Path<String>,
     Json(payload): Json<SetLayoutRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let resp = local_response(local_video_layout(&state, &room_number, &payload.layout));
+    let resp = local_response(local_video_layout(&state, &key, &payload.layout));
     if resp.0 == StatusCode::OK {
         info!(action = "video_layout", room = %room_number, layout = %payload.layout, from = %forwarded_from(&headers), "AUDIT: video layout set on behalf of peer node");
     }
@@ -3130,10 +3216,14 @@ async fn internal_video_pin_handler(
     headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return invalid_identifier();
     }
-    let resp = local_response(local_video_pin(&state, &room_number, Some(&pid)));
+    let resp = local_response(local_video_pin(&state, &key, Some(&pid)));
     if resp.0 == StatusCode::OK {
         info!(action = "video_pin", room = %room_number, participant = %pid, from = %forwarded_from(&headers), "AUDIT: participant pinned on behalf of peer node");
     }
@@ -3145,10 +3235,14 @@ async fn internal_video_unpin_handler(
     headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let resp = local_response(local_video_pin(&state, &room_number, None));
+    let resp = local_response(local_video_pin(&state, &key, None));
     if resp.0 == StatusCode::OK {
         info!(action = "video_clear", room = %room_number, which = "pin", from = %forwarded_from(&headers), "AUDIT: video pin cleared on behalf of peer node");
     }
@@ -3160,10 +3254,14 @@ async fn internal_video_spotlight_handler(
     headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return invalid_identifier();
     }
-    let resp = local_response(local_video_spotlight(&state, &room_number, Some(&pid)));
+    let resp = local_response(local_video_spotlight(&state, &key, Some(&pid)));
     if resp.0 == StatusCode::OK {
         info!(action = "video_spotlight", room = %room_number, participant = %pid, from = %forwarded_from(&headers), "AUDIT: participant spotlighted on behalf of peer node");
     }
@@ -3175,10 +3273,14 @@ async fn internal_video_unspotlight_handler(
     headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let resp = local_response(local_video_spotlight(&state, &room_number, None));
+    let resp = local_response(local_video_spotlight(&state, &key, None));
     if resp.0 == StatusCode::OK {
         info!(action = "video_clear", room = %room_number, which = "spotlight", from = %forwarded_from(&headers), "AUDIT: video spotlight cleared on behalf of peer node");
     }
@@ -3190,10 +3292,14 @@ async fn internal_content_stop_handler(
     headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let resp = local_response(local_content_stop(&state, &room_number));
+    let resp = local_response(local_content_stop(&state, &key));
     if resp.0 == StatusCode::OK {
         info!(action = "content_stop", room = %room_number, from = %forwarded_from(&headers), "AUDIT: screen share stopped on behalf of peer node");
     }
@@ -3206,10 +3312,14 @@ async fn internal_content_layout_handler(
     Path(room_number): Path<String>,
     Json(payload): Json<SetContentLayoutRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) {
         return invalid_identifier();
     }
-    let resp = local_response(local_content_layout(&state, &room_number, &payload.layout));
+    let resp = local_response(local_content_layout(&state, &key, &payload.layout));
     if resp.0 == StatusCode::OK {
         info!(action = "content_layout", room = %room_number, layout = %payload.layout, from = %forwarded_from(&headers), "AUDIT: content layout set on behalf of peer node");
     }
@@ -3221,13 +3331,17 @@ async fn internal_participant_video_handler(
     headers: HeaderMap,
     Path((room_number, pid, video_state)): Path<(String, String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return invalid_identifier();
     }
     let Some(enabled) = parse_video_state(&video_state) else {
         return invalid_video_state();
     };
-    let resp = local_response(local_participant_video(&state, &room_number, &pid, enabled));
+    let resp = local_response(local_participant_video(&state, &key, &pid, enabled));
     if resp.0 == StatusCode::OK {
         info!(action = "participant_video", room = %room_number, participant = %pid, enabled, from = %forwarded_from(&headers), "AUDIT: participant video set on behalf of peer node");
     }
@@ -3240,15 +3354,20 @@ async fn internal_participant_video_handler(
 
 async fn admit_participant_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Invalid identifier" })),
         );
     }
-    match state.conference_handler.admit_waiting(&room_number, &pid) {
+    match state.conference_handler.admit_waiting(&key, &pid) {
         Ok(()) => {
             info!(action = "admit", room = %room_number, participant = %pid, "AUDIT: waiting participant admitted via API");
             (
@@ -3265,9 +3384,14 @@ async fn admit_participant_handler(
 
 async fn admit_all_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    match state.conference_handler.admit_all_waiting(&room_number) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    match state.conference_handler.admit_all_waiting(&key) {
         Ok(count) => {
             info!(action = "admit_all", room = %room_number, count = count, "AUDIT: all waiting participants admitted via API");
             (
@@ -3288,9 +3412,14 @@ async fn admit_all_handler(
 
 async fn attach_ai_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    match state.conference_handler.attach_ai(&room_number).await {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    match state.conference_handler.attach_ai(&key).await {
         Ok(()) => {
             info!(action = "attach_ai", room = %room_number, "AUDIT: AI participant attached via API");
             (
@@ -3307,9 +3436,14 @@ async fn attach_ai_handler(
 
 async fn detach_ai_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    match state.conference_handler.detach_ai(&room_number).await {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    match state.conference_handler.detach_ai(&key).await {
         Ok(()) => {
             info!(action = "detach_ai", room = %room_number, "AUDIT: AI participant detached via API");
             (
@@ -3326,9 +3460,14 @@ async fn detach_ai_handler(
 
 async fn ai_status_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    match state.conference_handler.ai_status(&room_number) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    match state.conference_handler.ai_status(&key) {
         Ok(status) => (StatusCode::OK, Json(status)),
         Err(e) => (
             StatusCode::NOT_FOUND,

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use crate::rooms::RoomKey;
 use bytes::Bytes;
 use fcp_core::{Meeting, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
@@ -593,6 +594,13 @@ pub fn plan_video(
     Some((settings, codecs))
 }
 
+impl VideoEventSink {
+    /// The room the events are about.
+    pub fn key(&self) -> RoomKey {
+        RoomKey::new(self.tenant_id, self.room_number.clone())
+    }
+}
+
 /// Where the room's video events go.
 #[derive(Clone)]
 pub struct VideoEventSink {
@@ -603,7 +611,7 @@ pub struct VideoEventSink {
     pub node_id: String,
     /// Rooms with a pump running, so two callers joining at once start
     /// one pump, not two.
-    pub pumps: Arc<dashmap::DashMap<String, ()>>,
+    pub pumps: Arc<dashmap::DashMap<RoomKey, ()>>,
     /// Whether the node can afford a screen share (§15.6): the video
     /// budget, asked before the room grants the floor. `None` admits all.
     pub content_gate: Option<Arc<dyn ContentGate>>,
@@ -642,7 +650,7 @@ pub struct FloorNotice {
 pub trait FloorNotifier: Send + Sync {
     /// The floor of `room_number` changed. A `refused` notice concerns
     /// only the participant it names.
-    fn floor_changed(&self, room_number: &str, notice: FloorNotice);
+    fn floor_changed(&self, key: &RoomKey, notice: FloorNotice);
 }
 
 /// The notice one of the room's content events is, if any. `content`
@@ -691,7 +699,7 @@ pub fn attach_video(
     let video = room.enable_video(leg.settings.clone(), backend);
     video.set_local_node(&sink.node_id);
     video.set_content_gate(sink.content_gate.clone());
-    if sink.pumps.insert(sink.room_number.clone(), ()).is_none() {
+    if sink.pumps.insert(sink.key(), ()).is_none() {
         spawn_event_pump(&video, sink);
     }
     if let Some(name) = display_name {
@@ -764,7 +772,7 @@ pub fn attach_content(
     let video = room.enable_video(leg.settings.clone(), backend);
     video.set_local_node(&sink.node_id);
     video.set_content_gate(sink.content_gate.clone());
-    if sink.pumps.insert(sink.room_number.clone(), ()).is_none() {
+    if sink.pumps.insert(sink.key(), ()).is_none() {
         spawn_event_pump(&video, sink);
     }
     let profile = leg.negotiated.fmtp.clone().unwrap_or_default();
@@ -834,7 +842,7 @@ pub fn attach_trunk_video(
     // Named so an exact tie between this node's caller and a peer's
     // claim is settled the same way here and there (§15.4, 5c).
     video.set_local_node(&sink.node_id);
-    if sink.pumps.insert(sink.room_number.clone(), ()).is_none() {
+    if sink.pumps.insert(sink.key(), ()).is_none() {
         spawn_event_pump(&video, sink);
     }
     // The tile has to exist before it can be named: unlike a caller,
@@ -892,7 +900,7 @@ pub fn attach_trunk_content(
     let video = room.enable_video(leg.settings.clone(), backend);
     video.set_local_node(&sink.node_id);
     video.set_content_gate(sink.content_gate.clone());
-    if sink.pumps.insert(sink.room_number.clone(), ()).is_none() {
+    if sink.pumps.insert(sink.key(), ()).is_none() {
         spawn_event_pump(&video, sink);
     }
     let profile = leg.negotiated.fmtp.clone().unwrap_or_default();
@@ -973,13 +981,13 @@ fn spawn_event_pump(video: &Arc<VideoRoom>, sink: VideoEventSink) {
     // room's event channel closes, which is when the room goes.
     let room = Arc::downgrade(video);
     tokio::spawn(async move {
-        struct Done(Arc<dashmap::DashMap<String, ()>>, String);
+        struct Done(Arc<dashmap::DashMap<RoomKey, ()>>, RoomKey);
         impl Drop for Done {
             fn drop(&mut self) {
                 self.0.remove(&self.1);
             }
         }
-        let _done = Done(Arc::clone(&sink.pumps), sink.room_number.clone());
+        let _done = Done(Arc::clone(&sink.pumps), sink.key());
         loop {
             let ev = match events.recv().await {
                 Ok(ev) => ev,
@@ -1002,7 +1010,7 @@ fn spawn_event_pump(video: &Arc<VideoRoom>, sink: VideoEventSink) {
             ) = (&sink.floor, &ev)
             {
                 notifier.floor_changed(
-                    &sink.room_number,
+                    &sink.key(),
                     floor_notice(participant_id, event, content.as_ref()),
                 );
             }
@@ -1810,11 +1818,8 @@ mod tests {
         #[derive(Default)]
         struct Notices(std::sync::Mutex<Vec<(String, FloorNotice)>>);
         impl FloorNotifier for Notices {
-            fn floor_changed(&self, room_number: &str, notice: FloorNotice) {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push((room_number.to_string(), notice));
+            fn floor_changed(&self, key: &RoomKey, notice: FloorNotice) {
+                self.0.lock().unwrap().push((key.room.clone(), notice));
             }
         }
         let notices = Arc::new(Notices::default());
@@ -2550,12 +2555,13 @@ mod tests {
         let video = room.enable_video(settings, &backend);
         let bus = Arc::new(InMemoryEventBus::new());
         let pumps = Arc::new(dashmap::DashMap::new());
-        pumps.insert("2000".to_string(), ());
+        let tenant = TenantId::new();
+        pumps.insert(RoomKey::new(tenant, "2000"), ());
         spawn_event_pump(
             &video,
             VideoEventSink {
                 event_bus: bus.clone() as Arc<dyn EventPublisher>,
-                tenant_id: TenantId::new(),
+                tenant_id: tenant,
                 room_number: "2000".into(),
                 node_id: "conf-a".into(),
                 pumps: Arc::clone(&pumps),
@@ -3046,12 +3052,13 @@ mod tests {
 
         let bus = Arc::new(InMemoryEventBus::new());
         let pumps = Arc::new(dashmap::DashMap::new());
-        pumps.insert("3000".to_string(), ());
+        let tenant = TenantId::new();
+        pumps.insert(RoomKey::new(tenant, "3000"), ());
         spawn_event_pump(
             &video,
             VideoEventSink {
                 event_bus: bus.clone() as Arc<dyn EventPublisher>,
-                tenant_id: TenantId::new(),
+                tenant_id: tenant,
                 room_number: "3000".into(),
                 node_id: "conf-a".into(),
                 pumps: Arc::clone(&pumps),

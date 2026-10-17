@@ -179,7 +179,11 @@ construction rather than by somebody remembering. It runs in
 `handle_invite` on the call manager and the SBC, and again in the
 conference server's own handler; the conference server gains
 `[sip] trusted_edges`, which is how the call manager and the gateway
-beside it keep naming the record a leg belongs to.
+beside it keep naming the record a leg belongs to. Since v0.25.410 the
+call manager also names the caller's tenant and user on every leg into a
+room (`X-FCP-Caller-Tenant`, `X-FCP-Caller-User`), as the gateway always
+has: the conference server is reached at an address, which names no
+tenant, and its rooms are each a tenant's (`docs/DEEP_TESTING.md` D6).
 
 Two things deliberately kept out of the sweep. Headers with a gate of
 their own keep it — `X-FCP-Caller-*` and `X-FCP-Client-Address` against

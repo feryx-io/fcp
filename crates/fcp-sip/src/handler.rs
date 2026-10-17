@@ -4027,7 +4027,7 @@ impl SipMessageHandler {
 
         // Check if a conference handler wants this call (before flow routing)
         if let Some(conf_handler) = &self.conference_handler {
-            if conf_handler.can_handle(request).await {
+            if conf_handler.can_handle(request, peer).await {
                 debug!(call_id = %call_id, "Routing to conference handler");
                 // The room keeps its own record of the leg; this call object
                 // would otherwise outlive it.
@@ -7420,20 +7420,38 @@ impl SipMessageHandler {
             None => (caller_from_uri, None),
         };
         // A call into a conference room names itself, so the room's record
-        // of the leg shares this call's id.
-        let emergency_headers = if self
+        // of the leg shares this call's id, and says whose it is: the
+        // conference server is reached at an address, which names no
+        // tenant, and believes the tenant and caller from its trusted
+        // edges (`docs/EDGE_SECURITY.md` §2.3). A call up a site's link
+        // is named below, with its site.
+        let emergency_headers = match self
             .call_manager
             .get_call(&call_id)
-            .is_some_and(|c| c.conference_room.is_some())
+            .filter(|c| c.conference_room.is_some())
         {
-            let mut headers = emergency_headers.unwrap_or_default();
-            let _ = headers.push(
-                SmolStr::new(fcp_core::CALL_ID_HEADER),
-                SmolStr::new(call_id.to_string()),
-            );
-            Some(headers)
-        } else {
-            emergency_headers
+            Some(call) => {
+                let mut headers = emergency_headers.unwrap_or_default();
+                let _ = headers.push(
+                    SmolStr::new(fcp_core::CALL_ID_HEADER),
+                    SmolStr::new(call_id.to_string()),
+                );
+                let caller = extract_from_uri(request)
+                    .ok()
+                    .and_then(|u| u.user().map(str::to_string));
+                if let (None, Some(caller)) = (call.link_site, caller) {
+                    let _ = headers.push(
+                        SmolStr::new(fcp_core::CALLER_TENANT_HEADER),
+                        SmolStr::new(call.tenant_id.to_string()),
+                    );
+                    let _ = headers.push(
+                        SmolStr::new(fcp_core::CALLER_USER_HEADER),
+                        SmolStr::new(caller),
+                    );
+                }
+                Some(headers)
+            }
+            None => emergency_headers,
         };
 
         // An edge in front of phones says where its caller is, so the next
