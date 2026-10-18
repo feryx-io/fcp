@@ -248,6 +248,41 @@ async fn three_phones(stack: &Stack) -> [(SeededUser, Phone); 3] {
     [(alice, a), (bob, b), (carol, c)]
 }
 
+/// A call refused before anything rang lets its media session go: the
+/// session and its two ports were held from the INVITE for as long as the
+/// node ran (`docs/DEEP_TESTING.md` D8 — a carrier's calls to a user with
+/// no phone up, refused 480, each kept a session).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_refused_before_it_rang_leaves_no_media_session() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    // Dave has no phone and no mailbox: unreachable, refused at once.
+    let dave = stack.seed.user("dave", "dave-pw", "1004").await;
+    let alice_phone = stack.phone(&alice).await;
+    for _ in 0..3 {
+        let call = alice_phone.call(&dave.extension).await.unwrap();
+        assert_eq!(call.failed(SOON).await, Some(480));
+    }
+    let deadline = tokio::time::Instant::now() + SOON;
+    loop {
+        let (code, body) = fcp_testkit::smoke::http_get(&loopback(stack.http, "/media-sessions"))
+            .await
+            .expect("GET /media-sessions");
+        assert_eq!(code, 200, "{body}");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+        let left = json["sessions"].as_array().map(Vec::len).unwrap_or(0);
+        if left == 0 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{left} media sessions outlived their refused calls: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forward_all_sends_the_call_on_without_ringing() {
     let stack = stack_or_skip!();

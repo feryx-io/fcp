@@ -20,6 +20,10 @@ pub type OnPartiesChanged = Arc<dyn Fn(CallId, Vec<fcp_core::UserId>) + Send + S
 
 pub type OnHoldChanged = Arc<dyn Fn(CallId, Option<crate::call::LegSide>) + Send + Sync>;
 
+/// What is told of the media session a call ends with before it was ever
+/// answered.
+pub type OnUnansweredMedia = Arc<dyn Fn(fcp_core::CallId) + Send + Sync>;
+
 /// What is told of a call's appearance on a shared line changing: the call,
 /// its appearance, and the state its phones should show — `None` when the
 /// call no longer occupies the index (`docs/ENTERPRISE_CALLING.md` §3.9).
@@ -69,6 +73,13 @@ pub struct CallManager {
     /// released the leg. Set once, after the manager is shared.
     on_hold_changed: std::sync::OnceLock<OnHoldChanged>,
 
+    /// Told the media session of a call that ends never answered: a call
+    /// refused before anything rang (480, busy, a carrier's 403) holds a
+    /// session and its ports from its INVITE, and no BYE path ends it
+    /// (`docs/DEEP_TESTING.md` D8). An answered call's session is its
+    /// teardown paths' (it may have moved to another call), and is not told.
+    on_unanswered_media: std::sync::OnceLock<OnUnansweredMedia>,
+
     /// Told whenever the users a call counts against change
     /// (`docs/ENTERPRISE_CALLING.md` §3.4): what keeps each user's calls
     /// counted for call waiting.
@@ -98,6 +109,7 @@ impl CallManager {
             region: None,
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
+            on_unanswered_media: std::sync::OnceLock::new(),
             on_parties_changed: std::sync::OnceLock::new(),
             on_appearance_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
@@ -118,6 +130,7 @@ impl CallManager {
             region: None,
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
+            on_unanswered_media: std::sync::OnceLock::new(),
             on_parties_changed: std::sync::OnceLock::new(),
             on_appearance_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
@@ -175,6 +188,7 @@ impl CallManager {
             region: None,
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
+            on_unanswered_media: std::sync::OnceLock::new(),
             on_parties_changed: std::sync::OnceLock::new(),
             on_appearance_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
@@ -192,6 +206,7 @@ impl CallManager {
             region: None,
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
+            on_unanswered_media: std::sync::OnceLock::new(),
             on_parties_changed: std::sync::OnceLock::new(),
             on_appearance_changed: std::sync::OnceLock::new(),
             billing: None,
@@ -245,6 +260,12 @@ impl CallManager {
     /// stands.
     pub fn set_on_hold_changed(&self, hook: OnHoldChanged) {
         let _ = self.on_hold_changed.set(hook);
+    }
+
+    /// Set what ends the media session of a call that ends unanswered:
+    /// once, after the manager is shared.
+    pub fn set_on_unanswered_media(&self, hook: OnUnansweredMedia) {
+        let _ = self.on_unanswered_media.set(hook);
     }
 
     pub fn set_on_ended(&mut self, on_ended: OnEnded) {
@@ -850,6 +871,13 @@ impl CallManager {
 
         // Remove from active calls
         self.calls.remove(call_id);
+        if let (None, Some(session), Some(hook)) = (
+            call.established_at,
+            call.media_session_id,
+            self.on_unanswered_media.get(),
+        ) {
+            hook(session);
+        }
         if let Some(on_ended) = &self.on_ended {
             on_ended(call_id);
         }

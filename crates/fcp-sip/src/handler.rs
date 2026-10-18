@@ -932,6 +932,24 @@ impl SipMessageHandler {
             .validate()
             .map_err(|e| anyhow::anyhow!("Invalid ServerSettings: {}", e))?;
 
+        // A call that ends never answered lets its media session go
+        // (`docs/DEEP_TESTING.md` D8): one refused before anything rang
+        // held its session and two ports for as long as the node ran.
+        if let Some(media) = media_manager.as_ref() {
+            let media = Arc::downgrade(media);
+            call_manager.set_on_unanswered_media(Arc::new(move |session| {
+                let Some(media) = media.upgrade() else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    // Already ended by its own path: nothing to do.
+                    if media.terminate_session(&session).await.is_ok() {
+                        debug!(media_session_id = %session, "Ended the media session of an unanswered call");
+                    }
+                });
+            }));
+        }
+
         // Create User Agent Server helper with shared dialog manager
         let mut uas = sip_uas::UserAgentServer::new(local_uri.clone(), local_uri);
         uas.dialog_manager = Arc::clone(&dialog_manager);
