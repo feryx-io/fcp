@@ -27,6 +27,28 @@ fcp-loadgen --profile call-ramp --sip 10.0.0.7:5060 --realm fcp.local \
 | `soak` | `--users` calls held up for the whole run, each with a tone both ways. What holding them costs in memory, CPU and media quality. |
 | `mixed` | Calls and registrations at once, which is what a PBX actually sees. |
 
+## The soak
+
+`fcp-soak` runs the whole stack for hours and asks whether anything it
+holds kept growing (`docs/DEEP_TESTING.md` D6). It seeds its own tenant
+through the admin API, then runs three loads at once: calls between
+phones, a busy conference room, and a room that empties and is made
+again. API traffic runs beside them. Every 30 s it samples each
+`fcp-*` service's memory, descriptors, UDP sockets and threads, plus
+Redis and every Postgres table. It exits non-zero on a refused,
+dropped or silent call, an API 5xx, or growth that has not levelled off
+by the end of the run and is not named in `EXPECTED_GROWTH`.
+
+```bash
+# Against the compose stack on this host, for four hours
+fcp-soak --compose-dir deploy/docker-compose --minutes 240 --report soak.json
+```
+
+The compose project's `.env` gives it the admin token, the Postgres
+password and the call manager's token. `.github/workflows/soak.yml` runs
+it weekly against the nightly images. `tests/soak_stack.rs` runs the
+same soak against the binaries of this checkout (`FCP_SOAK_SECONDS`).
+
 ## Accounts
 
 The accounts must exist already — seed them however the deployment

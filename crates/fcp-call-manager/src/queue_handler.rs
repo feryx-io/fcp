@@ -2180,12 +2180,11 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         let ringing = uas.create_ringing(request);
         handle.send_provisional(ringing).await;
 
-        // 5. Allocate RTP port pair
-        let port_pair = self
-            .port_pool
-            .allocate()
+        // 5. Allocate RTP port pair, bound before it is answered on
+        let (port_pair, rtp_socket) = fcp_media::bound_port_pair(&self.port_pool)
             .await
             .context("Failed to allocate RTP port pair")?;
+        let rtp_socket = Arc::new(rtp_socket);
 
         // 6. Construct SDP answer
         let sdp_answer = construct_answer_for_a_leg(
@@ -2206,22 +2205,6 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         let _ = self
             .call_manager
             .update_call(&b2bua_call_id, |call| call.establish());
-
-        // 9. Create RTP socket pair
-        let rtp_socket = match RtpSocketPair::new(port_pair, RtpSocketConfig::default()).await {
-            Ok(s) => Arc::new(s),
-            Err(e) => {
-                warn!(
-                    call_id = %call_id,
-                    rtp_port = port_pair.rtp_port,
-                    error = %e,
-                    "Failed to create RTP socket pair, deallocating port"
-                );
-                let pool = Arc::clone(&self.port_pool);
-                tokio::spawn(async move { pool.deallocate(port_pair).await });
-                return Err(anyhow::anyhow!("Failed to create RTP socket pair: {}", e));
-            }
-        };
 
         // 10. Set remote RTP endpoint from caller's SDP
         if let Some(remote_addr) = Self::parse_remote_rtp_addr(sdp_offer) {

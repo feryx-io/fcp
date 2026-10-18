@@ -26,6 +26,8 @@ struct Stack {
     /// The conference server's SIP address: where a phone dials a room.
     sip: SocketAddr,
     http: u16,
+    /// The first of the node's RTP ports.
+    rtp_start: u16,
     _dir: tempfile::TempDir,
 }
 
@@ -41,6 +43,11 @@ impl Stack {
     /// for the call manager and the gateway beside it, which name the
     /// record a leg belongs to.
     async fn start_trusting(edges: &str) -> Option<Self> {
+        Self::start_with(edges, 60).await
+    }
+
+    /// As [`Stack::start_trusting`], with `pairs` RTP port pairs.
+    async fn start_with(edges: &str, pairs: u16) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -79,7 +86,7 @@ level = "info"
 format = "compact"
 "#,
             db = db.url(),
-            rtp_end = rtp_start + 120,
+            rtp_end = rtp_start + 2 * pairs,
             trusted_edges = edges,
             dir = dir.path().display(),
         );
@@ -91,6 +98,7 @@ format = "compact"
             seed,
             sip: SocketAddr::from(([127, 0, 0, 1], sip_port)),
             http,
+            rtp_start,
             _dir: dir,
         })
     }
@@ -879,5 +887,40 @@ async fn callers_meet_in_a_room_made_again_round_after_round() {
         // it is being removed, and after.
         tokio::time::sleep(Duration::from_millis(10 * round)).await;
     }
+    stack.finish().await;
+}
+
+/// A caller is answered only on ports the node holds. The pool knows its
+/// own pairs, not the host's: a pair another process held was put in the
+/// answer, the 200 OK went out, and the bind after it failed — the caller
+/// sat in a call no room listed (`docs/DEEP_TESTING.md` D6). All but four
+/// of the node's fifty pairs are held here, so nearly every pick hits one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn callers_are_answered_on_ports_the_node_could_bind() {
+    let Some(stack) = Stack::start_with("", 50).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let start = stack.rtp_start;
+    let _held: Vec<_> = (0..46)
+        .map(|pair| start + 2 * pair)
+        .flat_map(|port| [port, port + 1])
+        .filter_map(|port| std::net::UdpSocket::bind(("0.0.0.0", port)).ok())
+        .collect();
+    stack.seed.meeting(ROOM, None, None).await;
+    let alice = stack.phone("alice").await;
+    let bob = stack.phone("bob").await;
+
+    let alice_call = join(&stack, &alice).await;
+    let bob_call = join(&stack, &bob).await;
+    stack.wait_participants(2).await;
+    alice_call.media().play_tone(440.0, 1500);
+    assert!(bob_call.media().heard(440, SOON).await, "Bob hears Alice");
+    bob_call.media().play_tone(880.0, 1500);
+    assert!(alice_call.media().heard(880, SOON).await, "Alice hears Bob");
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    stack.wait_participants(0).await;
     stack.finish().await;
 }

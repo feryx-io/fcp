@@ -1,0 +1,125 @@
+# The soak (docs/DEEP_TESTING.md D6): the shipped stack from the nightly
+# images, under steady load for four hours — calls between phones, two
+# conference rooms that fill and empty, the phones re-registering, an
+# administrator and a user through the API — while fcp-soak samples every
+# fcp-* container (resident memory, descriptors, UDP sockets, threads),
+# Redis (keys, memory, clients) and Postgres (connections, every table's
+# rows). It fails when a load was refused, dropped or silent, when the API
+# answered 5xx, or when something kept growing to the end of the run that
+# is not named in fcp_loadgen::soak::growth::EXPECTED_GROWTH. The report,
+# every sample in it, is kept as an artifact either way.
+name: Soak
+
+on:
+  schedule:
+    # Saturdays, after the night's images are pushed.
+    - cron: '0 6 * * 6'
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: How long the load runs
+        default: '240'
+      image_tag:
+        description: The images to soak (a sha the Images workflow pushed, or `nightly`)
+        default: nightly
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  MINUTES: ${{ inputs.minutes || '240' }}
+  IMAGE_TAG: ${{ inputs.image_tag || 'nightly' }}
+
+jobs:
+  soak:
+    name: Four hours under load
+    runs-on: ubuntu-latest
+    # The load, the stack's start and the harness's build, inside the
+    # six-hour job limit.
+    timeout-minutes: 340
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+    defaults:
+      run:
+        working-directory: deploy/docker-compose
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: soak
+      - name: Log in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Built in release: a debug harness running fifty phones' RTP is the
+      # thing being measured, not the stack.
+      - name: Build the harness
+        working-directory: .
+        run: cargo build --release -p fcp-loadgen --bin fcp-soak
+      - name: This runner's .env
+        run: |
+          ip=$(hostname -I | awk '{print $1}')
+          sed -i "s/^HOST_IP=.*/HOST_IP=$ip/; s/^FCP_IMAGE_TAG=.*/FCP_IMAGE_TAG=$IMAGE_TAG/" .env
+          grep -E '^(HOST_IP|FCP_IMAGE_TAG)=' .env
+          docker compose config --quiet
+      - name: Pull and start the stack
+        run: |
+          docker compose pull --quiet
+          docker compose up -d --no-build
+          scripts/wait-healthy.sh 300
+          docker compose images
+      - name: Soak
+        working-directory: .
+        run: |
+          target/release/fcp-soak --compose-dir deploy/docker-compose \
+            --minutes "$MINUTES" --report "$RUNNER_TEMP/soak.json"
+      - name: The stack's logs
+        if: always()
+        run: |
+          docker compose ps
+          docker compose logs --no-color > "$RUNNER_TEMP/stack.log" 2>&1 || true
+      - name: Keep the report and the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak
+          path: |
+            ${{ runner.temp }}/soak.json
+            ${{ runner.temp }}/stack.log
+          if-no-files-found: ignore
+      - name: Down
+        if: always()
+        run: docker compose down -v
+
+  # As every scheduled workflow: a failure opens or updates an issue, a
+  # pass closes it (docs/DEEP_TESTING.md D0, Q8).
+  report:
+    name: Report the scheduled run
+    needs: [soak]
+    if: ${{ always() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
+          WORKFLOW: ${{ github.workflow }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/scheduled-run-report.sh

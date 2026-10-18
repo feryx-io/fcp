@@ -15,10 +15,9 @@
 //! encryption status shows. The compose file's ports are used
 //! as they are, so this is the one test in this binary.
 
-use fcp_testkit::certs::ClusterCa;
 use fcp_testkit::compose::ComposeStack;
-use fcp_testkit::smoke::{http_request, loopback, trust_ca};
-use fcp_testkit::{bins, cluster, Phone, Seed, Service, TestDatabase};
+use fcp_testkit::smoke::{http_request, loopback};
+use fcp_testkit::{cluster, Phone, Seed, TestDatabase};
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -26,60 +25,6 @@ const REALM: &str = "fcp.local"; // the compose call manager's realm
 const ROOM: &str = "8000";
 const NODE_ID_BY_REFERENCE: &str = "cm-by-reference";
 const A_WHILE: Duration = Duration::from_secs(20);
-
-async fn start(
-    stack: &ComposeStack,
-    name: &str,
-    dir: &std::path::Path,
-    db: &str,
-    redis: &str,
-) -> Service {
-    let svc = stack.service(name);
-    let mut config = stack.config_for(name, dir, redis);
-    let mut env = stack.env_for(name, db, dir);
-    if name == "fcp-call-manager" {
-        // A `${NAME}` in a configuration is resolved from the environment
-        // when the file is loaded (`docs/PRODUCTION_STACK.md` phase 2):
-        // the shipped node id becomes a reference, and `/status` below
-        // must show what the environment held.
-        let referenced = config.replace(
-            "node_id = \"cm-docker-01\"",
-            "node_id = \"${FCP_STACK_TEST_NODE_ID}\"",
-        );
-        assert_ne!(
-            referenced, config,
-            "the shipped node id is where this test expects it"
-        );
-        config = referenced;
-        env.push((
-            "FCP_STACK_TEST_NODE_ID".to_string(),
-            NODE_ID_BY_REFERENCE.to_string(),
-        ));
-    }
-    let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let bin = bins::path(svc.binary, svc.package);
-    Service::start_with(name, bin, &config, &svc.health_url, &env_refs).await
-}
-
-/// Stop every service, print what each logged, and fail with `why`.
-async fn fail(services: Vec<Service>, why: &str) -> ! {
-    for service in services.into_iter().rev() {
-        let log = service.stop().await;
-        let tail: Vec<&str> = log
-            .lines()
-            .rev()
-            .take(60)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        eprintln!(
-            "---- last lines of a service's log ----\n{}",
-            tail.join("\n")
-        );
-    }
-    panic!("{why}");
-}
 
 async fn get_json(url: &str, token: &str) -> (u16, serde_json::Value) {
     let bearer = format!("Bearer {token}");
@@ -103,65 +48,37 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
         return;
     };
     let stack = ComposeStack::load();
-    let dir = tempfile::tempdir().expect("tempdir");
-
-    // The certificates the compose stack's `certs` service makes into its
-    // volume, from a CA of this test's, under the path the configurations
-    // name once `config_for` has moved `/var/lib/fcp` under `dir`.
-    let certs_dir = dir.path().join("var-lib-fcp").join("certs");
-    std::fs::create_dir_all(&certs_dir).expect("certs dir");
-    let ca = ClusterCa::new(&certs_dir);
-    for service in [
-        "fcp-call-manager",
-        "fcp-registrar",
-        "fcp-conference",
-        "fcp-sbc",
-        "fcp-media",
-        "fcp-webrtc-gw",
-        "fcp-proxy",
-        "fcp-admin",
-    ] {
-        ca.node(service);
-    }
-    trust_ca(&ca.ca_path);
-    // And the master key the certs service makes beside them: 32 random
-    // bytes, base64, as `openssl rand -base64 32` writes it.
-    let mut key = uuid::Uuid::new_v4().as_bytes().to_vec();
-    key.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
-    std::fs::write(
-        certs_dir.join("master.key"),
-        format!(
-            "{}\n",
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key)
-        ),
-    )
-    .expect("master key");
     let seed = Seed::new(db.url(), REALM).await;
     seed.meeting(ROOM, None, None).await;
     let alice = seed.user("alice", "alice-pw", "1001").await;
     let bob = seed.user("bob", "bob-pw", "1002").await;
 
-    // In the compose file's order: the events server, then the admin and
-    // the gateway, then every SIP and media service and the job worker.
-    // Not the TTS server (its provider needs the image's Python) and not
-    // the registrar profile.
-    let mut services = Vec::new();
-    for name in [
-        "fcp-events-server",
-        "fcp-admin",
-        "fcp-api-gateway",
-        "fcp-call-manager",
-        "fcp-conference",
-        "fcp-ivr",
-        "fcp-voicemail",
-        "fcp-presence",
-        "fcp-sbc",
-        "fcp-media",
-        "fcp-webrtc-gw",
-        "fcp-jobs",
-    ] {
-        services.push(start(&stack, name, dir.path(), db.url(), &redis).await);
-    }
+    // Every service the compose file runs by default, with its own
+    // configuration but for one change: a `${NAME}` in a configuration
+    // is resolved from the environment when the file is loaded
+    // (`docs/PRODUCTION_STACK.md` phase 2), so the shipped node id
+    // becomes a reference, and `/status` below must show what the
+    // environment held.
+    let local = stack
+        .start_local(db.url(), &redis, |name, config, env| {
+            if name != "fcp-call-manager" {
+                return;
+            }
+            let referenced = config.replace(
+                "node_id = \"cm-docker-01\"",
+                "node_id = \"${FCP_STACK_TEST_NODE_ID}\"",
+            );
+            assert_ne!(
+                &referenced, config,
+                "the shipped node id is where this test expects it"
+            );
+            *config = referenced;
+            env.push((
+                "FCP_STACK_TEST_NODE_ID".to_string(),
+                NODE_ID_BY_REFERENCE.to_string(),
+            ));
+        })
+        .await;
 
     let admin_token = stack.dotenv("FCP_ADMIN_AUTH_TOKEN");
     let events_token = stack.dotenv("FCP_EVENTS_AUTH_TOKEN");
@@ -233,12 +150,20 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
     // one the `certs` service would have made, and only that CA is
     // trusted.
     let cm_sips: SocketAddr = "127.0.0.1:5061".parse().unwrap();
-    let secure_phone = Phone::new_tls(&bob.username, &bob.password, REALM, cm_sips, &ca.ca_path)
-        .await
-        .expect("TLS phone binds");
+    let secure_phone = Phone::new_tls(
+        &bob.username,
+        &bob.password,
+        REALM,
+        cm_sips,
+        &local.ca.ca_path,
+    )
+    .await
+    .expect("TLS phone binds");
     let registered = secure_phone.register().await;
     if !matches!(registered, Ok(200)) {
-        fail(services, &format!("REGISTER over SIPS: {registered:?}")).await;
+        local
+            .fail(&format!("REGISTER over SIPS: {registered:?}"))
+            .await;
     }
 
     // The services that serve HTTPS themselves answer under the same CA:
@@ -262,11 +187,11 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
     assert_eq!(phone.register().await.expect("register"), 200);
     let call = phone.call(ROOM).await.expect("INVITE sent");
     if let Err(e) = call.answered(A_WHILE).await {
-        fail(
-            services,
-            &format!("the conference server did not admit the caller: {e}"),
-        )
-        .await;
+        local
+            .fail(&format!(
+                "the conference server did not admit the caller: {e}"
+            ))
+            .await;
     }
 
     // The events server saw the call: the call manager posted it with the
@@ -308,7 +233,7 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
     assert_eq!(call.hangup().await.expect("BYE"), 200);
 
     // Every service stops cleanly and none panicked.
-    for service in services.into_iter().rev() {
+    for (_, service) in local.services.into_iter().rev() {
         let log = service.stop().await;
         assert!(!log.contains("panicked"), "a service panicked:\n{log}");
     }

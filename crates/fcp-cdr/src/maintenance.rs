@@ -33,8 +33,13 @@ impl Default for MaintenanceConfig {
     }
 }
 
-/// The lock the rollup rebuild takes.
-pub const ROLLUP_LOCK: &str = "fcp:cdr-rollups";
+/// The lock the scheduled rebuild takes, so one host runs it and the
+/// others skip the round. Not the rebuild's own lock (`fcp:cdr-rollups`,
+/// taken inside its transaction for any caller): an advisory lock held
+/// by one connection blocks the same lock from another, so sharing the
+/// name left the rebuild waiting on its own scheduler for as long as the
+/// process lived (`docs/DEEP_TESTING.md` D6).
+pub const ROLLUP_LOCK: &str = "fcp:cdr-rollup-schedule";
 
 /// Start the upkeep loop; the first round runs at once.
 pub fn spawn_maintenance(store: Arc<dyn CdrStore>, config: MaintenanceConfig) -> JoinHandle<()> {

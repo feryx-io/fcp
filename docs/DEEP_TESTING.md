@@ -751,7 +751,64 @@ backup, drop and restore that followed already continue from there.
 
 ### D6. Soak
 
+**What runs.** `fcp-soak` (`crates/fcp-loadgen/src/soak`) seeds a tenant
+through the admin API and puts the whole stack under three loads at
+once, from `fcp_loadgen::run`:
+- calls between phones, each answered by its own phone, with the phones
+  re-registering underneath;
+- a conference room three callers keep busy;
+- a room whose two callers leave together, so it empties and is made
+  again every round.
+
+Beside them, an administrator and a user use the API every few seconds:
+- lists of users, records, rooms, calls and nodes;
+- an extension made and deleted;
+- do-not-disturb on and off;
+- a sign-in and a sign-out.
+
+**What is watched.** A sampler (`soak::stack`) records, every 30 s:
+- each `fcp-*` service's resident memory, open descriptors, UDP sockets
+  (the RTP ports a media path holds) and threads. A container is read
+  with `docker exec`, a local process from `/proc`;
+- Redis's keys, memory and clients;
+- Postgres's connections and every table's live rows.
+
+**How growth is judged.** `soak::growth` leaves the warm-up out (a fifth
+of the run, at most 30 minutes) and cuts the rest into four windows.
+A series grows when its last window's median is above its first by
+more than its tolerance, and still above its third. A pool that filled
+early stands still at the end; a leak does not. What grows by design is
+named in `EXPECTED_GROWTH`, each entry with its reason: a call record
+per call, an audit row per write, SIP traces kept until a tenant's
+retention policy says. A run fails on:
+- a load that was refused, dropped or silent;
+- an API answer of 5xx;
+- any other growth.
+
+**Where it runs.**
+- Weekly, by `.github/workflows/soak.yml`: four hours against the
+  nightly images on a GitHub runner.
+- On a workstation, against the binaries of the checkout:
+  `FCP_SOAK_SECONDS=3600 cargo test -p fcp-loadgen --test soak_stack`.
+  `FCP_SOAK_CALLERS=0` or `FCP_SOAK_ROOMS=0` leaves one load, to tell
+  whose a growth is.
+- In CI, the same test for 90 s, as a check that the soak itself works.
+- Once by hand for 24 hours on a small cloud VM, before D6 is called
+  done (Q6).
+
+**What a run shows.** With the fixes below, an hour on a workstation
+(v0.25.412) offered 1,801 calls and 840 room joins, all answered, none
+dropped or silent, and 7,956 API requests, none failed. Every process's
+memory, descriptors, sockets and threads, Postgres's connections and
+Redis stood still after the warm-up. What grew was the audit log, call
+records, sign-in sessions, SIP traces and the site journal, each named
+in `EXPECTED_GROWTH`.
+
 | Finding | Severity | Dealt with |
 |---|---|---|
 | A conference room was a number, not a tenant's number. The conference server keyed its live rooms — the mixer, the session index, recordings, DTMF handlers, the floor, speaker and content claims — by room number alone. Two tenants that both numbered a meeting 8801 shared one mix on a node, and a tenant's control request (mute, kick, lock, record, video) acted on whichever 8801 was live, since `control_tenant` preferred the live room's tenant to the one the admin API named. It went unseen because every SIP caller was the default tenant's: the call manager's leg into a room named no tenant, and the conference server, reached at an address, refused any other tenant's caller (403) once there was more than one tenant. The soak's tenant, made through the API, could not join a room at all. | S1 (two tenants' calls mixed; one tenant controlling another's room) | Fixed in v0.25.410. A live room is a `RoomKey` (tenant and number), and `RoomBridge` is the only way to the mixer's rooms, so a lookup by number alone does not compile. The call manager names the caller's tenant and user on its legs into a room, and the conference server believes them from a trusted edge (`resolve_tenant`). Every HTTP route that names a room takes the tenant from the header the admin API and the peers already send; `/conferences` lists each room with its tenant. `rooms.rs` `two_tenants_with_one_room_number_meet_apart`. |
 | Callers in a room that emptied and was made again often heard nothing: the soak's two-caller room was silent on two calls in three. Two races. forge-conference's get-or-create checks and then inserts, so two callers making a room at once could each make it, the second replacing the first's. And the sweep that removes an emptied room checked it was empty, read the meeting, then removed it; a caller who joined during the read was left in a room no one else could reach. | S2 (silence in a conference) | Fixed in v0.25.410: `RoomBridge` makes and removes rooms one at a time, a caller holds a `Joining` from finding the room until it is in, and the sweep removes a room only if it is still empty and no one is joining (`delete_room_if_idle`). `rooms.rs` `callers_meet_in_a_room_made_again_round_after_round`; the check-then-insert is also forge-media's to fix. |
+| The call manager held two more UDP sockets for every call it had ever anchored: 114 after 57 calls, still open after a quiet minute, some ports bound twice. fcp-media ended a session by stopping its forwarding, which returned the ports to the pool. But forge-engine's `SessionManager` kept the session in its map, with its sockets. The next call was given the "free" port and bound it beside the old socket (`SO_REUSEADDR`), so the kernel chose which socket a packet reached. Descriptors grew without bound. | S1 (descriptors exhausted in time; packets to a dead call's socket) | Fixed in v0.25.411 (#331): a session ends through `SessionManager::stop_session`. `a_terminated_session_lets_its_sockets_go`. |
+| The usage rollups never rebuilt on schedule. `fcp_cdr::maintenance` took the session advisory lock `fcp:cdr-rollups` on one pooled connection. The rebuild then waited for the transaction lock of the same name on another connection, held by its own scheduler, for as long as the process lived. Each `fcp-admin` and `fcp-jobs` held a transaction open throughout, which also keeps vacuum from removing dead rows. The tests called the rebuild directly and never took the scheduler's lock. | S2 (usage figures stale; a transaction open for ever) | Fixed in v0.25.412: the scheduler's lock has its own name (`fcp:cdr-rollup-schedule`). `the_scheduled_rollup_rebuild_finishes` times out without the change. |
+| A caller could be answered on a port the node could not bind. The conference server and the call manager's queue took a port pair from their pool, put it in the answer, sent the 200 OK, and only then bound it. The pool knows only the node's own pairs: when another process on the host held one, the bind failed after the answer, and the caller sat in a call that no room or queue held, with no BYE. Dialling out and trunks between nodes made their offer the same way. Found when a CI run's test node met a port held by another test. | S2 (an answered caller in dead air) | Fixed in v0.25.412: `fcp_media::bound_port_pair` binds a pair before it is offered or answered on, passing over pairs held outside the node. It is used by the conference server's joins, dial-out and trunks both ways, and the queue's answer. `rooms.rs` `callers_are_answered_on_ports_the_node_could_bind` holds 46 of the node's 50 pairs and fails without the change. |
+
