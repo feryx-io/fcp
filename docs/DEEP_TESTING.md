@@ -332,6 +332,10 @@ issue when they fail and close it when they pass.
 This is for you to say: which hardware phones, a carrier account with a
 test number, an Entra ID or Okta tenant, the Apple and Firebase accounts
 for push, and devices for Anvil.
+*Answered 2026-10-18:* Poly phones, a Twilio Elastic SIP trunk with a
+number, the Apple and Firebase accounts with iOS and Android devices, on
+a GCE VM with a public address under `d8.feryx.io`. No identity tenant:
+SSO and SCIM stay with their stand-ins.
 
 **Q10. Anvil.** Does the session include Anvil's own client code, or only
 FCP?
@@ -857,3 +861,26 @@ test skips when the admin embeds no UI or Chromium is missing.
 | A user without a mailbox saw the API's raw error on their voicemail page, not "No voicemail mailbox is configured". | S3 | Fixed in v0.25.413: the client reads the 404 as no mailbox, as it already did for a brand. |
 | A schedule was deleted at one click, without the confirmation every other page asks for. | S3 | Fixed in v0.25.413. |
 | The UI shows every page and button to every role, and the API refuses what the role may not do. A tenant administrator in an enterprise is offered "Add Trunk" and refused. | S3 | Not fixed: the UI knows nothing of permissions, and teaching it is a change of its own (#333). A refused save now at least says "Insufficient permissions". |
+
+### D8. The real world, by hand
+
+The D8 server is the compose stack from the nightly images on a GCE VM
+with a static address and a Let's Encrypt certificate for `d8.feryx.io`
+(`deploy/gcp-d8`). It is up for the sessions and removed after them.
+
+The checklist, worked through together:
+1. **Poly phones.** Provisioned from the tenant's URL, then by Poly ZTP
+   if an account exists. Register over UDP and TLS, call each other, hold
+   and resume, blind and attended transfer, park, voicemail and its
+   light, BLF, a shared line, resync from the admin.
+2. **Twilio.** A tenant trunk to the Elastic SIP trunk's termination
+   URI, its number on the tenant. Inbound to a user, a flow and a queue;
+   outbound with the line's caller ID; DTMF both ways; a long call; `933`.
+3. **Anvil and push.** Sign in on iOS and Android, register, call a Poly
+   phone and the PSTN. Asleep, woken by a real APNs and FCM push for a
+   call from a phone and from Twilio; a cancelled call's push.
+4. **Browsers.** Chrome, Firefox and Safari in one WebRTC room with
+   video and screen share, with a Poly phone dialled in.
+
+| Finding | Severity | Dealt with |
+|---|---|---|

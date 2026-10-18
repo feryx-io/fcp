@@ -7850,6 +7850,9 @@ impl SipMessageHandler {
             Some((at, token)) => format!("sip:{at};{}={token}", crate::push::FLOW_RELAY_URI_PARAM),
             None => target_contact.uri.clone(),
         };
+        // A trunk leg to an address its host name resolved to keeps the
+        // name in its Request-URI and is sent to the address.
+        let (send_uri, destination) = crate::trunk_egress::take_destination(&target_uri_clone);
         let flow_token_clone = target_contact.flow_token.clone();
         let egress = target_contact.egress.clone();
         let header_rules = self.header_rules.clone();
@@ -7928,6 +7931,7 @@ impl SipMessageHandler {
             // The trunk's own header rules, run on the finished
             // INVITE (`docs/TENANT_TRUNKS.md` §6).
             filter: egress.request_filter(header_rules.as_ref()),
+            destination: destination.clone(),
         };
 
         // Add 5-second timeout for each INVITE to prevent TLS hangs
@@ -7962,7 +7966,7 @@ impl SipMessageHandler {
                 tokio::time::timeout(
                     std::time::Duration::from_secs(5),
                     uac_clone.invite_with_options(
-                        &target_uri_clone,
+                        send_uri.as_str(),
                         invite_options(a_leg_sdp_clone.as_deref()),
                     ),
                 )
@@ -7973,7 +7977,7 @@ impl SipMessageHandler {
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 uac_clone.invite_with_options(
-                    &target_uri_clone,
+                    send_uri.as_str(),
                     invite_options(a_leg_sdp_clone.as_deref()),
                 ),
             )
@@ -9680,7 +9684,12 @@ impl SipMessageHandler {
             uac.inner().set_display_name(display_name).await;
             let sent = tokio::time::timeout(
                 Duration::from_secs(5),
-                uac.invite_with_options(&attempt.target, options),
+                uac.invite_with_options(
+                    crate::trunk_egress::take_destination(&attempt.target)
+                        .0
+                        .as_str(),
+                    options,
+                ),
             )
             .await;
             uac.inner().set_display_name(None).await;
@@ -18533,7 +18542,12 @@ fn dedup_target_contacts_by_hostport(contacts: Vec<TargetContact>) -> Vec<Target
     let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();
     for contact in contacts {
-        let key = extract_hostport_from_uri(&contact.uri);
+        // Two addresses a trunk's name resolved to share the URI's host:
+        // the destination tells them apart.
+        let key = match crate::trunk_egress::take_destination(&contact.uri).1 {
+            Some(destination) => format!("{}:{}", destination.host(), destination.port()),
+            None => extract_hostport_from_uri(&contact.uri),
+        };
         if seen.insert(key) {
             result.push(contact);
         }

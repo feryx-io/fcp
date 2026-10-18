@@ -753,10 +753,17 @@ impl TrunkRouter {
         // given as a host, `host:port`, or a whole SIP URI; the dialled
         // number stays the user part, as the proxy routes by it.
         let targets = match trunk.outbound_proxy.as_deref().map(str::trim) {
-            Some(proxy) if !proxy.is_empty() => vec![proxy_host_port(proxy, trunk)],
+            Some(proxy) if !proxy.is_empty() => {
+                let (host, port) = proxy_host_port(proxy, trunk);
+                vec![DialTarget {
+                    host,
+                    port,
+                    name: None,
+                }]
+            }
             _ => {
                 let key = trunk.key();
-                host_targets(
+                dial_targets(
                     trunk,
                     |target| self.health.host_is_down(&key, target),
                     |name, transport| self.trunks.srv_targets(name, transport),
@@ -770,8 +777,20 @@ impl TrunkRouter {
 
         targets
             .into_iter()
-            .map(|(host, port)| OutboundRoute {
-                target_uri: format!("sip:{}@{}:{}{}", user_part, host, port, transport_param),
+            .map(|target| OutboundRoute {
+                // An address resolved from a name is where the INVITE goes;
+                // the Request-URI keeps the name (RFC 3263).
+                target_uri: match target.name {
+                    Some(name) => fcp_sip::trunk_egress::with_destination(
+                        &format!("sip:{user_part}@{name}{transport_param}"),
+                        &target.host,
+                        target.port,
+                    ),
+                    None => format!(
+                        "sip:{}@{}:{}{}",
+                        user_part, target.host, target.port, transport_param
+                    ),
+                },
                 trunk: Some(Arc::clone(trunk)),
             })
             .collect()
@@ -791,12 +810,41 @@ pub fn host_targets(
     is_down: impl Fn(&str) -> bool,
     srv: impl Fn(&str, fcp_core::transport::TransportType) -> Option<Vec<(String, u16)>>,
 ) -> Vec<(String, u16)> {
-    let mut targets: Vec<(String, u16)> = Vec::new();
+    dial_targets(trunk, is_down, srv)
+        .into_iter()
+        .map(|t| (t.host, t.port))
+        .collect()
+}
+
+/// One place a trunk's call may be sent: `host:port`, and the name it was
+/// resolved from when the trunk gave a name with no port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialTarget {
+    pub host: String,
+    pub port: u16,
+    /// The trunk's host name this address was resolved from (RFC 3263):
+    /// what the Request-URI keeps, as a carrier that knows its trunks by
+    /// domain needs.
+    pub name: Option<String>,
+}
+
+/// [`host_targets`], each with the name it was resolved from.
+pub fn dial_targets(
+    trunk: &TrunkConfig,
+    is_down: impl Fn(&str) -> bool,
+    srv: impl Fn(&str, fcp_core::transport::TransportType) -> Option<Vec<(String, u16)>>,
+) -> Vec<DialTarget> {
+    let mut targets: Vec<DialTarget> = Vec::new();
     for entry in &trunk.hosts {
         let Ok(host) = fcp_core::trunk::TrunkHost::parse(entry) else {
             continue;
         };
         let is_name = host.host.parse::<std::net::IpAddr>().is_err();
+        let as_given = DialTarget {
+            host: host.uri_host(),
+            port: host.port_or(&trunk.transport),
+            name: None,
+        };
         match (host.port, is_name) {
             (None, true) => match srv(&host.host, trunk.transport.protocol) {
                 Some(resolved) if !resolved.is_empty() => {
@@ -806,17 +854,21 @@ pub fn host_targets(
                         } else {
                             h
                         };
-                        (h, p)
+                        DialTarget {
+                            host: h,
+                            port: p,
+                            name: Some(host.host.clone()),
+                        }
                     }));
                 }
-                _ => targets.push((host.uri_host(), host.port_or(&trunk.transport))),
+                _ => targets.push(as_given),
             },
-            _ => targets.push((host.uri_host(), host.port_or(&trunk.transport))),
+            _ => targets.push(as_given),
         }
     }
     let (down, up): (Vec<_>, Vec<_>) = targets
         .into_iter()
-        .partition(|(h, p)| is_down(&target_key(h, *p)));
+        .partition(|t| is_down(&target_key(&t.host, t.port)));
     up.into_iter().chain(down).collect()
 }
 
@@ -1133,6 +1185,42 @@ mod tests {
         // Not resolved: the name itself on the default port.
         let targets = host_targets(&trunk, |_| false, |_, _| None);
         assert_eq!(targets[0], ("sip.carrier.example".to_string(), 5060));
+    }
+
+    /// A carrier given by name keeps its name in the Request-URI, and each
+    /// address it resolved to is where one route sends: a carrier that knows
+    /// its trunks by domain (Twilio) refused every call addressed to its IP
+    /// (`docs/DEEP_TESTING.md` D8).
+    #[tokio::test]
+    async fn a_route_to_a_resolved_name_keeps_the_name() {
+        let mut trunk = make_trunk("twilio", 1, 100, TrunkDirection::Upstream);
+        trunk.hosts = vec!["feryx.pstn.twilio.com".into(), "10.0.0.9:5080".into()];
+        let set = Arc::new(TrunkSet::platform_only(vec![trunk.clone()]));
+        set.set_srv_for_test(
+            "feryx.pstn.twilio.com",
+            trunk.transport.protocol,
+            vec![
+                ("54.172.60.0".to_string(), 5060),
+                ("54.172.60.1".to_string(), 5060),
+            ],
+        );
+        let health = Arc::new(TrunkHealthMonitor::new(&[]));
+        health.track(&set.all());
+        let router = TrunkRouter::with_trunk_set(set, Arc::clone(&health), no_cps());
+        let routes = router
+            .resolve_outbound_ordered(None, "sip:+15185550100@example.com")
+            .await;
+        assert_eq!(
+            routes
+                .iter()
+                .map(|r| r.target_uri.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "sip:+15185550100@feryx.pstn.twilio.com;fcp-dst=54.172.60.0:5060",
+                "sip:+15185550100@feryx.pstn.twilio.com;fcp-dst=54.172.60.1:5060",
+                "sip:+15185550100@10.0.0.9:5080",
+            ]
+        );
     }
 
     #[tokio::test]
