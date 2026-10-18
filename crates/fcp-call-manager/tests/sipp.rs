@@ -343,6 +343,23 @@ async fn sipp_calls_sipp_refused_busy() {
     stack.no_calls_up("busy").await;
 }
 
+/// A caller behind a proxy — a carrier's edge, two Vias — is told its
+/// call rings and is refused: the challenge, the 180 and the 486 carry
+/// every Via, and the 180 names this node, not the callee (D8: Twilio's
+/// callers heard no ringback and no refusal).
+#[tokio::test]
+async fn a_caller_behind_a_proxy_hears_it_ring_and_be_refused() {
+    let Some((sipp, stack)) = setup().await else {
+        return;
+    };
+    let (uac, uas) = stack
+        .call(&sipp, "uac_proxied_busy", "uas_ring_then_busy")
+        .await;
+    stack.passed(&uac, "caller").await;
+    stack.passed(&uas, "callee").await;
+    stack.no_calls_up("refused").await;
+}
+
 #[tokio::test]
 async fn sipp_cancels_a_ringing_call() {
     let Some((sipp, stack)) = setup().await else {

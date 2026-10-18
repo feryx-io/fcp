@@ -142,8 +142,9 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
 
         let mut headers = Headers::new();
 
-        // Copy required headers from request
-        if let Some(via) = request.headers().get("Via") {
+        // Copy required headers from request: every Via, so a challenge
+        // to a request that came through a proxy goes back through it.
+        for via in request.headers().get_all("Via") {
             headers.push(SmolStr::new("Via"), via)?;
         }
         if let Some(from) = request.headers().get("From") {

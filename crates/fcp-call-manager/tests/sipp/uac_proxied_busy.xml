@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!-- A call through a proxy (two Vias) that rings, then is refused busy; every response carries both Vias and the 180 the node's Contact. Keys: user, domain, callee. -->
+<scenario name="uac_proxied_busy">
+  <send retrans="500">
+    <![CDATA[
+      INVITE sip:[callee]@[domain] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKproxy[call_number]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[callee]@[domain]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:[user]@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      User-Agent: SIPp
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="407" optional="true" auth="true" next="challenged"/>
+  <recv response="401" auth="true"><action><ereg regexp="192\.0\.2\.9" search_in="msg" check_it="true" assign_to="challenged_via"/></action></recv>
+  <label id="challenged"/>
+  <send>
+    <![CDATA[
+      ACK sip:[callee]@[domain] SIP/2.0
+      [last_Via:]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      [last_To:]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send retrans="500">
+    <![CDATA[
+      INVITE sip:[callee]@[domain] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKproxy[call_number]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[callee]@[domain]>
+      Call-ID: [call_id]
+      CSeq: 2 INVITE
+      Contact: <sip:[user]@[local_ip]:[local_port]>
+      [authentication]
+      Max-Forwards: 70
+      User-Agent: SIPp
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="180">
+    <action>
+      <ereg regexp="192\.0\.2\.9" search_in="msg" check_it="true" assign_to="ringing_via"/>
+      <ereg regexp="@" search_in="hdr" header="Contact:" check_it="true" assign_to="ringing_contact"/>
+    </action>
+  </recv>
+  <recv response="486"><action><ereg regexp="192\.0\.2\.9" search_in="msg" check_it="true" assign_to="busy_via"/></action></recv>
+  <send>
+    <![CDATA[
+      ACK sip:[callee]@[domain] SIP/2.0
+      [last_Via:]
+      From: <sip:[user]@[domain]>;tag=[pid]SIPpTag00[call_number]
+      [last_To:]
+      Call-ID: [call_id]
+      CSeq: 2 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <Reference variables="challenged_via,ringing_via,ringing_contact,busy_via"/>
+</scenario>

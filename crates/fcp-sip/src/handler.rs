@@ -11827,8 +11827,10 @@ impl SipMessageHandler {
 
         let mut headers = Headers::new();
 
-        // Copy mandatory headers from request (RFC 3261 §8.2.6)
-        if let Some(via) = request.headers().get("Via") {
+        // Copy mandatory headers from request (RFC 3261 §8.2.6): every
+        // Via, or a response to a request that came through a proxy stops
+        // at the proxy (D8: a carrier's caller heard nothing of a refusal).
+        for via in request.headers().get_all("Via") {
             let _ = headers.push(SmolStr::new("Via"), via);
         }
         if let Some(from) = request.headers().get("From") {
@@ -12237,8 +12239,9 @@ impl SipMessageHandler {
 
         let mut headers = Headers::new();
 
-        // Mandatory dialog-forming headers from A-leg INVITE
-        if let Some(via) = a_leg_invite.headers().get("Via") {
+        // Mandatory dialog-forming headers from A-leg INVITE: every Via,
+        // or a caller behind a proxy (a carrier) never hears it ring.
+        for via in a_leg_invite.headers().get_all("Via") {
             let _ = headers.push(SmolStr::new("Via"), via);
         }
         if let Some(from) = a_leg_invite.headers().get("From") {
@@ -12266,13 +12269,15 @@ impl SipMessageHandler {
             let _ = headers.push(SmolStr::new("CSeq"), cseq);
         }
 
-        // Copy Contact from B-leg provisional (remote target)
-        if let Some(contact) = b_leg_resp.headers().get("Contact") {
-            let _ = headers.push(SmolStr::new("Contact"), contact);
-        }
-
-        // Propagate Record-Route for correct route set
-        for rr in b_leg_resp.headers().get_all("Record-Route") {
+        // The A-leg's dialog is with this node, as the 200 OK says: our
+        // Contact, not the callee's (which named a phone on its own network
+        // to the carrier), and the A-leg INVITE's Record-Route echoed
+        // (RFC 3261 §12.1.1), not the B-leg's.
+        let _ = headers.push(
+            SmolStr::new("Contact"),
+            SmolStr::new(format!("<{}>", self.uas.contact_uri.as_str())),
+        );
+        for rr in a_leg_invite.headers().get_all("Record-Route") {
             let _ = headers.push(SmolStr::new("Record-Route"), rr);
         }
 
