@@ -30,6 +30,8 @@ use forge_bfcp::{
 };
 use forge_conference::video::ContentRefusal;
 use forge_conference::ConferenceRoom;
+
+use crate::rooms::RoomKey;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -128,9 +130,9 @@ enum Send {
 
 #[derive(Default)]
 struct Inner {
-    rooms: HashMap<String, RoomFloor>,
+    rooms: HashMap<RoomKey, RoomFloor>,
     /// Conference id → room number, for sorting inbound messages.
-    conferences: HashMap<u32, String>,
+    conferences: HashMap<u32, RoomKey>,
     next_conference: u32,
     next_user: u16,
 }
@@ -169,7 +171,7 @@ impl Floors {
     /// the answer. The room may not exist yet: the caller is bound to it
     /// with [`bind`](Self::bind) once admitted, and a reservation that
     /// never is — the call failed after its answer — is forgotten.
-    pub fn reserve(&self, room_number: &str, transport: BfcpTransport) -> BfcpAssignment {
+    pub fn reserve(&self, room_number: &RoomKey, transport: BfcpTransport) -> BfcpAssignment {
         let mut inner = self.lock();
         let conference_id = match inner.rooms.get(room_number) {
             Some(rf) => rf.conference_id,
@@ -181,9 +183,9 @@ impl Floors {
                         break id;
                     }
                 };
-                inner.conferences.insert(id, room_number.to_string());
+                inner.conferences.insert(id, room_number.clone());
                 inner.rooms.insert(
-                    room_number.to_string(),
+                    room_number.clone(),
                     RoomFloor {
                         room: None,
                         conference_id: id,
@@ -235,7 +237,7 @@ impl Floors {
     /// The caller is in the room: their requests can be put to its floor.
     pub fn bind(
         &self,
-        room_number: &str,
+        room_number: &RoomKey,
         user_id: u16,
         room: &Arc<ConferenceRoom>,
         participant_id: &str,
@@ -254,7 +256,7 @@ impl Floors {
     /// The meeting's policy for the participant, known once their content
     /// leg attaches. A BFCP endpoint never takes the floor by sending:
     /// its implicit sending is switched off here, whatever the policy.
-    pub fn set_may_share(&self, room_number: &str, participant_id: &str, may_share: bool) {
+    pub fn set_may_share(&self, room_number: &RoomKey, participant_id: &str, may_share: bool) {
         let mut inner = self.lock();
         let Some(rf) = inner.rooms.get_mut(room_number) else {
             return;
@@ -273,7 +275,7 @@ impl Floors {
 
     /// The caller left (or never made it in): their ids, and the floor
     /// they held, go with them.
-    pub fn leave(&self, room_number: &str, user_id: u16) {
+    pub fn leave(&self, room_number: &RoomKey, user_id: u16) {
         let sends = {
             let mut inner = self.lock();
             let Some(rf) = inner.rooms.get_mut(room_number) else {
@@ -304,7 +306,7 @@ impl Floors {
     /// notice): a BFCP endpoint hears `Revoked` unless it released the
     /// floor itself, and a host's stop keeps it from asking again until
     /// its content section is renegotiated.
-    pub fn floor_released(&self, room_number: &str, participant_id: &str, reason: &str) {
+    pub fn floor_released(&self, room_number: &RoomKey, participant_id: &str, reason: &str) {
         let sends = {
             let mut inner = self.lock();
             let Some(rf) = inner.rooms.get_mut(room_number) else {
@@ -338,7 +340,11 @@ impl Floors {
     }
 
     /// The participant's BFCP state for the API.
-    pub fn participant_json(&self, room_number: &str, user_id: u16) -> Option<serde_json::Value> {
+    pub fn participant_json(
+        &self,
+        room_number: &RoomKey,
+        user_id: u16,
+    ) -> Option<serde_json::Value> {
         let inner = self.lock();
         let rf = inner.rooms.get(room_number)?;
         let id = user_id;
@@ -862,6 +868,7 @@ mod tests {
     /// coming back as Revoked, the policy, a query, and a leave.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_room_system_takes_and_loses_the_floor_over_udp() {
+        let rk = RoomKey::new(fcp_core::TenantId::new(), "5000");
         let room = room();
         let video = room.video().unwrap();
         let floors = Arc::new(Floors::new());
@@ -871,14 +878,14 @@ mod tests {
         let ticking = tokio::spawn(Arc::clone(&floors).serve_ticks());
 
         // The answer's ids: one conference for the room, a user each.
-        let a = floors.reserve("5000", BfcpTransport::Udp);
-        let b = floors.reserve("5000", BfcpTransport::Udp);
+        let a = floors.reserve(&rk, BfcpTransport::Udp);
+        let b = floors.reserve(&rk, BfcpTransport::Udp);
         assert_eq!(a.conference_id, b.conference_id);
         assert_ne!(a.user_id, b.user_id);
         assert_eq!(a.floor_id, FLOOR_ID);
-        floors.bind("5000", a.user_id, &room, "alice");
-        floors.bind("5000", b.user_id, &room, "bob");
-        floors.set_may_share("5000", "alice", true);
+        floors.bind(&rk, a.user_id, &room, "alice");
+        floors.bind(&rk, b.user_id, &room, "bob");
+        floors.set_may_share(&rk, "alice", true);
         // Bob's policy comes later: until then he is refused.
         let cid = a.conference_id;
         // A BFCP endpoint never takes the floor by sending.
@@ -920,7 +927,7 @@ mod tests {
         assert_ne!(granted.transaction_id, 0);
         udp_ack(&alice, to, &granted).await;
         assert_eq!(video.content_holder().as_deref(), Some("alice"));
-        let json = floors.participant_json("5000", a.user_id).unwrap();
+        let json = floors.participant_json(&rk, a.user_id).unwrap();
         assert_eq!(json["floor"], "granted");
         assert_eq!(json["transport"], "udp");
         assert_eq!(json["connected"], true);
@@ -940,7 +947,7 @@ mod tests {
             Some("sharing is not allowed for you in this meeting")
         );
         udp_ack(&bob, to, &denied).await;
-        floors.set_may_share("5000", "bob", true);
+        floors.set_may_share(&rk, "bob", true);
         let pending = udp_ask(
             &bob,
             to,
@@ -988,7 +995,7 @@ mod tests {
         );
         udp_ack(&alice, to, &granted).await;
         assert_eq!(video.stop_content().as_deref(), Some("alice"));
-        floors.floor_released("5000", "alice", "host");
+        floors.floor_released(&rk, "alice", "host");
         let revoked = udp_recv(&alice).await;
         assert_eq!(
             reported_status(&revoked),
@@ -997,7 +1004,7 @@ mod tests {
         assert_eq!(status_info(&revoked).as_deref(), Some("host"));
         udp_ack(&alice, to, &revoked).await;
         assert_eq!(
-            floors.participant_json("5000", a.user_id).unwrap()["host_stopped"],
+            floors.participant_json(&rk, a.user_id).unwrap()["host_stopped"],
             true
         );
         let pending = udp_ask(
@@ -1011,7 +1018,7 @@ mod tests {
         assert_eq!(status_info(&denied).as_deref(), Some("stopped by the host"));
         udp_ack(&alice, to, &denied).await;
         // Her content section renegotiated: allowed again.
-        floors.set_may_share("5000", "alice", true);
+        floors.set_may_share(&rk, "alice", true);
         let pending = udp_ask(
             &alice,
             to,
@@ -1036,12 +1043,12 @@ mod tests {
         .await;
         assert_eq!(status.primitive, Primitive::FloorStatus);
         assert_eq!(status.floor_request_information()[0].0, rid3);
-        floors.leave("5000", a.user_id);
+        floors.leave(&rk, a.user_id);
         let status = udp_recv(&bob).await;
         assert_eq!(status.primitive, Primitive::FloorStatus);
         assert!(status.floor_request_information().is_empty());
         udp_ack(&bob, to, &status).await;
-        assert!(floors.participant_json("5000", a.user_id).is_none());
+        assert!(floors.participant_json(&rk, a.user_id).is_none());
         // A message from her ids now: no such user.
         let err = udp_ask(&alice, to, &msg(Primitive::Hello, 7, a.user_id)).await;
         assert_eq!(err.error_code(), Some(ErrorCode::UserDoesNotExist));
@@ -1055,16 +1062,17 @@ mod tests {
     /// message.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_room_system_takes_the_floor_over_tcp() {
+        let rk = RoomKey::new(fcp_core::TenantId::new(), "5000");
         let room = room();
         let video = room.video().unwrap();
         let floors = Arc::new(Floors::new());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let to = listener.local_addr().unwrap();
         let serving = tokio::spawn(Arc::clone(&floors).serve_tcp(listener));
-        let c = floors.reserve("5000", BfcpTransport::Tcp);
-        floors.bind("5000", c.user_id, &room, "carol");
-        floors.set_may_share("5000", "carol", true);
-        let json = floors.participant_json("5000", c.user_id).unwrap();
+        let c = floors.reserve(&rk, BfcpTransport::Tcp);
+        floors.bind(&rk, c.user_id, &room, "carol");
+        floors.set_may_share(&rk, "carol", true);
+        let json = floors.participant_json(&rk, c.user_id).unwrap();
         assert_eq!(
             (json["transport"].as_str(), json["connected"].as_bool()),
             (Some("tcp"), Some(false))
@@ -1101,7 +1109,7 @@ mod tests {
         assert_eq!(ack.primitive, Primitive::HelloAck);
         assert!(!ack.responder);
         assert_eq!(
-            floors.participant_json("5000", c.user_id).unwrap()["connected"],
+            floors.participant_json(&rk, c.user_id).unwrap()["connected"],
             true
         );
 
@@ -1165,24 +1173,25 @@ mod tests {
     /// A reservation the call never bound is forgotten by the timers.
     #[test]
     fn an_unbound_reservation_is_forgotten() {
+        let rk = RoomKey::new(fcp_core::TenantId::new(), "5000");
         let floors = Floors::new();
-        let a = floors.reserve("6000", BfcpTransport::Udp);
-        assert!(floors.participant_json("6000", a.user_id).is_some());
+        let a = floors.reserve(&rk, BfcpTransport::Udp);
+        assert!(floors.participant_json(&rk, a.user_id).is_some());
         {
             let mut inner = floors.lock();
-            let rf = inner.rooms.get_mut("6000").unwrap();
+            let rf = inner.rooms.get_mut(&rk).unwrap();
             rf.users.get_mut(&a.user_id).unwrap().reserved_at =
                 Instant::now() - RESERVATION_TTL - Duration::from_secs(1);
         }
         floors.tick();
-        assert!(floors.participant_json("6000", a.user_id).is_none());
+        assert!(floors.participant_json(&rk, a.user_id).is_none());
         // The room's floor itself stays until the last user leaves.
-        let b = floors.reserve("6000", BfcpTransport::Tcp);
+        let b = floors.reserve(&rk, BfcpTransport::Tcp);
         assert_eq!(
             a.conference_id, b.conference_id,
             "the room keeps its conference id"
         );
-        floors.leave("6000", b.user_id);
-        assert!(!floors.lock().rooms.contains_key("6000"));
+        floors.leave(&rk, b.user_id);
+        assert!(!floors.lock().rooms.contains_key(&rk));
     }
 }

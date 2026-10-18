@@ -14,8 +14,10 @@ use std::net::SocketAddr;
 #[async_trait::async_trait]
 pub trait ConferenceHandler: Send + Sync {
     /// Returns `true` if this request should be handled as a conference call
-    /// (i.e., the Request-URI user part matches a known meeting room number).
-    async fn can_handle(&self, request: &sip_core::Request) -> bool;
+    /// (i.e., the Request-URI user part matches a known meeting room number
+    /// in the caller's tenant). `peer` is where the request came from: a
+    /// trusted edge names the caller's tenant.
+    async fn can_handle(&self, request: &sip_core::Request, peer: SocketAddr) -> bool;
 
     /// Handle an INVITE for a conference room.
     ///

@@ -17,8 +17,8 @@ use fcp_sip::PeerIdentity;
 use forge_codecs::{g711, g722, AudioCodec};
 use forge_conference::video::{StreamKind, VideoBackend};
 use forge_conference::{
-    ConferenceAIConfig, ConferenceAIManager, ConferenceBridge, ConferenceConfig,
-    ConferenceDtmfConfig, ConferenceError, DtmfCommandHandler, PinAuthResult, RoomConfig,
+    ConferenceAIConfig, ConferenceAIManager, ConferenceConfig, ConferenceDtmfConfig,
+    ConferenceError, DtmfCommandHandler, PinAuthResult, RoomConfig,
 };
 use forge_dtmf::rfc2833::Rfc2833Detector;
 use forge_dtmf::{
@@ -47,6 +47,7 @@ use crate::audio_bridge::{self, AudioStats};
 use crate::bfcp::{BfcpAssignment, Floors};
 use crate::config::{AiSection, ConferenceSection};
 use crate::migration::{self, Notice};
+use crate::rooms::{RoomBridge, RoomKey};
 use crate::trunks::{self, TRUNK_NODE_HEADER, TRUNK_TENANT_HEADER};
 use futures::StreamExt;
 
@@ -98,6 +99,13 @@ impl HandlerLatency {
     fn record(&self, count: &AtomicU64, total_us: &AtomicU64, elapsed: Duration) {
         count.fetch_add(1, Ordering::Relaxed);
         total_us.fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+    }
+}
+
+impl ParticipantSession {
+    /// The room the participant is in.
+    pub fn room_key(&self) -> RoomKey {
+        RoomKey::new(self.tenant_id, self.room_number.clone())
     }
 }
 
@@ -258,7 +266,7 @@ fn notice_tone_file(sample_rate: u32) -> Result<String> {
 /// 5. Spawns a per-participant audio bridge task
 /// 6. Publishes conference events (join/leave)
 pub struct ConferenceCallHandler {
-    pub bridge: Arc<ConferenceBridge>,
+    pub bridge: Arc<RoomBridge>,
     pub storage: Arc<DynStorage>,
     pub default_tenant_id: TenantId,
     pub conference_config: RwLock<ConferenceSection>,
@@ -269,7 +277,7 @@ pub struct ConferenceCallHandler {
     port_pool: Arc<PortPool>,
     event_bus: Arc<dyn EventPublisher>,
     uac: Arc<SipUserAgentClient>,
-    dtmf_handlers: DashMap<String, Arc<DtmfCommandHandler>>,
+    dtmf_handlers: DashMap<RoomKey, Arc<DtmfCommandHandler>>,
     /// In-memory meeting cache: (TenantId, room_number) → (Meeting, cached_at)
     meeting_cache: DashMap<(TenantId, String), (Meeting, Instant)>,
     /// Shared AI session manager (created once, reused for all rooms)
@@ -294,8 +302,8 @@ pub struct ConferenceCallHandler {
     /// gateway and the call manager, which name the record a leg belongs
     /// to. Empty believes nobody, which is the safe default.
     trusted_edges: std::sync::RwLock<fcp_sip::emergency::TrustedEdges>,
-    /// Secondary index: room_number → Vec<call_id> for O(1) room-to-session lookups.
-    room_sessions: DashMap<String, Vec<String>>,
+    /// Secondary index: room → Vec<call_id> for O(1) room-to-session lookups.
+    room_sessions: DashMap<RoomKey, Vec<String>>,
     /// This node's cluster id: what peers see in our trunk INVITEs and in
     /// our certificate.
     node_id: String,
@@ -312,17 +320,17 @@ pub struct ConferenceCallHandler {
     /// The node's video budget, when accounting is on.
     video_capacity: Option<Arc<crate::video_capacity::VideoCapacity>>,
     /// Rooms whose video events are being forwarded to the bus.
-    video_event_pumps: Arc<DashMap<String, ()>>,
+    video_event_pumps: Arc<DashMap<RoomKey, ()>>,
     /// BFCP floor control for the room systems that speak it (§15.6, 7e).
     bfcp: Arc<Floors>,
-    /// When each peer's speaker claim last arrived, by `room|node`. A
+    /// When each peer's speaker claim last arrived, by room and node. A
     /// claim that stops being refreshed is dropped rather than left
     /// holding the floor for a node that has gone quiet (§15.4, 5c).
-    speaker_claims: DashMap<String, Instant>,
+    speaker_claims: DashMap<(RoomKey, String), Instant>,
     /// Each peer's claim to the room's content floor and when it last
-    /// arrived, by `room|node` (§15.6, 7d). The presenter's name is what
+    /// arrived, by room and node (§15.6, 7d). The presenter's name is what
     /// this node's browsers are told; the claim's age is what expires it.
-    content_claims: DashMap<String, (ContentClaim, Instant)>,
+    content_claims: DashMap<(RoomKey, String), (ContentClaim, Instant)>,
     /// Calls that have been answered and are waiting for PIN input.
     pending_pin_auth: DashMap<String, PendingPinAuth>,
     /// Calls answered and not yet sessions, by Call-ID: `true` once a BYE
@@ -352,10 +360,10 @@ pub struct ConferenceCallHandler {
     pub dtmf_locked_samples: Option<Arc<Vec<i16>>>,
     pub dtmf_unlocked_samples: Option<Arc<Vec<i16>>>,
     pub dtmf_ending_samples: Option<Arc<Vec<i16>>>,
-    /// Recordings under way on this node, by room number (§11).
-    recordings: DashMap<String, ActiveRecording>,
+    /// Recordings under way on this node, by room (§11).
+    recordings: DashMap<RoomKey, ActiveRecording>,
     /// Per-participant recordings under way: (room, participant) → row.
-    participant_recordings: DashMap<(String, String), fcp_core::Recording>,
+    participant_recordings: DashMap<(RoomKey, String), fcp_core::Recording>,
     /// The handler's own `Arc`, for the tasks it spawns that need the
     /// whole handler rather than a few clones — the moderator-release
     /// path, which may have to start a recording. Set once at startup by
@@ -388,8 +396,8 @@ enum RecordingWriter {
 
 /// Tracks an active RFC 4575 conference event subscription.
 struct ConferenceSubscription {
-    /// The room number this subscription is for
-    room_number: String,
+    /// The room this subscription is for
+    key: RoomKey,
     /// Contact URI of the subscriber (for sending NOTIFY)
     contact_uri: SipUri,
     /// When the subscription expires
@@ -398,7 +406,7 @@ struct ConferenceSubscription {
 
 /// Tracks an answered conference call that is still collecting a room PIN.
 struct PendingPinAuth {
-    room_number: String,
+    key: RoomKey,
     participant_id: String,
     info_digits_tx: tokio::sync::mpsc::UnboundedSender<char>,
 }
@@ -745,7 +753,7 @@ fn log_pin_collector_summary(
 impl ConferenceCallHandler {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        bridge: Arc<ConferenceBridge>,
+        bridge: Arc<RoomBridge>,
         storage: Arc<DynStorage>,
         default_tenant_id: TenantId,
         conference_config: ConferenceSection,
@@ -841,7 +849,7 @@ impl ConferenceCallHandler {
         let rooms: Vec<Arc<forge_conference::ConferenceRoom>> = self
             .active_rooms()
             .into_iter()
-            .filter_map(|(room, _)| self.bridge.get_room(&room).ok())
+            .filter_map(|(key, _)| self.bridge.get_room(&key).ok())
             .collect();
         Some(capacity.recompute(rooms))
     }
@@ -865,26 +873,23 @@ impl ConferenceCallHandler {
     /// Local participants of a room that count towards placement: real
     /// callers only, not the `__…` virtual participants (audio feedback,
     /// AI, inter-node trunks).
-    pub fn countable_participants(&self, room_number: &str) -> usize {
-        self.room_participants(room_number)
+    pub fn countable_participants(&self, key: &RoomKey) -> usize {
+        self.room_participants(key)
             .map(|ids| ids.iter().filter(|id| !id.starts_with("__")).count())
             .unwrap_or(0)
     }
 
     /// Push this node's current participant count for a room to the
     /// registry hook (no-op without clustering).
-    pub fn sync_room_registry(&self, room_number: &str) {
+    pub fn sync_room_registry(&self, key: &RoomKey) {
+        let room_number = key.room.as_str();
         let Some(registry) = self.room_registry.read().unwrap().clone() else {
             return;
         };
-        let tenant = self
-            .tenant_for_room(room_number)
-            .unwrap_or(self.default_tenant_id)
-            .to_string();
         registry.room_participants_changed(
-            tenant,
+            key.tenant.to_string(),
             room_number.to_string(),
-            self.countable_participants(room_number),
+            self.countable_participants(key),
         );
         registry.node_callers_changed(self.node_callers());
     }
@@ -894,7 +899,7 @@ impl ConferenceCallHandler {
     pub fn node_callers(&self) -> usize {
         self.active_rooms()
             .iter()
-            .map(|(room, _)| self.countable_participants(room))
+            .map(|(key, _)| self.countable_participants(key))
             .sum()
     }
 
@@ -1006,12 +1011,13 @@ impl ConferenceCallHandler {
             if self.migrations.is_migrating(&call_id) {
                 continue;
             }
-            if let Ok(room) = self.bridge.get_room(&room_number) {
+            let key = RoomKey::new(tenant_id, room_number.clone());
+            if let Ok(room) = self.bridge.get_room(&key) {
                 if room.waiting_participants().contains(&participant_id) {
                     continue;
                 }
             }
-            let video = match self.lookup_meeting(&tenant_id, &room_number).await {
+            let video = match self.lookup_meeting(&key.tenant, &key.room).await {
                 Ok(Some(m)) if m.video_enabled => Some(fcp_cluster::VideoNeed::of(
                     m.video_codecs
                         .iter()
@@ -1053,7 +1059,7 @@ impl ConferenceCallHandler {
                 .with_context(|| format!("no session for {call_id}"))?;
             let room = self
                 .bridge
-                .get_room(&s.room_number)
+                .get_room(&s.room_key())
                 .map_err(|e| anyhow::anyhow!("room {}: {e}", s.room_number))?;
             let meta = room.get_participant_metadata(&s.participant_id).ok();
             let video_on = room
@@ -1231,29 +1237,6 @@ impl ConferenceCallHandler {
             .remove(&(*tenant_id, room_number.to_string()));
     }
 
-    fn session_tenant_for_room(&self, room_number: &str) -> Option<TenantId> {
-        let call_ids = self.room_sessions.get(room_number)?.clone();
-        for call_id in call_ids {
-            if let Some(session) = self.sessions.get(&call_id) {
-                return Some(session.tenant_id);
-            }
-        }
-        None
-    }
-
-    pub fn tenant_for_room(&self, room_number: &str) -> Option<TenantId> {
-        self.session_tenant_for_room(room_number).or_else(|| {
-            self.meeting_cache.iter().find_map(|entry| {
-                let key = entry.key();
-                if key.1 == room_number {
-                    Some(key.0)
-                } else {
-                    None
-                }
-            })
-        })
-    }
-
     fn extract_tenant_domain(request: &sip_core::Request) -> Option<String> {
         let request_uri = request.uri().to_string();
         let uri_str = request_uri
@@ -1299,7 +1282,27 @@ impl ConferenceCallHandler {
         }
     }
 
-    async fn resolve_tenant(&self, request: &sip_core::Request) -> Result<TenantId> {
+    /// The tenant whose room a request is for. A trusted edge — the call
+    /// manager, the WebRTC gateway — names the caller's tenant in
+    /// `X-FCP-Caller-Tenant` and reaches this node at an address, which
+    /// names no tenant (`docs/EDGE_SECURITY.md` §2.3); anyone else's
+    /// claim is not read. Then the Request-URI's domain, then the node's
+    /// default tenant.
+    async fn resolve_tenant(
+        &self,
+        request: &sip_core::Request,
+        peer: Option<SocketAddr>,
+    ) -> Result<TenantId> {
+        if let Some(peer) = peer {
+            let edge = self
+                .trusted_edges
+                .read()
+                .expect("trusted edges")
+                .caller(request, peer.ip());
+            if let Some(edge) = edge {
+                return Ok(edge.tenant_id);
+            }
+        }
         let resolved = if let Some(domain) = Self::extract_tenant_domain(request) {
             if fcp_core::is_host_literal(&domain) {
                 // IP literal — use default tenant directly.  Internal
@@ -1348,9 +1351,9 @@ impl ConferenceCallHandler {
 
     /// Get call IDs for a specific room (O(1) via secondary index).
     #[allow(dead_code)]
-    pub fn sessions_for_room(&self, room_number: &str) -> Vec<String> {
+    pub fn sessions_for_room(&self, key: &RoomKey) -> Vec<String> {
         self.room_sessions
-            .get(room_number)
+            .get(key)
             .map(|ids| ids.clone())
             .unwrap_or_default()
     }
@@ -1362,15 +1365,15 @@ impl ConferenceCallHandler {
     }
 
     /// List all active rooms with participant counts.
-    pub fn active_rooms(&self) -> Vec<(String, usize)> {
+    pub fn active_rooms(&self) -> Vec<(RoomKey, usize)> {
         self.bridge
             .list_rooms()
             .into_iter()
-            .filter_map(|room_id| {
+            .filter_map(|key| {
                 self.bridge
-                    .get_room(&room_id)
+                    .get_room(&key)
                     .ok()
-                    .map(|room| (room_id, room.participant_count()))
+                    .map(|room| (key, room.participant_count()))
             })
             .collect()
     }
@@ -1382,9 +1385,9 @@ impl ConferenceCallHandler {
 
     /// Get participant list for a specific room.
     #[allow(dead_code)]
-    pub fn room_participants(&self, room_number: &str) -> Option<Vec<String>> {
+    pub fn room_participants(&self, key: &RoomKey) -> Option<Vec<String>> {
         self.bridge
-            .get_room(room_number)
+            .get_room(key)
             .ok()
             .map(|room| room.participants())
     }
@@ -1392,12 +1395,12 @@ impl ConferenceCallHandler {
     /// Get detailed metadata for a specific participant in a room.
     pub fn get_participant_details(
         &self,
-        room_number: &str,
+        key: &RoomKey,
         participant_id: &str,
     ) -> Result<serde_json::Value> {
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
 
         let meta = room
@@ -1405,10 +1408,9 @@ impl ConferenceCallHandler {
             .map_err(|e| anyhow::anyhow!("Participant not found: {}", e))?;
 
         // Enrich with session data (codec, remote addr, stats)
-        let session_data = self
-            .sessions
-            .iter()
-            .find(|entry| entry.value().participant_id == participant_id);
+        let session_data = self.sessions.iter().find(|entry| {
+            entry.value().participant_id == participant_id && entry.value().room_key() == *key
+        });
 
         let mut json = serde_json::json!({
             "participant_id": meta.id,
@@ -1468,10 +1470,11 @@ impl ConferenceCallHandler {
     /// /conferences/{room}/video` (design §12): what the live view needs
     /// and nothing of the audio. Trunk participants are left out; they
     /// carry another node's mix. `Err` when the room is not active here.
-    pub fn get_room_video(&self, room_number: &str) -> Result<serde_json::Value> {
+    pub fn get_room_video(&self, key: &RoomKey) -> Result<serde_json::Value> {
+        let room_number = key.room.as_str();
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
         let participants: Vec<serde_json::Value> = room
             .get_all_participant_metadata()
@@ -1507,7 +1510,7 @@ impl ConferenceCallHandler {
                         if let Some(a) = &session.bfcp {
                             p["bfcp"] = self
                                 .bfcp
-                                .participant_json(room_number, a.user_id)
+                                .participant_json(key, a.user_id)
                                 .unwrap_or(serde_json::Value::Null);
                         }
                     }
@@ -1526,7 +1529,7 @@ impl ConferenceCallHandler {
             "participants": participants,
             // Trunks are not participants, but whether one carries video
             // decides whether the peer's callers are on screen at all.
-            "trunks": self.room_trunk_json(room_number),
+            "trunks": self.room_trunk_json(key),
             "video": video_bridge::room_video_json(&room),
         }))
     }
@@ -1537,16 +1540,17 @@ impl ConferenceCallHandler {
     /// trunk's video is nothing to worry about.
     pub fn apply_speaker_claim(
         &self,
-        room_number: &str,
+        key: &RoomKey,
         node: &str,
         participant_id: Option<&str>,
         display_name: Option<&str>,
         energy: f32,
         speaking: bool,
     ) -> Result<bool> {
+        let room_number = key.room.as_str();
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|_| anyhow::anyhow!("room {room_number} is not hosted on this node"))?;
         let Some(video) = room.video() else {
             return Ok(false);
@@ -1564,7 +1568,7 @@ impl ConferenceCallHandler {
         });
         video.set_remote_speaker(&tile, claim);
         self.speaker_claims
-            .insert(format!("{room_number}|{node}"), Instant::now());
+            .insert((key.clone(), node.to_string()), Instant::now());
         Ok(true)
     }
 
@@ -1573,24 +1577,21 @@ impl ConferenceCallHandler {
     /// the floor of every other node for good if it goes quiet or its
     /// trunk is slow to be noticed (§15.4, 5c).
     pub fn expire_speaker_claims(&self, max_age: Duration) {
-        let stale: Vec<String> = self
+        let stale: Vec<(RoomKey, String)> = self
             .speaker_claims
             .iter()
             .filter(|e| e.value().elapsed() > max_age)
             .map(|e| e.key().clone())
             .collect();
-        for key in stale {
-            let Some((room_number, node)) = key.split_once('|') else {
-                self.speaker_claims.remove(&key);
-                continue;
-            };
-            if let Ok(room) = self.bridge.get_room(room_number) {
+        for claim in stale {
+            let (key, node) = &claim;
+            if let Ok(room) = self.bridge.get_room(key) {
                 if let Some(video) = room.video() {
                     video.set_remote_speaker(&trunks::trunk_participant_id(node), None);
                 }
             }
-            debug!(room = %room_number, peer = %node, "Speaker claim expired");
-            self.speaker_claims.remove(&key);
+            debug!(room = %key, peer = %node, "Speaker claim expired");
+            self.speaker_claims.remove(&claim);
         }
     }
 
@@ -1604,15 +1605,16 @@ impl ConferenceCallHandler {
     /// no trunk to that peer yet.
     pub fn apply_content_claim(
         &self,
-        room_number: &str,
+        key: &RoomKey,
         node: &str,
         participant_id: Option<&str>,
         display_name: Option<&str>,
         since_ms: u64,
     ) -> Result<bool> {
+        let room_number = key.room.as_str();
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|_| anyhow::anyhow!("room {room_number} is not hosted on this node"))?;
         let Some(video) = room.video() else {
             return Ok(false);
@@ -1621,9 +1623,9 @@ impl ConferenceCallHandler {
         if !video.is_remote(&tile) {
             return Ok(false);
         }
-        let key = format!("{room_number}|{node}");
+        let claim_key = (key.clone(), node.to_string());
         let Some(participant_id) = participant_id else {
-            self.content_claims.remove(&key);
+            self.content_claims.remove(&claim_key);
             if video.release_content_with(&tile, forge_conference::video::ContentStop::Ended) {
                 debug!(room = %room_number, peer = %node, "The peer's share ended; floor released");
             }
@@ -1636,7 +1638,7 @@ impl ConferenceCallHandler {
         };
         let changed = self
             .content_claims
-            .insert(key, (claim.clone(), Instant::now()))
+            .insert(claim_key, (claim.clone(), Instant::now()))
             .is_none_or(|(old, _)| old != claim);
         match video.content() {
             // Our own presenter against the peer's: the earlier share
@@ -1665,7 +1667,7 @@ impl ConferenceCallHandler {
             // tile's name, so they are told the presenter's now.
             Some(theirs) if changed && theirs.participant_id == tile => {
                 self.floor_changed(
-                    room_number,
+                    key,
                     FloorNotice {
                         floor: "granted",
                         participant_id: tile,
@@ -1683,18 +1685,16 @@ impl ConferenceCallHandler {
     /// them, releasing the floor a quiet peer's screen holds here
     /// (§15.6, 7d) — it will not be arriving.
     pub fn expire_content_claims(&self, max_age: Duration) {
-        let stale: Vec<String> = self
+        let stale: Vec<(RoomKey, String)> = self
             .content_claims
             .iter()
             .filter(|e| e.value().1.elapsed() > max_age)
             .map(|e| e.key().clone())
             .collect();
-        for key in stale {
-            self.content_claims.remove(&key);
-            let Some((room_number, node)) = key.split_once('|') else {
-                continue;
-            };
-            if let Ok(room) = self.bridge.get_room(room_number) {
+        for claim in stale {
+            self.content_claims.remove(&claim);
+            let (key, node) = &claim;
+            if let Ok(room) = self.bridge.get_room(key) {
                 if let Some(video) = room.video() {
                     video.release_content_with(
                         &trunks::trunk_participant_id(node),
@@ -1702,15 +1702,15 @@ impl ConferenceCallHandler {
                     );
                 }
             }
-            debug!(room = %room_number, peer = %node, "Content claim expired");
+            debug!(room = %key, peer = %node, "Content claim expired");
         }
     }
 
     /// This node's own share in a room, as a claim to send to the peers
     /// hosting it. `None` when the floor is free or a peer's (their
     /// node makes that claim).
-    pub fn local_content_claim(&self, room_number: &str) -> Option<serde_json::Value> {
-        let room = self.bridge.get_room(room_number).ok()?;
+    pub fn local_content_claim(&self, key: &RoomKey) -> Option<serde_json::Value> {
+        let room = self.bridge.get_room(key).ok()?;
         let content = room.video()?.content().filter(|c| !c.remote)?;
         Some(serde_json::json!({
             "node": self.node_id,
@@ -1725,8 +1725,8 @@ impl ConferenceCallHandler {
     /// level the mixer has for them right now. `None` when the room's
     /// speaker is a peer's caller (their node makes that claim) or there
     /// is none.
-    pub fn local_speaker_claim(&self, room_number: &str) -> Option<serde_json::Value> {
-        let room = self.bridge.get_room(room_number).ok()?;
+    pub fn local_speaker_claim(&self, key: &RoomKey) -> Option<serde_json::Value> {
+        let room = self.bridge.get_room(key).ok()?;
         let video = room.video()?;
         // A speaker reached through a remote tile is the peer's to claim.
         if video.active_speaker_via().is_some() {
@@ -1754,11 +1754,11 @@ impl ConferenceCallHandler {
 
     /// Rooms this node hosts that both have video and are trunked to a
     /// peer: the only ones whose speaker anybody else needs to hear about.
-    pub fn rooms_with_trunked_video(&self) -> Vec<(String, TenantId)> {
+    pub fn rooms_with_trunked_video(&self) -> Vec<RoomKey> {
         self.room_sessions
             .iter()
             .filter_map(|entry| {
-                let room_number = entry.key().clone();
+                let key = entry.key().clone();
                 let has_trunk = entry.value().iter().any(|call_id| {
                     self.sessions
                         .get(call_id)
@@ -1768,18 +1768,17 @@ impl ConferenceCallHandler {
                 if !has_trunk {
                     return None;
                 }
-                let room = self.bridge.get_room(&room_number).ok()?;
+                let room = self.bridge.get_room(&key).ok()?;
                 room.video()?;
-                let tenant_id = self.tenant_for_room(&room_number)?;
-                Some((room_number, tenant_id))
+                Some(key)
             })
             .collect()
     }
 
     /// The trunks of a room as the video API reports them: the peer, and
     /// whether the trunk carries that peer's composite as well as its mix.
-    fn room_trunk_json(&self, room_number: &str) -> Vec<serde_json::Value> {
-        let Some(call_ids) = self.room_sessions.get(room_number) else {
+    fn room_trunk_json(&self, key: &RoomKey) -> Vec<serde_json::Value> {
+        let Some(call_ids) = self.room_sessions.get(key) else {
             return Vec::new();
         };
         let mut trunks: Vec<serde_json::Value> = call_ids
@@ -1805,39 +1804,39 @@ impl ConferenceCallHandler {
     }
 
     /// List participants waiting for moderator in a room.
-    pub fn list_waiting(&self, room_number: &str) -> Result<Vec<String>> {
+    pub fn list_waiting(&self, key: &RoomKey) -> Result<Vec<String>> {
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
         Ok(room.waiting_participants())
     }
 
     /// Promote a participant to host (releases waiting participants).
-    pub fn promote_participant(&self, room_number: &str, participant_id: &str) -> Result<()> {
+    pub fn promote_participant(&self, key: &RoomKey, participant_id: &str) -> Result<()> {
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
         room.promote_to_host(participant_id)
             .map_err(|e| anyhow::anyhow!("Failed to promote: {}", e))
     }
 
     /// Admit a specific waiting participant into the conference (admin bypass).
-    pub fn admit_waiting(&self, room_number: &str, participant_id: &str) -> Result<()> {
+    pub fn admit_waiting(&self, key: &RoomKey, participant_id: &str) -> Result<()> {
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
         room.admit_waiting_participant(participant_id)
             .map_err(|e| anyhow::anyhow!("Failed to admit: {}", e))
     }
 
     /// Admit all waiting participants into the conference (admin bypass).
-    pub fn admit_all_waiting(&self, room_number: &str) -> Result<usize> {
+    pub fn admit_all_waiting(&self, key: &RoomKey) -> Result<usize> {
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
         Ok(room.admit_all_waiting())
     }
@@ -1845,7 +1844,7 @@ impl ConferenceCallHandler {
     /// Set participant audio gain.
     ///
     /// Gain must be a finite value between 0.0 and 10.0 (inclusive).
-    pub fn set_gain(&self, room_number: &str, participant_id: &str, gain: f32) -> Result<()> {
+    pub fn set_gain(&self, key: &RoomKey, participant_id: &str, gain: f32) -> Result<()> {
         if !gain.is_finite() || gain < 0.0 || gain > audio_bridge::MAX_GAIN {
             anyhow::bail!(
                 "gain must be finite and in range [0.0, {}], got {}",
@@ -1855,17 +1854,18 @@ impl ConferenceCallHandler {
         }
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
         room.set_participant_gain(participant_id, gain)
             .map_err(|e| anyhow::anyhow!("Failed to set gain: {}", e))
     }
 
     /// Get aggregated room stats.
-    pub fn get_room_stats(&self, room_number: &str) -> Result<serde_json::Value> {
+    pub fn get_room_stats(&self, key: &RoomKey) -> Result<serde_json::Value> {
+        let room_number = key.room.as_str();
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
 
         let all_meta = room.get_all_participant_metadata();
@@ -1934,9 +1934,10 @@ impl ConferenceCallHandler {
     /// a subject's voice can be found (`docs/COMPLIANCE_FOLLOWUPS.md` §4).
     fn recording_participants(
         &self,
-        room_number: &str,
+        key: &RoomKey,
         only: Option<&str>,
     ) -> Vec<fcp_core::RecordingParticipant> {
+        let room_number = key.room.as_str();
         self.sessions
             .iter()
             .filter(|e| {
@@ -1955,11 +1956,11 @@ impl ConferenceCallHandler {
 
     /// Someone joined a room being recorded: their name goes on the row,
     /// off the join path, which is on its way to the caller's audio.
-    fn note_recording_participant(&self, room_number: &str, participant_id: &str) {
-        let Some(id) = self.recordings.get(room_number).map(|r| r.record.id) else {
+    fn note_recording_participant(&self, key: &RoomKey, participant_id: &str) {
+        let Some(id) = self.recordings.get(key).map(|r| r.record.id) else {
             return;
         };
-        let joined = self.recording_participants(room_number, Some(participant_id));
+        let joined = self.recording_participants(key, Some(participant_id));
         let Some(store) = self.storage.recording_store().cloned() else {
             return;
         };
@@ -1971,10 +1972,10 @@ impl ConferenceCallHandler {
     }
 
     /// Complete a per-participant recording's row, if one is under way.
-    fn finish_participant_recording(&self, room_number: &str, participant_id: &str) {
+    fn finish_participant_recording(&self, key: &RoomKey, participant_id: &str) {
         let Some((_, record)) = self
             .participant_recordings
-            .remove(&(room_number.to_string(), participant_id.to_string()))
+            .remove(&(key.clone(), participant_id.to_string()))
         else {
             return;
         };
@@ -2003,12 +2004,13 @@ impl ConferenceCallHandler {
     /// Start per-participant recording.
     pub async fn start_participant_recording(
         &self,
-        room_number: &str,
+        key: &RoomKey,
         participant_id: &str,
     ) -> Result<String> {
+        let room_number = key.room.as_str();
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
 
         let timestamp = SystemTime::now()
@@ -2029,13 +2031,8 @@ impl ConferenceCallHandler {
         // The room is told, as for a room recording: the participant is
         // heard with everyone they speak to (docs/COMPLIANCE_FOLLOWUPS.md
         // §8.3).
-        let tenant_id = self
-            .tenant_for_room(room_number)
-            .unwrap_or(self.default_tenant_id);
         let sample_rate = self.conference_config.read().sample_rate;
-        let (consent, _, _) = self
-            .announce_recording_consent(room_number, &tenant_id, sample_rate)
-            .await;
+        let (consent, _, _) = self.announce_recording_consent(key, sample_rate).await;
         if consent == fcp_core::RecordingConsent::Refused {
             anyhow::bail!(
                 "participant {participant_id} not recorded: the recording announcement could \
@@ -2050,8 +2047,8 @@ impl ConferenceCallHandler {
         // A row like a room recording's, so retention, holds and erasure
         // can find it.
         let mut record = fcp_core::Recording::starting(
-            tenant_id,
-            room_number,
+            key.tenant,
+            &key.room,
             &self.node_id,
             &path,
             fcp_core::RecordingFormat::Wav,
@@ -2061,7 +2058,7 @@ impl ConferenceCallHandler {
         record.consent = consent;
         record.participant_id = Some(participant_id.to_string());
         record.participants = 1;
-        record.participant_list = self.recording_participants(room_number, Some(participant_id));
+        record.participant_list = self.recording_participants(key, Some(participant_id));
         if let Some(store) = self.storage.recording_store() {
             if let Err(e) = store.create_recording(&record).await {
                 let _ = room.stop_participant_recording(participant_id);
@@ -2069,10 +2066,8 @@ impl ConferenceCallHandler {
                 anyhow::bail!("recording not registered, so not kept: {e}");
             }
         }
-        self.participant_recordings.insert(
-            (room_number.to_string(), participant_id.to_string()),
-            record,
-        );
+        self.participant_recordings
+            .insert((key.clone(), participant_id.to_string()), record);
 
         info!(
             room = %room_number,
@@ -2084,19 +2079,16 @@ impl ConferenceCallHandler {
     }
 
     /// Stop per-participant recording.
-    pub fn stop_participant_recording(
-        &self,
-        room_number: &str,
-        participant_id: &str,
-    ) -> Result<()> {
+    pub fn stop_participant_recording(&self, key: &RoomKey, participant_id: &str) -> Result<()> {
+        let room_number = key.room.as_str();
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
 
         room.stop_participant_recording(participant_id)
             .map_err(|e| anyhow::anyhow!("Failed to stop recording: {}", e))?;
-        self.finish_participant_recording(room_number, participant_id);
+        self.finish_participant_recording(key, participant_id);
 
         info!(
             room = %room_number,
@@ -2125,7 +2117,9 @@ impl ConferenceCallHandler {
     /// Where a room's video events go: the bus, the video budget as the
     /// floor's gate, and this handler as the one that tells gateway
     /// sessions about the floor.
-    fn video_event_sink(&self, tenant_id: TenantId, room_number: &str) -> VideoEventSink {
+    fn video_event_sink(&self, key: &RoomKey) -> VideoEventSink {
+        let room_number = key.room.as_str();
+        let tenant_id = key.tenant;
         VideoEventSink {
             event_bus: Arc::clone(&self.event_bus),
             tenant_id,
@@ -2171,8 +2165,8 @@ impl ConferenceCallHandler {
 
     /// A participant admitted while someone holds the floor is told so
     /// (§15.6, 7c), as one there from the start would have been.
-    fn tell_floor_on_join(&self, call_id: &str, room_number: &str) {
-        let (Some(me), Ok(room)) = (self.me(), self.bridge.get_room(room_number)) else {
+    fn tell_floor_on_join(&self, call_id: &str, key: &RoomKey) {
+        let (Some(me), Ok(room)) = (self.me(), self.bridge.get_room(key)) else {
             return;
         };
         let Some(content) = room.video().and_then(|v| v.content()) else {
@@ -2203,21 +2197,20 @@ impl ConferenceCallHandler {
     /// sample, so a recording is addressable from the moment it starts.
     pub async fn start_room_recording(
         &self,
-        room_number: &str,
+        key: &RoomKey,
         trigger: fcp_core::RecordingTrigger,
     ) -> Result<fcp_core::Recording> {
-        if self.recordings.contains_key(room_number) {
+        let room_number = key.room.as_str();
+        if self.recordings.contains_key(key) {
             anyhow::bail!("room {room_number} is already being recorded");
         }
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|_| anyhow::anyhow!("Conference room not active"))?;
-        let tenant_id = self
-            .tenant_for_room(room_number)
-            .unwrap_or(self.default_tenant_id);
+        let tenant_id = key.tenant;
         let meeting = self
-            .lookup_meeting(&tenant_id, room_number)
+            .lookup_meeting(&key.tenant, &key.room)
             .await
             .ok()
             .flatten();
@@ -2256,8 +2249,8 @@ impl ConferenceCallHandler {
         );
 
         let mut record = fcp_core::Recording::starting(
-            tenant_id,
-            room_number,
+            key.tenant,
+            &key.room,
             &self.node_id,
             &path,
             format,
@@ -2265,13 +2258,12 @@ impl ConferenceCallHandler {
         );
         record.meeting_id = meeting.as_ref().map(|m| m.id);
         record.participants = room.participant_count() as u32;
-        record.participant_list = self.recording_participants(room_number, None);
+        record.participant_list = self.recording_participants(key, None);
 
         // The room hears the tenant's announcement before the first
         // sample, and so does everyone who joins while this runs.
-        let (consent, consent_audio, plan) = self
-            .announce_recording_consent(room_number, &tenant_id, conf.sample_rate)
-            .await;
+        let (consent, consent_audio, plan) =
+            self.announce_recording_consent(key, conf.sample_rate).await;
         if consent == fcp_core::RecordingConsent::Refused {
             anyhow::bail!(
                 "room {room_number} not recorded: the recording announcement could not be \
@@ -2341,16 +2333,12 @@ impl ConferenceCallHandler {
             }
         }
         self.recordings.insert(
-            room_number.to_string(),
+            key.clone(),
             ActiveRecording {
                 record: record.clone(),
                 consent_audio,
                 writer,
-                notice: self.spawn_recording_notice(
-                    room_number,
-                    plan.notice_interval,
-                    conf.sample_rate,
-                ),
+                notice: self.spawn_recording_notice(key, plan.notice_interval, conf.sample_rate),
             },
         );
         info!(
@@ -2373,11 +2361,12 @@ impl ConferenceCallHandler {
     }
 
     /// Stop a room's recording and complete its row.
-    pub async fn stop_room_recording(&self, room_number: &str) -> Result<fcp_core::Recording> {
-        let Some((_, active)) = self.recordings.remove(room_number) else {
+    pub async fn stop_room_recording(&self, key: &RoomKey) -> Result<fcp_core::Recording> {
+        let room_number = key.room.as_str();
+        let Some((_, active)) = self.recordings.remove(key) else {
             // A room recording started before this node knew about the
             // registry (or by forge-conference itself) still stops.
-            if let Ok(room) = self.bridge.get_room(room_number) {
+            if let Ok(room) = self.bridge.get_room(key) {
                 if room.is_recording() {
                     room.stop_recording()
                         .map_err(|e| anyhow::anyhow!("stopping the recorder: {e}"))?;
@@ -2394,7 +2383,7 @@ impl ConferenceCallHandler {
         let mut record = active.record;
         let (duration_secs, size_bytes) = match active.writer {
             RecordingWriter::Wav => {
-                if let Ok(room) = self.bridge.get_room(room_number) {
+                if let Ok(room) = self.bridge.get_room(key) {
                     if let Err(e) = room.stop_recording() {
                         warn!(room = %room_number, error = %e, "Failed to stop the WAV recorder");
                     }
@@ -2449,13 +2438,13 @@ impl ConferenceCallHandler {
     }
 
     /// Whether this node is recording the room.
-    pub fn is_room_recording(&self, room_number: &str) -> bool {
-        self.recordings.contains_key(room_number)
+    pub fn is_room_recording(&self, key: &RoomKey) -> bool {
+        self.recordings.contains_key(key)
     }
 
     /// The room's recording, if this node is making one.
-    pub fn room_recording(&self, room_number: &str) -> Option<fcp_core::Recording> {
-        self.recordings.get(room_number).map(|r| r.record.clone())
+    pub fn room_recording(&self, key: &RoomKey) -> Option<fcp_core::Recording> {
+        self.recordings.get(key).map(|r| r.record.clone())
     }
 
     /// Every recording under way on this node.
@@ -2468,9 +2457,9 @@ impl ConferenceCallHandler {
 
     /// The announcement anyone joining a recorded room must hear, when
     /// the tenant's policy asks for one.
-    pub fn recording_consent_audio(&self, room_number: &str) -> Option<Arc<Vec<i16>>> {
+    pub fn recording_consent_audio(&self, key: &RoomKey) -> Option<Arc<Vec<i16>>> {
         self.recordings
-            .get(room_number)
+            .get(key)
             .and_then(|r| r.consent_audio.clone())
     }
 
@@ -2481,14 +2470,15 @@ impl ConferenceCallHandler {
     /// and the plan, whose notice interval the recording keeps.
     async fn announce_recording_consent(
         &self,
-        room_number: &str,
-        tenant_id: &TenantId,
+        key: &RoomKey,
         sample_rate: u32,
     ) -> (
         fcp_core::RecordingConsent,
         Option<Arc<Vec<i16>>>,
         fcp_core::compliance::ConsentPlan,
     ) {
+        let room_number = key.room.as_str();
+        let tenant_id = &key.tenant;
         let plan = fcp_core::compliance::ConsentPlan::resolve(
             self.storage.compliance_store().map(|s| s.as_ref()),
             self.storage.prompt_store().map(|s| s.as_ref()),
@@ -2534,7 +2524,7 @@ impl ConferenceCallHandler {
         let samples = player
             .load_audio_file(&audio_path)
             .map(|s| Arc::new(s.to_vec()));
-        match self.play_announcement(room_number, &audio_path).await {
+        match self.play_announcement(key, &audio_path).await {
             Ok(()) => {
                 info!(room = %room_number, "Recording announcement played");
                 (plan.outcome(true), samples, plan)
@@ -2550,32 +2540,33 @@ impl ConferenceCallHandler {
     /// tenants whose regime asks for a continuing notice.
     fn spawn_recording_notice(
         &self,
-        room_number: &str,
+        key: &RoomKey,
         interval: Option<Duration>,
         sample_rate: u32,
     ) -> Option<JoinHandle<()>> {
         let interval = interval?;
         let me = self.me()?;
-        let room_number = room_number.to_string();
+        let key = key.clone();
         Some(tokio::spawn(async move {
             let tone = match notice_tone_file(sample_rate) {
                 Ok(path) => path,
                 Err(e) => {
-                    warn!(room = %room_number, error = %e, "No notice tone to play");
+                    warn!(room = %key, error = %e, "No notice tone to play");
                     return;
                 }
             };
             loop {
                 tokio::time::sleep(interval).await;
-                if let Err(e) = me.play_announcement(&room_number, &tone).await {
-                    debug!(room = %room_number, error = %e, "Recording notice not played; stopping it");
+                if let Err(e) = me.play_announcement(&key, &tone).await {
+                    debug!(room = %key, error = %e, "Recording notice not played; stopping it");
                     return;
                 }
             }
         }))
     }
 
-    pub async fn play_announcement(&self, room_number: &str, audio_path: &str) -> Result<()> {
+    pub async fn play_announcement(&self, key: &RoomKey, audio_path: &str) -> Result<()> {
+        let room_number = key.room.as_str();
         // Validate announcement file exists and is within size limits
         let meta = std::fs::metadata(audio_path)
             .map_err(|e| anyhow::anyhow!("Announcement file not found '{}': {}", audio_path, e))?;
@@ -2591,7 +2582,7 @@ impl ConferenceCallHandler {
 
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
 
         room.play_announcement(audio_path)
@@ -2603,19 +2594,20 @@ impl ConferenceCallHandler {
     }
 
     /// Get or create DTMF command handler for a room.
-    fn get_or_create_dtmf_handler(&self, room_number: &str) -> Arc<DtmfCommandHandler> {
-        if let Some(handler) = self.dtmf_handlers.get(room_number) {
+    fn get_or_create_dtmf_handler(&self, key: &RoomKey) -> Arc<DtmfCommandHandler> {
+        let room_number = key.room.as_str();
+        if let Some(handler) = self.dtmf_handlers.get(key) {
             return Arc::clone(handler.value());
         }
         let config = ConferenceDtmfConfig::default();
         let handler = Arc::new(DtmfCommandHandler::new(room_number.to_string(), config));
-        self.dtmf_handlers
-            .insert(room_number.to_string(), Arc::clone(&handler));
+        self.dtmf_handlers.insert(key.clone(), Arc::clone(&handler));
         handler
     }
 
     /// Attach an AI participant to a conference room.
-    pub async fn attach_ai(&self, room_number: &str) -> Result<()> {
+    pub async fn attach_ai(&self, key: &RoomKey) -> Result<()> {
+        let room_number = key.room.as_str();
         let ai_conf = self.ai_config.read().clone();
         if !ai_conf.enabled {
             anyhow::bail!("AI participants are not enabled in configuration");
@@ -2623,7 +2615,7 @@ impl ConferenceCallHandler {
 
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
 
         // Build AI session config from server config
@@ -2667,10 +2659,11 @@ impl ConferenceCallHandler {
     }
 
     /// Detach AI participant from a conference room.
-    pub async fn detach_ai(&self, room_number: &str) -> Result<()> {
+    pub async fn detach_ai(&self, key: &RoomKey) -> Result<()> {
+        let room_number = key.room.as_str();
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
 
         room.detach_ai()
@@ -2682,10 +2675,11 @@ impl ConferenceCallHandler {
     }
 
     /// Get AI participant status for a room.
-    pub fn ai_status(&self, room_number: &str) -> Result<serde_json::Value> {
+    pub fn ai_status(&self, key: &RoomKey) -> Result<serde_json::Value> {
+        let room_number = key.room.as_str();
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
 
         let has_ai = room.has_ai();
@@ -2734,12 +2728,13 @@ impl ConferenceCallHandler {
     /// is bridged into the conference mixer as a regular participant.
     pub async fn dial_out(
         &self,
-        room_number: &str,
+        key: &RoomKey,
         destination: &str,
-        tenant_id: TenantId,
         greeting_tts: Option<&str>,
         greeting_prompt: Option<&str>,
     ) -> Result<String> {
+        let room_number = key.room.as_str();
+        let tenant_id = key.tenant;
         // 0. Normalize destination
         let destination = if destination.starts_with("sip:") || destination.starts_with("tel:") {
             destination.to_string()
@@ -2758,7 +2753,7 @@ impl ConferenceCallHandler {
 
         // 1. Look up meeting config and get or create the room
         let meeting = self
-            .lookup_meeting(&tenant_id, room_number)
+            .lookup_meeting(&key.tenant, &key.room)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Meeting '{}' not found", room_number))?;
 
@@ -2766,7 +2761,7 @@ impl ConferenceCallHandler {
             anyhow::bail!("Conference is disabled");
         }
 
-        let room = self.room_for_join(&tenant_id, room_number).await?;
+        let (room, _joining) = self.room_for_join(key).await?;
 
         // Configure room from meeting settings (idempotent)
         let room_config = self.meeting_to_room_config(&meeting);
@@ -3019,7 +3014,7 @@ impl ConferenceCallHandler {
         let stats = Arc::new(AudioStats::new());
         let stats_clone = Arc::clone(&stats);
         let dtmf_handler = if conf.dtmf_enabled {
-            Some(self.get_or_create_dtmf_handler(room_number))
+            Some(self.get_or_create_dtmf_handler(key))
         } else {
             None
         };
@@ -3054,7 +3049,7 @@ impl ConferenceCallHandler {
         let remote_addr = parse_remote_rtp_addr(answer_sdp).unwrap_or(UNKNOWN_REMOTE);
         let codec_name_log = codec_name.clone();
         self.room_sessions
-            .entry(room_number.to_string())
+            .entry(key.clone())
             .or_default()
             .push(call_id.clone());
         self.sessions.insert(
@@ -3099,7 +3094,7 @@ impl ConferenceCallHandler {
             tenant_id,
             timestamp: SystemTime::now(),
         });
-        self.sync_room_registry(room_number);
+        self.sync_room_registry(key);
         self.publish_event(ConferenceEvent::ParticipantJoined {
             room_number: room_number.to_string(),
             participant_id: participant_id.clone(),
@@ -3123,13 +3118,13 @@ impl ConferenceCallHandler {
 
     /// Play audio samples to all participants' RTP sockets directly.
     /// Used for conference-wide announcements (e.g. "conference ending").
-    pub async fn play_to_all_participants(&self, room_number: &str, samples: &[i16]) {
+    pub async fn play_to_all_participants(&self, key: &RoomKey, samples: &[i16]) {
         // Get all sessions for this room
-        if let Some(call_ids) = self.room_sessions.get(room_number) {
+        if let Some(call_ids) = self.room_sessions.get(key) {
             let call_ids: Vec<String> = call_ids.clone();
             drop(call_ids); // release DashMap ref
 
-            if let Some(sessions_ref) = self.room_sessions.get(room_number) {
+            if let Some(sessions_ref) = self.room_sessions.get(key) {
                 let cids: Vec<String> = sessions_ref.clone();
                 drop(sessions_ref);
 
@@ -3173,18 +3168,17 @@ impl ConferenceCallHandler {
     }
 
     /// Force-destroy a specific conference room: BYE all participants, stop recording, delete room.
-    pub async fn destroy_conference(&self, room_number: &str) -> Result<usize> {
+    pub async fn destroy_conference(&self, key: &RoomKey) -> Result<usize> {
+        let room_number = key.room.as_str();
         // Verify room exists
         self.bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|_| anyhow::anyhow!("Conference room not active: {}", room_number))?;
-
-        let room_tenant_id = self.tenant_for_room(room_number);
 
         // Collect call IDs using room index for O(1) lookup
         let call_ids: Vec<String> = self
             .room_sessions
-            .get(room_number)
+            .get(key)
             .map(|ids| ids.clone())
             .unwrap_or_default();
 
@@ -3205,36 +3199,29 @@ impl ConferenceCallHandler {
         }
 
         // Stop recording if active
-        if self.is_room_recording(room_number) {
-            let _ = self.stop_room_recording(room_number).await;
-        } else if let Ok(room) = self.bridge.get_room(room_number) {
+        if self.is_room_recording(key) {
+            let _ = self.stop_room_recording(key).await;
+        } else if let Ok(room) = self.bridge.get_room(key) {
             if room.is_recording() {
                 let _ = room.stop_recording();
             }
         }
 
         // Delete the room
-        let _ = self.bridge.delete_room(room_number);
+        let _ = self.bridge.delete_room(key);
 
         // Clean up associated state
-        self.dtmf_handlers.remove(room_number);
+        self.dtmf_handlers.remove(key);
 
-        if let Some(tenant_id) = room_tenant_id {
-            self.publish_event(ConferenceEvent::RoomDestroyed {
-                room_number: room_number.to_string(),
-                tenant_id,
-                timestamp: SystemTime::now(),
-            });
-        } else {
-            warn!(
-                room = %room_number,
-                "Skipped RoomDestroyed event because tenant context could not be resolved"
-            );
-        }
+        self.publish_event(ConferenceEvent::RoomDestroyed {
+            room_number: room_number.to_string(),
+            tenant_id: key.tenant,
+            timestamp: SystemTime::now(),
+        });
 
         info!(room = %room_number, participants = kicked, "Conference room force-destroyed");
         // The room is gone on this node: drop it from the cluster registry.
-        self.sync_room_registry(room_number);
+        self.sync_room_registry(key);
         Ok(kicked)
     }
 
@@ -3285,15 +3272,15 @@ impl ConferenceCallHandler {
         }
 
         // Stop recordings and delete all active rooms
-        for room_id in self.bridge.list_rooms() {
-            if self.is_room_recording(&room_id) {
-                let _ = self.stop_room_recording(&room_id).await;
-            } else if let Ok(room) = self.bridge.get_room(&room_id) {
+        for key in self.bridge.list_rooms() {
+            if self.is_room_recording(&key) {
+                let _ = self.stop_room_recording(&key).await;
+            } else if let Ok(room) = self.bridge.get_room(&key) {
                 if room.is_recording() {
                     let _ = room.stop_recording();
                 }
             }
-            let _ = self.bridge.delete_room(&room_id);
+            let _ = self.bridge.delete_room(&key);
         }
 
         // Clear all in-memory maps to release resources
@@ -3520,13 +3507,14 @@ impl ConferenceCallHandler {
             }
         };
 
+        let platform_event = PlatformEvent::Conference(event);
+
         // Notify RFC 4575 subscribers for this room
-        if let Some(ref rn) = room_number {
-            self.notify_conference_subscribers(rn);
+        if let (Some(room), Some(tenant)) = (room_number, platform_event.tenant_id()) {
+            self.notify_conference_subscribers(&RoomKey::new(*tenant, room));
         }
 
         let event_bus = Arc::clone(&self.event_bus);
-        let platform_event = PlatformEvent::Conference(event);
         tokio::spawn(async move {
             if let Err(e) = event_bus.publish(platform_event).await {
                 warn!(error = %e, "Failed to publish conference event");
@@ -3535,14 +3523,15 @@ impl ConferenceCallHandler {
     }
 
     /// Send NOTIFY to all RFC 4575 subscribers for a given room.
-    fn notify_conference_subscribers(&self, room_number: &str) {
+    fn notify_conference_subscribers(&self, key: &RoomKey) {
+        let room_number = key.room.as_str();
         // Collect active subscribers for this room (and prune expired ones)
         let now = Instant::now();
         let mut expired = Vec::new();
         let mut targets: Vec<SipUri> = Vec::new();
 
         for entry in self.conference_subscriptions.iter() {
-            if entry.value().room_number == room_number {
+            if entry.value().key == *key {
                 if entry.value().expires_at <= now {
                     expired.push(entry.key().clone());
                 } else {
@@ -3561,7 +3550,7 @@ impl ConferenceCallHandler {
         }
 
         // Build conference state XML
-        let state_xml = if let Ok(room) = self.bridge.get_room(room_number) {
+        let state_xml = if let Ok(room) = self.bridge.get_room(key) {
             build_conference_state_xml(room_number, &room)
         } else {
             // Room was destroyed, send empty state
@@ -3595,18 +3584,19 @@ impl ConferenceCallHandler {
     /// the far end), writing the leg's record.
     fn remove_session_for(&self, call_id: &str, reason: fcp_sip::TerminationReason) {
         if let Some((_, mut session)) = self.sessions.remove(call_id) {
+            let key = session.room_key();
             // A leg that was being moved leaves as a migration, whether
             // its holder reported first or simply hung up (phase 5).
             let migrated_to = self.migrations.take(call_id).map(|m| m.target_node);
             self.write_leg_record(&session, reason, migrated_to.as_deref());
             // Their own recording, if one ran, ends with them.
-            self.finish_participant_recording(&session.room_number, &session.participant_id);
+            self.finish_participant_recording(&key, &session.participant_id);
             // Update secondary room index
-            if let Some(mut ids) = self.room_sessions.get_mut(&session.room_number) {
+            if let Some(mut ids) = self.room_sessions.get_mut(&key) {
                 ids.retain(|id| id != call_id);
                 if ids.is_empty() {
                     drop(ids);
-                    self.room_sessions.remove(&session.room_number);
+                    self.room_sessions.remove(&key);
                 }
             }
             info!(
@@ -3619,7 +3609,7 @@ impl ConferenceCallHandler {
 
             // A BFCP endpoint's ids, and the floor it held, go with it (7e).
             if let Some(a) = &session.bfcp {
-                self.bfcp.leave(&session.room_number, a.user_id);
+                self.bfcp.leave(&key, a.user_id);
             }
 
             // Abort the audio bridge task and validate it actually stops
@@ -3674,7 +3664,7 @@ impl ConferenceCallHandler {
             }
 
             // Publish leave event (trunks are infrastructure, not participants)
-            self.sync_room_registry(&session.room_number);
+            self.sync_room_registry(&key);
             if session.trunk_peer.is_none() {
                 self.publish_event(ConferenceEvent::ParticipantLeft {
                     room_number: session.room_number.clone(),
@@ -3686,7 +3676,7 @@ impl ConferenceCallHandler {
             }
 
             // Remove from forge-conference room
-            if let Ok(room) = self.bridge.get_room(&session.room_number) {
+            if let Ok(room) = self.bridge.get_room(&key) {
                 let _ = room.remove_participant(&session.participant_id);
 
                 // Publish MeetingEnded when last participant leaves
@@ -3709,31 +3699,38 @@ impl ConferenceCallHandler {
                     let tenant_id = session.tenant_id;
 
                     // Clean up DTMF handler for this room
-                    self.dtmf_handlers.remove(&room_number);
+                    self.dtmf_handlers.remove(&key);
 
                     // Clean up meeting cache for this room
                     self.meeting_cache.remove(&(tenant_id, room_number.clone()));
 
+                    let key = key.clone();
                     tokio::spawn(async move {
                         use fcp_core::storage::ConferenceStore;
                         // Re-check participant count — a new participant may have joined
                         // between our check and this task executing
-                        if let Ok(room) = bridge.get_room(&room_number) {
+                        if let Ok(room) = bridge.get_room(&key) {
                             if room.participant_count() > 0 {
                                 debug!(room = %room_number, "Skipping auto-destroy: room is no longer empty");
                                 return;
                             }
                         }
                         let should_destroy = match storage
-                            .get_meeting_by_room_number(&tenant_id, &room_number)
+                            .get_meeting_by_room_number(&key.tenant, &key.room)
                             .await
                         {
                             Ok(Some(meeting)) => !meeting.permanent,
                             _ => true,
                         };
                         if should_destroy {
-                            debug!(room = %room_number, "Destroying empty conference room");
-                            let _ = bridge.delete_room(&room_number);
+                            // Still empty, and nobody on the way in: the
+                            // meeting read above is long enough for a
+                            // caller to have joined.
+                            if !bridge.delete_room_if_idle(&key) {
+                                debug!(room = %room_number, "Skipping auto-destroy: a caller joined");
+                                return;
+                            }
+                            debug!(room = %room_number, "Destroyed empty conference room");
 
                             let event = PlatformEvent::Conference(ConferenceEvent::RoomDestroyed {
                                 room_number,
@@ -4021,8 +4018,7 @@ impl ConferenceCallHandler {
         room: &Arc<forge_conference::ConferenceRoom>,
         participant_id: &str,
         display_name: Option<&str>,
-        tenant_id: TenantId,
-        room_number: &str,
+        key: &RoomKey,
         mut leg: VideoLeg,
         may_share: bool,
     ) -> Option<VideoLeg> {
@@ -4030,12 +4026,11 @@ impl ConferenceCallHandler {
             self.release_video_pair_later(leg.port_pair);
             return None;
         };
-        let sink = self.video_event_sink(tenant_id, room_number);
+        let sink = self.video_event_sink(key);
         // A BFCP endpoint's floor is explicit (7e): its policy is noted,
         // and its implicit sending switched off, whichever way it goes.
         if leg.kind == StreamKind::Content {
-            self.bfcp
-                .set_may_share(room_number, participant_id, may_share);
+            self.bfcp.set_may_share(key, participant_id, may_share);
         }
         let fut = match leg.kind {
             StreamKind::Camera => {
@@ -4071,7 +4066,7 @@ impl ConferenceCallHandler {
             if let Some(handle) = leg.bridge_handle {
                 handle.abort();
             }
-            if let Ok(room) = self.bridge.get_room(&session.room_number) {
+            if let Ok(room) = self.bridge.get_room(&session.room_key()) {
                 match kind {
                     StreamKind::Camera => {
                         video_bridge::detach_video(&room, &session.participant_id)
@@ -4093,14 +4088,14 @@ impl ConferenceCallHandler {
     async fn prepare_leg(
         &self,
         kind: StreamKind,
-        tenant_id: &TenantId,
-        room_number: &str,
+        key: &RoomKey,
         sdp_offer: &str,
         conf: &ConferenceSection,
     ) -> Option<(VideoLeg, String)> {
+        let room_number = key.room.as_str();
         let backend = self.video_backend.as_ref()?;
         let meeting = self
-            .lookup_meeting(tenant_id, room_number)
+            .lookup_meeting(&key.tenant, &key.room)
             .await
             .ok()
             .flatten()?;
@@ -4371,33 +4366,30 @@ pub async fn play_prompt_to_rtp(
 
 /// Inter-node conference trunks (see [`crate::trunks`]).
 impl ConferenceCallHandler {
-    /// Get or create a room and make sure its frame clock is running.
-    /// Every room this server mixes runs on the frame clock: it is what
-    /// lets each participant, the recorder, an AI tap and every trunk
-    /// read the same frame without consuming it from one another.
-    fn room_for(&self, room_number: &str) -> Result<Arc<forge_conference::ConferenceRoom>> {
-        let room = self
+    /// The room a caller joins, made if it is not here, with its frame
+    /// clock running. Every room this server mixes runs on the frame
+    /// clock: it is what lets each participant, the recorder, an AI tap
+    /// and every trunk read the same frame without consuming it from one
+    /// another. When this call creates the room on this node, the room inherits the cluster-wide
+    /// lock flag (phase 3), so a room locked on the nodes already hosting
+    /// it is locked here too before anyone is admitted.
+    ///
+    /// The [`Joining`](crate::rooms::Joining) keeps the room from being
+    /// removed as empty until the caller is in; hold it until then.
+    async fn room_for_join(
+        &self,
+        key: &RoomKey,
+    ) -> Result<(Arc<forge_conference::ConferenceRoom>, crate::rooms::Joining)> {
+        let room_number = key.room.as_str();
+        let tenant_id = &key.tenant;
+        let (room, created, joining) = self
             .bridge
-            .get_or_create_room(room_number, None)
+            .join(key, None)
             .context("Failed to create conference room")?;
         room.start_frame_clock()
             .context("Failed to start the room's frame clock")?;
-        Ok(room)
-    }
-
-    /// [`room_for`](Self::room_for) for a caller joining: when this call
-    /// creates the room on this node, the room inherits the cluster-wide
-    /// lock flag (phase 3), so a room locked on the nodes already hosting
-    /// it is locked here too before anyone is admitted.
-    async fn room_for_join(
-        &self,
-        tenant_id: &TenantId,
-        room_number: &str,
-    ) -> Result<Arc<forge_conference::ConferenceRoom>> {
-        let existed = self.bridge.get_room(room_number).is_ok();
-        let room = self.room_for(room_number)?;
-        if existed {
-            return Ok(room);
+        if !created {
+            return Ok((room, joining));
         }
         let registry = self.room_registry.read().unwrap().clone();
         if let Some(registry) = registry {
@@ -4409,15 +4401,16 @@ impl ConferenceCallHandler {
                 info!(room = %room_number, "Room created locked: inherited the cluster-wide lock");
             }
         }
-        Ok(room)
+        Ok((room, joining))
     }
 
     /// Lock or unlock the room on this node only. `Err` when the room is
     /// not active here.
-    pub fn set_room_locked(&self, room_number: &str, locked: bool) -> Result<()> {
+    pub fn set_room_locked(&self, key: &RoomKey, locked: bool) -> Result<()> {
+        let room_number = key.room.as_str();
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|_| anyhow::anyhow!("Conference room not active: {}", room_number))?;
         if locked {
             room.lock();
@@ -4434,8 +4427,8 @@ impl ConferenceCallHandler {
 
     /// Peer nodes this node has a trunk with for a room, whichever side
     /// dialed.
-    pub fn room_trunk_peers(&self, room_number: &str) -> Vec<String> {
-        let Some(call_ids) = self.room_sessions.get(room_number) else {
+    pub fn room_trunk_peers(&self, key: &RoomKey) -> Vec<String> {
+        let Some(call_ids) = self.room_sessions.get(key) else {
             return Vec::new();
         };
         let mut peers: Vec<String> = call_ids
@@ -4452,10 +4445,11 @@ impl ConferenceCallHandler {
     /// the BYE sent in the background with a bound. The peer may be the
     /// reason for the hangup — dead, or gone from the cluster — and a
     /// BYE that never gets answered must not stall the reconciler.
-    pub async fn hangup_trunk(&self, room_number: &str, peer: &str) {
+    pub async fn hangup_trunk(&self, key: &RoomKey, peer: &str) {
+        let room_number = key.room.as_str();
         let call_ids: Vec<String> = self
             .room_sessions
-            .get(room_number)
+            .get(key)
             .map(|ids| ids.clone())
             .unwrap_or_default();
         for call_id in call_ids {
@@ -4490,8 +4484,8 @@ impl ConferenceCallHandler {
     /// no RTP received for `timeout` (or ever). A peer sends a frame
     /// every 20 ms while its trunk is up, so silence this long means the
     /// peer crashed, restarted, or dropped the session without a BYE.
-    pub fn silent_trunks(&self, room_number: &str, timeout: Duration) -> Vec<String> {
-        let Some(call_ids) = self.room_sessions.get(room_number) else {
+    pub fn silent_trunks(&self, key: &RoomKey, timeout: Duration) -> Vec<String> {
+        let Some(call_ids) = self.room_sessions.get(key) else {
             return Vec::new();
         };
         let mut peers: Vec<String> = call_ids
@@ -4548,16 +4542,17 @@ impl ConferenceCallHandler {
     /// the trunk manager on the lower-id side only.
     pub async fn dial_trunk(
         &self,
-        tenant_id: TenantId,
-        room_number: &str,
+        key: &RoomKey,
         peer_node: &str,
         target: SocketAddr,
     ) -> Result<()> {
+        let room_number = key.room.as_str();
+        let tenant_id = key.tenant;
         let room = self
             .bridge
-            .get_room(room_number)
+            .get_room(key)
             .map_err(|_| anyhow::anyhow!("room {} is not hosted on this node", room_number))?;
-        if self.countable_participants(room_number) == 0 {
+        if self.countable_participants(key) == 0 {
             bail!("room {} has no local participants to trunk", room_number);
         }
         let conf = self.conference_config.read().clone();
@@ -4597,7 +4592,7 @@ impl ConferenceCallHandler {
         // encode something the meeting allows (§15.4, 5b). A meeting that
         // turns video on later gets it when its trunks are next
         // re-established, which reconcile does.
-        let planned = self.plan_trunk_video(&tenant_id, room_number, &conf).await;
+        let planned = self.plan_trunk_video(key, &conf).await;
         let video_srtp = match (&planned, offer_srtp) {
             (Some(_), true) => Some(
                 fcp_media::SrtpOffer::generate()
@@ -4892,13 +4887,12 @@ impl ConferenceCallHandler {
     /// backend, or nothing agrees.
     async fn plan_trunk_video(
         &self,
-        tenant_id: &TenantId,
-        room_number: &str,
+        key: &RoomKey,
         conf: &ConferenceSection,
     ) -> Option<TrunkVideoPlan> {
         let backend = self.video_backend.as_ref()?;
         let meeting = self
-            .lookup_meeting(tenant_id, room_number)
+            .lookup_meeting(&key.tenant, &key.room)
             .await
             .ok()
             .flatten()?;
@@ -5042,14 +5036,17 @@ impl ConferenceCallHandler {
             handle.send_final(reject(400, "Bad Room")).await;
             return Ok(());
         };
+        // The room is the tenant's the peer named: another tenant's room
+        // of the same number is another room.
+        let key = RoomKey::new(tenant_id, room_number.clone());
         // A trunk only makes sense between two nodes that both have
         // callers in the room. Without local callers there is nothing to
         // send, and the peer's own reconcile will not hold the trunk.
-        if self.countable_participants(&room_number) == 0 {
+        if self.countable_participants(&key) == 0 {
             handle.send_final(reject(480, "Room Not Hosted Here")).await;
             return Ok(());
         }
-        let Ok(room) = self.bridge.get_room(&room_number) else {
+        let Ok(room) = self.bridge.get_room(&key) else {
             handle.send_final(reject(480, "Room Not Hosted Here")).await;
             return Ok(());
         };
@@ -5096,7 +5093,7 @@ impl ConferenceCallHandler {
         let mut video_answer_srtp = None;
         let mut plan = None;
         if fcp_media::parse_video_offer(sdp_offer).is_some_and(|v| v.port != 0) {
-            plan = self.plan_trunk_video(&tenant_id, &room_number, &conf).await;
+            plan = self.plan_trunk_video(&key, &conf).await;
             if plan.is_some() {
                 match parse_video_sdes_crypto(sdp_offer)
                     .first()
@@ -5283,7 +5280,7 @@ impl ConferenceCallHandler {
         // not dial again if it thought it had one.
         let stale: Vec<String> = self
             .room_sessions
-            .get(&room_number)
+            .get(&key)
             .map(|ids| ids.clone())
             .unwrap_or_default()
             .into_iter()
@@ -5420,8 +5417,7 @@ impl ConferenceCallHandler {
                 &leg.room,
                 &participant_id,
                 &leg.peer_node,
-                leg.tenant_id,
-                &leg.room_number,
+                &RoomKey::new(leg.tenant_id, leg.room_number.clone()),
                 v,
             )
         });
@@ -5430,8 +5426,7 @@ impl ConferenceCallHandler {
             (Some(c), true) => self.start_trunk_content(
                 &leg.room,
                 &participant_id,
-                leg.tenant_id,
-                &leg.room_number,
+                &RoomKey::new(leg.tenant_id, leg.room_number.clone()),
                 c,
             ),
             (Some(c), false) => {
@@ -5442,7 +5437,7 @@ impl ConferenceCallHandler {
         };
 
         self.room_sessions
-            .entry(leg.room_number.clone())
+            .entry(RoomKey::new(leg.tenant_id, leg.room_number.clone()))
             .or_default()
             .push(leg.call_id.clone());
         self.sessions.insert(
@@ -5495,15 +5490,15 @@ impl ConferenceCallHandler {
         &self,
         room: &Arc<forge_conference::ConferenceRoom>,
         participant_id: &str,
-        tenant_id: TenantId,
-        room_number: &str,
+        key: &RoomKey,
         mut leg: VideoLeg,
     ) -> Option<VideoLeg> {
+        let room_number = key.room.as_str();
         let Some(backend) = self.video_backend.as_ref() else {
             self.release_video_pair_later(leg.port_pair);
             return None;
         };
-        let sink = self.video_event_sink(tenant_id, room_number);
+        let sink = self.video_event_sink(key);
         match video_bridge::attach_trunk_content(room, backend, participant_id, &leg, sink) {
             Some(fut) => {
                 leg.bridge_handle = Some(tokio::spawn(fut));
@@ -5524,15 +5519,15 @@ impl ConferenceCallHandler {
         room: &Arc<forge_conference::ConferenceRoom>,
         participant_id: &str,
         peer_node: &str,
-        tenant_id: TenantId,
-        room_number: &str,
+        key: &RoomKey,
         mut leg: VideoLeg,
     ) -> Option<VideoLeg> {
+        let room_number = key.room.as_str();
         let Some(backend) = self.video_backend.as_ref() else {
             self.release_video_pair_later(leg.port_pair);
             return None;
         };
-        let sink = self.video_event_sink(tenant_id, room_number);
+        let sink = self.video_event_sink(key);
         match video_bridge::attach_trunk_video(room, backend, participant_id, peer_node, &leg, sink)
         {
             Some(fut) => {
@@ -5615,7 +5610,7 @@ struct TrunkVideoPlan {
 
 #[async_trait::async_trait]
 impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
-    async fn can_handle(&self, request: &sip_core::Request) -> bool {
+    async fn can_handle(&self, request: &sip_core::Request, peer: SocketAddr) -> bool {
         // A trunk INVITE names its tenant in a header and is authorized by
         // the peer certificate; handle_invite does that. Deciding here by
         // the Request-URI host would resolve the wrong tenant.
@@ -5630,7 +5625,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
         };
 
-        let tenant_id = match self.resolve_tenant(request).await {
+        let tenant_id = match self.resolve_tenant(request, Some(peer)).await {
             Ok(tenant_id) => tenant_id,
             Err(e) => {
                 warn!(room = %room_number, error = %e, "can_handle: resolve_tenant failed");
@@ -5815,10 +5810,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let tenant_id = match (&migrate, &join) {
             (Some(ticket), _) => ticket.tenant_id,
             (None, Some(token)) => token.tenant_id,
-            (None, None) => self.resolve_tenant(request).await?,
+            (None, None) => self.resolve_tenant(request, Some(peer)).await?,
         };
+        // The tenant's room of that number: another tenant's is another
+        // room, with its own mix.
+        let key = RoomKey::new(tenant_id, room_number.clone());
         let meeting = self
-            .lookup_meeting(&tenant_id, &room_number)
+            .lookup_meeting(&key.tenant, &key.room)
             .await?
             .context("Meeting not found")?;
 
@@ -5895,7 +5893,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         {
             let room_video = self
                 .bridge
-                .get_room(&room_number)
+                .get_room(&key)
                 .ok()
                 .and_then(|room| room.video());
             let cost = capacity.join_cost(settings, codecs, room_video.as_deref());
@@ -6051,9 +6049,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 .map(|o| (bind, o))
         });
         let mut bfcp_assignment = match (&bfcp_offer, content_pair.is_some(), &content_label) {
-            (Some((_, offer)), true, Some(_)) => {
-                Some(self.bfcp.reserve(&room_number, offer.transport))
-            }
+            (Some((_, offer)), true, Some(_)) => Some(self.bfcp.reserve(&key, offer.transport)),
             _ => None,
         };
         let bfcp_answer = match (&bfcp_assignment, &bfcp_offer, &content_label) {
@@ -6085,7 +6081,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let sdp_answer = answer.sdp;
         if answer.bfcp.is_none() {
             if let Some(a) = bfcp_assignment.take() {
-                self.bfcp.leave(&room_number, a.user_id);
+                self.bfcp.leave(&key, a.user_id);
             }
         }
         let mut negotiated_video = answer.video;
@@ -6320,7 +6316,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         };
 
         // 13. Get or create conference room, configure with meeting settings
-        let room = self.room_for_join(&tenant_id, &room_number).await?;
+        let (room, _joining) = self.room_for_join(&key).await?;
 
         // Wire room configuration from meeting → forge-conference
         let room_config = self.meeting_to_room_config(&meeting);
@@ -6443,7 +6439,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             self.pending_pin_auth.insert(
                 call_id.clone(),
                 PendingPinAuth {
-                    room_number: room_number.clone(),
+                    key: key.clone(),
                     participant_id: participant_id.clone(),
                     info_digits_tx,
                 },
@@ -6720,6 +6716,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let bridge_socket = Arc::clone(&rtp_socket);
             let event_bus = Arc::clone(&self.event_bus);
             let rn = room_number.clone();
+            let rkey = key.clone();
             let pid = participant_id.clone();
             let encoder = create_codec_instance(&codec_name)?;
             let decoder = create_codec_instance(&codec_name)?;
@@ -6727,7 +6724,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let mixer_sample_rate = conf.sample_rate;
 
             let dtmf_handler = if conf.dtmf_enabled {
-                Some(self.get_or_create_dtmf_handler(&room_number))
+                Some(self.get_or_create_dtmf_handler(&key))
             } else {
                 None
             };
@@ -6751,7 +6748,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let wait_may_share = video_bridge::may_share(&meeting.video_content_share, false);
             let wait_backend = self.video_backend.clone();
             let wait_display_name = display_name.clone();
-            let wait_sink = self.video_event_sink(tenant_id, &room_number);
+            let wait_sink = self.video_event_sink(&key);
 
             // Load announcement sound (short TTS message like "Please wait...")
             let mut announcement_samples: Option<Arc<Vec<i16>>> = None;
@@ -6988,7 +6985,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                             Some(handler) => {
                                                 if let Err(e) = handler
                                                     .start_room_recording(
-                                                        &rn,
+                                                        &rkey,
                                                         fcp_core::RecordingTrigger::Auto,
                                                     )
                                                     .await
@@ -7013,7 +7010,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                             // admitted now is told, as at a direct join.
                             if wait_by_token {
                                 if let Some(handler) = &wait_handler {
-                                    handler.tell_floor_on_join(&wait_call_id, &rn);
+                                    handler.tell_floor_on_join(&wait_call_id, &rkey);
                                 }
                             }
 
@@ -7084,12 +7081,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             // Store session with the wait handle
             let remote_addr = parse_remote_rtp_addr(sdp_offer).unwrap_or(UNKNOWN_REMOTE);
             self.room_sessions
-                .entry(room_number.clone())
+                .entry(key.clone())
                 .or_default()
                 .push(call_id.clone());
             if let Some(a) = &bfcp_assignment {
-                self.bfcp
-                    .bind(&room_number, a.user_id, &room, &participant_id);
+                self.bfcp.bind(&key, a.user_id, &room, &participant_id);
             }
             self.sessions.insert(
                 call_id.clone(),
@@ -7143,7 +7139,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // Insert into room_sessions index first (atomically check if we're the first)
         {
-            let mut entry = self.room_sessions.entry(room_number.clone()).or_default();
+            let mut entry = self.room_sessions.entry(key.clone()).or_default();
             let is_first = entry.is_empty();
             entry.push(call_id.clone());
             drop(entry); // release DashMap lock before publishing events
@@ -7181,7 +7177,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         }
 
         // Publish join event
-        self.sync_room_registry(&room_number);
+        self.sync_room_registry(&key);
         self.publish_event(ConferenceEvent::ParticipantJoined {
             room_number: room_number.clone(),
             participant_id: participant_id.clone(),
@@ -7199,7 +7195,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     && room.participant_count() >= cfg.min_recording_participants
                 {
                     if let Err(e) = self
-                        .start_room_recording(&room_number, fcp_core::RecordingTrigger::Auto)
+                        .start_room_recording(&key, fcp_core::RecordingTrigger::Auto)
                         .await
                     {
                         warn!(room = %room_number, error = %e, "Auto-record failed");
@@ -7220,13 +7216,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let mut welcome_played = false;
 
             // Whoever joins a room being recorded is named on its row.
-            self.note_recording_participant(&room_number, &participant_id);
+            self.note_recording_participant(&key, &participant_id);
 
             // A room being recorded tells whoever joins, when the
             // tenant's policy asks for an announcement (§11,
             // docs/COMPLIANCE.md). Before the welcome, so nobody speaks
             // first.
-            if let Some(consent) = self.recording_consent_audio(&room_number) {
+            if let Some(consent) = self.recording_consent_audio(&key) {
                 play_prompt_to_rtp(
                     &rtp_socket,
                     &consent,
@@ -7324,7 +7320,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // 17. Create DTMF handler and stats for audio bridge
         let dtmf_handler = if conf.dtmf_enabled {
-            let handler = self.get_or_create_dtmf_handler(&room_number);
+            let handler = self.get_or_create_dtmf_handler(&key);
             // Propagate host status so DTMF host commands work immediately
             if is_host {
                 handler.set_host(&participant_id, true);
@@ -7377,8 +7373,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 &room,
                 &participant_id,
                 display_name.as_deref(),
-                tenant_id,
-                &room_number,
+                &key,
                 leg,
                 may_share,
             )
@@ -7388,8 +7383,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 &room,
                 &participant_id,
                 display_name.as_deref(),
-                tenant_id,
-                &room_number,
+                &key,
                 leg,
                 may_share,
             )
@@ -7399,11 +7393,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let remote_addr = parse_remote_rtp_addr(sdp_offer).unwrap_or(UNKNOWN_REMOTE);
         if join.is_some() {
             // Told after the insert below has made the session findable.
-            self.tell_floor_on_join(&call_id, &room_number);
+            self.tell_floor_on_join(&call_id, &key);
         }
         if let Some(a) = &bfcp_assignment {
-            self.bfcp
-                .bind(&room_number, a.user_id, &room, &participant_id);
+            self.bfcp.bind(&key, a.user_id, &room, &participant_id);
         }
         self.sessions.insert(
             call_id.clone(),
@@ -7470,6 +7463,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 session.is_host,
             )
         };
+        let key = RoomKey::new(tenant_id, room_number.clone());
 
         // Rate-limit re-INVITEs using the participant's known remote IP
         if !self.check_invite_rate(remote_ip, conf.max_invite_rate_per_ip) {
@@ -7487,26 +7481,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let offered_video = offered_sections.camera.filter(|v| v.port != 0);
         let offered_content = offered_sections.content.filter(|v| v.port != 0);
         let new_video = if !has_video && offered_video.is_some() {
-            self.prepare_leg(
-                StreamKind::Camera,
-                &tenant_id,
-                &room_number,
-                sdp_offer,
-                &conf,
-            )
-            .await
+            self.prepare_leg(StreamKind::Camera, &key, sdp_offer, &conf)
+                .await
         } else {
             None
         };
         let new_content = if !has_content && offered_content.is_some() {
-            self.prepare_leg(
-                StreamKind::Content,
-                &tenant_id,
-                &room_number,
-                sdp_offer,
-                &conf,
-            )
-            .await
+            self.prepare_leg(StreamKind::Content, &key, sdp_offer, &conf)
+                .await
         } else {
             None
         };
@@ -7578,7 +7560,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 // Get room reference
                 let room = self
                     .bridge
-                    .get_room(&session.room_number)
+                    .get_room(&session.room_key())
                     .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
 
                 // Spawn new audio bridge that waits for old bridge to stop first
@@ -7589,7 +7571,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let jitter_buffer_ms = conf.jitter_buffer_ms;
                 let reinvite_mixer_rate = conf.sample_rate;
                 let reinvite_dtmf = if conf.dtmf_enabled {
-                    Some(self.get_or_create_dtmf_handler(&session.room_number))
+                    Some(self.get_or_create_dtmf_handler(&session.room_key()))
                 } else {
                     None
                 };
@@ -7695,13 +7677,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             );
             video_codec = vec![leg.negotiated.codec];
         } else if let Some((leg, policy)) = new_video {
-            let started = match self.bridge.get_room(&room_number) {
+            let started = match self.bridge.get_room(&key) {
                 Ok(room) => self.start_video_leg(
                     &room,
                     &session.participant_id,
                     session.display_name.as_deref(),
-                    tenant_id,
-                    &room_number,
+                    &key,
                     leg,
                     video_bridge::may_share(&policy, is_host),
                 ),
@@ -7741,13 +7722,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             );
             content_codec = vec![leg.negotiated.codec];
         } else if let Some((leg, policy)) = new_content {
-            let started = match self.bridge.get_room(&room_number) {
+            let started = match self.bridge.get_room(&key) {
                 Ok(room) => self.start_video_leg(
                     &room,
                     &session.participant_id,
                     session.display_name.as_deref(),
-                    tenant_id,
-                    &room_number,
+                    &key,
                     leg,
                     video_bridge::may_share(&policy, is_host),
                 ),
@@ -8004,7 +7984,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                             if DtmfDigit::from_char(ch).is_ok() {
                                 debug!(
                                     call_id = %call_id,
-                                    room = %pending.room_number,
+                                    room = %pending.key,
                                     participant = %pending.participant_id,
                                     digit = %digit_str,
                                     "INFO DTMF received during PIN collection"
@@ -8050,7 +8030,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                             );
                             // Route to DTMF handler if enabled
                             if self.conference_config.read().dtmf_enabled {
-                                let handler = self.get_or_create_dtmf_handler(&session.room_number);
+                                let handler = self.get_or_create_dtmf_handler(&session.room_key());
                                 let _ = handler.process_digit(&session.participant_id, ch);
                             }
                         }
@@ -8098,12 +8078,15 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .ok_or_else(|| anyhow::anyhow!("Cannot extract room number from SUBSCRIBE URI"))?;
 
         // Verify room exists (either active or configured)
-        let room_active = self.bridge.get_room(&room_number).is_ok();
-        let tenant_id = self.resolve_tenant(request).await?;
-        let meeting_exists = self
-            .lookup_meeting(&tenant_id, &room_number)
-            .await?
-            .is_some();
+        // A subscriber in the room is in its tenant's room; anyone else
+        // is placed by the request.
+        let tenant_id = match self.sessions.get(&extract_call_id(request)) {
+            Some(session) => session.tenant_id,
+            None => self.resolve_tenant(request, None).await?,
+        };
+        let key = RoomKey::new(tenant_id, room_number.clone());
+        let room_active = self.bridge.get_room(&key).is_ok();
+        let meeting_exists = self.lookup_meeting(&key.tenant, &key.room).await?.is_some();
         if !room_active && !meeting_exists {
             let response = UserAgentServer::create_response(request, 404, "Conference Not Found");
             handle.send_final(response).await;
@@ -8116,7 +8099,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let is_participant = self
             .sessions
             .iter()
-            .any(|entry| entry.value().room_number == room_number);
+            .any(|entry| entry.value().room_key() == key);
         // Also allow if the subscriber's Call-ID matches an existing session
         let is_session = self.sessions.contains_key(&call_id_sub);
         if !is_participant && !is_session {
@@ -8183,7 +8166,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         self.conference_subscriptions.insert(
             call_id.clone(),
             ConferenceSubscription {
-                room_number: room_number.clone(),
+                key: key.clone(),
                 contact_uri: contact_uri.clone(),
                 expires_at: Instant::now() + Duration::from_secs(expires_secs),
             },
@@ -8205,7 +8188,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // Send initial NOTIFY with current conference state
         if room_active {
-            if let Ok(room) = self.bridge.get_room(&room_number) {
+            if let Ok(room) = self.bridge.get_room(&key) {
                 let state_xml = build_conference_state_xml(&room_number, &room);
                 let _ = self
                     .uac
@@ -8262,8 +8245,15 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .filter(|r| validate_room_number(r))
             .ok_or_else(|| anyhow::anyhow!("Refer-To does not target a conference room"))?;
 
-        // Check if this room exists
-        if self.bridge.get_room(&room_number).is_err() {
+        // Check if this room exists: the referring caller's tenant's, as
+        // a REFER names a room by number only.
+        let tenant = self
+            .sessions
+            .get(&extract_call_id(request))
+            .map(|s| s.tenant_id)
+            .unwrap_or(self.default_tenant_id);
+        let key = RoomKey::new(tenant, room_number.clone());
+        if self.bridge.get_room(&key).is_err() {
             anyhow::bail!("Conference room not active: {}", room_number);
         }
 
@@ -8657,12 +8647,12 @@ pub fn create_codec_instance(codec_name: &str) -> Result<Box<dyn AudioCodec>> {
 }
 
 impl FloorNotifier for ConferenceCallHandler {
-    fn floor_changed(&self, room_number: &str, mut notice: FloorNotice) {
+    fn floor_changed(&self, key: &RoomKey, mut notice: FloorNotice) {
         // A BFCP endpoint hears the room taking the floor from it as a
         // `Revoked` (§15.6, 7e); the rest is the gateway sessions'.
         if notice.floor == "released" {
             self.bfcp.floor_released(
-                room_number,
+                key,
                 &notice.participant_id,
                 notice.reason.as_deref().unwrap_or("ended"),
             );
@@ -8677,7 +8667,7 @@ impl FloorNotifier for ConferenceCallHandler {
             trunks::trunk_peer_node(&notice.participant_id),
             notice.presenter.as_ref(),
         ) {
-            if let Some(claim) = self.content_claims.get(&format!("{room_number}|{node}")) {
+            if let Some(claim) = self.content_claims.get(&(key.clone(), node.to_string())) {
                 notice.presenter = Some(claim.value().0.display_name.clone());
             }
         }
@@ -8686,7 +8676,7 @@ impl FloorNotifier for ConferenceCallHandler {
         let only_theirs = notice.floor == "refused";
         let targets: Vec<(String, bool)> = self
             .room_sessions
-            .get(room_number)
+            .get(key)
             .map(|ids| {
                 ids.iter()
                     .filter_map(|id| self.sessions.get(id))

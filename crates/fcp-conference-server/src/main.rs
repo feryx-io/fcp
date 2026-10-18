@@ -10,6 +10,7 @@
 //! - REST API manages persistent Meeting configs + runtime conference operations
 //! - No flow engine — conference calls are multi-party, not sequential single-call flows
 
+use crate::rooms::RoomKey;
 use anyhow::{Context, Result};
 use clap::Parser;
 use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus};
@@ -38,6 +39,7 @@ mod control;
 mod drain;
 mod health;
 mod migration;
+mod rooms;
 mod storage;
 mod trunks;
 mod video_bridge;
@@ -825,10 +827,11 @@ async fn main() -> Result<()> {
         frame_clock: true,
         ..MixerOptions::default()
     };
-    let bridge = Arc::new(
+    // Rooms by tenant and number: two tenants' 8801 are two mixes.
+    let bridge = Arc::new(crate::rooms::RoomBridge::new(Arc::new(
         ConferenceBridge::new(audio_format, config.conference.frame_size, mixer_options)
             .context("Failed to create ConferenceBridge")?,
-    );
+    )));
 
     let local_uri = create_local_uri(&config)?;
     let local_addr = config
@@ -1390,17 +1393,13 @@ async fn main() -> Result<()> {
                         .map(cluster_budget)
                         .collect(),
                 );
-                for (room, _) in refresh_handler.active_rooms() {
-                    let tenant = refresh_handler
-                        .tenant_for_room(&room)
-                        .unwrap_or(refresh_handler.default_tenant_id)
-                        .to_string();
-                    let count = refresh_handler.countable_participants(&room);
+                for (key, _) in refresh_handler.active_rooms() {
+                    let count = refresh_handler.countable_participants(&key);
                     if let Err(e) = refresh_registry
-                        .set_participants(&tenant, &room, count)
+                        .set_participants(&key.tenant.to_string(), &key.room, count)
                         .await
                     {
-                        warn!(error = %e, room = %room, "Conference registry refresh failed");
+                        warn!(error = %e, room = %key, "Conference registry refresh failed");
                     }
                 }
             }
@@ -1588,20 +1587,17 @@ async fn main() -> Result<()> {
                 ticker.tick().await;
                 handler.expire_speaker_claims(max_age);
                 handler.expire_content_claims(max_age);
-                for (room_number, tenant_id) in handler.rooms_with_trunked_video() {
+                for key in handler.rooms_with_trunked_video() {
                     // A room whose speaker is a peer's caller is that
                     // peer's to announce; `local_speaker_claim` says so
                     // by returning nothing. The same for a shared screen
                     // (§15.6, 7d): the presenter's own node claims it.
-                    if let Some(claim) = handler.local_speaker_claim(&room_number) {
-                        control
-                            .announce_speaker(&tenant_id.to_string(), &room_number, claim)
-                            .await;
+                    let tenant = key.tenant.to_string();
+                    if let Some(claim) = handler.local_speaker_claim(&key) {
+                        control.announce_speaker(&tenant, &key.room, claim).await;
                     }
-                    if let Some(claim) = handler.local_content_claim(&room_number) {
-                        control
-                            .announce_content(&tenant_id.to_string(), &room_number, claim)
-                            .await;
+                    if let Some(claim) = handler.local_content_claim(&key) {
+                        control.announce_content(&tenant, &key.room, claim).await;
                     }
                 }
             }
@@ -1762,15 +1758,7 @@ async fn main() -> Result<()> {
                             let dest = destination.clone();
                             tokio::spawn(async move {
                                 info!(room = %rn, destination = %dest, "Processing DTMF dial-out request");
-                                let Some(tenant_id) = handler.tenant_for_room(&rn) else {
-                                    warn!(
-                                        room = %rn,
-                                        destination = %dest,
-                                        "Skipping DTMF dial-out because tenant context could not be resolved"
-                                    );
-                                    return;
-                                };
-                                match handler.dial_out(&rn, &dest, tenant_id, None, None).await {
+                                match handler.dial_out(&rn, &dest, None, None).await {
                                     Ok(pid) => {
                                         info!(room = %rn, destination = %dest, participant = %pid, "DTMF dial-out connected")
                                     }
@@ -1813,10 +1801,8 @@ async fn main() -> Result<()> {
                         max_mb = max_bytes / (1024 * 1024),
                         "Recording size limit reached, stopping"
                     );
-                    if let Err(e) = monitor_handler
-                        .stop_room_recording(&recording.room_number)
-                        .await
-                    {
+                    let key = RoomKey::new(recording.tenant_id, recording.room_number.clone());
+                    if let Err(e) = monitor_handler.stop_room_recording(&key).await {
                         warn!(
                             room = %recording.room_number,
                             error = %e,
@@ -1925,13 +1911,7 @@ async fn main() -> Result<()> {
     let hosted_rooms: Vec<(String, String)> = conference_handler
         .active_rooms()
         .into_iter()
-        .map(|(room, _)| {
-            let tenant = conference_handler
-                .tenant_for_room(&room)
-                .unwrap_or(conference_handler.default_tenant_id)
-                .to_string();
-            (tenant, room)
-        })
+        .map(|(key, _)| (key.tenant.to_string(), key.room))
         .collect();
 
     let shutdown_timeout = Duration::from_secs(config.service.shutdown_timeout_secs);

@@ -5,8 +5,9 @@
 //! `FCP_TEST_DATABASE_URL`.
 
 use fcp_core::storage::{CallDisposition, CdrKind, HangupParty};
+use fcp_core::TenantId;
 use fcp_testkit::media::allocate_port_pair;
-use fcp_testkit::smoke::{http_get, http_post, loopback};
+use fcp_testkit::smoke::{http_get, http_post, http_request, loopback};
 use fcp_testkit::{bins, free_port, Phone, PhoneEvent, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -97,6 +98,12 @@ format = "compact"
     /// Start a call manager on the same database, routing room numbers to
     /// this conference server; returns its SIP address.
     async fn start_call_manager(&self) -> SocketAddr {
+        self.start_call_manager_with("").await
+    }
+
+    /// As [`Stack::start_call_manager`], with `extra` added to its
+    /// configuration.
+    async fn start_call_manager_with(&self, extra: &str) -> SocketAddr {
         let sip_port = free_port();
         let http = free_port();
         let rtp_start = allocate_port_pair().rtp_port;
@@ -132,6 +139,8 @@ tts_cache_dir = "{dir}/tts-cache"
 [logging]
 level = "info"
 format = "compact"
+
+{extra}
 "#,
             db = self.db.as_ref().expect("database").url(),
             conf = self.sip,
@@ -685,5 +694,190 @@ async fn a_room_is_reached_through_the_call_manager() {
         .find(|r| r.from_uri.contains("bob"))
         .unwrap_or_else(|| panic!("no leg for Bob: {legs:#?}"));
     assert_ne!(bob_leg.call_id, alice_call_record.call_id);
+    stack.finish().await;
+}
+
+/// Two tenants that both number a meeting 8000 meet in two rooms
+/// (`docs/DEEP_TESTING.md` D6). The call manager names each caller's
+/// tenant to the conference server, which believes it from a trusted edge
+/// and keeps a room per tenant and number: a caller in one hears nothing
+/// of the other, the node lists both rooms with their tenants, and a
+/// tenant's request about its room sees its own callers only. Before,
+/// the second tenant's callers were refused (403, then 500) and the
+/// node's rooms were keyed by number alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_tenants_with_one_room_number_meet_apart() {
+    let Some(stack) = Stack::start_trusting(r#"trusted_edges = ["127.0.0.1"]"#).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let tenant_a = stack.seed.tenant_id;
+    let tenant_b = stack.seed.tenant("other", "other.e2e.local").await;
+    stack.seed.meeting(ROOM, None, None).await;
+    stack.seed.meeting_in(tenant_b, ROOM, None, None).await;
+    let alice_user = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob_user = stack.seed.user("bob", "bob-pw", "1002").await;
+    stack.seed.user_in(tenant_b, "bea", "bea-pw", "2001").await;
+    // The second tenant's caller is placed by an edge, as a gateway would:
+    // the call manager's single realm registers only the first tenant's.
+    let cm = stack
+        .start_call_manager_with("[e911]\ntrusted_edges = [\"127.0.0.0/8\"]")
+        .await;
+
+    let alice = Phone::new(&alice_user.username, &alice_user.password, REALM, cm)
+        .await
+        .unwrap();
+    assert_eq!(alice.register().await.unwrap(), 200);
+    let alice_call = alice.call(ROOM).await.unwrap();
+    if let Err(e) = alice_call.answered(SOON).await {
+        stack
+            .fail(
+                &format!("Alice was not put through to her room: {e}"),
+                &alice,
+            )
+            .await;
+    }
+    let edge = Phone::new("edge", "x", REALM, cm).await.unwrap();
+    let tenant_b_str = tenant_b.to_string();
+    let bea_call = edge
+        .call_with_headers(
+            ROOM,
+            &[
+                (fcp_core::CALLER_TENANT_HEADER, tenant_b_str.as_str()),
+                (fcp_core::CALLER_USER_HEADER, "bea"),
+            ],
+        )
+        .await
+        .unwrap();
+    if let Err(e) = bea_call.answered(SOON).await {
+        stack
+            .fail(&format!("Bea was not put through to her room: {e}"), &edge)
+            .await;
+    }
+    // A second caller of the first tenant. (Not dialling the node
+    // directly: with two tenants an address names neither, and the node
+    // refuses it.)
+    let bob = Phone::new(&bob_user.username, &bob_user.password, REALM, cm)
+        .await
+        .unwrap();
+    assert_eq!(bob.register().await.unwrap(), 200);
+    let bob_call = bob.call(ROOM).await.unwrap();
+    if let Err(e) = bob_call.answered(SOON).await {
+        stack
+            .fail(&format!("Bob was not put through to his room: {e}"), &bob)
+            .await;
+    }
+
+    alice_call.media().play_tone(440.0, 3000);
+    assert!(
+        bob_call.media().heard(440, SOON).await,
+        "Bob, in Alice's room, hears her"
+    );
+    assert!(
+        !bea_call.media().heard(440, Duration::from_secs(2)).await,
+        "Bea, in the other tenant's room of the same number, hears nothing of Alice"
+    );
+    bea_call.media().play_tone(880.0, 3000);
+    assert!(
+        !bob_call.media().heard(880, Duration::from_secs(2)).await,
+        "nor does Bob hear Bea"
+    );
+
+    // The node holds two rooms numbered 8000, each with its tenant.
+    let (code, listed) = stack.get("/conferences").await;
+    assert_eq!(code, 200, "{listed}");
+    let rooms = listed["conferences"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let of = |tenant: TenantId| {
+        rooms
+            .iter()
+            .find(|r| r["room_number"] == ROOM && r["tenant_id"] == serde_json::json!(tenant))
+            .map(|r| r["participants"].as_u64().unwrap_or(0))
+    };
+    assert_eq!(of(tenant_a), Some(2), "{listed}");
+    assert_eq!(of(tenant_b), Some(1), "{listed}");
+
+    // A tenant's request about its room sees its callers, not the
+    // other's: the admin API names the tenant on every request it sends.
+    let tenant_header = |t: TenantId| t.to_string();
+    for (tenant, want) in [(tenant_a, 2), (tenant_b, 1)] {
+        let (code, body) = http_request(
+            "GET",
+            &loopback(stack.http, &format!("/conferences/{ROOM}")),
+            &[("x-fcp-tenant-id", tenant_header(tenant).as_str())],
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 200, "{body}");
+        let room: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            room["participant_count"], want,
+            "tenant {tenant}'s room: {room}"
+        );
+    }
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert_eq!(bea_call.hangup().await.unwrap(), 200);
+    assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    stack.finish().await;
+}
+
+/// Two callers who join a room at the same moment, talk, leave and come
+/// back, round after round, hear each other every time
+/// (`docs/DEEP_TESTING.md` D6). The meeting is not permanent, so the
+/// room is removed when it empties and made again by the next caller.
+/// Before, two callers making the room at once could each make it — the
+/// second replacing the first's — and a caller joining while an emptied
+/// room was being removed was left in a room nobody else reached: the
+/// soak's two-caller room heard silence on two calls in three.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn callers_meet_in_a_room_made_again_round_after_round() {
+    let Some(stack) = Stack::start_trusting(r#"trusted_edges = ["127.0.0.1"]"#).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack.seed.meeting(ROOM, None, None).await;
+    stack
+        .seed
+        .execute("UPDATE conference_meetings SET permanent = false")
+        .await;
+    let cm = stack.start_call_manager().await;
+    let a = stack.seed.user("alice", "alice-pw", "1001").await;
+    let b = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice = Phone::new(&a.username, &a.password, REALM, cm)
+        .await
+        .unwrap();
+    let bob = Phone::new(&b.username, &b.password, REALM, cm)
+        .await
+        .unwrap();
+    assert_eq!(alice.register().await.unwrap(), 200);
+    assert_eq!(bob.register().await.unwrap(), 200);
+    for round in 0..5 {
+        let (alice_call, bob_call) = tokio::join!(alice.call(ROOM), bob.call(ROOM));
+        let (alice_call, bob_call) = (alice_call.unwrap(), bob_call.unwrap());
+        let (a_in, b_in) = tokio::join!(alice_call.answered(SOON), bob_call.answered(SOON));
+        if let Err(e) = a_in.and(b_in) {
+            stack
+                .fail(&format!("round {round}: not both put through: {e}"), &alice)
+                .await;
+        }
+        alice_call.media().play_tone(440.0, 3000);
+        bob_call.media().play_tone(880.0, 3000);
+        let (bob_hears, alice_hears) = tokio::join!(
+            bob_call.media().heard(440, SOON),
+            alice_call.media().heard(880, SOON)
+        );
+        assert!(
+            bob_hears && alice_hears,
+            "round {round}: Bob hears Alice {bob_hears}, Alice hears Bob {alice_hears}"
+        );
+        let _ = tokio::join!(alice_call.hangup(), bob_call.hangup());
+        // Back at once, and a little later each round: into the room as
+        // it is being removed, and after.
+        tokio::time::sleep(Duration::from_millis(10 * round)).await;
+    }
     stack.finish().await;
 }
