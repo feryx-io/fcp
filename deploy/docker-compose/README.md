@@ -102,6 +102,25 @@ prompts are silent. The image builds nightly like the rest.
 Not in this stack yet: clustering — one node of each
 (`docs/PRODUCTION_STACK.md` has the order).
 
+## On a cloud VM
+
+`HOST_IP` is the address phones, carriers and browsers reach — on GCE,
+or AWS with an elastic IP, the VM's public address, which the provider
+maps at its edge: no interface holds it, and nothing the VM sends to it
+comes back. The services advertise it to one another too (Contact, SDP),
+so without a fix every request and every packet of media between two of
+them inside a call is lost: a caller's hang-up never reaches voicemail,
+which records until its limit. Put the address on the loopback, before
+Docker starts and at every boot:
+
+```bash
+sudo ip addr add "$HOST_IP/32" dev lo
+```
+
+Each SIP service checks at startup and logs a warning naming this when
+its address does not reach the host. `deploy/gcp-d8` does it with a
+systemd unit.
+
 ## Certificates
 
 `certs` runs once, before anything that terminates TLS, and makes a CA
