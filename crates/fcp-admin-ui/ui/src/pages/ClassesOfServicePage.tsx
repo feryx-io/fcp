@@ -238,7 +238,7 @@ export function ClassesOfServicePage() {
                   <Label>Default class</Label>
                   <p className="text-xs text-muted-foreground">The class of every user who has none of their own.</p>
                 </div>
-                <Switch checked={req.is_default} onCheckedChange={(v) => update({ is_default: v })} />
+                <Switch aria-label="Default class" checked={req.is_default} onCheckedChange={(v) => update({ is_default: v })} />
               </div>
               {error && <p className="text-sm text-destructive">{error}</p>}
             </div>

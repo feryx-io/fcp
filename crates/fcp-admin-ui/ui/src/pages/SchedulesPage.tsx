@@ -123,6 +123,7 @@ export function SchedulesPage() {
                     <Button
                       variant="ghost"
                       size="sm"
+                      title="Edit"
                       onClick={() => {
                         setError(null)
                         setEditing({
@@ -133,7 +134,14 @@ export function SchedulesPage() {
                     >
                       <Pencil className="h-4 w-4" />
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => remove.mutate(s.id)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title="Delete"
+                      onClick={() => {
+                        if (confirm(`Delete the schedule "${s.name}"?`)) remove.mutate(s.id)
+                      }}
+                    >
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </TableCell>
@@ -207,6 +215,7 @@ export function SchedulesPage() {
                       type="button"
                       variant="ghost"
                       size="sm"
+                      title="Remove these hours"
                       onClick={() => update({ weekly: (req.weekly ?? []).filter((_, j) => j !== i) })}
                     >
                       <X className="h-4 w-4" />
@@ -244,6 +253,7 @@ export function SchedulesPage() {
                       type="button"
                       variant="ghost"
                       size="sm"
+                      title="Remove this holiday"
                       onClick={() => update({ holidays: (req.holidays ?? []).filter((_, j) => j !== i) })}
                     >
                       <X className="h-4 w-4" />

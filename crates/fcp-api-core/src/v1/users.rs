@@ -608,6 +608,12 @@ pub async fn create_user(
     Ok((StatusCode::CREATED, Json(UserResponse::from(user))))
 }
 
+/// An optional text field as an update gives it: an empty string clears it
+/// (a form's emptied field), as `extension` and `location_id` already did.
+fn cleared(value: String) -> Option<String> {
+    Some(value).filter(|v| !v.trim().is_empty())
+}
+
 /// Update a user.
 ///
 /// PUT /api/v1/users/:username
@@ -652,7 +658,7 @@ pub async fn update_user(
 
     // Update fields
     if let Some(display_name) = req.display_name {
-        user.display_name = Some(display_name);
+        user.display_name = cleared(display_name);
     }
     // `enabled` is the suspension, said the old way (one release).
     match req.enabled {
@@ -690,13 +696,13 @@ pub async fn update_user(
 
     // Update enterprise fields
     if let Some(email) = req.email {
-        user.email = Some(email);
+        user.email = cleared(email);
     }
     if let Some(phone_number) = req.phone_number {
-        user.phone_number = Some(phone_number);
+        user.phone_number = cleared(phone_number);
     }
     if let Some(mobile_number) = req.mobile_number {
-        user.mobile_number = Some(mobile_number);
+        user.mobile_number = cleared(mobile_number);
     }
     if let Some(pin) = req.pin {
         // Hash the PIN
@@ -710,13 +716,13 @@ pub async fn update_user(
         check_user_extension(storage, &tenant.0, &user.id, user.extension.as_deref()).await?;
     }
     if let Some(department) = req.department {
-        user.department = Some(department);
+        user.department = cleared(department);
     }
     if let Some(job_title) = req.job_title {
-        user.job_title = Some(job_title);
+        user.job_title = cleared(job_title);
     }
     if let Some(location) = req.location {
-        user.location = Some(location);
+        user.location = cleared(location);
     }
     if let Some(location_id_str) = req.location_id {
         user.location_id = if location_id_str.is_empty() {
@@ -751,10 +757,10 @@ pub async fn update_user(
     }
     user.normalize_status();
     if let Some(emergency_name) = req.emergency_contact_name {
-        user.emergency_contact.name = Some(emergency_name);
+        user.emergency_contact.name = cleared(emergency_name);
     }
     if let Some(emergency_phone) = req.emergency_contact_phone {
-        user.emergency_contact.phone = Some(emergency_phone);
+        user.emergency_contact.phone = cleared(emergency_phone);
     }
 
     user.updated_at = std::time::SystemTime::now();

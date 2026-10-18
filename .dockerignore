@@ -49,3 +49,8 @@ docker-compose.yml
 # Temporary files
 tmp/
 temp/
+
+# The admin UI's dependencies and build: Dockerfile.admin installs and
+# builds them in its own stage.
+**/node_modules/
+crates/fcp-admin-ui/dist/

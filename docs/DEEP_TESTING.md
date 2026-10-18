@@ -812,3 +812,48 @@ in `EXPECTED_GROWTH`.
 | The usage rollups never rebuilt on schedule. `fcp_cdr::maintenance` took the session advisory lock `fcp:cdr-rollups` on one pooled connection. The rebuild then waited for the transaction lock of the same name on another connection, held by its own scheduler, for as long as the process lived. Each `fcp-admin` and `fcp-jobs` held a transaction open throughout, which also keeps vacuum from removing dead rows. The tests called the rebuild directly and never took the scheduler's lock. | S2 (usage figures stale; a transaction open for ever) | Fixed in v0.25.412: the scheduler's lock has its own name (`fcp:cdr-rollup-schedule`). `the_scheduled_rollup_rebuild_finishes` times out without the change. |
 | A caller could be answered on a port the node could not bind. The conference server and the call manager's queue took a port pair from their pool, put it in the answer, sent the 200 OK, and only then bound it. The pool knows only the node's own pairs: when another process on the host held one, the bind failed after the answer, and the caller sat in a call that no room or queue held, with no BYE. Dialling out and trunks between nodes made their offer the same way. Found when a CI run's test node met a port held by another test. | S2 (an answered caller in dead air) | Fixed in v0.25.412: `fcp_media::bound_port_pair` binds a pair before it is offered or answered on, passing over pairs held outside the node. It is used by the conference server's joins, dial-out and trunks both ways, and the queue's answer. `rooms.rs` `callers_are_answered_on_ports_the_node_could_bind` holds 46 of the node's 50 pairs and fails without the change. |
 
+
+### D7. The admin UI in a browser
+
+`fcp-admin/tests/ui.rs` starts an admin on a database of its own, with
+authentication on, serving the UI it embeds. It makes a super admin, a
+tenant admin and an end user through the API. It then runs the Playwright
+suite in `crates/fcp-admin-ui/ui/e2e` against the admin, in Chromium.
+The suite is told where the admin is, and who may sign in, through
+`FCP_UI_*` variables.
+
+**Every page** (`pages.spec.ts`):
+- The super admin signs in through the form and opens every page in the
+  navigation by its link, then Settings.
+- The end user opens every page of their portal.
+- A page fails when it throws, logs a console error, or shows the error
+  boundary.
+- It also fails on any API answer of 400 or more, other than the refused
+  session refresh before sign-in and five reads that answer 404 for
+  "nothing yet" (`NOTHING_YET` in `fixtures.ts`).
+- And it fails on any button without a name a screen reader can say.
+
+**The main objects** (`crud.spec.ts`), as a tenant administrator: users,
+devices, numbers, queues, flows, schedules, prompts, webhooks and
+identity providers. Trunks are done as the super admin, since in an
+enterprise (the default deployment mode) trunks are the platform's.
+- Each object is made through its form, changed (and, for users, devices
+  and numbers, has a field emptied), and deleted.
+- Each step is checked through the API.
+
+**Where it runs.** CI's `Admin UI in a browser` job builds the UI, then
+the admin, installs Chromium, and runs the test with
+`FCP_UI_TESTS=required`; the traces of a failure are kept. Locally the
+test skips when the admin embeds no UI or Chromium is missing.
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| The admin image served no UI. `Dockerfile.admin` built the binary without building the UI first, so the binary embedded the placeholder page and `/admin/` answered "Admin UI not built". Every deployment from our images had no admin UI; the stack test only asked the admin's API. | S2 (the admin UI absent wherever our images run) | Fixed in v0.25.413: the image builds the UI in a Node stage and embeds it. `compose_live.rs` checks `/admin/` on the restored stack, which always runs this release's images. |
+| The UI had not built since 2026-10-06. A security update moved Tailwind from v3 to v4, whose PostCSS plugin is a separate package, and `vite build` failed. CI only type-checked the UI. | S2 (no UI could be built) | Fixed in v0.25.413: `@tailwindcss/postcss`, and the stylesheet imports Tailwind and keeps `tailwind.config.ts` through `@config`. The new CI job builds the UI before anything else. |
+| No flow could be made from the UI. A new flow was sent with a greeting whose `next` was `null`, which the flow schema refuses (a node's next is a node). The error was not shown either: the dialog stayed open. It had been so since the flow builder was written. | S2 (flows could be made only through the API) | Fixed in v0.25.413: a new flow is a greeting and a hangup; the dialog shows a refusal, and a refused delete says why. |
+| An emptied field was never cleared. The user, device and number edit forms left an empty field out of the request, so the old value stayed. The API, sent an empty string, stored `""` for a user's e-mail, phone, mobile, department, job title, location and emergency contact, and a device's model, firmware, SIP URI and location. | S3 | Fixed in v0.25.413: the forms send the emptied field, and the API clears a field given an empty string, as it already did for an extension. `crud.spec.ts` empties a user's e-mail, a device's model and a number's caller name. |
+| The trunk and queue forms failed silently. A refused save left the dialog open with no message; a trunk without a name was not explained. | S3 | Fixed in v0.25.413: both forms and their delete dialogs show why. |
+| About forty buttons had no name a screen reader could say: every row's actions menu, the trunk, queue and schedule icons, the table's pager, the calling settings' switches, Branding's uploads, and the flow builder's back button and name field. | S3 (accessibility) | Fixed in v0.25.413; `pages.spec.ts` now fails on a button without a name on any page. |
+| A user without a mailbox saw the API's raw error on their voicemail page, not "No voicemail mailbox is configured". | S3 | Fixed in v0.25.413: the client reads the 404 as no mailbox, as it already did for a brand. |
+| A schedule was deleted at one click, without the confirmation every other page asks for. | S3 | Fixed in v0.25.413. |
+| The UI shows every page and button to every role, and the API refuses what the role may not do. A tenant administrator in an enterprise is offered "Add Trunk" and refused. | S3 | Not fixed: the UI knows nothing of permissions, and teaching it is a change of its own (#333). A refused save now at least says "Insufficient permissions". |

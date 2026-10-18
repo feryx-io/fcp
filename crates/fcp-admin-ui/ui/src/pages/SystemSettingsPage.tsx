@@ -299,7 +299,7 @@ function SectionEditor({
               {rawMode ? 'Visual' : 'JSON'}
             </Button>
             {isDirty && <Badge variant="secondary">Unsaved changes</Badge>}
-            <Button variant="ghost" size="icon" onClick={onCancel}>
+            <Button variant="ghost" size="icon" title="Cancel" onClick={onCancel}>
               <X className="h-4 w-4" />
             </Button>
           </div>

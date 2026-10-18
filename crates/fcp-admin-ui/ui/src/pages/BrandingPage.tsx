@@ -172,7 +172,7 @@ function AssetPicker({
             </option>
           ))}
         </select>
-        <Button size="sm" variant="outline" type="button" onClick={() => input.current?.click()}>
+        <Button size="sm" variant="outline" type="button" title={`Upload the ${label.toLowerCase()}`} onClick={() => input.current?.click()}>
           <Upload className="h-4 w-4" />
         </Button>
         <input
@@ -323,7 +323,7 @@ export function BrandingPage() {
                   <p className="text-sm font-medium">Dark</p>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     Its own colors
-                    <Switch checked={form.dark} onCheckedChange={(dark) => set({ dark })} />
+                    <Switch aria-label="Dark colors of its own" checked={form.dark} onCheckedChange={(dark) => set({ dark })} />
                   </div>
                 </div>
                 {form.dark ? (

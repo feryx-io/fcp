@@ -422,7 +422,7 @@ export function DevicesPage() {
       cell: ({ row }) => (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon"><MoreHorizontal className="h-4 w-4" /></Button>
+            <Button variant="ghost" size="icon" aria-label="Actions"><MoreHorizontal className="h-4 w-4" /></Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => setEditItem(row.original)}>
@@ -566,14 +566,15 @@ export function DevicesPage() {
       id: editItem.id,
       data: {
         name: data.name,
-        sip_uri: data.sip_uri || undefined,
-        mac_address: data.mac_address || undefined,
-        model: data.model || undefined,
+        // An emptied field is sent empty, which clears it.
+        sip_uri: data.sip_uri ?? '',
+        mac_address: data.mac_address ?? '',
+        model: data.model ?? '',
         vendor: data.vendor ?? '',
         line_keys: textToLineKeys(data.line_keys ?? ''),
-        firmware_version: data.firmware_version || undefined,
-        location: data.location || undefined,
-        location_id: data.location_id || undefined,
+        firmware_version: data.firmware_version ?? '',
+        location: data.location ?? '',
+        location_id: data.location_id ?? '',
         enabled: data.enabled,
         tenant_id: data.tenant_id || undefined,
         // An address needs its street, city, state and postal code to be

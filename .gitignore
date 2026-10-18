@@ -43,3 +43,7 @@ __pycache__/
 *.tfstate
 *.tfstate.*
 *.tfvars
+
+# Playwright (docs/DEEP_TESTING.md D7)
+crates/fcp-admin-ui/ui/test-results/
+crates/fcp-admin-ui/ui/playwright-report/

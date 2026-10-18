@@ -242,6 +242,21 @@ async fn the_shipped_stack_carries_a_call() {
         assert_eq!(code, 200, "{name} {url}: {body}");
     }
 
+    // The admin serves its UI, not the placeholder a binary built without
+    // it embeds (docs/DEEP_TESTING.md D7). Checked on the restored stack,
+    // which always runs this release's images: a fresh one may be the
+    // previous release's, from before the image built the UI.
+    if mode == Mode::Restored {
+        let (code, page) = http_request("GET", &loopback(8080, "/admin/"), &[], None)
+            .await
+            .expect("GET /admin/");
+        assert_eq!(code, 200, "{page}");
+        assert!(
+            page.contains("<div id=\"root\"") && !page.contains("Admin UI not built"),
+            "the admin image serves no UI: {page}"
+        );
+    }
+
     // The tenant and its users: made once, expected thereafter.
     let tenant = admin.tenant(&mode).await;
     if mode == Mode::Fresh {

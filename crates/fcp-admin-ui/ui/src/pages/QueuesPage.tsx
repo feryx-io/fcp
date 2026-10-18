@@ -271,10 +271,10 @@ export function QueuesPage() {
                       {c.callback_enabled && <Badge variant="secondary" className="text-xs">CB</Badge>}
                     </div>
                     <div className="flex items-center gap-1">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(c)}>
+                      <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit" onClick={() => openEdit(c)}>
                         <Pencil className="h-3.5 w-3.5" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => setDeleteConfig(c)}>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" title="Delete" onClick={() => setDeleteConfig(c)}>
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
@@ -332,7 +332,7 @@ export function QueuesPage() {
             <DialogTitle>Create Queue</DialogTitle>
             <DialogDescription>Configure a new ACD queue.</DialogDescription>
           </DialogHeader>
-          <QueueForm form={createForm} onSubmit={(d) => createMutation.mutate(formToRequest(d))} isSubmitting={createMutation.isPending} />
+          <QueueForm form={createForm} onSubmit={(d) => createMutation.mutate(formToRequest(d))} isSubmitting={createMutation.isPending} error={createMutation.error} />
         </DialogContent>
       </Dialog>
 
@@ -348,6 +348,7 @@ export function QueuesPage() {
             onSubmit={(d) => editConfig && updateMutation.mutate({ id: editConfig.id, data: formToRequest(d) })}
             isSubmitting={updateMutation.isPending}
             submitLabel="Save Changes"
+            error={updateMutation.error}
           />
         </DialogContent>
       </Dialog>
@@ -359,6 +360,7 @@ export function QueuesPage() {
             <DialogTitle>Delete Queue</DialogTitle>
             <DialogDescription>Delete <strong>{deleteConfig?.name}</strong>? This cannot be undone.</DialogDescription>
           </DialogHeader>
+          {deleteMutation.error && <p className="text-sm text-destructive">{deleteMutation.error.message}</p>}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteConfig(null)}>Cancel</Button>
             <Button variant="destructive" onClick={() => deleteConfig && deleteMutation.mutate(deleteConfig.id)}>Delete</Button>
@@ -413,11 +415,13 @@ export function QueuesPage() {
   )
 }
 
-function QueueForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Queue' }: {
+function QueueForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Queue', error }: {
   form: ReturnType<typeof useForm<QueueFormData>>
   onSubmit: (data: QueueFormData) => void
   isSubmitting: boolean
   submitLabel?: string
+  /** Why the API refused the last save. */
+  error?: Error | null
 }) {
   const { data: scheduleList = [] } = useQuery({ queryKey: ['schedules'], queryFn: schedules.list })
   const { data: groupList = [] } = useQuery({ queryKey: ['groups'], queryFn: groups.list })
@@ -567,6 +571,7 @@ function QueueForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Queue' 
         </div>
       </div>
 
+      {error && <p className="text-sm text-destructive">{error.message}</p>}
       <DialogFooter>
         <Button type="submit" disabled={isSubmitting}>
           {isSubmitting ? 'Saving...' : submitLabel}

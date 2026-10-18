@@ -426,11 +426,12 @@ impl PhoneNumber {
     /// Validate CNAM (Caller ID Name).
     ///
     /// CNAM is limited to 15 characters by carrier requirements.
+    /// An empty one clears it.
     pub fn set_cnam(&mut self, cnam: String) -> Result<(), String> {
         if cnam.len() > 15 {
             return Err("CNAM must be 15 characters or less".to_string());
         }
-        self.cnam = Some(cnam);
+        self.cnam = Some(cnam).filter(|c| !c.trim().is_empty());
         self.updated_at = SystemTime::now();
         Ok(())
     }

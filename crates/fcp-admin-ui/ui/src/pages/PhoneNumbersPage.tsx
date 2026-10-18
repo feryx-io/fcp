@@ -209,7 +209,7 @@ export function PhoneNumbersPage() {
       cell: ({ row }) => (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon"><MoreHorizontal className="h-4 w-4" /></Button>
+            <Button variant="ghost" size="icon" aria-label="Actions"><MoreHorizontal className="h-4 w-4" /></Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => setEditItem(row.original)}>
@@ -280,7 +280,8 @@ export function PhoneNumbersPage() {
     updateMutation.mutate({
       id: editItem.id,
       data: {
-        cnam: data.cnam || undefined,
+        // An emptied caller name is sent empty, which clears it.
+        cnam: data.cnam ?? '',
         recording_enabled: data.recording_enabled,
         block_anonymous: data.block_anonymous,
         location_id: data.location_id || undefined,
