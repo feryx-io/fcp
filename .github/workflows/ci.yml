@@ -326,6 +326,67 @@ jobs:
       - name: Typecheck
         run: npx tsc -b
 
+  admin-ui-browser:
+    name: Admin UI in a browser
+    # The UI as a person uses it (docs/DEEP_TESTING.md D7): the UI is built,
+    # an admin embedding it is started on a throwaway database, and the
+    # Playwright suite in crates/fcp-admin-ui/ui/e2e signs in, opens every
+    # page and makes, changes and deletes the main objects in Chromium.
+    if: >-
+      github.event_name != 'pull_request'
+      || (!github.event.pull_request.draft
+          && !startsWith(github.event.pull_request.title, 'docs:'))
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FCP_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      FCP_UI_TESTS: required
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/fcp-admin-ui/ui/package-lock.json
+      # Built before cargo, so the admin embeds the UI rather than its
+      # placeholder page.
+      - name: Build the UI
+        working-directory: crates/fcp-admin-ui/ui
+        run: |
+          npm ci
+          npm run build
+      - name: Chromium for Playwright
+        working-directory: crates/fcp-admin-ui/ui
+        run: npx playwright install --with-deps chromium
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: admin-ui-browser
+      - name: The UI in Chromium
+        run: cargo test -p fcp-admin --test ui
+      - name: Keep the traces of a failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: crates/fcp-admin-ui/ui/test-results
+          if-no-files-found: ignore
+
   packaging:
     name: Packaging
     runs-on: ubuntu-latest
@@ -392,7 +453,7 @@ jobs:
   # for nights before anyone looked.
   report:
     name: Report the scheduled run
-    needs: [test, submodule-nightlies, sdks, admin-ui, packaging, security-audit]
+    needs: [test, submodule-nightlies, sdks, admin-ui, admin-ui-browser, packaging, security-audit]
     if: ${{ always() && github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
     permissions:

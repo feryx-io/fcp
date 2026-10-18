@@ -364,7 +364,7 @@ export function TrunksPage() {
             <DialogTitle>Create SIP Trunk</DialogTitle>
             <DialogDescription>Configure a new SIP trunk connection.</DialogDescription>
           </DialogHeader>
-          <TrunkForm form={createForm} onSubmit={onCreateSubmit} isSubmitting={createMutation.isPending} />
+          <TrunkForm form={createForm} onSubmit={onCreateSubmit} isSubmitting={createMutation.isPending} error={createMutation.error} />
         </DialogContent>
       </Dialog>
 
@@ -375,7 +375,7 @@ export function TrunksPage() {
             <DialogTitle>Edit Trunk: {editTrunk?.name}</DialogTitle>
             <DialogDescription>Update trunk configuration.</DialogDescription>
           </DialogHeader>
-          <TrunkForm form={editForm} onSubmit={onEditSubmit} isSubmitting={updateMutation.isPending} submitLabel="Save Changes" />
+          <TrunkForm form={editForm} onSubmit={onEditSubmit} isSubmitting={updateMutation.isPending} submitLabel="Save Changes" error={updateMutation.error} />
         </DialogContent>
       </Dialog>
 
@@ -417,6 +417,7 @@ export function TrunksPage() {
               Are you sure you want to delete the trunk <strong>{deleteTrunk?.name}</strong>? This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
+          {deleteMutation.error && <p className="text-sm text-destructive">{deleteMutation.error.message}</p>}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTrunk(null)}>Cancel</Button>
             <Button
@@ -502,13 +503,13 @@ function TrunkCard({ trunk, onSelect, onEdit, onDelete, onToggle, onClone, onTes
             <Button variant="ghost" size="icon" className="h-7 w-7" title="Clone" onClick={(e) => { e.stopPropagation(); onClone() }}>
               <Copy className="h-3.5 w-3.5" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(e) => { e.stopPropagation(); onToggle() }}>
+            <Button variant="ghost" size="icon" className="h-7 w-7" title={trunk.enabled ? 'Disable' : 'Enable'} onClick={(e) => { e.stopPropagation(); onToggle() }}>
               {trunk.enabled ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
             </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(e) => { e.stopPropagation(); onEdit() }}>
+            <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit" onClick={(e) => { e.stopPropagation(); onEdit() }}>
               <Pencil className="h-3.5 w-3.5" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={(e) => { e.stopPropagation(); onDelete() }}>
+            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" title="Delete" onClick={(e) => { e.stopPropagation(); onDelete() }}>
               <Trash2 className="h-3.5 w-3.5" />
             </Button>
           </div>
@@ -668,13 +669,15 @@ function TrunkDetailView({ trunk, stats, onEdit }: { trunk: SipTrunk; stats?: Tr
   )
 }
 
-function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' }: {
+function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk', error }: {
   form: ReturnType<typeof useForm<TrunkFormData>>
   onSubmit: (data: TrunkFormData) => void
   isSubmitting: boolean
   submitLabel?: string
+  /** Why the API refused the last save. */
+  error?: Error | null
 }) {
-  const { register, handleSubmit, watch, setValue } = form
+  const { register, handleSubmit, watch, setValue, formState: { errors } } = form
   const tenantForSites = useEffectiveTenantId()
   // The tenant's sites: a trunk may run at one, as a carrier of the
   // site's own (docs/HYBRID_CONTROL_PLANE.md §3.6).
@@ -695,6 +698,7 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' 
           <div>
             <Label htmlFor="name">Trunk Name</Label>
             <Input id="name" placeholder="e.g. twilio-us-east" {...register('name', { required: true })} />
+            {errors.name && <p className="mt-1 text-xs text-destructive">A trunk needs a name</p>}
           </div>
           <div className="flex items-end">
             <div className="flex items-center gap-2">
@@ -1004,6 +1008,7 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' 
         </div>
       </div>
 
+      {error && <p className="text-sm text-destructive">{error.message}</p>}
       <DialogFooter>
         <Button type="submit" disabled={isSubmitting}>
           {isSubmitting ? 'Saving...' : submitLabel}

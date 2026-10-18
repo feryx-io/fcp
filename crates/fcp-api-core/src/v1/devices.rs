@@ -976,8 +976,9 @@ pub async fn update_device(
         device.mac_address = mac_address;
     }
 
-    if req.model.is_some() {
-        device.model = req.model;
+    // An empty field clears it (a form's emptied field).
+    if let Some(model) = req.model {
+        device.model = normalize_optional_string(model);
     }
 
     if let Some(vendor) = req.vendor {
@@ -988,12 +989,12 @@ pub async fn update_device(
         device.line_keys = checked_line_keys(keys)?;
     }
 
-    if req.firmware_version.is_some() {
-        device.firmware_version = req.firmware_version;
+    if let Some(firmware_version) = req.firmware_version {
+        device.firmware_version = normalize_optional_string(firmware_version);
     }
 
-    if req.sip_uri.is_some() {
-        device.sip_uri = req.sip_uri;
+    if let Some(sip_uri) = req.sip_uri {
+        device.sip_uri = normalize_optional_string(sip_uri);
     }
 
     if let Some(max_lines) = req.max_lines {
@@ -1008,8 +1009,8 @@ pub async fn update_device(
         device.supports_blf = blf;
     }
 
-    if req.location.is_some() {
-        device.location = req.location;
+    if let Some(location) = req.location {
+        device.location = normalize_optional_string(location);
     }
 
     if let Some(location_id_str) = req.location_id {

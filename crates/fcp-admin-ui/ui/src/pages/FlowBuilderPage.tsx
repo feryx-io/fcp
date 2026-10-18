@@ -1165,11 +1165,13 @@ export function FlowBuilderPage() {
           <Button
             variant="ghost"
             size="icon"
+            title="Back to the flows"
             onClick={() => navigate('/admin/flows')}
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <Input
+            aria-label="Flow name"
             value={flowName}
             onChange={(e) => {
               setFlowName(e.target.value)

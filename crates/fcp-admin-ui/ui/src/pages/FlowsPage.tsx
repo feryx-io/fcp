@@ -52,6 +52,8 @@ export function FlowsPage() {
   const deleteMutation = useMutation({
     mutationFn: flows.delete,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['flows'] }),
+    // A flow a number or a queue still runs is refused: say why.
+    onError: (err) => alert(`Failed to delete the flow: ${(err as Error).message}`),
   })
 
   const columns: ColumnDef<FlowResponse>[] = [
@@ -115,7 +117,7 @@ export function FlowsPage() {
       cell: ({ row }) => (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon">
+            <Button variant="ghost" size="icon" aria-label="Actions">
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
@@ -151,8 +153,12 @@ export function FlowsPage() {
       name: data.name,
       description: data.description,
       initial_node: 'start',
+      // A flow the engine takes: a node's next is a node, so the greeting
+      // leads to a hangup (a null next was refused, and no flow could be
+      // made here).
       nodes: {
-        start: { type: 'say', label: 'Start', text: 'Welcome', next: null },
+        start: { type: 'say', label: 'Start', text: 'Welcome', next: 'end' },
+        end: { type: 'hangup', label: 'End' },
       },
     })
   }
@@ -200,6 +206,7 @@ export function FlowsPage() {
               <Label htmlFor="flow-desc">Description</Label>
               <Input id="flow-desc" placeholder="Optional description" {...register('description')} />
             </div>
+            {createMutation.error && <p className="text-sm text-destructive">{(createMutation.error as Error).message}</p>}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={createMutation.isPending}>

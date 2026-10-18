@@ -177,7 +177,7 @@ export function CallingSettingsForm({
             Calls do not ring; they get the busy forward, voicemail, or a busy signal.
           </p>
         </div>
-        <Switch checked={form.dnd} onCheckedChange={(dnd) => setForm((prev) => ({ ...prev, dnd }))} />
+        <Switch aria-label="Do Not Disturb" checked={form.dnd} onCheckedChange={(dnd) => setForm((prev) => ({ ...prev, dnd }))} />
       </div>
 
       <div className="flex items-center justify-between">
@@ -187,7 +187,7 @@ export function CallingSettingsForm({
             A second call rings while you are on one; off, it gets the busy forward, voicemail, or a busy signal.
           </p>
         </div>
-        <Switch
+        <Switch aria-label="Call Waiting"
           checked={form.call_waiting}
           onCheckedChange={(call_waiting) => setForm((prev) => ({ ...prev, call_waiting }))}
         />
@@ -268,7 +268,7 @@ export function CallingSettingsForm({
               devices (your phones), an extension, a +number. Confirm asks whoever answers to press 1.
             </p>
           </div>
-          <Switch
+          <Switch aria-label="Find Me"
             checked={form.find_me.enabled}
             onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, find_me: { ...prev.find_me, enabled } }))}
           />
@@ -392,7 +392,7 @@ export function CallingSettingsForm({
                 <Label className="text-sm font-medium">{label}</Label>
                 <p className="text-xs text-muted-foreground">{hint}</p>
               </div>
-              <Switch checked={f.enabled} onCheckedChange={(enabled) => updateForward(key, { enabled })} />
+              <Switch aria-label={label} checked={f.enabled} onCheckedChange={(enabled) => updateForward(key, { enabled })} />
             </div>
             {f.enabled && (
               <div className="space-y-2">
@@ -429,7 +429,7 @@ export function CallingSettingsForm({
                 Also *65 on, *66 off.
               </p>
             </div>
-            <Switch
+            <Switch aria-label="Assistants take calls"
               checked={form.executive.enabled}
               onCheckedChange={(enabled) =>
                 setForm((prev) => ({ ...prev, executive: { ...prev.executive, enabled } }))

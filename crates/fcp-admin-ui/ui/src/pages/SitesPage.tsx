@@ -273,10 +273,10 @@ export function SitesPage() {
                 className="font-mono text-xs pr-16"
               />
               <div className="absolute right-1 top-1 flex gap-1">
-                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setShowToken(!showToken)}>
+                <Button variant="ghost" size="icon" className="h-7 w-7" title={showToken ? 'Hide the token' : 'Show the token'} onClick={() => setShowToken(!showToken)}>
                   {showToken ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
                 </Button>
-                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={copyToken}>
+                <Button variant="ghost" size="icon" className="h-7 w-7" title="Copy the token" onClick={copyToken}>
                   <Copy className="h-3 w-3" />
                 </Button>
               </div>

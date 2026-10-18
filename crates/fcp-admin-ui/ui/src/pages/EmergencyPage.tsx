@@ -265,13 +265,14 @@ function ConfigurationTab() {
         <h2 className="font-semibold">Location</h2>
         <div className="flex items-center justify-between gap-4">
           <div>
-            <Label>Flag calls with no dispatchable location</Label>
+            <Label htmlFor="require-dispatchable-location">Flag calls with no dispatchable location</Label>
             <p className="text-sm text-muted-foreground">
               The call is always placed; with this on, the record and the event say the location was
               missing.
             </p>
           </div>
           <Switch
+            id="require-dispatchable-location"
             checked={current.require_dispatchable_location}
             onCheckedChange={(v) => edit({ require_dispatchable_location: v })}
           />

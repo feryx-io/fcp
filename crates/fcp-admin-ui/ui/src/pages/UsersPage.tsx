@@ -263,7 +263,7 @@ export function UsersPage() {
       cell: ({ row }) => (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon">
+            <Button variant="ghost" size="icon" aria-label="Actions">
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
@@ -568,11 +568,12 @@ function EditUserDialog({
         ...data,
         // A rename only when it changed (docs/USERS.md §6).
         username: data.username && data.username !== user.username ? data.username : undefined,
-        email: data.email || undefined,
-        display_name: data.display_name || undefined,
-        extension: data.extension || undefined,
-        department: data.department || undefined,
-        location_id: data.location_id || undefined,
+        // An emptied field is sent empty, which clears it.
+        email: data.email ?? '',
+        display_name: data.display_name ?? '',
+        extension: data.extension ?? '',
+        department: data.department ?? '',
+        location_id: data.location_id ?? '',
         tenant_id: data.tenant_id || undefined,
       },
     })

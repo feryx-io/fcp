@@ -232,7 +232,7 @@ export function LineBindingsPage() {
       cell: ({ row }) => (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon"><MoreHorizontal className="h-4 w-4" /></Button>
+            <Button variant="ghost" size="icon" aria-label="Actions"><MoreHorizontal className="h-4 w-4" /></Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => {
@@ -378,7 +378,7 @@ export function LineBindingsPage() {
             </div>
             <div>
               {index === 0 && <Label className="text-xs invisible">X</Label>}
-              <Button type="button" variant="ghost" size="icon" className="h-9 w-9" onClick={() => onRemove(index)}>
+              <Button type="button" variant="ghost" size="icon" className="h-9 w-9" title="Remove" onClick={() => onRemove(index)}>
                 <X className="h-4 w-4" />
               </Button>
             </div>

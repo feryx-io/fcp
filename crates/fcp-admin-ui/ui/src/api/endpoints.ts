@@ -950,7 +950,15 @@ export const me = {
   renewRecoveryCodes: (code: string) => apiClient.post<RecoveryCodes>('/me/totp/recovery-codes', { code }),
 
   // Voicemail
-  getMailbox: () => apiClient.get<MeMailbox>('/me/voicemail'),
+  /** `null` when the user has no mailbox. */
+  getMailbox: async (): Promise<MeMailbox | null> => {
+    try {
+      return await apiClient.get<MeMailbox>('/me/voicemail')
+    } catch (e) {
+      if (e instanceof ApiRequestError && e.status === 404) return null
+      throw e
+    }
+  },
   updateMailbox: (data: { pin?: string; email_notification?: boolean; email_address?: string; attach_audio?: boolean }) =>
     apiClient.put<MeMailbox>('/me/voicemail', data),
   getMailboxStats: () => apiClient.get<MeMailboxStats>('/me/voicemail/stats'),

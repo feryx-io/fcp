@@ -1,4 +1,15 @@
 # Multi-stage build for fcp-admin
+
+# The admin UI, built into the dist/ the binary embeds (fcp-admin-ui).
+# Without it the binary serves a placeholder page at /admin.
+FROM node:22-trixie-slim AS ui
+WORKDIR /ui
+COPY crates/fcp-admin-ui/ui/package.json crates/fcp-admin-ui/ui/package-lock.json ./
+RUN npm ci
+COPY crates/fcp-admin-ui/ui ./
+# vite writes to ../dist, here /dist.
+RUN npm run build
+
 FROM rust:1.98 as builder
 
 # Install build dependencies
@@ -18,6 +29,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY external ./external
+COPY --from=ui /dist ./crates/fcp-admin-ui/dist
 
 # Build fcp-admin in release mode, with SAML sign-in
 RUN cargo build --release -p fcp-admin --features saml
