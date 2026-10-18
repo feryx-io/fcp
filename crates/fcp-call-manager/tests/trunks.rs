@@ -2366,6 +2366,58 @@ async fn line_and_class(
     storage.put_calling_settings(settings).await.unwrap();
 }
 
+/// A user given a number, with no outbound caller ID set on the line,
+/// presents the number (`docs/DEEP_TESTING.md` D8: the user's SIP name
+/// went to the carrier, which refuses a caller ID not its customer's).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_line_with_no_caller_id_set_presents_its_number() {
+    use fcp_core::storage::{CredentialStore, LineBindingStore, PhoneNumberStore};
+    let carrier = Carrier::new("number-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "number-carrier", carrier.port(), |_| {})
+        .await;
+    let row = stack
+        .seed
+        .storage()
+        .get_user_in_tenant("alice", &acme)
+        .await
+        .unwrap()
+        .unwrap();
+    let number = fcp_core::PhoneNumber::new("+15185550199".into(), acme).unwrap();
+    let binding =
+        fcp_core::LineBinding::new(number.id, Some(row.id), fcp_core::BindingType::User, acme);
+    stack.seed.storage().put_phone_number(number).await.unwrap();
+    stack
+        .seed
+        .storage()
+        .put_line_binding(binding)
+        .await
+        .unwrap();
+    tokio::time::sleep(REFRESHED).await;
+    let alice_phone = stack.phone(&alice).await;
+
+    let call = alice_phone
+        .call_with_headers("+15125559999", &Caller::new(acme, "alice").headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the carrier never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming.from.contains("+15185550199@"),
+        "From: {}",
+        incoming.from
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert_eq!(call.failed(SOON).await, Some(486));
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_users_class_decides_what_leaves_and_under_which_caller_id() {
     let carrier = Carrier::new("cos-carrier").await;

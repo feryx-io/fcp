@@ -15996,16 +15996,32 @@ impl SipMessageHandler {
         // A call an assistant places for an executive leaves with the
         // executive's line (§3.10); the assistant's class still decides.
         let user = call.on_behalf_of.unwrap_or(user);
-        let number = match storage.list_line_bindings_by_user(&user).await {
+        // The line's outbound caller ID, else the line's own number: a user
+        // given a number presented their SIP name to the carrier, which a
+        // carrier refuses (`docs/DEEP_TESTING.md` D8).
+        let lines: Vec<_> = match storage.list_line_bindings_by_user(&user).await {
             Ok(bindings) => bindings
                 .into_iter()
                 .filter(|b| b.tenant_id == call.tenant_id)
-                .find_map(|b| b.outbound_caller_id.filter(|id| !id.trim().is_empty())),
+                .collect(),
             Err(e) => {
                 warn!(call_id = %call_id, user_id = %user, error = %e, "Failed to read the caller's lines");
-                None
+                Vec::new()
             }
         };
+        let mut number = lines.iter().find_map(|b| {
+            b.outbound_caller_id
+                .clone()
+                .filter(|id| !id.trim().is_empty())
+        });
+        if number.is_none() {
+            for line in &lines {
+                if let Ok(Some(n)) = storage.get_phone_number(&line.phone_number_id).await {
+                    number = Some(n.e164);
+                    break;
+                }
+            }
+        }
         let host = caller_from
             .and_then(|from| {
                 sip_core::SipUri::parse(from.trim_matches(|c| c == '<' || c == '>')).ok()
