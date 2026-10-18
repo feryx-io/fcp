@@ -452,6 +452,16 @@ impl Tenant {
         }
     }
 
+    /// The default tenant as it is before anything about it is stored: a
+    /// single-tenant deployment's users, numbers and devices are its, and
+    /// it has no row until an administrator sets something on it — its
+    /// SIP domains, say (`docs/DEEP_TESTING.md` D8).
+    pub fn default_tenant() -> Self {
+        let mut tenant = Self::new("default".to_string());
+        tenant.id = TenantId::nil();
+        tenant
+    }
+
     /// Returns true if this tenant claims the given SIP domain.
     ///
     /// The comparison is case-insensitive and ignores surrounding

@@ -218,8 +218,19 @@ export const users = {
 }
 
 // Tenants
+/** The default tenant: a single-tenant deployment's, listed before it has a row. */
+export const DEFAULT_TENANT_ID = 'tenant-00000000-0000-0000-0000-000000000000'
+
 export const tenants = {
-  list: () => apiClient.getAll<Tenant>('/tenants'),
+  list: async () => {
+    const all = await apiClient.getAll<Tenant>('/tenants')
+    if (all.some((t) => t.id === DEFAULT_TENANT_ID)) return all
+    try {
+      return [await apiClient.get<Tenant>(`/tenants/${DEFAULT_TENANT_ID}`), ...all]
+    } catch {
+      return all
+    }
+  },
   get: (id: string) => apiClient.get<Tenant>(`/tenants/${encodeURIComponent(id)}`),
   create: (data: CreateTenantRequest) => apiClient.post<Tenant>('/tenants', data),
   update: (id: string, data: Partial<CreateTenantRequest>) =>

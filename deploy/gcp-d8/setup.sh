@@ -89,4 +89,10 @@ docker compose up -d --no-build
 # new image, not for a changed file.
 docker compose restart fcp-admin fcp-call-manager
 bash scripts/wait-healthy.sh || { docker compose ps; exit 1; }
+
+# Phones register by the name: the default tenant claims it.
+token=$(grep ^FCP_ADMIN_AUTH_TOKEN= .env | cut -d= -f2)
+curl -fsS -o /dev/null -X PUT -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+    "http://127.0.0.1:8080/api/v1/tenants/tenant-00000000-0000-0000-0000-000000000000" \
+    -d "{\"sip_domains\":[\"$DOMAIN\"]}" || echo "the default tenant did not take $DOMAIN (an image before v0.25.415?)"
 docker compose ps --format '{{.Name}} {{.Status}}'

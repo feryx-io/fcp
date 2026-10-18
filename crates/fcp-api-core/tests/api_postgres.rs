@@ -7973,6 +7973,40 @@ async fn an_erasure_is_previewed_confirmed_by_a_person_and_logged_under_its_requ
     app.finish().await;
 }
 
+/// The default tenant — a single-tenant deployment's — has no row until
+/// something is set on it. It reads as its defaults, takes a SIP domain by
+/// an update (D8: phones provisioned by name could not register, since
+/// nothing could claim the name), and is never deleted.
+#[tokio::test]
+async fn the_default_tenant_takes_a_sip_domain_and_is_never_deleted() {
+    let app = require_app!();
+    let path = "/api/v1/tenants/tenant-00000000-0000-0000-0000-000000000000";
+    let read = app.admin(Method::GET, path, None).await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+
+    let domain = format!("default-{}.d8.test", uuid::Uuid::new_v4().simple());
+    let updated = app
+        .admin(Method::PUT, path, Some(json!({ "sip_domains": [domain] })))
+        .await;
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.text);
+    assert_eq!(updated.json["sip_domains"], json!([domain]));
+    let claimed = app
+        .storage
+        .get_tenant_by_sip_domain(&domain)
+        .await
+        .unwrap()
+        .expect("the default tenant claims it");
+    assert_eq!(claimed.id, TenantId::nil());
+
+    let refused = app.admin(Method::DELETE, path, None).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    // The domain is let go, for the other tests that share the database.
+    let cleared = app
+        .admin(Method::PUT, path, Some(json!({ "sip_domains": [] })))
+        .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text);
+}
+
 #[tokio::test]
 async fn deleting_a_tenant_is_a_request_refused_under_a_hold() {
     let app = require_app!();

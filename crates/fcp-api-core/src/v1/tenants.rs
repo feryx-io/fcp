@@ -463,11 +463,15 @@ pub async fn get_tenant(
     let tenant_id = TenantId::from_str(&id)
         .map_err(|_| ApiError::BadRequest("Invalid tenant ID format".to_string()))?;
     require_tenant_access(identity.as_ref().map(|ext| &ext.0), &tenant_id)?;
-    let tenant = storage
-        .get_tenant(&tenant_id)
-        .await?
+    let tenant = stored_or_default(storage.get_tenant(&tenant_id).await?, &tenant_id)
         .ok_or_else(|| ApiError::NotFound(format!("Tenant {} not found", id)))?;
     Ok(Json(tenant.into()))
+}
+
+/// A tenant as stored; the default tenant, which has no row until
+/// something is set on it, as it is by default.
+fn stored_or_default(found: Option<Tenant>, id: &TenantId) -> Option<Tenant> {
+    found.or_else(|| (*id == TenantId::nil()).then(Tenant::default_tenant))
 }
 
 /// Create a new tenant (platform admin only)
@@ -597,10 +601,9 @@ pub async fn update_tenant(
         .map_err(|_| ApiError::BadRequest("Invalid tenant ID format".to_string()))?;
     require_tenant_access(identity.as_ref().map(|ext| &ext.0), &tenant_id)?;
 
-    // Get existing tenant
-    let mut tenant = storage
-        .get_tenant(&tenant_id)
-        .await?
+    // Get existing tenant; the default tenant's row is made by its first
+    // update.
+    let mut tenant = stored_or_default(storage.get_tenant(&tenant_id).await?, &tenant_id)
         .ok_or_else(|| ApiError::NotFound(format!("Tenant {} not found", id)))?;
 
     // Update fields if provided
@@ -765,6 +768,13 @@ pub async fn delete_tenant(
     let storage = require_storage!(state);
     let tenant_id = TenantId::from_str(&id)
         .map_err(|_| ApiError::BadRequest("Invalid tenant ID format".to_string()))?;
+    // The default tenant is a single-tenant deployment's everything; its row
+    // holds only its settings, and deleting the tenant would erase it all.
+    if tenant_id == TenantId::nil() {
+        return Err(ApiError::BadRequest(
+            "The default tenant cannot be deleted".to_string(),
+        ));
+    }
 
     let Some(mut tenant) = storage.get_tenant(&tenant_id).await? else {
         return Err(ApiError::NotFound(format!("Tenant {} not found", id)));
