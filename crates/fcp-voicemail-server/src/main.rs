@@ -439,6 +439,17 @@ async fn main() -> Result<()> {
         Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
     ));
 
+    // Its directories, made if they are missing: the recorder refuses a
+    // directory that does not exist, so a message was never kept where
+    // nothing had made them (a fresh volume — D8).
+    for dir in [
+        &config.voicemail.recordings_dir,
+        &config.voicemail.greetings_dir,
+    ] {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("cannot make the voicemail directory {dir}"))?;
+    }
+
     // 16. Create VoicemailService
     let vm_config = VoicemailConfig {
         recordings_dir: PathBuf::from(&config.voicemail.recordings_dir),
