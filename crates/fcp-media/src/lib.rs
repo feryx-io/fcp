@@ -55,6 +55,7 @@ pub mod decision;
 pub mod dtmf_collector;
 pub mod error;
 pub mod manager;
+pub mod ports;
 pub mod sdp;
 pub mod session;
 pub mod stt;
@@ -70,6 +71,7 @@ pub use decision::{should_anchor_media, MediaAnchoringDecision, MediaDecisionCon
 pub use dtmf_collector::{CollectionResult, DtmfCollector};
 pub use error::{Error, Result};
 pub use manager::{MediaManager, MediaManagerStats};
+pub use ports::bound_port_pair;
 pub use sdp::{
     construct_answer, construct_answer_for_a_leg, construct_offer, decode_sdes_key_params,
     extract_codecs_from_sdp, extract_telephone_event_pt, filter_sdp_codecs,

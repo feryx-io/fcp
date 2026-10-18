@@ -19,6 +19,7 @@ pub mod profile;
 pub mod report;
 pub mod run;
 pub mod sampler;
+pub mod soak;
 pub mod target;
 
 pub use budget::Budget;

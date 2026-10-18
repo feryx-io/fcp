@@ -14,12 +14,19 @@ publish = false
 name = "fcp-loadgen"
 path = "src/main.rs"
 
+[[bin]]
+name = "fcp-soak"
+path = "src/bin/fcp-soak.rs"
+
 [dependencies]
 fcp-testkit = { path = "../fcp-testkit" }
 
 anyhow = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4", features = ["derive"] }
+# The soak reads the stack's stores (`docs/DEEP_TESTING.md` D6).
+redis = { version = "0.27", features = ["tokio-comp"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["full"] }

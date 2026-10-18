@@ -2779,9 +2779,8 @@ impl ConferenceCallHandler {
         }
 
         // 2. Allocate RTP port pair
-        let port_pair = self
-            .port_pool
-            .allocate()
+        let (port_pair, rtp_socket) = self
+            .bound_port_pair()
             .await
             .context("Failed to allocate RTP port pair for dial-out")?;
 
@@ -2901,12 +2900,7 @@ impl ConferenceCallHandler {
         let te_pt = find_telephone_event_pt(&offered_codecs, answer_sdp);
         let dtmf_clock_rate = find_telephone_event_clock_rate(&offered_codecs, answer_sdp);
 
-        // 8. Create RTP socket and set remote endpoint
-        let rtp_socket = Arc::new(
-            RtpSocketPair::new(port_pair, RtpSocketConfig::default())
-                .await
-                .context("Failed to create RTP socket for dial-out")?,
-        );
+        // 8. Point the RTP socket at the far end
         if let Some(remote_addr) = parse_remote_rtp_addr(answer_sdp) {
             rtp_socket
                 .set_remote_endpoint(RemoteEndpoint {
@@ -3996,6 +3990,14 @@ impl ConferenceCallHandler {
         }
     }
 
+    /// A port pair from the pool with its sockets bound
+    /// ([`fcp_media::bound_port_pair`]): a caller is answered only on
+    /// ports this node holds.
+    async fn bound_port_pair(&self) -> Result<(PortPair, Arc<RtpSocketPair>)> {
+        let (pair, socket) = fcp_media::bound_port_pair(&self.port_pool).await?;
+        Ok((pair, Arc::new(socket)))
+    }
+
     /// Give back a participant's ports when the join fails after allocation.
     fn release_ports(&self, audio: PortPair, video: Option<PortPair>) {
         let pool = Arc::clone(&self.port_pool);
@@ -4557,9 +4559,8 @@ impl ConferenceCallHandler {
         }
         let conf = self.conference_config.read().clone();
 
-        let port_pair = self
-            .port_pool
-            .allocate()
+        let (port_pair, rtp_socket) = self
+            .bound_port_pair()
             .await
             .context("Failed to allocate RTP port pair for conference trunk")?;
         let dealloc = |pool: Arc<PortPool>, pair: PortPair| {
@@ -4772,15 +4773,6 @@ impl ConferenceCallHandler {
             None => None,
         };
 
-        let rtp_socket = match RtpSocketPair::new(port_pair, RtpSocketConfig::default()).await {
-            Ok(s) => Arc::new(s),
-            Err(e) => {
-                let _ = self.uac.bye(&dialog).await;
-                release_video(self, video_pair);
-                dealloc(Arc::clone(&self.port_pool), port_pair);
-                bail!("failed to create RTP socket for trunk: {}", e);
-            }
-        };
         let remote_addr = parse_remote_rtp_addr(answer_sdp);
         if let Some(remote_addr) = remote_addr {
             rtp_socket
@@ -5080,9 +5072,8 @@ impl ConferenceCallHandler {
             None => (None, None),
         };
 
-        let port_pair = self
-            .port_pool
-            .allocate()
+        let (port_pair, rtp_socket) = self
+            .bound_port_pair()
             .await
             .context("Failed to allocate RTP port pair for conference trunk")?;
 
@@ -5209,22 +5200,6 @@ impl ConferenceCallHandler {
             }
         };
         handle.send_final(response).await;
-
-        let rtp_socket = match RtpSocketPair::new(port_pair, RtpSocketConfig::default()).await {
-            Ok(s) => Arc::new(s),
-            Err(e) => {
-                let _ = self.uac.bye(&dialog).await;
-                let pool = Arc::clone(&self.port_pool);
-                tokio::spawn(async move { pool.deallocate(port_pair).await });
-                for pair in [video_pair, content_pair].into_iter().flatten() {
-                    self.release_video_pair_later(pair);
-                }
-                return Err(anyhow::anyhow!(
-                    "Failed to create RTP socket for trunk: {}",
-                    e
-                ));
-            }
-        };
 
         // The video half of the answer, when one was agreed, and the
         // screen's section beside it.
@@ -5931,10 +5906,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let ringing = uas.create_ringing(request);
         handle.send_provisional(ringing).await;
 
-        // 6. Allocate RTP port pair (and a second one for video)
-        let port_pair = self
-            .port_pool
-            .allocate()
+        // 6. Allocate RTP port pair, bound (and a second one for video)
+        let (port_pair, rtp_socket) = self
+            .bound_port_pair()
             .await
             .context("Failed to allocate RTP port pair")?;
         let mut video_pair = match (&video_plan, &offered_sections.camera) {
@@ -6148,20 +6122,6 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // is joining: a BYE is taken, and the join undone when it is done.
         let joining = Joining::start(&self.joining, extract_call_id(request));
         handle.send_final(response).await;
-
-        // 10. Create RTP socket pair (deallocate port on failure to prevent leak)
-        let rtp_socket = match RtpSocketPair::new(port_pair, RtpSocketConfig::default()).await {
-            Ok(s) => Arc::new(s),
-            Err(e) => {
-                warn!(
-                    rtp_port = port_pair.rtp_port,
-                    error = %e,
-                    "Failed to create RTP socket pair, deallocating port"
-                );
-                self.release_ports(port_pair, video_pair);
-                return Err(anyhow::anyhow!("Failed to create RTP socket pair: {}", e));
-            }
-        };
 
         // 11. Parse remote RTP address from SDP offer
         if let Some(remote_addr) = parse_remote_rtp_addr(sdp_offer) {

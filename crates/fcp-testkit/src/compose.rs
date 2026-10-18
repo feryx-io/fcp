@@ -251,6 +251,113 @@ impl ComposeStack {
     }
 }
 
+/// Every service the compose file runs by default, in its start order:
+/// the events server, then the admin and the gateway, then every SIP and
+/// media service and the job worker. Not the TTS server (its provider
+/// needs the image's Python) and not the registrar profile.
+pub const DEFAULT_SERVICES: [&str; 12] = [
+    "fcp-events-server",
+    "fcp-admin",
+    "fcp-api-gateway",
+    "fcp-call-manager",
+    "fcp-conference",
+    "fcp-ivr",
+    "fcp-voicemail",
+    "fcp-presence",
+    "fcp-sbc",
+    "fcp-media",
+    "fcp-webrtc-gw",
+    "fcp-jobs",
+];
+
+/// The compose stack's default services started from this checkout's
+/// binaries, as [`ComposeStack::start_local`] brings them up.
+pub struct LocalStack {
+    /// Where the containers' paths went; the certificates are under
+    /// `var-lib-fcp/certs`.
+    pub dir: tempfile::TempDir,
+    /// The CA the `certs` service would have made, trusted by this process.
+    pub ca: crate::certs::ClusterCa,
+    /// The running services, by compose name, in start order.
+    pub services: Vec<(String, crate::Service)>,
+}
+
+impl LocalStack {
+    /// Stop every service, print the tail of each one's log, and panic
+    /// with `why`.
+    pub async fn fail(self, why: &str) -> ! {
+        for (name, service) in self.services.into_iter().rev() {
+            let log = service.stop().await;
+            let lines: Vec<&str> = log.lines().collect();
+            let tail = &lines[lines.len().saturating_sub(60)..];
+            eprintln!("---- last lines of {name}'s log ----\n{}", tail.join("\n"));
+        }
+        panic!("{why}");
+    }
+}
+
+impl ComposeStack {
+    /// Start [`DEFAULT_SERVICES`] with the compose file's configurations
+    /// and environment against `database_url` and `redis_url`, each
+    /// healthy before the next starts. The certificates and master key
+    /// the `certs` service would have made come from a CA of the
+    /// caller's, which this process trusts. `edit` may change a
+    /// service's configuration and environment before it starts.
+    pub async fn start_local(
+        &self,
+        database_url: &str,
+        redis_url: &str,
+        edit: impl Fn(&str, &mut String, &mut Vec<(String, String)>),
+    ) -> LocalStack {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Under the path the configurations name once `config_for` has
+        // moved `/var/lib/fcp` under `dir`.
+        let certs_dir = dir.path().join("var-lib-fcp").join("certs");
+        std::fs::create_dir_all(&certs_dir).expect("certs dir");
+        let ca = crate::certs::ClusterCa::new(&certs_dir);
+        for service in [
+            "fcp-call-manager",
+            "fcp-registrar",
+            "fcp-conference",
+            "fcp-sbc",
+            "fcp-media",
+            "fcp-webrtc-gw",
+            "fcp-proxy",
+            "fcp-admin",
+        ] {
+            ca.node(service);
+        }
+        crate::smoke::trust_ca(&ca.ca_path);
+        // The master key beside them: 32 random bytes, base64, as
+        // `openssl rand -base64 32` writes it.
+        let mut key = uuid::Uuid::new_v4().as_bytes().to_vec();
+        key.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+        std::fs::write(
+            certs_dir.join("master.key"),
+            format!(
+                "{}\n",
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key)
+            ),
+        )
+        .expect("master key");
+
+        let mut services = Vec::new();
+        for name in DEFAULT_SERVICES {
+            let svc = self.service(name);
+            let mut config = self.config_for(name, dir.path(), redis_url);
+            let mut env = self.env_for(name, database_url, dir.path());
+            edit(name, &mut config, &mut env);
+            let env_refs: Vec<(&str, &str)> =
+                env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            let bin = crate::bins::path(svc.binary, svc.package);
+            let service =
+                crate::Service::start_with(name, bin, &config, &svc.health_url, &env_refs).await;
+            services.push((name.to_string(), service));
+        }
+        LocalStack { dir, ca, services }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

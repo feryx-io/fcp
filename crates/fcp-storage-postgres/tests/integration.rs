@@ -1060,6 +1060,37 @@ async fn a_keyset_walk_crosses_months_and_ties_and_sees_every_record_once() {
     );
 }
 
+/// The scheduled rebuild (`fcp_cdr::maintenance`, run by `fcp-admin` and
+/// `fcp-jobs`) holds the maintenance lock while the rebuild takes its own:
+/// were they one lock, the rebuild would wait on its own scheduler for as
+/// long as the process lived, holding a transaction open (found by the
+/// soak, `docs/DEEP_TESTING.md` D6).
+#[tokio::test]
+async fn the_scheduled_rollup_rebuild_finishes() {
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+    let mut r = cdr(a.id, "sip:bob@a.example.com", Some(30_000), None);
+    r.start_time = SystemTime::now() - Duration::from_secs(2 * 3_600);
+    s.insert_cdr(r).await.unwrap();
+    let from = SystemTime::now() - Duration::from_secs(3 * 3_600);
+    let window = Duration::from_secs(48 * 3_600);
+    for round in 0..2 {
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            fcp_cdr::maintenance::rebuild_rollups(s, window),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("scheduled rebuild {round} did not finish"));
+    }
+    let rolled = s
+        .aggregate_usage(&a.id, from, SystemTime::now())
+        .await
+        .unwrap();
+    assert_eq!(rolled.total_calls, 1, "the record was rolled up");
+}
+
 #[tokio::test]
 async fn usage_from_rollups_and_the_open_edges_matches_usage_from_the_records() {
     let db = require_db!();
