@@ -528,6 +528,9 @@ account.{{ account.index }}.display_name = {{ account.display_name }}
 account.{{ account.index }}.user_name = {{ account.user_name }}
 account.{{ account.index }}.auth_name = {{ account.auth_name }}
 account.{{ account.index }}.password = {{ account.password }}
+account.{{ account.index }}.subscribe_mwi = 1
+account.{{ account.index }}.subscribe_mwi_to_vm = 1
+voice_mail.number.{{ account.index }} = *98
 account.{{ account.index }}.sip_server.1.address = {{ sip_domain }}
 account.{{ account.index }}.sip_server.1.port = {{ sip_port }}
 account.{{ account.index }}.sip_server.1.transport_type = {{ transport }}
@@ -580,6 +583,9 @@ linekey.{{ n }}.label = {{ key.label }}
     reg.{{ account.index }}.server.1.address="{{ sip_server }}"
     reg.{{ account.index }}.server.1.port="{{ sip_port }}"
     reg.{{ account.index }}.server.1.transport="{{ {"udp": "UDPOnly", "tcp": "TCPOnly", "tls": "TLS"}[sip_transport] }}"
+    msg.mwi.{{ account.index }}.subscribe="{{ account.user_name }}@{{ sip_domain }}"
+    msg.mwi.{{ account.index }}.callBackMode="contact"
+    msg.mwi.{{ account.index }}.callBack="*98"
 {% if account.shared %}
     reg.{{ account.index }}.type="shared"
     reg.{{ account.index }}.lineKeys="{{ account.appearances }}"
@@ -588,6 +594,8 @@ linekey.{{ n }}.label = {{ key.label }}
 {% if firmware_url %}
     upgrade.custom.server.url="{{ firmware_url }}"
 {% endif %}
+    dialplan.digitmap="*x.T|x.T"
+    dialplan.digitmap.timeOut="3"
     tcpIpApp.sntp.address="{{ ntp_server }}"
     tcpIpApp.sntp.gmtOffset="{{ utc_offset_minutes * 60 }}"
 {% for key in line_keys %}
@@ -979,9 +987,31 @@ mod tests {
             "linekey.5.type = 10\n",
             "static.auto_provision.server.url = https://pbx.example.com/provision/",
             "static.firmware.url = https://pbx.example.com/provision/",
+            "account.1.subscribe_mwi = 1\n",
+            "voice_mail.number.1 = *98\n",
         ] {
             assert!(out.contains(want), "{want:?} in\n{out}");
         }
         assert!(!out.contains("account.2.enable = 0"), "{out}");
+    }
+
+    /// A VVX told nothing of its mailbox never lit its message light, and
+    /// its default digit map sent `*9` before `*98` was typed
+    /// (`docs/DEEP_TESTING.md` D8).
+    #[test]
+    fn the_polycom_starter_subscribes_to_its_mailbox_and_waits_to_dial() {
+        let c = TemplateContext::sample();
+        let polycom = builtin_templates()
+            .iter()
+            .find(|t| t.vendor == PhoneVendor::Polycom)
+            .unwrap();
+        let out = render(polycom.body, polycom.vendor, &c).unwrap();
+        for want in [
+            r#"msg.mwi.1.subscribe="alice@acme.example.com""#,
+            r#"msg.mwi.1.callBack="*98""#,
+            r#"dialplan.digitmap="*x.T|x.T""#,
+        ] {
+            assert!(out.contains(want), "{want:?} in\n{out}");
+        }
     }
 }

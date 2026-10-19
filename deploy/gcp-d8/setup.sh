@@ -43,13 +43,9 @@ chmod 600 .env
 # What phones, apps and browsers are told: the name the certificate is for.
 sed -i "s|^provisioning_url = .*|provisioning_url = \"https://$DOMAIN:8444\"|" configs/fcp-call-manager.toml
 sed -i "s|^gateway_url = .*|gateway_url = \"https://$DOMAIN:8095\"|" configs/fcp-admin.toml
-cat >> configs/fcp-admin.toml <<TOML
-
-[api.provisioning]
-# What provisioned phones are told: register to the name, fetch from it.
-sip_server = "$DOMAIN"
-public_url = "https://$DOMAIN:8444"
-TOML
+# Phones register to the name (the default tenant claims it, below) and
+# fetch from it.
+sed -i "s|^sip_server = .*|sip_server = \"$DOMAIN\"|; s|^public_url = \"https://\${HOST_IP}:8444\"|public_url = \"https://$DOMAIN:8444\"|" configs/fcp-admin.toml
 
 # Push: the publisher's keys in /opt/d8/push (push.toml naming the files
 # under /var/lib/fcp/push), added to the call manager when present.
