@@ -36,17 +36,8 @@ fn hash_token(token: &str) -> String {
 /// Where phones reach this admin: `[api.provisioning] public_url`, else
 /// `[api.sso] public_url`, else the host the request came to, over HTTPS.
 pub(crate) fn public_base(state: &ApiState, headers: &HeaderMap) -> Option<String> {
-    let configured = state
-        .provisioning
-        .public_url
-        .as_deref()
-        .map(|u| u.trim().trim_end_matches('/').to_string())
-        .filter(|u| !u.is_empty());
-    if configured.is_some() {
-        return configured;
-    }
-    if let Some(sso) = state.sso.as_ref() {
-        return Some(sso.public_url.trim_end_matches('/').to_string());
+    if let Some(configured) = configured_base(state) {
+        return Some(configured);
     }
     let host = headers
         .get("x-forwarded-host")
@@ -60,6 +51,23 @@ pub(crate) fn public_base(state: &ApiState, headers: &HeaderMap) -> Option<Strin
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))
         })?;
     Some(format!("https://{host}"))
+}
+
+/// Where phones reach this admin, when it is configured:
+/// `[api.provisioning] public_url`, else `[api.sso] public_url`.
+fn configured_base(state: &ApiState) -> Option<String> {
+    state
+        .provisioning
+        .public_url
+        .as_deref()
+        .map(|u| u.trim().trim_end_matches('/').to_string())
+        .filter(|u| !u.is_empty())
+        .or_else(|| {
+            state
+                .sso
+                .as_ref()
+                .map(|sso| sso.public_url.trim_end_matches('/').to_string())
+        })
 }
 
 /// The template a device gets: the one it names, else one picked by its
@@ -674,7 +682,7 @@ pub struct ProvisioningKeyResponse {
     /// The path phones fetch under: `/provision/<key>/`.
     pub path: String,
     /// The whole URL, when the admin knows its public address
-    /// (`[api.sso] public_url`).
+    /// (`[api.provisioning] public_url`, else `[api.sso] public_url`).
     pub url: Option<String>,
     #[serde(with = "crate::time::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
@@ -687,10 +695,7 @@ fn key_response(
 ) -> ProvisioningKeyResponse {
     let path = format!("/provision/{}/", key.key);
     ProvisioningKeyResponse {
-        url: state
-            .sso
-            .as_ref()
-            .map(|s| format!("{}{path}", s.public_url)),
+        url: configured_base(state).map(|base| format!("{base}{path}")),
         path,
         key: key.key,
         created_at: key.created_at,

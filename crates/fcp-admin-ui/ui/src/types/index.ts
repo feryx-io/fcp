@@ -279,6 +279,7 @@ export interface SipTrunk {
   from_domain: string | null
   strip_digits: number
   prepend_digits: string | null
+  send_e164?: boolean
   cps_limit: number
   description: string | null
   srtp_mode: string

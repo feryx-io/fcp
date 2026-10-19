@@ -6526,6 +6526,12 @@ export interface components {
             max_message_duration?: number;
             /** Format: int32 */
             max_messages?: number;
+            /**
+             * @description A flow of the tenant's to handle a call this mailbox would take —
+             *     say something, ring someone, a queue, or a message after all. Unset:
+             *     the mailbox takes it.
+             */
+            flow_id?: string | null;
         };
         /** @description Create meeting request body. */
         CreateMeetingRequest: {
@@ -6759,6 +6765,11 @@ export interface components {
             /** Format: int32 */
             strip_digits?: number | null;
             prepend_digits?: string | null;
+            /**
+             * @description Send numbers in E.164 (`+15183217034`), as the tenant's country
+             *     reads what was dialled, before the digit plan: what Twilio needs.
+             */
+            send_e164?: boolean | null;
             /** Format: int32 */
             cps_limit?: number | null;
             description?: string | null;
@@ -7862,6 +7873,11 @@ export interface components {
             transcription_enabled: boolean;
             /** Format: int32 */
             retention_days?: number | null;
+            /**
+             * @description The flow that handles a call this mailbox would take, if not the
+             *     mailbox itself.
+             */
+            flow_id?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -9113,6 +9129,11 @@ export interface components {
                 transcription_enabled: boolean;
                 /** Format: int32 */
                 retention_days?: number | null;
+                /**
+                 * @description The flow that handles a call this mailbox would take, if not the
+                 *     mailbox itself.
+                 */
+                flow_id?: string | null;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -10058,6 +10079,8 @@ export interface components {
                 /** Format: int32 */
                 strip_digits: number;
                 prepend_digits?: string | null;
+                /** @description Numbers go to this trunk in E.164, before its digit plan. */
+                send_e164: boolean;
                 /** Format: int32 */
                 cps_limit: number;
                 description?: string | null;
@@ -10702,7 +10725,7 @@ export interface components {
             path: string;
             /**
              * @description The whole URL, when the admin knows its public address
-             *     (`[api.sso] public_url`).
+             *     (`[api.provisioning] public_url`, else `[api.sso] public_url`).
              */
             url?: string | null;
             /** Format: date-time */
@@ -11883,6 +11906,8 @@ export interface components {
             /** Format: int32 */
             strip_digits: number;
             prepend_digits?: string | null;
+            /** @description Numbers go to this trunk in E.164, before its digit plan. */
+            send_e164: boolean;
             /** Format: int32 */
             cps_limit: number;
             description?: string | null;
@@ -12191,6 +12216,11 @@ export interface components {
              * @description Double Option: outer = field not provided, inner = null to clear.
              */
             retention_days?: number | null;
+            /**
+             * @description The flow that handles a call this mailbox would take; empty clears
+             *     it, so the mailbox takes it again.
+             */
+            flow_id?: string | null;
         };
         /**
          * @description Update meeting request body (all fields optional; `null` clears one
@@ -12459,6 +12489,8 @@ export interface components {
             /** Format: int32 */
             strip_digits?: number | null;
             prepend_digits?: string | null;
+            /** @description Send numbers in E.164, before the digit plan. */
+            send_e164?: boolean | null;
             /** Format: int32 */
             cps_limit?: number | null;
             description?: string | null;

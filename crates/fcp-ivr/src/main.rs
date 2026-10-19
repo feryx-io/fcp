@@ -110,6 +110,11 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     init_tracing(&config);
+    // On a cloud VM whose public address is NAT at the edge, services on
+    // this host cannot reach one another by it (`fcp_sip::self_reach`).
+    if let Some(ip) = config.media.public_ip.as_deref() {
+        fcp_sip::self_reach::warn_if_unreachable(ip, "fcp-ivr").await;
+    }
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -168,7 +173,7 @@ async fn main() -> Result<()> {
         ];
 
         for (section, toml_val) in sections {
-            match cs.get_config(svc, section, tid).await {
+            match fcp_core::reconcile_with_seed(cs, svc, section, tid, &toml_val).await {
                 Ok(Some(entry)) => {
                     match section {
                         "media" => {

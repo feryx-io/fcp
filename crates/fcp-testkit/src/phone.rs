@@ -241,6 +241,7 @@ impl Inner {
                     extra_headers: headers,
                     from: None,
                     filter: None,
+                    destination: None,
                 }
             }
             None => sip_uac::InviteOptions {
@@ -248,6 +249,7 @@ impl Inner {
                 extra_headers: headers,
                 from: None,
                 filter: None,
+                destination: None,
             },
         };
         let handle = Arc::new(

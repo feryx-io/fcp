@@ -1101,6 +1101,67 @@ def trunk(steps):
     return plain.replace("\n      [authentication]", "")
 
 
+# A caller whose INVITE came through a proxy (a carrier's edge): two Vias.
+# Every response must carry both, or the proxy cannot pass it on — D8 found
+# a carrier's caller hearing no ringing and no refusal. The 180 must also
+# name the node's Contact, not the callee's (which is on its own network).
+PROXY_VIA = "Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKproxy[call_number]"
+
+
+def proxied_check(name):
+    return (
+        f'<action><ereg regexp="192\\.0\\.2\\.9" search_in="msg" check_it="true"'
+        f' assign_to="{name}"/></action>'
+    )
+
+
+def uac_proxied_busy():
+    steps = UAC_INVITE.replace(
+        "Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]",
+        "Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]\n      " + PROXY_VIA,
+    )
+    steps = steps.replace(
+        '<recv response="401" auth="true"/>',
+        f'<recv response="401" auth="true">{proxied_check("challenged_via")}</recv>',
+    )
+    return (
+        steps
+        + f"""  <recv response="180">
+    <action>
+      <ereg regexp="192\\.0\\.2\\.9" search_in="msg" check_it="true" assign_to="ringing_via"/>
+      <ereg regexp="@" search_in="hdr" header="Contact:" check_it="true" assign_to="ringing_contact"/>
+    </action>
+  </recv>
+  <recv response="486">{proxied_check("busy_via")}</recv>
+"""
+        + ack_failure()
+        + """  <Reference variables="challenged_via,ringing_via,ringing_contact,busy_via"/>
+"""
+    )
+
+
+SCENARIOS.update(
+    {
+        "uac_proxied_busy": (
+            "A call through a proxy (two Vias) that rings, then is refused busy; every "
+            "response carries both Vias and the 180 the node's Contact. Keys: user, domain, "
+            "callee.",
+            uac_proxied_busy(),
+        ),
+        "uas_ring_then_busy": (
+            "The callee: rings, then is busy.",
+            """  <recv request="INVITE" crlf="true"/>
+"""
+            + reply(180, "Ringing")
+            + """  <pause milliseconds="300"/>
+"""
+            + reply(486, "Busy Here")
+            + """  <recv request="ACK"/>
+""",
+        ),
+    }
+)
+
 TRUNK_CALLERS = ("uac_answered", "uac_busy", "uac_cancel", "uac_reinvite", "uac_update")
 SCENARIOS.update(
     {

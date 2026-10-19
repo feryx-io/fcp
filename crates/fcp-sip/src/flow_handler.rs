@@ -86,6 +86,10 @@ pub struct FlowCallHandler {
 
     /// Voicemail service for recording voicemail messages
     voicemail_service: Option<Arc<VoicemailService>>,
+    /// Where a Voicemail node sends the call when this node records no
+    /// messages itself: the voicemail server (the call manager's
+    /// `voicemail_server_uri`).
+    voicemail_server: Option<String>,
 
     /// Hoteling sessions, for the login node (`docs/ENTERPRISE_CALLING.md` §3.8)
     hoteling: Option<Arc<crate::hoteling::Hoteling>>,
@@ -186,6 +190,7 @@ impl FlowCallHandler {
             local_addr: None,
             rtp_port: 8000,
             voicemail_service: None,
+            voicemail_server: None,
             hoteling: None,
             prompt_service: None,
             flow_trace_store: None,
@@ -249,6 +254,14 @@ impl FlowCallHandler {
     /// Set the voicemail service (for Voicemail flow nodes).
     pub fn with_voicemail_service(mut self, voicemail_service: Arc<VoicemailService>) -> Self {
         self.voicemail_service = Some(voicemail_service);
+        self
+    }
+
+    /// The voicemail server a Voicemail node hands its call to when this
+    /// node has no voicemail service of its own (`docs/DEEP_TESTING.md`
+    /// D8: a mailbox's own flow ends in a message after all).
+    pub fn with_voicemail_server(mut self, uri: impl Into<String>) -> Self {
+        self.voicemail_server = Some(uri.into());
         self
     }
 
@@ -1941,6 +1954,33 @@ impl FlowCallHandler {
 
         let voicemail_service = match &self.voicemail_service {
             Some(vs) => Arc::clone(vs),
+            // The voicemail server takes the message: the call is bridged
+            // to it, addressed to the mailbox, as an unanswered call is.
+            None if self.voicemail_server.is_some() => {
+                let server = self.voicemail_server.as_deref().unwrap_or_default();
+                let host = server
+                    .trim_start_matches('<')
+                    .trim_end_matches('>')
+                    .rsplit('@')
+                    .next()
+                    .unwrap_or(server)
+                    .trim_start_matches("sip:");
+                let destination = format!("sip:{mailbox}@{host}");
+                info!(call_id = %call_id, destination = %destination, "Voicemail node: the voicemail server takes the message");
+                let on_error = next_on_error.clone();
+                return Box::pin(self.handle_dial(
+                    call_id,
+                    destination,
+                    30,
+                    None,
+                    max_duration.saturating_add(60),
+                    on_error.clone(),
+                    on_error.clone(),
+                    on_error,
+                    next_on_success,
+                ))
+                .await;
+            }
             None => {
                 warn!(call_id = %call_id, "VoicemailService not configured - skipping voicemail node");
 
@@ -2168,7 +2208,7 @@ impl FlowCallHandler {
                     mm,
                     &media_call_id,
                     "hoteling_enter_pin",
-                    "Enter your PIN, then pound.",
+                    "Enter your pin, then pound.",
                 )
                 .await;
             let user = if extension.is_empty() || pin.is_empty() {
@@ -2530,7 +2570,7 @@ impl FlowCallHandler {
                 &mm,
                 &media_call_id,
                 Some("vm_enter_pin"),
-                Some("Enter your PIN followed by pound".to_string()),
+                Some("Enter your pin, followed by pound".to_string()),
                 0,
                 Some('#'),
                 10,
@@ -2587,7 +2627,7 @@ impl FlowCallHandler {
                         &mm,
                         &media_call_id,
                         "vm_incorrect_pin",
-                        "Incorrect PIN. Please try again.".to_string(),
+                        "Incorrect pin. Please try again.".to_string(),
                     )
                     .await;
                 }
@@ -2788,6 +2828,28 @@ impl FlowCallHandler {
         // 5. Exit — send MWI update and set success status
         play_system_prompt(&mm, &media_call_id, "vm_goodbye", "Goodbye.".to_string()).await;
         let _ = voicemail_service.send_mwi(&target_mailbox).await;
+        // The mailbox's counts as the caller left them, for the phones
+        // subscribed to message waiting: messages heard, saved or deleted
+        // here change the lamp (`docs/DEEP_TESTING.md` D8).
+        if let Some(events) = &self.events {
+            let messages = voicemail_service
+                .get_messages(&target_mailbox, None)
+                .await
+                .unwrap_or_default();
+            let count = |pick: fn(&MessageStatus) -> bool| {
+                messages.iter().filter(|m| pick(&m.status)).count() as u32
+            };
+            let event = PlatformEvent::Voicemail(VoicemailEvent::MwiUpdated {
+                tenant_id: Some(tenant_id),
+                mailbox_id: target_mailbox.clone(),
+                new_messages: count(|s| *s == MessageStatus::New),
+                old_messages: count(|s| matches!(s, MessageStatus::Heard | MessageStatus::Saved)),
+                timestamp: std::time::SystemTime::now(),
+            });
+            if let Err(e) = events.publish(event).await {
+                warn!(call_id = %call_id, error = %e, "Message waiting not announced");
+            }
+        }
 
         let mut context_guard = context.write().await;
         context_guard.set_variable("voicemail_access_status".to_string(), "success".to_string());

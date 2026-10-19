@@ -10,6 +10,7 @@ pub mod elevenlabs;
 pub mod google_cloud;
 pub mod local;
 pub mod openai;
+pub mod piper;
 pub mod remote;
 
 /// Create a TTS provider from configuration.
@@ -54,6 +55,17 @@ pub async fn create_provider(config: TtsProviderConfig) -> Result<Arc<dyn TtsPro
         } => {
             let provider = local::LocalTts::new(engine, executable_path, device)?;
             // Eagerly start the worker so the model is pre-loaded and ready
+            provider.warm_up().await?;
+            Ok(Arc::new(provider))
+        }
+
+        TtsProviderConfig::Piper {
+            binary,
+            voices_dir,
+            voice,
+        } => {
+            let provider = piper::PiperTts::new(binary, voices_dir, voice)?;
+            // The default voice loaded before the first prompt.
             provider.warm_up().await?;
             Ok(Arc::new(provider))
         }

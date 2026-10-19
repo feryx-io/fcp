@@ -681,6 +681,12 @@ pub struct MediaSection {
     /// day.
     #[serde(default = "default_recording_dir")]
     pub recording_dir: String,
+
+    /// Where the voicemail server keeps its messages, when this node's
+    /// `*98` plays and deletes them (`docs/DEEP_TESTING.md` D8): a message
+    /// is read only from here or `recording_dir`.
+    #[serde(default)]
+    pub voicemail_recordings_dir: Option<String>,
 }
 
 fn default_rtp_port_start() -> u16 {
@@ -724,6 +730,7 @@ impl Default for MediaSection {
             enable_recording: false,
             hold_music: true,
             recording_dir: default_recording_dir(),
+            voicemail_recordings_dir: None,
         }
     }
 }

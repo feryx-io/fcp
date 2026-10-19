@@ -87,6 +87,7 @@ interface TrunkFormData {
   from_domain: string
   strip_digits: number
   prepend_digits: string
+  send_e164: boolean
   srtp_mode: string
   dtmf_mode: string
   session_timer_secs: number
@@ -127,6 +128,7 @@ const defaultValues: TrunkFormData = {
   from_domain: '',
   strip_digits: 0,
   prepend_digits: '',
+  send_e164: false,
   srtp_mode: 'disabled',
   dtmf_mode: 'rfc2833',
   session_timer_secs: 0,
@@ -167,6 +169,7 @@ function trunkToForm(trunk: SipTrunk): TrunkFormData {
     from_domain: trunk.from_domain ?? '',
     strip_digits: trunk.strip_digits,
     prepend_digits: trunk.prepend_digits ?? '',
+    send_e164: trunk.send_e164 ?? false,
     srtp_mode: trunk.srtp_mode,
     dtmf_mode: trunk.dtmf_mode,
     session_timer_secs: trunk.session_timer_secs,
@@ -211,6 +214,7 @@ function formToRequest(form: TrunkFormData): CreateTrunkRequest {
     from_domain: form.from_domain || undefined,
     strip_digits: form.strip_digits,
     prepend_digits: form.prepend_digits || undefined,
+    send_e164: form.send_e164,
     srtp_mode: form.srtp_mode,
     dtmf_mode: form.dtmf_mode,
     session_timer_secs: form.session_timer_secs,
@@ -589,6 +593,7 @@ function TrunkDetailView({ trunk, stats, onEdit }: { trunk: SipTrunk; stats?: Tr
         <Field label="SRTP" value={trunk.srtp_mode} />
         <Field label="DTMF" value={trunk.dtmf_mode.replace('_', ' ')} />
         {trunk.session_timer_secs > 0 && <Field label="Session Timer" value={`${trunk.session_timer_secs}s`} />}
+        {trunk.send_e164 && <Field label="Numbers" value="E.164" />}
         {trunk.t38_enabled && <Field label="T.38 Fax" value="Enabled" />}
         {trunk.emergency_capable && <Field label="Emergency calls" value="Capable" />}
         {trunk.outbound_proxy && <Field label="Outbound Proxy" value={trunk.outbound_proxy} />}
@@ -864,6 +869,10 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk',
             <Label htmlFor="prepend_digits">Prepend Digits</Label>
             <Input id="prepend_digits" placeholder="e.g. +1" {...register('prepend_digits')} />
           </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Switch id="send_e164" checked={watch('send_e164')} onCheckedChange={(v) => setValue('send_e164', v)} />
+          <Label htmlFor="send_e164">Send numbers in E.164 (+15551234567), before the rules above</Label>
         </div>
       </div>
 

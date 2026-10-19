@@ -42,6 +42,8 @@ class PageMailboxResponseDataItem:
             line_binding_id (None | str | Unset):
             email_address (None | str | Unset):
             retention_days (int | None | Unset):
+            flow_id (None | str | Unset): The flow that handles a call this mailbox would take, if not the
+                mailbox itself.
      """
 
     id: str
@@ -60,6 +62,7 @@ class PageMailboxResponseDataItem:
     line_binding_id: None | str | Unset = UNSET
     email_address: None | str | Unset = UNSET
     retention_days: int | None | Unset = UNSET
+    flow_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -111,6 +114,12 @@ class PageMailboxResponseDataItem:
         else:
             retention_days = self.retention_days
 
+        flow_id: None | str | Unset
+        if isinstance(self.flow_id, Unset):
+            flow_id = UNSET
+        else:
+            flow_id = self.flow_id
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -135,6 +144,8 @@ class PageMailboxResponseDataItem:
             field_dict["email_address"] = email_address
         if retention_days is not UNSET:
             field_dict["retention_days"] = retention_days
+        if flow_id is not UNSET:
+            field_dict["flow_id"] = flow_id
 
         return field_dict
 
@@ -205,6 +216,16 @@ class PageMailboxResponseDataItem:
         retention_days = _parse_retention_days(d.pop("retention_days", UNSET))
 
 
+        def _parse_flow_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        flow_id = _parse_flow_id(d.pop("flow_id", UNSET))
+
+
         page_mailbox_response_data_item = cls(
             id=id,
             tenant_id=tenant_id,
@@ -222,6 +243,7 @@ class PageMailboxResponseDataItem:
             line_binding_id=line_binding_id,
             email_address=email_address,
             retention_days=retention_days,
+            flow_id=flow_id,
         )
 
 

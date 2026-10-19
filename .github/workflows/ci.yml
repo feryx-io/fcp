@@ -401,9 +401,9 @@ jobs:
       - name: The compose stack resolves with the registrar profile
         working-directory: deploy/docker-compose
         run: docker compose --profile registrar config --quiet
-      - name: The compose stack resolves with the tts profile
+      - name: The compose stack resolves with the full TTS image
         working-directory: deploy/docker-compose
-        run: docker compose --profile tts config --quiet
+        run: FCP_TTS=tts-full docker compose config --quiet
       - name: The site stack resolves
         working-directory: deploy/docker-compose/site
         run: docker compose config --quiet

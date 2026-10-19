@@ -82,8 +82,8 @@ pub use crate::config::{
     ObservabilityConfig, RegistrarConfig, StorageBackend, StorageConfig, TransportConfig,
 };
 pub use crate::config_store::{
-    get_config_with_tenant_fallback, load_or_seed_config, spawn_config_poll_loop, AuditEntry,
-    ConfigEntry, ConfigStore, ConfigWatcher,
+    get_config_with_tenant_fallback, load_or_seed_config, reconcile_with_seed,
+    spawn_config_poll_loop, AuditEntry, ConfigEntry, ConfigStore, ConfigWatcher,
 };
 pub use crate::device::{Device, DeviceType, LineKey, LineKeyKind, RegistrationState};
 pub use crate::encryption::{EncryptionStatus, EncryptionStore, ReencryptReport, RewrapReport};

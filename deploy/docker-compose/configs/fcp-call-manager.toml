@@ -57,10 +57,12 @@ codecs = ["PCMU", "PCMA", "G722"]
 # call-manager-data volume (docs/BACKUP_AND_RESTORE.md): without these the
 # defaults are the container's own filesystem (./recordings, /tmp/fcp).
 recording_dir = "/app/data/recordings"
+# The voicemail server's messages (its voicemail-data volume, mounted here):
+# *98 on this node plays and deletes them.
+voicemail_recordings_dir = "/var/lib/fcp/voicemail/recordings"
 prompts_dir = "/app/data/prompts"
 tts_cache_dir = "/app/data/tts-cache"
-# Speech from the TTS server, when the `tts` profile is up;
-# FCP_CALL_MANAGER_TTS_REMOTE_TOKEN authenticates.
+# Speech from the TTS server; FCP_CALL_MANAGER_TTS_REMOTE_TOKEN authenticates.
 tts_remote_url = "http://127.0.0.1:8093"
 
 [storage]
@@ -97,6 +99,10 @@ voicemail_server_uri = "sip:voicemail@127.0.0.1:5072"
 [events]
 # The events server publishes 8081 on the host; FCP_CALL_MANAGER_EVENTS_AUTH_TOKEN authenticates.
 server_url = "http://127.0.0.1:8081/ingest"
+# Events go through Redis both ways: this node's to the events server's
+# stream, and the other services' (a voicemail left, heard or deleted) back
+# to this node, which tells the phones subscribed to message waiting.
+use_redis = true
 
 # The SBC on this host stands in front of this node: a call it forwards up a
 # site's link names the site, and that is believed from these addresses

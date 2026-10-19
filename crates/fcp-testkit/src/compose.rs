@@ -60,7 +60,7 @@ fn binary_for(dockerfile: &str) -> Option<(&'static str, &'static str)> {
         "ivr" => ("fcp-ivr", "fcp-ivr"),
         "voicemail" => ("fcp-voicemail-server", "fcp-voicemail"),
         "presence" => ("fcp-presence-server", "fcp-presence"),
-        "tts" => ("fcp-tts-server", "fcp-tts"),
+        "tts" | "tts-full" => ("fcp-tts-server", "fcp-tts"),
         "link" => ("fcp-link", "fcp-link"),
         _ => return None,
     })
@@ -128,6 +128,9 @@ impl ComposeStack {
             else {
                 continue; // an image (postgres, redis, prometheus, grafana)
             };
+            // `Dockerfile.${FCP_TTS:-tts}`: the image the environment picks.
+            let dockerfile = interpolate(dockerfile, &vars);
+            let dockerfile = dockerfile.as_str();
             let Some((package, binary)) = binary_for(dockerfile) else {
                 panic!("{name}: no binary known for {dockerfile}");
             };

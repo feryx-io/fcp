@@ -456,6 +456,8 @@ pub fn attempt_invite(
             from,
             // An emergency INVITE is not rewritten by an operator's rules.
             filter: None,
+            // A trunk's address, its name kept in the Request-URI.
+            destination: crate::trunk_egress::take_destination(&attempt.target).1,
         },
         delivered,
     )

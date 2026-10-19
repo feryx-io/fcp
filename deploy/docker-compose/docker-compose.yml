@@ -184,6 +184,8 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
       interval: 10s
@@ -205,6 +207,8 @@ services:
       - ./configs/fcp-call-manager.toml:/app/fcp-call-manager.toml:ro
       - fcp-certs:/var/lib/fcp/certs:ro
       - call-manager-data:/app/data
+      # The voicemail server's messages, which *98 here plays and deletes.
+      - voicemail-data:/var/lib/fcp/voicemail
     environment:
       RUST_LOG: info
       FCP_CALL_MANAGER_LOG_FORMAT: pretty
@@ -507,16 +511,17 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # Text to speech for the call manager and IVR. HTTP 8093. Off unless
-  # asked for — `docker compose --profile tts up -d` — because its image
-  # carries PyTorch; without it the prompts are silent.
+  # Text to speech for the call manager, IVR and voicemail. HTTP 8093.
   fcp-tts:
-    image: ghcr.io/thevoiceguy/fcp-tts:${FCP_IMAGE_TAG:-local}
+    # Text to speech for every prompt, greeting and voicemail menu
+    # (docs/SPEECH.md). FCP_TTS=tts (the default) is Piper alone, small;
+    # FCP_TTS=tts-full adds Kokoro and the local Whisper worker (PyTorch,
+    # several GB), named in configs/fcp-tts-server.toml to be used.
+    image: ghcr.io/thevoiceguy/fcp-${FCP_TTS:-tts}:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
-      dockerfile: deploy/docker-compose/Dockerfile.tts
+      dockerfile: deploy/docker-compose/Dockerfile.${FCP_TTS:-tts}
     container_name: fcp-tts
-    profiles: ["tts"]
     ports:
       - "8093:8093"
     volumes:
@@ -671,10 +676,14 @@ configs:
         proxy_set_header Upgrade $$http_upgrade;
         proxy_set_header Connection $$connection_upgrade;
         proxy_read_timeout 3600s;
+        # Each backend's address looked up per request through Docker's DNS,
+        # not once at start: a backend restarted on another address was
+        # 502 until the proxy restarted too (docs/DEEP_TESTING.md D8).
+        resolver 127.0.0.11 valid=10s ipv6=off;
         server {
           listen 8443 ssl;
           listen [::]:8443 ssl;
-          location / { proxy_pass http://fcp-api-gateway:8000; }
+          location / { set $$fcp_api_gateway http://fcp-api-gateway:8000; proxy_pass $$fcp_api_gateway; }
         }
         server {
           listen 8444 ssl;
@@ -683,12 +692,12 @@ configs:
           # max_image_mb, 1 GB by default), streamed through.
           client_max_body_size 1100m;
           proxy_request_buffering off;
-          location / { proxy_pass http://fcp-admin:8080; }
+          location / { set $$fcp_admin http://fcp-admin:8080; proxy_pass $$fcp_admin; }
         }
         server {
           listen 8445 ssl;
           listen [::]:8445 ssl;
-          location / { proxy_pass http://fcp-events-server:8081; }
+          location / { set $$fcp_events_server http://fcp-events-server:8081; proxy_pass $$fcp_events_server; }
         }
       }
   prometheus:

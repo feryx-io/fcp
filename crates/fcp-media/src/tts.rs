@@ -2,11 +2,10 @@
 //!
 //! Provides a flexible abstraction over multiple TTS providers:
 //! - Google Cloud TTS
-//! - AWS Polly
-//! - Azure Cognitive Services TTS
-//! - OpenAI TTS (ChatGPT)
-//! - ElevenLabs
-//! - Local TTS (espeak, festival, piper)
+//! - Piper, the default local engine (`docs/SPEECH.md` §8)
+//! - Kokoro, local, in the `fcp-tts-full` image
+//! - OpenAI TTS
+//! - AWS Polly, Azure, ElevenLabs: placeholders until #339
 //!
 //! ## Architecture
 //!
@@ -496,9 +495,9 @@ pub enum TtsProviderConfig {
         model_id: Option<String>,
     },
 
-    /// Local TTS (espeak, festival, piper)
+    /// Kokoro, run by a Python worker (the `fcp-tts-full` image).
     Local {
-        /// TTS engine (espeak, festival, piper)
+        /// The engine: `kokoro`, the only one.
         engine: String,
         /// Path to TTS executable
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -506,6 +505,19 @@ pub enum TtsProviderConfig {
         /// Optional compute device override for local engines.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<String>,
+    },
+
+    /// Piper (`docs/SPEECH.md`): the default local engine, a native
+    /// binary and ONNX voices, no Python.
+    Piper {
+        /// The `piper` binary; `piper` on the PATH when unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binary: Option<PathBuf>,
+        /// Where the voices are: `<voice>.onnx` and `<voice>.onnx.json`.
+        voices_dir: PathBuf,
+        /// The voice spoken when a request names none and no voice speaks
+        /// its language.
+        voice: String,
     },
 
     /// Remote TTS via shared fcp-tts HTTP service.

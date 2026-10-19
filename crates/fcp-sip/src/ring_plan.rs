@@ -151,7 +151,10 @@ pub async fn has_mailbox(storage: &DynStorage, user_id: &UserId) -> bool {
 
 /// The registered contacts of a line binding's enabled devices. With
 /// `invite_domain`, a device's registrations are read as the tenant's
-/// (domain aliases included); without, at the device's own SIP URI.
+/// (domain aliases included); without, at the device's own SIP URI. A
+/// binding that names no devices rings its owner's, as a call to the
+/// owner's extension does: a number bound to a user rang nobody until
+/// each phone was listed on it (`docs/DEEP_TESTING.md` D8).
 pub async fn contacts_for_binding(
     storage: &DynStorage,
     registrar: &FcpRegistrar,
@@ -229,6 +232,13 @@ pub async fn contacts_for_binding(
             Err(e) => {
                 warn!(line = %binding.id, error = %e, "A shared line's number could not be read")
             }
+        }
+    }
+    // No devices of its own: the owner's phones, wherever they are.
+    if binding.devices.is_empty() && !binding.shared {
+        if let Some(owner) = binding.owner_user_id {
+            let domain = invite_domain.unwrap_or("");
+            return contacts_for_user(storage, registrar, &binding.tenant_id, &owner, domain).await;
         }
     }
     // The owner's calls also ring the host they are logged in on.

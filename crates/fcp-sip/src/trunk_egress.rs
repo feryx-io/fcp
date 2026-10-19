@@ -258,6 +258,75 @@ fn anonymous_display(request: &mut sip_core::Request) {
     );
 }
 
+/// The Request-URI parameter that carries where a trunk leg is sent when
+/// its host was a name the router resolved: the address goes here, the
+/// name stays the URI's host, and the parameter is taken off before the
+/// INVITE leaves (`docs/DEEP_TESTING.md` D8).
+pub const DESTINATION_URI_PARAM: &str = "fcp-dst";
+
+/// `uri`, sent to `host:port` with its host kept.
+pub fn with_destination(uri: &str, host: &str, port: u16) -> String {
+    format!("{uri};{DESTINATION_URI_PARAM}={host}:{port}")
+}
+
+/// `uri` without its destination, and the destination: host, port and the
+/// transport the URI asks for.
+pub fn take_destination(uri: &str) -> (String, Option<sip_dns::DnsTarget>) {
+    let mut parts = uri.split(';');
+    let head = parts.next().unwrap_or(uri);
+    let mut kept = vec![head];
+    let mut destination = None;
+    for part in parts {
+        match part
+            .strip_prefix(DESTINATION_URI_PARAM)
+            .and_then(|p| p.strip_prefix('='))
+        {
+            Some(value) => destination = Some(value),
+            None => kept.push(part),
+        }
+    }
+    let Some(value) = destination else {
+        return (uri.to_string(), None);
+    };
+    let kept = kept.join(";");
+    let (host, port) = match value.rsplit_once(':') {
+        Some((host, port)) => match port.parse::<u16>() {
+            Ok(port) => (host, port),
+            Err(_) => return (kept, None),
+        },
+        None => return (kept, None),
+    };
+    let lower = kept.to_ascii_lowercase();
+    let transport = if lower.starts_with("sips:") || lower.contains(";transport=tls") {
+        sip_dns::Transport::Tls
+    } else if lower.contains(";transport=tcp") {
+        sip_dns::Transport::Tcp
+    } else {
+        sip_dns::Transport::Udp
+    };
+    let host = host.trim_matches(['[', ']']);
+    let mut target = sip_dns::DnsTarget::unchecked_new(host, port, transport);
+    // Over TLS the carrier's certificate is for the name, not the address.
+    if transport == sip_dns::Transport::Tls {
+        if let Some(name) = uri_host(&kept) {
+            target = target.with_tls_name(name);
+        }
+    }
+    (kept, Some(target))
+}
+
+/// The host of a SIP URI, without its port or parameters.
+fn uri_host(uri: &str) -> Option<&str> {
+    let rest = uri.split_once(':')?.1;
+    let rest = rest.rsplit_once('@').map(|(_, h)| h).unwrap_or(rest);
+    let rest = rest.split(';').next()?;
+    let host = match rest.strip_prefix('[') {
+        Some(v6) => v6.split(']').next()?,
+        None => rest.split(':').next()?,
+    };
+    (!host.is_empty()).then_some(host)
+}
+
 /// The RFC 5806 `Diversion` reason for why a call was forwarded, as the
 /// ring plan, a schedule or find-me says it.
 pub fn diversion_reason(reason: &str) -> &'static str {
@@ -399,6 +468,38 @@ fn split_uri(uri: Option<&str>) -> (Option<String>, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_destination_rides_in_the_uri_and_comes_off_before_sending() {
+        let uri = with_destination("sip:+15185550100@carrier.example", "54.172.60.1", 5060);
+        assert_eq!(
+            uri,
+            "sip:+15185550100@carrier.example;fcp-dst=54.172.60.1:5060"
+        );
+        let (sent, to) = take_destination(&uri);
+        assert_eq!(sent, "sip:+15185550100@carrier.example");
+        let to = to.unwrap();
+        assert_eq!((to.host(), to.port()), ("54.172.60.1", 5060));
+        assert_eq!(to.transport(), sip_dns::Transport::Udp);
+
+        // Other parameters stay; TLS checks the carrier's name.
+        let uri = with_destination(
+            "sip:+15185550100@carrier.example;transport=tls",
+            "[2001:db8::5]",
+            5061,
+        );
+        let (sent, to) = take_destination(&uri);
+        assert_eq!(sent, "sip:+15185550100@carrier.example;transport=tls");
+        let to = to.unwrap();
+        assert_eq!((to.host(), to.port()), ("2001:db8::5", 5061));
+        assert_eq!(to.transport(), sip_dns::Transport::Tls);
+        assert_eq!(to.sni(), "carrier.example");
+
+        // A URI with none is sent as it is.
+        let (sent, to) = take_destination("sip:alice@192.0.2.7:5060;transport=tcp");
+        assert_eq!(sent, "sip:alice@192.0.2.7:5060;transport=tcp");
+        assert!(to.is_none());
+    }
     use fcp_core::trunk::TrunkDtmfConfig;
     use fcp_core::TenantId;
 

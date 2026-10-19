@@ -32,6 +32,9 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /app/target/release/fcp-call-manager /app/fcp-call-manager
+# The default greeting, spoken by Piper's public-domain voice: a mailbox
+# with none of its own says this before the beep (docs/SPEECH.md).
+COPY deploy/docker-compose/audio/default-greeting.wav /var/fcp/audio/default-greeting.wav
 
 # Create data directory
 RUN mkdir -p /app/data

@@ -13,6 +13,14 @@ auth_enabled = true
 # provisioning_require_https stays at its default, true: provisioning is
 # served through the proxy on 8444, which says so in X-Forwarded-Proto.
 
+[api.provisioning]
+# What provisioned phones are told: register at the host's address (the
+# registrar knows an address's phones by their username; a name needs the
+# tenant to claim it, docs/SINGLE-NODE-SETUP.md §9) and fetch from the
+# proxy. HOST_IP is resolved from the environment when this file loads.
+sip_server = "${HOST_IP}"
+public_url = "https://${HOST_IP}:8444"
+
 [api.firmware]
 # Firmware images the platform administrator uploads (docs/PROVISIONING.md
 # §11), in admin-data with the rest of the admin's files.

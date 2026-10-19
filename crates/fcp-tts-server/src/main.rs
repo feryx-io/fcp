@@ -265,6 +265,18 @@ fn build_provider_config(
             executable_path: entry.python_path.as_ref().map(std::path::PathBuf::from),
             device: Some(entry.device.clone()),
         }),
+        "piper" => Ok(fcp_media::tts::TtsProviderConfig::Piper {
+            binary: entry.binary.as_ref().map(std::path::PathBuf::from),
+            voices_dir: std::path::PathBuf::from(require_non_empty(
+                &entry.voices_dir,
+                "voices_dir",
+                entry,
+            )?),
+            voice: entry
+                .voice
+                .clone()
+                .unwrap_or_else(|| "en_US-ljspeech-medium".to_string()),
+        }),
         "openai" => Ok(fcp_media::tts::TtsProviderConfig::OpenAi {
             api_key: require_non_empty(&entry.api_key, "api_key", entry)?,
             model: entry.model.clone().unwrap_or_else(|| "tts-1".to_string()),
@@ -441,6 +453,9 @@ mod tests {
             api_key: Some("test-key".to_string()),
             model: Some("tts-1".to_string()),
             device: "cuda:0".to_string(),
+            binary: None,
+            voices_dir: None,
+            voice: None,
         }
     }
 

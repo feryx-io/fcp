@@ -31,7 +31,7 @@ class ProvisioningKeyResponse:
             path (str): The path phones fetch under: `/provision/<key>/`.
             created_at (datetime.datetime):
             url (None | str | Unset): The whole URL, when the admin knows its public address
-                (`[api.sso] public_url`).
+                (`[api.provisioning] public_url`, else `[api.sso] public_url`).
      """
 
     key: str

@@ -1,4 +1,4 @@
-# fcp-tts in the compose stack (the `tts` profile), on the bridge network:
+# fcp-tts in the compose stack, on the bridge network:
 # HTTP 8093. Tokens come from .env through FCP_TTS_AUTH_TOKENS; the call
 # manager and IVR reach it at 127.0.0.1:8093 on the host.
 
@@ -14,18 +14,34 @@ bind_address = "0.0.0.0:8093"
 tokens = ["set-by-FCP_TTS_AUTH_TOKENS"]
 
 [tts]
-default_provider = "kokoro"
+# Piper, in both images (docs/SPEECH.md). Another engine is a provider
+# below and default_provider names it.
+default_provider = "piper"
 cache_dir = "/var/lib/fcp/tts_cache"
 cache_max_size_mb = 1000
 default_language = "en-US"
 
 [[tts.providers]]
-name = "kokoro"
-type = "local"
-engine = "kokoro"
-# The image's Python, with kokoro installed; the worker is at FCP_KOKORO_WORKER.
-python_path = "/usr/local/bin/python3"
-device = "cpu"
+name = "piper"
+type = "piper"
+binary = "/opt/piper/piper"
+voices_dir = "/opt/piper-voices"
+voice = "en_US-ljspeech-medium"
+
+# Kokoro, in the fcp-tts-full image only (FCP_TTS=tts-full):
+# [[tts.providers]]
+# name = "kokoro"
+# type = "local"
+# engine = "kokoro"
+# python_path = "/usr/local/bin/python3"   # the worker is at FCP_KOKORO_WORKER
+# device = "cpu"
+#
+# A cloud voice, in either image (its key through ${NAME}):
+# [[tts.providers]]
+# name = "openai"
+# type = "openai"
+# api_key = "${OPENAI_API_KEY}"
+# model = "tts-1"
 
 [logging]
 level = "info"

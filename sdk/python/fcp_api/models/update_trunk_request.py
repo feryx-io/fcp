@@ -52,6 +52,7 @@ class UpdateTrunkRequest:
             from_domain (None | str | Unset):
             strip_digits (int | None | Unset):
             prepend_digits (None | str | Unset):
+            send_e164 (bool | None | Unset): Send numbers in E.164, before the digit plan.
             cps_limit (int | None | Unset):
             description (None | str | Unset):
             srtp_mode (None | str | Unset):
@@ -90,6 +91,7 @@ class UpdateTrunkRequest:
     from_domain: None | str | Unset = UNSET
     strip_digits: int | None | Unset = UNSET
     prepend_digits: None | str | Unset = UNSET
+    send_e164: bool | None | Unset = UNSET
     cps_limit: int | None | Unset = UNSET
     description: None | str | Unset = UNSET
     srtp_mode: None | str | Unset = UNSET
@@ -280,6 +282,12 @@ class UpdateTrunkRequest:
         else:
             prepend_digits = self.prepend_digits
 
+        send_e164: bool | None | Unset
+        if isinstance(self.send_e164, Unset):
+            send_e164 = UNSET
+        else:
+            send_e164 = self.send_e164
+
         cps_limit: int | None | Unset
         if isinstance(self.cps_limit, Unset):
             cps_limit = UNSET
@@ -393,6 +401,8 @@ class UpdateTrunkRequest:
             field_dict["strip_digits"] = strip_digits
         if prepend_digits is not UNSET:
             field_dict["prepend_digits"] = prepend_digits
+        if send_e164 is not UNSET:
+            field_dict["send_e164"] = send_e164
         if cps_limit is not UNSET:
             field_dict["cps_limit"] = cps_limit
         if description is not UNSET:
@@ -713,6 +723,16 @@ class UpdateTrunkRequest:
         prepend_digits = _parse_prepend_digits(d.pop("prepend_digits", UNSET))
 
 
+        def _parse_send_e164(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        send_e164 = _parse_send_e164(d.pop("send_e164", UNSET))
+
+
         def _parse_cps_limit(data: object) -> int | None | Unset:
             if data is None:
                 return data
@@ -831,6 +851,7 @@ class UpdateTrunkRequest:
             from_domain=from_domain,
             strip_digits=strip_digits,
             prepend_digits=prepend_digits,
+            send_e164=send_e164,
             cps_limit=cps_limit,
             description=description,
             srtp_mode=srtp_mode,

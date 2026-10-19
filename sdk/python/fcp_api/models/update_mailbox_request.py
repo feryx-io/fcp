@@ -35,6 +35,8 @@ class UpdateMailboxRequest:
             include_transcription (bool | None | Unset):
             transcription_enabled (bool | None | Unset):
             retention_days (int | None | Unset): Double Option: outer = field not provided, inner = null to clear.
+            flow_id (None | str | Unset): The flow that handles a call this mailbox would take; empty clears
+                it, so the mailbox takes it again.
      """
 
     pin: None | str | Unset = UNSET
@@ -47,6 +49,7 @@ class UpdateMailboxRequest:
     include_transcription: bool | None | Unset = UNSET
     transcription_enabled: bool | None | Unset = UNSET
     retention_days: int | None | Unset = UNSET
+    flow_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -114,6 +117,12 @@ class UpdateMailboxRequest:
         else:
             retention_days = self.retention_days
 
+        flow_id: None | str | Unset
+        if isinstance(self.flow_id, Unset):
+            flow_id = UNSET
+        else:
+            flow_id = self.flow_id
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -139,6 +148,8 @@ class UpdateMailboxRequest:
             field_dict["transcription_enabled"] = transcription_enabled
         if retention_days is not UNSET:
             field_dict["retention_days"] = retention_days
+        if flow_id is not UNSET:
+            field_dict["flow_id"] = flow_id
 
         return field_dict
 
@@ -247,6 +258,16 @@ class UpdateMailboxRequest:
         retention_days = _parse_retention_days(d.pop("retention_days", UNSET))
 
 
+        def _parse_flow_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        flow_id = _parse_flow_id(d.pop("flow_id", UNSET))
+
+
         update_mailbox_request = cls(
             pin=pin,
             enabled=enabled,
@@ -258,6 +279,7 @@ class UpdateMailboxRequest:
             include_transcription=include_transcription,
             transcription_enabled=transcription_enabled,
             retention_days=retention_days,
+            flow_id=flow_id,
         )
 
 

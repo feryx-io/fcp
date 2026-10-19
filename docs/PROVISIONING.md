@@ -136,7 +136,7 @@ Every one is always there, empty when it does not apply.
 | Variable | What |
 |---|---|
 | `mac_address`, `device_name`, `vendor`, `model`, `firmware_version` | The device (the request's vendor, model and firmware where the device has none). |
-| `sip_domain` | The domain the phone registers in: the tenant's first SIP domain (`sip_domains`), else `sip_server`. It is how the registrar knows the phone's tenant, so a phone must register in it. |
+| `sip_domain` | The domain the phone registers in: the tenant's first SIP domain (`sip_domains`), else `sip_server`. It is how the registrar knows the phone's tenant, so a phone must register in it — and a name no tenant claims is refused: a `sip_server` given by name needs the tenant (the default tenant too) to claim it (`docs/SINGLE-NODE-SETUP.md` §9). |
 | `sip_server`, `sip_port`, `sip_transport` | Where the phone sends, and how: `[api.provisioning]` (below). The starters make it the outbound proxy when it is not `sip_domain`. `sip_transport` is `udp`, `tcp` or `tls`. |
 | `sip_uri`, `sip_username`, `sip_auth_username`, `sip_password`, `sip_auth_ha1_hash` | The first account: the device's own credentials, else its owner's. `sip_provisioning_password` is `sip_password`, for older templates. |
 | `owner_username`, `owner_display_name`, `owner_email`, `owner_user_id` | The owner. |

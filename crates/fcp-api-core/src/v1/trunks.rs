@@ -67,6 +67,8 @@ pub struct TrunkResponse {
     pub from_domain: Option<String>,
     pub strip_digits: i32,
     pub prepend_digits: Option<String>,
+    /// Numbers go to this trunk in E.164, before its digit plan.
+    pub send_e164: bool,
     pub cps_limit: i32,
     pub description: Option<String>,
     pub srtp_mode: String,
@@ -145,6 +147,7 @@ impl From<Trunk> for TrunkResponse {
                 .as_ref()
                 .map(|x| x.prepend.clone())
                 .filter(|p| !p.is_empty()),
+            send_e164: t.send_e164,
             cps_limit: t.cps_limit as i32,
             description: t.description,
             srtp_mode: t.srtp.mode.as_str().to_string(),
@@ -257,6 +260,10 @@ pub struct CreateTrunkRequest {
     #[serde(default)]
     pub strip_digits: Option<i32>,
     pub prepend_digits: Option<String>,
+    /// Send numbers in E.164 (`+15183217034`), as the tenant's country
+    /// reads what was dialled, before the digit plan: what Twilio needs.
+    #[serde(default)]
+    pub send_e164: Option<bool>,
     #[serde(default)]
     pub cps_limit: Option<i32>,
     pub description: Option<String>,
@@ -302,6 +309,8 @@ pub struct UpdateTrunkRequest {
     pub from_domain: Option<String>,
     pub strip_digits: Option<i32>,
     pub prepend_digits: Option<String>,
+    /// Send numbers in E.164, before the digit plan.
+    pub send_e164: Option<bool>,
     pub cps_limit: Option<i32>,
     pub description: Option<String>,
     pub srtp_mode: Option<String>,
@@ -438,6 +447,7 @@ struct TrunkFields {
     from_domain: Option<String>,
     strip_digits: Option<i32>,
     prepend_digits: Option<String>,
+    send_e164: Option<bool>,
     cps_limit: Option<i32>,
     description: Option<String>,
     srtp_mode: Option<String>,
@@ -593,6 +603,9 @@ fn apply_trunk_fields(trunk: &mut Trunk, fields: TrunkFields) -> Result<(), ApiE
         }
         trunk.egress_number_transform = (!transform.is_noop()).then_some(transform);
     }
+    if let Some(e164) = fields.send_e164 {
+        trunk.send_e164 = e164;
+    }
     if let Some(cps) = fields.cps_limit {
         trunk.cps_limit = cps.max(0) as u32;
     }
@@ -657,6 +670,7 @@ impl From<CreateTrunkRequest> for TrunkFields {
             from_domain: r.from_domain,
             strip_digits: r.strip_digits,
             prepend_digits: r.prepend_digits,
+            send_e164: r.send_e164,
             cps_limit: r.cps_limit,
             description: r.description,
             srtp_mode: r.srtp_mode,
@@ -699,6 +713,7 @@ impl From<UpdateTrunkRequest> for TrunkFields {
             from_domain: r.from_domain,
             strip_digits: r.strip_digits,
             prepend_digits: r.prepend_digits,
+            send_e164: r.send_e164,
             cps_limit: r.cps_limit,
             description: r.description,
             srtp_mode: r.srtp_mode,

@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { tenants, prompts } from '@/api/endpoints'
+import { tenants, prompts, DEFAULT_TENANT_ID } from '@/api/endpoints'
 import type { Tenant, CreateTenantRequest, DestinationClass, DestinationOverride } from '@/types'
 import { formatDateTime } from '@/lib/utils'
 import { useIsPlatformAdmin } from '@/components/TenantSelector'
@@ -190,7 +190,7 @@ export function TenantsPage() {
               <Pencil className="mr-2 h-4 w-4" />
               Edit
             </DropdownMenuItem>
-            {isPlatformAdmin && (
+            {isPlatformAdmin && row.original.id !== DEFAULT_TENANT_ID && (
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem

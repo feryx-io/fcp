@@ -5230,6 +5230,7 @@ fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
                 .unwrap_or(60),
         },
         egress_number_transform,
+        send_e164: row.try_get("send_e164").unwrap_or(false),
         caller_id_override: row.try_get("caller_id_override")?,
         from_domain: row.try_get("from_domain")?,
         session_timer_secs: row.try_get::<i32, _>("session_timer_secs")?.max(0) as u32,
@@ -5309,7 +5310,7 @@ impl TrunkStore for PostgresStorage {
                     created_at, updated_at, emergency_capable,
                     strip_prefixes, srtp_suites, allow_transcoding,
                     stir_verify_mode, stir_sign_mode, stir_attestation,
-                    stir_max_iat_age_secs, emergency_location, inbound_sources, site_id, link_end
+                    stir_max_iat_age_secs, emergency_location, inbound_sources, site_id, link_end, send_e164
              FROM trunks WHERE id = $1",
         )
         .bind(id.to_string())
@@ -5337,7 +5338,7 @@ impl TrunkStore for PostgresStorage {
                     created_at, updated_at, emergency_capable,
                     strip_prefixes, srtp_suites, allow_transcoding,
                     stir_verify_mode, stir_sign_mode, stir_attestation,
-                    stir_max_iat_age_secs, emergency_location, inbound_sources, site_id, link_end
+                    stir_max_iat_age_secs, emergency_location, inbound_sources, site_id, link_end, send_e164
              FROM trunks WHERE tenant_id = $1
              ORDER BY priority, name",
         )
@@ -5370,7 +5371,7 @@ impl TrunkStore for PostgresStorage {
                     created_at, updated_at, emergency_capable,
                     strip_prefixes, srtp_suites, allow_transcoding,
                     stir_verify_mode, stir_sign_mode, stir_attestation,
-                    stir_max_iat_age_secs, emergency_location, inbound_sources, site_id, link_end
+                    stir_max_iat_age_secs, emergency_location, inbound_sources, site_id, link_end, send_e164
              FROM trunks
              ORDER BY tenant_id, priority, name",
         )
@@ -5399,8 +5400,8 @@ impl TrunkStore for PostgresStorage {
                     created_at, updated_at, emergency_capable,
                     strip_prefixes, srtp_suites, allow_transcoding,
                     stir_verify_mode, stir_sign_mode, stir_attestation,
-                    stir_max_iat_age_secs, emergency_location, inbound_sources, site_id, link_end)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49)
+                    stir_max_iat_age_secs, emergency_location, inbound_sources, site_id, link_end, send_e164)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 enabled = EXCLUDED.enabled,
@@ -5447,6 +5448,7 @@ impl TrunkStore for PostgresStorage {
                 inbound_sources = EXCLUDED.inbound_sources,
                 site_id = EXCLUDED.site_id,
                 link_end = EXCLUDED.link_end,
+                send_e164 = EXCLUDED.send_e164,
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(trunk.id.to_string())
@@ -5530,6 +5532,7 @@ impl TrunkStore for PostgresStorage {
             fcp_core::LinkEnd::Cloud => "cloud",
             fcp_core::LinkEnd::Site => "site",
         }))
+        .bind(trunk.send_e164)
         .execute(self.writes())
         .await?;
 
@@ -7365,6 +7368,7 @@ impl PostgresStorage {
             include_transcription,
             transcription_enabled,
             retention_days: retention_days.map(|d| d as u32),
+            flow_id: row.try_get("flow_id").unwrap_or(None),
             greetings,
             created_at: datetime_to_system_time(created_at),
             updated_at: datetime_to_system_time(updated_at),
@@ -7431,7 +7435,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    retention_days, created_at, updated_at
+                    retention_days, flow_id, created_at, updated_at
              FROM voicemail_mailboxes WHERE id = $1",
         )
         .bind(id)
@@ -7455,7 +7459,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    retention_days, created_at, updated_at
+                    retention_days, flow_id, created_at, updated_at
              FROM voicemail_mailboxes WHERE line_binding_id = $1",
         )
         .bind(line_binding_id.to_string())
@@ -7479,7 +7483,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    retention_days, created_at, updated_at
+                    retention_days, flow_id, created_at, updated_at
              FROM voicemail_mailboxes WHERE user_id = $1",
         )
         .bind(user_id.to_string())
@@ -7504,7 +7508,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    retention_days, created_at, updated_at
+                    retention_days, flow_id, created_at, updated_at
              FROM voicemail_mailboxes WHERE tenant_id = $1 AND extension = $2",
         )
         .bind(tenant_id.to_string())
@@ -7529,7 +7533,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    retention_days, created_at, updated_at
+                    retention_days, flow_id, created_at, updated_at
              FROM voicemail_mailboxes WHERE tenant_id = $1 ORDER BY extension",
         )
         .bind(tenant_id.to_string())
@@ -7553,8 +7557,8 @@ impl VoicemailStore for PostgresStorage {
              (id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
               max_message_duration, max_messages, email_notification, email_address,
               attach_audio, include_transcription, transcription_enabled,
-              retention_days, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+              retention_days, created_at, updated_at, flow_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
              ON CONFLICT (id) DO UPDATE SET
                  tenant_id = EXCLUDED.tenant_id,
                  user_id = EXCLUDED.user_id,
@@ -7570,6 +7574,7 @@ impl VoicemailStore for PostgresStorage {
                  include_transcription = EXCLUDED.include_transcription,
                  transcription_enabled = EXCLUDED.transcription_enabled,
                  retention_days = EXCLUDED.retention_days,
+                 flow_id = EXCLUDED.flow_id,
                  updated_at = EXCLUDED.updated_at",
         )
         .bind(&mailbox.id)
@@ -7589,6 +7594,7 @@ impl VoicemailStore for PostgresStorage {
         .bind(mailbox.retention_days.map(|d| d as i32))
         .bind(created_at)
         .bind(now)
+        .bind(mailbox.flow_id.as_deref())
         .execute(self.writes())
         .await?;
 

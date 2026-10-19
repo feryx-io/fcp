@@ -13,7 +13,7 @@ pub use engine::{
     AnswerCallback, FlowContext, FlowEngine, FlowExecutionResult, HangupCallback, SpeechGather,
 };
 pub use schema::{FlowDefinition, FlowNode, NodeType};
-pub use storage::{FlowQuery, FlowStore, InMemoryFlowStore};
+pub use storage::{BuiltinFlows, FlowQuery, FlowStore, InMemoryFlowStore};
 
 use thiserror::Error;
 

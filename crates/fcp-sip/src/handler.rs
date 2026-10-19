@@ -932,6 +932,24 @@ impl SipMessageHandler {
             .validate()
             .map_err(|e| anyhow::anyhow!("Invalid ServerSettings: {}", e))?;
 
+        // A call that ends never answered lets its media session go
+        // (`docs/DEEP_TESTING.md` D8): one refused before anything rang
+        // held its session and two ports for as long as the node ran.
+        if let Some(media) = media_manager.as_ref() {
+            let media = Arc::downgrade(media);
+            call_manager.set_on_unanswered_media(Arc::new(move |session| {
+                let Some(media) = media.upgrade() else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    // Already ended by its own path: nothing to do.
+                    if media.terminate_session(&session).await.is_ok() {
+                        debug!(media_session_id = %session, "Ended the media session of an unanswered call");
+                    }
+                });
+            }));
+        }
+
         // Create User Agent Server helper with shared dialog manager
         let mut uas = sip_uas::UserAgentServer::new(local_uri.clone(), local_uri);
         uas.dialog_manager = Arc::clone(&dialog_manager);
@@ -2165,6 +2183,35 @@ impl SipMessageHandler {
             Some(call) => (Some(call.tenant_id), call.trunk_target.clone()),
             None => (None, None),
         };
+        // A star code that reached the trunks is not one of ours, and is
+        // no carrier's number either (D8: `*9` went to Twilio, which said
+        // 400).
+        let dialed = crate::class_of_service::uri_user(destination);
+        if dialed.starts_with('*') || dialed.starts_with('#') {
+            info!(call_id = %call_id, dialed = %dialed, "Not a feature code: no trunk takes it");
+            return RouteResolution::NoRoute;
+        }
+        let resolution = self
+            .unclassified_routes(provider, call_id, tenant, target, destination)
+            .await;
+        match (resolution, tenant) {
+            (RouteResolution::Routes(routes), Some(tenant)) => {
+                RouteResolution::Routes(self.in_e164_where_wanted(routes, &tenant, dialed).await)
+            }
+            (resolution, _) => resolution,
+        }
+    }
+
+    /// The routes as the trunks give them: confined to the trunk a rule
+    /// named, else every trunk that may carry the call.
+    async fn unclassified_routes(
+        &self,
+        provider: &Arc<dyn OutboundRouteProvider>,
+        call_id: &fcp_b2bua_core::CallId,
+        tenant: Option<fcp_core::TenantId>,
+        target: Option<fcp_core::TrunkTarget>,
+        destination: &str,
+    ) -> RouteResolution {
         match target {
             Some(target) => {
                 let resolution = provider
@@ -2186,6 +2233,46 @@ impl SipMessageHandler {
                     .await
             }
         }
+    }
+
+    /// Each route on a trunk that takes E.164 (`Trunk::send_e164`) with
+    /// the number as the tenant's country reads `dialed`, then the trunk's
+    /// digit plan; the rest as they are, and every route as it is when
+    /// `dialed` is not a number.
+    async fn in_e164_where_wanted(
+        &self,
+        mut routes: Vec<OutboundRoute>,
+        tenant: &fcp_core::TenantId,
+        dialed: &str,
+    ) -> Vec<OutboundRoute> {
+        if !routes
+            .iter()
+            .any(|r| r.trunk.as_ref().is_some_and(|t| t.send_e164))
+        {
+            return routes;
+        }
+        let Some(storage) = &self.storage else {
+            return routes;
+        };
+        let max_digits = usize::from(self.b2bua_config.max_extension_digits);
+        let Some(e164) =
+            crate::class_of_service::classify_for_tenant(storage, tenant, dialed, max_digits)
+                .await
+                .e164
+        else {
+            return routes;
+        };
+        for route in &mut routes {
+            let Some(trunk) = route.trunk.as_ref().filter(|t| t.send_e164) else {
+                continue;
+            };
+            let number = match &trunk.egress_number_transform {
+                Some(transform) => transform.apply(&e164),
+                None => e164.clone(),
+            };
+            route.target_uri = with_uri_user(&route.target_uri, &number);
+        }
+        routes
     }
 
     async fn trunk_bindings(
@@ -7850,6 +7937,9 @@ impl SipMessageHandler {
             Some((at, token)) => format!("sip:{at};{}={token}", crate::push::FLOW_RELAY_URI_PARAM),
             None => target_contact.uri.clone(),
         };
+        // A trunk leg to an address its host name resolved to keeps the
+        // name in its Request-URI and is sent to the address.
+        let (send_uri, destination) = crate::trunk_egress::take_destination(&target_uri_clone);
         let flow_token_clone = target_contact.flow_token.clone();
         let egress = target_contact.egress.clone();
         let header_rules = self.header_rules.clone();
@@ -7928,6 +8018,7 @@ impl SipMessageHandler {
             // The trunk's own header rules, run on the finished
             // INVITE (`docs/TENANT_TRUNKS.md` §6).
             filter: egress.request_filter(header_rules.as_ref()),
+            destination: destination.clone(),
         };
 
         // Add 5-second timeout for each INVITE to prevent TLS hangs
@@ -7962,7 +8053,7 @@ impl SipMessageHandler {
                 tokio::time::timeout(
                     std::time::Duration::from_secs(5),
                     uac_clone.invite_with_options(
-                        &target_uri_clone,
+                        send_uri.as_str(),
                         invite_options(a_leg_sdp_clone.as_deref()),
                     ),
                 )
@@ -7973,7 +8064,7 @@ impl SipMessageHandler {
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 uac_clone.invite_with_options(
-                    &target_uri_clone,
+                    send_uri.as_str(),
                     invite_options(a_leg_sdp_clone.as_deref()),
                 ),
             )
@@ -9680,7 +9771,12 @@ impl SipMessageHandler {
             uac.inner().set_display_name(display_name).await;
             let sent = tokio::time::timeout(
                 Duration::from_secs(5),
-                uac.invite_with_options(&attempt.target, options),
+                uac.invite_with_options(
+                    crate::trunk_egress::take_destination(&attempt.target)
+                        .0
+                        .as_str(),
+                    options,
+                ),
             )
             .await;
             uac.inner().set_display_name(None).await;
@@ -11818,8 +11914,10 @@ impl SipMessageHandler {
 
         let mut headers = Headers::new();
 
-        // Copy mandatory headers from request (RFC 3261 §8.2.6)
-        if let Some(via) = request.headers().get("Via") {
+        // Copy mandatory headers from request (RFC 3261 §8.2.6): every
+        // Via, or a response to a request that came through a proxy stops
+        // at the proxy (D8: a carrier's caller heard nothing of a refusal).
+        for via in request.headers().get_all("Via") {
             let _ = headers.push(SmolStr::new("Via"), via);
         }
         if let Some(from) = request.headers().get("From") {
@@ -12228,8 +12326,9 @@ impl SipMessageHandler {
 
         let mut headers = Headers::new();
 
-        // Mandatory dialog-forming headers from A-leg INVITE
-        if let Some(via) = a_leg_invite.headers().get("Via") {
+        // Mandatory dialog-forming headers from A-leg INVITE: every Via,
+        // or a caller behind a proxy (a carrier) never hears it ring.
+        for via in a_leg_invite.headers().get_all("Via") {
             let _ = headers.push(SmolStr::new("Via"), via);
         }
         if let Some(from) = a_leg_invite.headers().get("From") {
@@ -12257,13 +12356,15 @@ impl SipMessageHandler {
             let _ = headers.push(SmolStr::new("CSeq"), cseq);
         }
 
-        // Copy Contact from B-leg provisional (remote target)
-        if let Some(contact) = b_leg_resp.headers().get("Contact") {
-            let _ = headers.push(SmolStr::new("Contact"), contact);
-        }
-
-        // Propagate Record-Route for correct route set
-        for rr in b_leg_resp.headers().get_all("Record-Route") {
+        // The A-leg's dialog is with this node, as the 200 OK says: our
+        // Contact, not the callee's (which named a phone on its own network
+        // to the carrier), and the A-leg INVITE's Record-Route echoed
+        // (RFC 3261 §12.1.1), not the B-leg's.
+        let _ = headers.push(
+            SmolStr::new("Contact"),
+            SmolStr::new(format!("<{}>", self.uas.contact_uri.as_str())),
+        );
+        for rr in a_leg_invite.headers().get_all("Record-Route") {
             let _ = headers.push(SmolStr::new("Record-Route"), rr);
         }
 
@@ -14805,8 +14906,9 @@ impl SipMessageHandler {
             }
         };
 
-        // Determine the target mailbox: explicit or derive from caller extension
-        let mailbox_str = mailbox.unwrap_or_default();
+        // The target mailbox: the one dialled, else the caller's own (found
+        // below), else the caller's extension as a mailbox's.
+        let mut mailbox_str = mailbox.unwrap_or_default();
 
         let sip_username = sip_parse::header(request.headers(), "From")
             .and_then(|from| Self::extract_did_from_uri(from.as_str()))
@@ -14829,10 +14931,25 @@ impl SipMessageHandler {
                         None => None,
                     };
                     match user {
-                        Some(user) => user
-                            .extension
-                            .clone()
-                            .unwrap_or_else(|| user.sip_name().to_string()),
+                        Some(user) => {
+                            // The user's own mailbox, whatever its extension
+                            // (`docs/DEEP_TESTING.md` D8: alice's mailbox,
+                            // made as `alice`, was looked for as `1001`).
+                            if mailbox_str.is_empty() {
+                                if let Ok(Some(own)) =
+                                    fcp_core::storage::VoicemailStore::get_mailbox_by_user(
+                                        storage.as_ref(),
+                                        &user.id,
+                                    )
+                                    .await
+                                {
+                                    mailbox_str = own.id;
+                                }
+                            }
+                            user.extension
+                                .clone()
+                                .unwrap_or_else(|| user.sip_name().to_string())
+                        }
                         None => sip_username.clone(),
                     }
                 }
@@ -14929,9 +15046,10 @@ impl SipMessageHandler {
         initial_variables: HashMap<String, String>,
         what: &str,
     ) -> Result<()> {
-        // Insert flow into the store
+        // Held for the call, not written: the call manager lets it go when
+        // the call ends.
         let flow_id = flow_def.id.clone();
-        if let Err(e) = flow_handler.flow_store().insert_flow(flow_def).await {
+        if let Err(e) = flow_handler.flow_store().hold_flow(flow_def).await {
             warn!(call_id = %call_id, error = %e, what, "Failed to insert an inline flow");
             let response = self.create_simple_response(request, 500, "Internal Error");
             handle.send_final(response).await;
@@ -15964,16 +16082,32 @@ impl SipMessageHandler {
         // A call an assistant places for an executive leaves with the
         // executive's line (§3.10); the assistant's class still decides.
         let user = call.on_behalf_of.unwrap_or(user);
-        let number = match storage.list_line_bindings_by_user(&user).await {
+        // The line's outbound caller ID, else the line's own number: a user
+        // given a number presented their SIP name to the carrier, which a
+        // carrier refuses (`docs/DEEP_TESTING.md` D8).
+        let lines: Vec<_> = match storage.list_line_bindings_by_user(&user).await {
             Ok(bindings) => bindings
                 .into_iter()
                 .filter(|b| b.tenant_id == call.tenant_id)
-                .find_map(|b| b.outbound_caller_id.filter(|id| !id.trim().is_empty())),
+                .collect(),
             Err(e) => {
                 warn!(call_id = %call_id, user_id = %user, error = %e, "Failed to read the caller's lines");
-                None
+                Vec::new()
             }
         };
+        let mut number = lines.iter().find_map(|b| {
+            b.outbound_caller_id
+                .clone()
+                .filter(|id| !id.trim().is_empty())
+        });
+        if number.is_none() {
+            for line in &lines {
+                if let Ok(Some(n)) = storage.get_phone_number(&line.phone_number_id).await {
+                    number = Some(n.e164);
+                    break;
+                }
+            }
+        }
         let host = caller_from
             .and_then(|from| {
                 sip_core::SipUri::parse(from.trim_matches(|c| c == '<' || c == '>')).ok()
@@ -16372,6 +16506,20 @@ impl SipMessageHandler {
 
     /// Apply a treatment to the caller: forward, voicemail, or a final
     /// response. Ends the call on its record when nothing else will.
+    /// The flow the callee's mailbox hands its calls to, if it has one and
+    /// is enabled.
+    async fn mailbox_flow_of_callee(&self, call_id: fcp_b2bua_core::CallId) -> Option<String> {
+        let storage = self.storage.as_ref()?;
+        let user = self.call_manager.get_call(&call_id)?.callee_user_id?;
+        let mailbox =
+            fcp_core::storage::VoicemailStore::get_mailbox_by_user(storage.as_ref(), &user)
+                .await
+                .ok()??;
+        mailbox
+            .flow_id
+            .filter(|id| mailbox.enabled && !id.trim().is_empty())
+    }
+
     async fn apply_treatment(
         &self,
         request: &sip_core::Request,
@@ -16388,6 +16536,20 @@ impl SipMessageHandler {
                 info!(call_id = %call_id, reason, "A flow's Dial: the plan's voicemail answered as 480");
                 fcp_core::Treatment::Refuse { code: 480 }
             }
+            other => other,
+        };
+        // A mailbox that hands its calls to a flow (its `flow_id`): the call
+        // runs that flow instead (`docs/DEEP_TESTING.md` D8).
+        let treatment = match treatment {
+            fcp_core::Treatment::Voicemail => match self.mailbox_flow_of_callee(call_id).await {
+                Some(flow_id) => {
+                    info!(call_id = %call_id, flow_id = %flow_id, "The callee's mailbox hands the call to a flow");
+                    fcp_core::Treatment::Forward {
+                        target: fcp_core::CallTarget::Flow(flow_id),
+                    }
+                }
+                None => fcp_core::Treatment::Voicemail,
+            },
             other => other,
         };
         let routed = match treatment {
@@ -18533,7 +18695,12 @@ fn dedup_target_contacts_by_hostport(contacts: Vec<TargetContact>) -> Vec<Target
     let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();
     for contact in contacts {
-        let key = extract_hostport_from_uri(&contact.uri);
+        // Two addresses a trunk's name resolved to share the URI's host:
+        // the destination tells them apart.
+        let key = match crate::trunk_egress::take_destination(&contact.uri).1 {
+            Some(destination) => format!("{}:{}", destination.host(), destination.port()),
+            None => extract_hostport_from_uri(&contact.uri),
+        };
         if seen.insert(key) {
             result.push(contact);
         }
@@ -18918,6 +19085,19 @@ const MAX_FORWARD_HOPS: usize = 10;
 /// call gives up on it: a backstop, since the new call ends by its own
 /// plan (no-answer times are at most 300 seconds).
 const FORWARD_INTO_NODE_LIMIT: Duration = Duration::from_secs(600);
+
+/// `uri` with its user part replaced (`sip:15183217034@h` →
+/// `sip:+15183217034@h`); a URI with no user part as it is.
+fn with_uri_user(uri: &str, user: &str) -> String {
+    let (scheme, rest) = match uri.split_once(':') {
+        Some(parts) => parts,
+        None => return uri.to_string(),
+    };
+    match rest.split_once('@') {
+        Some((_, host)) => format!("{scheme}:{user}@{host}"),
+        None => uri.to_string(),
+    }
+}
 
 /// `uri` with a URI header added (`?name=value`, or `&name=value` when it
 /// has headers already).
@@ -19764,6 +19944,21 @@ impl ConferenceMigration {
 #[cfg(test)]
 #[allow(unused_must_use)]
 mod tests {
+
+    #[test]
+    fn a_uri_takes_a_new_user_and_keeps_its_host_and_parameters() {
+        assert_eq!(
+            super::with_uri_user(
+                "sip:15183217034@carrier.example;fcp-dst=192.0.2.1:5060",
+                "+15183217034"
+            ),
+            "sip:+15183217034@carrier.example;fcp-dst=192.0.2.1:5060"
+        );
+        assert_eq!(
+            super::with_uri_user("sip:carrier.example", "+1"),
+            "sip:carrier.example"
+        );
+    }
 
     /// A carrier's failure sends the call to the next route; the callee's
     /// answer does not (`docs/TENANT_TRUNKS.md` §5).

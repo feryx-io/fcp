@@ -332,6 +332,10 @@ issue when they fail and close it when they pass.
 This is for you to say: which hardware phones, a carrier account with a
 test number, an Entra ID or Okta tenant, the Apple and Firebase accounts
 for push, and devices for Anvil.
+*Answered 2026-10-18:* Poly phones, a Twilio Elastic SIP trunk with a
+number, the Apple and Firebase accounts with iOS and Android devices, on
+a GCE VM with a public address under `d8.feryx.io`. No identity tenant:
+SSO and SCIM stay with their stand-ins.
 
 **Q10. Anvil.** Does the session include Anvil's own client code, or only
 FCP?
@@ -857,3 +861,71 @@ test skips when the admin embeds no UI or Chromium is missing.
 | A user without a mailbox saw the API's raw error on their voicemail page, not "No voicemail mailbox is configured". | S3 | Fixed in v0.25.413: the client reads the 404 as no mailbox, as it already did for a brand. |
 | A schedule was deleted at one click, without the confirmation every other page asks for. | S3 | Fixed in v0.25.413. |
 | The UI shows every page and button to every role, and the API refuses what the role may not do. A tenant administrator in an enterprise is offered "Add Trunk" and refused. | S3 | Not fixed: the UI knows nothing of permissions, and teaching it is a change of its own (#333). A refused save now at least says "Insufficient permissions". |
+
+### D8. The real world, by hand
+
+The D8 server is the compose stack from the nightly images on a GCE VM
+with a static address and a Let's Encrypt certificate for `d8.feryx.io`
+(`deploy/gcp-d8`). It is up for the sessions and removed after them.
+
+The checklist, worked through together:
+1. **Poly phones.** Provisioned from the tenant's URL, then by Poly ZTP
+   if an account exists. Register over UDP and TLS, call each other, hold
+   and resume, blind and attended transfer, park, voicemail and its
+   light, BLF, a shared line, resync from the admin.
+2. **Twilio.** A tenant trunk to the Elastic SIP trunk's termination
+   URI, its number on the tenant. Inbound to a user, a flow and a queue;
+   outbound with the line's caller ID; DTMF both ways; a long call; `933`.
+3. **Anvil and push.** Sign in on iOS and Android, register, call a Poly
+   phone and the PSTN. Asleep, woken by a real APNs and FCM push for a
+   call from a phone and from Twilio; a cancelled call's push.
+4. **Browsers.** Chrome, Firefox and Safari in one WebRTC room with
+   video and screen share, with a Poly phone dialled in.
+
+**Session 1 (2026-10-18).** A Poly VVX 250 (UC Software 6.4.7) and a
+Twilio Elastic SIP trunk with one number. The VVX was provisioned from the
+tenant's URL over HTTPS and registered; a call from a mobile through
+Twilio rang it and was answered with audio both ways; a call from the VVX
+to the mobile left through Twilio with the line's number as its caller
+ID; voicemail took a message and the VVX's light came on. Each of these
+needed fixes first — the table — and the menu that plays messages is
+silent without text to speech (Q-D8a below).
+
+| Finding | Severity | Dealt with |
+|---|---|---|
+| A trunk host given as a name with no port was resolved and its **address** put in the Request-URI. Twilio, which knows a trunk by the domain there, refused every outbound call (403). | S2 (no outbound call to a carrier that names trunks by domain) | Fixed in v0.25.414 with siphon-rs's `InviteOptions::destination` (sip-uac 0.9.0): the name stays, the address the router chose is where the INVITE goes (TLS checks the name); emergency attempts too. Test: `trunk_router` `a_route_to_a_resolved_name_keeps_the_name`, siphon-rs `an_invite_goes_to_its_destination_and_keeps_the_name`. |
+| The default tenant had no row, so nothing could claim a SIP domain for a single-tenant deployment: a phone provisioned to register as `alice@d8.feryx.io` was refused ("unknown tenant domain"), and provisioning's fallback told it to. Tests never met it: the testkit's `Seed` writes the default tenant's row by hand. | S2 (phones cannot register by name) | Fixed in v0.25.415: the default tenant reads as its defaults, its first update stores it, it is listed on the Tenants page and never deleted. Test: `the_default_tenant_takes_a_sip_domain_and_is_never_deleted`. |
+| Three response builders copied only the first `Via`: the simple responses (480, 486, 503…), the relayed provisional and the digest challenge. A carrier's INVITE arrives through its edge with two; its callers heard no ringback, and a refused call kept ringing at the caller's end. The relayed 180 also carried the callee's Contact (a phone's private address, to the carrier) and the callee's Record-Route. | S2 (no ringback and no refusal for any call through a proxy) | Fixed in v0.25.416. Test: `sipp.rs` `a_caller_behind_a_proxy_hears_it_ring_and_be_refused`, failing on the old code at the 401 and the 486. |
+| The voicemail server never made its directories, and the recorder refuses one that does not exist: in the compose stack every caller heard the beep and was hung up on. No test had left a message with the real server; every other reaches voicemail through a stub. | S2 (no voicemail in the shipped stack) | Fixed in v0.25.417: made at startup. Test: `fcp-voicemail-server/tests/messages.rs`, the first to leave a message with the real server. |
+| On a cloud VM whose public address is NAT at the provider's edge (GCE, an AWS elastic IP), the services cannot reach one another at the address they advertise: the caller's BYE never reached voicemail, which recorded for five minutes. | S2 (calls between services break on a cloud host) | The host's fix — the address on the loopback — documented in the compose README and done by `deploy/gcp-d8`; v0.25.418 has every SIP service warn at startup when its address does not come back (`fcp_sip::self_reach`). Advertising private addresses to siblings is #335. |
+| A call that ended unanswered (refused 480, busy, a carrier's 403) kept its media session and two RTP ports for as long as the node ran: about 500 such calls exhaust the call manager's ports. The soak's calls are all answered. | S2 (port exhaustion) | Fixed in v0.25.419: `CallManager::set_on_unanswered_media`, ended by the SIP handler in every binary. Test: `calling.rs` `a_call_refused_before_it_rang_leaves_no_media_session`. |
+| A number bound to a user rang only the devices listed on the binding; one with none — what the API makes — rang nobody, and Twilio's call was refused 480 with the phone registered. | S2 (a user's number does not ring) | Fixed in v0.25.420. Test: `trunks.rs` `a_carriers_call_to_a_users_number_rings_the_users_phone`. |
+| A user's calls out presented their SIP name unless `outbound_caller_id` was set on the line, which the API does not set. Twilio refuses it. | S3 | Fixed in v0.25.421: the line's number. Test: `a_line_with_no_caller_id_set_presents_its_number`. |
+| Numbers went to a trunk as dialled; Twilio wants E.164, and a prepended `+` doubled one already there. A star code that is no feature (`*9`, sent by the VVX's own digit map) went to Twilio as a number. | S3 | Fixed in v0.25.422: `Trunk::send_e164` (migration 116, API, form); a stray star code is 404. Test: `an_e164_trunk_gets_e164_and_a_stray_star_code_reaches_no_carrier`. |
+| The Polycom and Yealink starters set up no message waiting, and the VVX's default digit map sent `*9` before `*98` was typed. | S3 | Fixed in v0.25.423. |
+| The compose stack set no `[api.provisioning] sip_server`: phones were told to register to `fcp.local`. | S3 | Fixed in v0.25.423: `HOST_IP`. |
+| The provisioning key's whole URL ignored `[api.provisioning] public_url`. | S3 | Fixed in v0.25.414; `provisioning.rs` checks it. |
+| The menu that plays voicemail (`*98`) speaks only through text to speech, which the compose stack leaves off (its image carries PyTorch); with it off every prompt is silence, as is the default "leave a message". | S2 (the shipped stack's prompts are silence) | Fixed in v0.25.425 (Q-D8a, answered: on by default): Piper is the default engine, in a small `fcp-tts` image that every stack runs; Kokoro and local Whisper are `fcp-tts-full` (`FCP_TTS=tts-full`); the images carry a default greeting spoken by Piper (`docs/SPEECH.md` §8). |
+| Built-in flows were stored: every `*98` and hoteling login wrote a flow row that was never removed, and each mailbox's flow belonged to no tenant, so the Flows page never showed it and no one could edit it. | S3 (a row per voicemail check, forever) | Fixed in v0.25.427: `fcp_flow::BuiltinFlows` holds them in memory, let go at the call's end; migration 117 removes the rows. A mailbox can hand its calls to a flow of the tenant's (`flow_id`, *Call handling*): `docs/FLOWS.md`. Tests: `calling.rs` `voicemail_access_leaves_no_flow_behind`, `a_mailbox_that_hands_its_calls_to_a_flow_runs_it`. |
+| The compose proxy (nginx) looked its backends up once, at start: a restarted admin came back on another address and every HTTPS request was 502 until the proxy restarted too. | S3 | Fixed in v0.25.428: Docker's resolver, looked up per request; proved on the D8 server by restarting the admin under it. |
+| The operational TOML sections (`[media]`, `[voicemail]`, `[b2bua]`…) are stored at a service's first boot and read from the database after; nothing reconciled them with the file, so a key set later — the default greeting the images now carry, a changed `public_ip` — was never read, in all eight binaries that store them. Callers heard silence before the beep. | S2 (a TOML edited after the first boot is silently ignored) | Fixed in v0.25.429: `fcp_core::reconcile_with_seed` settles each key three ways against the TOML last seeded (`config_settings.seed`, migration 118, backfilled from the audit log): a key the file changed takes the file's value, every other keeps the stored one, so an edit through the API stands until the file changes that key. Tests: `config_store` unit tests, `fcp-voicemail-server/tests/messages.rs` `a_key_added_to_the_toml_later_is_read_and_an_api_edit_stands`. |
+| A message left lit no lamp until the phone subscribed again: the call manager tells message-waiting subscribers on `voicemail.*` events from its own bus, and the compose stack ran the events server's bus in memory, so what the voicemail server posted to `/ingest` never reached it (the call manager even warned that `use_redis` was off). | S2 (no message waiting in the shipped stack) | Fixed in v0.25.429: the compose stack's events go through Redis (`[event_bus] bus_type = "redis"`, the call manager's `use_redis`). |
+| `*98` looked for the caller's mailbox by their extension (`1001`); a mailbox made through the API is named by the username (`alice`), so every PIN was "incorrect". | S2 (no one can hear their messages) | Fixed in v0.25.430: the calling user's own mailbox, by user. Test: `mwi.rs` `the_voicemail_menu_opens_the_callers_mailbox_and_puts_the_lamp_out`. |
+| In the compose stack `*98` runs on the call manager, which could not see the voicemail server's volume and accepted only files under its own `recording_dir`: messages would play as silence and could not be deleted. | S2 | Fixed in v0.25.430: `voicemail-data` mounted on the call manager, `[media] voicemail_recordings_dir` (`VoicemailConfig::message_dirs`). Same test. |
+| A node on the Redis bus never heard its own events: it published to Redis alone and its subscriber skips its own. Leaving `*98` changed no lamp; with the menu's update now announced, it would still have reached only other nodes. | S2 (message waiting, and any listener of the node's own events, on every clustered node) | Fixed in v0.25.430: `fcp_events::LocalAndCluster` publishes to the node's own bus as well; leaving the menu announces `voicemail.mwi_updated`. Same test, failing on the old bus. |
+| The prompts said "PIN", which Piper spells out letter by letter. | S4 | Fixed in v0.25.430: "pin"; migration 119 updates the stored system prompts still holding the old text and lets their audio be made again. |
+| The voicemail server logs the events token in the WebSocket URL it connects to. | S3 (a secret in logs) | #340. |
+| The events server's `consumer_name` defaults to a random name per start, so with the TOML now reconciled its stored section is rewritten at every start. | S4 | #341. |
+| A trunk's health is probed by the conference, IVR and voicemail servers as well as the call manager. | S4 | #336. |
+| The voicemail menu's flow runs on after the caller hangs up, asking for digits from a session that is gone. | S3 | #337. |
+| The VVX never answers the PRACK the node sends for its reliable 180 (retransmitted for the whole ring). | S3 | To capture on the next session. |
+| A VVX offers G.722 first; the node answering its own flow took G.722 against PCMU prompts ("not transcodable"). Whether the VVX hears garbage is to hear on the next session; forge's transcoder has no G.722 yet. | ? | To hear on the next session. |
+
+**Q-D8a. Text to speech in the default stack.** Voicemail retrieval,
+the default greeting, IVR prompts and hoteling's prompts are spoken by
+text to speech; the compose stack runs `fcp-tts` only under its `tts`
+profile because the image carries PyTorch (several GB). Off, they are
+silence. Ship it on, ship a small engine (Piper) as the default, or ship
+recorded prompts for what is fixed and accept silence for what is not?
+*Answered 2026-10-19:* on by default, with Piper the default engine and
+what exists today (Kokoro, the cloud voices) enabled by settings.

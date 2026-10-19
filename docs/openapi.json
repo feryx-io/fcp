@@ -21313,6 +21313,13 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          },
+          "flow_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A flow of the tenant's to handle a call this mailbox would take —\nsay something, ring someone, a queue, or a message after all. Unset:\nthe mailbox takes it."
           }
         }
       },
@@ -22273,6 +22280,13 @@
               "string",
               "null"
             ]
+          },
+          "send_e164": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Send numbers in E.164 (`+15183217034`), as the tenant's country\nreads what was dialled, before the digit plan: what Twilio needs."
           },
           "cps_limit": {
             "type": [
@@ -25683,6 +25697,13 @@
             ],
             "format": "int32",
             "minimum": 0
+          },
+          "flow_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The flow that handles a call this mailbox would take, if not the\nmailbox itself."
           },
           "created_at": {
             "type": "string",
@@ -29601,6 +29622,13 @@
                   "format": "int32",
                   "minimum": 0
                 },
+                "flow_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The flow that handles a call this mailbox would take, if not the\nmailbox itself."
+                },
                 "created_at": {
                   "type": "string",
                   "format": "date-time"
@@ -32597,6 +32625,7 @@
                 "health_check_interval_secs",
                 "codec_prefs",
                 "strip_digits",
+                "send_e164",
                 "cps_limit",
                 "srtp_mode",
                 "dtmf_mode",
@@ -32738,6 +32767,10 @@
                     "string",
                     "null"
                   ]
+                },
+                "send_e164": {
+                  "type": "boolean",
+                  "description": "Numbers go to this trunk in E.164, before its digit plan."
                 },
                 "cps_limit": {
                   "type": "integer",
@@ -34609,7 +34642,7 @@
               "string",
               "null"
             ],
-            "description": "The whole URL, when the admin knows its public address\n(`[api.sso] public_url`)."
+            "description": "The whole URL, when the admin knows its public address\n(`[api.provisioning] public_url`, else `[api.sso] public_url`)."
           },
           "created_at": {
             "type": "string",
@@ -37719,6 +37752,7 @@
           "health_check_interval_secs",
           "codec_prefs",
           "strip_digits",
+          "send_e164",
           "cps_limit",
           "srtp_mode",
           "dtmf_mode",
@@ -37860,6 +37894,10 @@
               "string",
               "null"
             ]
+          },
+          "send_e164": {
+            "type": "boolean",
+            "description": "Numbers go to this trunk in E.164, before its digit plan."
           },
           "cps_limit": {
             "type": "integer",
@@ -38863,6 +38901,13 @@
             "format": "int32",
             "description": "Double Option: outer = field not provided, inner = null to clear.",
             "minimum": 0
+          },
+          "flow_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The flow that handles a call this mailbox would take; empty clears\nit, so the mailbox takes it again."
           }
         }
       },
@@ -40111,6 +40156,13 @@
               "string",
               "null"
             ]
+          },
+          "send_e164": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Send numbers in E.164, before the digit plan."
           },
           "cps_limit": {
             "type": [

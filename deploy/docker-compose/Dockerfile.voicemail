@@ -23,6 +23,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 COPY --from=builder /app/target/release/fcp-voicemail /app/fcp-voicemail
+# The default greeting, spoken by Piper's public-domain voice: a mailbox
+# with none of its own says this before the beep (docs/SPEECH.md).
+COPY deploy/docker-compose/audio/default-greeting.wav /var/fcp/audio/default-greeting.wav
 RUN mkdir -p /app/data
 
 EXPOSE 5072/udp

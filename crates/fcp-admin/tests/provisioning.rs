@@ -112,6 +112,7 @@ auth_token = "{TOKEN}"
 sip_server = "127.0.0.1"
 sip_port = {sip_port}
 sip_transport = "udp"
+public_url = "https://phones.example.test:8444/"
 
 [storage]
 database_url = "{db}"
@@ -191,6 +192,13 @@ format = "compact"
     let (status, key, text) = api(Method::POST, "/api/v1/provisioning/key", None).await;
     assert_eq!(status, 201, "{text}");
     let key = key["key"].as_str().unwrap().to_string();
+    // The whole URL, from `[api.provisioning] public_url` (D8: it was
+    // null unless SSO was configured).
+    let (_, shown, _) = api(Method::GET, "/api/v1/provisioning/key", None).await;
+    assert_eq!(
+        shown["url"],
+        format!("https://phones.example.test:8444/provision/{key}/")
+    );
 
     // The phone asks for its file as a Yealink does, through the proxy.
     let fetched = client

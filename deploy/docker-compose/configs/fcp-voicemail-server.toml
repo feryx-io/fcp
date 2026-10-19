@@ -36,6 +36,8 @@ greetings_dir = "/var/lib/fcp/voicemail/greetings"
 max_message_duration = 300
 max_messages_per_mailbox = 100
 play_beep = true
+# A mailbox with no greeting of its own: the image's, spoken by Piper.
+default_greeting_path = "/var/fcp/audio/default-greeting.wav"
 
 [logging]
 level = "info"

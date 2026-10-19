@@ -940,6 +940,57 @@ async fn a_carriers_call_is_the_tenant_its_trunk_says() {
     stack.finish().await;
 }
 
+/// A number bound to a user, naming none of the user's phones, rings the
+/// user's phones (`docs/DEEP_TESTING.md` D8: a carrier's call to a user's
+/// number was refused 480 while the user's phone was registered, until the
+/// phone was listed on the binding).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_carriers_call_to_a_users_number_rings_the_users_phone() {
+    use fcp_core::storage::{CredentialStore, LineBindingStore, PhoneNumberStore};
+    let carrier = Carrier::new("carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+    let tenant = stack.seed.tenant_id;
+    stack
+        .seed
+        .trunk_with(tenant, "carrier-in", carrier.port(), |trunk| {
+            trunk.direction = fcp_core::TrunkDirection::Bidirectional;
+        })
+        .await;
+    let alice = stack.seed.user("alice", "Alice-pw-2026!", "1001").await;
+    let row = stack
+        .seed
+        .storage()
+        .get_user_in_tenant("alice", &tenant)
+        .await
+        .unwrap()
+        .unwrap();
+    let number = fcp_core::PhoneNumber::new("+15125550444".into(), tenant).unwrap();
+    let binding =
+        fcp_core::LineBinding::new(number.id, Some(row.id), fcp_core::BindingType::User, tenant);
+    stack.seed.storage().put_phone_number(number).await.unwrap();
+    stack
+        .seed
+        .storage()
+        .put_line_binding(binding)
+        .await
+        .unwrap();
+    let alice_phone = stack.phone(&alice).await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let from_carrier = Phone::new("carrier-caller", "x", "carrier.example", stack.sip)
+        .await
+        .expect("carrier phone binds");
+    let call = from_carrier.call("+15125550444").await.unwrap();
+    let Some(ringing) = alice_phone.incoming(SOON).await else {
+        let why = format!("Alice's phone never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    let answered = ringing.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(answered.hangup().await.unwrap(), 200);
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_carriers_call_runs_the_ingress_rules_its_trunk_names() {
     let mut stack = stack_or_skip!(&[]);
@@ -2313,6 +2364,105 @@ async fn line_and_class(
         storage.put_class_of_service(class).await.unwrap();
     }
     storage.put_calling_settings(settings).await.unwrap();
+}
+
+/// A trunk that takes E.164 is sent the number as the tenant's country
+/// reads it, and a star code that is no feature reaches no carrier
+/// (`docs/DEEP_TESTING.md` D8: Twilio refused `15183217034` and `*9`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_e164_trunk_gets_e164_and_a_stray_star_code_reaches_no_carrier() {
+    let carrier = Carrier::new("e164-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "e164-carrier", carrier.port(), |trunk| {
+            trunk.send_e164 = true;
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+    let alice_phone = stack.phone(&alice).await;
+    let headers = Caller::new(acme, "alice");
+
+    let call = alice_phone
+        .call_with_headers("15125559999", &headers.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the carrier never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming.request_uri().starts_with("sip:+15125559999@"),
+        "Request-URI: {}",
+        incoming.request_uri()
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert_eq!(call.failed(SOON).await, Some(486));
+
+    let call = alice_phone
+        .call_with_headers("*9", &headers.headers())
+        .await
+        .unwrap();
+    assert_eq!(call.failed(SOON).await, Some(404));
+    assert!(
+        carrier.phone.incoming(NEVER).await.is_none(),
+        "*9 reached the carrier"
+    );
+    stack.finish().await;
+}
+
+/// A user given a number, with no outbound caller ID set on the line,
+/// presents the number (`docs/DEEP_TESTING.md` D8: the user's SIP name
+/// went to the carrier, which refuses a caller ID not its customer's).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_line_with_no_caller_id_set_presents_its_number() {
+    use fcp_core::storage::{CredentialStore, LineBindingStore, PhoneNumberStore};
+    let carrier = Carrier::new("number-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "number-carrier", carrier.port(), |_| {})
+        .await;
+    let row = stack
+        .seed
+        .storage()
+        .get_user_in_tenant("alice", &acme)
+        .await
+        .unwrap()
+        .unwrap();
+    let number = fcp_core::PhoneNumber::new("+15185550199".into(), acme).unwrap();
+    let binding =
+        fcp_core::LineBinding::new(number.id, Some(row.id), fcp_core::BindingType::User, acme);
+    stack.seed.storage().put_phone_number(number).await.unwrap();
+    stack
+        .seed
+        .storage()
+        .put_line_binding(binding)
+        .await
+        .unwrap();
+    tokio::time::sleep(REFRESHED).await;
+    let alice_phone = stack.phone(&alice).await;
+
+    let call = alice_phone
+        .call_with_headers("+15125559999", &Caller::new(acme, "alice").headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the carrier never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming.from.contains("+15185550199@"),
+        "From: {}",
+        incoming.from
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert_eq!(call.failed(SOON).await, Some(486));
+    stack.finish().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

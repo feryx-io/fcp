@@ -166,6 +166,19 @@ impl TrunkSet {
             .cloned()
     }
 
+    /// What a refresh would have resolved `name` to (tests).
+    #[cfg(test)]
+    pub(crate) fn set_srv_for_test(
+        &self,
+        name: &str,
+        transport: TransportType,
+        targets: Vec<(String, u16)>,
+    ) {
+        if let Ok(mut srv) = self.srv.write() {
+            srv.insert((name.to_string(), transport), targets);
+        }
+    }
+
     /// The trunks a call from `source` may have arrived on: enabled, not
     /// outbound-only, and taking calls from that address — by their
     /// `inbound_sources`, or by their hosts when they name none. Most

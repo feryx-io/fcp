@@ -326,6 +326,23 @@ A phone then registers at the host's address, port 5060, realm
 `fcp.local`, user `alice`, password `alice-pw`. Registrations are
 listed at `GET /registrations` on the call manager, with its token.
 
+**Phones that register by a name.** The registrar knows a phone's tenant
+by the domain it registers in, and refuses a name no tenant claims; an
+address (`alice@192.0.2.10`) is resolved by the username instead. To
+register as `alice@pbx.example.com`, the tenant claims the name:
+
+```bash
+curl -s -H "$A" -H "$J" -X PUT http://localhost:8080/api/v1/tenants/<tenant id> \
+  -d '{"sip_domains":["pbx.example.com"]}' | jq .
+```
+
+Without a tenant of its own, a deployment's users are the default
+tenant's, `tenant-00000000-0000-0000-0000-000000000000`, which takes its
+domains the same way (its first update stores it; it is listed on the
+Tenants page and is never deleted). Provisioning tells phones the
+tenant's first domain, else `[api.provisioning] sip_server`
+(`docs/PROVISIONING.md` §5).
+
 ## 10. Stop
 
 `SIGTERM` (or `POST /drain` with the token, then `SIGTERM`): each

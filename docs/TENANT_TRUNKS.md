@@ -154,6 +154,12 @@ pub struct Trunk {
 `egress_number_transform` and are folded into it on read, so the API keeps
 working.
 
+`send_e164` (added in D8, `docs/DEEP_TESTING.md`) sends the trunk the
+number as the tenant's country reads what was dialled — `15183217034` and
+`+15183217034` both go as `+15183217034` — before the digit plan; off, the
+number goes as dialled. Twilio's Elastic SIP Trunking wants it on. A
+dialled star code is never sent to a trunk: it is refused 404.
+
 **One type, not two models and a conversion** (built in phase 1). The call
 path holds `fcp_core::Trunk` itself: `TrunkConfig` in `fcp-sbc-core` is an
 alias of it, and the settings that crate owned — transport, credentials,
