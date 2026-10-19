@@ -24,7 +24,10 @@ resolve to it yet), opens the firewall, makes the VM, copies
 - gets the certificate with certbot and installs it (`install-certs.sh`,
   also certbot's renewal hook) for the proxy, the call manager's SIPS and
   WSS, the WebRTC gateway and the SBC's TLS, in place of the compose CA's;
-- pulls, logs out of GHCR, and starts the stack.
+- pulls, logs out of GHCR, and starts the stack with its `tts` profile
+  (voicemail retrieval and prompts are silence without it);
+- puts the address on the loopback (the services reach one another at it)
+  and has the default tenant claim the name.
 
 What is open to the world: HTTPS 8443–8445 (gateway, admin, events)
 and 8095 (WebRTC), SIP on 5060/5061/5081 (call manager) and 5078/5079
