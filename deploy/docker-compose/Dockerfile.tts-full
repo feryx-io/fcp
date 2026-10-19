@@ -1,0 +1,49 @@
+# Multi-stage build for fcp-tts-full (fcp-tts-server): fcp-tts's Piper
+# (Dockerfile.tts) and, on a Python runtime, the Kokoro engine
+# (docs/PRODUCTION_STACK.md phase 1) and the faster-whisper worker its
+# `local` speech provider runs (docs/DEVELOPER_SURFACE.md phase 6). Large —
+# `kokoro` brings PyTorch — so compose runs fcp-tts unless
+# FCP_TTS_IMAGE=fcp-tts-full asks for this one (docs/SPEECH.md). CPU-only
+# PyTorch; Kokoro's model is fetched from the Hugging Face hub on first use.
+FROM rust:1.98 AS builder
+
+RUN apt-get update && apt-get install -y \
+    cmake \
+    pkg-config \
+    libssl-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY external ./external
+RUN cargo build --release -p fcp-tts-server
+
+# The same Debian release as the builder, so the binary's libc matches.
+FROM python:3.12-slim-trixie
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    espeak-ng \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch \
+    && pip install --no-cache-dir kokoro soundfile numpy faster-whisper
+
+# Piper and its default voice, as fcp-tts has them.
+COPY deploy/docker-compose/scripts/fetch-piper.sh /tmp/fetch-piper.sh
+RUN sh /tmp/fetch-piper.sh /opt/piper /opt/piper-voices && rm /tmp/fetch-piper.sh
+
+WORKDIR /app
+COPY --from=builder /app/target/release/fcp-tts /app/fcp-tts
+COPY scripts/kokoro_tts_worker.py /app/scripts/kokoro_tts_worker.py
+COPY scripts/whisper_stt_worker.py /app/scripts/whisper_stt_worker.py
+RUN mkdir -p /var/lib/fcp/tts_cache
+# Where the local providers find their workers.
+ENV FCP_KOKORO_WORKER=/app/scripts/kokoro_tts_worker.py
+ENV FCP_WHISPER_WORKER=/app/scripts/whisper_stt_worker.py
+
+EXPOSE 8093
+
+CMD ["/app/fcp-tts", "--config", "/app/fcp-tts-server.toml"]

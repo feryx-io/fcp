@@ -32,7 +32,7 @@ rtp_port_end = 22999
 server_url = "http://127.0.0.1:8081/ingest"
 
 [flows]
-# Speech from the TTS server, when the `tts` profile is up; FCP_IVR_TTS_REMOTE_TOKEN authenticates.
+# Speech from the TTS server; FCP_IVR_TTS_REMOTE_TOKEN authenticates.
 tts_provider = "remote"
 tts_remote_url = "http://127.0.0.1:8093"
 tts_language = "en-US"

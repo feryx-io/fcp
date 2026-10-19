@@ -55,6 +55,7 @@ jobs:
           - voicemail
           - presence
           - tts
+          - tts-full
           - link
     steps:
       - uses: actions/checkout@v5

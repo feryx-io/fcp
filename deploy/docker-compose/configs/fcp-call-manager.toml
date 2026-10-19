@@ -59,8 +59,7 @@ codecs = ["PCMU", "PCMA", "G722"]
 recording_dir = "/app/data/recordings"
 prompts_dir = "/app/data/prompts"
 tts_cache_dir = "/app/data/tts-cache"
-# Speech from the TTS server, when the `tts` profile is up;
-# FCP_CALL_MANAGER_TTS_REMOTE_TOKEN authenticates.
+# Speech from the TTS server; FCP_CALL_MANAGER_TTS_REMOTE_TOKEN authenticates.
 tts_remote_url = "http://127.0.0.1:8093"
 
 [storage]

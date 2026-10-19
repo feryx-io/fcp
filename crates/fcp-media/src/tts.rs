@@ -508,6 +508,19 @@ pub enum TtsProviderConfig {
         device: Option<String>,
     },
 
+    /// Piper (`docs/SPEECH.md`): the default local engine, a native
+    /// binary and ONNX voices, no Python.
+    Piper {
+        /// The `piper` binary; `piper` on the PATH when unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binary: Option<PathBuf>,
+        /// Where the voices are: `<voice>.onnx` and `<voice>.onnx.json`.
+        voices_dir: PathBuf,
+        /// The voice spoken when a request names none and no voice speaks
+        /// its language.
+        voice: String,
+    },
+
     /// Remote TTS via shared fcp-tts HTTP service.
     Remote {
         /// URL of the fcp-tts service (e.g. "http://localhost:8093")

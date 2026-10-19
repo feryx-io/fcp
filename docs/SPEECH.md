@@ -200,3 +200,39 @@ and answers against stand-ins; `fcp-call-manager/tests/listen.rs` runs a
 menu that is spoken to, pressed by SIP INFO and left silent, and reads a
 `call.transcript` from the node's events. The real services are checked by
 hand.
+
+## 8. Text to speech: Piper by default
+
+What FCP says — prompts, greetings, the voicemail menu, a flow's Say — is
+spoken by `fcp-tts-server` (`[tts]`, `[[tts.providers]]`); the call
+manager, IVR and voicemail server reach it with `tts_provider = "remote"`.
+Without an engine all of it was silence, because the only local engine,
+Kokoro, needs PyTorch and was left off (`docs/DEEP_TESTING.md` Q-D8a).
+
+- **Piper** (`type = "piper"`, `fcp_media::tts::providers::piper`) is the
+  default engine: the last MIT-licensed release of the C++ engine and the
+  LJSpeech voice (public domain), in every TTS image
+  (`scripts/fetch-piper.sh`, pinned by SHA-256). One `piper --json-input`
+  process per voice, started on first use and kept; its audio returned at
+  8 kHz like every provider's. About 0.2–0.5 s a sentence on a CPU.
+  `binary`, `voices_dir` and `voice` (`en_US-ljspeech-medium` unless set)
+  configure it; a request's voice is used if installed, else one of the
+  request's language (`en-GB` → an `en_GB-…` model in `voices_dir`), else
+  the default. More voices are `.onnx` models with their `.onnx.json`
+  dropped into `voices_dir` — check each voice's licence (several of
+  Piper's are non-commercial).
+- **Kokoro** (`type = "local"`, `engine = "kokoro"`) is in the
+  `fcp-tts-full` image only (`FCP_TTS=tts-full` in compose), with the
+  local Whisper recogniser.
+- **OpenAI** and **Google Cloud** voices are providers with a key, in
+  either image. Azure, Polly and ElevenLabs are configured but not yet
+  implemented (refused at start).
+
+`default_provider` names the engine used when a request names none.
+
+The stack's default greeting (`deploy/docker-compose/audio/
+default-greeting.wav`, played by a mailbox with no greeting of its own)
+was recorded by Piper through `record_a_prompt_when_asked` in the
+provider's tests. The provider's own tests run the real engine when
+`FCP_PIPER` and `FCP_PIPER_VOICES` name it.
+

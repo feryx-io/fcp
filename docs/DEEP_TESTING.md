@@ -905,7 +905,7 @@ silent without text to speech (Q-D8a below).
 | The Polycom and Yealink starters set up no message waiting, and the VVX's default digit map sent `*9` before `*98` was typed. | S3 | Fixed in v0.25.423. |
 | The compose stack set no `[api.provisioning] sip_server`: phones were told to register to `fcp.local`. | S3 | Fixed in v0.25.423: `HOST_IP`. |
 | The provisioning key's whole URL ignored `[api.provisioning] public_url`. | S3 | Fixed in v0.25.414; `provisioning.rs` checks it. |
-| The menu that plays voicemail (`*98`) speaks only through text to speech, which the compose stack leaves off (its image carries PyTorch); with it off every prompt is silence, as is the default "leave a message". | S2 for anyone without TTS | Q-D8a. The D8 server runs the `tts` profile. |
+| The menu that plays voicemail (`*98`) speaks only through text to speech, which the compose stack leaves off (its image carries PyTorch); with it off every prompt is silence, as is the default "leave a message". | S2 (the shipped stack's prompts are silence) | Fixed in v0.25.425 (Q-D8a, answered: on by default): Piper is the default engine, in a small `fcp-tts` image that every stack runs; Kokoro and local Whisper are `fcp-tts-full` (`FCP_TTS=tts-full`); the images carry a default greeting spoken by Piper (`docs/SPEECH.md` §8). |
 | A trunk's health is probed by the conference, IVR and voicemail servers as well as the call manager. | S4 | #336. |
 | The voicemail menu's flow runs on after the caller hangs up, asking for digits from a session that is gone. | S3 | #337. |
 | The VVX never answers the PRACK the node sends for its reliable 180 (retransmitted for the whole ring). | S3 | To capture on the next session. |
@@ -917,3 +917,5 @@ text to speech; the compose stack runs `fcp-tts` only under its `tts`
 profile because the image carries PyTorch (several GB). Off, they are
 silence. Ship it on, ship a small engine (Piper) as the default, or ship
 recorded prompts for what is fixed and accept silence for what is not?
+*Answered 2026-10-19:* on by default, with Piper the default engine and
+what exists today (Kokoro, the cloud voices) enabled by settings.

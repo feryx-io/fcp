@@ -186,6 +186,7 @@ impl MediaConfig {
                 crate::tts::TtsProviderConfig::GoogleCloud { .. }
                 | crate::tts::TtsProviderConfig::OpenAi { .. }
                 | crate::tts::TtsProviderConfig::Local { .. }
+                | crate::tts::TtsProviderConfig::Piper { .. }
                 | crate::tts::TtsProviderConfig::Remote { .. } => {}
                 crate::tts::TtsProviderConfig::AwsPolly { .. } => {
                     return Err(Error::Config(

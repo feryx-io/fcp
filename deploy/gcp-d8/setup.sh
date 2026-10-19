@@ -7,8 +7,8 @@ set -euo pipefail
 DOMAIN=$1 EMAIL=$2 IP=$3
 D8=/opt/d8
 COMPOSE=$D8/docker-compose
-# Text to speech: voicemail retrieval, greetings and IVR prompts are
-# silence without it (docs/DEEP_TESTING.md Q-D8a).
+# Text to speech is part of the stack from v0.25.425; an image before it
+# still has it under the `tts` profile.
 export COMPOSE_PROFILES=tts
 cd "$COMPOSE"
 

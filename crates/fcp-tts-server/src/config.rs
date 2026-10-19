@@ -114,7 +114,7 @@ pub struct TtsSection {
 }
 
 fn default_provider_name() -> String {
-    "kokoro".to_string()
+    "piper".to_string()
 }
 fn default_cache_dir() -> PathBuf {
     PathBuf::from("/tmp/fcp/tts_cache")
@@ -169,6 +169,19 @@ pub struct ProviderEntry {
     /// GPU device for local models: "auto", "cuda", "cuda:0", "cuda:1", "cpu".
     #[serde(default = "default_device")]
     pub device: String,
+
+    /// The engine's binary (for `piper`); `piper` on the PATH when unset.
+    #[serde(default)]
+    pub binary: Option<String>,
+
+    /// Where the voices are (for `piper`): `<voice>.onnx` and its `.json`.
+    #[serde(default)]
+    pub voices_dir: Option<String>,
+
+    /// The voice spoken when a request names none (for `piper`):
+    /// `en_US-ljspeech-medium` unless set.
+    #[serde(default)]
+    pub voice: Option<String>,
 }
 
 fn default_device() -> String {
@@ -356,6 +369,9 @@ mod tests {
                     api_key: Some("test-key".to_string()),
                     model: Some("tts-1".to_string()),
                     device: "auto".to_string(),
+                    binary: None,
+                    voices_dir: None,
+                    voice: None,
                 }],
             },
             stt: SttSection::default(),

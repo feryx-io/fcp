@@ -41,7 +41,7 @@ Options:
 
 ```bash
 docker compose --profile registrar up -d                       # also the standalone registrar
-docker compose --profile tts up -d                             # also text to speech (a large image: PyTorch)
+FCP_TTS=tts-full docker compose up -d                          # Kokoro and local Whisper beside Piper (a large image: PyTorch)
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d   # the conference server on an NVIDIA GPU (docs/GPU.md)
 ```
 
@@ -75,7 +75,7 @@ bridge services reach them through `host.docker.internal`.
 | `fcp-media` | host | HTTP 8085, HTTPS 8185, RTP 30000–30999 |
 | `fcp-webrtc-gw` | host | HTTPS 8095, SIP 5077, RTP 34000–35999 |
 | `fcp-registrar` (profile `registrar`) | host | SIP 5062, SIPS 5063, WSS 5083, HTTP 8083 |
-| `fcp-tts` (profile `tts`) — speech for the call manager and IVR | bridge | 8093 |
+| `fcp-tts` — speech for the call manager, IVR and voicemail (Piper; `FCP_TTS=tts-full` for Kokoro too) | bridge | 8093 |
 | `prometheus` | bridge | 9090 |
 | `grafana` (admin/admin; anonymous viewers) | bridge | 3000 |
 
@@ -95,9 +95,13 @@ scrapes every metrics endpoint. The admin reaches the call manager and
 the conference server with their tokens, and mints join tokens with the
 secret the conference server verifies them with.
 
-The TTS server is off unless its profile is up, because its image carries
-PyTorch (the Kokoro engine); without it the call manager's and IVR's
-prompts are silent. The image builds nightly like the rest.
+Text to speech is Piper (`docs/SPEECH.md` §8): a native engine and one
+public-domain voice in the `fcp-tts` image, so every prompt, greeting and
+voicemail menu speaks. `FCP_TTS=tts-full` runs `fcp-tts-full` instead —
+Kokoro and the local Whisper worker beside Piper, several GB of PyTorch —
+whose engines `configs/fcp-tts-server.toml` names to be used. Both images
+build nightly like the rest. A mailbox without a greeting of its own plays
+the images' `default-greeting.wav`, spoken by Piper.
 
 Not in this stack yet: clustering — one node of each
 (`docs/PRODUCTION_STACK.md` has the order).
@@ -196,7 +200,7 @@ right token.
 Every configuration under `configs/` is checked by its binary's smoke
 test with this `.env` (`--check-config` must accept it), the compose
 file is validated by CI's packaging job on every pull request (alone,
-with the GPU overlay, with the registrar and tts profiles), the fifteen images are
+with the GPU overlay, with the registrar profile and the full TTS image), the sixteen images are
 built nightly, and the stack test starts every service (the TTS server
 apart), waits for each to be healthy and carries a call.
 Check a file by hand:

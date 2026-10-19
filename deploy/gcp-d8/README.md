@@ -24,8 +24,8 @@ resolve to it yet), opens the firewall, makes the VM, copies
 - gets the certificate with certbot and installs it (`install-certs.sh`,
   also certbot's renewal hook) for the proxy, the call manager's SIPS and
   WSS, the WebRTC gateway and the SBC's TLS, in place of the compose CA's;
-- pulls, logs out of GHCR, and starts the stack with its `tts` profile
-  (voicemail retrieval and prompts are silence without it);
+- pulls, logs out of GHCR, and starts the stack (text to speech is Piper,
+  part of it now);
 - puts the address on the loopback (the services reach one another at it)
   and has the default tenant claim the name.
 

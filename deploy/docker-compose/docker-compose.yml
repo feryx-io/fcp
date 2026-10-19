@@ -507,16 +507,17 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # Text to speech for the call manager and IVR. HTTP 8093. Off unless
-  # asked for — `docker compose --profile tts up -d` — because its image
-  # carries PyTorch; without it the prompts are silent.
+  # Text to speech for the call manager, IVR and voicemail. HTTP 8093.
   fcp-tts:
-    image: ghcr.io/thevoiceguy/fcp-tts:${FCP_IMAGE_TAG:-local}
+    # Text to speech for every prompt, greeting and voicemail menu
+    # (docs/SPEECH.md). FCP_TTS=tts (the default) is Piper alone, small;
+    # FCP_TTS=tts-full adds Kokoro and the local Whisper worker (PyTorch,
+    # several GB), named in configs/fcp-tts-server.toml to be used.
+    image: ghcr.io/thevoiceguy/fcp-${FCP_TTS:-tts}:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
-      dockerfile: deploy/docker-compose/Dockerfile.tts
+      dockerfile: deploy/docker-compose/Dockerfile.${FCP_TTS:-tts}
     container_name: fcp-tts
-    profiles: ["tts"]
     ports:
       - "8093:8093"
     volumes:
