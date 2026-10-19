@@ -672,10 +672,14 @@ configs:
         proxy_set_header Upgrade $$http_upgrade;
         proxy_set_header Connection $$connection_upgrade;
         proxy_read_timeout 3600s;
+        # Each backend's address looked up per request through Docker's DNS,
+        # not once at start: a backend restarted on another address was
+        # 502 until the proxy restarted too (docs/DEEP_TESTING.md D8).
+        resolver 127.0.0.11 valid=10s ipv6=off;
         server {
           listen 8443 ssl;
           listen [::]:8443 ssl;
-          location / { proxy_pass http://fcp-api-gateway:8000; }
+          location / { set $$fcp_api_gateway http://fcp-api-gateway:8000; proxy_pass $$fcp_api_gateway; }
         }
         server {
           listen 8444 ssl;
@@ -684,12 +688,12 @@ configs:
           # max_image_mb, 1 GB by default), streamed through.
           client_max_body_size 1100m;
           proxy_request_buffering off;
-          location / { proxy_pass http://fcp-admin:8080; }
+          location / { set $$fcp_admin http://fcp-admin:8080; proxy_pass $$fcp_admin; }
         }
         server {
           listen 8445 ssl;
           listen [::]:8445 ssl;
-          location / { proxy_pass http://fcp-events-server:8081; }
+          location / { set $$fcp_events_server http://fcp-events-server:8081; proxy_pass $$fcp_events_server; }
         }
       }
   prometheus:
