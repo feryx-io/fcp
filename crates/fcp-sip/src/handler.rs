@@ -2183,6 +2183,35 @@ impl SipMessageHandler {
             Some(call) => (Some(call.tenant_id), call.trunk_target.clone()),
             None => (None, None),
         };
+        // A star code that reached the trunks is not one of ours, and is
+        // no carrier's number either (D8: `*9` went to Twilio, which said
+        // 400).
+        let dialed = crate::class_of_service::uri_user(destination);
+        if dialed.starts_with('*') || dialed.starts_with('#') {
+            info!(call_id = %call_id, dialed = %dialed, "Not a feature code: no trunk takes it");
+            return RouteResolution::NoRoute;
+        }
+        let resolution = self
+            .unclassified_routes(provider, call_id, tenant, target, destination)
+            .await;
+        match (resolution, tenant) {
+            (RouteResolution::Routes(routes), Some(tenant)) => {
+                RouteResolution::Routes(self.in_e164_where_wanted(routes, &tenant, dialed).await)
+            }
+            (resolution, _) => resolution,
+        }
+    }
+
+    /// The routes as the trunks give them: confined to the trunk a rule
+    /// named, else every trunk that may carry the call.
+    async fn unclassified_routes(
+        &self,
+        provider: &Arc<dyn OutboundRouteProvider>,
+        call_id: &fcp_b2bua_core::CallId,
+        tenant: Option<fcp_core::TenantId>,
+        target: Option<fcp_core::TrunkTarget>,
+        destination: &str,
+    ) -> RouteResolution {
         match target {
             Some(target) => {
                 let resolution = provider
@@ -2204,6 +2233,46 @@ impl SipMessageHandler {
                     .await
             }
         }
+    }
+
+    /// Each route on a trunk that takes E.164 (`Trunk::send_e164`) with
+    /// the number as the tenant's country reads `dialed`, then the trunk's
+    /// digit plan; the rest as they are, and every route as it is when
+    /// `dialed` is not a number.
+    async fn in_e164_where_wanted(
+        &self,
+        mut routes: Vec<OutboundRoute>,
+        tenant: &fcp_core::TenantId,
+        dialed: &str,
+    ) -> Vec<OutboundRoute> {
+        if !routes
+            .iter()
+            .any(|r| r.trunk.as_ref().is_some_and(|t| t.send_e164))
+        {
+            return routes;
+        }
+        let Some(storage) = &self.storage else {
+            return routes;
+        };
+        let max_digits = usize::from(self.b2bua_config.max_extension_digits);
+        let Some(e164) =
+            crate::class_of_service::classify_for_tenant(storage, tenant, dialed, max_digits)
+                .await
+                .e164
+        else {
+            return routes;
+        };
+        for route in &mut routes {
+            let Some(trunk) = route.trunk.as_ref().filter(|t| t.send_e164) else {
+                continue;
+            };
+            let number = match &trunk.egress_number_transform {
+                Some(transform) => transform.apply(&e164),
+                None => e164.clone(),
+            };
+            route.target_uri = with_uri_user(&route.target_uri, &number);
+        }
+        routes
     }
 
     async fn trunk_bindings(
@@ -18972,6 +19041,19 @@ const MAX_FORWARD_HOPS: usize = 10;
 /// plan (no-answer times are at most 300 seconds).
 const FORWARD_INTO_NODE_LIMIT: Duration = Duration::from_secs(600);
 
+/// `uri` with its user part replaced (`sip:15183217034@h` →
+/// `sip:+15183217034@h`); a URI with no user part as it is.
+fn with_uri_user(uri: &str, user: &str) -> String {
+    let (scheme, rest) = match uri.split_once(':') {
+        Some(parts) => parts,
+        None => return uri.to_string(),
+    };
+    match rest.split_once('@') {
+        Some((_, host)) => format!("{scheme}:{user}@{host}"),
+        None => uri.to_string(),
+    }
+}
+
 /// `uri` with a URI header added (`?name=value`, or `&name=value` when it
 /// has headers already).
 fn with_uri_header(uri: &str, name: &str, value: &str) -> String {
@@ -19817,6 +19899,21 @@ impl ConferenceMigration {
 #[cfg(test)]
 #[allow(unused_must_use)]
 mod tests {
+
+    #[test]
+    fn a_uri_takes_a_new_user_and_keeps_its_host_and_parameters() {
+        assert_eq!(
+            super::with_uri_user(
+                "sip:15183217034@carrier.example;fcp-dst=192.0.2.1:5060",
+                "+15183217034"
+            ),
+            "sip:+15183217034@carrier.example;fcp-dst=192.0.2.1:5060"
+        );
+        assert_eq!(
+            super::with_uri_user("sip:carrier.example", "+1"),
+            "sip:carrier.example"
+        );
+    }
 
     /// A carrier's failure sends the call to the next route; the callee's
     /// answer does not (`docs/TENANT_TRUNKS.md` §5).

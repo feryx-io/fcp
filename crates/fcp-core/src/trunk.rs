@@ -752,6 +752,13 @@ pub struct Trunk {
     #[serde(default)]
     pub egress_number_transform: Option<NumberTransform>,
 
+    /// Send this trunk numbers in E.164 (`+15183217034`), as the tenant's
+    /// country reads what was dialled, before `egress_number_transform`:
+    /// what a carrier like Twilio requires (`docs/DEEP_TESTING.md` D8).
+    /// Off, the number goes as dialled.
+    #[serde(default)]
+    pub send_e164: bool,
+
     /// Outbound caller ID override (replaces the From user/display).
     #[serde(default)]
     pub caller_id_override: Option<String>,
@@ -845,6 +852,7 @@ impl Default for Trunk {
             codec: TrunkCodecConfig::default(),
             stir_shaken: TrunkStirShakenConfig::default(),
             egress_number_transform: None,
+            send_e164: false,
             caller_id_override: None,
             from_domain: None,
             session_timer_secs: 0,

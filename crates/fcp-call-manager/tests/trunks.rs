@@ -2366,6 +2366,53 @@ async fn line_and_class(
     storage.put_calling_settings(settings).await.unwrap();
 }
 
+/// A trunk that takes E.164 is sent the number as the tenant's country
+/// reads it, and a star code that is no feature reaches no carrier
+/// (`docs/DEEP_TESTING.md` D8: Twilio refused `15183217034` and `*9`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_e164_trunk_gets_e164_and_a_stray_star_code_reaches_no_carrier() {
+    let carrier = Carrier::new("e164-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "e164-carrier", carrier.port(), |trunk| {
+            trunk.send_e164 = true;
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+    let alice_phone = stack.phone(&alice).await;
+    let headers = Caller::new(acme, "alice");
+
+    let call = alice_phone
+        .call_with_headers("15125559999", &headers.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the carrier never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming.request_uri().starts_with("sip:+15125559999@"),
+        "Request-URI: {}",
+        incoming.request_uri()
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert_eq!(call.failed(SOON).await, Some(486));
+
+    let call = alice_phone
+        .call_with_headers("*9", &headers.headers())
+        .await
+        .unwrap();
+    assert_eq!(call.failed(SOON).await, Some(404));
+    assert!(
+        carrier.phone.incoming(NEVER).await.is_none(),
+        "*9 reached the carrier"
+    );
+    stack.finish().await;
+}
+
 /// A user given a number, with no outbound caller ID set on the line,
 /// presents the number (`docs/DEEP_TESTING.md` D8: the user's SIP name
 /// went to the carrier, which refuses a caller ID not its customer's).

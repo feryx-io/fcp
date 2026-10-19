@@ -51,6 +51,7 @@ class TrunkResponse:
             health_check_interval_secs (int):
             codec_prefs (list[str]):
             strip_digits (int):
+            send_e164 (bool): Numbers go to this trunk in E.164, before its digit plan.
             cps_limit (int):
             srtp_mode (str):
             dtmf_mode (str):
@@ -105,6 +106,7 @@ class TrunkResponse:
     health_check_interval_secs: int
     codec_prefs: list[str]
     strip_digits: int
+    send_e164: bool
     cps_limit: int
     srtp_mode: str
     dtmf_mode: str
@@ -188,6 +190,8 @@ class TrunkResponse:
 
 
         strip_digits = self.strip_digits
+
+        send_e164 = self.send_e164
 
         cps_limit = self.cps_limit
 
@@ -319,6 +323,7 @@ class TrunkResponse:
             "health_check_interval_secs": health_check_interval_secs,
             "codec_prefs": codec_prefs,
             "strip_digits": strip_digits,
+            "send_e164": send_e164,
             "cps_limit": cps_limit,
             "srtp_mode": srtp_mode,
             "dtmf_mode": dtmf_mode,
@@ -416,6 +421,8 @@ class TrunkResponse:
 
 
         strip_digits = d.pop("strip_digits")
+
+        send_e164 = d.pop("send_e164")
 
         cps_limit = d.pop("cps_limit")
 
@@ -601,6 +608,7 @@ class TrunkResponse:
             health_check_interval_secs=health_check_interval_secs,
             codec_prefs=codec_prefs,
             strip_digits=strip_digits,
+            send_e164=send_e164,
             cps_limit=cps_limit,
             srtp_mode=srtp_mode,
             dtmf_mode=dtmf_mode,
