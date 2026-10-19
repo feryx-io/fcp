@@ -13,8 +13,12 @@ max_message_size = 1048576
 batch_size = 10
 batch_timeout = 100
 
+# Redis: what the voicemail, IVR and conference servers post to /ingest is
+# written to the stream and published, so the call manager hears it too —
+# a message left lights the phone's lamp (docs/DEEP_TESTING.md D8).
 [event_bus]
-bus_type = "in-memory"
+bus_type = "redis"
+redis_url = "redis://redis:6379"
 buffer_size = 1000
 
 [limits]

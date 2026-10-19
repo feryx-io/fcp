@@ -257,7 +257,7 @@ async fn main() -> Result<()> {
         ];
 
         for (section, toml_val) in sections {
-            match cs.get_config(svc, section, tid).await {
+            match fcp_core::reconcile_with_seed(cs, svc, section, tid, &toml_val).await {
                 Ok(Some(entry)) => {
                     match section {
                         "media" => {

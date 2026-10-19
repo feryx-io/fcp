@@ -379,7 +379,7 @@ async fn run() -> Result<()> {
 
         for (section, toml_val) in sections {
             // Check if DB has this section; if not, seed it
-            match cs.get_config(svc, section, tid).await {
+            match fcp_core::reconcile_with_seed(cs, svc, section, tid, &toml_val).await {
                 Ok(Some(entry)) => {
                     // DB has it — use DB version to override local config
                     match section {

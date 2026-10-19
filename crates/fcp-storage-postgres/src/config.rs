@@ -279,6 +279,46 @@ impl ConfigStore for PostgresStorage {
         Ok(version)
     }
 
+    async fn get_seed(
+        &self,
+        service: &str,
+        section: &str,
+        tenant_id: &str,
+    ) -> fcp_core::Result<Option<serde_json::Value>> {
+        let seed: Option<Option<serde_json::Value>> = sqlx::query_scalar(
+            "SELECT seed FROM config_settings
+             WHERE service = $1 AND section = $2 AND tenant_id = $3",
+        )
+        .bind(service)
+        .bind(section)
+        .bind(tenant_id)
+        .fetch_optional(self.writes())
+        .await
+        .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
+        Ok(seed.flatten())
+    }
+
+    async fn set_seed(
+        &self,
+        service: &str,
+        section: &str,
+        tenant_id: &str,
+        seed: serde_json::Value,
+    ) -> fcp_core::Result<()> {
+        sqlx::query(
+            "UPDATE config_settings SET seed = $4
+             WHERE service = $1 AND section = $2 AND tenant_id = $3",
+        )
+        .bind(service)
+        .bind(section)
+        .bind(tenant_id)
+        .bind(seed)
+        .execute(self.writes())
+        .await
+        .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
+        Ok(())
+    }
+
     async fn get_audit_log(
         &self,
         service: &str,

@@ -7,6 +7,7 @@
 //! Skipped without `FCP_TEST_DATABASE_URL`.
 
 use fcp_core::storage::{CredentialStore, LineBindingStore, PhoneNumberStore, VoicemailStore};
+use fcp_core::ConfigStore;
 use fcp_testkit::smoke::{self, free_port, loopback};
 use fcp_testkit::{Phone, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
@@ -126,5 +127,98 @@ format = "compact"
         message.duration
     );
     server.stop().await;
+    db.drop_db().await;
+}
+
+/// A voicemail server's configuration: `extra` is added to `[voicemail]`.
+fn config(db: &str, dir: &std::path::Path, sip: u16, http: u16, extra: &str) -> String {
+    format!(
+        r#"[service]
+node_id = "vm-config"
+
+[sip]
+udp_bind = "127.0.0.1:{sip}"
+tcp_bind = "127.0.0.1:{sip}"
+local_ip = "127.0.0.1"
+local_uri = "sip:voicemail@127.0.0.1:{sip}"
+
+[storage]
+database_url = "{db}"
+
+[http]
+bind_address = "127.0.0.1:{http}"
+
+[voicemail]
+recordings_dir = "{dir}/recordings"
+greetings_dir = "{dir}/greetings"
+{extra}
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        dir = smoke::toml_path(dir),
+    )
+}
+
+/// The `[voicemail]` section's stored value, as the server left it.
+async fn stored(storage: &fcp_storage_postgres::PostgresStorage) -> serde_json::Value {
+    storage
+        .get_config("voicemail", "voicemail", "_system")
+        .await
+        .unwrap()
+        .expect("the section is stored")
+        .value
+}
+
+/// D8 found a greeting the TOML named never played: the section was stored
+/// on the first boot, before the file had the key, and every boot after
+/// read the stored row alone. A key the file sets later is read; an edit
+/// made through the API stands while the file leaves that key alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_added_to_the_toml_later_is_read_and_an_api_edit_stands() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    let storage = seed.storage();
+    let dir = smoke::temp_dir();
+    let boot = |extra: &'static str| {
+        let (sip, http) = (free_port(), free_port());
+        let config = config(db.url(), dir.path(), sip, http, extra);
+        async move { Service::start("voicemail", BIN, &config, &loopback(http, "/health")).await }
+    };
+
+    // The first boot, with no greeting in the file.
+    boot("").await.stop().await;
+    assert!(stored(storage).await["default_greeting_path"].is_null());
+
+    // The file names a greeting: the next boot reads it.
+    let greeting = r#"default_greeting_path = "/var/fcp/audio/default-greeting.wav""#;
+    boot(greeting).await.stop().await;
+    let value = stored(storage).await;
+    assert_eq!(
+        value["default_greeting_path"], "/var/fcp/audio/default-greeting.wav",
+        "the file's new key is read: {value}"
+    );
+
+    // An edit through the API stands across a boot with the same file.
+    let mut edited = value.clone();
+    edited["max_message_duration"] = serde_json::json!(60);
+    storage
+        .set_config("voicemail", "voicemail", "_system", edited, Some("api"))
+        .await
+        .unwrap();
+    boot(greeting).await.stop().await;
+    let value = stored(storage).await;
+    assert_eq!(
+        value["max_message_duration"], 60,
+        "the edit stands: {value}"
+    );
+    assert_eq!(
+        value["default_greeting_path"],
+        "/var/fcp/audio/default-greeting.wav"
+    );
     db.drop_db().await;
 }

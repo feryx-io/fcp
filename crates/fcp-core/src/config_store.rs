@@ -99,6 +99,24 @@ pub trait ConfigStore: Send + Sync {
     /// Returns 0 if no entries exist. Used for poll-based change detection.
     async fn get_latest_version(&self, service: &str, tenant_id: &str) -> Result<i64>;
 
+    /// The TOML value a section was last seeded from, if one is recorded.
+    async fn get_seed(
+        &self,
+        service: &str,
+        section: &str,
+        tenant_id: &str,
+    ) -> Result<Option<serde_json::Value>>;
+
+    /// Record the TOML value a section was seeded from. The row's value is
+    /// not touched, and no version is spent.
+    async fn set_seed(
+        &self,
+        service: &str,
+        section: &str,
+        tenant_id: &str,
+        seed: serde_json::Value,
+    ) -> Result<()>;
+
     /// Get audit log entries, optionally filtered by section.
     async fn get_audit_log(
         &self,
@@ -180,10 +198,116 @@ impl<T: Clone + Send + Sync + 'static> ConfigWatcher<T> {
     }
 }
 
+/// Who wrote a seed: the TOML's values, as opposed to an edit through the API.
+pub const SEEDED_BY: &str = "seed";
+
+/// A section's stored entry, brought up to date with the TOML it was seeded
+/// from (`docs/DEEP_TESTING.md` D8).
+///
+/// The database is the source of truth after the first boot, but that must
+/// not mean a TOML edited since is never read: a key the release added, or a
+/// value the operator changed in the file, would be silently ignored. So each
+/// key is settled three ways against the recorded seed: a key whose TOML
+/// value differs from the seed takes the TOML's value; any other key keeps
+/// the stored one, so an edit made through the API stands until the file
+/// changes that key. With no seed recorded, only keys the row lacks or holds
+/// as null are taken from the TOML. The TOML is then recorded as the seed.
+///
+/// Returns `None` when the section has no row; the caller seeds it, and
+/// the next boot, finding the row equal to the file, records the seed.
+pub async fn reconcile_with_seed(
+    store: &dyn ConfigStore,
+    service: &str,
+    section: &str,
+    tenant_id: &str,
+    toml_value: &serde_json::Value,
+) -> Result<Option<ConfigEntry>> {
+    let Some(mut entry) = store.get_config(service, section, tenant_id).await? else {
+        return Ok(None);
+    };
+    let seed = store.get_seed(service, section, tenant_id).await?;
+    // A section the caller could not serialize says nothing about the file.
+    if !toml_value.is_object() || seed.as_ref() == Some(toml_value) {
+        return Ok(Some(entry));
+    }
+    let merged = match &seed {
+        Some(seed) => merge_toml_changes(&entry.value, seed, toml_value),
+        None => fill_unset(&entry.value, toml_value),
+    };
+    if merged != entry.value {
+        entry.version = store
+            .set_config(service, section, tenant_id, merged.clone(), Some(SEEDED_BY))
+            .await?;
+        info!(
+            service,
+            section,
+            tenant_id,
+            version = entry.version,
+            "config brought up to date with its TOML"
+        );
+        entry.value = merged;
+    }
+    store
+        .set_seed(service, section, tenant_id, toml_value.clone())
+        .await?;
+    Ok(Some(entry))
+}
+
+/// `stored`, with every key whose value moved from `seed` to `toml` taken
+/// from `toml`. Objects are settled key by key; anything else whole.
+fn merge_toml_changes(
+    stored: &serde_json::Value,
+    seed: &serde_json::Value,
+    toml: &serde_json::Value,
+) -> serde_json::Value {
+    use serde_json::Value;
+    match (stored, toml) {
+        (Value::Object(stored), Value::Object(toml)) => {
+            let empty = serde_json::Map::new();
+            let seed = seed.as_object().unwrap_or(&empty);
+            let mut out = stored.clone();
+            for (key, new) in toml {
+                let old = seed.get(key).unwrap_or(&Value::Null);
+                if new == old {
+                    continue;
+                }
+                let merged = match stored.get(key) {
+                    Some(current) => merge_toml_changes(current, old, new),
+                    None => new.clone(),
+                };
+                out.insert(key.clone(), merged);
+            }
+            Value::Object(out)
+        }
+        _ if toml != seed => toml.clone(),
+        _ => stored.clone(),
+    }
+}
+
+/// `stored`, with keys it lacks or holds as null taken from `toml`.
+fn fill_unset(stored: &serde_json::Value, toml: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match (stored, toml) {
+        (Value::Object(stored), Value::Object(toml)) => {
+            let mut out = stored.clone();
+            for (key, new) in toml {
+                let filled = match stored.get(key) {
+                    None | Some(Value::Null) => new.clone(),
+                    Some(current) => fill_unset(current, new),
+                };
+                out.insert(key.clone(), filled);
+            }
+            Value::Object(out)
+        }
+        _ => stored.clone(),
+    }
+}
+
 /// Load a config section from the database, or seed it from the provided TOML value.
 ///
 /// This implements the "DB primary, TOML seed" pattern:
-/// 1. Try to load from DB for the given service/section/tenant
+/// 1. Try to load from DB for the given service/section/tenant, brought up
+///    to date with the TOML by [`reconcile_with_seed`]
 /// 2. If found, deserialize and return it
 /// 3. If not found, serialize the `toml_value` into the DB as the seed, then return it
 ///
@@ -198,8 +322,12 @@ pub async fn load_or_seed_config<T>(
 where
     T: Serialize + DeserializeOwned + Clone,
 {
+    let toml_json = serde_json::to_value(toml_value).map_err(|e| {
+        crate::Error::Config(format!("failed to serialize config for seeding: {e}"))
+    })?;
     // Try loading from DB first
-    if let Some(entry) = store.get_config(service, section, tenant_id).await? {
+    if let Some(entry) = reconcile_with_seed(store, service, section, tenant_id, &toml_json).await?
+    {
         match serde_json::from_value::<T>(entry.value.clone()) {
             Ok(config) => {
                 debug!(
@@ -225,12 +353,17 @@ where
     }
 
     // Seed from TOML value
-    let json_value = serde_json::to_value(toml_value).map_err(|e| {
-        crate::Error::Config(format!("failed to serialize config for seeding: {e}"))
-    })?;
-
     let version = store
-        .set_config(service, section, tenant_id, json_value, Some("seed"))
+        .set_config(
+            service,
+            section,
+            tenant_id,
+            toml_json.clone(),
+            Some(SEEDED_BY),
+        )
+        .await?;
+    store
+        .set_seed(service, section, tenant_id, toml_json)
         .await?;
 
     info!(
@@ -365,4 +498,161 @@ where
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    /// One section's row and its audit log, in memory.
+    #[derive(Default)]
+    struct OneSection {
+        row: Mutex<Option<ConfigEntry>>,
+        seed: Mutex<Option<serde_json::Value>>,
+    }
+
+    #[async_trait]
+    impl ConfigStore for OneSection {
+        async fn get_config(&self, _: &str, _: &str, _: &str) -> Result<Option<ConfigEntry>> {
+            Ok(self.row.lock().unwrap().clone())
+        }
+        async fn get_service_config(&self, _: &str, _: &str) -> Result<Vec<ConfigEntry>> {
+            unimplemented!()
+        }
+        async fn set_config(
+            &self,
+            service: &str,
+            section: &str,
+            tenant_id: &str,
+            value: serde_json::Value,
+            updated_by: Option<&str>,
+        ) -> Result<i64> {
+            let mut row = self.row.lock().unwrap();
+            let version = row.as_ref().map_or(1, |r| r.version + 1);
+            *row = Some(ConfigEntry {
+                service: service.into(),
+                section: section.into(),
+                tenant_id: tenant_id.into(),
+                value,
+                version,
+                updated_at: Utc::now(),
+                updated_by: updated_by.map(str::to_string),
+            });
+            Ok(version)
+        }
+        async fn delete_config(&self, _: &str, _: &str, _: &str) -> Result<bool> {
+            unimplemented!()
+        }
+        async fn list_configs(&self, _: Option<&str>, _: Option<&str>) -> Result<Vec<ConfigEntry>> {
+            unimplemented!()
+        }
+        async fn get_latest_version(&self, _: &str, _: &str) -> Result<i64> {
+            unimplemented!()
+        }
+        async fn get_seed(&self, _: &str, _: &str, _: &str) -> Result<Option<serde_json::Value>> {
+            Ok(self.seed.lock().unwrap().clone())
+        }
+        async fn set_seed(&self, _: &str, _: &str, _: &str, seed: serde_json::Value) -> Result<()> {
+            *self.seed.lock().unwrap() = Some(seed);
+            Ok(())
+        }
+        async fn get_audit_log(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+            _: i64,
+        ) -> Result<Vec<AuditEntry>> {
+            unimplemented!()
+        }
+    }
+
+    /// A section as the first boot leaves it: `value` stored and seeded.
+    async fn seeded(value: serde_json::Value) -> OneSection {
+        let store = OneSection::default();
+        store
+            .set_config("vm", "vm", "_system", value.clone(), Some(SEEDED_BY))
+            .await
+            .unwrap();
+        store.set_seed("vm", "vm", "_system", value).await.unwrap();
+        store
+    }
+
+    async fn boot(store: &OneSection, toml: serde_json::Value) -> serde_json::Value {
+        reconcile_with_seed(store, "vm", "vm", "_system", &toml)
+            .await
+            .unwrap()
+            .expect("a row")
+            .value
+    }
+
+    fn version(store: &OneSection) -> i64 {
+        store.row.lock().unwrap().as_ref().unwrap().version
+    }
+
+    #[tokio::test]
+    async fn a_key_set_in_the_toml_after_the_first_boot_is_read() {
+        let store = seeded(json!({"play_beep": true, "default_greeting_path": null})).await;
+        let toml = json!({"play_beep": true, "default_greeting_path": "/greeting.wav"});
+        assert_eq!(boot(&store, toml.clone()).await, toml);
+        assert_eq!(version(&store), 2);
+        // The next boot with the same file changes nothing.
+        assert_eq!(
+            boot(&store, toml).await["default_greeting_path"],
+            "/greeting.wav"
+        );
+        assert_eq!(version(&store), 2);
+    }
+
+    #[tokio::test]
+    async fn an_api_edit_stands_until_the_toml_changes_that_key() {
+        let seed = json!({"max": 100, "media": {"public_ip": "1.1.1.1", "port": 1}});
+        let store = seeded(seed.clone()).await;
+        let edited = json!({"max": 50, "media": {"public_ip": "1.1.1.1", "port": 9}});
+        store
+            .set_config("vm", "vm", "_system", edited.clone(), Some("api"))
+            .await
+            .unwrap();
+        // The file unchanged: the edit stands, nothing is written.
+        assert_eq!(boot(&store, seed).await, edited);
+        assert_eq!(version(&store), 2);
+        // The file changes one nested key: that key moves, the edits stay,
+        // and stay on the boot after.
+        let toml = json!({"max": 100, "media": {"public_ip": "2.2.2.2", "port": 1}});
+        let moved = json!({"max": 50, "media": {"public_ip": "2.2.2.2", "port": 9}});
+        assert_eq!(boot(&store, toml.clone()).await, moved);
+        assert_eq!(boot(&store, toml).await, moved);
+        assert_eq!(version(&store), 3);
+    }
+
+    #[tokio::test]
+    async fn with_no_seed_on_record_only_unset_keys_are_filled() {
+        let store = OneSection::default();
+        store
+            .set_config(
+                "vm",
+                "vm",
+                "_system",
+                json!({"max": 50, "path": null}),
+                Some("api"),
+            )
+            .await
+            .unwrap();
+        let toml = json!({"max": 100, "path": "/p", "new": 1});
+        let filled = json!({"max": 50, "path": "/p", "new": 1});
+        assert_eq!(boot(&store, toml.clone()).await, filled);
+        // The file is now the seed: the edit to max still stands.
+        assert_eq!(boot(&store, toml).await, filled);
+    }
+
+    #[tokio::test]
+    async fn no_row_is_left_for_the_caller_to_seed() {
+        let store = OneSection::default();
+        let got = reconcile_with_seed(&store, "vm", "vm", "_system", &json!({}))
+            .await
+            .unwrap();
+        assert!(got.is_none());
+    }
 }
