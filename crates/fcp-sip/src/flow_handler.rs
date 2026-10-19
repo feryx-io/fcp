@@ -2681,12 +2681,7 @@ impl FlowCallHandler {
                 &mm,
                 &media_call_id,
                 None,
-                Some(format!(
-                    "You have {} new messages and {} saved messages. \
-                     Press 1 for new messages. Press 2 for saved messages. \
-                     Press star to exit.",
-                    new_count, saved_count
-                )),
+                Some(main_menu_text(new_count, saved_count)),
                 1,
                 None,
                 10,
@@ -4644,8 +4639,55 @@ async fn send_cancel(
     Ok(())
 }
 
+/// The voicemail menu's opening: the counts as spoken English, and only the
+/// choices there is something behind (`docs/DEEP_TESTING.md` D8: "You have 0
+/// new messages… Press 1 for new messages").
+fn main_menu_text(new_count: usize, saved_count: usize) -> String {
+    let count = |n: usize, kind: &str| match n {
+        0 => format!("no {kind} messages"),
+        1 => format!("1 {kind} message"),
+        n => format!("{n} {kind} messages"),
+    };
+    let mut text = match (new_count, saved_count) {
+        (0, 0) => "You have no messages.".to_string(),
+        (n, 0) => format!("You have {}.", count(n, "new")),
+        (0, s) => format!("You have no new messages, and {}.", count(s, "saved")),
+        (n, s) => format!("You have {} and {}.", count(n, "new"), count(s, "saved")),
+    };
+    if new_count > 0 {
+        text.push_str(" Press 1 for new messages.");
+    }
+    if saved_count > 0 {
+        text.push_str(" Press 2 for saved messages.");
+    }
+    text.push_str(" Press star to exit.");
+    text
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_menu_offers_only_what_there_is() {
+        assert_eq!(
+            super::main_menu_text(0, 0),
+            "You have no messages. Press star to exit."
+        );
+        assert_eq!(
+            super::main_menu_text(1, 0),
+            "You have 1 new message. Press 1 for new messages. Press star to exit."
+        );
+        assert_eq!(
+            super::main_menu_text(0, 2),
+            "You have no new messages, and 2 saved messages. Press 2 for saved messages. \
+             Press star to exit."
+        );
+        assert_eq!(
+            super::main_menu_text(3, 1),
+            "You have 3 new messages and 1 saved message. Press 1 for new messages. \
+             Press 2 for saved messages. Press star to exit."
+        );
+    }
+
     use super::*;
     use fcp_flow::InMemoryFlowStore;
 

@@ -247,10 +247,7 @@ fn load_pcm_8k(path: &Path) -> anyhow::Result<Vec<i16>> {
     if spec.sample_rate == 8000 {
         return Ok(mono);
     }
-    let mut resampler = forge_resampler::Resampler::new(spec.sample_rate, 8000, 1)
-        .map_err(|e| anyhow::anyhow!("resampling {}: {e}", spec.sample_rate))?;
-    resampler
-        .resample(&mono)
+    forge_resampler::resample_all(&mono, spec.sample_rate, 8000, 1)
         .map_err(|e| anyhow::anyhow!("resampling {}: {e}", spec.sample_rate))
 }
 

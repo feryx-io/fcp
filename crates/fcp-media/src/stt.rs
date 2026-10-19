@@ -484,10 +484,7 @@ pub fn resample_to_16k(pcm: &[i16], rate: u32) -> Result<Vec<i16>> {
     if rate == STT_SAMPLE_RATE || pcm.is_empty() {
         return Ok(pcm.to_vec());
     }
-    let mut resampler = forge_resampler::Resampler::new(rate, STT_SAMPLE_RATE, 1)
-        .map_err(|e| anyhow::anyhow!("resampling {rate} Hz: {e}"))?;
-    resampler
-        .resample(pcm)
+    forge_resampler::resample_all(pcm, rate, STT_SAMPLE_RATE, 1)
         .map_err(|e| anyhow::anyhow!("resampling {rate} Hz: {e}"))
 }
 
