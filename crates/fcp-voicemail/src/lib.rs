@@ -638,9 +638,9 @@ impl VoicemailService {
             Some(notifier) => {
                 notifier.notify_mwi(&mwi_status).await?;
             }
-            None => {
-                warn!("MWI notifier not configured — skipping SIP NOTIFY");
-            }
+            // The usual case: message waiting reaches phones through the
+            // `voicemail.*` events the call manager tells its subscribers.
+            None => debug!("No unsolicited MWI notifier: the events carry it"),
         }
 
         Ok(())

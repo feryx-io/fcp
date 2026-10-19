@@ -4286,16 +4286,11 @@ pub async fn play_prompt_to_rtp(
 
     // Resample from mixer rate to codec rate if needed
     let codec_samples = if need_resample {
-        match forge_resampler::Resampler::new(mixer_sample_rate, codec_rate, 1) {
-            Ok(mut rs) => match rs.resample(samples) {
-                Ok(resampled) => resampled,
-                Err(e) => {
-                    warn!(error = %e, "Resample failed for prompt playback");
-                    return;
-                }
-            },
+        // The whole prompt at once: aligned, its tail flushed.
+        match forge_resampler::resample_all(samples, mixer_sample_rate, codec_rate, 1) {
+            Ok(resampled) => resampled,
             Err(e) => {
-                warn!(error = %e, "Failed to create resampler for prompt");
+                warn!(error = %e, "Resample failed for prompt playback");
                 return;
             }
         }

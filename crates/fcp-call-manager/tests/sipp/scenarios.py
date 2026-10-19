@@ -22,17 +22,30 @@ SDP = """v=0
       a=rtpmap:101 telephone-event/8000
       a=sendrecv"""
 
+# A phone offering wideband first, as a Poly VVX does (docs/DEEP_TESTING.md
+# D8): G.722, then PCMU.
+SDP_G722 = """v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 9 0 101
+      a=rtpmap:9 G722/8000
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv"""
+
 HEAD = """<?xml version="1.0" encoding="ISO-8859-1" ?>
 <!DOCTYPE scenario SYSTEM "sipp.dtd">
 """
 
 
-def body(sdp):
+def body(sdp, offer=SDP):
     if sdp:
         return f"""      Content-Type: application/sdp
       Content-Length: [len]
 
-      {SDP}"""
+      {offer}"""
     return """      Content-Length: 0
 """
 
@@ -46,7 +59,7 @@ def headers(extra):
     return "".join(f"\n      {line}" for line in extra.splitlines() if line)
 
 
-def invite(cseq, auth, txn=None, extra=""):
+def invite(cseq, auth, txn=None, extra="", offer=SDP):
     start = f' start_txn="{txn}"' if txn else ""
     return f"""  <send retrans="500"{start}>
     <![CDATA[
@@ -59,7 +72,7 @@ def invite(cseq, auth, txn=None, extra=""):
       Contact: <sip:[user]@[local_ip]:[local_port]>{AUTH if auth else ""}
       Max-Forwards: 70
       User-Agent: SIPp{headers(extra)}
-{body(True)}
+{body(True, offer)}
     ]]>
   </send>
 """
@@ -69,9 +82,9 @@ def invite(cseq, auth, txn=None, extra=""):
 # INVITE again with the digest of -au/-ap at CSeq 2; `txn` names that
 # INVITE's transaction for a scenario that must tell its responses from a
 # CANCEL's.
-def uac_invite(txn=None, trying=True, extra=""):
+def uac_invite(txn=None, trying=True, extra="", offer=SDP):
     return (
-        invite(1, False, extra=extra)
+        invite(1, False, extra=extra, offer=offer)
         + """  <recv response="100" optional="true"/>
   <recv response="407" optional="true" auth="true" next="challenged"/>
   <recv response="401" auth="true"/>
@@ -90,7 +103,7 @@ def uac_invite(txn=None, trying=True, extra=""):
     ]]>
   </send>
 """
-        + invite(2, True, txn, extra)
+        + invite(2, True, txn, extra, offer)
         + (
             f"""  <recv response="100" optional="true"{' response_txn="' + txn + '"' if txn else ""}/>
 """
@@ -249,6 +262,28 @@ def answered_hangup():
 
 
 SCENARIOS = {
+    "uac_wideband_answered_by_the_node": (
+        "A phone offering G.722 first calls something the node answers "
+        "itself (*98): the answer leads with the codec the node sends in, "
+        "G.722. Keys: user, domain, callee.",
+        uac_invite(offer=SDP_G722)
+        + """  <recv response="180" optional="true"/>
+  <recv response="183" optional="true"/>
+  <recv response="200" rrs="true">
+    <action>
+      <ereg regexp="m=audio [0-9]+ RTP/AVP 9 " search_in="body" check_it="true" assign_to="answer"/>
+      <log message="answer: [$answer]"/>
+    </action>
+  </recv>
+  <Reference variables="answer"/>
+"""
+        + in_dialog("ACK", 2)
+        + """  <pause milliseconds="500"/>
+"""
+        + in_dialog("BYE", 3)
+        + """  <recv response="200"/>
+""",
+    ),
     "uac_answered": (
         "A call answered, then hung up by the caller. Keys: user, domain, callee.",
         UAC_INVITE

@@ -808,6 +808,17 @@ Redis stood still after the warm-up. What grew was the audit log, call
 records, sign-in sessions, SIP traces and the site journal, each named
 in `EXPECTED_GROWTH`.
 
+**The 24-hour run (2026-10-18/19, v0.25.412, a GCE e2 VM).** 43,201 calls
+and 14,381 room joins offered, all answered, none dropped or silent; 95,640
+registrations; 183,600 API requests, none failed. The verdict failed on two
+growths. The call manager's memory rose linearly, 96.6 → 149.8 MB, about
+1.2 KB a call, with nothing it counts left over: a leak to find with a
+heap profile (#344). Redis rose 20 → 89 MB, all of it the CDR stream's
+24-hour replay window, which a 24-hour run cannot see level off (#345: the
+soak runs it at an hour; ~1.5 KB a record). And forge-rtp logged a warning
+for every refused latch packet — 44 million lines, a 6.7 GB log
+(forge-media #175).
+
 | Finding | Severity | Dealt with |
 |---|---|---|
 | A conference room was a number, not a tenant's number. The conference server keyed its live rooms — the mixer, the session index, recordings, DTMF handlers, the floor, speaker and content claims — by room number alone. Two tenants that both numbered a meeting 8801 shared one mix on a node, and a tenant's control request (mute, kick, lock, record, video) acted on whichever 8801 was live, since `control_tenant` preferred the live room's tenant to the one the admin API named. It went unseen because every SIP caller was the default tenant's: the call manager's leg into a room named no tenant, and the conference server, reached at an address, refused any other tenant's caller (403) once there was more than one tenant. The soak's tenant, made through the API, could not join a room at all. | S1 (two tenants' calls mixed; one tenant controlling another's room) | Fixed in v0.25.410. A live room is a `RoomKey` (tenant and number), and `RoomBridge` is the only way to the mixer's rooms, so a lookup by number alone does not compile. The call manager names the caller's tenant and user on its legs into a room, and the conference server believes them from a trusted edge (`resolve_tenant`). Every HTTP route that names a room takes the tenant from the header the admin API and the peers already send; `/conferences` lists each room with its tenant. `rooms.rs` `two_tenants_with_one_room_number_meet_apart`. |
@@ -891,6 +902,18 @@ ID; voicemail took a message and the VVX's light came on. Each of these
 needed fixes first — the table — and the menu that plays messages is
 silent without text to speech (Q-D8a below).
 
+**Session 2 (2026-10-19).** The fixes of session 1 retested on the images
+they shipped in, with every workaround removed: the VVX registered as
+`alice@d8.feryx.io`; a call from the mobile through Twilio rang it with
+ringback and audio both ways; a call out left Twilio in E.164
+(`send_e164`) with the line's number; voicemail answered with Piper's
+greeting, kept the message, and the VVX's lamp came on and went out
+through Redis — with the admin's deletes and with `*98`'s; `*98` took the
+PIN, played the message and deleted it, its prompts clean in G.722 after
+the resampler was replaced (forge-media v2026.10.19). The rows below from
+the stored-TOML finding on came out of session 2. forge-media #174 (the
+transcoder's G.722 mapping) is open.
+
 | Finding | Severity | Dealt with |
 |---|---|---|
 | A trunk host given as a name with no port was resolved and its **address** put in the Request-URI. Twilio, which knows a trunk by the domain there, refused every outbound call (403). | S2 (no outbound call to a carrier that names trunks by domain) | Fixed in v0.25.414 with siphon-rs's `InviteOptions::destination` (sip-uac 0.9.0): the name stays, the address the router chose is where the INVITE goes (TLS checks the name); emergency attempts too. Test: `trunk_router` `a_route_to_a_resolved_name_keeps_the_name`, siphon-rs `an_invite_goes_to_its_destination_and_keeps_the_name`. |
@@ -916,10 +939,13 @@ silent without text to speech (Q-D8a below).
 | The prompts said "PIN", which Piper spells out letter by letter. | S4 | Fixed in v0.25.430: "pin"; migration 119 updates the stored system prompts still holding the old text and lets their audio be made again. |
 | The voicemail server logs the events token in the WebSocket URL it connects to. | S3 (a secret in logs) | #340. |
 | The events server's `consumer_name` defaults to a random name per start, so with the TOML now reconciled its stored section is rewritten at every start. | S4 | #341. |
+| With the codec agreed, `*98` on the VVX still sounded off: 8 kHz prompts played to a G.722 leg were resampled a 20 ms frame at a time, by straight lines, each frame alone — a step at every frame's edge (50 a second) under a metallic voice; a 1 kHz tone measured 24.5 dB SNR. forge-resampler, used by every transcoder, was linear as well. | S2 (every prompt to a wideband phone, and every transcoded call, distorted) | Fixed in v0.25.432 with forge-media #173: a band-limited (Kaiser-windowed sinc), streaming resampler, playout keeping one per playback across frames (> 50 dB), `resample_all` for whole buffers (Piper, queue recordings, speech recognition, conference prompts). |
+| The voicemail menu read "You have 0 new messages … Press 1 for new messages", and "1 new messages". | S4 | Fixed in v0.25.432: counts in English, only the choices there is something behind. |
+| The voicemail server warned "MWI notifier not configured" on every message, though message waiting goes by events. | S4 | Fixed in v0.25.434: debug. |
 | A trunk's health is probed by the conference, IVR and voicemail servers as well as the call manager. | S4 | #336. |
 | The voicemail menu's flow runs on after the caller hangs up, asking for digits from a session that is gone. | S3 | #337. |
 | The VVX never answers the PRACK the node sends for its reliable 180 (retransmitted for the whole ring). | S3 | To capture on the next session. |
-| A VVX offers G.722 first; the node answering its own flow took G.722 against PCMU prompts ("not transcodable"). Whether the VVX hears garbage is to hear on the next session; forge's transcoder has no G.722 yet. | ? | To hear on the next session. |
+| A VVX offers G.722 first. The node answering its own flow (`*98`, `*88`, a mailbox's flow) sent its configured codecs in its own order as the answer — PCMU first — while the media session took the offer's first, G.722, and encoded the prompts in it: the VVX decoded G.722 as PCMU, and every prompt was static. The 200 OK also carried no Contact. | S2 (every node-answered prompt is noise on a wideband phone) | Fixed in v0.25.431: the answer is the media session's own (the offer's order, the codec it sends in first), and the 200 OK has a Contact. Test: `sipp.rs` `a_wideband_phone_is_answered_in_the_codec_the_node_sends`, failing on the old answer. |
 
 **Q-D8a. Text to speech in the default stack.** Voicemail retrieval,
 the default greeting, IVR prompts and hoteling's prompts are spoken by

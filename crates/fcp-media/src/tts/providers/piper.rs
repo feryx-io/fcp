@@ -207,9 +207,7 @@ fn to_8k_wav(bytes: &[u8]) -> Result<Vec<u8>> {
     let pcm = if spec.sample_rate == OUTPUT_RATE {
         mono
     } else {
-        forge_resampler::Resampler::new(spec.sample_rate, OUTPUT_RATE, 1)
-            .map_err(|e| anyhow::anyhow!("resampling {} Hz: {e}", spec.sample_rate))?
-            .resample(&mono)
+        forge_resampler::resample_all(&mono, spec.sample_rate, OUTPUT_RATE, 1)
             .map_err(|e| anyhow::anyhow!("resampling {} Hz: {e}", spec.sample_rate))?
     };
     let mut out = std::io::Cursor::new(Vec::new());
