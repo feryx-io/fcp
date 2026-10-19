@@ -8,7 +8,9 @@ pub mod filter;
 pub mod types;
 
 // Re-exports
-pub use bus::{EventBus, EventPublisher, EventStream, EventSubscriber, InMemoryEventBus};
+pub use bus::{
+    EventBus, EventPublisher, EventStream, EventSubscriber, InMemoryEventBus, LocalAndCluster,
+};
 pub use filter::EventFilter;
 pub use types::*;
 

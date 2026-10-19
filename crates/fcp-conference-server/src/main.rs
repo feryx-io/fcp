@@ -348,13 +348,13 @@ async fn main() -> Result<()> {
             (
                 "conf_pin_prompt",
                 "Conference PIN Prompt",
-                "Please enter your conference PIN, followed by the pound key.",
+                "Please enter your conference pin, followed by the pound key.",
                 fcp_core::prompt::PromptCategory::System,
             ),
             (
                 "conf_invalid_pin",
                 "Conference Invalid PIN",
-                "Invalid PIN. Please try again.",
+                "Invalid pin. Please try again.",
                 fcp_core::prompt::PromptCategory::System,
             ),
             (

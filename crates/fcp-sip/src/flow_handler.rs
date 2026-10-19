@@ -2208,7 +2208,7 @@ impl FlowCallHandler {
                     mm,
                     &media_call_id,
                     "hoteling_enter_pin",
-                    "Enter your PIN, then pound.",
+                    "Enter your pin, then pound.",
                 )
                 .await;
             let user = if extension.is_empty() || pin.is_empty() {
@@ -2570,7 +2570,7 @@ impl FlowCallHandler {
                 &mm,
                 &media_call_id,
                 Some("vm_enter_pin"),
-                Some("Enter your PIN followed by pound".to_string()),
+                Some("Enter your pin, followed by pound".to_string()),
                 0,
                 Some('#'),
                 10,
@@ -2627,7 +2627,7 @@ impl FlowCallHandler {
                         &mm,
                         &media_call_id,
                         "vm_incorrect_pin",
-                        "Incorrect PIN. Please try again.".to_string(),
+                        "Incorrect pin. Please try again.".to_string(),
                     )
                     .await;
                 }
@@ -2828,6 +2828,28 @@ impl FlowCallHandler {
         // 5. Exit — send MWI update and set success status
         play_system_prompt(&mm, &media_call_id, "vm_goodbye", "Goodbye.".to_string()).await;
         let _ = voicemail_service.send_mwi(&target_mailbox).await;
+        // The mailbox's counts as the caller left them, for the phones
+        // subscribed to message waiting: messages heard, saved or deleted
+        // here change the lamp (`docs/DEEP_TESTING.md` D8).
+        if let Some(events) = &self.events {
+            let messages = voicemail_service
+                .get_messages(&target_mailbox, None)
+                .await
+                .unwrap_or_default();
+            let count = |pick: fn(&MessageStatus) -> bool| {
+                messages.iter().filter(|m| pick(&m.status)).count() as u32
+            };
+            let event = PlatformEvent::Voicemail(VoicemailEvent::MwiUpdated {
+                tenant_id: Some(tenant_id),
+                mailbox_id: target_mailbox.clone(),
+                new_messages: count(|s| *s == MessageStatus::New),
+                old_messages: count(|s| matches!(s, MessageStatus::Heard | MessageStatus::Saved)),
+                timestamp: std::time::SystemTime::now(),
+            });
+            if let Err(e) = events.publish(event).await {
+                warn!(call_id = %call_id, error = %e, "Message waiting not announced");
+            }
+        }
 
         let mut context_guard = context.write().await;
         context_guard.set_variable("voicemail_access_status".to_string(), "success".to_string());

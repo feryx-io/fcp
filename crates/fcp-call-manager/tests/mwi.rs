@@ -18,31 +18,11 @@ const BIN: &str = env!("CARGO_BIN_EXE_fcp-call-manager");
 const REALM: &str = "e2e.local";
 const SOON: Duration = Duration::from_secs(5);
 
-/// The next message-summary NOTIFY's body.
-async fn summary(phone: &Phone) -> Option<String> {
-    let deadline = tokio::time::Instant::now() + SOON;
-    while tokio::time::Instant::now() < deadline {
-        if let Some(PhoneEvent::Notify { event, body, .. }) =
-            phone.next_event(Duration::from_millis(250)).await
-        {
-            if event.starts_with("message-summary") {
-                return Some(body);
-            }
-        }
-    }
-    None
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_subscribed_phone_is_told_its_messages() {
-    let (Some(db), Some(redis)) = (TestDatabase::create().await, private_redis_url()) else {
-        eprintln!("skipped: FCP_TEST_DATABASE_URL or FCP_TEST_REDIS_URL is not set");
-        return;
-    };
-    let seed = Seed::new(db.url(), REALM).await;
+/// A call manager on Redis's event bus, as the compose stack runs one.
+async fn node(db: &str, redis: &str, dir: &std::path::Path) -> (Service, SocketAddr) {
+    std::fs::create_dir_all(dir.join("voicemail")).unwrap();
     let (sip_port, http) = (free_port(), free_port());
     let rtp_start = allocate_port_pair().rtp_port;
-    let dir = tempfile::tempdir().unwrap();
     let config = format!(
         r#"
 [service]
@@ -76,17 +56,44 @@ rtp_port_end = {rtp_end}
 prompts_dir = "{dir}/prompts"
 tts_cache_dir = "{dir}/tts-cache"
 recording_dir = "{dir}/recordings"
+voicemail_recordings_dir = "{dir}/voicemail"
 
 [logging]
 level = "info"
 format = "compact"
 "#,
-        db = db.url(),
         rtp_end = rtp_start + 20,
-        dir = dir.path().display(),
+        dir = dir.display(),
     );
     let service = Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
     let sip = SocketAddr::from(([127, 0, 0, 1], sip_port));
+    (service, sip)
+}
+
+/// The next message-summary NOTIFY's body.
+async fn summary(phone: &Phone) -> Option<String> {
+    let deadline = tokio::time::Instant::now() + SOON;
+    while tokio::time::Instant::now() < deadline {
+        if let Some(PhoneEvent::Notify { event, body, .. }) =
+            phone.next_event(Duration::from_millis(250)).await
+        {
+            if event.starts_with("message-summary") {
+                return Some(body);
+            }
+        }
+    }
+    None
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_subscribed_phone_is_told_its_messages() {
+    let (Some(db), Some(redis)) = (TestDatabase::create().await, private_redis_url()) else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL or FCP_TEST_REDIS_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (service, sip) = node(db.url(), &redis, dir.path()).await;
 
     // Alice has a mailbox with two new messages; Bob has none.
     let alice = seed.user("alice", "Alice-pw-2026!", "2001").await;
@@ -208,6 +215,110 @@ format = "compact"
         .unwrap();
     assert_eq!(none.code, 404);
 
+    service.stop().await;
+    db.drop_db().await;
+}
+
+/// Key `digits` into the call once the node is listening for them.
+async fn key(call: &fcp_testkit::Call, digits: &str) {
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    for digit in digits.chars() {
+        call.media().send_dtmf(digit);
+    }
+}
+
+/// `*98` from a phone reaches its user's own mailbox, whatever the
+/// mailbox's extension (D8: alice's, made as `alice`, was looked for as
+/// her extension and every PIN was refused), and a message deleted there
+/// — a file the voicemail server wrote, read here from its directory —
+/// puts the lamp out: leaving the menu announces the counts
+/// (`voicemail.mwi_updated`), which the node tells its subscribers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_voicemail_menu_opens_the_callers_mailbox_and_puts_the_lamp_out() {
+    let (Some(db), Some(redis)) = (TestDatabase::create().await, private_redis_url()) else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL or FCP_TEST_REDIS_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (service, sip) = node(db.url(), &redis, dir.path()).await;
+
+    let alice = seed.user("alice", "Alice-pw-2026!", "1001").await;
+    let storage = seed.storage();
+    let row = storage
+        .get_user_in_tenant("alice", &seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let number = fcp_core::PhoneNumber::new("+15125550302".into(), seed.tenant_id).unwrap();
+    let binding = fcp_core::LineBinding::new(
+        number.id,
+        Some(row.id),
+        fcp_core::BindingType::User,
+        seed.tenant_id,
+    );
+    let mailbox = fcp_core::VoicemailMailbox::new(
+        seed.tenant_id,
+        row.id,
+        binding.id,
+        "alice".into(),
+        "4826".into(),
+    );
+    let mailbox_id = mailbox.id.to_string();
+    storage.put_phone_number(number).await.unwrap();
+    storage.put_line_binding(binding).await.unwrap();
+    storage.put_mailbox(mailbox).await.unwrap();
+    // Recorded by the voicemail server, in its directory.
+    let recording = dir.path().join("voicemail/m.wav");
+    std::fs::write(&recording, b"").unwrap();
+    let message = fcp_core::VoicemailMessage::new(
+        mailbox_id.clone(),
+        "sip:+15125550901@pstn".into(),
+        10,
+        recording,
+    );
+    storage.put_message(message).await.unwrap();
+
+    let phone = Phone::new(&alice.username, &alice.password, REALM, sip)
+        .await
+        .unwrap();
+    assert_eq!(phone.register().await.unwrap(), 200);
+    let sub = phone
+        .subscribe(&alice.username, "message-summary", 600, None)
+        .await
+        .unwrap();
+    assert_eq!(sub.code, 200);
+    let body = summary(&phone).await.expect("the counts at once");
+    assert!(body.contains("Voice-Message: 1/0"), "{body}");
+
+    // The PIN, new messages, delete, back to the menu, out.
+    let call = phone.call("*98").await.unwrap();
+    call.answered(SOON).await.expect("voicemail access answers");
+    key(&call, "4826#").await;
+    key(&call, "1").await;
+    key(&call, "3").await;
+    key(&call, "*").await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !storage.list_messages(&mailbox_id).await.unwrap().is_empty() {
+        if tokio::time::Instant::now() > deadline {
+            let logs = service.kill().await;
+            panic!("the message was not deleted: the mailbox was not opened\n{logs}");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let mut out = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while out.is_none() && tokio::time::Instant::now() < deadline {
+        out = summary(&phone)
+            .await
+            .filter(|b| b.contains("Voice-Message: 0/0"));
+    }
+    if out.is_none() {
+        let logs = service.kill().await;
+        panic!("the lamp was not put out\n{logs}");
+    }
+    let _ = call.hangup().await;
     service.stop().await;
     db.drop_db().await;
 }

@@ -14906,8 +14906,9 @@ impl SipMessageHandler {
             }
         };
 
-        // Determine the target mailbox: explicit or derive from caller extension
-        let mailbox_str = mailbox.unwrap_or_default();
+        // The target mailbox: the one dialled, else the caller's own (found
+        // below), else the caller's extension as a mailbox's.
+        let mut mailbox_str = mailbox.unwrap_or_default();
 
         let sip_username = sip_parse::header(request.headers(), "From")
             .and_then(|from| Self::extract_did_from_uri(from.as_str()))
@@ -14930,10 +14931,25 @@ impl SipMessageHandler {
                         None => None,
                     };
                     match user {
-                        Some(user) => user
-                            .extension
-                            .clone()
-                            .unwrap_or_else(|| user.sip_name().to_string()),
+                        Some(user) => {
+                            // The user's own mailbox, whatever its extension
+                            // (`docs/DEEP_TESTING.md` D8: alice's mailbox,
+                            // made as `alice`, was looked for as `1001`).
+                            if mailbox_str.is_empty() {
+                                if let Ok(Some(own)) =
+                                    fcp_core::storage::VoicemailStore::get_mailbox_by_user(
+                                        storage.as_ref(),
+                                        &user.id,
+                                    )
+                                    .await
+                                {
+                                    mailbox_str = own.id;
+                                }
+                            }
+                            user.extension
+                                .clone()
+                                .unwrap_or_else(|| user.sip_name().to_string())
+                        }
                         None => sip_username.clone(),
                     }
                 }

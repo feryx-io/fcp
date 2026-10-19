@@ -207,6 +207,8 @@ services:
       - ./configs/fcp-call-manager.toml:/app/fcp-call-manager.toml:ro
       - fcp-certs:/var/lib/fcp/certs:ro
       - call-manager-data:/app/data
+      # The voicemail server's messages, which *98 here plays and deletes.
+      - voicemail-data:/var/lib/fcp/voicemail
     environment:
       RUST_LOG: info
       FCP_CALL_MANAGER_LOG_FORMAT: pretty

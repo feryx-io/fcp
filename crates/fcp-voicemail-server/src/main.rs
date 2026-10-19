@@ -468,6 +468,7 @@ async fn main() -> Result<()> {
             .as_ref()
             .map(PathBuf::from),
         beep_audio_path: config.voicemail.beep_audio_path.as_ref().map(PathBuf::from),
+        message_dirs: Vec::new(),
     };
 
     let voicemail_service = {

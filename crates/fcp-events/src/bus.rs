@@ -108,6 +108,30 @@ impl InMemoryEventBus {
     }
 }
 
+/// Publishes to this process's bus and to a cluster's: a node on Redis
+/// hears its own events where it raised them, as it does on the in-memory
+/// bus alone. Its Redis subscriber skips what it published, so nothing
+/// arrives twice (`docs/DEEP_TESTING.md` D8: the menu's message-waiting
+/// update never reached the phones subscribed on the same node).
+pub struct LocalAndCluster {
+    local: Arc<InMemoryEventBus>,
+    cluster: Arc<dyn EventPublisher>,
+}
+
+impl LocalAndCluster {
+    pub fn new(local: Arc<InMemoryEventBus>, cluster: Arc<dyn EventPublisher>) -> Self {
+        Self { local, cluster }
+    }
+}
+
+#[async_trait]
+impl EventPublisher for LocalAndCluster {
+    async fn publish(&self, event: PlatformEvent) -> Result<()> {
+        let _ = self.local.publish(event.clone()).await;
+        self.cluster.publish(event).await
+    }
+}
+
 impl Default for InMemoryEventBus {
     fn default() -> Self {
         Self::new()

@@ -580,7 +580,10 @@ async fn run() -> Result<()> {
             let _sub_handle = redis_bus.start_subscriber(Arc::clone(&event_bus));
 
             info!("Redis event bus initialized (Pub/Sub + Streams)");
-            Some(Arc::new(redis_bus) as Arc<dyn EventPublisher>)
+            Some(Arc::new(fcp_events::LocalAndCluster::new(
+                Arc::clone(&event_bus),
+                Arc::new(redis_bus),
+            )) as Arc<dyn EventPublisher>)
         } else {
             warn!("events.use_redis = true but redis_url is not set; falling back to in-memory");
             None
@@ -1333,6 +1336,12 @@ async fn run() -> Result<()> {
         // must be the file the recorder wrote.
         let vm_config = VoicemailConfig {
             recordings_dir: std::path::PathBuf::from(&config.media.recording_dir),
+            message_dirs: config
+                .media
+                .voicemail_recordings_dir
+                .iter()
+                .map(std::path::PathBuf::from)
+                .collect(),
             ..VoicemailConfig::default()
         };
         if let Err(e) = vm_config.validate() {
@@ -1412,8 +1421,8 @@ async fn run() -> Result<()> {
 
         // Seed system prompts at startup
         let system_prompts = vec![
-            ("vm_enter_pin", "PIN entry prompt", "Enter your PIN followed by pound."),
-            ("vm_incorrect_pin", "Wrong PIN", "Incorrect PIN. Please try again."),
+            ("vm_enter_pin", "PIN entry prompt", "Enter your pin, followed by pound."),
+            ("vm_incorrect_pin", "Wrong PIN", "Incorrect pin. Please try again."),
             ("vm_auth_failed", "Auth failure", "Authentication failed. Goodbye."),
             ("vm_post_message_menu", "Message controls", "Press 1 to replay. Press 2 to save. Press 3 to delete. Press 4 for next message. Press star for main menu."),
             ("vm_message_saved", "Confirmation", "Message saved."),

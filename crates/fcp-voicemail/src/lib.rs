@@ -47,6 +47,11 @@ pub struct VoicemailConfig {
 
     /// Path to beep audio file
     pub beep_audio_path: Option<PathBuf>,
+
+    /// Other directories a message may be in, for a node that plays and
+    /// deletes messages it did not record: the call manager's `*98` reads
+    /// the voicemail server's (`docs/DEEP_TESTING.md` D8).
+    pub message_dirs: Vec<PathBuf>,
 }
 
 impl Default for VoicemailConfig {
@@ -59,6 +64,7 @@ impl Default for VoicemailConfig {
             play_beep: true,
             default_greeting_path: Some(PathBuf::from("/var/fcp/audio/default-greeting.wav")),
             beep_audio_path: Some(PathBuf::from("/var/fcp/audio/beep.wav")),
+            message_dirs: Vec::new(),
         }
     }
 }
@@ -512,7 +518,7 @@ impl VoicemailService {
             .ok_or_else(|| anyhow::anyhow!("Message not found: {}", message_id))?;
 
         // Validate recording path is within allowed directory before playing
-        validate_path_within_dir(&message.recording_path, &self.config.recordings_dir)?;
+        self.validate_message_path(&message.recording_path)?;
 
         // Play the recording
         self.play_audio(call_id, &message.recording_path).await?;
@@ -558,7 +564,7 @@ impl VoicemailService {
         let mailbox_id = message.mailbox_id.clone();
 
         // Validate recording path is within allowed directory before deletion
-        validate_path_within_dir(&message.recording_path, &self.config.recordings_dir)?;
+        self.validate_message_path(&message.recording_path)?;
 
         // Delete from database; the deletion log names the mailbox's owner,
         // who deleted it from the phone.
@@ -822,6 +828,24 @@ fn validate_identifier(id: &str, field_name: &str) -> Result<()> {
 /// If the path does not yet exist (e.g. a recording about to be written) we
 /// canonicalize the nearest existing ancestor and verify the logical join
 /// stays inside.
+impl VoicemailService {
+    /// A message's file is under this node's recordings or one of the
+    /// other directories messages are kept in.
+    fn validate_message_path(&self, path: &Path) -> Result<()> {
+        let own = validate_path_within_dir(path, &self.config.recordings_dir);
+        if own.is_ok()
+            || self
+                .config
+                .message_dirs
+                .iter()
+                .any(|dir| validate_path_within_dir(path, dir).is_ok())
+        {
+            return Ok(());
+        }
+        own
+    }
+}
+
 fn validate_path_within_dir(path: &Path, base_dir: &Path) -> Result<()> {
     // Canonicalize base_dir (must exist)
     let canonical_base = base_dir.canonicalize().with_context(|| {
