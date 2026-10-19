@@ -225,8 +225,8 @@ Kokoro, needs PyTorch and was left off (`docs/DEEP_TESTING.md` Q-D8a).
   `fcp-tts-full` image only (`FCP_TTS=tts-full` in compose), with the
   local Whisper recogniser.
 - **OpenAI** and **Google Cloud** voices are providers with a key, in
-  either image. Azure, Polly and ElevenLabs are configured but not yet
-  implemented (refused at start).
+  either image. Azure, Polly and ElevenLabs are placeholders, refused
+  at start, until #339.
 
 `default_provider` names the engine used when a request names none.
 

@@ -2,11 +2,10 @@
 //!
 //! Provides a flexible abstraction over multiple TTS providers:
 //! - Google Cloud TTS
-//! - AWS Polly
-//! - Azure Cognitive Services TTS
-//! - OpenAI TTS (ChatGPT)
-//! - ElevenLabs
-//! - Local TTS (espeak, festival, piper)
+//! - Piper, the default local engine (`docs/SPEECH.md` §8)
+//! - Kokoro, local, in the `fcp-tts-full` image
+//! - OpenAI TTS
+//! - AWS Polly, Azure, ElevenLabs: placeholders until #339
 //!
 //! ## Architecture
 //!
@@ -496,9 +495,9 @@ pub enum TtsProviderConfig {
         model_id: Option<String>,
     },
 
-    /// Local TTS (espeak, festival, piper)
+    /// Kokoro, run by a Python worker (the `fcp-tts-full` image).
     Local {
-        /// TTS engine (espeak, festival, piper)
+        /// The engine: `kokoro`, the only one.
         engine: String,
         /// Path to TTS executable
         #[serde(skip_serializing_if = "Option::is_none")]
