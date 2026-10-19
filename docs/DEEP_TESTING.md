@@ -919,7 +919,7 @@ silent without text to speech (Q-D8a below).
 | A trunk's health is probed by the conference, IVR and voicemail servers as well as the call manager. | S4 | #336. |
 | The voicemail menu's flow runs on after the caller hangs up, asking for digits from a session that is gone. | S3 | #337. |
 | The VVX never answers the PRACK the node sends for its reliable 180 (retransmitted for the whole ring). | S3 | To capture on the next session. |
-| A VVX offers G.722 first; the node answering its own flow took G.722 against PCMU prompts ("not transcodable"). Whether the VVX hears garbage is to hear on the next session; forge's transcoder has no G.722 yet. | ? | To hear on the next session. |
+| A VVX offers G.722 first. The node answering its own flow (`*98`, `*88`, a mailbox's flow) sent its configured codecs in its own order as the answer — PCMU first — while the media session took the offer's first, G.722, and encoded the prompts in it: the VVX decoded G.722 as PCMU, and every prompt was static. The 200 OK also carried no Contact. | S2 (every node-answered prompt is noise on a wideband phone) | Fixed in v0.25.431: the answer is the media session's own (the offer's order, the codec it sends in first), and the 200 OK has a Contact. Test: `sipp.rs` `a_wideband_phone_is_answered_in_the_codec_the_node_sends`, failing on the old answer. |
 
 **Q-D8a. Text to speech in the default stack.** Voicemail retrieval,
 the default greeting, IVR prompts and hoteling's prompts are spoken by

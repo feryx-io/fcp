@@ -446,6 +446,31 @@ async fn a_cancel_before_the_call_is_set_up_rings_no_one() {
     }
 }
 
+/// A phone offering G.722 first (a Poly VVX) dials `*98`, which the node
+/// answers itself: the answer must lead with the codec the node then sends
+/// in. It led with the node's configured order (PCMU) while the media
+/// session sent G.722, and every prompt was static (`docs/DEEP_TESTING.md`
+/// D8).
+#[tokio::test]
+async fn a_wideband_phone_is_answered_in_the_codec_the_node_sends() {
+    let Some((sipp, stack)) = setup().await else {
+        return;
+    };
+    let uac = sipp
+        .run(
+            &scenario("uac_wideband_answered_by_the_node"),
+            stack.sip,
+            &[
+                ("user", &stack.alice.username),
+                ("domain", REALM),
+                ("callee", "*98"),
+            ],
+            &["-au", &stack.alice.username, "-ap", &stack.alice.password],
+        )
+        .await;
+    stack.passed(&uac, "a wideband caller to *98").await;
+}
+
 #[tokio::test]
 async fn sipp_reinvites_an_answered_call() {
     let Some((sipp, stack)) = setup().await else {

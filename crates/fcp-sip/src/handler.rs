@@ -15070,6 +15070,9 @@ impl SipMessageHandler {
         let answer_rtp_port = self.rtp_port;
         let answer_media_profile = self.media_profile.clone();
         let answer_local_uri = self.uas.local_uri.clone();
+        // A 2xx to an INVITE carries a Contact (RFC 3261 §12.1.1): where the
+        // caller's ACK and BYE go.
+        let answer_contact = format!("<{}>", self.uas.contact_uri.as_str());
 
         let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
             let request = answer_request.clone();
@@ -15082,9 +15085,16 @@ impl SipMessageHandler {
             let rtp_port = answer_rtp_port;
             let media_profile = answer_media_profile.clone();
             let call_id = answer_call_id;
+            let contact = answer_contact.clone();
             Box::pin(async move {
                 // Check if a media session already exists (created by evaluate_media_anchoring)
                 let mut actual_rtp_port = rtp_port;
+                // The session's own answer to the offer: the codec it will
+                // send in, first. An answer built apart from it listed our
+                // codecs in our order, so a phone offering G.722 first heard
+                // the session's G.722 decoded as PCMU (`docs/DEEP_TESTING.md`
+                // D8: static on every prompt of `*98`).
+                let mut session_answer: Option<String> = None;
                 let existing_session_id = call_manager
                     .get_call(&call_id)
                     .and_then(|c| c.media_session_id);
@@ -15096,7 +15106,8 @@ impl SipMessageHandler {
                             actual_rtp_port = session.ports().0;
                         }
                         if let Some(remote_sdp) = crate::body::request_sdp(&request) {
-                            let _ = mm.update_session(existing_msid, remote_sdp).await;
+                            session_answer =
+                                mm.update_session(existing_msid, remote_sdp).await.ok();
                         }
                     } else {
                         // No existing session — create one
@@ -15107,7 +15118,8 @@ impl SipMessageHandler {
                         {
                             actual_rtp_port = session.ports().0;
                             if let Some(remote_sdp) = crate::body::request_sdp(&request) {
-                                let _ = mm.update_session(&core_call_id, remote_sdp).await;
+                                session_answer =
+                                    mm.update_session(&core_call_id, remote_sdp).await.ok();
                             }
                             let _ = call_manager.update_call(&call_id, |c| {
                                 c.media_session_id = Some(core_call_id);
@@ -15118,7 +15130,9 @@ impl SipMessageHandler {
                 }
 
                 // Generate SDP with the actual RTP port from the media session
-                let sdp_string = if let Some(profile) = media_profile {
+                let sdp_string = if session_answer.is_some() {
+                    session_answer
+                } else if let Some(profile) = media_profile {
                     let sdp = profile.build("fcp", &local_addr, actual_rtp_port, None);
                     Some(sdp.to_string())
                 } else {
@@ -15130,6 +15144,10 @@ impl SipMessageHandler {
                     let base = sip_uas::UserAgentServer::create_response(&request, 200, "OK");
                     let sdp_bytes = bytes::Bytes::from(sdp_str.clone());
                     let mut headers = base.headers().clone();
+                    let _ = headers.push(
+                        smol_str::SmolStr::new("Contact"),
+                        smol_str::SmolStr::new(contact.as_str()),
+                    );
                     let _ = headers.push(
                         smol_str::SmolStr::new("Content-Type"),
                         smol_str::SmolStr::new("application/sdp"),
