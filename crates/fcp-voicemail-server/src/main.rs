@@ -485,7 +485,12 @@ async fn main() -> Result<()> {
     info!("VoicemailService created");
 
     // 17. Create flow store and FlowCallHandler with voicemail service wired in
-    let flow_store: Arc<dyn fcp_flow::FlowStore> = Arc::clone(&flow_store_db);
+    // Each mailbox's flow is built here and held in memory, never written:
+    // the stored ones belonged to no tenant, so no one could see or edit
+    // them (`docs/DEEP_TESTING.md` D8). A mailbox's own call handling is a
+    // flow of its tenant's, run by the call manager (its `flow_id`).
+    let flow_store: Arc<dyn fcp_flow::FlowStore> =
+        Arc::new(fcp_flow::BuiltinFlows::new(Arc::clone(&flow_store_db)));
 
     let local_uri = create_local_uri(&config)?;
     let contact_uri = local_uri.clone();
@@ -605,14 +610,9 @@ async fn main() -> Result<()> {
                         config.voicemail.max_message_duration,
                         config.voicemail.play_beep,
                     );
-                    match flow_store.get_flow(&flow_id).await {
-                        Ok(Some(_)) => {} // Flow already exists, preserve user edits
-                        _ => {
-                            if let Err(e) = flow_store.insert_flow(flow_def).await {
-                                warn!(mailbox_id = %mb.id, error = %e, "Failed to create auto-flow for mailbox");
-                                continue;
-                            }
-                        }
+                    if let Err(e) = flow_store.hold_flow(flow_def).await {
+                        warn!(mailbox_id = %mb.id, error = %e, "Failed to build the mailbox's flow");
+                        continue;
                     }
 
                     // Register by owner's SIP username (primary identifier)
@@ -678,23 +678,6 @@ async fn main() -> Result<()> {
                     }
                 }
                 info!(auto_routes, "Auto-discovered mailbox routes from database");
-
-                // Clean up orphaned vm-auto-* flows that no longer have a mailbox
-                let mailbox_ids: std::collections::HashSet<String> =
-                    mailboxes.iter().map(|mb| mb.id.clone()).collect();
-                if let Ok(all_flows) = flow_store.list_flows(None).await {
-                    for flow in &all_flows {
-                        if let Some(mb_id) = flow.id.strip_prefix("vm-auto-") {
-                            if !mailbox_ids.contains(mb_id) {
-                                if let Err(e) = flow_store.delete_flow(&flow.id).await {
-                                    warn!(flow_id = %flow.id, error = %e, "Failed to delete orphaned voicemail flow");
-                                } else {
-                                    info!(flow_id = %flow.id, "Deleted orphaned voicemail flow");
-                                }
-                            }
-                        }
-                    }
-                }
             }
             Err(e) => {
                 warn!(error = %e, "Failed to list mailboxes for auto-discovery");
@@ -706,12 +689,10 @@ async fn main() -> Result<()> {
     if let Some(ref access_ext) = config.voicemail.access_extension {
         let flow_id = "vm-access-flow";
         let flow_def = build_voicemail_access_flow(flow_id);
-        if flow_store.get_flow(flow_id).await?.is_none() {
-            flow_store
-                .insert_flow(flow_def)
-                .await
-                .context("Failed to save voicemail access flow")?;
-        }
+        flow_store
+            .hold_flow(flow_def)
+            .await
+            .context("Failed to build the voicemail access flow")?;
         flow_handler
             .add_route(access_ext.clone(), flow_id.to_string())
             .await;
@@ -1500,9 +1481,7 @@ async fn run_events_subscriber(
                                                         info!(mailbox_id = %mailbox_id, "Received MailboxDeleted event");
                                                         let flow_id = format!("vm-auto-{}", mailbox_id);
                                                         flow_handler.remove_routes_for_flow(&flow_id).await;
-                                                        if let Err(e) = flow_store.delete_flow(&flow_id).await {
-                                                            warn!(flow_id = %flow_id, error = %e, "Failed to delete flow for mailbox");
-                                                        }
+                                                        let _ = flow_store.release_flow(&flow_id).await;
                                                         info!(mailbox_id = %mailbox_id, flow_id = %flow_id, "Removed voicemail routes");
                                                     }
                                                     fcp_events::PlatformEvent::Voicemail(fcp_events::VoicemailEvent::MailboxUpdated { ref mailbox_id, .. }) => {
@@ -1587,20 +1566,10 @@ async fn handle_mailbox_created(
         play_beep,
     );
 
-    // Insert or update flow
-    match flow_store.get_flow(&flow_id).await {
-        Ok(Some(_)) => {
-            // Flow exists — update it
-            if let Err(e) = flow_store.update_flow(flow_def).await {
-                warn!(flow_id = %flow_id, error = %e, "Failed to update flow");
-            }
-        }
-        _ => {
-            if let Err(e) = flow_store.insert_flow(flow_def).await {
-                warn!(flow_id = %flow_id, error = %e, "Failed to create flow");
-                return;
-            }
-        }
+    // Built afresh and held in memory.
+    if let Err(e) = flow_store.hold_flow(flow_def).await {
+        warn!(flow_id = %flow_id, error = %e, "Failed to build the mailbox's flow");
+        return;
     }
 
     // Register by owner's SIP username

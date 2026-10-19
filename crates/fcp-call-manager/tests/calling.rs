@@ -419,6 +419,93 @@ async fn do_not_disturb_is_busy_without_ringing() {
     stack.finish().await;
 }
 
+/// A mailbox that hands its calls to a flow (its `flow_id`): a call the
+/// mailbox would have taken runs the flow instead — here, ringing someone
+/// else — and the voicemail server is not reached (`docs/DEEP_TESTING.md`
+/// D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mailbox_that_hands_its_calls_to_a_flow_runs_it() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let carol = stack.seed.user("carol", "carol-pw", "1003").await;
+    stack.mailbox(&carol, "+15125550113").await;
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "carol-away",
+        "name": "Carol is away: ring Bob",
+        "version": 1,
+        "initial_node": "dial",
+        "enabled": true,
+        "tenant_id": stack.seed.tenant_id.to_string(),
+        "nodes": {
+            "dial": {
+                "id": "dial", "name": "Dial Bob", "type": "dial",
+                "destination": bob.extension, "timeout": 10, "next": "done",
+                "on_error": "done", "on_no_answer": "done", "on_busy": "done"
+            },
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .expect("seed flow");
+    let storage = stack.seed.storage();
+    let row = fcp_core::storage::CredentialStore::get_user_in_tenant(
+        storage,
+        &carol.username,
+        &stack.seed.tenant_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let mut mailbox = storage.get_mailbox_by_user(&row.id).await.unwrap().unwrap();
+    mailbox.flow_id = Some("carol-away".to_string());
+    storage.put_mailbox(mailbox).await.unwrap();
+
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    let voicemail = stack.voicemail_server().await;
+    // Carol has no phone up: her mailbox would take it, and hands it on.
+    let call = alice_phone.call(&carol.extension).await.unwrap();
+    let Some(at_bob) = bob_phone.incoming(SOON).await else {
+        stack
+            .fail("the mailbox's flow did not ring Bob", &alice_phone)
+            .await;
+    };
+    assert!(
+        voicemail.incoming(QUIET).await.is_none(),
+        "the voicemail server was reached"
+    );
+    let answered = at_bob.answer().await.unwrap();
+    call.answered(SOON).await.expect("Alice reaches Bob");
+    answered.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// A call's own flow (`*98`, voicemail access) is held for the call, not
+/// written: every check of a mailbox left a row behind
+/// (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn voicemail_access_leaves_no_flow_behind() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack.mailbox(&alice, "+15125550114").await;
+    let alice_phone = stack.phone(&alice).await;
+    let call = alice_phone.call("*98").await.unwrap();
+    call.answered(SOON).await.expect("voicemail access answers");
+    call.hangup().await.unwrap();
+    let flows = fcp_flow::FlowStore::list_flows(stack.seed.storage(), None)
+        .await
+        .unwrap();
+    assert!(
+        flows.iter().all(|f| !f.id.starts_with("vm-access-")),
+        "a stored voicemail access flow: {:?}",
+        flows.iter().map(|f| &f.id).collect::<Vec<_>>()
+    );
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_user_with_no_phone_reaches_voicemail_by_extension() {
     let stack = stack_or_skip!();

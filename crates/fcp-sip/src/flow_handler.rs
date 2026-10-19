@@ -86,6 +86,10 @@ pub struct FlowCallHandler {
 
     /// Voicemail service for recording voicemail messages
     voicemail_service: Option<Arc<VoicemailService>>,
+    /// Where a Voicemail node sends the call when this node records no
+    /// messages itself: the voicemail server (the call manager's
+    /// `voicemail_server_uri`).
+    voicemail_server: Option<String>,
 
     /// Hoteling sessions, for the login node (`docs/ENTERPRISE_CALLING.md` §3.8)
     hoteling: Option<Arc<crate::hoteling::Hoteling>>,
@@ -186,6 +190,7 @@ impl FlowCallHandler {
             local_addr: None,
             rtp_port: 8000,
             voicemail_service: None,
+            voicemail_server: None,
             hoteling: None,
             prompt_service: None,
             flow_trace_store: None,
@@ -249,6 +254,14 @@ impl FlowCallHandler {
     /// Set the voicemail service (for Voicemail flow nodes).
     pub fn with_voicemail_service(mut self, voicemail_service: Arc<VoicemailService>) -> Self {
         self.voicemail_service = Some(voicemail_service);
+        self
+    }
+
+    /// The voicemail server a Voicemail node hands its call to when this
+    /// node has no voicemail service of its own (`docs/DEEP_TESTING.md`
+    /// D8: a mailbox's own flow ends in a message after all).
+    pub fn with_voicemail_server(mut self, uri: impl Into<String>) -> Self {
+        self.voicemail_server = Some(uri.into());
         self
     }
 
@@ -1941,6 +1954,33 @@ impl FlowCallHandler {
 
         let voicemail_service = match &self.voicemail_service {
             Some(vs) => Arc::clone(vs),
+            // The voicemail server takes the message: the call is bridged
+            // to it, addressed to the mailbox, as an unanswered call is.
+            None if self.voicemail_server.is_some() => {
+                let server = self.voicemail_server.as_deref().unwrap_or_default();
+                let host = server
+                    .trim_start_matches('<')
+                    .trim_end_matches('>')
+                    .rsplit('@')
+                    .next()
+                    .unwrap_or(server)
+                    .trim_start_matches("sip:");
+                let destination = format!("sip:{mailbox}@{host}");
+                info!(call_id = %call_id, destination = %destination, "Voicemail node: the voicemail server takes the message");
+                let on_error = next_on_error.clone();
+                return Box::pin(self.handle_dial(
+                    call_id,
+                    destination,
+                    30,
+                    None,
+                    max_duration.saturating_add(60),
+                    on_error.clone(),
+                    on_error.clone(),
+                    on_error,
+                    next_on_success,
+                ))
+                .await;
+            }
             None => {
                 warn!(call_id = %call_id, "VoicemailService not configured - skipping voicemail node");
 

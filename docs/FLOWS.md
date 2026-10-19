@@ -72,3 +72,23 @@ release drops it, so a node of the previous release reading it during a
 rolling upgrade still finds it. A flow that should tell a system what it
 is doing calls out with an Http node. The `flow.*` events carry no tenant
 yet, so no tenant webhook receives them.
+
+## A mailbox's call handling
+
+A mailbox can hand the calls it would take to a flow of its tenant's:
+its `flow_id` (`PUT /api/v1/voicemail/mailboxes/{id}`, the mailbox's *Call
+handling* on the Voicemail page). Where the call would have reached the
+mailbox — no answer, busy, nobody's phone up — the call manager runs that
+flow instead. It can say something, ring someone else (Dial), send the
+call to a queue, or still take a message: its Voicemail node records into
+the mailbox it names. The flow is an ordinary flow, on the Flows page with
+the tenant's others. An empty `flow_id` gives the call back to the
+mailbox. A flow's own Dial to the same user does not loop: the plan's
+voicemail answers it 480 (`FLOW_DIAL_HEADER`).
+
+The flows a node builds for itself — the voicemail server's per-mailbox
+record flow, `*98`'s access flow, hoteling's login — are not stored:
+`fcp_flow::BuiltinFlows` holds them in memory, in front of the tenants'
+flows, and a call's are let go when the call ends (migration 117 removed
+the ones written before, `docs/DEEP_TESTING.md` D8).
+

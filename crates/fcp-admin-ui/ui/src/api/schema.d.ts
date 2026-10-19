@@ -6526,6 +6526,12 @@ export interface components {
             max_message_duration?: number;
             /** Format: int32 */
             max_messages?: number;
+            /**
+             * @description A flow of the tenant's to handle a call this mailbox would take —
+             *     say something, ring someone, a queue, or a message after all. Unset:
+             *     the mailbox takes it.
+             */
+            flow_id?: string | null;
         };
         /** @description Create meeting request body. */
         CreateMeetingRequest: {
@@ -7867,6 +7873,11 @@ export interface components {
             transcription_enabled: boolean;
             /** Format: int32 */
             retention_days?: number | null;
+            /**
+             * @description The flow that handles a call this mailbox would take, if not the
+             *     mailbox itself.
+             */
+            flow_id?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -9118,6 +9129,11 @@ export interface components {
                 transcription_enabled: boolean;
                 /** Format: int32 */
                 retention_days?: number | null;
+                /**
+                 * @description The flow that handles a call this mailbox would take, if not the
+                 *     mailbox itself.
+                 */
+                flow_id?: string | null;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -12200,6 +12216,11 @@ export interface components {
              * @description Double Option: outer = field not provided, inner = null to clear.
              */
             retention_days?: number | null;
+            /**
+             * @description The flow that handles a call this mailbox would take; empty clears
+             *     it, so the mailbox takes it again.
+             */
+            flow_id?: string | null;
         };
         /**
          * @description Update meeting request body (all fields optional; `null` clears one

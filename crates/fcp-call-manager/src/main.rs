@@ -197,6 +197,11 @@ async fn run() -> Result<()> {
     let primary_health = Arc::clone(&storage_result.primary);
     let config_store = storage_result.config_store;
     let pg_flow_store = storage_result.flow_store;
+    // The flows this node builds for one call (`*98`, hoteling's login)
+    // are held here, in front of the tenants' flows, and let go when the
+    // call ends: they were written to the database and never removed
+    // (`docs/DEEP_TESTING.md` D8).
+    let builtin_flows = Arc::new(fcp_flow::BuiltinFlows::new(pg_flow_store));
     #[allow(unused_mut)]
     let mut dyn_storage = storage_result.dyn_storage;
 
@@ -902,10 +907,14 @@ async fn run() -> Result<()> {
         let trunk_calls = Arc::clone(&trunk_calls);
         let admission = Arc::clone(&admission);
         let supervisions = Arc::clone(&supervisions_slot);
+        let builtin_flows = Arc::clone(&builtin_flows);
         call_manager_inner.set_on_ended(Arc::new(move |call_id| {
             if let Some(supervisions) = supervisions.get() {
                 supervisions.ended(call_id);
             }
+            // The call's own flows, named for it.
+            let call = call_id.to_string();
+            builtin_flows.release_where(|id| id.ends_with(&call));
             let id = call_id.to_string();
             fcp_sip::trunk_ingress::TrunkCallCounter::ended(&*trunk_calls, &id);
             // The place the call held on this node and against its tenant
@@ -1341,7 +1350,7 @@ async fn run() -> Result<()> {
     };
 
     // 17d. Create FlowCallHandler for IVR flows (*98 voicemail access, future IVR features)
-    let flow_store: Arc<dyn fcp_flow::FlowStore> = pg_flow_store;
+    let flow_store: Arc<dyn fcp_flow::FlowStore> = builtin_flows.clone();
     let contact_uri = local_uri.clone();
     let mut flow_handler = FlowCallHandler::new(
         Arc::clone(&flow_store),

@@ -21313,6 +21313,13 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          },
+          "flow_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A flow of the tenant's to handle a call this mailbox would take —\nsay something, ring someone, a queue, or a message after all. Unset:\nthe mailbox takes it."
           }
         }
       },
@@ -25691,6 +25698,13 @@
             "format": "int32",
             "minimum": 0
           },
+          "flow_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The flow that handles a call this mailbox would take, if not the\nmailbox itself."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -29607,6 +29621,13 @@
                   ],
                   "format": "int32",
                   "minimum": 0
+                },
+                "flow_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The flow that handles a call this mailbox would take, if not the\nmailbox itself."
                 },
                 "created_at": {
                   "type": "string",
@@ -38880,6 +38901,13 @@
             "format": "int32",
             "description": "Double Option: outer = field not provided, inner = null to clear.",
             "minimum": 0
+          },
+          "flow_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The flow that handles a call this mailbox would take; empty clears\nit, so the mailbox takes it again."
           }
         }
       },

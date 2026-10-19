@@ -44,6 +44,9 @@ pub struct MailboxResponse {
     pub include_transcription: bool,
     pub transcription_enabled: bool,
     pub retention_days: Option<u32>,
+    /// The flow that handles a call this mailbox would take, if not the
+    /// mailbox itself.
+    pub flow_id: Option<String>,
     #[serde(with = "crate::time::epoch_secs_f64")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: f64,
@@ -69,6 +72,7 @@ impl From<VoicemailMailbox> for MailboxResponse {
             include_transcription: mailbox.include_transcription,
             transcription_enabled: mailbox.transcription_enabled,
             retention_days: mailbox.retention_days,
+            flow_id: mailbox.flow_id,
             created_at: system_time_to_epoch_secs(mailbox.created_at),
             updated_at: system_time_to_epoch_secs(mailbox.updated_at),
         }
@@ -129,6 +133,11 @@ pub struct CreateMailboxRequest {
     pub max_message_duration: u32,
     #[serde(default = "default_max_messages")]
     pub max_messages: u32,
+    /// A flow of the tenant's to handle a call this mailbox would take —
+    /// say something, ring someone, a queue, or a message after all. Unset:
+    /// the mailbox takes it.
+    #[serde(default)]
+    pub flow_id: Option<String>,
 }
 
 /// Update mailbox request.
@@ -145,6 +154,37 @@ pub struct UpdateMailboxRequest {
     pub transcription_enabled: Option<bool>,
     /// Double Option: outer = field not provided, inner = null to clear.
     pub retention_days: Option<Option<u32>>,
+    /// The flow that handles a call this mailbox would take; empty clears
+    /// it, so the mailbox takes it again.
+    pub flow_id: Option<String>,
+}
+
+/// The flow a mailbox hands its calls to, checked to be the tenant's; an
+/// empty value is none.
+async fn mailbox_flow(
+    state: &ApiState,
+    tenant: &fcp_core::TenantId,
+    flow_id: &str,
+) -> Result<Option<String>, ApiError> {
+    let flow_id = flow_id.trim();
+    if flow_id.is_empty() {
+        return Ok(None);
+    }
+    let store = state
+        .flow_store
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Flow store not configured".to_string()))?;
+    let flow = store
+        .get_flow(flow_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::BadRequest(format!("Flow {flow_id} not found")))?;
+    if flow.tenant_id.as_deref() != Some(tenant.to_string().as_str()) {
+        return Err(ApiError::BadRequest(format!(
+            "Flow {flow_id} is not in the authenticated tenant"
+        )));
+    }
+    Ok(Some(flow_id.to_string()))
 }
 
 /// Update message request.
@@ -378,6 +418,9 @@ pub async fn create_mailbox(
 
     mailbox.enabled = req.enabled;
     mailbox.max_message_duration = req.max_message_duration;
+    if let Some(flow_id) = &req.flow_id {
+        mailbox.flow_id = mailbox_flow(&state, &tenant.0, flow_id).await?;
+    }
     mailbox.max_messages = req.max_messages;
 
     storage
@@ -545,6 +588,9 @@ pub async fn update_mailbox(
             }
         }
         mailbox.retention_days = rd;
+    }
+    if let Some(flow_id) = &req.flow_id {
+        mailbox.flow_id = mailbox_flow(&state, &tenant.0, flow_id).await?;
     }
 
     mailbox.updated_at = SystemTime::now();

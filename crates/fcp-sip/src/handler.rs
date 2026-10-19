@@ -15030,9 +15030,10 @@ impl SipMessageHandler {
         initial_variables: HashMap<String, String>,
         what: &str,
     ) -> Result<()> {
-        // Insert flow into the store
+        // Held for the call, not written: the call manager lets it go when
+        // the call ends.
         let flow_id = flow_def.id.clone();
-        if let Err(e) = flow_handler.flow_store().insert_flow(flow_def).await {
+        if let Err(e) = flow_handler.flow_store().hold_flow(flow_def).await {
             warn!(call_id = %call_id, error = %e, what, "Failed to insert an inline flow");
             let response = self.create_simple_response(request, 500, "Internal Error");
             handle.send_final(response).await;
@@ -16489,6 +16490,20 @@ impl SipMessageHandler {
 
     /// Apply a treatment to the caller: forward, voicemail, or a final
     /// response. Ends the call on its record when nothing else will.
+    /// The flow the callee's mailbox hands its calls to, if it has one and
+    /// is enabled.
+    async fn mailbox_flow_of_callee(&self, call_id: fcp_b2bua_core::CallId) -> Option<String> {
+        let storage = self.storage.as_ref()?;
+        let user = self.call_manager.get_call(&call_id)?.callee_user_id?;
+        let mailbox =
+            fcp_core::storage::VoicemailStore::get_mailbox_by_user(storage.as_ref(), &user)
+                .await
+                .ok()??;
+        mailbox
+            .flow_id
+            .filter(|id| mailbox.enabled && !id.trim().is_empty())
+    }
+
     async fn apply_treatment(
         &self,
         request: &sip_core::Request,
@@ -16505,6 +16520,20 @@ impl SipMessageHandler {
                 info!(call_id = %call_id, reason, "A flow's Dial: the plan's voicemail answered as 480");
                 fcp_core::Treatment::Refuse { code: 480 }
             }
+            other => other,
+        };
+        // A mailbox that hands its calls to a flow (its `flow_id`): the call
+        // runs that flow instead (`docs/DEEP_TESTING.md` D8).
+        let treatment = match treatment {
+            fcp_core::Treatment::Voicemail => match self.mailbox_flow_of_callee(call_id).await {
+                Some(flow_id) => {
+                    info!(call_id = %call_id, flow_id = %flow_id, "The callee's mailbox hands the call to a flow");
+                    fcp_core::Treatment::Forward {
+                        target: fcp_core::CallTarget::Flow(flow_id),
+                    }
+                }
+                None => fcp_core::Treatment::Voicemail,
+            },
             other => other,
         };
         let routed = match treatment {

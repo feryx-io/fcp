@@ -260,6 +260,12 @@ pub struct VoicemailMailbox {
     /// Message retention period in days (None = keep forever)
     pub retention_days: Option<u32>,
 
+    /// How a call this mailbox would take is handled: a flow of the
+    /// tenant's, run by the call manager (say something, ring someone,
+    /// a queue, or a message after all); `None`, the mailbox takes it.
+    #[serde(default)]
+    pub flow_id: Option<String>,
+
     /// Greetings for this mailbox
     pub greetings: Vec<VoicemailGreeting>,
 
@@ -295,6 +301,7 @@ impl VoicemailMailbox {
             include_transcription: false,
             transcription_enabled: false,
             retention_days: None,
+            flow_id: None,
             greetings: Vec::new(),
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),

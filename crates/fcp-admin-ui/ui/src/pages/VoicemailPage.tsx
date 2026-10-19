@@ -22,7 +22,7 @@ import {
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { voicemail, users, lineBindings, phoneNumbers } from '@/api/endpoints'
+import { voicemail, users, lineBindings, phoneNumbers, flows } from '@/api/endpoints'
 import { formatDuration } from '@/lib/utils'
 import type { MailboxResponse, VoicemailMessage, CreateMailboxRequest, UpdateMailboxRequest } from '@/types'
 
@@ -45,6 +45,7 @@ const editSchema = z.object({
   include_transcription: z.boolean().optional(),
   transcription_enabled: z.boolean().optional(),
   retention_days: z.union([z.coerce.number().min(1).max(365), z.null()]).optional(),
+  flow_id: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -78,6 +79,11 @@ export function VoicemailPage() {
     queryFn: voicemail.listMailboxes,
   })
 
+  // Flows a mailbox can hand its calls to.
+  const { data: flowList = [] } = useQuery({
+    queryKey: ['flows'],
+    queryFn: () => flows.list(),
+  })
   const { data: userList = [] } = useQuery({
     queryKey: ['users'],
     queryFn: users.list,
@@ -408,6 +414,7 @@ export function VoicemailPage() {
       include_transcription: editItem.include_transcription,
       transcription_enabled: editItem.transcription_enabled,
       retention_days: editItem.retention_days,
+      flow_id: editItem.flow_id ?? '',
     })
   }
 
@@ -423,6 +430,8 @@ export function VoicemailPage() {
       include_transcription: data.include_transcription,
       transcription_enabled: data.transcription_enabled,
       retention_days: data.retention_days,
+      // Empty: the mailbox takes its calls itself.
+      flow_id: data.flow_id ?? '',
     }
     if (data.pin) payload.pin = data.pin
     updateMutation.mutate({ id: editItem.id, data: payload })
@@ -553,6 +562,24 @@ export function VoicemailPage() {
                 <Label htmlFor="e-max-msg">Max Messages</Label>
                 <Input id="e-max-msg" type="number" {...editForm.register('max_messages')} />
               </div>
+            </div>
+            <div className="border-t pt-3 space-y-2">
+              <Label htmlFor="e-flow" className="text-xs text-muted-foreground uppercase tracking-wider">Call handling</Label>
+              <select
+                id="e-flow"
+                className="w-full border rounded px-3 py-2 text-sm bg-background"
+                value={editForm.watch('flow_id') ?? ''}
+                onChange={e => editForm.setValue('flow_id', e.target.value)}
+              >
+                <option value="">Take a message (the greeting, then record)</option>
+                {flowList.map(f => (
+                  <option key={f.id} value={f.id}>Run the flow: {f.name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                A flow can say something, ring someone else, send the call to a queue, or still take a
+                message with its Voicemail node.
+              </p>
             </div>
             <div className="border-t pt-3 space-y-2">
               <Label className="text-xs text-muted-foreground uppercase tracking-wider">Message Retention</Label>
