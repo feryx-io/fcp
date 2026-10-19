@@ -808,6 +808,17 @@ Redis stood still after the warm-up. What grew was the audit log, call
 records, sign-in sessions, SIP traces and the site journal, each named
 in `EXPECTED_GROWTH`.
 
+**The 24-hour run (2026-10-18/19, v0.25.412, a GCE e2 VM).** 43,201 calls
+and 14,381 room joins offered, all answered, none dropped or silent; 95,640
+registrations; 183,600 API requests, none failed. The verdict failed on two
+growths. The call manager's memory rose linearly, 96.6 → 149.8 MB, about
+1.2 KB a call, with nothing it counts left over: a leak to find with a
+heap profile (#344). Redis rose 20 → 89 MB, all of it the CDR stream's
+24-hour replay window, which a 24-hour run cannot see level off (#345: the
+soak runs it at an hour; ~1.5 KB a record). And forge-rtp logged a warning
+for every refused latch packet — 44 million lines, a 6.7 GB log
+(forge-media #175).
+
 | Finding | Severity | Dealt with |
 |---|---|---|
 | A conference room was a number, not a tenant's number. The conference server keyed its live rooms — the mixer, the session index, recordings, DTMF handlers, the floor, speaker and content claims — by room number alone. Two tenants that both numbered a meeting 8801 shared one mix on a node, and a tenant's control request (mute, kick, lock, record, video) acted on whichever 8801 was live, since `control_tenant` preferred the live room's tenant to the one the admin API named. It went unseen because every SIP caller was the default tenant's: the call manager's leg into a room named no tenant, and the conference server, reached at an address, refused any other tenant's caller (403) once there was more than one tenant. The soak's tenant, made through the API, could not join a room at all. | S1 (two tenants' calls mixed; one tenant controlling another's room) | Fixed in v0.25.410. A live room is a `RoomKey` (tenant and number), and `RoomBridge` is the only way to the mixer's rooms, so a lookup by number alone does not compile. The call manager names the caller's tenant and user on its legs into a room, and the conference server believes them from a trusted edge (`resolve_tenant`). Every HTTP route that names a room takes the tenant from the header the admin API and the peers already send; `/conferences` lists each room with its tenant. `rooms.rs` `two_tenants_with_one_room_number_meet_apart`. |
