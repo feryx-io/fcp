@@ -891,6 +891,18 @@ ID; voicemail took a message and the VVX's light came on. Each of these
 needed fixes first — the table — and the menu that plays messages is
 silent without text to speech (Q-D8a below).
 
+**Session 2 (2026-10-19).** The fixes of session 1 retested on the images
+they shipped in, with every workaround removed: the VVX registered as
+`alice@d8.feryx.io`; a call from the mobile through Twilio rang it with
+ringback and audio both ways; a call out left Twilio in E.164
+(`send_e164`) with the line's number; voicemail answered with Piper's
+greeting, kept the message, and the VVX's lamp came on and went out
+through Redis — with the admin's deletes and with `*98`'s; `*98` took the
+PIN, played the message and deleted it, its prompts clean in G.722 after
+the resampler was replaced (forge-media v2026.10.19). The rows below from
+the stored-TOML finding on came out of session 2. forge-media #174 (the
+transcoder's G.722 mapping) is open.
+
 | Finding | Severity | Dealt with |
 |---|---|---|
 | A trunk host given as a name with no port was resolved and its **address** put in the Request-URI. Twilio, which knows a trunk by the domain there, refused every outbound call (403). | S2 (no outbound call to a carrier that names trunks by domain) | Fixed in v0.25.414 with siphon-rs's `InviteOptions::destination` (sip-uac 0.9.0): the name stays, the address the router chose is where the INVITE goes (TLS checks the name); emergency attempts too. Test: `trunk_router` `a_route_to_a_resolved_name_keeps_the_name`, siphon-rs `an_invite_goes_to_its_destination_and_keeps_the_name`. |
@@ -918,6 +930,7 @@ silent without text to speech (Q-D8a below).
 | The events server's `consumer_name` defaults to a random name per start, so with the TOML now reconciled its stored section is rewritten at every start. | S4 | #341. |
 | With the codec agreed, `*98` on the VVX still sounded off: 8 kHz prompts played to a G.722 leg were resampled a 20 ms frame at a time, by straight lines, each frame alone — a step at every frame's edge (50 a second) under a metallic voice; a 1 kHz tone measured 24.5 dB SNR. forge-resampler, used by every transcoder, was linear as well. | S2 (every prompt to a wideband phone, and every transcoded call, distorted) | Fixed in v0.25.432 with forge-media #173: a band-limited (Kaiser-windowed sinc), streaming resampler, playout keeping one per playback across frames (> 50 dB), `resample_all` for whole buffers (Piper, queue recordings, speech recognition, conference prompts). |
 | The voicemail menu read "You have 0 new messages … Press 1 for new messages", and "1 new messages". | S4 | Fixed in v0.25.432: counts in English, only the choices there is something behind. |
+| The voicemail server warned "MWI notifier not configured" on every message, though message waiting goes by events. | S4 | Fixed in v0.25.434: debug. |
 | A trunk's health is probed by the conference, IVR and voicemail servers as well as the call manager. | S4 | #336. |
 | The voicemail menu's flow runs on after the caller hangs up, asking for digits from a session that is gone. | S3 | #337. |
 | The VVX never answers the PRACK the node sends for its reliable 180 (retransmitted for the whole ring). | S3 | To capture on the next session. |
