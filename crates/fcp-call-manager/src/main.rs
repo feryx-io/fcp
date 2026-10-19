@@ -1251,6 +1251,57 @@ async fn run() -> Result<()> {
     let queue_handler: Option<Arc<dyn fcp_sip::queue::QueueHandler>> = queue_call_handler
         .as_ref()
         .map(|h| Arc::clone(h) as Arc<dyn fcp_sip::queue::QueueHandler>);
+    if queue_manager.is_none() {
+        // Queues on the admin API that this node will never answer.
+        let mut configured = 0usize;
+        if let Ok(tenants) =
+            fcp_core::storage::TenantStore::list_tenants(dyn_storage.as_ref()).await
+        {
+            for tenant in tenants.iter().map(|t| t.id).chain([default_tenant_id]) {
+                configured += fcp_core::storage::QueueConfigStore::list_queue_configs(
+                    dyn_storage.as_ref(),
+                    &tenant,
+                )
+                .await
+                .map(|q| q.len())
+                .unwrap_or(0);
+            }
+        }
+        if configured > 0 {
+            warn!(
+                queues = configured,
+                "Queues are configured on the admin API but [queue] enabled is false: \
+                 calls to them are not answered here"
+            );
+        }
+    }
+    // Queues made, changed or removed on the admin API take effect here
+    // without a signal (`docs/DEEP_TESTING.md` D8).
+    if let Some(qm) = queue_manager.clone() {
+        let qh = queue_call_handler.clone();
+        let base = config.queue.clone();
+        let storage = Arc::clone(&dyn_storage);
+        tokio::spawn(async move {
+            let every = Duration::from_secs(base.store_sync_secs.max(1));
+            let mut tick = tokio::time::interval(every);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                if let Err(e) = queue_runtime_config::sync_from_store(
+                    &qm,
+                    qh.as_deref(),
+                    &base,
+                    &storage,
+                    default_tenant_id,
+                )
+                .await
+                {
+                    warn!(error = %e, "Queues not brought up to date with the database");
+                }
+            }
+        });
+    }
 
     // 17b. Create PresenceManager (if enabled)
     let presence_manager: Option<fcp_presence::PresenceManager> = if config.presence.enabled {
@@ -2302,31 +2353,22 @@ async fn run() -> Result<()> {
                 match config::load_config(cli.config.as_deref()) {
                     Ok(new_config) => {
                         if let Some(ref qm) = queue_manager {
-                            match queue_runtime_config::build_effective_queue_runtime(
+                            match queue_runtime_config::sync_from_store(
+                                qm,
+                                queue_call_handler.as_deref(),
                                 &new_config.queue,
                                 &dyn_storage,
                                 default_tenant_id,
-                            ).await {
-                                Ok((effective_queue_config, queue_definitions)) => {
-                                    match qm.sync_queue_definitions(queue_definitions, effective_queue_config) {
-                                        Ok(new_queues) => {
-                                            if let Some(ref qh) = queue_call_handler {
-                                                for name in new_queues {
-                                                    info!(queue = %name, "Spawning distribution loop for new queue");
-                                                    qh.spawn_distribution_loop_for(name);
-                                                }
-                                            }
-                                            info!("Queue configuration reloaded successfully");
-                                        }
-                                        Err(e) => {
-                                            warn!(error = %e, "Failed to synchronize queue configuration");
-                                        }
-                                    }
-                                }
+                            )
+                            .await
+                            {
+                                Ok(_) => info!("Queue configuration reloaded successfully"),
                                 Err(e) => {
-                                    warn!(error = %e, "Failed to build effective queue runtime config");
+                                    warn!(error = %e, "Failed to reload the queue configuration")
                                 }
                             }
+                        } else {
+                            warn!("SIGHUP: the queue system is off ([queue] enabled = false)");
                         }
                     }
                     Err(e) => {

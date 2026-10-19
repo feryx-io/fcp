@@ -161,3 +161,27 @@ pub async fn build_effective_queue_runtime(
 
     Ok((effective_config, definitions))
 }
+
+/// Bring the running queues up to date with the database: a queue made,
+/// changed or removed on the admin API is answered, changed or drained
+/// here, and each new one starts distributing. Run at an interval and on
+/// SIGHUP (`docs/DEEP_TESTING.md` D8: a queue made on the API was never
+/// answered until the node was signalled). The names of new queues.
+pub async fn sync_from_store(
+    queue_manager: &fcp_queue::QueueManager,
+    queue_handler: Option<&crate::queue_handler::QueueCallHandler>,
+    base_config: &QueueSystemConfig,
+    storage: &Arc<DynStorage>,
+    default_tenant_id: TenantId,
+) -> Result<Vec<String>> {
+    let (effective, definitions) =
+        build_effective_queue_runtime(base_config, storage, default_tenant_id).await?;
+    let new_queues = queue_manager.sync_queue_definitions(definitions, effective)?;
+    if let Some(handler) = queue_handler {
+        for name in &new_queues {
+            tracing::info!(queue = %name, "Spawning distribution loop for new queue");
+            handler.spawn_distribution_loop_for(name.clone());
+        }
+    }
+    Ok(new_queues)
+}

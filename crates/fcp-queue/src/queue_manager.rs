@@ -465,11 +465,19 @@ impl QueueManager {
 
         *self.config.write() = system_config;
 
-        info!(
-            updated = self.queues.len(),
-            new = new_queues.len(),
-            "Queue configuration synchronized"
-        );
+        // Run on a timer as well as at start: only a change is news.
+        if new_queues.is_empty() {
+            debug!(
+                updated = self.queues.len(),
+                "Queue configuration synchronized"
+            );
+        } else {
+            info!(
+                updated = self.queues.len(),
+                new = new_queues.len(),
+                "Queue configuration synchronized"
+            );
+        }
         Ok(new_queues)
     }
 
@@ -2355,6 +2363,7 @@ mod tests {
             max_ring_time_secs: 20,
             queue_audio_dir: None,
             stats_publish_interval_secs: 5,
+            store_sync_secs: 30,
             auto_pause_resume_secs: 0,
             max_no_answer: 3,
             default_max_concurrent_calls: 1,

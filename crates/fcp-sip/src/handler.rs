@@ -14180,6 +14180,67 @@ impl SipMessageHandler {
             fcp_b2bua_core::LegSide::A => Some(call.a_leg.clone()),
             fcp_b2bua_core::LegSide::B => call.b_leg.clone(),
         };
+        // No second party: the node answered the call itself — a flow, a
+        // menu, voicemail access — and plays into the media session's A
+        // side. Whoever takes the caller's place is pointed at that side,
+        // and the flow carries on with them (`docs/DEEP_TESTING.md` D8: a
+        // VVX's attended transfer to an IVR was refused 481).
+        if party_leg.is_none() && side == fcp_b2bua_core::LegSide::A {
+            let anchored = call
+                .media_anchored
+                .then_some(call.media_session_id)
+                .flatten()
+                .zip(self.media_manager.clone());
+            if let Some((session_id, media_manager)) = anchored {
+                let Some(offer) = crate::body::request_sdp(request) else {
+                    return fail(
+                        488,
+                        "Not Acceptable Here",
+                        "an INVITE without an offer".into(),
+                    )
+                    .await;
+                };
+                let answer = match media_manager.update_session(&session_id, offer).await {
+                    Ok(answer) => answer,
+                    Err(e) => {
+                        return fail(503, "Service Unavailable", format!("media session: {e}"))
+                            .await
+                    }
+                };
+                let response = self.build_final_ok_response(request, None, Some(&answer))?;
+                let new_dialog = self.build_inbound_dialog(request, &response)?;
+                let leg = self.build_pickup_leg(request, new_dialog.clone());
+                let joining_user = self
+                    .call_manager
+                    .get_call(feature_call_id)
+                    .and_then(|c| c.caller_user_id);
+                let updated = self.call_manager.update_call(&call.id, |c| {
+                    c.caller_user_id = joining_user;
+                    c.a_leg = leg.clone();
+                    c.held = None;
+                });
+                if updated.is_err() {
+                    return fail(
+                        481,
+                        "Call/Transaction Does Not Exist",
+                        "the call ended".into(),
+                    )
+                    .await;
+                }
+                let _ = self.dialog_manager.insert(new_dialog.clone());
+                self.start_session_timer(&new_dialog);
+                self.sip_call_id_map
+                    .insert(new_dialog.id().call_id().to_string(), call.id.to_string());
+                handle.send_final(response).await;
+                if let Some((old_dialog, flow)) = old {
+                    self.sip_call_id_map.remove(old_dialog.id().call_id());
+                    self.drop_leg(old_dialog, flow);
+                }
+                self.end_joining_call(feature_call_id, call, label).await;
+                info!(call_id = %call.id, label, "A leg of a call the node answered taken over");
+                return Ok(());
+            }
+        }
         let Some(party_leg) = party_leg else {
             return fail(
                 481,
@@ -14362,8 +14423,19 @@ impl SipMessageHandler {
             self.drop_leg(old_dialog, flow);
         }
 
-        // The INVITE's own call: its media session (if it made one) freed,
-        // its record pointing at the call it joined.
+        self.end_joining_call(feature_call_id, call, label).await;
+        info!(call_id = %call.id, side = side.as_str(), label, "A leg taken over");
+        Ok(())
+    }
+
+    /// The INVITE's own call, once it has joined `call`: its media session
+    /// (if it made one) freed, its record pointing at the call it joined.
+    async fn end_joining_call(
+        &self,
+        feature_call_id: &fcp_b2bua_core::CallId,
+        call: &fcp_b2bua_core::Call,
+        label: &str,
+    ) {
         if let Some(own) = self.call_manager.get_call(feature_call_id) {
             if let (true, Some(session_id), Some(media_manager)) = (
                 own.media_anchored,
@@ -14384,8 +14456,6 @@ impl SipMessageHandler {
                 detail: format!("{label} completed"),
             },
         );
-        info!(call_id = %call.id, side = side.as_str(), label, "A leg taken over");
-        Ok(())
     }
 
     /// Handle park call (*70): park the current call in the next available orbit.

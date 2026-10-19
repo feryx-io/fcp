@@ -956,6 +956,88 @@ async fn an_attended_transfer_joins_the_other_two() {
     stack.finish().await;
 }
 
+/// An attended transfer to something the node answers itself — a menu, as
+/// a VVX's Transfer button does to an IVR (`docs/DEEP_TESTING.md` D8): the
+/// consultation call has no second party, only the flow, and the Replaces
+/// was refused 481 ("no party to join"). The transferee takes the
+/// consulting phone's place on the flow: Alice keys 5 and the menu rings
+/// Carol.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attended_transfer_to_a_menu_hands_the_caller_to_it() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let menu = stack.seed.user("menu", "menu-pw", "1500").await;
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "transfer-menu", "name": "Menu", "version": 1, "initial_node": "answer",
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "menu"},
+            "menu": {
+                "id": "menu", "name": "Menu", "type": "gather", "num_digits": 1,
+                "timeout": 20, "transitions": {"5": "dial"}, "default": "menu",
+                "on_timeout": "menu"
+            },
+            "dial": {
+                "id": "dial", "name": "Dial Carol", "type": "dial",
+                "destination": carol.extension, "timeout": 10, "next": "done",
+                "on_error": "done", "on_no_answer": "done", "on_busy": "done"
+            },
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .expect("seed flow");
+    stack
+        .calling(&menu, |s| {
+            s.forward_all = Some(CallTarget::Flow("transfer-menu".into()))
+        })
+        .await;
+
+    let (alice_call, bob_first) = answered(&stack, &alice, &bob, &bob_phone).await;
+    assert_eq!(bob_first.hold().await.unwrap(), 200);
+    let bob_second = bob_phone.call(&menu.extension).await.unwrap();
+    bob_second
+        .answered(SOON)
+        .await
+        .expect("the menu answers Bob");
+
+    // Bob completes the transfer: Alice replaces him on the menu's call.
+    let replaces = bob_second.replaces().await.unwrap();
+    let refer_to = format!(
+        "sip:{}@{}?Replaces={}",
+        menu.extension,
+        stack.sip,
+        escaped(&replaces)
+    );
+    assert_eq!(bob_first.refer(&refer_to).await.unwrap(), 202);
+    assert!(
+        bob_second.ended(SOON).await,
+        "Bob's leg to the menu was not dropped"
+    );
+    assert!(
+        bob_first.ended(RING_OUT).await,
+        "Bob's leg to Alice was not dropped"
+    );
+
+    // Alice is on the menu now: her 5 is heard there, and Carol rings.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    alice_call.media().send_dtmf('5');
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("Alice's key did not reach the menu", &bob_phone)
+            .await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    carol_call.media().play_tone(880.0, 3000);
+    assert!(
+        alice_call.media().heard(880, SOON).await,
+        "Alice does not hear Carol"
+    );
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_call_parked_by_transfer_is_retrieved_from_its_orbit() {
     let stack = stack_or_skip!();
@@ -1935,6 +2017,38 @@ async fn a_closed_queue_sends_its_callers_on() {
     let answered = at_carol.answer().await.unwrap();
     call.answered(SOON).await.unwrap();
     answered.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// A queue made on the admin API after the node started is answered with
+/// no signal to the node: it read its queues once, at start, and a queue
+/// made later was refused until the node was signalled
+/// (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queue_made_after_start_is_answered() {
+    let Some(stack) = Stack::start_with("[queue]\nenabled = true\nstore_sync_secs = 1\n").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let [(_, alice), _, _] = three_phones(&stack).await;
+    let queue = fcp_core::QueueConfigRecord::new(
+        "late".to_string(),
+        "7200".to_string(),
+        stack.seed.tenant_id,
+    );
+    fcp_core::storage::QueueConfigStore::put_queue_config(stack.seed.storage(), queue)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let call = alice.call("7200").await.unwrap();
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(&format!("the new queue did not answer: {e}"), &alice)
+            .await;
+    }
+    call.hangup().await.unwrap();
     stack.finish().await;
 }
 

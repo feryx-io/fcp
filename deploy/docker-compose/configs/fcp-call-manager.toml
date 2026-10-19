@@ -113,3 +113,8 @@ trusted_edges = ["127.0.0.0/8"]
 [logging]
 level = "info"
 format = "pretty"
+
+# Call queues: a queue made on the admin API is answered here, read again
+# from the database every [queue] store_sync_secs (30).
+[queue]
+enabled = true
