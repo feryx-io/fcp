@@ -559,6 +559,26 @@ async fn the_node_pracks_a_callee_that_rings_reliably() {
     for caller in ["uac_prack", "uac_answered"] {
         let (uac, uas) = stack.call(&sipp, caller, "uas_prack").await;
         stack.both_passed(&uac, &uas, caller).await;
+        // The node's BYE comes after its PRACK in the dialog: reusing the
+        // PRACK's CSeq, it was refused 500 by a Poly VVX, which kept the
+        // call (`docs/DEEP_TESTING.md` D8).
+        let cseq = |method: &str| -> u32 {
+            uas.messages
+                .split("-----------------------------------------------")
+                .filter(|block| block.contains("message received"))
+                .flat_map(str::lines)
+                .find_map(|l| {
+                    let rest = l.strip_prefix("CSeq:")?.trim();
+                    let (n, m) = rest.split_once(' ')?;
+                    (m == method).then(|| n.parse().ok()).flatten()
+                })
+                .unwrap_or_else(|| panic!("no {method} received:\n{}", uas.messages))
+        };
+        let (prack, bye) = (cseq("PRACK"), cseq("BYE"));
+        assert!(
+            bye > prack,
+            "{caller}: the node's BYE took CSeq {bye} after its PRACK's {prack}"
+        );
         stack.no_calls_up(caller).await;
     }
 }
