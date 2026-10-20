@@ -106,6 +106,9 @@ pub struct FlowCallHandler {
     /// Storage backend for extension → phone number → device resolution
     storage: Option<Arc<fcp_core::DynStorage>>,
 
+    /// The node's queues, where a Queue node dials its caller
+    queue_handler: Option<Arc<dyn crate::queue::QueueHandler>>,
+
     /// Transport dispatcher for sending out-of-transaction messages (ACK for 2xx)
     dispatcher: Option<Arc<dyn TransportDispatcher>>,
 
@@ -196,6 +199,7 @@ impl FlowCallHandler {
             flow_trace_store: None,
             registrar: None,
             storage: None,
+            queue_handler: None,
             dispatcher: None,
             call_recorder: std::sync::OnceLock::new(),
             outbound_route_provider: None,
@@ -311,6 +315,12 @@ impl FlowCallHandler {
     /// Set the storage backend for extension → device resolution.
     pub fn with_storage(mut self, storage: Arc<fcp_core::DynStorage>) -> Self {
         self.storage = Some(storage);
+        self
+    }
+
+    /// The node's queues, for the Queue node.
+    pub fn with_queue_handler(mut self, queues: Arc<dyn crate::queue::QueueHandler>) -> Self {
+        self.queue_handler = Some(queues);
         self
     }
 
@@ -735,6 +745,43 @@ impl FlowCallHandler {
     /// Phase 3 (PENDING): Media bridging
     /// Phase 4 (PENDING): CDR tracking
     /// Phase 5 (PENDING): Advanced features
+    /// `sip:<user>@` this node's own address, port included: a leg placed
+    /// there comes back into this node (`own_leg`).
+    fn own_uri(&self, user: &str) -> Option<sip_core::SipUri> {
+        let local = self.local_uri.as_ref()?;
+        let host = match local.port() {
+            Some(port) => format!("{}:{}", local.host(), port),
+            None => local.host().to_string(),
+        };
+        sip_core::SipUri::parse(&format!("sip:{user}@{host}")).ok()
+    }
+
+    /// Where a Queue node's caller is dialed: the extension at this node
+    /// where the call's tenant's queue, named by its name or extension,
+    /// answers.
+    fn queue_leg_uri(
+        &self,
+        a_leg_call_id: CallId,
+        queue: &str,
+    ) -> std::result::Result<sip_core::SipUri, String> {
+        let queues = self
+            .queue_handler
+            .as_ref()
+            .ok_or("Queues are off on this node")?;
+        let tenant_id = self
+            .call_manager
+            .as_ref()
+            .and_then(|cm| cm.get_call(&a_leg_call_id))
+            .map(|c| c.tenant_id)
+            .ok_or("No tenant for a queue")?;
+        let extension = queues
+            .extension_of(&tenant_id, queue)
+            .ok_or_else(|| format!("No queue '{queue}'"))?;
+        let uri = self.own_uri(&extension).ok_or("SIP URIs not configured")?;
+        info!(a_leg_call_id = %a_leg_call_id, queue = %queue, extension = %extension, "Queue node: the caller is dialed into the queue");
+        Ok(uri)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn handle_dial(
         &self,
@@ -805,7 +852,24 @@ impl FlowCallHandler {
                     // extension → phone number → device chain to get the actual device contact
                     // (e.g., "1234" → "polycom@192.168.1.12") so we INVITE the device directly
                     // instead of looping through the local B2BUA.
-                    let dest_uri = match sip_core::SipUri::parse(&destination) {
+                    // A Queue node's caller goes to the queue's extension here.
+                    let queue_uri = match destination.strip_prefix(fcp_flow::QUEUE_DIAL_PREFIX) {
+                        Some(queue) => match self.queue_leg_uri(a_leg_call_id, queue) {
+                            Ok(uri) => Some(uri),
+                            Err(error_msg) => {
+                                warn!(a_leg_call_id = %a_leg_call_id, %error_msg);
+                                return self
+                                    .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
+                                    .await;
+                            }
+                        },
+                        None => None,
+                    };
+                    let parsed = match queue_uri {
+                        Some(uri) => Ok(uri),
+                        None => sip_core::SipUri::parse(&destination),
+                    };
+                    let dest_uri = match parsed {
                         Ok(uri) => uri,
                         Err(_) => {
                             // Bare extension — try registrar lookup first
@@ -1018,19 +1082,7 @@ impl FlowCallHandler {
                                                     // as codes (`FLOW_DIAL_HEADER`), so a busy
                                                     // or unanswered user takes the flow's own
                                                     // branches.
-                                                    resolved =
-                                                        self.local_uri.as_ref().and_then(|u| {
-                                                            let host = match u.port() {
-                                                                Some(port) => {
-                                                                    format!("{}:{}", u.host(), port)
-                                                                }
-                                                                None => u.host().to_string(),
-                                                            };
-                                                            sip_core::SipUri::parse(&format!(
-                                                                "sip:{destination}@{host}"
-                                                            ))
-                                                            .ok()
-                                                        });
+                                                    resolved = self.own_uri(&destination);
                                                     info!(a_leg_call_id = %a_leg_call_id, user_id = %user_id, "Dial to a user: rung by their plan at this node");
                                                 }
                                                 other => {

@@ -13,6 +13,15 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+/// A Queue node's dial destination: this prefix, then the queue's name or
+/// extension, resolved by the flow handler to where the queue answers.
+pub const QUEUE_DIAL_PREFIX: &str = "queue:";
+
+/// How long a Queue node waits for its queue to answer the caller's leg.
+/// The queue answers at once and holds the caller itself; this is for a
+/// node that cannot.
+const QUEUE_ANSWER_SECS: u32 = 30;
+
 /// Flow execution engine.
 pub struct FlowEngine {
     /// HTTP client for HTTP nodes
@@ -737,20 +746,21 @@ impl FlowEngine {
                     "Routing call to ACD queue"
                 );
 
-                // Store queue routing configuration in context for the flow handler
-                context.set_variable("__queue_name".to_string(), interpolated_queue.clone());
-                context.set_variable("__queue_priority".to_string(), priority.to_string());
-                context.set_variable("__queue_next_on_answer".to_string(), next_on_answer.clone());
-                if let Some(timeout_node) = next_on_timeout {
-                    context
-                        .set_variable("__queue_next_on_timeout".to_string(), timeout_node.clone());
-                }
-                if let Some(error_node) = next_on_error {
-                    context.set_variable("__queue_next_on_error".to_string(), error_node.clone());
-                }
-
-                // Continue to the answer node; the flow handler will manage queue routing
-                Ok(FlowExecutionResult::Continue(next_on_answer.clone()))
+                // The caller is dialed into the queue where it answers, as a
+                // Dial to a user is: `next_on_answer` once that call is over.
+                // It only set variables nobody read and went on at once — a
+                // menu's "press 2 for the queue" said goodbye
+                // (`docs/DEEP_TESTING.md` D8).
+                Ok(FlowExecutionResult::WaitingForDial {
+                    destination: format!("{QUEUE_DIAL_PREFIX}{interpolated_queue}"),
+                    timeout_secs: QUEUE_ANSWER_SECS,
+                    caller_id: None,
+                    max_duration_secs: 0,
+                    on_busy: next_on_error.clone(),
+                    on_no_answer: next_on_timeout.clone().or_else(|| next_on_error.clone()),
+                    on_error: next_on_error.clone(),
+                    next: next_on_answer.clone(),
+                })
             }
         };
 

@@ -63,4 +63,12 @@ pub trait QueueHandler: Send + Sync {
 
     /// Log an agent out of all queues via feature code.
     async fn agent_logout(&self, extension: &str) -> Result<()>;
+
+    /// The extension a tenant's queue answers at, the queue named by its
+    /// name or its extension; `None` when this node has no such queue. A
+    /// flow's Queue node dials the caller there.
+    fn extension_of(&self, tenant_id: &fcp_core::TenantId, queue: &str) -> Option<String> {
+        let _ = (tenant_id, queue);
+        None
+    }
 }

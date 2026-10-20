@@ -1816,6 +1816,113 @@ record_calls = true
     stack.finish().await;
 }
 
+/// A flow's Queue node puts the caller in the queue: the agent rings and
+/// they talk. It set variables nobody read and went on at once, so the D8
+/// menu's "press 2 for the queue" said goodbye (`docs/DEEP_TESTING.md` D8).
+/// A queue that does not exist takes the node's error branch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flows_queue_node_puts_the_caller_in_the_queue() {
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+
+[queue.queues.support]
+name = "support"
+extension = "7000"
+agents = ["1002"]
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let (_alice, alice_phone, _bob, bob_phone) = two_phones(&stack).await;
+    let (code, login) = stack.post("/agents/1002/login", "{}").await;
+    assert_eq!(code, 200, "{login}");
+
+    // 1 for the queue, 2 for one that is not there, whose error branch
+    // hangs up (its answer branch would go back to the menu).
+    let menu = stack.seed.user("menu", "menu-pw", "1500").await;
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "queue-menu", "name": "Menu", "version": 1, "initial_node": "answer",
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "menu"},
+            "menu": {
+                "id": "menu", "name": "Menu", "type": "gather", "num_digits": 1,
+                "timeout": 20, "transitions": {"1": "support", "2": "missing"},
+                "default": "menu", "on_timeout": "menu"
+            },
+            "support": {
+                "id": "support", "name": "Support", "type": "queue", "queue_name": "support",
+                "next_on_answer": "done", "next_on_error": "menu"
+            },
+            "missing": {
+                "id": "missing", "name": "Missing", "type": "queue", "queue_name": "nobody",
+                "next_on_answer": "menu", "next_on_error": "done"
+            },
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    let storage = stack.seed.storage();
+    fcp_flow::FlowStore::insert_flow(storage, flow)
+        .await
+        .expect("seed flow");
+    let menu_id = fcp_core::storage::CredentialStore::get_user_in_tenant(
+        storage,
+        &menu.username,
+        &stack.seed.tenant_id,
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .id;
+    let mut settings = fcp_core::CallingSettings::defaults(stack.seed.tenant_id, menu_id);
+    settings.forward_all = Some(fcp_core::CallTarget::Flow("queue-menu".into()));
+    fcp_core::CallingStore::put_calling_settings(storage, settings)
+        .await
+        .unwrap();
+
+    let alice_call = alice_phone.call(&menu.extension).await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    alice_call.media().send_dtmf('1');
+    let Some(incoming) = bob_phone.incoming(Duration::from_secs(10)).await else {
+        stack
+            .fail("the Queue node did not ring the agent", &alice_phone)
+            .await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.media().play_tone(440.0, 3000);
+    bob_call.media().play_tone(880.0, 3000);
+    assert!(
+        bob_call.media().heard(440, SOON).await,
+        "the agent does not hear the caller"
+    );
+    assert!(
+        alice_call.media().heard(880, SOON).await,
+        "the caller does not hear the agent"
+    );
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(
+        bob_call.ended(SOON).await,
+        "the agent's leg outlived the call"
+    );
+
+    let lost = alice_phone.call(&menu.extension).await.unwrap();
+    lost.answered(SOON).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    lost.media().send_dtmf('2');
+    assert!(
+        lost.ended(SOON).await,
+        "a missing queue did not take the error branch"
+    );
+    stack.finish().await;
+}
+
 /// A registration whose phone is gone — crashed, or brought back by a
 /// restore — is one of the contacts a call to the user forks to. The
 /// live phone answers; the caller must hear that answer at once, not

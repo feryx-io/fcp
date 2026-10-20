@@ -2030,6 +2030,21 @@ impl QueueCallHandler {
 
 #[async_trait::async_trait]
 impl fcp_sip::queue::QueueHandler for QueueCallHandler {
+    fn extension_of(&self, tenant_id: &fcp_core::TenantId, queue: &str) -> Option<String> {
+        if !self.queue_manager.is_enabled() {
+            return None;
+        }
+        if let Some(config) = self
+            .queue_manager
+            .get_queue_config_for_tenant(queue, tenant_id)
+        {
+            return Some(config.extension);
+        }
+        self.queue_manager
+            .get_queue_for_extension_in_tenant(tenant_id, queue)
+            .map(|_| queue.to_string())
+    }
+
     async fn can_handle(&self, request: &sip_core::Request) -> bool {
         if !self.queue_manager.is_enabled() {
             return false;

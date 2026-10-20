@@ -1437,6 +1437,10 @@ async fn run() -> Result<()> {
 
     // Wire storage for extension → phone number → device → registrar resolution chain
     flow_handler = flow_handler.with_storage(Arc::clone(&dyn_storage));
+    // A Queue node dials its caller into the node's queue.
+    if let Some(ref queues) = queue_handler {
+        flow_handler = flow_handler.with_queue_handler(Arc::clone(queues));
+    }
 
     // Hoteling (docs/ENTERPRISE_CALLING.md §3.8): `*88` runs its login in
     // a flow, `*89` and the sweep end sessions here, and a phone is told
