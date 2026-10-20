@@ -894,8 +894,20 @@ impl FlowEngine {
         let mut result = template.to_string();
 
         for cap in re.captures_iter(template) {
-            let var_name = cap[1].trim();
+            let (var_name, filter) = match cap[1].split_once('|') {
+                Some((name, filter)) => (name.trim(), Some(filter.trim())),
+                None => (cap[1].trim(), None),
+            };
             let value = context.get_variable(var_name)?;
+            let value = match filter {
+                None => value,
+                Some(filter) => apply_filter(&value, filter).ok_or_else(|| {
+                    FlowError::InvalidDefinition(format!(
+                        "unknown filter `{filter}` in `{}`",
+                        &cap[0]
+                    ))
+                })?,
+            };
             result = result.replace(&cap[0], &value);
         }
 
@@ -1304,6 +1316,30 @@ pub enum FlowExecutionResult {
     },
 }
 
+/// A placeholder's filter (`{{keys|digits}}`) applied to its value; None
+/// for a filter there is no such thing as.
+pub fn apply_filter(value: &str, filter: &str) -> Option<String> {
+    match filter {
+        "digits" => Some(spoken_digits(value)),
+        _ => None,
+    }
+}
+
+/// The `digits` filter: each key on its own, so speech reads 5551 as
+/// "five five five one", not five thousand five hundred and fifty-one.
+fn spoken_digits(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| match c {
+            '*' => "star".to_string(),
+            '#' => "pound".to_string(),
+            c => c.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1508,6 +1544,23 @@ mod tests {
     }
 
     // ---- interpolate_variables tests ----
+
+    #[test]
+    fn the_digits_filter_reads_keys_one_at_a_time() {
+        let engine = test_engine();
+        let mut vars = HashMap::new();
+        vars.insert("keys".to_string(), "5551*0#".to_string());
+        let ctx = test_context_with(vars);
+
+        let result = engine
+            .interpolate_variables("You entered {{keys|digits}}", &ctx)
+            .unwrap();
+        assert_eq!(result, "You entered 5 5 5 1 star 0 pound");
+        assert!(matches!(
+            engine.interpolate_variables("{{ keys | shout }}", &ctx),
+            Err(FlowError::InvalidDefinition(_))
+        ));
+    }
 
     #[test]
     fn test_interpolate_simple() {

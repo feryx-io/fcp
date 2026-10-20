@@ -347,8 +347,15 @@ impl FlowCallHandler {
     fn interpolate(template: &str, context: &FlowContext) -> String {
         let mut result = template.to_string();
         for cap in INTERPOLATION_RE.captures_iter(template) {
-            let var_name = cap[1].trim();
+            let (var_name, filter) = match cap[1].split_once('|') {
+                Some((name, filter)) => (name.trim(), Some(filter.trim())),
+                None => (cap[1].trim(), None),
+            };
             if let Ok(value) = context.get_variable(var_name) {
+                let value = match filter {
+                    Some(filter) => fcp_flow::apply_filter(&value, filter).unwrap_or(value),
+                    None => value,
+                };
                 result = result.replace(&cap[0], &value);
             }
         }

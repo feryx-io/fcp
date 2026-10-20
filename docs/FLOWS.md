@@ -127,3 +127,12 @@ on every Gather.
   "on_max_attempts": "operator"
 }
 ```
+
+### Reading keys back
+
+`{{keys|digits}}` reads a value one key at a time: `5551#` is spoken
+"5 5 5 1 pound", not five thousand five hundred and fifty-one (`*` is
+"star"). A Say node's `{"type": "say", "text": "You entered {{keys|digits}}"}`
+is the usual case. In the engine an unknown filter is an error; a filter
+in a Gather's retry prompt is applied the same way, and an unknown one
+leaves the value as it is.

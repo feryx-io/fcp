@@ -10,8 +10,8 @@ pub mod storage;
 
 // Re-exports
 pub use engine::{
-    AnswerCallback, FlowContext, FlowEngine, FlowExecutionResult, HangupCallback, SpeechGather,
-    QUEUE_DIAL_PREFIX,
+    apply_filter, AnswerCallback, FlowContext, FlowEngine, FlowExecutionResult, HangupCallback,
+    SpeechGather, QUEUE_DIAL_PREFIX,
 };
 pub use schema::{FlowDefinition, FlowNode, NodeType};
 pub use storage::{BuiltinFlows, FlowQuery, FlowStore, InMemoryFlowStore};
