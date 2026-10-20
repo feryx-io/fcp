@@ -1096,6 +1096,83 @@ async fn a_call_parked_by_transfer_is_retrieved_from_its_orbit() {
     stack.finish().await;
 }
 
+/// A menu's timeout runs from the end of its prompt: a caller who listens
+/// to the whole prompt, then presses, is heard. It ran from the prompt's
+/// start, so the D8 menu — a prompt about as long as its 8 s timeout —
+/// said goodbye as it finished asking (`docs/DEEP_TESTING.md` D8). A key
+/// during the prompt still cuts it short.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_menus_timeout_runs_from_the_end_of_its_prompt() {
+    const PROMPT_HZ: u32 = 500;
+    let stack = stack_or_skip!();
+    let [(_, alice), (carol, carol_phone), _] = three_phones(&stack).await;
+    let menu = stack.seed.user("menu", "menu-pw", "1500").await;
+    let prompt = stack._dir.path().join("long-prompt.wav");
+    tone_wav(&prompt, PROMPT_HZ as f32, 4.0);
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "long-menu", "name": "Menu", "version": 1, "initial_node": "answer",
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "menu"},
+            "menu": {
+                "id": "menu", "name": "Menu", "type": "gather", "num_digits": 1,
+                "timeout": 2, "barge_in": true,
+                "prompt": {"type": "play", "url": prompt.display().to_string()},
+                "transitions": {"3": "dial"}, "default": "done", "on_timeout": "done"
+            },
+            "dial": {
+                "id": "dial", "name": "Dial Carol", "type": "dial",
+                "destination": carol.extension, "timeout": 10, "next": "done",
+                "on_error": "done", "on_no_answer": "done", "on_busy": "done"
+            },
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .expect("seed flow");
+    stack
+        .calling(&menu, |s| {
+            s.forward_all = Some(CallTarget::Flow("long-menu".into()))
+        })
+        .await;
+
+    // The whole 4 s prompt heard, then 3: past the old deadline (2 s from
+    // the prompt's start), inside the new one (2 s from its end).
+    let call = alice.call(&menu.extension).await.unwrap();
+    call.answered(SOON).await.expect("the menu answers");
+    assert!(
+        call.media().heard(PROMPT_HZ, SOON).await,
+        "the prompt is not heard"
+    );
+    tokio::time::sleep(Duration::from_millis(4500)).await;
+    assert!(
+        !call.ended(Duration::ZERO).await,
+        "the menu hung up while the prompt was still playing or just after"
+    );
+    call.media().send_dtmf('3');
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("the 3 pressed after the prompt was not heard", &alice)
+            .await;
+    };
+    at_carol.answer().await.unwrap().hangup().await.unwrap();
+    let _ = call.ended(SOON).await;
+
+    // Pressed during the prompt: the prompt stops and the choice is taken.
+    let call = alice.call(&menu.extension).await.unwrap();
+    call.answered(SOON).await.expect("the menu answers");
+    assert!(call.media().heard(PROMPT_HZ, SOON).await);
+    call.media().send_dtmf('3');
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("a 3 pressed during the prompt was not heard", &alice)
+            .await;
+    };
+    at_carol.answer().await.unwrap().hangup().await.unwrap();
+    stack.finish().await;
+}
+
 /// The caller parks the callee with `*70`: the callee moves to the A
 /// slot, and the B slot the caller left must name no one. Still naming the
 /// callee, it sent the callee's own audio back between the hold music's

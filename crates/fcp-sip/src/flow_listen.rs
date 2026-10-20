@@ -31,6 +31,10 @@ const ONSET_FRAMES: usize = 10;
 /// as speech, recognised as no words).
 const RECOGNITION_GRACE: Duration = Duration::from_secs(3);
 
+/// The digit collector's own limit, which never comes: a Gather's deadline
+/// runs from its prompt's end, and is kept by [`Listening::wait`].
+const UNTIMED: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// What the watch on the caller's leg hears.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Voice {
@@ -136,8 +140,10 @@ impl Listening {
 
     /// Wait for input, stopping `prompt` (a playback on `session`) as soon
     /// as the caller presses a digit or begins to speak. `timeout` is how
-    /// long the caller has to begin; once they have begun speaking, their
-    /// utterance is waited for.
+    /// long the caller has to begin once the prompt is over — it used to
+    /// run from the prompt's start, so a menu whose prompt was as long as
+    /// its timeout said goodbye as it finished asking (`docs/DEEP_TESTING.md`
+    /// D8). Once they have begun speaking, their utterance is waited for.
     pub(crate) async fn wait(
         mut self,
         media: &MediaManager,
@@ -156,9 +162,11 @@ impl Listening {
             };
         }
         let collector = self.collector.take();
+        // The collector keeps no time: the deadline below does, from the
+        // prompt's end.
         let digits = async {
             match &collector {
-                Some(collector) => collector.collect(timeout).await,
+                Some(collector) => collector.collect(UNTIMED).await,
                 None => std::future::pending().await,
             }
         };
@@ -166,12 +174,21 @@ impl Listening {
         let mut digits_done = collector.is_none();
         let mut speech = self.speech.take();
         let mut onset = self.onset.take();
-        let begin_by = Instant::now() + timeout;
-        let give_up = begin_by + UTTERANCE_GRACE;
+        let playing = prompt.clone();
+        let prompt_done = async {
+            match &playing {
+                Some(pid) => {
+                    let _ = media.wait_playback_completion(pid.clone()).await;
+                }
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(prompt_done);
+        let mut begin_by = prompt.is_none().then(|| Instant::now() + timeout);
         let mut speaking = false;
 
         let outcome = loop {
-            let deadline = if speaking { give_up } else { begin_by };
+            let deadline = begin_by.map(|at| if speaking { at + UTTERANCE_GRACE } else { at });
             tokio::select! {
                 result = &mut digits, if !digits_done => match result {
                     CollectionResult::Complete(d) => break GatherOutcome::Digits(d),
@@ -186,6 +203,24 @@ impl Listening {
                     }
                     CollectionResult::Cancelled => break GatherOutcome::Cancelled,
                 },
+                () = &mut prompt_done, if begin_by.is_none() => {
+                    prompt = None;
+                    begin_by = Some(Instant::now() + timeout);
+                }
+                _ = sleep_until_some(deadline) => {
+                    let pressed = match &collector {
+                        Some(collector) if !digits_done => {
+                            collector.cancel().await;
+                            collector.get_digits().await
+                        }
+                        _ => String::new(),
+                    };
+                    break if pressed.is_empty() {
+                        GatherOutcome::Timeout
+                    } else {
+                        GatherOutcome::PartialDigits(pressed)
+                    };
+                }
                 transcript = next_transcript(&mut speech) => match transcript {
                     // An utterance recognised as no words: not speech.
                     Some(t) if t.text.trim().is_empty() => {
@@ -200,6 +235,7 @@ impl Listening {
                         if let Some(pid) = prompt.take() {
                             let _ = media.stop_playback(session, pid).await;
                         }
+                        begin_by.get_or_insert_with(|| Instant::now() + timeout);
                     }
                     None => {
                         // The recognizer has gone; digits may still come.
@@ -218,19 +254,25 @@ impl Listening {
                         if let Some(pid) = prompt.take() {
                             let _ = media.stop_playback(session, pid).await;
                         }
+                        begin_by.get_or_insert_with(|| Instant::now() + timeout);
                     }
                     // Nothing came of it: the timeout counts again.
                     Voice::Quiet => speaking = false,
                 },
-                _ = tokio::time::sleep_until(deadline), if speech.is_some() => {
-                    break GatherOutcome::Timeout;
-                }
             }
         };
         if let Some(pid) = prompt {
             let _ = media.stop_playback(session, pid).await;
         }
         outcome
+    }
+}
+
+/// Until `deadline`, or for ever without one.
+async fn sleep_until_some(deadline: Option<Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
     }
 }
 
