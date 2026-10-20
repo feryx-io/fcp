@@ -1349,6 +1349,49 @@ async fn a_caller_parking_with_the_code_leaves_the_parked_party_only_the_music()
     stack.finish().await;
 }
 
+/// The callee parks the caller with `*70`. The callee's leg is To the
+/// extension dialed, not the callee's name, so the lookup by name found no
+/// call and `*70` was refused 480 — busy on the D8 server's VVX, parking a
+/// carrier call it had answered (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_callee_parking_with_the_code_parks_the_caller() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), _] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+
+    let park = bob_phone.call("*70").await.unwrap();
+    if let Err(e) = park.answered(SOON).await {
+        stack
+            .fail(&format!("*70 was not answered: {e}"), &bob_phone)
+            .await;
+    }
+    assert!(park.ended(RING_OUT).await, "the *70 call was never ended");
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+    assert!(
+        alice_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await,
+        "Alice, parked, hears no music"
+    );
+
+    let retrieve = bob_phone.call("*71701").await.unwrap();
+    if let Err(e) = retrieve.answered(SOON).await {
+        stack
+            .fail(&format!("the retrieve was not answered: {e}"), &bob_phone)
+            .await;
+    }
+    retrieve.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Bob after the retrieve"
+    );
+    retrieve.hangup().await.unwrap();
+    assert!(
+        alice_call.ended(SOON).await,
+        "Alice's leg outlived the call"
+    );
+    stack.finish().await;
+}
+
 /// An encrypted caller transfers the callee to a plain phone: the plain
 /// phone takes the caller's side, so the node's keys for that side must go
 /// — kept, the node would encrypt toward it and refuse its plain packets.

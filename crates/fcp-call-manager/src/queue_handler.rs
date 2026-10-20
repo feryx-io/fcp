@@ -195,13 +195,14 @@ pub struct QueueCallHandler {
 }
 
 impl QueueCallHandler {
-    /// The groups (by id) of the user an agent's extension names — their
-    /// username, else the extension on their record — if they may work.
-    async fn groups_of_extension(&self, extension: &str, tenant_id: &TenantId) -> Vec<String> {
+    /// The user an agent's extension names — their username, else the
+    /// extension on their record — if they may work.
+    async fn user_of_extension(
+        &self,
+        extension: &str,
+        tenant_id: &TenantId,
+    ) -> Option<fcp_core::User> {
         use fcp_core::CredentialStore;
-        let Some(groups) = self.storage.group_store() else {
-            return Vec::new();
-        };
         let user = match self
             .storage
             .get_user_by_sip_name(extension, tenant_id)
@@ -219,16 +220,36 @@ impl QueueCallHandler {
                         .find(|u| u.extension.as_deref() == Some(extension))
                 }),
         };
-        let Some(user) = user.filter(|u| u.may_use_services()) else {
+        user.filter(|u| u.may_use_services())
+    }
+
+    /// The groups (by id) of `user`.
+    async fn groups_of_user(&self, user: &fcp_core::User) -> Vec<String> {
+        let Some(groups) = self.storage.group_store() else {
             return Vec::new();
         };
         match groups.groups_of_user(&user.id).await {
             Ok(groups) => groups.into_iter().map(|g| g.id.to_string()).collect(),
             Err(e) => {
-                warn!(extension, error = %e, "Could not read an agent's groups");
+                warn!(user = %user.username, error = %e, "Could not read an agent's groups");
                 Vec::new()
             }
         }
+    }
+
+    /// The node's hold music (`path`) for a queue whose class has no
+    /// audio, so a waiting caller is never left on dead air.
+    pub fn with_default_moh(mut self, path: Option<&std::path::Path>) -> Self {
+        if let Some(path) = path {
+            let cache = self
+                .moh_cache
+                .take()
+                .map(|c| Arc::try_unwrap(c).unwrap_or_default())
+                .unwrap_or_default()
+                .with_default(path);
+            self.moh_cache = (!cache.is_empty()).then(|| Arc::new(cache));
+        }
+        self
     }
 
     /// Speech for recording announcements when a tenant's prompt has no
@@ -414,15 +435,20 @@ impl QueueCallHandler {
     }
 
     /// Resolve MOH frames for a given queue and codec.
-    /// Looks up the queue's `moh_class` (defaulting to `"default"`) in the MOH cache.
+    /// Looks up the queue's `moh_class` in the MOH cache, falling back to
+    /// `"default"` for a queue with none (or an empty one, as the API
+    /// stores it) or a class with no audio.
     fn resolve_moh_frames(&self, queue_name: &str, codec_name: &str) -> Option<Arc<Vec<Vec<u8>>>> {
         let cache = self.moh_cache.as_ref()?;
         let moh_class = self
             .queue_manager
             .get_queue_config(queue_name)
             .and_then(|c| c.moh_class.clone())
+            .filter(|class| !class.is_empty())
             .unwrap_or_else(|| "default".to_string());
-        let frames = cache.get_frames(&moh_class, codec_name)?;
+        let frames = cache
+            .get_frames(&moh_class, codec_name)
+            .or_else(|| cache.get_frames("default", codec_name))?;
         Some(Arc::new(frames.to_vec()))
     }
 
@@ -2488,18 +2514,25 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
     async fn agent_login(&self, extension: &str, tenant_id: &TenantId) -> Result<()> {
         // Find which queues this extension belongs to from config
         let config = self.queue_manager.get_system_config();
-        // A queue may take its agents from a group (docs/USERS.md §5): the
-        // caller's groups, asked only when some queue has one.
-        let groups = if config.queues.values().any(|qc| qc.agent_group_id.is_some()) {
-            self.groups_of_extension(extension, tenant_id).await
-        } else {
-            Vec::new()
+        // A phone dials in by its user's name; a queue may list that user
+        // by name or by extension, or take its agents from a group
+        // (docs/USERS.md §5).
+        let user = self.user_of_extension(extension, tenant_id).await;
+        let groups = match &user {
+            Some(user) if config.queues.values().any(|qc| qc.agent_group_id.is_some()) => {
+                self.groups_of_user(user).await
+            }
+            _ => Vec::new(),
         };
+        let names: Vec<&str> = std::iter::once(extension)
+            .chain(user.iter().map(|u| u.username.as_str()))
+            .chain(user.iter().filter_map(|u| u.extension.as_deref()))
+            .collect();
         let queue_names: Vec<String> = config
             .queues
             .iter()
             .filter(|(_, qc)| {
-                qc.agents.contains(&extension.to_string())
+                qc.agents.iter().any(|a| names.contains(&a.as_str()))
                     || qc
                         .agent_group_id
                         .as_ref()

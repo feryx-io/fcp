@@ -353,10 +353,20 @@ fn encode_pcma_frames(pcm: &[i16]) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// One MOH class's 8 kHz audio, encoded for each codec a caller may use.
+fn encode_moh_class(pcm: &[i16]) -> HashMap<String, Vec<Vec<u8>>> {
+    let mut codec_map = HashMap::new();
+    codec_map.insert("PCMU".to_string(), encode_pcmu_frames(pcm));
+    codec_map.insert("PCMA".to_string(), encode_pcma_frames(pcm));
+    codec_map.insert("G722".to_string(), encode_g722_frames(pcm));
+    codec_map
+}
+
 /// Pre-encoded MOH (Music On Hold) audio cache.
 ///
 /// Loads WAV files from `{audio_dir}/moh/{class_name}/` subdirectories,
 /// concatenates all WAVs in each class, and pre-encodes per codec.
+#[derive(Default)]
 pub struct MohCache {
     /// class_name → codec_name → Vec<frames>
     classes: HashMap<String, HashMap<String, Vec<Vec<u8>>>>,
@@ -428,10 +438,7 @@ impl MohCache {
                 continue;
             }
 
-            let mut codec_map = HashMap::new();
-            codec_map.insert("PCMU".to_string(), encode_pcmu_frames(&combined_pcm));
-            codec_map.insert("PCMA".to_string(), encode_pcma_frames(&combined_pcm));
-            codec_map.insert("G722".to_string(), encode_g722_frames(&combined_pcm));
+            let codec_map = encode_moh_class(&combined_pcm);
 
             info!(
                 class = %class_name,
@@ -444,6 +451,20 @@ impl MohCache {
         }
 
         Self { classes }
+    }
+
+    /// With `path` (the node's hold music) as the `default` class when no
+    /// `default/` directory gave one: a queue with no audio of its own
+    /// plays what a held call hears, not silence.
+    pub fn with_default(mut self, path: &Path) -> Self {
+        if !self.classes.contains_key("default") {
+            if let Some(pcm) = load_wav_pcm(path).filter(|pcm| !pcm.is_empty()) {
+                info!(path = %path.display(), "Queue hold music: the node's default");
+                self.classes
+                    .insert("default".to_string(), encode_moh_class(&pcm));
+            }
+        }
+        self
     }
 
     /// Get the pre-encoded frames for a MOH class and codec.

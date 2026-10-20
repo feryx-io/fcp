@@ -1923,6 +1923,67 @@ agents = ["1002"]
     stack.finish().await;
 }
 
+/// A queue with no audio of its own plays the node's hold music, and an
+/// agent the queue lists by extension logs in with `*50` from a phone that
+/// dials by name. On the D8 server the caller waited two minutes in
+/// silence, and the agent's `*50` would have been refused: the queue said
+/// `1001`, the phone said `alice` (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_waiting_caller_hears_music_until_an_agent_logs_in_by_name() {
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+
+[queue.queues.support]
+name = "support"
+extension = "7000"
+agents = ["1002"]
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let (_alice, alice_phone, _bob, bob_phone) = two_phones(&stack).await;
+
+    let alice_call = alice_phone.call("7000").await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+    assert!(
+        alice_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await,
+        "the waiting caller hears no music"
+    );
+
+    let login = bob_phone.call("*50").await.unwrap();
+    if let Err(e) = login.answered(SOON).await {
+        stack
+            .fail(&format!("the agent's *50 was refused: {e}"), &bob_phone)
+            .await;
+    }
+    let Some(incoming) = bob_phone.incoming(Duration::from_secs(10)).await else {
+        stack
+            .fail("the logged-in agent was not rung", &alice_phone)
+            .await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    bob_call.media().play_tone(880.0, 3000);
+    assert!(
+        alice_call.media().heard(880, SOON).await,
+        "the caller does not hear the agent"
+    );
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(
+        bob_call.ended(SOON).await,
+        "the agent's leg outlived the call"
+    );
+    stack.finish().await;
+}
+
+/// The built-in hold music's first note (`fcp_sip::hold_music`).
+const DEFAULT_MUSIC_HZ: u32 = 659;
+
 /// A registration whose phone is gone — crashed, or brought back by a
 /// restore — is one of the contacts a call to the user forks to. The
 /// live phone answers; the caller must hear that answer at once, not

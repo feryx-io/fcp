@@ -1181,14 +1181,21 @@ impl CallManager {
             if call.state != CallState::Established || !wanted(call) {
                 return None;
             }
-            let is = |uri: &str| {
-                extract_user_from_uri(uri)
-                    .map(|u| u == user)
-                    .unwrap_or(false)
+            // A leg is the party's when the phone at its far end is
+            // theirs (the dialog's remote target, which names the phone
+            // that answered) or its From/To names them: a B-leg's To is
+            // the number dialed, not who answered it.
+            let is = |leg: &crate::call::CallLeg| {
+                leg.dialog
+                    .as_ref()
+                    .is_some_and(|d| d.remote_target().user() == Some(user))
+                    || extract_user_from_uri(&leg.remote_uri)
+                        .map(|u| u == user)
+                        .unwrap_or(false)
             };
-            if is(&call.a_leg.remote_uri) {
+            if is(&call.a_leg) {
                 Some((call.clone(), crate::call::LegSide::A))
-            } else if call.b_leg.as_ref().is_some_and(|b| is(&b.remote_uri)) {
+            } else if call.b_leg.as_ref().is_some_and(is) {
                 Some((call.clone(), crate::call::LegSide::B))
             } else {
                 None

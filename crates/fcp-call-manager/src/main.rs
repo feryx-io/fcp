@@ -1240,6 +1240,15 @@ async fn run() -> Result<()> {
             Arc::clone(&call_manager),
         )
         .with_tts_service(media_manager.tts_service().cloned());
+        // A queue with no music of its own plays the node's hold music.
+        let default_music = PathBuf::from(&config.media.prompts_dir).join("hold-music.wav");
+        let handler = match fcp_sip::hold_music::write_default_music(&default_music) {
+            Ok(()) => handler.with_default_moh(Some(&default_music)),
+            Err(e) => {
+                warn!(path = %default_music.display(), error = %e, "The default hold music could not be written; queues without music of their own are silent");
+                handler
+            }
+        };
         info!(
             queues = config.queue.queues.len(),
             "Queue/ACD handler enabled"
