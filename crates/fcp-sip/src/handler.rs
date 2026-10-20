@@ -13841,17 +13841,31 @@ impl SipMessageHandler {
                 }
             });
         }
-        // The parked party goes to the A slot; its media side follows.
-        if parker == fcp_b2bua_core::LegSide::A {
-            if let (true, Some(session_id), Some(media_manager), Some(sdp)) = (
-                call.media_anchored,
-                call.media_session_id,
-                self.media_manager.as_ref(),
-                call.b_leg.as_ref().and_then(|b| b.sdp.clone()),
-            ) {
-                if let Err(e) = media_manager.update_session(&session_id, sdp).await {
-                    warn!(call_id = %call.id, error = %e, "Parked party's media not moved to the A side");
+        // The parked party goes to the A slot; its media side follows, and
+        // the B side, the parker's, is left with no one on it until the
+        // call is retrieved: still naming the parked party, it relayed the
+        // party's own audio back between the hold music's packets
+        // (`docs/DEEP_TESTING.md` D8).
+        if let (true, Some(session_id), Some(media_manager)) = (
+            call.media_anchored,
+            call.media_session_id,
+            self.media_manager.as_ref(),
+        ) {
+            use fcp_media::backend::Leg;
+            let moved = match parker {
+                fcp_b2bua_core::LegSide::A => {
+                    match call.b_leg.as_ref().and_then(|b| b.sdp.clone()) {
+                        Some(sdp) => match media_manager.update_session(&session_id, sdp).await {
+                            Ok(_) => media_manager.move_peer(&session_id, Leg::B, Leg::A).await,
+                            Err(e) => Err(e),
+                        },
+                        None => media_manager.release_leg(&session_id, Leg::B).await,
+                    }
                 }
+                fcp_b2bua_core::LegSide::B => media_manager.release_leg(&session_id, Leg::B).await,
+            };
+            if let Err(e) = moved {
+                warn!(call_id = %call.id, error = %e, "Parked party's media not moved to the A side");
             }
         }
         let parker_dialog_id = match parker {
@@ -14529,15 +14543,27 @@ impl SipMessageHandler {
             self.drop_leg(dialog, parker_flow);
         }
 
-        // Respond 200 OK to the feature-code INVITE with orbit info
-        let response =
-            self.create_simple_response(request, 200, &format!("Parked Orbit {}", orbit));
-        handle.send_final(response).await;
-
-        // Terminate the feature-code call
-        let _ = self.call_manager.terminate_call(call_id, None);
-
-        Ok(())
+        // The parker is told the orbit, then hung up on. A bare 200 told
+        // only a reason phrase no phone shows, answered an offer with no
+        // SDP, and left the phone on a call nobody ended
+        // (`docs/DEEP_TESTING.md` D8).
+        let Some(flow_handler) = self.flow_handler.clone() else {
+            let response =
+                self.create_simple_response(request, 200, &format!("Parked Orbit {}", orbit));
+            handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call(call_id, None);
+            return Ok(());
+        };
+        self.start_inline_flow(
+            request,
+            handle,
+            call_id,
+            &flow_handler,
+            park_announcement(call_id, orbit),
+            HashMap::new(),
+            "park announcement",
+        )
+        .await
     }
 
     /// Handle retrieve parked call (*71orbit): retrieve a call from a parking orbit.
@@ -18583,6 +18609,60 @@ fn spawn_race_task(
             }
         }
     })
+}
+
+/// What a parker hears on `*70`: the orbit, digit by digit, then the end
+/// of the call. Held for the call alone, like `*98`'s flow.
+fn park_announcement(call_id: &fcp_b2bua_core::CallId, orbit: u16) -> fcp_flow::FlowDefinition {
+    use fcp_flow::{FlowDefinition, FlowNode, NodeType};
+    let digits: Vec<String> = orbit.to_string().chars().map(String::from).collect();
+    let node = |id: &str, name: &str, node_type: NodeType| {
+        (
+            id.to_string(),
+            FlowNode {
+                id: id.to_string(),
+                name: Some(name.to_string()),
+                node_type,
+            },
+        )
+    };
+    let nodes = [
+        node(
+            "answer",
+            "Answer call",
+            NodeType::Answer {
+                next: "say".to_string(),
+                on_error: None,
+            },
+        ),
+        node(
+            "say",
+            "Say the orbit",
+            NodeType::Say {
+                text: format!("Parked on {}.", digits.join(" ")),
+                voice: None,
+                language: "en-US".to_string(),
+                next: "hangup".to_string(),
+                on_error: Some("hangup".to_string()),
+            },
+        ),
+        node("hangup", "Hang up", NodeType::Hangup { reason: None }),
+    ]
+    .into_iter()
+    .collect();
+    FlowDefinition {
+        id: format!("park-{call_id}"),
+        name: "Park".to_string(),
+        description: Some("Inline flow telling a parker the orbit (*70)".to_string()),
+        version: 1,
+        initial_node: "answer".to_string(),
+        nodes,
+        variables: HashMap::new(),
+        tenant_id: None,
+        enabled: true,
+        created_at: None,
+        updated_at: None,
+    }
 }
 
 fn extract_tag_value(value: Option<&SmolStr>) -> Option<String> {

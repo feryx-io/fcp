@@ -1096,6 +1096,70 @@ async fn a_call_parked_by_transfer_is_retrieved_from_its_orbit() {
     stack.finish().await;
 }
 
+/// The caller parks the callee with `*70`: the callee moves to the A
+/// slot, and the B slot the caller left must name no one. Still naming the
+/// callee, it sent the callee's own audio back between the hold music's
+/// packets — choppy music on the D8 server (`docs/DEEP_TESTING.md` D8).
+/// The `*70` call is ended by the node, not left for the phone to hang up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_parking_with_the_code_leaves_the_parked_party_only_the_music() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), _] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    assert_eq!(alice_call.hold().await.unwrap(), 200);
+
+    let park = alice.call("*70").await.unwrap();
+    if let Err(e) = park.answered(SOON).await {
+        stack
+            .fail(&format!("*70 was not answered: {e}"), &alice)
+            .await;
+    }
+    assert!(park.ended(RING_OUT).await, "the *70 call was never ended");
+    assert!(alice_call.ended(SOON).await, "Alice's leg was not dropped");
+    assert!(
+        bob_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await,
+        "Bob, parked, hears no music"
+    );
+
+    // Bob talks into the park: none of it may come back to him. The music
+    // alone is one packet every 20 ms; Bob's own echoed beside it doubled
+    // that.
+    bob_call.media().heard(1200, Duration::ZERO).await;
+    bob_call.media().play_tone(1200.0, 4000);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let before = bob_call.media().packets_received();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let received = bob_call.media().packets_received() - before;
+    assert!(
+        received < 200,
+        "Bob, parked, got {received} packets in 3 s: his own audio is coming back"
+    );
+    assert!(
+        bob_call.media().tone_frames(1200) == 0,
+        "Bob hears himself while parked"
+    );
+
+    let retrieve = alice.call("*71701").await.unwrap();
+    if let Err(e) = retrieve.answered(SOON).await {
+        stack
+            .fail(&format!("the retrieve was not answered: {e}"), &alice)
+            .await;
+    }
+    retrieve.media().play_tone(660.0, 3000);
+    assert!(
+        bob_call.media().heard(660, SOON).await,
+        "Bob does not hear Alice after the retrieve"
+    );
+    bob_call.media().play_tone(880.0, 3000);
+    assert!(
+        retrieve.media().heard(880, SOON).await,
+        "Alice does not hear Bob after the retrieve"
+    );
+    retrieve.hangup().await.unwrap();
+    assert!(bob_call.ended(SOON).await, "Bob's leg outlived the call");
+    stack.finish().await;
+}
+
 /// An encrypted caller transfers the callee to a plain phone: the plain
 /// phone takes the caller's side, so the node's keys for that side must go
 /// — kept, the node would encrypt toward it and refuse its plain packets.

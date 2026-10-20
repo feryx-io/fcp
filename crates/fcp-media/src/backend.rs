@@ -110,6 +110,24 @@ pub trait MediaBackend: Send + Sync {
         Ok(())
     }
 
+    /// Put the peer on `from` on `to` as well — where its packets come
+    /// from and how that is learned — and leave `from` with no peer:
+    /// nothing relayed to it, no packet claiming it, until an SDP names
+    /// its next one. A parked party moved to the A slot (`docs/DEEP_TESTING.md`
+    /// D8: the slot the parker left still named the parked party, who heard
+    /// its own audio between the hold music's packets).
+    async fn move_peer(&self, call_id: &CallId, from: Leg, to: Leg) -> Result<()> {
+        let _ = (call_id, from, to);
+        Ok(())
+    }
+
+    /// Leave `leg` with no peer, as [`MediaBackend::move_peer`] leaves the
+    /// leg it moved from: the slot a parker left.
+    async fn release_leg(&self, call_id: &CallId, leg: Leg) -> Result<()> {
+        let _ = (call_id, leg);
+        Ok(())
+    }
+
     async fn hold_session(&self, call_id: &CallId) -> Result<()>;
 
     /// Resume session from hold
@@ -439,6 +457,7 @@ pub mod embedded {
     };
     use forge_injection::FileSource;
     use forge_rtp::PortPoolConfig;
+    use std::collections::HashSet;
     use std::time::Duration;
     use tracing::{debug, error, info, warn};
 
@@ -632,10 +651,14 @@ pub mod embedded {
     impl SessionInfo {
         fn latched(&self, leg: Leg) -> Option<IpAddr> {
             let held = self.latched.lock().unwrap_or_else(|e| e.into_inner());
-            held[match leg {
-                Leg::A => 0,
-                Leg::B => 1,
-            }]
+            held[leg_index(leg)]
+        }
+    }
+
+    fn leg_index(leg: Leg) -> usize {
+        match leg {
+            Leg::A => 0,
+            Leg::B => 1,
         }
     }
 
@@ -867,10 +890,7 @@ pub mod embedded {
                     .latched
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
-                held[match leg {
-                    Leg::A => 0,
-                    Leg::B => 1,
-                }] = Some(source);
+                held[leg_index(leg)] = Some(source);
             }
             // Whatever an SDP already pinned is undone: the first packet
             // from `source` says where the peer really is.
@@ -882,6 +902,76 @@ pub mod embedded {
             p.remote_addr = None;
             p.latch_allowed_ips = Some(std::iter::once(source).collect());
             info!(?call_id, ?leg, %source, "Leg's RTP address will be learned from its first packet");
+            Ok(())
+        }
+
+        async fn move_peer(&self, call_id: &CallId, from: Leg, to: Leg) -> Result<()> {
+            if from == to {
+                return Ok(());
+            }
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+            {
+                let mut held = session_info
+                    .latched
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                held[leg_index(to)] = held[leg_index(from)].take();
+            }
+            let session = &session_info.forge_session;
+            let (source, target) = match from {
+                Leg::A => (session.participant_a(), session.participant_b()),
+                Leg::B => (session.participant_b(), session.participant_a()),
+            };
+            {
+                let mut source = source.write().await;
+                let mut target = target.write().await;
+                target.remote_addr = source.remote_addr.take();
+                target.latch_allowed_ips = source.latch_allowed_ips.replace(HashSet::new());
+            }
+            // The keys the peer was given travel with it.
+            let (source, target) = match from {
+                Leg::A => (session.srtp_a(), session.srtp_b()),
+                Leg::B => (session.srtp_b(), session.srtp_a()),
+            };
+            {
+                let mut source = source.lock().await;
+                let mut target = target.lock().await;
+                *target = std::mem::replace(&mut *source, forge_rtp::srtp::SrtpContext::new());
+            }
+            info!(
+                ?call_id,
+                ?from,
+                ?to,
+                "Leg's peer moved; the leg it left has none"
+            );
+            Ok(())
+        }
+
+        async fn release_leg(&self, call_id: &CallId, leg: Leg) -> Result<()> {
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+            session_info
+                .latched
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())[leg_index(leg)] = None;
+            let session = &session_info.forge_session;
+            let (participant, srtp) = match leg {
+                Leg::A => (session.participant_a(), session.srtp_a()),
+                Leg::B => (session.participant_b(), session.srtp_b()),
+            };
+            {
+                let mut p = participant.write().await;
+                p.remote_addr = None;
+                // No packet may claim it: a stray one would be relayed to.
+                p.latch_allowed_ips = Some(HashSet::new());
+            }
+            *srtp.lock().await = forge_rtp::srtp::SrtpContext::new();
+            info!(?call_id, ?leg, "Leg has no peer");
             Ok(())
         }
 
