@@ -1173,6 +1173,118 @@ async fn a_menus_timeout_runs_from_the_end_of_its_prompt() {
     stack.finish().await;
 }
 
+/// A menu asked up to `max_attempts` times: nothing pressed plays the
+/// no-input prompt and the menu again, a key it has no branch for plays the
+/// invalid-choice prompt and the menu again, and when the attempts are
+/// spent the call goes to `on_max_attempts`. Asked once, it said goodbye
+/// at the first silence (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_menu_asks_again_then_gives_up_where_it_is_told() {
+    const PROMPT_HZ: u32 = 500;
+    const NO_INPUT_HZ: u32 = 700;
+    const INVALID_HZ: u32 = 900;
+    let stack = stack_or_skip!();
+    let [(_, alice), (carol, carol_phone), (dave, dave_phone)] = three_phones(&stack).await;
+    let menu = stack.seed.user("menu", "menu-pw", "1500").await;
+    let wav = |name: &str, hz: u32, secs: f32| {
+        let path = stack._dir.path().join(name);
+        tone_wav(&path, hz as f32, secs);
+        path.display().to_string()
+    };
+    let (prompt, no_input, invalid) = (
+        wav("menu.wav", PROMPT_HZ, 1.0),
+        wav("no-input.wav", NO_INPUT_HZ, 0.6),
+        wav("invalid.wav", INVALID_HZ, 0.6),
+    );
+    let dial = |to: &str| {
+        serde_json::json!({
+            "id": format!("dial_{to}"), "name": "Dial", "type": "dial", "destination": to,
+            "timeout": 10, "next": "done", "on_error": "done", "on_no_answer": "done",
+            "on_busy": "done"
+        })
+    };
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "patient-menu", "name": "Menu", "version": 1, "initial_node": "answer",
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "menu"},
+            "menu": {
+                "id": "menu", "name": "Menu", "type": "gather", "num_digits": 1, "timeout": 1,
+                "prompt": {"type": "play", "url": prompt},
+                "transitions": {"3": format!("dial_{}", carol.extension)},
+                "default": "done", "on_timeout": "done",
+                "max_attempts": 3,
+                "no_input_prompt": {"type": "play", "url": no_input},
+                "invalid_prompt": {"type": "play", "url": invalid},
+                "on_max_attempts": format!("dial_{}", dave.extension)
+            },
+            format!("dial_{}", carol.extension): dial(&carol.extension),
+            format!("dial_{}", dave.extension): dial(&dave.extension),
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .expect("seed flow");
+    stack
+        .calling(&menu, |s| {
+            s.forward_all = Some(CallTarget::Flow("patient-menu".into()))
+        })
+        .await;
+
+    // A wrong key: told so, asked again, then a right one is taken.
+    let call = alice.call(&menu.extension).await.unwrap();
+    call.answered(SOON).await.expect("the menu answers");
+    assert!(call.media().heard(PROMPT_HZ, SOON).await, "no menu prompt");
+    call.media().send_dtmf('9');
+    assert!(
+        call.media().heard(INVALID_HZ, SOON).await,
+        "a wrong key did not play the invalid-choice prompt"
+    );
+    assert!(
+        !call.ended(Duration::from_millis(1500)).await,
+        "a wrong key ended the call"
+    );
+    call.media().send_dtmf('3');
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("the menu asked again did not take the right key", &alice)
+            .await;
+    };
+    at_carol.answer().await.unwrap().hangup().await.unwrap();
+    let _ = call.ended(SOON).await;
+
+    // Nothing pressed: told so twice, then on to the last-attempt branch.
+    let call = alice.call(&menu.extension).await.unwrap();
+    call.answered(SOON).await.expect("the menu answers");
+    let asked = Instant::now();
+    assert!(
+        call.media()
+            .heard(NO_INPUT_HZ, Duration::from_secs(8))
+            .await,
+        "silence did not play the no-input prompt"
+    );
+    let Some(at_dave) = dave_phone.incoming(Duration::from_secs(15)).await else {
+        stack
+            .fail("the spent attempts did not go to on_max_attempts", &alice)
+            .await;
+    };
+    // Three prompts and three timeouts, two no-input prompts between:
+    // about 7 s. Two attempts would be about 4.6 s.
+    let waited = asked.elapsed();
+    assert!(
+        waited >= Duration::from_secs(6),
+        "gave up after {waited:?}: fewer than three attempts"
+    );
+    assert_eq!(
+        call.media().tone_frames(INVALID_HZ),
+        0,
+        "silence played the invalid-choice prompt"
+    );
+    at_dave.answer().await.unwrap().hangup().await.unwrap();
+    stack.finish().await;
+}
+
 /// The caller parks the callee with `*70`: the callee moves to the A
 /// slot, and the B slot the caller left must name no one. Still naming the
 /// callee, it sent the callee's own audio back between the hold music's

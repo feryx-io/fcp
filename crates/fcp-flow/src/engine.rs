@@ -13,6 +13,16 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+/// What a Gather leaves for the flow handler about asking again: the
+/// attempts allowed, where to go when they are spent, and the retry
+/// prompts' audio. Cleared at each Gather.
+pub const GATHER_RETRY_VARIABLES: [&str; 4] = [
+    "__gather_max_attempts",
+    "__gather_on_max_attempts",
+    "__gather_no_input_url",
+    "__gather_invalid_url",
+];
+
 /// A Queue node's dial destination: this prefix, then the queue's name or
 /// extension, resolved by the flow handler to where the queue answers.
 pub const QUEUE_DIAL_PREFIX: &str = "queue:";
@@ -204,6 +214,10 @@ impl FlowEngine {
                 hints,
                 language,
                 speech_transitions,
+                max_attempts,
+                no_input_prompt,
+                invalid_prompt,
+                on_max_attempts,
             } => {
                 info!(
                     call_id = %context.call_id,
@@ -219,65 +233,33 @@ impl FlowEngine {
                 context.remove_variable("__gather_prompt_url");
                 context.remove_variable("__gather_finish_on_key");
                 context.remove_variable("__gather_on_timeout");
+                for retry in GATHER_RETRY_VARIABLES {
+                    context.remove_variable(retry);
+                }
 
-                // Handle prompt if present
-                if let Some(gather_prompt) = prompt {
-                    use crate::schema::GatherPrompt;
-
-                    match gather_prompt {
-                        GatherPrompt::Play { url } => {
-                            // Store Play prompt information for flow handler
-                            context.set_variable(
-                                "__gather_prompt_type".to_string(),
-                                "play".to_string(),
-                            );
-                            context.set_variable("__gather_prompt_url".to_string(), url.clone());
-                        }
-                        GatherPrompt::Say {
-                            text,
-                            voice,
-                            language,
-                        } => {
-                            // If TTS service is available, synthesize the prompt
-                            if let Some(tts_service) = &self.tts_service {
-                                let interpolated_text =
-                                    self.interpolate_variables(text, context)?;
-
-                                match tts_service
-                                    .synthesize(
-                                        &interpolated_text,
-                                        Some(language),
-                                        voice.as_deref(),
-                                    )
-                                    .await
-                                {
-                                    Ok(audio_path) => {
-                                        // Store synthesized audio path
-                                        context.set_variable(
-                                            "__gather_prompt_type".to_string(),
-                                            "play".to_string(),
-                                        );
-                                        context.set_variable(
-                                            "__gather_prompt_url".to_string(),
-                                            audio_path.display().to_string(),
-                                        );
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            call_id = %context.call_id,
-                                            error = %e,
-                                            "TTS synthesis failed for Gather prompt"
-                                        );
-                                        // Continue anyway - will gather without prompt
-                                    }
-                                }
-                            } else {
-                                warn!(
-                                    call_id = %context.call_id,
-                                    "TTS service not available for Gather prompt"
-                                );
-                            }
-                        }
+                if let Some(url) = self.gather_prompt_audio(prompt.as_deref(), context).await? {
+                    context.set_variable("__gather_prompt_type".to_string(), "play".to_string());
+                    context.set_variable("__gather_prompt_url".to_string(), url);
+                }
+                // Asked more than once: the retry prompts are made ready now,
+                // with the menu's own.
+                if let Some(max) = max_attempts.filter(|max| *max > 1) {
+                    context.set_variable("__gather_max_attempts".to_string(), max.to_string());
+                    // The flow builder writes an unset field empty.
+                    if let Some(node) = on_max_attempts.as_ref().filter(|n| !n.is_empty()) {
+                        context.set_variable("__gather_on_max_attempts".to_string(), node.clone());
+                    }
+                    if let Some(url) = self
+                        .gather_prompt_audio(no_input_prompt.as_deref(), context)
+                        .await?
+                    {
+                        context.set_variable("__gather_no_input_url".to_string(), url);
+                    }
+                    if let Some(url) = self
+                        .gather_prompt_audio(invalid_prompt.as_deref(), context)
+                        .await?
+                    {
+                        context.set_variable("__gather_invalid_url".to_string(), url);
                     }
                 }
 
@@ -860,6 +842,53 @@ impl FlowEngine {
     }
 
     /// Interpolate variables in a string (e.g., "Hello {{name}}")
+    /// The audio a Gather prompt plays: a `play` prompt's file, or a `say`
+    /// prompt synthesized. `None` without one, or when it cannot be spoken
+    /// (logged): the menu gathers without it.
+    async fn gather_prompt_audio(
+        &self,
+        prompt: Option<&crate::schema::GatherPrompt>,
+        context: &FlowContext,
+    ) -> Result<Option<String>> {
+        use crate::schema::GatherPrompt;
+        // The flow builder writes an unset prompt with an empty file or
+        // text: nothing to play.
+        match prompt {
+            None => Ok(None),
+            Some(GatherPrompt::Play { url }) if url.is_empty() => Ok(None),
+            Some(GatherPrompt::Say { text, .. }) if text.trim().is_empty() => Ok(None),
+            Some(GatherPrompt::Play { url }) => Ok(Some(url.clone())),
+            Some(GatherPrompt::Say {
+                text,
+                voice,
+                language,
+            }) => {
+                let Some(tts_service) = &self.tts_service else {
+                    warn!(
+                        call_id = %context.call_id,
+                        "TTS service not available for Gather prompt"
+                    );
+                    return Ok(None);
+                };
+                let text = self.interpolate_variables(text, context)?;
+                match tts_service
+                    .synthesize(&text, Some(language), voice.as_deref())
+                    .await
+                {
+                    Ok(audio_path) => Ok(Some(audio_path.display().to_string())),
+                    Err(e) => {
+                        error!(
+                            call_id = %context.call_id,
+                            error = %e,
+                            "TTS synthesis failed for Gather prompt"
+                        );
+                        Ok(None)
+                    }
+                }
+            }
+        }
+    }
+
     fn interpolate_variables(&self, template: &str, context: &FlowContext) -> Result<String> {
         let re = Regex::new(r"\{\{([^}]+)\}\}").unwrap();
         let mut result = template.to_string();

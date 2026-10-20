@@ -128,6 +128,14 @@ pub struct FlowCallHandler {
     transcripts: Arc<DashMap<CallId, Vec<tokio::task::JoinHandle<()>>>>,
 }
 
+/// What a Gather heard, for its retries: a branch chosen, or nothing, or
+/// a choice the menu does not have.
+enum Heard {
+    Chose(String),
+    Nothing,
+    Invalid,
+}
+
 /// A call's Gather collection, taken out of [`FlowCallHandler`]'s map when
 /// the Gather ends however it ends.
 struct GatherDigitSlot {
@@ -3916,19 +3924,17 @@ impl FlowCallHandler {
                 info!(call_id = %call_id, outcome = ?outcome, "Gather complete");
 
                 use crate::flow_listen::GatherOutcome;
-                let mut context_guard = context.write().await;
-                let next_node = match outcome {
+                let context_guard = context.write().await;
+                let heard = match outcome {
                     GatherOutcome::Digits(digits) => {
                         context_guard.set_variable(variable.clone(), digits.clone());
                         context_guard.set_variable("gather_input".to_string(), "dtmf".to_string());
-                        if let Some(next) = transitions.get(&digits) {
-                            next.clone()
-                        } else if let Some(default_node) = &default {
-                            default_node.clone()
-                        } else {
-                            // No transition and no default: the Gather runs again.
-                            warn!(call_id = %call_id, digits = %digits, "No transition found for collected digits");
-                            context_guard.current_node.clone()
+                        match transitions.get(&digits) {
+                            Some(next) => Heard::Chose(next.clone()),
+                            None => {
+                                warn!(call_id = %call_id, digits = %digits, "No transition found for collected digits");
+                                Heard::Invalid
+                            }
                         }
                     }
                     GatherOutcome::PartialDigits(digits) => {
@@ -3936,15 +3942,9 @@ impl FlowCallHandler {
                         // a valid choice may still have been made.
                         context_guard.set_variable(variable.clone(), digits.clone());
                         context_guard.set_variable("gather_input".to_string(), "dtmf".to_string());
-                        if let Some(next) = transitions.get(&digits) {
-                            next.clone()
-                        } else if let Some(timeout_node) = on_timeout_node {
-                            timeout_node
-                        } else if let Some(default_node) = &default {
-                            default_node.clone()
-                        } else {
-                            warn!(call_id = %call_id, digits = %digits, "Timeout with digits but no matching transition or handler");
-                            context_guard.current_node.clone()
+                        match transitions.get(&digits) {
+                            Some(next) => Heard::Chose(next.clone()),
+                            None => Heard::Nothing,
                         }
                     }
                     GatherOutcome::Speech(transcript) => {
@@ -3958,36 +3958,96 @@ impl FlowCallHandler {
                         );
                         context_guard
                             .set_variable("gather_input".to_string(), "speech".to_string());
-                        if let Some(next) =
-                            fcp_flow::schema::match_speech(&speech.transitions, &transcript.text)
+                        match fcp_flow::schema::match_speech(&speech.transitions, &transcript.text)
                         {
-                            next.clone()
-                        } else if let Some(default_node) = &default {
-                            default_node.clone()
-                        } else {
-                            warn!(call_id = %call_id, speech = %transcript.text, "No transition found for what was said");
-                            context_guard.current_node.clone()
+                            Some(next) => Heard::Chose(next.clone()),
+                            None => {
+                                warn!(call_id = %call_id, speech = %transcript.text, "No transition found for what was said");
+                                Heard::Invalid
+                            }
                         }
                     }
                     GatherOutcome::SpeechUnavailable if on_error.is_some() => {
-                        on_error.clone().unwrap_or_default()
+                        Heard::Chose(on_error.clone().unwrap_or_default())
                     }
-                    GatherOutcome::Timeout | GatherOutcome::SpeechUnavailable => {
-                        if let Some(timeout_node) = on_timeout_node {
-                            timeout_node
-                        } else if let Some(default_node) = default {
-                            default_node
-                        } else {
-                            warn!(call_id = %call_id, "Gather timeout with no timeout handler");
-                            context_guard.current_node.clone()
-                        }
-                    }
+                    GatherOutcome::Timeout | GatherOutcome::SpeechUnavailable => Heard::Nothing,
                     GatherOutcome::Cancelled => {
                         warn!(call_id = %call_id, "Gather cancelled");
                         // The call has likely ended: nothing more runs.
                         return Ok(());
                     }
                 };
+                let this_node = context_guard.current_node.clone();
+                let attempts_key = format!("__gather_attempts.{this_node}");
+                let mut retry_prompt = None;
+                let next_node = match heard {
+                    Heard::Chose(next) => {
+                        context_guard.remove_variable(&attempts_key);
+                        next
+                    }
+                    failed => {
+                        let max_attempts = context_guard
+                            .get_variable("__gather_max_attempts")
+                            .ok()
+                            .and_then(|v| v.parse::<u32>().ok())
+                            .unwrap_or(1);
+                        let attempt = context_guard
+                            .get_variable(&attempts_key)
+                            .ok()
+                            .and_then(|v| v.parse::<u32>().ok())
+                            .unwrap_or(0)
+                            + 1;
+                        if attempt < max_attempts {
+                            // Asked again, after the retry prompt for what
+                            // went wrong.
+                            info!(call_id = %call_id, attempt, max_attempts, nothing_heard = matches!(failed, Heard::Nothing), "Gather: asking again");
+                            context_guard.set_variable(attempts_key, attempt.to_string());
+                            let prompt = match failed {
+                                Heard::Nothing => "__gather_no_input_url",
+                                _ => "__gather_invalid_url",
+                            };
+                            retry_prompt = context_guard.get_variable(prompt).ok();
+                            this_node
+                        } else {
+                            context_guard.remove_variable(&attempts_key);
+                            let spent = (max_attempts > 1)
+                                .then(|| {
+                                    context_guard.get_variable("__gather_on_max_attempts").ok()
+                                })
+                                .flatten();
+                            let fallback = match failed {
+                                Heard::Nothing => on_timeout_node.or_else(|| default.clone()),
+                                _ => default.clone(),
+                            };
+                            match spent.or(fallback) {
+                                Some(next) => next,
+                                None => {
+                                    // No branch for it: the Gather runs again.
+                                    warn!(call_id = %call_id, "Gather: no branch for a failed attempt");
+                                    this_node
+                                }
+                            }
+                        }
+                    }
+                };
+                drop(context_guard);
+                if let (Some(url), Some(session_id), Some(media_manager)) =
+                    (retry_prompt, media_session_id, self.media_manager.as_ref())
+                {
+                    let url = self.resolve_prompt_url(&url).await.unwrap_or(url);
+                    match media_manager
+                        .play_file(&session_id, url, fcp_media::AudioTarget::ParticipantA)
+                        .await
+                    {
+                        Ok(pid) => {
+                            let _ = media_manager.wait_playback_completion(pid).await;
+                        }
+                        Err(e) => {
+                            warn!(call_id = %call_id, error = %e, "Gather retry prompt not played")
+                        }
+                    }
+                }
+                let mut context_guard = context.write().await;
                 info!(call_id = %call_id, next_node = %next_node, "Gather continuing to next node");
                 context_guard.current_node = next_node;
                 drop(context_guard);
