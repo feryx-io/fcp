@@ -1986,6 +1986,67 @@ agents = ["1002"]
     stack.finish().await;
 }
 
+/// The agent hangs up first: the caller is hung up on, and the agent,
+/// after wrap-up, takes the next caller. On the D8 server the caller
+/// stayed on the line, and the queue never let its agent off the call
+/// (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_hanging_up_ends_the_callers_call_and_takes_the_next() {
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+wrap_up_time_secs = 1
+
+[queue.queues.support]
+name = "support"
+extension = "7000"
+agents = ["1002"]
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let (_alice, alice_phone, _bob, bob_phone) = two_phones(&stack).await;
+    let login = bob_phone.call("*50").await.unwrap();
+    login.answered(SOON).await.unwrap();
+    assert!(login.ended(Duration::from_secs(15)).await);
+
+    for round in ["first", "second"] {
+        let alice_call = alice_phone.call("7000").await.unwrap();
+        alice_call.answered(SOON).await.unwrap();
+        let Some(incoming) = bob_phone.incoming(Duration::from_secs(10)).await else {
+            stack
+                .fail(
+                    &format!("the agent was not rung for the {round} caller"),
+                    &bob_phone,
+                )
+                .await;
+        };
+        let bob_call = incoming.answer().await.unwrap();
+        bob_call.media().play_tone(880.0, 3000);
+        assert!(
+            alice_call.media().heard(880, SOON).await,
+            "the {round} caller does not hear the agent"
+        );
+        assert_eq!(bob_call.hangup().await.unwrap(), 200);
+        if !alice_call.ended(SOON).await {
+            stack
+                .fail(
+                    &format!("the {round} caller stayed on after the agent hung up"),
+                    &alice_phone,
+                )
+                .await;
+        }
+        // Wrap-up, then available again.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    stack.finish().await;
+}
+
 /// The built-in hold music's first note (`fcp_sip::hold_music`).
 const DEFAULT_MUSIC_HZ: u32 = 659;
 

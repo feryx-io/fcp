@@ -1320,7 +1320,11 @@ impl QueueCallHandler {
                                 session.agent_port_pair = Some(agent_port_pair);
                                 session.agent_rtp_socket = Some(agent_rtp_socket);
                                 session.agent_dialog = Some(agent_dialog);
-                                session.ringing_agent = None;
+                                // Kept: the agent on the call, whose call
+                                // ends with the session (wrap-up, then
+                                // available) and whom the record names.
+                                // Cleared, the agent stayed on a call for
+                                // good (`docs/DEEP_TESTING.md` D8).
                                 session.ring_task_handle = None;
                             }
                             (Some(bridge), None) => {
@@ -2494,6 +2498,35 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 self.campaign_call_id_map.remove(&callee_call_id);
                 if self.sessions.contains_key(&callee_call_id) {
                     self.remove_session(&callee_call_id);
+                }
+                return Ok(());
+            }
+            // The agent hung up: so is the caller. Only the caller's own
+            // BYE was matched, and a caller whose agent hung up stayed on
+            // the line until they hung up too (`docs/DEEP_TESTING.md` D8).
+            let caller_call_id = self
+                .sessions
+                .iter()
+                .find(|s| {
+                    s.agent_dialog
+                        .as_ref()
+                        .is_some_and(|d| d.id().call_id() == call_id)
+                })
+                .map(|s| s.key().clone());
+            if let Some(caller_call_id) = caller_call_id {
+                info!(call_id = %caller_call_id, "The agent hung up; ending the caller's call");
+                let caller_dialog = self.sessions.get_mut(&caller_call_id).map(|mut s| {
+                    s.agent_dialog = None;
+                    s.dialog.clone()
+                });
+                self.remove_session(&caller_call_id);
+                if let Some(dialog) = caller_dialog {
+                    let uac = Arc::clone(&self.uac);
+                    tokio::spawn(async move {
+                        if let Err(e) = uac.bye(&dialog).await {
+                            warn!(error = %e, "Failed to send BYE to the queue caller");
+                        }
+                    });
                 }
                 return Ok(());
             }
