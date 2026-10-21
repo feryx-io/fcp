@@ -635,9 +635,7 @@ async fn feature_codes_change_the_callers_own_settings() {
     let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
 
     // *78: do not disturb on. A call to Bob is busy without ringing.
-    let code = bob_phone.call("*78").await.unwrap();
-    code.answered(SOON).await.expect("*78 accepted");
-    let _ = code.hangup().await;
+    dial_code(&stack, &bob_phone, "*78").await;
     let call = alice.call(&bob.extension).await.unwrap();
     match call.failed(SOON).await {
         Some(486) => {}
@@ -649,15 +647,8 @@ async fn feature_codes_change_the_callers_own_settings() {
     }
 
     // *79: off again, and *72 + Carol's extension: every call to Carol.
-    let code = bob_phone.call("*79").await.unwrap();
-    code.answered(SOON).await.expect("*79 accepted");
-    let _ = code.hangup().await;
-    let code = bob_phone
-        .call(&format!("*72{}", carol.extension))
-        .await
-        .unwrap();
-    code.answered(SOON).await.expect("*72 accepted");
-    let _ = code.hangup().await;
+    dial_code(&stack, &bob_phone, "*79").await;
+    dial_code(&stack, &bob_phone, &format!("*72{}", carol.extension)).await;
     let call = alice.call(&bob.extension).await.unwrap();
     let Some(at_carol) = carol_phone.incoming(SOON).await else {
         stack
@@ -669,9 +660,7 @@ async fn feature_codes_change_the_callers_own_settings() {
     answered.hangup().await.unwrap();
 
     // *73: forwarding off; Bob rings again.
-    let code = bob_phone.call("*73").await.unwrap();
-    code.answered(SOON).await.expect("*73 accepted");
-    let _ = code.hangup().await;
+    dial_code(&stack, &bob_phone, "*73").await;
     let call = alice.call(&bob.extension).await.unwrap();
     let Some(at_bob) = bob_phone.incoming(SOON).await else {
         stack
@@ -1927,9 +1916,7 @@ async fn call_waiting_decides_whether_a_second_call_rings() {
     assert_eq!(second.failed(SOON).await, Some(486));
 
     // *57: off. The second call is busy without ringing.
-    let code = bob_phone.call("*57").await.unwrap();
-    code.answered(SOON).await.expect("*57 accepted");
-    let _ = code.hangup().await;
+    dial_code(&stack, &bob_phone, "*57").await;
     let second = carol_phone.call(&bob.extension).await.unwrap();
     match second.failed(SOON).await {
         Some(486) => {}
@@ -3237,6 +3224,8 @@ async fn make_executive(
 }
 
 /// Dial a feature code and hang up once it is taken.
+/// A feature code is answered, told, and hung up on by the node: a bare
+/// 200 left the phone on a call nobody ended (`docs/DEEP_TESTING.md` D8).
 async fn dial_code(stack: &Stack, phone: &Phone, code: &str) {
     let call = phone.call(code).await.unwrap();
     if let Err(e) = call.answered(SOON).await {
@@ -3244,7 +3233,11 @@ async fn dial_code(stack: &Stack, phone: &Phone, code: &str) {
             .fail(&format!("{code} was not taken: {e}"), phone)
             .await;
     }
-    let _ = call.hangup().await;
+    if !call.ended(RING_OUT).await {
+        stack
+            .fail(&format!("the node never ended the {code} call"), phone)
+            .await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

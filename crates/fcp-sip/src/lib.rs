@@ -8,6 +8,7 @@
 //! - Transport implementations using fcp-core::Transport trait
 //! - Service implementations using fcp-core::Service trait
 
+pub mod ack_wait;
 pub mod adapters;
 pub mod admission;
 pub mod auth;

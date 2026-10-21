@@ -1962,6 +1962,11 @@ agents = ["1002"]
             .fail(&format!("the agent's *50 was refused: {e}"), &bob_phone)
             .await;
     }
+    // Told, then hung up on: a bare 200 left the phone on a call (D8).
+    assert!(
+        login.ended(Duration::from_secs(15)).await,
+        "the *50 call was never ended"
+    );
     let Some(incoming) = bob_phone.incoming(Duration::from_secs(10)).await else {
         stack
             .fail("the logged-in agent was not rung", &alice_phone)

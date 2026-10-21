@@ -735,6 +735,9 @@ pub struct SipMessageHandler {
     /// Conference calls whose B-leg is being moved to another conference
     /// node (phase 5b), so a second REFER while one is in flight is refused.
     conference_migrations: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, ()>>,
+    /// 2xx responses a flow sent that the caller has not ACKed; the
+    /// flow's BYE waits for the ACK (RFC 3261 §15).
+    ack_waits: Arc<crate::ack_wait::AckWaits>,
     /// Calls being redirected into a flow by the API, until their
     /// dial-back arrives (`docs/DEVELOPER_SURFACE.md` phase 8).
     redirect_tickets: Arc<crate::call_control::RedirectTickets>,
@@ -1131,6 +1134,7 @@ impl SipMessageHandler {
             admission: None,
             call_signer: None,
             conference_migrations: Arc::new(dashmap::DashMap::new()),
+            ack_waits: Arc::new(crate::ack_wait::AckWaits::new()),
             redirect_tickets: Arc::new(crate::call_control::RedirectTickets::default()),
             serving: Arc::new(std::sync::OnceLock::new()),
         };
@@ -4270,6 +4274,7 @@ impl SipMessageHandler {
                         let answer_media_manager = self.media_manager.clone();
                         let answer_uas = self.uas.clone();
                         let answer_dialog_manager = Arc::clone(&self.dialog_manager);
+                        let answer_ack_waits = Arc::clone(&self.ack_waits);
                         let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
                             let handle = answer_handle.clone();
                             let request = answer_request.clone();
@@ -4278,6 +4283,7 @@ impl SipMessageHandler {
                             let media_manager = answer_media_manager.clone();
                             let uas = answer_uas.clone();
                             let dialog_manager = Arc::clone(&answer_dialog_manager);
+                            let ack_waits = Arc::clone(&answer_ack_waits);
                             Box::pin(async move {
                                 info!(call_id = %call_id, "Answer callback executing - creating 200 OK");
                                 // Create base 200 OK response
@@ -4380,6 +4386,7 @@ impl SipMessageHandler {
                                 }
 
                                 // Send 200 OK
+                                ack_waits.expect(call_id);
                                 handle.send_final(response.clone()).await;
 
                                 Ok(())
@@ -4390,14 +4397,18 @@ impl SipMessageHandler {
                         let hangup_call_manager = Arc::clone(&self.call_manager);
                         let hangup_uac = self.uac.clone();
                         let hangup_dialog_manager = Arc::clone(&self.dialog_manager);
+                        let hangup_ack_waits = Arc::clone(&self.ack_waits);
                         let hangup_media_manager = self.media_manager.clone();
                         let hangup_callback: fcp_flow::HangupCallback = Arc::new(move |reason| {
                             let call_id = hangup_call_id;
                             let call_manager = Arc::clone(&hangup_call_manager);
                             let uac_opt = hangup_uac.clone();
                             let dialog_manager = Arc::clone(&hangup_dialog_manager);
+                            let ack_waits = Arc::clone(&hangup_ack_waits);
                             let media_manager = hangup_media_manager.clone();
                             Box::pin(async move {
+                                // Not before the caller has ACKed the answer (RFC 3261 §15).
+                                ack_waits.wait(&call_id, crate::ack_wait::ACK_WAIT).await;
                                 info!(call_id = %call_id, reason = ?reason, "Hangup callback executing");
                                 // Get the dialog for this call
                                 if let Some(call_entry) = call_manager.get_call(&call_id) {
@@ -10010,6 +10021,7 @@ impl SipMessageHandler {
                 state = ?call.state,
                 "ACK received from A-leg - call dialog fully established"
             );
+            self.ack_waits.acked(&call.id);
 
             // The call should already be in Established state from the 200 OK
             // ACK is just confirmation, no state change needed
@@ -13253,7 +13265,8 @@ impl SipMessageHandler {
             {
                 Some(session) => {
                     info!(call_id = %call_id, device_id = %device.id, user_id = %session.user_id, "Hoteling logout by feature code");
-                    finish(200, "OK").await
+                    self.confirm_feature(request, handle, call_id, "Logged out.")
+                        .await
                 }
                 None => finish(404, "No One Logged In").await,
             };
@@ -14922,8 +14935,9 @@ impl SipMessageHandler {
         match queue_handler.agent_login(&caller_ext, &tenant_id).await {
             Ok(()) => {
                 info!(call_id = %call_id, extension = %caller_ext, "Agent logged in via feature code");
-                let response = self.create_simple_response(request, 200, "OK");
-                handle.send_final(response).await;
+                return self
+                    .confirm_feature(request, handle, call_id, "Agent logged in.")
+                    .await;
             }
             Err(e) => {
                 warn!(call_id = %call_id, extension = %caller_ext, error = %e, "Agent login failed");
@@ -14961,8 +14975,9 @@ impl SipMessageHandler {
         match queue_handler.agent_logout(&caller_ext).await {
             Ok(()) => {
                 info!(call_id = %call_id, extension = %caller_ext, "Agent logged out via feature code");
-                let response = self.create_simple_response(request, 200, "OK");
-                handle.send_final(response).await;
+                return self
+                    .confirm_feature(request, handle, call_id, "Agent logged out.")
+                    .await;
             }
             Err(e) => {
                 warn!(call_id = %call_id, extension = %caller_ext, error = %e, "Agent logout failed");
@@ -15132,6 +15147,36 @@ impl SipMessageHandler {
     /// Answer the call into `flow_def`, inserted for the call alone:
     /// what a feature code that talks to the caller runs (`*98`, `*88`).
     #[allow(clippy::too_many_arguments)]
+    /// A feature code done: the caller is told so, then hung up on. A bare
+    /// 200 answered an offer with no SDP and left the phone on a call
+    /// nobody ended (`docs/DEEP_TESTING.md` D8).
+    async fn confirm_feature(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        text: &str,
+    ) -> Result<()> {
+        let Some(flow_handler) = self.flow_handler.clone() else {
+            let response = self.create_simple_response(request, 200, "OK");
+            handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(call_id, Some("Feature code".to_string()));
+            return Ok(());
+        };
+        self.start_inline_flow(
+            request,
+            handle,
+            call_id,
+            &flow_handler,
+            feature_confirmation(call_id, text),
+            HashMap::new(),
+            "feature confirmation",
+        )
+        .await
+    }
+
     async fn start_inline_flow(
         &self,
         request: &sip_core::Request,
@@ -15161,6 +15206,7 @@ impl SipMessageHandler {
         let answer_handle = handle.clone();
         let answer_call_manager = Arc::clone(&self.call_manager);
         let answer_dialog_manager = Arc::clone(&self.dialog_manager);
+        let answer_ack_waits = Arc::clone(&self.ack_waits);
         let answer_media_manager = self.media_manager.clone();
         let answer_local_addr = self.local_addr.clone();
         let answer_rtp_port = self.rtp_port;
@@ -15175,6 +15221,7 @@ impl SipMessageHandler {
             let handle = answer_handle.clone();
             let call_manager = Arc::clone(&answer_call_manager);
             let dialog_manager = Arc::clone(&answer_dialog_manager);
+            let ack_waits = Arc::clone(&answer_ack_waits);
             let local_uri = answer_local_uri.clone();
             let media_manager = answer_media_manager.clone();
             let local_addr = answer_local_addr.clone();
@@ -15279,6 +15326,7 @@ impl SipMessageHandler {
                         warn!(call_id = %call_id, "Inline flow: no A-leg dialog from the 200 OK")
                     }
                 }
+                ack_waits.expect(call_id);
                 handle.send_final(response).await;
 
                 Ok(())
@@ -15290,6 +15338,7 @@ impl SipMessageHandler {
         let hangup_call_manager = Arc::clone(&self.call_manager);
         let hangup_uac = self.uac.clone();
         let hangup_dialog_manager = Arc::clone(&self.dialog_manager);
+        let hangup_ack_waits = Arc::clone(&self.ack_waits);
         let hangup_media_manager = self.media_manager.clone();
 
         let hangup_callback: fcp_flow::HangupCallback = Arc::new(move |reason| {
@@ -15297,8 +15346,11 @@ impl SipMessageHandler {
             let call_manager = Arc::clone(&hangup_call_manager);
             let uac_opt = hangup_uac.clone();
             let dialog_manager = Arc::clone(&hangup_dialog_manager);
+            let ack_waits = Arc::clone(&hangup_ack_waits);
             let media_manager = hangup_media_manager.clone();
             Box::pin(async move {
+                // Not before the caller has ACKed the answer (RFC 3261 §15).
+                ack_waits.wait(&call_id, crate::ack_wait::ACK_WAIT).await;
                 if let Some(call_entry) = call_manager.get_call(&call_id) {
                     if call_entry.media_anchored {
                         if let (Some(ref media_session_id), Some(ref mm)) =
@@ -15782,6 +15834,7 @@ impl SipMessageHandler {
         let answer_media_manager = self.media_manager.clone();
         let answer_uas = self.uas.clone();
         let answer_dialog_manager = Arc::clone(&self.dialog_manager);
+        let answer_ack_waits = Arc::clone(&self.ack_waits);
         let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
             let handle = answer_handle.clone();
             let request = answer_request.clone();
@@ -15790,6 +15843,7 @@ impl SipMessageHandler {
             let media_manager = answer_media_manager.clone();
             let uas = answer_uas.clone();
             let dialog_manager = Arc::clone(&answer_dialog_manager);
+            let ack_waits = Arc::clone(&answer_ack_waits);
             Box::pin(async move {
                 info!(call_id = %call_id, "IVR Answer callback executing - creating 200 OK");
                 let mut response = sip_uas::UserAgentServer::create_response(&request, 200, "OK");
@@ -15847,6 +15901,7 @@ impl SipMessageHandler {
                     });
                 }
 
+                ack_waits.expect(call_id);
                 handle.send_final(response.clone()).await;
 
                 Ok(())
@@ -15858,14 +15913,18 @@ impl SipMessageHandler {
         let hangup_call_manager = Arc::clone(&self.call_manager);
         let hangup_uac = self.uac.clone();
         let hangup_dialog_manager = Arc::clone(&self.dialog_manager);
+        let hangup_ack_waits = Arc::clone(&self.ack_waits);
         let hangup_media_manager = self.media_manager.clone();
         let hangup_callback: fcp_flow::HangupCallback = Arc::new(move |reason| {
             let call_id = hangup_call_id;
             let call_manager = Arc::clone(&hangup_call_manager);
             let uac_opt = hangup_uac.clone();
             let dialog_manager = Arc::clone(&hangup_dialog_manager);
+            let ack_waits = Arc::clone(&hangup_ack_waits);
             let media_manager = hangup_media_manager.clone();
             Box::pin(async move {
+                // Not before the caller has ACKed the answer (RFC 3261 §15).
+                ack_waits.wait(&call_id, crate::ack_wait::ACK_WAIT).await;
                 info!(call_id = %call_id, "IVR Hangup callback executing");
                 // On a task of its own, and awaited so nothing
                 // changes but the stack it runs on. The flow
@@ -17008,7 +17067,8 @@ impl SipMessageHandler {
             notify_referrer: true,
         };
         tokio::spawn(run.run());
-        finish(200, "OK").await
+        self.confirm_feature(request, handle, call_id, "Call pushed.")
+            .await
     }
 
     /// `*64<number>` from an assistant (§3.10): the number called for the
@@ -17170,7 +17230,8 @@ impl SipMessageHandler {
                             },
                         ));
                     }
-                    finish(200, "OK").await
+                    self.confirm_feature(request, handle, call_id, calling_code_confirmation(&code))
+                        .await
                 }
                 Err(e) => {
                     error!(call_id = %call_id, error = %e, "An assistant's opt-in not stored");
@@ -17178,6 +17239,7 @@ impl SipMessageHandler {
                 }
             };
         }
+        let confirmation = calling_code_confirmation(&code);
         let mut settings = crate::ring_plan::settings_for(storage, &tenant_id, &user.id).await;
         let target = |dialed: &str| fcp_core::CallTarget::parse(dialed);
         let executive_on = code == fcp_pbx::CallingCode::ExecutiveOn;
@@ -17266,7 +17328,8 @@ impl SipMessageHandler {
                 timestamp: std::time::SystemTime::now(),
             },
         ));
-        finish(200, "OK").await
+        self.confirm_feature(request, handle, call_id, confirmation)
+            .await
     }
 
     ///
@@ -18614,8 +18677,57 @@ fn spawn_race_task(
 /// What a parker hears on `*70`: the orbit, digit by digit, then the end
 /// of the call. Held for the call alone, like `*98`'s flow.
 fn park_announcement(call_id: &fcp_b2bua_core::CallId, orbit: u16) -> fcp_flow::FlowDefinition {
-    use fcp_flow::{FlowDefinition, FlowNode, NodeType};
     let digits: Vec<String> = orbit.to_string().chars().map(String::from).collect();
+    spoken_confirmation(
+        &format!("park-{call_id}"),
+        "Park",
+        "Inline flow telling a parker the orbit (*70)",
+        format!("Parked on {}.", digits.join(" ")),
+    )
+}
+
+/// What a caller hears after a feature code: one sentence, then the end of
+/// the call.
+fn feature_confirmation(call_id: &fcp_b2bua_core::CallId, text: &str) -> fcp_flow::FlowDefinition {
+    spoken_confirmation(
+        &format!("feature-{call_id}"),
+        "Feature code",
+        "Inline flow confirming a feature code",
+        text.to_string(),
+    )
+}
+
+/// The sentence a calling code's caller hears once it is stored.
+fn calling_code_confirmation(code: &fcp_pbx::CallingCode) -> &'static str {
+    use fcp_pbx::CallingCode::*;
+    match code {
+        DndOn => "Do not disturb on.",
+        DndOff => "Do not disturb off.",
+        ForwardAllOn { .. } => "Call forwarding on.",
+        ForwardAllOff => "Call forwarding off.",
+        ForwardBusyOn { .. } => "Forward when busy on.",
+        ForwardBusyOff => "Forward when busy off.",
+        ForwardNoAnswerOn { .. } => "Forward on no answer on.",
+        ForwardNoAnswerOff => "Forward on no answer off.",
+        CallWaitingOn => "Call waiting on.",
+        CallWaitingOff => "Call waiting off.",
+        FindMeOn => "Find me on.",
+        FindMeOff => "Find me off.",
+        ExecutiveOn => "Executive screening on.",
+        ExecutiveOff => "Executive screening off.",
+        AssistantOn => "Assistant on.",
+        AssistantOff => "Assistant off.",
+    }
+}
+
+/// An inline flow that answers, says `text` and hangs up.
+fn spoken_confirmation(
+    id: &str,
+    name: &str,
+    description: &str,
+    text: String,
+) -> fcp_flow::FlowDefinition {
+    use fcp_flow::{FlowDefinition, FlowNode, NodeType};
     let node = |id: &str, name: &str, node_type: NodeType| {
         (
             id.to_string(),
@@ -18637,9 +18749,9 @@ fn park_announcement(call_id: &fcp_b2bua_core::CallId, orbit: u16) -> fcp_flow::
         ),
         node(
             "say",
-            "Say the orbit",
+            "Say the confirmation",
             NodeType::Say {
-                text: format!("Parked on {}.", digits.join(" ")),
+                text,
                 voice: None,
                 language: "en-US".to_string(),
                 next: "hangup".to_string(),
@@ -18651,9 +18763,9 @@ fn park_announcement(call_id: &fcp_b2bua_core::CallId, orbit: u16) -> fcp_flow::
     .into_iter()
     .collect();
     FlowDefinition {
-        id: format!("park-{call_id}"),
-        name: "Park".to_string(),
-        description: Some("Inline flow telling a parker the orbit (*70)".to_string()),
+        id: id.to_string(),
+        name: name.to_string(),
+        description: Some(description.to_string()),
         version: 1,
         initial_node: "answer".to_string(),
         nodes,
