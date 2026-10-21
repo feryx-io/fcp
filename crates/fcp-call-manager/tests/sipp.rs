@@ -579,6 +579,21 @@ async fn the_node_pracks_a_callee_that_rings_reliably() {
             bye > prack,
             "{caller}: the node's BYE took CSeq {bye} after its PRACK's {prack}"
         );
+        // Its PRACK names the node in its Via: a `placeholder` host sent
+        // the VVX's 200 nowhere, and the PRACK ran to Timer F (D8).
+        let prack_block = uas
+            .messages
+            .split("-----------------------------------------------")
+            .find(|block| {
+                block.contains("message received")
+                    && block.contains("CSeq: ")
+                    && block.contains(" PRACK")
+            })
+            .unwrap_or_else(|| panic!("no PRACK received:\n{}", uas.messages));
+        assert!(
+            !prack_block.contains("placeholder"),
+            "{caller}: the node's PRACK has no address in its Via:\n{prack_block}"
+        );
         stack.no_calls_up(caller).await;
     }
 }
