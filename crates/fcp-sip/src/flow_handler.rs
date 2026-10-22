@@ -1460,7 +1460,7 @@ impl FlowCallHandler {
             if config.test_call_mode == fcp_core::e911::TestCallMode::Local {
                 let text = crate::emergency::test_readback(
                     &info,
-                    &routes,
+                    !routes.is_empty(),
                     config.deliverable_contacts().len(),
                 );
                 let _ = call_mgr.update_call(&a_leg_call_id, |c| {

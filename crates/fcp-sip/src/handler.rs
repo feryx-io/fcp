@@ -15223,8 +15223,11 @@ impl SipMessageHandler {
             }
             None => Vec::new(),
         };
-        let text =
-            crate::emergency::test_readback(em, &routes, config.deliverable_contacts().len());
+        let text = crate::emergency::test_readback(
+            em,
+            !routes.is_empty(),
+            config.deliverable_contacts().len(),
+        );
         info!(
             call_id = %call_id,
             routes = routes.len(),
