@@ -265,7 +265,7 @@ pub async fn detect(
         // Where the caller was seen: the address a trusted edge vouched for
         // or the INVITE's own source, else where their device last
         // registered from (§6.2).
-        info.location = resolve_for_user(
+        info.location = Box::pin(resolve_for_user(
             storage.as_ref(),
             user,
             fcp_core::e911::CallerContext {
@@ -274,7 +274,7 @@ pub async fn detect(
                 supplied,
                 config: Some(&config),
             },
-        )
+        ))
         .await;
     }
     info.callback_number = info
@@ -284,8 +284,12 @@ pub async fn detect(
     if info.location.is_none() {
         // Not located, the caller still has a number to be called back on.
         if let Some(user) = &user {
-            info.callback_number =
-                fcp_core::e911::callback_for_user(storage.as_ref(), user, caller_aor).await;
+            info.callback_number = Box::pin(fcp_core::e911::callback_for_user(
+                storage.as_ref(),
+                user,
+                caller_aor,
+            ))
+            .await;
         }
         warn!(
             tenant_id = %tenant_id,

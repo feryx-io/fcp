@@ -1375,7 +1375,7 @@ impl FlowCallHandler {
             .original_invite
             .as_ref()
             .and_then(crate::emergency::supplied_location);
-        let info = crate::emergency::detect(
+        let info = Box::pin(crate::emergency::detect(
             self.storage.as_ref(),
             &call.tenant_id,
             destination,
@@ -1383,7 +1383,7 @@ impl FlowCallHandler {
             aor.as_deref(),
             client_address,
             supplied.as_ref(),
-        )
+        ))
         .await?;
 
         let local_host = self

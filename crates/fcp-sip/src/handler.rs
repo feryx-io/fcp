@@ -11841,7 +11841,11 @@ impl SipMessageHandler {
                 .link_peers
                 .from_peer(peer, &self.flow_registry)
                 .is_some();
-        let mut info = crate::emergency::detect(
+        // Boxed: every INVITE is classified here, and the location lookups'
+        // future on the stack of a deep INVITE path overflowed a debug
+        // build's worker (a site's call up its link, `docs/DEEP_TESTING.md`
+        // D8).
+        let mut info = Box::pin(crate::emergency::detect(
             self.storage.as_ref(),
             tenant_id,
             &destination,
@@ -11849,7 +11853,7 @@ impl SipMessageHandler {
             aor.as_deref(),
             client_address,
             supplied.as_ref(),
-        )
+        ))
         .await?;
         // A site's call has no user or device here: it is placed where the
         // site, which knows its caller, says (`docs/HYBRID_CONTROL_PLANE.md`
