@@ -26,6 +26,7 @@ const REALM: &str = "e2e.local";
 const SOON: Duration = Duration::from_secs(5);
 const MENU: &str = "+15125550910";
 const VERSIONED: &str = "+15125550911";
+const KEYPAD: &str = "+15125550912";
 /// What the recognizer hears in each tone.
 const SALES_HZ: u32 = 700;
 const SALES: &str = "Sales, please.";
@@ -182,6 +183,86 @@ async fn a_menu_hears_words_digits_and_silence_and_a_call_is_transcribed() {
     let path = nodes_run(&traces).await;
     assert!(path.contains(&"nothing".to_string()), "a noise: {path:?}");
 
+    service.stop().await;
+    db.drop_db().await;
+}
+
+/// The key that finishes a Gather is not part of what was entered: kept,
+/// the D8 keypad test read the pound back, and a transition on the digits
+/// alone was never taken (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_finish_key_is_not_part_of_the_digits() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    let Node {
+        service,
+        sip_port,
+        _dir,
+        ..
+    } = Node::start(&db, &[]).await;
+    let alice = seed.user("alice", "alice-pw", "1001").await;
+    let storage = seed.storage();
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "keypad",
+        "name": "Keypad",
+        "version": 1,
+        "initial_node": "answer",
+        "enabled": true,
+        "tenant_id": seed.tenant_id.to_string(),
+        "nodes": {
+            "answer": {"type": "answer", "next": "keys"},
+            "keys": {
+                "type": "gather",
+                "num_digits": 0,
+                "finish_on_key": "#",
+                "timeout": 5,
+                "variable": "keys",
+                "transitions": {"42": "right"},
+                "default": "wrong",
+                "on_timeout": "wrong"
+            },
+            "right": {"type": "log", "message": "42", "next": "bye"},
+            "wrong": {"type": "log", "message": "not 42", "next": "bye"},
+            "bye": {"type": "hangup"}
+        }
+    }))
+    .unwrap();
+    fcp_flow::FlowStore::insert_flow(storage, flow)
+        .await
+        .unwrap();
+    let number = fcp_core::PhoneNumber::new(KEYPAD.to_string(), seed.tenant_id).unwrap();
+    let mut binding =
+        fcp_core::LineBinding::new(number.id, None, fcp_core::BindingType::Ivr, seed.tenant_id);
+    binding.flow_id = Some("keypad".to_string());
+    storage.put_phone_number(number).await.unwrap();
+    storage.put_line_binding(binding).await.unwrap();
+
+    let phone = Phone::new(
+        &alice.username,
+        &alice.password,
+        REALM,
+        SocketAddr::from(([127, 0, 0, 1], sip_port)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(phone.register().await.unwrap(), 200);
+    let traces =
+        fcp_storage_postgres::flow_trace::PostgresFlowTraceStore::new(storage.pool().clone());
+
+    let call = phone.call(KEYPAD).await.unwrap();
+    call.answered(SOON).await.expect("the flow answers");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    for digit in ['4', '2', '#'] {
+        assert_eq!(call.send_info_dtmf(digit).await.unwrap(), 200);
+    }
+    assert!(call.ended(SOON).await, "the flow hangs up");
+    let (path, _) = newest_call(&traces, "keypad").await;
+    if !path.contains(&"right".to_string()) {
+        panic!("4, 2, #: {path:?}\n{}", service.kill().await);
+    }
     service.stop().await;
     db.drop_db().await;
 }

@@ -3931,6 +3931,11 @@ impl FlowCallHandler {
                     )
                     .await;
                 drop(digit_slot);
+                // The key that finishes the input is not part of it: kept,
+                // "Enter some digits, then press pound" read the pound back
+                // and no transition could name the digits alone
+                // (`docs/DEEP_TESTING.md` D8).
+                let outcome = without_finish_key(outcome, finish_on_key);
                 info!(call_id = %call_id, outcome = ?outcome, "Gather complete");
 
                 use crate::flow_listen::GatherOutcome;
@@ -4853,6 +4858,45 @@ pub(crate) fn transport_of(uri: &sip_core::SipUri) -> sip_transaction::fsm::Tran
         Some("ws") => TransportKind::Ws,
         Some("wss") => TransportKind::Wss,
         _ => TransportKind::Udp,
+    }
+}
+
+/// `outcome` with the Gather's finish key taken off the digits it ends.
+fn without_finish_key(
+    outcome: crate::flow_listen::GatherOutcome,
+    finish_on_key: Option<char>,
+) -> crate::flow_listen::GatherOutcome {
+    use crate::flow_listen::GatherOutcome;
+    let Some(key) = finish_on_key else {
+        return outcome;
+    };
+    match outcome {
+        GatherOutcome::Digits(d) => match d.strip_suffix(key) {
+            Some(rest) => GatherOutcome::Digits(rest.to_string()),
+            None => GatherOutcome::Digits(d),
+        },
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod finish_key_tests {
+    use super::without_finish_key;
+    use crate::flow_listen::GatherOutcome;
+
+    #[test]
+    fn the_finish_key_is_not_part_of_the_digits() {
+        let digits = |o: GatherOutcome| match o {
+            GatherOutcome::Digits(d) => d,
+            other => panic!("{other:?}"),
+        };
+        let out = without_finish_key(GatherOutcome::Digits("5551212#".into()), Some('#'));
+        assert_eq!(digits(out), "5551212");
+        // Only a final key is the finish key; without one nothing changes.
+        let out = without_finish_key(GatherOutcome::Digits("12".into()), Some('#'));
+        assert_eq!(digits(out), "12");
+        let out = without_finish_key(GatherOutcome::Digits("1#".into()), None);
+        assert_eq!(digits(out), "1#");
     }
 }
 
