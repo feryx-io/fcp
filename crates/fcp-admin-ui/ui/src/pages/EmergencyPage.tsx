@@ -180,6 +180,26 @@ function ConfigurationTab() {
             <p className="text-xs text-muted-foreground">Stripped before matching, so 9911 is 911.</p>
           </div>
         </div>
+        <div className="space-y-1 md:w-1/2">
+          <Label htmlFor="test-call-mode" className="text-xs">A test call is answered by</Label>
+          <Select
+            value={current.test_call_mode}
+            onValueChange={(v) => edit({ test_call_mode: v })}
+          >
+            <SelectTrigger id="test-call-mode" aria-label="A test call is answered by">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="local">This platform: read back what a real call would carry</SelectItem>
+              <SelectItem value="carrier">The carrier: its test service reads back what it holds</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Read back here, a test reaches no carrier: the caller hears their location and where it
+            came from, their callback number and the trunks a real call would take. Sent to the
+            carrier, it proves the carrier's records, on carriers that offer a test service.
+          </p>
+        </div>
       </div>
 
       <div className="rounded-lg border bg-card p-4 space-y-4">
@@ -330,6 +350,7 @@ function ConfigurationTab() {
             save.mutate({
               emergency_numbers: current.emergency_numbers,
               test_numbers: current.test_numbers,
+              test_call_mode: current.test_call_mode,
               dial_prefixes: current.dial_prefixes,
               contacts: current.contacts
                 .filter((c) => c.target.trim().length > 0)

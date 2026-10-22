@@ -53,6 +53,9 @@ pub struct EmergencyConfigResponse {
     pub tenant_id: String,
     pub emergency_numbers: Vec<String>,
     pub test_numbers: Vec<String>,
+    /// Who answers a test call: `local`, this platform reading back what a
+    /// live call would carry, or `carrier`, the carrier's test service.
+    pub test_call_mode: String,
     pub dial_prefixes: Vec<String>,
     /// Who is told when an emergency call is placed, typed by channel
     /// (`docs/E911_BLOCK_2.md` §8.1).
@@ -81,6 +84,7 @@ impl EmergencyConfigResponse {
             tenant_id: c.tenant_id.to_string(),
             emergency_numbers: c.emergency_numbers,
             test_numbers: c.test_numbers,
+            test_call_mode: c.test_call_mode.as_str().to_string(),
             dial_prefixes: c.dial_prefixes,
             notify_contacts,
             contacts,
@@ -178,6 +182,8 @@ impl ContactInput {
 pub struct UpdateEmergencyConfigRequest {
     pub emergency_numbers: Option<Vec<String>>,
     pub test_numbers: Option<Vec<String>>,
+    /// `local` (read back here) or `carrier` (sent to the emergency trunks).
+    pub test_call_mode: Option<String>,
     pub dial_prefixes: Option<Vec<String>>,
     /// Replaces the notification contacts. Strings are read by shape.
     pub contacts: Option<Vec<ContactInput>>,
@@ -274,6 +280,14 @@ pub async fn update_config(
     }
     if let Some(numbers) = req.test_numbers {
         config.test_numbers = clean_numbers("test_numbers", numbers)?;
+    }
+    if let Some(mode) = req.test_call_mode {
+        config.test_call_mode =
+            fcp_core::e911::TestCallMode::parse(mode.trim()).ok_or_else(|| {
+                ApiError::BadRequest(format!(
+                    "test_call_mode: '{mode}' must be 'local' or 'carrier'"
+                ))
+            })?;
     }
     if let Some(prefixes) = req.dial_prefixes {
         config.dial_prefixes = clean_numbers("dial_prefixes", prefixes)?;

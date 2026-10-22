@@ -207,6 +207,11 @@ pub struct EmergencyCallInfo {
     /// The `Geolocation-Error` (or 424) a trunk answered the location with.
     #[serde(default)]
     pub geolocation_error: Option<String>,
+    /// A test call this platform answered itself, reading back what a live
+    /// call would carry (`TestCallMode::Local`): no trunk was called and no
+    /// location delivered.
+    #[serde(default)]
+    pub read_back: bool,
 }
 
 /// What became of an emergency leg placed apart from the call's B-leg.
@@ -224,6 +229,9 @@ impl EmergencyCallInfo {
     /// attempt recorded any and there is a callback number.
     pub fn delivery(&self) -> Option<String> {
         use fcp_core::e911::LocationDelivery;
+        if self.read_back {
+            return None;
+        }
         let mut methods: Vec<String> = self
             .delivered
             .iter()

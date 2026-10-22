@@ -8,7 +8,7 @@ use fcp_core::e911::notify::{
 };
 use fcp_core::e911::{
     DeclaredLocation, DispatchableLocation, EmergencyCallRecord, EmergencyCompletion,
-    EmergencyConfig, EmergencyKind, EmergencyNetwork, EmergencyStore, NetworkApplies,
+    EmergencyConfig, EmergencyKind, EmergencyNetwork, EmergencyStore, NetworkApplies, TestCallMode,
 };
 use fcp_core::TenantId;
 use sqlx::{Pool, Postgres, Row};
@@ -130,7 +130,7 @@ impl EmergencyStore for PostgresEmergencyStore {
         let row = sqlx::query(
             "SELECT tenant_id, emergency_numbers, test_numbers, dial_prefixes, contacts,
                     notify_contacts, require_dispatchable_location, updated_at,
-                    trust_device_locations, declared_location_ttl_secs
+                    trust_device_locations, declared_location_ttl_secs, test_call_mode
              FROM emergency_configs WHERE tenant_id = $1",
         )
         .bind(tenant_id.to_string())
@@ -144,6 +144,11 @@ impl EmergencyStore for PostgresEmergencyStore {
             tenant_id: *tenant_id,
             emergency_numbers: row.try_get("emergency_numbers")?,
             test_numbers: row.try_get("test_numbers")?,
+            test_call_mode: row
+                .try_get::<String, _>("test_call_mode")
+                .ok()
+                .and_then(|m| TestCallMode::parse(&m))
+                .unwrap_or_default(),
             dial_prefixes: row.try_get("dial_prefixes")?,
             contacts: {
                 let typed: Vec<NotifyContact> = row
@@ -185,8 +190,8 @@ impl EmergencyStore for PostgresEmergencyStore {
             "INSERT INTO emergency_configs
                 (tenant_id, emergency_numbers, test_numbers, dial_prefixes, notify_contacts,
                  require_dispatchable_location, updated_at, trust_device_locations,
-                 declared_location_ttl_secs, contacts)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 declared_location_ttl_secs, contacts, test_call_mode)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (tenant_id) DO UPDATE SET
                 emergency_numbers = EXCLUDED.emergency_numbers,
                 test_numbers = EXCLUDED.test_numbers,
@@ -196,6 +201,7 @@ impl EmergencyStore for PostgresEmergencyStore {
                 require_dispatchable_location = EXCLUDED.require_dispatchable_location,
                 trust_device_locations = EXCLUDED.trust_device_locations,
                 declared_location_ttl_secs = EXCLUDED.declared_location_ttl_secs,
+                test_call_mode = EXCLUDED.test_call_mode,
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(config.tenant_id.to_string())
@@ -216,6 +222,7 @@ impl EmergencyStore for PostgresEmergencyStore {
         )
         .bind(config.declared_location_ttl.as_secs() as i64)
         .bind(serde_json::to_value(&config.contacts)?)
+        .bind(config.test_call_mode.as_str())
         .execute(&self.pool)
         .await?;
         Ok(())

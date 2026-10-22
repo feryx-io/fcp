@@ -5684,6 +5684,25 @@ async fn e911_config_readiness_validation_and_audit() {
     assert_eq!(cfg.json["configured"], false);
     assert_eq!(cfg.json["emergency_numbers"], json!(["911"]));
     assert_eq!(cfg.json["test_numbers"], json!(["933"]));
+    // A test call is read back here unless the tenant says otherwise.
+    assert_eq!(cfg.json["test_call_mode"], "local");
+    let mode = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "test_call_mode": "pstn" })),
+        )
+        .await;
+    assert_eq!(mode.status, StatusCode::BAD_REQUEST, "{}", mode.text);
+    let mode = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "test_call_mode": "carrier" })),
+        )
+        .await;
+    assert_eq!(mode.status, StatusCode::OK, "{}", mode.text);
+    assert_eq!(mode.json["test_call_mode"], "carrier");
 
     let bad = app
         .admin(
@@ -5726,6 +5745,7 @@ async fn e911_config_readiness_validation_and_audit() {
         "untouched fields keep defaults"
     );
     assert_eq!(saved.json["require_dispatchable_location"], true);
+    assert_eq!(saved.json["test_call_mode"], "carrier", "kept");
     let reread = app
         .admin(Method::GET, "/api/v1/emergency/config", None)
         .await;

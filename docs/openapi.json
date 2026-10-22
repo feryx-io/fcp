@@ -23566,6 +23566,7 @@
           "tenant_id",
           "emergency_numbers",
           "test_numbers",
+          "test_call_mode",
           "dial_prefixes",
           "contacts",
           "notify_contacts",
@@ -23590,6 +23591,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "test_call_mode": {
+            "type": "string",
+            "description": "Who answers a test call: `local`, this platform reading back what a\nlive call would carry, or `carrier`, the carrier's test service."
           },
           "dial_prefixes": {
             "type": "array",
@@ -38453,6 +38458,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "test_call_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`local` (read back here) or `carrier` (sent to the emergency trunks)."
           },
           "dial_prefixes": {
             "type": [

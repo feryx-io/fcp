@@ -344,6 +344,12 @@ Changes that need something of a configuration the operator keeps:
   runs on one host. Phones answer the challenge with the credentials they
   register with. Setting `auth_invites = false` keeps the old behaviour,
   and is warned about at every start.
+- **v0.25.453: an emergency test call (`933`) is answered by the call
+  manager** (`docs/E911.md` "Test calls"), which reads back what a live
+  call would carry and calls no carrier. Migration 120 gives every tenant
+  `test_call_mode = 'local'`. A tenant that relied on its carrier's test
+  service sets `test_call_mode` to `carrier` on `/api/v1/emergency/config`
+  or the Emergency page.
 
 ### 5.5 Proved
 

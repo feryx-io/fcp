@@ -157,6 +157,15 @@ struct EmergencyDialPlan {
     headers: sip_core::Headers,
 }
 
+/// What a `Dial` to an emergency number does.
+enum EmergencyDial {
+    /// Place it on the emergency routes.
+    Place(EmergencyDialPlan),
+    /// A test the tenant has this platform answer: say this to the caller
+    /// and call no carrier (`TestCallMode::Local`).
+    ReadBack(String),
+}
+
 /// The outcome of one B-leg INVITE.
 #[derive(Debug, Default)]
 struct DialAttempt {
@@ -847,7 +856,10 @@ impl FlowCallHandler {
         // each emergency route in turn with the callback number as caller
         // (`docs/E911_BLOCK_2.md` §4).
         let emergency = match self.emergency_dial_plan(a_leg_call_id, &destination).await {
-            Some(Ok(plan)) => Some(plan),
+            Some(Ok(EmergencyDial::Place(plan))) => Some(plan),
+            Some(Ok(EmergencyDial::ReadBack(text))) => {
+                return self.read_back_test(a_leg_call_id, &text, next).await;
+            }
             Some(Err(error_msg)) => {
                 return self
                     .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
@@ -1349,7 +1361,7 @@ impl FlowCallHandler {
         &self,
         a_leg_call_id: CallId,
         destination: &str,
-    ) -> Option<std::result::Result<EmergencyDialPlan, String>> {
+    ) -> Option<std::result::Result<EmergencyDial, String>> {
         let call_mgr = self.call_manager.as_ref()?;
         let call = call_mgr.get_call(&a_leg_call_id)?;
         let caller = call
@@ -1441,6 +1453,33 @@ impl FlowCallHandler {
         );
         crate::emergency::announce(call_mgr, a_leg_call_id, record).await;
 
+        // A test read back here: what a live call would carry, and no
+        // carrier called (`docs/E911.md` "Test calls").
+        if info.kind == fcp_core::e911::EmergencyKind::Test {
+            let config = crate::emergency::config_for(self.storage.as_ref(), &call.tenant_id).await;
+            if config.test_call_mode == fcp_core::e911::TestCallMode::Local {
+                let text = crate::emergency::test_readback(
+                    &info,
+                    &routes,
+                    config.deliverable_contacts().len(),
+                );
+                let _ = call_mgr.update_call(&a_leg_call_id, |c| {
+                    c.trunk_name = None;
+                    c.trunk_id = None;
+                    c.route_trunks = Vec::new();
+                    if let Some(em) = c.emergency.as_mut() {
+                        em.read_back = true;
+                        em.leg = Some(fcp_b2bua_core::EmergencyLeg {
+                            outcome: "read_back".to_string(),
+                            sip_status: None,
+                            answered_at: Some(std::time::SystemTime::now()),
+                        });
+                    }
+                });
+                return Some(Ok(EmergencyDial::ReadBack(text)));
+            }
+        }
+
         let targets: Vec<(sip_core::SipUri, crate::emergency::EmergencyAttempt)> = routes
             .iter()
             .filter_map(|r| {
@@ -1466,11 +1505,39 @@ impl FlowCallHandler {
             });
             return Some(Err("No trunk available for emergency call".to_string()));
         }
-        Some(Ok(EmergencyDialPlan {
+        Some(Ok(EmergencyDial::Place(EmergencyDialPlan {
             targets,
             from,
             headers,
-        }))
+        })))
+    }
+
+    /// A `Dial` to a test number read back here: `text` said to the
+    /// flow's caller, then the node's `next`, with `dial_status` set to
+    /// `read_back`.
+    async fn read_back_test(&self, call_id: CallId, text: &str, next: String) -> Result<()> {
+        info!(call_id = %call_id, "Flow's emergency test read back here");
+        let session = self
+            .call_manager
+            .as_ref()
+            .and_then(|cm| cm.get_call(&call_id))
+            .and_then(|c| c.media_session_id);
+        match (&self.media_manager, session) {
+            (Some(mm), Some(session)) => self.say(mm, &session, "", text).await,
+            _ => warn!(call_id = %call_id, "No media to read the emergency test back on"),
+        }
+        let context_entry = self
+            .contexts
+            .get(&call_id)
+            .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+        let context = Arc::clone(context_entry.value());
+        drop(context_entry);
+        {
+            let mut context_guard = context.write().await;
+            context_guard.set_variable("dial_status".to_string(), "read_back".to_string());
+            context_guard.current_node = next;
+        }
+        Box::pin(self.execute_next_node(call_id)).await
     }
 
     /// Place one B-leg INVITE for a `Dial` node and wait for its outcome;

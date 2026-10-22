@@ -4098,6 +4098,17 @@ impl SipMessageHandler {
             }
         }
 
+        // An emergency test call the tenant has this platform answer: the
+        // node reads back what a live call would carry, and no carrier is
+        // called (`docs/E911.md` "Test calls").
+        // Boxed and apart: this future is deep, and what a branch holds
+        // across an await here overflowed a debug worker's stack.
+        if let Some(done) =
+            Box::pin(self.read_back_local_test(request, handle, &call_id, tenant_id)).await
+        {
+            return done;
+        }
+
         // Check if this is a PBX feature code (e.g., *8 pickup, *70 park, *81 intercom)
         if let Some(pbx) = &self.pbx_handler {
             if pbx.is_enabled() {
@@ -15154,6 +15165,100 @@ impl SipMessageHandler {
     /// A feature code done: the caller is told so, then hung up on. A bare
     /// 200 answered an offer with no SDP and left the phone on a call
     /// nobody ended (`docs/DEEP_TESTING.md` D8).
+    /// `Some` when `call_id` is an emergency test its tenant has this
+    /// platform answer, with what answering it came to; `None` for every
+    /// other call.
+    async fn read_back_local_test(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        tenant_id: fcp_core::TenantId,
+    ) -> Option<Result<()>> {
+        let em = self.call_manager.get_call(call_id)?.emergency?;
+        if em.kind != fcp_core::e911::EmergencyKind::Test {
+            return None;
+        }
+        let config = crate::emergency::config_for(self.storage.as_ref(), &tenant_id).await;
+        if config.test_call_mode != fcp_core::e911::TestCallMode::Local {
+            return None;
+        }
+        Some(
+            self.answer_emergency_test(request, handle, call_id, tenant_id, &em, &config)
+                .await,
+        )
+    }
+
+    /// Answer an emergency test call here and read back what a live call
+    /// placed now would carry (`TestCallMode::Local`): the location and its
+    /// source, the callback number, the emergency routes in order and how
+    /// each takes the location, the contacts told. The record is completed
+    /// as `read_back`, with no trunk.
+    async fn answer_emergency_test(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        tenant_id: fcp_core::TenantId,
+        em: &fcp_b2bua_core::EmergencyCallInfo,
+        config: &fcp_core::e911::EmergencyConfig,
+    ) -> Result<()> {
+        let Some(flow_handler) = self.flow_handler.clone() else {
+            // Nothing here can speak: refused rather than sent to a carrier
+            // the tenant did not ask to test.
+            warn!(call_id = %call_id, "Emergency test call refused: this node runs no flows to read it back");
+            let response = self.create_simple_response(request, 503, "Service Unavailable");
+            handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call_with(
+                call_id,
+                fcp_cdr::TerminationReason::rejected(503, "no flows to read a test call back"),
+            );
+            return Ok(());
+        };
+        let routes = match &self.outbound_route_provider {
+            Some(provider) => {
+                provider
+                    .resolve_emergency_ordered(Some(tenant_id), &request.uri().to_string())
+                    .await
+            }
+            None => Vec::new(),
+        };
+        let text =
+            crate::emergency::test_readback(em, &routes, config.deliverable_contacts().len());
+        info!(
+            call_id = %call_id,
+            routes = routes.len(),
+            located = em.location.is_some(),
+            callback = em.callback_number.as_deref().unwrap_or("none"),
+            "Emergency test call read back here"
+        );
+        let _ = self.call_manager.update_call(call_id, |call| {
+            if let Some(em) = call.emergency.as_mut() {
+                em.read_back = true;
+                em.leg = Some(fcp_b2bua_core::EmergencyLeg {
+                    outcome: "read_back".to_string(),
+                    sip_status: None,
+                    answered_at: Some(std::time::SystemTime::now()),
+                });
+            }
+        });
+        self.start_inline_flow(
+            request,
+            handle,
+            call_id,
+            &flow_handler,
+            spoken_confirmation(
+                &format!("emergency-test-{call_id}"),
+                "Emergency test",
+                "Inline flow reading back an emergency test call",
+                text,
+            ),
+            HashMap::new(),
+            "emergency test",
+        )
+        .await
+    }
+
     async fn confirm_feature(
         &self,
         request: &sip_core::Request,

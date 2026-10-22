@@ -28,6 +28,7 @@ class UpdateEmergencyConfigRequest:
         Attributes:
             emergency_numbers (list[str] | None | Unset):
             test_numbers (list[str] | None | Unset):
+            test_call_mode (None | str | Unset): `local` (read back here) or `carrier` (sent to the emergency trunks).
             dial_prefixes (list[str] | None | Unset):
             contacts (list[ContactInputType1 | str] | None | Unset): Replaces the notification contacts. Strings are read by
                 shape.
@@ -43,6 +44,7 @@ class UpdateEmergencyConfigRequest:
 
     emergency_numbers: list[str] | None | Unset = UNSET
     test_numbers: list[str] | None | Unset = UNSET
+    test_call_mode: None | str | Unset = UNSET
     dial_prefixes: list[str] | None | Unset = UNSET
     contacts: list[ContactInputType1 | str] | None | Unset = UNSET
     notify_contacts: list[ContactInputType1 | str] | None | Unset = UNSET
@@ -76,6 +78,12 @@ class UpdateEmergencyConfigRequest:
 
         else:
             test_numbers = self.test_numbers
+
+        test_call_mode: None | str | Unset
+        if isinstance(self.test_call_mode, Unset):
+            test_call_mode = UNSET
+        else:
+            test_call_mode = self.test_call_mode
 
         dial_prefixes: list[str] | None | Unset
         if isinstance(self.dial_prefixes, Unset):
@@ -152,6 +160,8 @@ class UpdateEmergencyConfigRequest:
             field_dict["emergency_numbers"] = emergency_numbers
         if test_numbers is not UNSET:
             field_dict["test_numbers"] = test_numbers
+        if test_call_mode is not UNSET:
+            field_dict["test_call_mode"] = test_call_mode
         if dial_prefixes is not UNSET:
             field_dict["dial_prefixes"] = dial_prefixes
         if contacts is not UNSET:
@@ -207,6 +217,16 @@ class UpdateEmergencyConfigRequest:
             return cast(list[str] | None | Unset, data)
 
         test_numbers = _parse_test_numbers(d.pop("test_numbers", UNSET))
+
+
+        def _parse_test_call_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        test_call_mode = _parse_test_call_mode(d.pop("test_call_mode", UNSET))
 
 
         def _parse_dial_prefixes(data: object) -> list[str] | None | Unset:
@@ -340,6 +360,7 @@ class UpdateEmergencyConfigRequest:
         update_emergency_config_request = cls(
             emergency_numbers=emergency_numbers,
             test_numbers=test_numbers,
+            test_call_mode=test_call_mode,
             dial_prefixes=dial_prefixes,
             contacts=contacts,
             notify_contacts=notify_contacts,

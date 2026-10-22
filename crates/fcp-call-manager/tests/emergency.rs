@@ -326,7 +326,9 @@ async fn a_911_call_reaches_the_emergency_trunk_as_the_sites_callback_number() {
     assert_eq!(call.hangup().await.unwrap(), 200);
     assert!(carrier_call.ended(SOON).await, "the carrier's leg ends");
 
-    // A 933 test call goes the same way and is recorded as a test.
+    // A 933 test call, for a tenant whose carrier answers its tests, goes
+    // the same way and is recorded as a test.
+    carrier_tests(&stack.seed).await;
     let test_call = alice_phone.call("933").await.unwrap();
     let Some(incoming) = carrier.phone.incoming(SOON).await else {
         let why = format!("the test call never rang; it is {:?}", test_call.phase());
@@ -949,6 +951,156 @@ async fn a_device_is_placed_by_the_network_it_is_on() {
     stack.finish().await;
 }
 
+/// The tenant's test calls sent to its carrier's test service.
+async fn carrier_tests(seed: &Seed) {
+    use fcp_core::e911::{EmergencyConfig, EmergencyStore};
+    let store =
+        fcp_storage_postgres::emergency::PostgresEmergencyStore::new(seed.storage().pool().clone());
+    let mut config = store
+        .get_emergency_config(&seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap_or_else(|| EmergencyConfig::defaults(seed.tenant_id));
+    config.test_call_mode = fcp_core::e911::TestCallMode::Carrier;
+    store.put_emergency_config(&config).await.unwrap();
+}
+
+/// A test call this platform answers (the default, `TestCallMode::Local`):
+/// the node reads back what a live call would carry, no carrier is called,
+/// and the record says so — read back, no trunk, nothing delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_test_call_is_read_back_here_and_no_carrier_is_called() {
+    let carrier = Carrier::new("psap-primary", 1).await;
+    let tts = tone_tts().await;
+    let mut stack = match Stack::start_speaking(&[&carrier], &[], None, Some(&tts)).await {
+        Some(s) => s,
+        None => {
+            eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+            return;
+        }
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack.seed.site_for("alice", ALICE_ELIN).await;
+    let phone = stack.phone(&alice).await;
+
+    let call = phone.call("933").await.unwrap();
+    if call.answered(SOON).await.is_err() {
+        let why = format!("the node did not answer the test; it is {:?}", call.phase());
+        stack.fail(&why).await;
+    }
+    if !call.media().heard(NOTICE_HZ, SOON).await {
+        stack.fail("the caller heard no readback").await;
+    }
+    assert!(
+        call.ended(Duration::from_secs(20)).await,
+        "the node hangs up once it has read back"
+    );
+    assert!(
+        carrier
+            .phone
+            .incoming(Duration::from_millis(500))
+            .await
+            .is_none(),
+        "no carrier is called for a test read back here"
+    );
+
+    let records = stack
+        .seed
+        .emergency_calls(1, SOON, |r| r.ended_at.is_some())
+        .await;
+    let test = &records[0];
+    assert_eq!(test.kind, EmergencyKind::Test);
+    assert_eq!(test.outcome, "read_back", "{test:#?}");
+    assert!(test.trunk_name.is_none(), "{test:#?}");
+    assert!(test.delivery.is_none(), "{test:#?}");
+    assert_eq!(test.callback_number.as_deref(), Some(ALICE_ELIN));
+    assert!(test.location.is_some());
+
+    stack.finish().await;
+}
+
+/// A flow's `Dial` to the test number is read back too: the flow's caller
+/// hears it and the flow goes on, and no carrier is called.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flow_dialing_the_test_number_is_read_back() {
+    let carrier = Carrier::new("psap-primary", 1).await;
+    let tts = tone_tts().await;
+    let mut stack = match Stack::start_speaking(&[&carrier], &[], None, Some(&tts)).await {
+        Some(s) => s,
+        None => {
+            eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+            return;
+        }
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack.seed.site_for("alice", ALICE_ELIN).await;
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "dial-933",
+        "name": "Dial 933",
+        "version": 1,
+        "initial_node": "answer",
+        "enabled": true,
+        "tenant_id": stack.seed.tenant_id.to_string(),
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "dial"},
+            "dial": {
+                "id": "dial", "name": "Dial 933", "type": "dial",
+                "destination": "933", "timeout": 10, "next": "done",
+                "on_error": "failed", "on_no_answer": "failed", "on_busy": "failed"
+            },
+            "failed": {"id": "failed", "name": "Failed", "type": "log", "message": "dial failed", "next": "done"},
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .expect("seed flow");
+    let number = fcp_core::PhoneNumber::new("+15185551933".to_string(), stack.seed.tenant_id)
+        .expect("valid number");
+    let mut binding = fcp_core::LineBinding::new(
+        number.id,
+        None,
+        fcp_core::BindingType::Ivr,
+        stack.seed.tenant_id,
+    );
+    binding.flow_id = Some("dial-933".to_string());
+    stack.seed.storage().put_phone_number(number).await.unwrap();
+    stack
+        .seed
+        .storage()
+        .put_line_binding(binding)
+        .await
+        .unwrap();
+
+    let phone = stack.phone(&alice).await;
+    let call = phone.call("+15185551933").await.unwrap();
+    call.answered(SOON).await.expect("the flow answers");
+    if !call.media().heard(NOTICE_HZ, SOON).await {
+        stack.fail("the flow's caller heard no readback").await;
+    }
+    assert!(
+        call.ended(Duration::from_secs(20)).await,
+        "the flow goes on to its hangup"
+    );
+    assert!(
+        carrier
+            .phone
+            .incoming(Duration::from_millis(500))
+            .await
+            .is_none(),
+        "no carrier is called for a test read back here"
+    );
+    let records = stack
+        .seed
+        .emergency_calls(1, SOON, |r| r.ended_at.is_some())
+        .await;
+    assert_eq!(records[0].outcome, "read_back", "{:#?}", records[0]);
+    assert!(records[0].trunk_name.is_none(), "{:#?}", records[0]);
+
+    stack.finish().await;
+}
+
 /// A caller nothing places still goes out as a number to call back: their
 /// DID, in From and `P-Asserted-Identity`. The callback number was chosen
 /// only with an address, so an unlocated call carried the phone's own SIP
@@ -986,7 +1138,7 @@ async fn an_unlocated_caller_goes_out_as_their_number() {
         .unwrap();
 
     let phone = stack.phone(&carol).await;
-    let call = phone.call("933").await.unwrap();
+    let call = phone.call("911").await.unwrap();
     let Some(incoming) = carrier.phone.incoming(SOON).await else {
         let why = format!("the trunk never rang; the call is {:?}", call.phase());
         stack.fail(&why).await;
@@ -1209,6 +1361,8 @@ async fn a_test_call_tells_the_tenants_contacts() {
         ContactKind::Email,
         "frontdesk@example.com",
     )];
+    // The carrier answers the test, as a carrier's test service would.
+    config.test_call_mode = fcp_core::e911::TestCallMode::Carrier;
     store.put_emergency_config(&config).await.unwrap();
 
     // An events server with nothing but the email channel.
@@ -1472,6 +1626,7 @@ async fn a_notification_call_rings_the_contact_and_speaks_the_notice() {
     );
     let mut config = EmergencyConfig::defaults(stack.seed.tenant_id);
     config.contacts = vec![NotifyContact::new(ContactKind::Call, "1050")];
+    config.test_call_mode = fcp_core::e911::TestCallMode::Carrier;
     store.put_emergency_config(&config).await.unwrap();
 
     // Asked directly, for someone who is not the tenant's.

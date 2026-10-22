@@ -19,6 +19,7 @@ use std::sync::Arc;
 use fcp_b2bua_core::EmergencyCallInfo;
 use fcp_core::e911::{
     dialed_user_part, resolve_for_user, EmergencyCallRecord, EmergencyConfig, LocationDelivery,
+    LocationSource,
 };
 use fcp_core::storage::CredentialStore;
 use fcp_core::{SiteId, TenantId};
@@ -247,6 +248,7 @@ pub async fn detect(
         leg: None,
         delivered: Vec::new(),
         geolocation_error: None,
+        read_back: false,
     };
     let Some(storage) = storage else {
         return Some(info);
@@ -565,6 +567,106 @@ pub async fn announce(
     call_manager.record_emergency(call_id, record);
 }
 
+/// What a caller hears when this platform answers their emergency test
+/// call (`TestCallMode::Local`, `docs/E911.md` "Test calls"): what a live
+/// call placed now would carry. `routes` are the emergency routes in the
+/// order they would be tried; `contacts` the notification contacts a
+/// notice is being sent to.
+pub fn test_readback(
+    info: &EmergencyCallInfo,
+    routes: &[crate::handler::OutboundRoute],
+    contacts: usize,
+) -> String {
+    let digits = |value: &str| {
+        fcp_flow::apply_filter(value.trim_start_matches('+'), "digits").unwrap_or_default()
+    };
+    let mut said =
+        vec!["This is an emergency calling test. No emergency call has been placed.".to_string()];
+
+    match &info.location {
+        Some(location) => {
+            let a = &location.address;
+            let mut street = vec![a.address1.trim().to_string()];
+            if let Some(line) = a.address2.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+                street.push(line.to_string());
+            }
+            said.push(format!(
+                "Your location is {}, {}, {}, {}.",
+                street.join(", "),
+                a.city.trim(),
+                a.state.trim(),
+                digits(&a.postal_code)
+            ));
+            let name = location
+                .location_name
+                .as_deref()
+                .map(|n| format!(", {n}"))
+                .unwrap_or_default();
+            said.push(match location.source {
+                LocationSource::DeviceOverride => "It is the address set on this phone.".to_string(),
+                LocationSource::DeviceSupplied => "It is the location this phone sent.".to_string(),
+                LocationSource::Network => format!("It comes from the network you are on{name}."),
+                LocationSource::DeviceLocation => format!("It is this phone's site{name}."),
+                LocationSource::UserLocation => format!("It is your site{name}."),
+                LocationSource::Declared => "It is the location you declared.".to_string(),
+                LocationSource::PhoneNumber => {
+                    "It is the address on your phone number.".to_string()
+                }
+                LocationSource::SiteSupplied => "It is the location your site sent.".to_string(),
+            });
+        }
+        None => said.push(
+            "No location was found for you. A real call would depend on the address your carrier holds for your callback number."
+                .to_string(),
+        ),
+    }
+
+    said.push(match &info.callback_number {
+        Some(number) => format!("Your callback number is {}.", digits(number)),
+        None => {
+            "There is no callback number. Emergency services could not call you back.".to_string()
+        }
+    });
+
+    if routes.is_empty() {
+        said.push("No trunk can carry an emergency call. A real call would fail.".to_string());
+    } else {
+        let ordinal = ["First", "Then", "Then"];
+        for (route, first) in routes.iter().take(3).zip(ordinal) {
+            let attempt = EmergencyAttempt::from_route(route);
+            let name = attempt.trunk.as_deref().unwrap_or("a direct route");
+            let elin = attempt.delivery.contains(&LocationDelivery::Elin);
+            let by_value = attempt.delivery.contains(&LocationDelivery::PidfLo);
+            let how = match (elin, by_value) {
+                (true, true) => "with the callback number and the address",
+                (false, true) => "with the address",
+                _ => "with the callback number",
+            };
+            said.push(format!("{first}, trunk {name}, {how}."));
+        }
+        if routes.len() > 3 {
+            said.push(format!("And {} more.", routes.len() - 3));
+        }
+        if !routes
+            .iter()
+            .any(|r| r.trunk.as_ref().is_some_and(|t| t.emergency_capable))
+        {
+            said.push(
+                "No trunk is marked for emergency calls, so a real call would use your ordinary outbound trunk."
+                    .to_string(),
+            );
+        }
+    }
+
+    said.push(match contacts {
+        0 => "No emergency contacts are set, so no one is being told.".to_string(),
+        1 => "Your emergency contact is being told, marked as a test.".to_string(),
+        n => format!("Your {n} emergency contacts are being told, marked as a test."),
+    });
+    said.push("The test is complete. Goodbye.".to_string());
+    said.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,6 +737,7 @@ mod tests {
             leg: None,
             delivered: Vec::new(),
             geolocation_error: None,
+            read_back: false,
         };
         let caller = sip_core::SipUri::parse("sip:alice@pbx.example").ok();
         let (from, headers) = outbound_identity(&info, caller, "10.0.0.1");
@@ -681,7 +784,81 @@ mod tests {
             leg: None,
             delivered: Vec::new(),
             geolocation_error: None,
+            read_back: false,
         }
+    }
+
+    fn route(
+        name: &str,
+        capable: bool,
+        delivery: &[LocationDelivery],
+    ) -> crate::handler::OutboundRoute {
+        let mut trunk = fcp_core::Trunk::new(name.into(), TenantId::nil());
+        trunk.emergency_capable = capable;
+        trunk.emergency_location = delivery.to_vec();
+        crate::handler::OutboundRoute {
+            target_uri: format!("sip:933@{name}.example"),
+            trunk: Some(std::sync::Arc::new(trunk)),
+        }
+    }
+
+    #[test]
+    fn a_test_call_hears_what_a_real_call_would_carry() {
+        let info = EmergencyCallInfo {
+            dialed: "933".into(),
+            kind: fcp_core::e911::EmergencyKind::Test,
+            ..located_info()
+        };
+        let routes = [
+            route(
+                "psap",
+                true,
+                &[LocationDelivery::Elin, LocationDelivery::PidfLo],
+            ),
+            route("backup", false, &[]),
+        ];
+        let said = test_readback(&info, &routes, 2);
+        for part in [
+            "No emergency call has been placed.",
+            "Your location is 100 State St, Albany, NY, 1 2 2 0 7.",
+            "It is your site, HQ.",
+            "Your callback number is 1 5 1 8 5 5 5 0 1 0 0.",
+            "First, trunk psap, with the callback number and the address.",
+            "Then, trunk backup, with the callback number.",
+            "Your 2 emergency contacts are being told, marked as a test.",
+        ] {
+            assert!(said.contains(part), "{part:?} not in {said:?}");
+        }
+        assert!(!said.contains("No trunk is marked"), "{said}");
+    }
+
+    #[test]
+    fn a_test_call_hears_what_is_missing() {
+        let info = EmergencyCallInfo {
+            dialed: "933".into(),
+            kind: fcp_core::e911::EmergencyKind::Test,
+            callback_number: None,
+            location: None,
+            ..located_info()
+        };
+        let said = test_readback(&info, &[], 0);
+        for part in [
+            "No location was found for you.",
+            "There is no callback number.",
+            "No trunk can carry an emergency call.",
+            "No emergency contacts are set",
+        ] {
+            assert!(said.contains(part), "{part:?} not in {said:?}");
+        }
+        let said = test_readback(&info, &[route("carrier", false, &[])], 1);
+        assert!(
+            said.contains("No trunk is marked for emergency calls"),
+            "{said}"
+        );
+        assert!(
+            said.contains("Your emergency contact is being told"),
+            "{said}"
+        );
     }
 
     fn attempt(delivery: &[LocationDelivery]) -> EmergencyAttempt {

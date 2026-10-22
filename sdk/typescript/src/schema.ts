@@ -7151,6 +7151,11 @@ export interface components {
             tenant_id: string;
             emergency_numbers: string[];
             test_numbers: string[];
+            /**
+             * @description Who answers a test call: `local`, this platform reading back what a
+             *     live call would carry, or `carrier`, the carrier's test service.
+             */
+            test_call_mode: string;
             dial_prefixes: string[];
             /**
              * @description Who is told when an emergency call is placed, typed by channel
@@ -12098,6 +12103,8 @@ export interface components {
         UpdateEmergencyConfigRequest: {
             emergency_numbers?: string[] | null;
             test_numbers?: string[] | null;
+            /** @description `local` (read back here) or `carrier` (sent to the emergency trunks). */
+            test_call_mode?: string | null;
             dial_prefixes?: string[] | null;
             /** @description Replaces the notification contacts. Strings are read by shape. */
             contacts?: components["schemas"]["ContactInput"][] | null;

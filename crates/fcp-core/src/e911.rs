@@ -45,6 +45,10 @@ pub struct EmergencyConfig {
     pub emergency_numbers: Vec<String>,
     /// Dialed strings that are emergency test calls (`933`).
     pub test_numbers: Vec<String>,
+    /// Who answers a test call: this platform, reading back what a real
+    /// emergency call would carry, or the carrier's own test service.
+    #[serde(default)]
+    pub test_call_mode: TestCallMode,
     /// Outside-line prefixes stripped before matching (`9` → `9911`).
     pub dial_prefixes: Vec<String>,
     /// Who is told when an emergency call is placed (Kari's Law on-site
@@ -67,6 +71,41 @@ pub struct EmergencyConfig {
     #[serde(default = "default_declared_ttl")]
     pub declared_location_ttl: Duration,
     pub updated_at: SystemTime,
+}
+
+/// Who answers an emergency test call (`933`, `docs/E911.md` "Test
+/// calls").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestCallMode {
+    /// The call manager answers and reads back what a real call would
+    /// carry: the location and where it came from, the callback number,
+    /// the trunks in the order they would be tried and how each takes the
+    /// location, and what is missing. No carrier is called, so it works
+    /// whichever carriers a deployment has and whether they offer a test
+    /// service or not.
+    #[default]
+    Local,
+    /// The call goes to the emergency trunks as a live call would, for
+    /// the carrier's own test service to read back what it holds.
+    Carrier,
+}
+
+impl TestCallMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Carrier => "carrier",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "local" => Some(Self::Local),
+            "carrier" => Some(Self::Carrier),
+            _ => None,
+        }
+    }
 }
 
 /// A day: how long a declared location stands unless the tenant says
@@ -102,6 +141,7 @@ impl EmergencyConfig {
                 .map(|s| s.to_string())
                 .collect(),
             test_numbers: DEFAULT_TEST_NUMBERS.iter().map(|s| s.to_string()).collect(),
+            test_call_mode: TestCallMode::default(),
             dial_prefixes: DEFAULT_DIAL_PREFIXES
                 .iter()
                 .map(|s| s.to_string())
