@@ -282,10 +282,16 @@ pub async fn detect(
         .as_ref()
         .and_then(|l| l.callback_number.clone());
     if info.location.is_none() {
+        // Not located, the caller still has a number to be called back on.
+        if let Some(user) = &user {
+            info.callback_number =
+                fcp_core::e911::callback_for_user(storage.as_ref(), user, caller_aor).await;
+        }
         warn!(
             tenant_id = %tenant_id,
             caller = %username,
             dialed = %info.dialed,
+            callback = info.callback_number.as_deref().unwrap_or("none"),
             "Emergency call without a dispatchable location"
         );
     }

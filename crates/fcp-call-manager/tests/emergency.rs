@@ -949,6 +949,66 @@ async fn a_device_is_placed_by_the_network_it_is_on() {
     stack.finish().await;
 }
 
+/// A caller nothing places still goes out as a number to call back: their
+/// DID, in From and `P-Asserted-Identity`. The callback number was chosen
+/// only with an address, so an unlocated call carried the phone's own SIP
+/// name, which no PSAP can call and a carrier keeping addresses by number
+/// (Twilio) cannot look up (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unlocated_caller_goes_out_as_their_number() {
+    use fcp_core::storage::CredentialStore;
+    const CAROL_DID: &str = "+15185550333";
+
+    let carrier = Carrier::new("psap-primary", 1).await;
+    let mut stack = stack_or_skip!(&[&carrier], &[]);
+    // Carol has no site, no network, no declaration: only a DID.
+    let carol = stack.seed.user("carol", "carol-pw", "1003").await;
+    let user = stack
+        .seed
+        .storage()
+        .get_user_in_tenant("carol", &stack.seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let number = fcp_core::PhoneNumber::new(CAROL_DID.to_string(), stack.seed.tenant_id).unwrap();
+    let binding = fcp_core::LineBinding::new(
+        number.id,
+        Some(user.id),
+        fcp_core::BindingType::User,
+        stack.seed.tenant_id,
+    );
+    stack.seed.storage().put_phone_number(number).await.unwrap();
+    stack
+        .seed
+        .storage()
+        .put_line_binding(binding)
+        .await
+        .unwrap();
+
+    let phone = stack.phone(&carol).await;
+    let call = phone.call("933").await.unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the trunk never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(incoming.from.contains(CAROL_DID), "From: {}", incoming.from);
+    assert_eq!(
+        incoming.header("P-Asserted-Identity").as_deref(),
+        Some(format!("<sip:{CAROL_DID}@{REALM}>").as_str())
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert!(call.answered(SOON).await.is_err());
+
+    let records = stack
+        .seed
+        .emergency_calls(1, SOON, |r| r.ended_at.is_some())
+        .await;
+    assert!(records[0].location.is_none(), "{:#?}", records[0]);
+    assert_eq!(records[0].callback_number.as_deref(), Some(CAROL_DID));
+
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_declared_location_places_a_caller_nothing_else_places() {
     use fcp_core::e911::EmergencyStore;
