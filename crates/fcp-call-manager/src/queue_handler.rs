@@ -1212,6 +1212,13 @@ impl QueueCallHandler {
                             Ok(s) => Arc::new(s),
                             Err(e) => {
                                 warn!(error = %e, "Failed to create agent RTP socket");
+                                // The call goes back to the queue; the
+                                // agent, who answered, is hung up.
+                                let dialog = call_handle.dialog.read().await.clone();
+                                let uac = Arc::clone(&uac);
+                                tokio::spawn(async move {
+                                    let _ = uac.bye(&dialog).await;
+                                });
                                 port_pool.deallocate(agent_port_pair).await;
                                 Self::return_to_waiting(
                                     &call_id,
@@ -1235,11 +1242,38 @@ impl QueueCallHandler {
                             .await;
                     }
 
-                    // Get the agent's dialog
+                    // The agent's dialog is the session's from the 200 on.
+                    // Saved only once the legs were connected, the agent's
+                    // BYE during the connect prompt or the recording
+                    // announcement found no session and was refused 481,
+                    // and a caller hanging up then left the agent on the
+                    // line, on a call for good (`docs/DEEP_TESTING.md` D8).
                     let agent_dialog = call_handle.dialog.read().await.clone();
-
-                    // Update QueueManager
+                    let kept = match sessions.get_mut(&call_id) {
+                        Some(mut session) => {
+                            session.agent_dialog = Some(agent_dialog.clone());
+                            session.agent_port_pair = Some(agent_port_pair);
+                            session.agent_answered_at = Some(Instant::now());
+                            true
+                        }
+                        None => false,
+                    };
+                    // After the store: a caller leaving from here on sends
+                    // the agent to wrap-up through `remove_session`.
                     queue_manager.agent_answered(&agent_id, &call_id).await;
+                    if !kept {
+                        info!(call_id = %call_id, agent = %agent_id, "The caller left as the agent answered; ending the agent's leg");
+                        queue_manager.agent_call_completed(&agent_id);
+                        let uac = Arc::clone(&uac);
+                        let dialog = agent_dialog.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = uac.bye(&dialog).await {
+                                warn!(error = %e, "Failed to send BYE to agent");
+                            }
+                        });
+                        port_pool.deallocate(agent_port_pair).await;
+                        return;
+                    }
 
                     // Play connect prompt to caller if configured
                     if let Some(ref pc) = prompt_cache {
@@ -1315,7 +1349,6 @@ impl QueueCallHandler {
                                 session.recording_path = bridge.recording_path;
                                 session.recording_consent = bridge.recording_consent;
                                 session.state = QueueCallState::Connected;
-                                session.agent_answered_at = Some(Instant::now());
                                 session.agent_codec_name = Some(agent_codec_name.clone());
                                 session.agent_port_pair = Some(agent_port_pair);
                                 session.agent_rtp_socket = Some(agent_rtp_socket);
@@ -1593,8 +1626,10 @@ impl QueueCallHandler {
                 }
             });
 
-            // Notify QueueManager if still in queue
-            if session.state != QueueCallState::Connected
+            // Notify QueueManager if still in queue; an agent who answered
+            // is on the call, connected yet or not.
+            if session.agent_answered_at.is_none()
+                && session.state != QueueCallState::Connected
                 && session.state != QueueCallState::OverflowedToDestination
             {
                 let qm = self.queue_manager.clone();

@@ -2047,6 +2047,82 @@ agents = ["1002"]
     stack.finish().await;
 }
 
+/// Between the agent's answer and the legs connected (the announcement a
+/// recorded queue plays first) either party may hang up. The agent's
+/// dialog was the queue's only once they were connected: the agent's BYE
+/// there was refused 481 and the caller left talking to no one, and the
+/// caller's left the agent on the line, on a call for good
+/// (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hangup_during_the_announcement_ends_both_parties() {
+    use fcp_core::compliance::ConsentFailureAction;
+
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+wrap_up_time_secs = 1
+recording_dir = "{dir}/queue-recordings"
+
+[queue.queues.support]
+name = "support"
+extension = "7000"
+agents = ["1002"]
+record_calls = true
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let prompt = stack.dir().join("long-consent.wav");
+    fcp_testkit::wav::write_tone(&prompt, PROMPT_HZ as f32, 6000).unwrap();
+    announce_recordings(&stack, &prompt, ConsentFailureAction::Record, None).await;
+    let (_alice, alice_phone, _bob, bob_phone) = two_phones(&stack).await;
+    let (code, login) = stack.post("/agents/1002/login", "{}").await;
+    assert_eq!(code, 200, "{login}");
+
+    for agent_leaves in [true, false] {
+        let who = if agent_leaves { "agent" } else { "caller" };
+        let alice_call = alice_phone.call("7000").await.unwrap();
+        alice_call.answered(SOON).await.unwrap();
+        let Some(incoming) = bob_phone.incoming(Duration::from_secs(10)).await else {
+            stack
+                .fail(&format!("the agent was not rung ({who} round)"), &bob_phone)
+                .await;
+        };
+        let bob_call = incoming.answer().await.unwrap();
+        // Inside the announcement: both are hearing it.
+        assert!(
+            bob_call.media().heard(PROMPT_HZ, SOON).await,
+            "the agent never heard the announcement ({who} round)"
+        );
+        let (leaving, staying, staying_phone) = if agent_leaves {
+            (&bob_call, &alice_call, &alice_phone)
+        } else {
+            (&alice_call, &bob_call, &bob_phone)
+        };
+        assert_eq!(
+            leaving.hangup().await.unwrap(),
+            200,
+            "the {who}'s BYE during the announcement"
+        );
+        if !staying.ended(SOON).await {
+            stack
+                .fail(
+                    &format!("the other party stayed on after the {who} hung up"),
+                    staying_phone,
+                )
+                .await;
+        }
+        // Wrap-up, then the agent is rung for the next caller.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    stack.finish().await;
+}
+
 /// The built-in hold music's first note (`fcp_sip::hold_music`).
 const DEFAULT_MUSIC_HZ: u32 = 659;
 
