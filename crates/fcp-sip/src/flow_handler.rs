@@ -1587,6 +1587,7 @@ impl FlowCallHandler {
             sip_transaction::fsm::TransportKind::Tls => 5061,
             _ => 5060,
         });
+        let invite = with_own_via(invite, local_uri, transport_kind);
 
         // For MVP, resolve host to IP address using basic DNS lookup
         let peer_addr: SocketAddr = match tokio::net::lookup_host(format!("{}:{}", host, port))
@@ -1818,6 +1819,8 @@ impl FlowCallHandler {
                                             contact_uri.clone(),
                                         )
                                         .create_bye(&dialog);
+                                        let bye =
+                                            with_own_via(bye, local_uri, transport_kind);
                                         if let Err(e) = transaction_manager
                                             .start_client_transaction(
                                                 bye,
@@ -4494,7 +4497,11 @@ impl ClientTransactionUser for DialTransactionUser {
         );
 
         // Create ACK using UAC helper
-        let ack = self.uac.create_ack(&self.request, &response, None);
+        let ack = with_own_via(
+            self.uac.create_ack(&self.request, &response, None),
+            &self.local_uri,
+            self.ctx.transport(),
+        );
 
         // Dispatch ACK via transport
         if let Some(ref dispatcher) = self.dispatcher {
@@ -4546,7 +4553,7 @@ impl ClientTransactionUser for DialTransactionUser {
         };
 
         let prack = match self.uac.create_prack(&self.request, &response, &dialog) {
-            Ok(prack) => prack,
+            Ok(prack) => with_own_via(prack, &self.local_uri, ctx.transport()),
             Err(e) => {
                 warn!(
                     code = response.code(),
@@ -4846,6 +4853,85 @@ pub(crate) fn transport_of(uri: &sip_core::SipUri) -> sip_transaction::fsm::Tran
         Some("ws") => TransportKind::Ws,
         Some("wss") => TransportKind::Wss,
         _ => TransportKind::Udp,
+    }
+}
+
+/// `request` naming this node in its top Via, its branch kept.
+///
+/// A `Dial` node's INVITE, ACK, PRACK and BYE are built by
+/// `UserAgentClient`, whose Via names `placeholder`, and go straight to the
+/// transaction manager, which sends them as they are; only the integrated
+/// UAC fills it in. A peer that answers to the Via, as RFC 3261 §18.2.2
+/// asks without `rport`, answered a host that does not exist
+/// (`docs/DEEP_TESTING.md` D8).
+pub(crate) fn with_own_via(
+    mut request: Request,
+    local_uri: &sip_core::SipUri,
+    transport: sip_transaction::fsm::TransportKind,
+) -> Request {
+    use sip_transaction::fsm::TransportKind;
+    let Some(via) = request.headers().get("Via") else {
+        return request;
+    };
+    if !via.contains("placeholder") {
+        return request;
+    }
+    let branch = via
+        .split(';')
+        .find_map(|p| p.trim().strip_prefix("branch="))
+        .map(str::to_string)
+        .unwrap_or_else(|| sip_transaction::generate_branch_id().to_string());
+    let (name, default_port) = match transport {
+        TransportKind::Udp => ("UDP", 5060),
+        TransportKind::Tcp => ("TCP", 5060),
+        TransportKind::Tls => ("TLS", 5061),
+        TransportKind::Ws => ("WS", 80),
+        TransportKind::Wss => ("WSS", 443),
+        _ => ("UDP", 5060),
+    };
+    let port = local_uri.port().unwrap_or(default_port);
+    let value = format!(
+        "SIP/2.0/{name} {}:{port};branch={branch};rport",
+        local_uri.host()
+    );
+    let _ = request
+        .headers_mut()
+        .set_or_push("Via", smol_str::SmolStr::new(value));
+    request
+}
+
+#[cfg(test)]
+mod own_via_tests {
+    use super::with_own_via;
+    use sip_transaction::fsm::TransportKind;
+
+    #[test]
+    fn a_dialed_leg_names_the_node_in_its_via() {
+        let local = sip_core::SipUri::parse("sip:fcp@203.0.113.7:5060").unwrap();
+        let remote = sip_core::SipUri::parse("sip:600@203.0.113.7").unwrap();
+        let uac = sip_uac::UserAgentClient::new(local.clone(), local.clone());
+        let invite = uac.create_invite(&remote, None);
+        let branch = invite
+            .headers()
+            .get("Via")
+            .unwrap()
+            .split("branch=")
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        let invite = with_own_via(invite, &local, TransportKind::Udp);
+        let via = invite.headers().get("Via").unwrap();
+        assert_eq!(
+            via,
+            format!("SIP/2.0/UDP 203.0.113.7:5060;branch={branch};rport")
+        );
+        assert_eq!(invite.headers().get_all("Via").count(), 1);
+        // Filled once, a second pass leaves it alone.
+        let again = with_own_via(invite.clone(), &local, TransportKind::Tcp);
+        assert_eq!(again.headers().get("Via").unwrap(), via);
     }
 }
 

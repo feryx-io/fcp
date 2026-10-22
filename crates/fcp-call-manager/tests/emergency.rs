@@ -492,6 +492,13 @@ async fn a_flow_dialing_911_places_an_emergency_call() {
         incoming.from
     );
     assert_eq!(incoming.header("Priority").as_deref(), Some("emergency"));
+    // The flow's INVITE names the node in its Via: built by the helper and
+    // sent as it was, it said `placeholder` (`docs/DEEP_TESTING.md` D8).
+    let via = incoming.header("Via").expect("Via");
+    assert!(
+        via.starts_with("SIP/2.0/UDP 127.0.0.1:") && !via.contains("placeholder"),
+        "Via: {via}"
+    );
     let body = incoming
         .multipart()
         .expect("the flow's INVITE carries the location");
