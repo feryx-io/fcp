@@ -15159,12 +15159,6 @@ impl SipMessageHandler {
         .await
     }
 
-    /// Answer the call into `flow_def`, inserted for the call alone:
-    /// what a feature code that talks to the caller runs (`*98`, `*88`).
-    #[allow(clippy::too_many_arguments)]
-    /// A feature code done: the caller is told so, then hung up on. A bare
-    /// 200 answered an offer with no SDP and left the phone on a call
-    /// nobody ended (`docs/DEEP_TESTING.md` D8).
     /// `Some` when `call_id` is an emergency test its tenant has this
     /// platform answer, with what answering it came to; `None` for every
     /// other call.
@@ -15223,11 +15217,16 @@ impl SipMessageHandler {
             }
             None => Vec::new(),
         };
-        let text = crate::emergency::test_readback(
+        let parts = crate::emergency::test_readback(
             em,
             !routes.is_empty(),
             config.deliverable_contacts().len(),
         );
+        // Synthesized while the opening plays: the caller would otherwise
+        // wait out the whole readback's synthesis after the answer.
+        if let Some(tts) = self.media_manager.as_ref().and_then(|mm| mm.tts_service()) {
+            tts.warm(parts.clone(), Some("en-US"));
+        }
         info!(
             call_id = %call_id,
             routes = routes.len(),
@@ -15254,7 +15253,7 @@ impl SipMessageHandler {
                 &format!("emergency-test-{call_id}"),
                 "Emergency test",
                 "Inline flow reading back an emergency test call",
-                text,
+                parts,
             ),
             HashMap::new(),
             "emergency test",
@@ -15262,6 +15261,9 @@ impl SipMessageHandler {
         .await
     }
 
+    /// A feature code done: the caller is told so, then hung up on. A bare
+    /// 200 answered an offer with no SDP and left the phone on a call
+    /// nobody ended (`docs/DEEP_TESTING.md` D8).
     async fn confirm_feature(
         &self,
         request: &sip_core::Request,
@@ -15289,6 +15291,9 @@ impl SipMessageHandler {
         .await
     }
 
+    /// Answer the call into `flow_def`, inserted for the call alone:
+    /// what a feature code that talks to the caller runs (`*98`, `*88`).
+    #[allow(clippy::too_many_arguments)]
     async fn start_inline_flow(
         &self,
         request: &sip_core::Request,
@@ -18794,7 +18799,7 @@ fn park_announcement(call_id: &fcp_b2bua_core::CallId, orbit: u16) -> fcp_flow::
         &format!("park-{call_id}"),
         "Park",
         "Inline flow telling a parker the orbit (*70)",
-        format!("Parked on {}.", digits.join(" ")),
+        vec![format!("Parked on {}.", digits.join(" "))],
     )
 }
 
@@ -18805,7 +18810,7 @@ fn feature_confirmation(call_id: &fcp_b2bua_core::CallId, text: &str) -> fcp_flo
         &format!("feature-{call_id}"),
         "Feature code",
         "Inline flow confirming a feature code",
-        text.to_string(),
+        vec![text.to_string()],
     )
 }
 
@@ -18832,47 +18837,67 @@ fn calling_code_confirmation(code: &fcp_pbx::CallingCode) -> &'static str {
     }
 }
 
-/// An inline flow that answers, says `text` and hangs up.
+/// An inline flow that answers, says each of `parts` in turn and hangs up.
 fn spoken_confirmation(
     id: &str,
     name: &str,
     description: &str,
-    text: String,
+    parts: Vec<String>,
 ) -> fcp_flow::FlowDefinition {
     use fcp_flow::{FlowDefinition, FlowNode, NodeType};
-    let node = |id: &str, name: &str, node_type: NodeType| {
+    let node = |id: String, name: &str, node_type: NodeType| {
         (
-            id.to_string(),
+            id.clone(),
             FlowNode {
-                id: id.to_string(),
+                id,
                 name: Some(name.to_string()),
                 node_type,
             },
         )
     };
-    let nodes = [
+    let say_id = |i: usize| {
+        if i == 0 {
+            "say".to_string()
+        } else {
+            format!("say-{i}")
+        }
+    };
+    let count = parts.len();
+    let first = if count == 0 {
+        "hangup".to_string()
+    } else {
+        say_id(0)
+    };
+    let nodes = std::iter::once(node(
+        "answer".to_string(),
+        "Answer call",
+        NodeType::Answer {
+            next: first,
+            on_error: None,
+        },
+    ))
+    .chain(parts.into_iter().enumerate().map(|(i, text)| {
         node(
-            "answer",
-            "Answer call",
-            NodeType::Answer {
-                next: "say".to_string(),
-                on_error: None,
-            },
-        ),
-        node(
-            "say",
+            say_id(i),
             "Say the confirmation",
             NodeType::Say {
                 text,
                 voice: None,
                 language: "en-US".to_string(),
-                next: "hangup".to_string(),
+                next: if i + 1 < count {
+                    say_id(i + 1)
+                } else {
+                    "hangup".to_string()
+                },
                 on_error: Some("hangup".to_string()),
             },
-        ),
-        node("hangup", "Hang up", NodeType::Hangup { reason: None }),
-    ]
-    .into_iter()
+        )
+    }))
+    .chain(std::iter::once(node(
+        "hangup".to_string(),
+        "Hang up",
+        NodeType::Hangup { reason: None },
+    )))
     .collect();
     FlowDefinition {
         id: id.to_string(),

@@ -573,12 +573,17 @@ pub async fn announce(
 /// would take it; the routes themselves are the administrator's, and the
 /// caller is not told which carriers they are. `contacts` the notification
 /// contacts a notice is being sent to.
-pub fn test_readback(info: &EmergencyCallInfo, routable: bool, contacts: usize) -> String {
+///
+/// One sentence or two per part, each spoken as its own prompt: the
+/// opening is the same for every caller and synthesized once at start
+/// (`warm_test_opening`), and the parts after it are synthesized while it
+/// plays (`TtsService::warm`), so the caller hears the opening at the
+/// answer rather than after the whole readback is synthesized.
+pub fn test_readback(info: &EmergencyCallInfo, routable: bool, contacts: usize) -> Vec<String> {
     let digits = |value: &str| {
         fcp_flow::apply_filter(value.trim_start_matches('+'), "digits").unwrap_or_default()
     };
-    let mut said =
-        vec!["This is an emergency calling test. No emergency call has been placed.".to_string()];
+    let mut said = vec![TEST_OPENING.to_string()];
 
     match &info.location {
         Some(location) => {
@@ -638,7 +643,16 @@ pub fn test_readback(info: &EmergencyCallInfo, routable: bool, contacts: usize) 
         n => format!("Your {n} emergency contacts are being told, marked as a test."),
     });
     said.push("The test is complete. Goodbye.".to_string());
-    said.join(" ")
+    said
+}
+
+/// The first thing every emergency test caller hears.
+const TEST_OPENING: &str = "This is an emergency calling test. No emergency call has been placed.";
+
+/// Synthesize the test readback's opening into the TTS cache, so the first
+/// test call after a start hears it at the answer.
+pub fn warm_test_opening(tts: &std::sync::Arc<fcp_media::TtsService>) {
+    tts.warm(vec![TEST_OPENING.to_string()], Some("en-US"));
 }
 
 #[cfg(test)]
@@ -769,7 +783,12 @@ mod tests {
             kind: fcp_core::e911::EmergencyKind::Test,
             ..located_info()
         };
-        let said = test_readback(&info, true, 2);
+        let parts = test_readback(&info, true, 2);
+        assert_eq!(
+            parts[0], TEST_OPENING,
+            "every caller's first prompt is the same, so it is cached"
+        );
+        let said = parts.join(" ");
         for part in [
             "No emergency call has been placed.",
             "Your location is 100 State St, Albany, NY, 1 2 2 0 7.",
@@ -795,7 +814,7 @@ mod tests {
             location: None,
             ..located_info()
         };
-        let said = test_readback(&info, false, 0);
+        let said = test_readback(&info, false, 0).join(" ");
         for part in [
             "No location was found for you.",
             "There is no callback number.",
@@ -804,7 +823,7 @@ mod tests {
         ] {
             assert!(said.contains(part), "{part:?} not in {said:?}");
         }
-        let said = test_readback(&info, true, 1);
+        let said = test_readback(&info, true, 1).join(" ");
         assert!(!said.contains("could not be placed"), "{said}");
         assert!(
             said.contains("Your emergency contact is being told"),

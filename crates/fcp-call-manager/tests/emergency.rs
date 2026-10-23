@@ -1019,6 +1019,54 @@ async fn a_test_call_is_read_back_here_and_no_carrier_is_called() {
     stack.finish().await;
 }
 
+/// The readback starts at the answer even when the voice is slow: its
+/// opening is synthesized when the node starts and the rest while the
+/// opening plays, not the whole of it after the answer (D8: 3.7 s of
+/// silence on a VVX).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_test_call_hears_the_readback_at_the_answer() {
+    const SYNTHESIS: Duration = Duration::from_secs(2);
+    let carrier = Carrier::new("psap-primary", 1).await;
+    let tts = tone_tts_taking(SYNTHESIS).await;
+    let mut stack = match Stack::start_speaking(&[&carrier], &[], None, Some(&tts)).await {
+        Some(s) => s,
+        None => {
+            eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+            return;
+        }
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack.seed.site_for("alice", ALICE_ELIN).await;
+    let phone = stack.phone(&alice).await;
+    // The opening the node warmed at its start is in its cache by now.
+    tokio::time::sleep(SYNTHESIS + Duration::from_millis(500)).await;
+
+    let call = phone.call("933").await.unwrap();
+    if call.answered(SOON).await.is_err() {
+        let why = format!("the node did not answer the test; it is {:?}", call.phase());
+        stack.fail(&why).await;
+    }
+    let answered = std::time::Instant::now();
+    if !call
+        .media()
+        .heard(NOTICE_HZ, Duration::from_millis(1500))
+        .await
+    {
+        stack
+            .fail("the caller waited on the voice before hearing the readback")
+            .await;
+    }
+    // Six one-second prompts: one at a time behind a two-second voice is
+    // eighteen seconds; warmed together, about eight.
+    assert!(
+        call.ended(Duration::from_secs(13)).await,
+        "the readback's prompts are synthesized together"
+    );
+    eprintln!("readback took {:?} from the answer", answered.elapsed());
+
+    stack.finish().await;
+}
+
 /// A flow's `Dial` to the test number is read back too: the flow's caller
 /// hears it and the flow goes on, and no carrier is called.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1557,6 +1605,11 @@ async fn a_tenants_own_emergency_trunk_carries_its_911_call() {
 
 /// A TTS service that speaks every text as a second of [`NOTICE_HZ`].
 async fn tone_tts() -> String {
+    tone_tts_taking(Duration::ZERO).await
+}
+
+/// `tone_tts`, taking `delay` over each prompt as a real voice does.
+async fn tone_tts_taking(delay: Duration) -> String {
     use axum::routing::post;
     let mut wav = Vec::new();
     let mut phase = 0.0f32;
@@ -1584,7 +1637,10 @@ async fn tone_tts() -> String {
         "/v1/synthesize",
         post(move || {
             let wav = wav.clone();
-            async move { wav }
+            async move {
+                tokio::time::sleep(delay).await;
+                wav
+            }
         }),
     );
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))

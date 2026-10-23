@@ -1473,6 +1473,7 @@ async fn run() -> Result<()> {
     if let Some(tts) = media_manager.tts_service() {
         info!("Shared TTS service wired to FlowEngine for Gather/Say nodes");
         flow_handler = flow_handler.with_tts_service(Arc::clone(tts));
+        fcp_sip::emergency::warm_test_opening(tts);
     }
 
     // 17e. Create PromptService for system prompt resolution (WAV file → TTS fallback)

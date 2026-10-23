@@ -162,8 +162,8 @@ enum EmergencyDial {
     /// Place it on the emergency routes.
     Place(EmergencyDialPlan),
     /// A test the tenant has this platform answer: say this to the caller
-    /// and call no carrier (`TestCallMode::Local`).
-    ReadBack(String),
+    /// and call no carrier (`TestCallMode::Local`), a part at a time.
+    ReadBack(Vec<String>),
 }
 
 /// The outcome of one B-leg INVITE.
@@ -857,8 +857,8 @@ impl FlowCallHandler {
         // (`docs/E911_BLOCK_2.md` §4).
         let emergency = match self.emergency_dial_plan(a_leg_call_id, &destination).await {
             Some(Ok(EmergencyDial::Place(plan))) => Some(plan),
-            Some(Ok(EmergencyDial::ReadBack(text))) => {
-                return self.read_back_test(a_leg_call_id, &text, next).await;
+            Some(Ok(EmergencyDial::ReadBack(parts))) => {
+                return self.read_back_test(a_leg_call_id, parts, next).await;
             }
             Some(Err(error_msg)) => {
                 return self
@@ -1458,7 +1458,7 @@ impl FlowCallHandler {
         if info.kind == fcp_core::e911::EmergencyKind::Test {
             let config = crate::emergency::config_for(self.storage.as_ref(), &call.tenant_id).await;
             if config.test_call_mode == fcp_core::e911::TestCallMode::Local {
-                let text = crate::emergency::test_readback(
+                let parts = crate::emergency::test_readback(
                     &info,
                     !routes.is_empty(),
                     config.deliverable_contacts().len(),
@@ -1476,7 +1476,7 @@ impl FlowCallHandler {
                         });
                     }
                 });
-                return Some(Ok(EmergencyDial::ReadBack(text)));
+                return Some(Ok(EmergencyDial::ReadBack(parts)));
             }
         }
 
@@ -1515,15 +1515,28 @@ impl FlowCallHandler {
     /// A `Dial` to a test number read back here: `text` said to the
     /// flow's caller, then the node's `next`, with `dial_status` set to
     /// `read_back`.
-    async fn read_back_test(&self, call_id: CallId, text: &str, next: String) -> Result<()> {
+    async fn read_back_test(
+        &self,
+        call_id: CallId,
+        parts: Vec<String>,
+        next: String,
+    ) -> Result<()> {
         info!(call_id = %call_id, "Flow's emergency test read back here");
+        // Synthesized while the opening plays (`emergency::test_readback`).
+        if let Some(tts) = self.media_manager.as_ref().and_then(|mm| mm.tts_service()) {
+            tts.warm(parts.clone(), Some("en-US"));
+        }
         let session = self
             .call_manager
             .as_ref()
             .and_then(|cm| cm.get_call(&call_id))
             .and_then(|c| c.media_session_id);
         match (&self.media_manager, session) {
-            (Some(mm), Some(session)) => self.say(mm, &session, "", text).await,
+            (Some(mm), Some(session)) => {
+                for part in &parts {
+                    self.say(mm, &session, "", part).await;
+                }
+            }
             _ => warn!(call_id = %call_id, "No media to read the emergency test back on"),
         }
         let context_entry = self

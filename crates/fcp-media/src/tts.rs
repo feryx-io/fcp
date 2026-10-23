@@ -101,6 +101,12 @@ pub struct TtsService {
 
     /// Default voice name
     default_voice: Option<String>,
+
+    /// One lock per text being synthesized: a second request for the same
+    /// text waits for the first and reads its file, rather than
+    /// synthesizing it again and rewriting the file under a playback
+    /// (`TtsService::warm`).
+    in_flight: dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl TtsService {
@@ -135,6 +141,7 @@ impl TtsService {
             cache_size_bytes: Arc::new(RwLock::new(cache_size_bytes)),
             default_language: config.default_language,
             default_voice: config.default_voice,
+            in_flight: dashmap::DashMap::new(),
         })
     }
 
@@ -159,19 +166,57 @@ impl TtsService {
         // Generate cache key
         let cache_key = self.generate_cache_key(text, language, voice);
 
-        // Check cache
-        {
-            let cache_index = self.cache_index.read().await;
-            if let Some((path, _)) = cache_index.get(&cache_key) {
-                if path.exists() {
-                    debug!(
-                        cache_key = %cache_key,
-                        path = %path.display(),
-                        "TTS cache hit"
-                    );
-                    return Ok(path.clone());
+        if let Some(path) = self.cached(&cache_key).await {
+            return Ok(path);
+        }
+        let lock = self.in_flight.entry(cache_key.clone()).or_default().clone();
+        let _synthesizing = lock.lock().await;
+        let result = self
+            .synthesize_uncached(text, language, voice, &cache_key)
+            .await;
+        self.in_flight.remove(&cache_key);
+        result
+    }
+
+    /// Synthesize `texts` into the cache in the background, so a call that
+    /// speaks them one after another hears each without waiting for it.
+    pub fn warm(self: &Arc<Self>, texts: Vec<String>, language: Option<&str>) {
+        let language = language.map(str::to_string);
+        for text in texts {
+            let tts = Arc::clone(self);
+            let language = language.clone();
+            tokio::spawn(async move {
+                if let Err(e) = tts.synthesize(&text, language.as_deref(), None).await {
+                    warn!(error = %e, "TTS warm-up of a prompt failed");
                 }
-            }
+            });
+        }
+    }
+
+    async fn cached(&self, cache_key: &str) -> Option<PathBuf> {
+        let cache_index = self.cache_index.read().await;
+        let (path, _) = cache_index.get(cache_key)?;
+        if !path.exists() {
+            return None;
+        }
+        debug!(
+            cache_key = %cache_key,
+            path = %path.display(),
+            "TTS cache hit"
+        );
+        Some(path.clone())
+    }
+
+    async fn synthesize_uncached(
+        &self,
+        text: &str,
+        language: &str,
+        voice: Option<&str>,
+        cache_key: &str,
+    ) -> Result<PathBuf> {
+        // Whoever held the lock before us may have made it.
+        if let Some(path) = self.cached(cache_key).await {
+            return Ok(path);
         }
 
         debug!(
@@ -199,7 +244,7 @@ impl TtsService {
         // Update cache index
         {
             let mut cache_index = self.cache_index.write().await;
-            cache_index.insert(cache_key.clone(), (cache_path.clone(), file_size));
+            cache_index.insert(cache_key.to_string(), (cache_path.clone(), file_size));
         }
 
         // Update cache size and evict if necessary
@@ -615,6 +660,7 @@ mod tests {
             cache_size_bytes: Arc::new(RwLock::new(0)),
             default_language: "en-US".to_string(),
             default_voice: None,
+            in_flight: Default::default(),
         };
         let service_b = TtsService {
             provider: Arc::new(StubProvider {
@@ -627,11 +673,74 @@ mod tests {
             cache_size_bytes: Arc::new(RwLock::new(0)),
             default_language: "en-US".to_string(),
             default_voice: None,
+            in_flight: Default::default(),
         };
 
         assert_ne!(
             service_a.generate_cache_key("hello", "en-US", Some("nova")),
             service_b.generate_cache_key("hello", "en-US", Some("nova"))
         );
+    }
+
+    /// A provider that takes a while and counts what it is asked for.
+    struct SlowProvider {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl TtsProvider for SlowProvider {
+        fn name(&self) -> String {
+            "slow".to_string()
+        }
+
+        async fn synthesize(
+            &self,
+            text: &str,
+            _language: &str,
+            _voice: Option<&str>,
+        ) -> Result<Vec<u8>> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Ok(text.as_bytes().to_vec())
+        }
+
+        async fn list_voices(&self, _language: &str) -> Result<Vec<VoiceInfo>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_warmed_text_is_synthesized_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = Arc::new(SlowProvider {
+            calls: Default::default(),
+        });
+        let service = Arc::new(TtsService {
+            provider: provider.clone(),
+            provider_cache_namespace: "slow".to_string(),
+            cache_dir: dir.path().to_path_buf(),
+            cache_max_size_mb: 500,
+            cache_index: Arc::new(RwLock::new(HashMap::new())),
+            cache_size_bytes: Arc::new(RwLock::new(0)),
+            default_language: "en-US".to_string(),
+            default_voice: None,
+            in_flight: Default::default(),
+        });
+
+        // A call reaching a sentence still being warmed waits for it.
+        service.warm(vec!["one".into(), "two".into()], Some("en-US"));
+        tokio::task::yield_now().await;
+        let (a, b) = tokio::join!(
+            service.synthesize("one", Some("en-US"), None),
+            service.synthesize("two", Some("en-US"), None),
+        );
+        assert_eq!(std::fs::read(a.unwrap()).unwrap(), b"one");
+        assert_eq!(std::fs::read(b.unwrap()).unwrap(), b"two");
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "each text synthesized once"
+        );
+        assert_eq!(service.cache_size_bytes().await, 6);
     }
 }
