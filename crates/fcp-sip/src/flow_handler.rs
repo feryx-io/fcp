@@ -1458,10 +1458,23 @@ impl FlowCallHandler {
         if info.kind == fcp_core::e911::EmergencyKind::Test {
             let config = crate::emergency::config_for(self.storage.as_ref(), &call.tenant_id).await;
             if config.test_call_mode == fcp_core::e911::TestCallMode::Local {
+                let told: Vec<_> = crate::emergency::contacts_for_call(
+                    self.storage.as_ref(),
+                    &config,
+                    info.location.as_ref(),
+                )
+                .await
+                .into_iter()
+                .filter(|c| c.problems().is_empty())
+                .collect();
+                // The flow goes on after the readback, so its caller is
+                // not asked to stay for a listener.
                 let parts = crate::emergency::test_readback(
                     &info,
                     !routes.is_empty(),
-                    config.deliverable_contacts().len(),
+                    told.len(),
+                    0,
+                    false,
                 );
                 let _ = call_mgr.update_call(&a_leg_call_id, |c| {
                     c.trunk_name = None;

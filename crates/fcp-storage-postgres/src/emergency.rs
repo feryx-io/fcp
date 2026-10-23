@@ -571,4 +571,29 @@ impl EmergencyStore for PostgresEmergencyStore {
         .await?;
         rows.into_iter().map(Self::row_to_notification).collect()
     }
+
+    async fn get_emergency_site(
+        &self,
+        tenant_id: &TenantId,
+        location_id: &fcp_core::LocationId,
+    ) -> anyhow::Result<Option<fcp_core::SiteLocation>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, name, description, address_line1, address_line2,
+                    city, state, postal_code, country, floor, building,
+                    latitude, longitude, phone_number, timezone,
+                    emergency_contacts, notify_tenant_contacts,
+                    created_at, updated_at, e911_callback_number, civic,
+                    e911_validated_at, e911_validated_by, e911_validation_reference
+             FROM locations
+             WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(location_id.to_string())
+        .bind(tenant_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(match row {
+            Some(row) => Some(crate::row_to_site_location(row)?),
+            None => None,
+        })
+    }
 }

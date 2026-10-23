@@ -5038,7 +5038,7 @@ fn row_to_config_template(
     })
 }
 
-fn row_to_site_location(row: sqlx::postgres::PgRow) -> Result<SiteLocation> {
+pub(crate) fn row_to_site_location(row: sqlx::postgres::PgRow) -> Result<SiteLocation> {
     use sqlx::Row;
     let id = LocationId::from_str(&row.get::<String, _>("id"))?;
     let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
@@ -5062,8 +5062,12 @@ fn row_to_site_location(row: sqlx::postgres::PgRow) -> Result<SiteLocation> {
         longitude: row.get("longitude"),
         phone_number: row.get("phone_number"),
         timezone: row.get("timezone"),
-        emergency_contact_name: row.get("emergency_contact_name"),
-        emergency_contact_phone: row.get("emergency_contact_phone"),
+        emergency_contacts: row
+            .try_get::<serde_json::Value, _>("emergency_contacts")
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
+        notify_tenant_contacts: row.try_get("notify_tenant_contacts").unwrap_or(true),
         e911_callback_number: row.try_get("e911_callback_number").unwrap_or(None),
         civic: row
             .try_get::<Option<serde_json::Value>, _>("civic")
@@ -5995,7 +5999,7 @@ impl SiteLocationStore for PostgresStorage {
             "SELECT id, tenant_id, name, description, address_line1, address_line2,
                     city, state, postal_code, country, floor, building,
                     latitude, longitude, phone_number, timezone,
-                    emergency_contact_name, emergency_contact_phone,
+                    emergency_contacts, notify_tenant_contacts,
                     created_at, updated_at, e911_callback_number, civic,
                     e911_validated_at, e911_validated_by, e911_validation_reference
              FROM locations
@@ -6016,7 +6020,7 @@ impl SiteLocationStore for PostgresStorage {
             "SELECT id, tenant_id, name, description, address_line1, address_line2,
                     city, state, postal_code, country, floor, building,
                     latitude, longitude, phone_number, timezone,
-                    emergency_contact_name, emergency_contact_phone,
+                    emergency_contacts, notify_tenant_contacts,
                     created_at, updated_at, e911_callback_number, civic,
                     e911_validated_at, e911_validated_by, e911_validation_reference
              FROM locations
@@ -6046,7 +6050,7 @@ impl SiteLocationStore for PostgresStorage {
                 id, tenant_id, name, description, address_line1, address_line2,
                 city, state, postal_code, country, floor, building,
                 latitude, longitude, phone_number, timezone,
-                emergency_contact_name, emergency_contact_phone,
+                emergency_contacts, notify_tenant_contacts,
                 created_at, updated_at, e911_callback_number, civic,
                 e911_validated_at, e911_validated_by, e911_validation_reference
              )
@@ -6066,8 +6070,8 @@ impl SiteLocationStore for PostgresStorage {
                  longitude = EXCLUDED.longitude,
                  phone_number = EXCLUDED.phone_number,
                  timezone = EXCLUDED.timezone,
-                 emergency_contact_name = EXCLUDED.emergency_contact_name,
-                 emergency_contact_phone = EXCLUDED.emergency_contact_phone,
+                 emergency_contacts = EXCLUDED.emergency_contacts,
+                 notify_tenant_contacts = EXCLUDED.notify_tenant_contacts,
                  e911_callback_number = EXCLUDED.e911_callback_number,
                  civic = EXCLUDED.civic,
                  e911_validated_at = EXCLUDED.e911_validated_at,
@@ -6091,8 +6095,8 @@ impl SiteLocationStore for PostgresStorage {
         .bind(location.longitude)
         .bind(&location.phone_number)
         .bind(&location.timezone)
-        .bind(&location.emergency_contact_name)
-        .bind(&location.emergency_contact_phone)
+        .bind(serde_json::to_value(&location.emergency_contacts)?)
+        .bind(location.notify_tenant_contacts)
         .bind(created_at)
         .bind(updated_at)
         .bind(&location.e911_callback_number)

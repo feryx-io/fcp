@@ -5788,6 +5788,42 @@ async fn e911_config_readiness_validation_and_audit() {
         typed.json["notify_contacts"],
         json!(["security@example.com", "+15185550143", "2001"])
     );
+    assert_eq!(typed.json["contacts"][2]["listen"], false);
+    // A call contact may listen in; nothing else can.
+    let listening = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "contacts": [{ "kind": "call", "target": "2001", "listen": true }] })),
+        )
+        .await;
+    assert_eq!(listening.status, StatusCode::OK, "{}", listening.text);
+    assert_eq!(listening.json["contacts"][0]["listen"], true);
+    let not_a_call = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "contacts": [{ "kind": "sms", "target": "+15185550143", "listen": true }] })),
+        )
+        .await;
+    assert_eq!(
+        not_a_call.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        not_a_call.text
+    );
+    let restored = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "contacts": [
+                { "kind": "email", "target": "security@example.com", "name": "Front desk" },
+                { "kind": "sms", "target": "+15185550143" },
+                "2001"
+            ]})),
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text);
     let refused = app
         .admin(
             Method::PUT,
@@ -6414,6 +6450,7 @@ async fn e911_config_readiness_validation_and_audit() {
         location_source: Some("user_location".to_string()),
         client_address: None,
         trunk_name: Some("e911-trunk".to_string()),
+        location_id: None,
         placed_at: SystemTime::now(),
     };
     let mut delivered = fcp_core::e911::notify::EmergencyNotification::first(

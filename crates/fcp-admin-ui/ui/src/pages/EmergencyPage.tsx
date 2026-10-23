@@ -2,9 +2,10 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import {
-  AlertTriangle, CheckCircle2, Mail, MessageSquare, PhoneCall, Plus, Trash2, Webhook,
+  AlertTriangle, CheckCircle2, Plus, Trash2,
 } from 'lucide-react'
 import { DataTable } from '@/components/DataTable'
+import { AddContactButton, EmergencyContacts, contactsToSave, newContact } from '@/components/EmergencyContacts'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -18,8 +19,8 @@ import {
 } from '@/components/ui/dialog'
 import { emergency, locations } from '@/api/endpoints'
 import type {
-  ContactKind, ContactReadiness, EmergencyCall, EmergencyConfig, EmergencyNetwork,
-  EmergencyNotification, NotifyContact, UserReadiness,
+  ContactReadiness, EmergencyCall, EmergencyConfig, EmergencyNetwork,
+  EmergencyNotification, UserReadiness,
 } from '@/types'
 
 type Tab = 'config' | 'readiness' | 'networks' | 'calls'
@@ -30,20 +31,6 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'networks', label: 'Networks' },
   { id: 'calls', label: 'Calls' },
 ]
-
-const CONTACT_KINDS: Array<{ value: ContactKind; label: string; hint: string }> = [
-  { value: 'email', label: 'Email', hint: 'security@example.com' },
-  { value: 'sms', label: 'SMS', hint: '+15185550143' },
-  { value: 'call', label: 'Call', hint: '2001 or sip:frontdesk@pbx.example.com' },
-  { value: 'webhook', label: 'Webhook', hint: 'a webhook endpoint id' },
-]
-
-const KIND_ICON: Record<ContactKind, React.ElementType> = {
-  email: Mail,
-  sms: MessageSquare,
-  call: PhoneCall,
-  webhook: Webhook,
-}
 
 /** Device types a tenant can trust to send their own location. */
 const DEVICE_TYPES = ['desk_phone', 'softphone', 'mobile', 'webrtc', 'ata', 'conference_phone']
@@ -137,11 +124,6 @@ function ConfigurationTab() {
   const list = (value: string) =>
     value.split(',').map((v) => v.trim()).filter((v) => v.length > 0)
 
-  const setContact = (index: number, change: Partial<NotifyContact>) =>
-    edit({
-      contacts: current.contacts.map((c, i) => (i === index ? { ...c, ...change } : c)),
-    })
-
   return (
     <div className="space-y-6">
       {!current.configured && (
@@ -208,77 +190,24 @@ function ConfigurationTab() {
             <h2 className="font-semibold">Who is told</h2>
             <p className="text-sm text-muted-foreground">
               Kari's Law requires on-site notification. Each contact is told when an emergency call
-              is placed, and every attempt is recorded against the call.
+              is placed, and every attempt is recorded against the call. A site's own contacts
+              (Locations) are told first; a call contact may be allowed to listen in.
             </p>
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => edit({ contacts: [...current.contacts, { kind: 'email', target: '' }] })}
-          >
-            <Plus className="mr-2 h-4 w-4" /> Add contact
-          </Button>
+          <AddContactButton onAdd={() => edit({ contacts: [...current.contacts, newContact()] })} />
         </div>
 
-        {current.contacts.length === 0 ? (
-          <p className="text-sm text-destructive">
-            Nobody would be told about an emergency call from this tenant.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {current.contacts.map((contact, index) => {
-              const Icon = KIND_ICON[contact.kind as ContactKind]
-              const hint = CONTACT_KINDS.find((k) => k.value === contact.kind)?.hint
-              return (
-                <div key={index} className="flex items-start gap-2">
-                  <div className="w-36">
-                    <Select
-                      value={contact.kind}
-                      onValueChange={(v) => setContact(index, { kind: v as ContactKind })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {CONTACT_KINDS.map((k) => (
-                          <SelectItem key={k.value} value={k.value}>{k.label}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <Icon className="h-4 w-4 text-muted-foreground" />
-                      <Input
-                        value={contact.target}
-                        placeholder={hint}
-                        onChange={(e) => setContact(index, { target: e.target.value })}
-                      />
-                    </div>
-                    {(contact.issues ?? []).length > 0 && (
-                      <p className="mt-1 text-xs text-destructive">{(contact.issues ?? []).join('; ')}</p>
-                    )}
-                  </div>
-                  <div className="w-40">
-                    <Input
-                      value={contact.name ?? ''}
-                      placeholder="Name (optional)"
-                      onChange={(e) => setContact(index, { name: e.target.value })}
-                    />
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label="Remove contact"
-                    onClick={() => edit({ contacts: current.contacts.filter((_, i) => i !== index) })}
-                  >
-                    <Trash2 className="h-4 w-4 text-destructive" />
-                  </Button>
-                </div>
-              )
-            })}
-          </div>
-        )}
+        <EmergencyContacts
+          idPrefix="tenant"
+          contacts={current.contacts}
+          onChange={(contacts) => edit({ contacts })}
+          empty={
+            <p className="text-sm text-destructive">
+              Nobody would be told about an emergency call from this tenant, unless its sites name
+              their own contacts.
+            </p>
+          }
+        />
       </div>
 
       <div className="rounded-lg border bg-card p-4 space-y-4">
@@ -352,13 +281,7 @@ function ConfigurationTab() {
               test_numbers: current.test_numbers,
               test_call_mode: current.test_call_mode,
               dial_prefixes: current.dial_prefixes,
-              contacts: current.contacts
-                .filter((c) => c.target.trim().length > 0)
-                .map((c) => ({
-                  kind: c.kind,
-                  target: c.target.trim(),
-                  name: c.name?.trim() || undefined,
-                })),
+              contacts: contactsToSave(current.contacts),
               require_dispatchable_location: current.require_dispatchable_location,
               trust_device_locations: current.trust_device_locations,
               declared_location_ttl_secs: current.declared_location_ttl_secs,
@@ -436,7 +359,17 @@ function ReadinessTab() {
         <div className="flex items-center gap-2">
           <Badge variant="outline">{row.original.kind}</Badge>
           <span className="text-sm">{row.original.name ?? row.original.target}</span>
+          {row.original.listen && <Badge variant="secondary">may listen</Badge>}
         </div>
+      ),
+    },
+    {
+      id: 'site',
+      header: 'For',
+      cell: ({ row }) => (
+        <span className={`text-sm ${row.original.site ? '' : 'text-muted-foreground'}`}>
+          {row.original.site ?? 'the tenant'}
+        </span>
       ),
     },
     {

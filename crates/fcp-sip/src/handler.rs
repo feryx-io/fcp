@@ -4670,6 +4670,10 @@ impl SipMessageHandler {
             dtmf_requested: user_prefs.enable_dtmf_detection || user_prefs.force_media_anchoring,
             conference_call: false, // TODO: Detect conference scenarios
             hold_music: media_config.hold_music,
+            emergency_call: self
+                .call_manager
+                .get_call(call_id)
+                .is_some_and(|c| c.emergency.is_some()),
         };
 
         // Make anchoring decision
@@ -15217,11 +15221,21 @@ impl SipMessageHandler {
             }
             None => Vec::new(),
         };
-        let parts = crate::emergency::test_readback(
-            em,
-            !routes.is_empty(),
-            config.deliverable_contacts().len(),
-        );
+        let told: Vec<_> = crate::emergency::contacts_for_call(
+            self.storage.as_ref(),
+            config,
+            em.location.as_ref(),
+        )
+        .await
+        .into_iter()
+        .filter(|c| c.problems().is_empty())
+        .collect();
+        let listeners = told
+            .iter()
+            .filter(|c| c.listen && c.kind == fcp_core::e911::notify::ContactKind::Call)
+            .count();
+        let parts =
+            crate::emergency::test_readback(em, !routes.is_empty(), told.len(), listeners, true);
         // Synthesized while the opening plays: the caller would otherwise
         // wait out the whole readback's synthesis after the answer.
         if let Some(tts) = self.media_manager.as_ref().and_then(|mm| mm.tts_service()) {
@@ -15244,17 +15258,21 @@ impl SipMessageHandler {
                 });
             }
         });
+        let mut flow = spoken_confirmation(
+            &format!("emergency-test-{call_id}"),
+            "Emergency test",
+            "Inline flow reading back an emergency test call",
+            parts,
+        );
+        if listeners > 0 {
+            wait_before_last_part(&mut flow, crate::emergency::LISTEN_TEST_WAIT_SECS);
+        }
         self.start_inline_flow(
             request,
             handle,
             call_id,
             &flow_handler,
-            spoken_confirmation(
-                &format!("emergency-test-{call_id}"),
-                "Emergency test",
-                "Inline flow reading back an emergency test call",
-                parts,
-            ),
+            flow,
             HashMap::new(),
             "emergency test",
         )
@@ -17822,6 +17840,7 @@ impl SipMessageHandler {
         text: &str,
         ring_timeout: std::time::Duration,
         repeat: u32,
+        listen_to: Option<fcp_b2bua_core::CallId>,
     ) -> Result<AnnouncementOutcome> {
         let uac = self.uac.as_ref().ok_or_else(|| {
             anyhow::anyhow!("UAC not configured — cannot place notification calls")
@@ -17858,6 +17877,7 @@ impl SipMessageHandler {
                 session_id,
                 ring_timeout,
                 repeat,
+                listen_to,
             )
             .await;
         let _ = media_manager.terminate_session(&session_id).await;
@@ -17881,6 +17901,7 @@ impl SipMessageHandler {
         session_id: fcp_core::CallId,
         ring_timeout: std::time::Duration,
         repeat: u32,
+        listen_to: Option<fcp_b2bua_core::CallId>,
     ) -> Result<AnnouncementOutcome> {
         let handle = uac
             .invite(target, Some(offer))
@@ -17936,10 +17957,142 @@ impl SipMessageHandler {
         }
 
         let dialog = handle.dialog.read().await.clone();
+        if let Some(call_id) = listen_to {
+            if self
+                .offer_listening(media_manager, session_id, &call_id, target, dialog.clone())
+                .await
+            {
+                // The contact's call is the emergency call's supervisor now.
+                return Ok(AnnouncementOutcome::Answered);
+            }
+        }
         if let Err(e) = uac.bye(&dialog).await {
             debug!(error = %e, "Notification call BYE failed");
         }
         Ok(AnnouncementOutcome::Answered)
+    }
+
+    /// Say `text` on a notification call's own session and wait for it.
+    async fn say_on_session(
+        media_manager: &Arc<fcp_media::MediaManager>,
+        session_id: &fcp_core::CallId,
+        text: &str,
+    ) {
+        if let Ok(playback) = media_manager
+            .play_tts(
+                session_id,
+                text.to_string(),
+                "en-US".to_string(),
+                None,
+                fcp_media::AudioTarget::Both,
+            )
+            .await
+        {
+            let _ = media_manager.wait_playback_completion(playback).await;
+        }
+    }
+
+    /// Offer an emergency contact who may listen in the choice, once told
+    /// (`docs/E911.md` "Listening in"): 1 to listen, 2 to listen and
+    /// speak. A choice moves their call onto the emergency call as its
+    /// supervisor, once that call is answered; `true` when it did, and the
+    /// notification call is theirs to end.
+    async fn offer_listening(
+        &self,
+        media_manager: &Arc<fcp_media::MediaManager>,
+        session_id: fcp_core::CallId,
+        call_id: &fcp_b2bua_core::CallId,
+        party: &str,
+        dialog: sip_dialog::Dialog,
+    ) -> bool {
+        const MENU: &str = "To listen to the call, press 1. To listen and speak, press 2.";
+        let Some(supervisions) = self.supervisions.clone() else {
+            return false;
+        };
+        if self.call_manager.get_call(call_id).is_none() {
+            Self::say_on_session(media_manager, &session_id, "The emergency call has ended.").await;
+            return false;
+        }
+        let mut mode = None;
+        for _ in 0..2 {
+            // Made before the prompt, so a key pressed over it counts.
+            let collector = media_manager.create_dtmf_collector(&session_id, 1, None);
+            Self::say_on_session(media_manager, &session_id, MENU).await;
+            let digits = match collector.collect(std::time::Duration::from_secs(6)).await {
+                fcp_media::CollectionResult::Complete(d)
+                | fcp_media::CollectionResult::Timeout(d) => d,
+                fcp_media::CollectionResult::Cancelled => String::new(),
+            };
+            mode = match digits.as_str() {
+                "1" => Some(fcp_media::Supervision::Monitor),
+                "2" => Some(fcp_media::Supervision::Barge),
+                _ => None,
+            };
+            if mode.is_some() {
+                break;
+            }
+        }
+        let Some(mode) = mode else {
+            return false;
+        };
+
+        // A live call may still be ringing at the emergency service.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut told_to_wait = false;
+        loop {
+            match self.call_manager.get_call(call_id) {
+                None => {
+                    Self::say_on_session(
+                        media_manager,
+                        &session_id,
+                        "The emergency call has ended.",
+                    )
+                    .await;
+                    return false;
+                }
+                Some(call) if call.state == fcp_b2bua_core::CallState::Established => break,
+                Some(_) if std::time::Instant::now() >= deadline => {
+                    Self::say_on_session(
+                        media_manager,
+                        &session_id,
+                        "The emergency call was not answered in time.",
+                    )
+                    .await;
+                    return false;
+                }
+                Some(_) => {
+                    if !told_to_wait {
+                        told_to_wait = true;
+                        Self::say_on_session(
+                            media_manager,
+                            &session_id,
+                            "The call is connecting. Please hold.",
+                        )
+                        .await;
+                    } else {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        }
+
+        match supervisions.join_dialog(call_id, party, mode, dialog).await {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(call_id = %call_id, party, error = %e, "An emergency contact could not listen in");
+                let why = match e {
+                    crate::supervision::SuperviseError::AlreadySupervised => {
+                        "Someone else is already listening to the call."
+                    }
+                    crate::supervision::SuperviseError::NoSuchCall => {
+                        "The emergency call has ended."
+                    }
+                    _ => "The call cannot be listened to.",
+                };
+                Self::say_on_session(media_manager, &session_id, why).await;
+                false
+            }
+        }
     }
 
     /// Put `party` of a call on hold from the node
@@ -18835,6 +18988,46 @@ fn calling_code_confirmation(code: &fcp_pbx::CallingCode) -> &'static str {
         AssistantOn => "Assistant on.",
         AssistantOff => "Assistant off.",
     }
+}
+
+/// Make a `spoken_confirmation` wait `secs` before its last part: a test
+/// call held open for a contact to try listening in.
+fn wait_before_last_part(flow: &mut fcp_flow::FlowDefinition, secs: u32) {
+    use fcp_flow::{FlowNode, NodeType};
+    let says: Vec<String> = flow
+        .nodes
+        .keys()
+        .filter(|id| id.starts_with("say"))
+        .cloned()
+        .collect();
+    let Some(last) = says.iter().max_by_key(|id| {
+        id.strip_prefix("say-")
+            .and_then(|n| n.parse::<usize>().ok())
+            .unwrap_or(0)
+    }) else {
+        return;
+    };
+    let Some(before) = flow
+        .nodes
+        .values_mut()
+        .find(|node| matches!(&node.node_type, NodeType::Say { next, .. } if next == last))
+    else {
+        return;
+    };
+    if let NodeType::Say { next, .. } = &mut before.node_type {
+        *next = "wait".to_string();
+    }
+    flow.nodes.insert(
+        "wait".to_string(),
+        FlowNode {
+            id: "wait".to_string(),
+            name: Some("Wait for a listener".to_string()),
+            node_type: NodeType::Pause {
+                duration: secs,
+                next: last.clone(),
+            },
+        },
+    );
 }
 
 /// An inline flow that answers, says each of `parts` in turn and hangs up.

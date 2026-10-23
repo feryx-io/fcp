@@ -277,6 +277,7 @@ format = "compact"
                 location_source: None,
                 location_summary: Some("Building 1".to_string()),
                 client_address: None,
+                location_id: None,
                 trunk_name: None,
                 notify_contacts: Vec::new(),
                 timestamp: SystemTime::now(),

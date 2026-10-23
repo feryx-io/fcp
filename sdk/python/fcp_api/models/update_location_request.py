@@ -13,6 +13,7 @@ from typing import cast
 
 if TYPE_CHECKING:
   from ..models.civic_elements import CivicElements
+  from ..models.contact_input_type_1 import ContactInputType1
 
 
 
@@ -41,8 +42,9 @@ class UpdateLocationRequest:
             longitude (float | None | Unset):
             phone_number (None | str | Unset):
             timezone (None | str | Unset):
-            emergency_contact_name (None | str | Unset):
-            emergency_contact_phone (None | str | Unset):
+            emergency_contacts (list[ContactInputType1 | str] | None | Unset): Replaces the site's emergency contacts when
+                given.
+            notify_tenant_contacts (bool | None | Unset):
             e911_callback_number (None | str | Unset):
             civic (CivicElements | None | Unset):
      """
@@ -61,8 +63,8 @@ class UpdateLocationRequest:
     longitude: float | None | Unset = UNSET
     phone_number: None | str | Unset = UNSET
     timezone: None | str | Unset = UNSET
-    emergency_contact_name: None | str | Unset = UNSET
-    emergency_contact_phone: None | str | Unset = UNSET
+    emergency_contacts: list[ContactInputType1 | str] | None | Unset = UNSET
+    notify_tenant_contacts: bool | None | Unset = UNSET
     e911_callback_number: None | str | Unset = UNSET
     civic: CivicElements | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -73,6 +75,7 @@ class UpdateLocationRequest:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.civic_elements import CivicElements # noqa: PLC0415
+        from ..models.contact_input_type_1 import ContactInputType1 # noqa: PLC0415
         name: None | str | Unset
         if isinstance(self.name, Unset):
             name = UNSET
@@ -157,17 +160,28 @@ class UpdateLocationRequest:
         else:
             timezone = self.timezone
 
-        emergency_contact_name: None | str | Unset
-        if isinstance(self.emergency_contact_name, Unset):
-            emergency_contact_name = UNSET
-        else:
-            emergency_contact_name = self.emergency_contact_name
+        emergency_contacts: list[dict[str, Any] | str] | None | Unset
+        if isinstance(self.emergency_contacts, Unset):
+            emergency_contacts = UNSET
+        elif isinstance(self.emergency_contacts, list):
+            emergency_contacts = []
+            for emergency_contacts_type_0_item_data in self.emergency_contacts:
+                emergency_contacts_type_0_item: dict[str, Any] | str
+                if isinstance(emergency_contacts_type_0_item_data, ContactInputType1):
+                    emergency_contacts_type_0_item = emergency_contacts_type_0_item_data.to_dict()
+                else:
+                    emergency_contacts_type_0_item = emergency_contacts_type_0_item_data
+                emergency_contacts.append(emergency_contacts_type_0_item)
 
-        emergency_contact_phone: None | str | Unset
-        if isinstance(self.emergency_contact_phone, Unset):
-            emergency_contact_phone = UNSET
+
         else:
-            emergency_contact_phone = self.emergency_contact_phone
+            emergency_contacts = self.emergency_contacts
+
+        notify_tenant_contacts: bool | None | Unset
+        if isinstance(self.notify_tenant_contacts, Unset):
+            notify_tenant_contacts = UNSET
+        else:
+            notify_tenant_contacts = self.notify_tenant_contacts
 
         e911_callback_number: None | str | Unset
         if isinstance(self.e911_callback_number, Unset):
@@ -216,10 +230,10 @@ class UpdateLocationRequest:
             field_dict["phone_number"] = phone_number
         if timezone is not UNSET:
             field_dict["timezone"] = timezone
-        if emergency_contact_name is not UNSET:
-            field_dict["emergency_contact_name"] = emergency_contact_name
-        if emergency_contact_phone is not UNSET:
-            field_dict["emergency_contact_phone"] = emergency_contact_phone
+        if emergency_contacts is not UNSET:
+            field_dict["emergency_contacts"] = emergency_contacts
+        if notify_tenant_contacts is not UNSET:
+            field_dict["notify_tenant_contacts"] = notify_tenant_contacts
         if e911_callback_number is not UNSET:
             field_dict["e911_callback_number"] = e911_callback_number
         if civic is not UNSET:
@@ -232,6 +246,7 @@ class UpdateLocationRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.civic_elements import CivicElements # noqa: PLC0415
+        from ..models.contact_input_type_1 import ContactInputType1 # noqa: PLC0415
         d = dict(src_dict)
         def _parse_name(data: object) -> None | str | Unset:
             if data is None:
@@ -373,24 +388,50 @@ class UpdateLocationRequest:
         timezone = _parse_timezone(d.pop("timezone", UNSET))
 
 
-        def _parse_emergency_contact_name(data: object) -> None | str | Unset:
+        def _parse_emergency_contacts(data: object) -> list[ContactInputType1 | str] | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return cast(None | str | Unset, data)
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                emergency_contacts_type_0 = []
+                _emergency_contacts_type_0 = data
+                for emergency_contacts_type_0_item_data in (_emergency_contacts_type_0):
+                    def _parse_emergency_contacts_type_0_item(data: object) -> ContactInputType1 | str:
+                        try:
+                            if not isinstance(data, dict):
+                                raise TypeError()
+                            componentsschemas_contact_input_type_1 = ContactInputType1.from_dict(data)
 
-        emergency_contact_name = _parse_emergency_contact_name(d.pop("emergency_contact_name", UNSET))
 
 
-        def _parse_emergency_contact_phone(data: object) -> None | str | Unset:
+                            return componentsschemas_contact_input_type_1
+                        except (TypeError, ValueError, AttributeError, KeyError):
+                            pass
+                        return cast(ContactInputType1 | str, data)
+
+                    emergency_contacts_type_0_item = _parse_emergency_contacts_type_0_item(emergency_contacts_type_0_item_data)
+
+                    emergency_contacts_type_0.append(emergency_contacts_type_0_item)
+
+                return emergency_contacts_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[ContactInputType1 | str] | None | Unset, data)
+
+        emergency_contacts = _parse_emergency_contacts(d.pop("emergency_contacts", UNSET))
+
+
+        def _parse_notify_tenant_contacts(data: object) -> bool | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return cast(None | str | Unset, data)
+            return cast(bool | None | Unset, data)
 
-        emergency_contact_phone = _parse_emergency_contact_phone(d.pop("emergency_contact_phone", UNSET))
+        notify_tenant_contacts = _parse_notify_tenant_contacts(d.pop("notify_tenant_contacts", UNSET))
 
 
         def _parse_e911_callback_number(data: object) -> None | str | Unset:
@@ -438,8 +479,8 @@ class UpdateLocationRequest:
             longitude=longitude,
             phone_number=phone_number,
             timezone=timezone,
-            emergency_contact_name=emergency_contact_name,
-            emergency_contact_phone=emergency_contact_phone,
+            emergency_contacts=emergency_contacts,
+            notify_tenant_contacts=notify_tenant_contacts,
             e911_callback_number=e911_callback_number,
             civic=civic,
         )

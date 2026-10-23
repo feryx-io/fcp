@@ -27,12 +27,15 @@ class ContactResponse:
         Attributes:
             kind (str): `email`, `sms`, `call` or `webhook`.
             target (str):
+            listen (bool): A `call` contact who may listen in to the emergency call once told
+                (`docs/E911.md` "Listening in").
             name (None | str | Unset):
             issues (list[str] | Unset): What keeps this contact from being delivered to, empty when it can.
      """
 
     kind: str
     target: str
+    listen: bool
     name: None | str | Unset = UNSET
     issues: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -45,6 +48,8 @@ class ContactResponse:
         kind = self.kind
 
         target = self.target
+
+        listen = self.listen
 
         name: None | str | Unset
         if isinstance(self.name, Unset):
@@ -64,6 +69,7 @@ class ContactResponse:
         field_dict.update({
             "kind": kind,
             "target": target,
+            "listen": listen,
         })
         if name is not UNSET:
             field_dict["name"] = name
@@ -81,6 +87,8 @@ class ContactResponse:
 
         target = d.pop("target")
 
+        listen = d.pop("listen")
+
         def _parse_name(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -97,6 +105,7 @@ class ContactResponse:
         contact_response = cls(
             kind=kind,
             target=target,
+            listen=listen,
             name=name,
             issues=issues,
         )

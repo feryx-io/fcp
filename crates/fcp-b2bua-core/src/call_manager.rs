@@ -365,6 +365,10 @@ impl CallManager {
             location_source: em.location.as_ref().map(|l| l.source.to_string()),
             location_summary: em.location.as_ref().map(|l| l.summary()),
             client_address: em.location.as_ref().and_then(|l| l.client_address.clone()),
+            location_id: em
+                .location
+                .as_ref()
+                .and_then(|l| l.location_id.map(|id| id.to_string())),
             trunk_name: call.trunk_name.clone(),
             notify_contacts,
             timestamp: std::time::SystemTime::now(),

@@ -64,6 +64,12 @@ pub struct NotifyContact {
     /// Who this is, for the delivery log and the admin UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// A `call` contact who may listen in to the emergency call once told:
+    /// the notification call offers it, and the node joins them to the
+    /// call as a supervisor, listening or speaking (`docs/E911.md`
+    /// "Listening in").
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub listen: bool,
 }
 
 impl NotifyContact {
@@ -72,6 +78,7 @@ impl NotifyContact {
             kind,
             target: target.into(),
             name: None,
+            listen: false,
         }
     }
 
@@ -168,11 +175,56 @@ impl NotifyContact {
         problems
     }
 
+    /// What keeps this contact from being saved: a contact's problems,
+    /// and listening asked of one that is not called.
+    pub fn refusals(&self) -> Vec<String> {
+        let mut refusals = self.problems();
+        if self.listen && self.kind != ContactKind::Call {
+            refusals.push(format!(
+                "only a call contact can listen in; {} is {}",
+                self.target.trim(),
+                self.kind
+            ));
+        }
+        refusals
+    }
+
+    /// Whether two entries reach the same place.
+    fn same_target(&self, other: &NotifyContact) -> bool {
+        self.kind == other.kind && self.target.trim().eq_ignore_ascii_case(other.target.trim())
+    }
+
     /// How this contact reads in the delivery log and in the event's
     /// `notify_contacts`, which carried plain strings before block 2.
     pub fn display_target(&self) -> String {
         self.target.trim().to_string()
     }
+}
+
+/// Who is told about an emergency call from a site: the site's own
+/// contacts first, then the tenant's unless the site says its own are
+/// enough. A place listed twice is told once, and may listen in if either
+/// entry says so.
+pub fn contacts_for_site(
+    tenant: &[NotifyContact],
+    site: Option<&crate::SiteLocation>,
+) -> Vec<NotifyContact> {
+    let mut contacts: Vec<NotifyContact> = Vec::new();
+    let site_contacts = site.map(|s| s.emergency_contacts.as_slice()).unwrap_or(&[]);
+    let tenant_too = site.is_none_or(|s| s.notify_tenant_contacts);
+    let tenant = if tenant_too { tenant } else { &[] };
+    for contact in site_contacts.iter().chain(tenant) {
+        match contacts.iter_mut().find(|c| c.same_target(contact)) {
+            Some(known) => {
+                known.listen |= contact.listen;
+                if known.name.is_none() {
+                    known.name = contact.name.clone();
+                }
+            }
+            None => contacts.push(contact.clone()),
+        }
+    }
+    contacts
 }
 
 impl fmt::Display for NotifyContact {
@@ -209,6 +261,10 @@ pub struct EmergencyNotice {
     pub client_address: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trunk_name: Option<String>,
+    /// The tenant's site the caller was placed at: whose contacts are told
+    /// first (`contacts_for_site`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_id: Option<String>,
     pub placed_at: SystemTime,
 }
 
@@ -488,6 +544,7 @@ mod tests {
             location_source: Some("user_location".to_string()),
             client_address: Some("10.0.0.5".to_string()),
             trunk_name: Some("carrier-a".to_string()),
+            location_id: None,
             placed_at: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_789_000_000),
         }
     }
@@ -570,5 +627,59 @@ mod tests {
         assert!(test.lines()[0].starts_with("[TEST] "));
         assert!(test.text().contains("No emergency services were contacted"));
         assert!(test.spoken().starts_with("This is a test"));
+    }
+
+    #[test]
+    fn a_sites_contacts_come_first_and_the_tenants_follow_unless_it_says_not() {
+        let desk = NotifyContact::new(ContactKind::Call, "2000");
+        let mut security = NotifyContact::new(ContactKind::Call, "2001");
+        security.listen = true;
+        let office = NotifyContact::new(ContactKind::Email, "office@example.com");
+        let mut site = crate::SiteLocation::new("Albany".to_string(), TenantId::nil());
+        site.emergency_contacts = vec![security.clone(), desk.clone()];
+
+        let tenant = vec![
+            office.clone(),
+            NotifyContact::new(ContactKind::Call, "2000"),
+        ];
+        let told = contacts_for_site(&tenant, Some(&site));
+        assert_eq!(told, vec![security.clone(), desk.clone(), office.clone()]);
+
+        site.notify_tenant_contacts = false;
+        assert_eq!(
+            contacts_for_site(&tenant, Some(&site)),
+            vec![security, desk]
+        );
+        assert_eq!(contacts_for_site(&tenant, None), tenant[..].to_vec());
+    }
+
+    #[test]
+    fn a_place_listed_twice_may_listen_if_either_entry_says_so() {
+        let mut listening = NotifyContact::new(ContactKind::Call, "sip:guard@pbx.example.com");
+        listening.listen = true;
+        let mut site = crate::SiteLocation::new("Albany".to_string(), TenantId::nil());
+        site.emergency_contacts = vec![NotifyContact::new(
+            ContactKind::Call,
+            "SIP:guard@pbx.example.com",
+        )];
+        let told = contacts_for_site(&[listening], Some(&site));
+        assert_eq!(told.len(), 1);
+        assert!(told[0].listen);
+    }
+
+    #[test]
+    fn only_a_call_contact_can_listen_in() {
+        let mut email = NotifyContact::new(ContactKind::Email, "office@example.com");
+        assert!(email.refusals().is_empty());
+        email.listen = true;
+        assert!(email.refusals()[0].contains("only a call contact"));
+        let mut call = NotifyContact::new(ContactKind::Call, "2001");
+        call.listen = true;
+        assert!(call.refusals().is_empty());
+        assert_eq!(
+            serde_json::to_value(NotifyContact::new(ContactKind::Call, "2001")).unwrap(),
+            serde_json::json!({"kind": "call", "target": "2001"}),
+            "listen is left out when false"
+        );
     }
 }

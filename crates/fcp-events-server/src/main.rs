@@ -143,6 +143,12 @@ async fn main() -> Result<()> {
     if let Some(v) = &cli.webhook_database_url {
         config.webhook.database_url = v.clone();
     }
+    if let Some(v) = &cli.notify_call_token {
+        match config.notifications.call.as_mut() {
+            Some(call) => call.auth_token = Some(v.clone()),
+            None => warn!("FCP_EVENTS_NOTIFY_CALL_TOKEN is set but [notifications.call] is not; it is not used"),
+        }
+    }
 
     // Apply CLI overrides
     if let Some(log_level) = cli.log_level {
@@ -1531,9 +1537,10 @@ async fn build_notifier(
             from: call.from.clone(),
             ring_timeout: Duration::from_secs(call.ring_timeout_secs.max(1)),
             repeat: call.repeat.max(1),
-            // The call rings, is answered and is spoken to, so it takes
-            // longer than the ringing alone.
-            timeout: Duration::from_secs(call.ring_timeout_secs.max(1) + 60),
+            // The call rings, is answered and is spoken to, and a contact
+            // who may listen in is asked whether to and waits for the call
+            // to be answered, so it takes longer than the ringing alone.
+            timeout: Duration::from_secs(call.ring_timeout_secs.max(1) + 150),
         };
         notifier = notifier.with_channel(Arc::new(fcp_notify::call::CallChannel::new(settings)?));
     }

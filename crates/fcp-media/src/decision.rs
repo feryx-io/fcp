@@ -49,6 +49,10 @@ pub struct MediaDecisionContext {
     /// Holds are answered by the node with music, which needs the media
     /// (`docs/ENTERPRISE_CALLING.md` §3.3).
     pub hold_music: bool,
+
+    /// An emergency call: anchored so that a contact told about it can
+    /// listen in (`docs/E911.md` "Listening in").
+    pub emergency_call: bool,
 }
 
 impl MediaDecisionContext {
@@ -65,6 +69,7 @@ impl MediaDecisionContext {
             dtmf_requested: false,
             conference_call: false,
             hold_music: false,
+            emergency_call: false,
         }
     }
 
@@ -112,6 +117,14 @@ pub fn should_anchor_media(ctx: &MediaDecisionContext) -> MediaAnchoringDecision
     if ctx.conference_call {
         return MediaAnchoringDecision::Anchored {
             reason: "Conference call requires media mixing".to_string(),
+            requires_transcoding: false,
+        };
+    }
+
+    // An emergency call's contacts may listen in, which needs the media
+    if ctx.emergency_call {
+        return MediaAnchoringDecision::Anchored {
+            reason: "Emergency call: its contacts may listen in".to_string(),
             requires_transcoding: false,
         };
     }
@@ -239,6 +252,7 @@ mod tests {
             media_enabled: true,
             conference_call: true,
             hold_music: false,
+            emergency_call: false,
             ..MediaDecisionContext::new(true)
         };
         let decision = should_anchor_media(&ctx);
@@ -318,5 +332,26 @@ mod tests {
 
         let common = find_common_codec(&a_leg, &b_leg);
         assert_eq!(common, None);
+    }
+
+    #[test]
+    fn an_emergency_call_is_anchored_so_its_contacts_can_listen() {
+        let ctx = MediaDecisionContext {
+            emergency_call: true,
+            dtmf_enabled: false,
+            ..MediaDecisionContext::new(true)
+        };
+        assert!(matches!(
+            should_anchor_media(&ctx),
+            MediaAnchoringDecision::Anchored { .. }
+        ));
+        let off = MediaDecisionContext {
+            emergency_call: true,
+            ..MediaDecisionContext::new(false)
+        };
+        assert!(matches!(
+            should_anchor_media(&off),
+            MediaAnchoringDecision::PassThrough { .. }
+        ));
     }
 }

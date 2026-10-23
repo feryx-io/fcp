@@ -74,6 +74,7 @@ fn notice(tenant: TenantId, call_id: &str, kind: EmergencyKind) -> EmergencyNoti
         location_source: Some("user_location".to_string()),
         client_address: Some("10.0.0.5".to_string()),
         trunk_name: Some("carrier-a".to_string()),
+        location_id: None,
         placed_at: SystemTime::now(),
     }
 }
@@ -364,6 +365,77 @@ async fn a_test_calls_notice_says_it_is_a_test() {
     assert_eq!(last.len(), 1, "{last:?}");
     assert_eq!(last[0].contact.target, "security@example.com");
     assert!(last[0].delivered_at.is_some());
+
+    db.drop_db().await;
+}
+
+/// A call from a site tells the site's contacts first, then the tenant's
+/// unless the site says its own are enough (`docs/E911.md` "On-site
+/// notification").
+#[tokio::test]
+async fn a_sites_contacts_are_told_and_the_tenants_unless_it_says_not() {
+    use fcp_core::storage::SiteLocationStore;
+    let db = require_db!();
+    let mail = SmtpSink::start().await;
+    let f = fixture(
+        db.url(),
+        vec![NotifyContact::new(ContactKind::Email, "office@example.com")],
+    )
+    .await;
+    let storage = PostgresStorage::new(PostgresConfig::new(db.url()))
+        .await
+        .expect("connect");
+    let mut site = fcp_core::SiteLocation::new("Albany".to_string(), f.tenant);
+    site.emergency_contacts = vec![NotifyContact::new(
+        ContactKind::Email,
+        "albany-desk@example.com",
+    )];
+    storage
+        .put_location(site.clone())
+        .await
+        .expect("save the site");
+
+    let notifier = EmergencyNotifier::new(Arc::clone(&f.store), RetryPolicy::default())
+        .with_channel(Arc::new(
+            fcp_notify::email::EmailChannel::new(&fcp_notify::email::SmtpSettings {
+                host: mail.host(),
+                port: mail.port(),
+                encryption: "none".to_string(),
+                username: None,
+                password: None,
+                from: "fcp@example.com".to_string(),
+                timeout: SOON,
+            })
+            .expect("email channel"),
+        ));
+    let from_site = |call_id: &str| EmergencyNotice {
+        location_id: Some(site.id.to_string()),
+        ..notice(f.tenant, call_id, EmergencyKind::Live)
+    };
+
+    notifier
+        .notify(from_site(&uuid::Uuid::new_v4().to_string()))
+        .await;
+    let seen = mail.wait_for(2, SOON).await;
+    let bare = |to: &[String]| -> Vec<String> {
+        to.iter()
+            .map(|a| a.trim_matches(|c| c == '<' || c == '>').to_string())
+            .collect()
+    };
+    let mut to: Vec<String> = seen.iter().flat_map(|m| bare(&m.to)).collect();
+    to.sort();
+    assert_eq!(to, vec!["albany-desk@example.com", "office@example.com"]);
+
+    site.notify_tenant_contacts = false;
+    storage
+        .put_location(site.clone())
+        .await
+        .expect("save the site");
+    notifier
+        .notify(from_site(&uuid::Uuid::new_v4().to_string()))
+        .await;
+    let seen = mail.wait_for(3, SOON).await;
+    assert_eq!(bare(&seen[2].to), vec!["albany-desk@example.com"]);
 
     db.drop_db().await;
 }

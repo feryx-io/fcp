@@ -445,6 +445,133 @@ async fn a_line_is_its_tenants_and_runs_only_its_tenants_flow() {
     app.finish().await;
 }
 
+/// A site keeps its own emergency contacts (`docs/E911.md` "On-site
+/// notification"): typed or as text, each checked, listening only for a
+/// call contact, and whether the tenant's are told too.
+#[tokio::test]
+async fn a_site_keeps_its_own_emergency_contacts() {
+    let app = require_app!();
+    let site = app.create_location(app.tenant_a, "HQ").await;
+    let path = format!("/api/v1/locations/{site}");
+
+    let fresh = app.admin(Method::GET, &path, None).await;
+    assert_eq!(
+        fresh.json["emergency_contacts"],
+        json!([]),
+        "{}",
+        fresh.text
+    );
+    assert_eq!(fresh.json["notify_tenant_contacts"], true);
+
+    let saved = app
+        .admin(
+            Method::PATCH,
+            &path,
+            Some(json!({
+                "emergency_contacts": [
+                    { "kind": "call", "target": "2001", "name": "Security", "listen": true },
+                    "frontdesk@example.com"
+                ],
+                "notify_tenant_contacts": false
+            })),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.json["notify_tenant_contacts"], false);
+    let contacts = &saved.json["emergency_contacts"];
+    assert_eq!(contacts[0]["name"], "Security", "{}", saved.text);
+    assert_eq!(contacts[0]["listen"], true);
+    assert_eq!(contacts[1]["kind"], "email");
+    assert_eq!(contacts[1]["listen"], false);
+    let reread = app.admin(Method::GET, &path, None).await;
+    assert_eq!(reread.json["emergency_contacts"], *contacts);
+
+    // The readiness report lists the site's contacts under its name.
+    let ready = app
+        .admin(Method::GET, "/api/v1/emergency/readiness", None)
+        .await;
+    assert_eq!(ready.status, StatusCode::OK, "{}", ready.text);
+    let listed = ready.json["notifications"]["contacts"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        listed
+            .iter()
+            .any(|c| c["site"] == "HQ" && c["target"] == "2001" && c["listen"] == true),
+        "{}",
+        ready.text
+    );
+
+    let not_a_call = app
+        .admin(
+            Method::PATCH,
+            &path,
+            Some(json!({ "emergency_contacts": [
+                { "kind": "email", "target": "desk@example.com", "listen": true }
+            ]})),
+        )
+        .await;
+    assert_eq!(
+        not_a_call.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        not_a_call.text
+    );
+    assert!(
+        not_a_call.text.contains("only a call contact"),
+        "{}",
+        not_a_call.text
+    );
+    let unreadable = app
+        .admin(
+            Method::PATCH,
+            &path,
+            Some(json!({ "emergency_contacts": [{ "kind": "sms", "target": "12" }] })),
+        )
+        .await;
+    assert_eq!(
+        unreadable.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        unreadable.text
+    );
+
+    // A site that tells only its own, and has none, would tell nobody.
+    let emptied = app
+        .admin(
+            Method::PATCH,
+            &path,
+            Some(json!({ "emergency_contacts": [] })),
+        )
+        .await;
+    assert_eq!(emptied.status, StatusCode::OK, "{}", emptied.text);
+    let ready = app
+        .admin(Method::GET, "/api/v1/emergency/readiness", None)
+        .await;
+    assert!(
+        ready.json["notifications"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i.as_str().unwrap().contains("emergency call from HQ")),
+        "{}",
+        ready.text
+    );
+
+    // Another tenant's site is not theirs to change.
+    let from_b = app
+        .admin_in(
+            app.tenant_b,
+            Method::PATCH,
+            &path,
+            Some(json!({ "emergency_contacts": [] })),
+        )
+        .await;
+    assert_eq!(from_b.status, StatusCode::NOT_FOUND, "{}", from_b.text);
+    app.finish().await;
+}
+
 /// A site is listed in its tenant, and is not deleted while anything is
 /// placed there: each would be left at no address.
 #[tokio::test]

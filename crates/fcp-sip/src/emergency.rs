@@ -224,6 +224,30 @@ pub async fn config_for(
     stored.unwrap_or_else(|| EmergencyConfig::defaults(*tenant_id))
 }
 
+/// Who is told about an emergency call placed from `location`: its site's
+/// own contacts, then the tenant's unless the site says not
+/// (`notify::contacts_for_site`).
+pub async fn contacts_for_call(
+    storage: Option<&Arc<fcp_core::DynStorage>>,
+    config: &EmergencyConfig,
+    location: Option<&fcp_core::e911::DispatchableLocation>,
+) -> Vec<fcp_core::e911::notify::NotifyContact> {
+    let site = match (
+        storage.and_then(|s| s.emergency_store()),
+        location.and_then(|l| l.location_id),
+    ) {
+        (Some(store), Some(location_id)) => store
+            .get_emergency_site(&config.tenant_id, &location_id)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to load the caller's site; telling the tenant's contacts");
+                None
+            }),
+        _ => None,
+    };
+    fcp_core::e911::notify::contacts_for_site(&config.contacts, site.as_ref())
+}
+
 /// Classify `destination` (a URI or a bare number) for the tenant and, when
 /// it is an emergency number, resolve the caller's dispatchable location
 /// and callback number. `caller_aor` (`user@host`) picks the caller's
@@ -557,10 +581,14 @@ pub async fn announce(
     record: EmergencyCallRecord,
 ) {
     // The event carries the plain targets it always has; the notifier
-    // reads the typed contacts from the tenant's configuration (§8.1).
-    let notify_contacts = config_for(call_manager.storage(), &record.tenant_id)
-        .await
-        .contact_targets();
+    // reads the typed contacts from the site and the tenant (§8.1).
+    let config = config_for(call_manager.storage(), &record.tenant_id).await;
+    let notify_contacts =
+        contacts_for_call(call_manager.storage(), &config, record.location.as_ref())
+            .await
+            .iter()
+            .map(|c| c.display_target())
+            .collect();
     if let Some(call) = call_manager.get_call(&call_id) {
         call_manager.publish_emergency(&call, notify_contacts);
     }
@@ -579,7 +607,18 @@ pub async fn announce(
 /// (`warm_test_opening`), and the parts after it are synthesized while it
 /// plays (`TtsService::warm`), so the caller hears the opening at the
 /// answer rather than after the whole readback is synthesized.
-pub fn test_readback(info: &EmergencyCallInfo, routable: bool, contacts: usize) -> Vec<String> {
+///
+/// `listeners` is how many of the contacts may listen in. When `stay` and
+/// some may, the caller is asked to stay on the line and the second-last
+/// part is the one after which the call waits ([`LISTEN_TEST_WAIT_SECS`])
+/// before the goodbye, so a listening contact can try joining.
+pub fn test_readback(
+    info: &EmergencyCallInfo,
+    routable: bool,
+    contacts: usize,
+    listeners: usize,
+    stay: bool,
+) -> Vec<String> {
     let digits = |value: &str| {
         fcp_flow::apply_filter(value.trim_start_matches('+'), "digits").unwrap_or_default()
     };
@@ -642,9 +681,19 @@ pub fn test_readback(info: &EmergencyCallInfo, routable: bool, contacts: usize) 
         1 => "Your emergency contact is being told, marked as a test.".to_string(),
         n => format!("Your {n} emergency contacts are being told, marked as a test."),
     });
+    if stay && listeners > 0 {
+        said.push(format!(
+            "{} may listen in. Stay on the line for a minute to let them try, or hang up when you are done.",
+            if listeners == 1 { "One of them" } else { "Some of them" }
+        ));
+    }
     said.push("The test is complete. Goodbye.".to_string());
     said
 }
+
+/// How long a test call stays up after its readback when a contact may
+/// listen in, for them to try it.
+pub const LISTEN_TEST_WAIT_SECS: u32 = 60;
 
 /// The first thing every emergency test caller hears.
 const TEST_OPENING: &str = "This is an emergency calling test. No emergency call has been placed.";
@@ -783,7 +832,7 @@ mod tests {
             kind: fcp_core::e911::EmergencyKind::Test,
             ..located_info()
         };
-        let parts = test_readback(&info, true, 2);
+        let parts = test_readback(&info, true, 2, 0, true);
         assert_eq!(
             parts[0], TEST_OPENING,
             "every caller's first prompt is the same, so it is cached"
@@ -814,7 +863,7 @@ mod tests {
             location: None,
             ..located_info()
         };
-        let said = test_readback(&info, false, 0).join(" ");
+        let said = test_readback(&info, false, 0, 0, true).join(" ");
         for part in [
             "No location was found for you.",
             "There is no callback number.",
@@ -823,7 +872,19 @@ mod tests {
         ] {
             assert!(said.contains(part), "{part:?} not in {said:?}");
         }
-        let said = test_readback(&info, true, 1).join(" ");
+        let said = test_readback(&info, true, 1, 0, true).join(" ");
+        assert!(!said.contains("listen in"), "{said}");
+        let parts = test_readback(&info, true, 2, 1, true);
+        assert!(
+            parts[parts.len() - 2].starts_with("One of them may listen in. Stay on the line"),
+            "the wait comes after this part: {parts:?}"
+        );
+        assert!(
+            !test_readback(&info, true, 2, 1, false)
+                .join(" ")
+                .contains("Stay on the line"),
+            "a flow's caller is not asked to stay"
+        );
         assert!(!said.contains("could not be placed"), "{said}");
         assert!(
             said.contains("Your emergency contact is being told"),

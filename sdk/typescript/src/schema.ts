@@ -6338,6 +6338,8 @@ export interface components {
             kind: string;
             target: string;
             name?: string | null;
+            /** @description A `call` contact may listen in to the emergency call. */
+            listen?: boolean;
         };
         /**
          * @description One contact and how it has fared (§8.4): a tenant should be able to
@@ -6347,6 +6349,10 @@ export interface components {
             kind: string;
             target: string;
             name?: string | null;
+            /** @description The site whose contact this is; absent for the tenant's own. */
+            site?: string | null;
+            /** @description Whether this contact may listen in to the call. */
+            listen: boolean;
             /** @description What keeps this contact from being delivered to. */
             issues: string[];
             /**
@@ -6366,6 +6372,11 @@ export interface components {
             kind: string;
             target: string;
             name?: string | null;
+            /**
+             * @description A `call` contact who may listen in to the emergency call once told
+             *     (`docs/E911.md` "Listening in").
+             */
+            listen: boolean;
             /** @description What keeps this contact from being delivered to, empty when it can. */
             issues?: string[];
         };
@@ -6510,8 +6521,10 @@ export interface components {
             longitude?: number | null;
             phone_number?: string | null;
             timezone?: string | null;
-            emergency_contact_name?: string | null;
-            emergency_contact_phone?: string | null;
+            /** @description The site's emergency contacts, as `/emergency/config` takes them. */
+            emergency_contacts?: components["schemas"]["ContactInput"][] | null;
+            /** @description Whether the tenant's contacts are told too (true when unsaid). */
+            notify_tenant_contacts?: boolean | null;
             e911_callback_number?: string | null;
             civic?: components["schemas"]["CivicElements"] | null;
         };
@@ -7790,8 +7803,13 @@ export interface components {
             longitude?: number | null;
             phone_number?: string | null;
             timezone?: string | null;
-            emergency_contact_name?: string | null;
-            emergency_contact_phone?: string | null;
+            /**
+             * @description Who is told about an emergency call from this site, before the
+             *     tenant's contacts (`docs/E911.md` "On-site notification").
+             */
+            emergency_contacts: components["schemas"]["ContactResponse"][];
+            /** @description Whether the tenant's contacts are told too. */
+            notify_tenant_contacts: boolean;
             e911_callback_number?: string | null;
             /**
              * @description The street address as RFC 5139 civic elements (`docs/E911_BLOCK_2.md`
@@ -9084,8 +9102,13 @@ export interface components {
                 longitude?: number | null;
                 phone_number?: string | null;
                 timezone?: string | null;
-                emergency_contact_name?: string | null;
-                emergency_contact_phone?: string | null;
+                /**
+                 * @description Who is told about an emergency call from this site, before the
+                 *     tenant's contacts (`docs/E911.md` "On-site notification").
+                 */
+                emergency_contacts: components["schemas"]["ContactResponse"][];
+                /** @description Whether the tenant's contacts are told too. */
+                notify_tenant_contacts: boolean;
                 e911_callback_number?: string | null;
                 /**
                  * @description The street address as RFC 5139 civic elements (`docs/E911_BLOCK_2.md`
@@ -12200,8 +12223,9 @@ export interface components {
             longitude?: number | null;
             phone_number?: string | null;
             timezone?: string | null;
-            emergency_contact_name?: string | null;
-            emergency_contact_phone?: string | null;
+            /** @description Replaces the site's emergency contacts when given. */
+            emergency_contacts?: components["schemas"]["ContactInput"][] | null;
+            notify_tenant_contacts?: boolean | null;
             e911_callback_number?: string | null;
             civic?: components["schemas"]["CivicElements"] | null;
         };

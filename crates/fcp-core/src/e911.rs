@@ -1599,6 +1599,16 @@ pub trait EmergencyStore: Send + Sync {
     ) -> anyhow::Result<Vec<EmergencyNotification>> {
         Ok(Vec::new())
     }
+
+    /// The tenant's site an emergency call was placed from, for its own
+    /// contacts (`notify::contacts_for_site`). `None` for another tenant's.
+    async fn get_emergency_site(
+        &self,
+        _tenant_id: &TenantId,
+        _location_id: &LocationId,
+    ) -> anyhow::Result<Option<SiteLocation>> {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

@@ -1653,6 +1653,339 @@ async fn tone_tts_taking(delay: Duration) -> String {
 /// What a notification call speaks, as the stand-in TTS says it.
 const NOTICE_HZ: u32 = 1100;
 
+/// A site's own contact is told about a call from that site, and may
+/// listen in (`docs/E911.md` "On-site notification", "Listening in"): a
+/// 933 test call from Alice's site rings the site's guard and not the
+/// tenant's contact (the site says its own are enough); the guard presses
+/// 2, is joined to the call, and Alice and the guard hear each other; the
+/// test call waits on the line for that, and Alice hanging up ends the
+/// guard's call too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sites_contact_is_told_and_listens_in() {
+    use fcp_core::e911::notify::{ContactKind, NotifyContact};
+    use fcp_core::e911::{EmergencyConfig, EmergencyStore};
+    use fcp_core::storage::SiteLocationStore;
+
+    let events_port = free_port();
+    let ingest = loopback(events_port, "/ingest");
+    let tts = tone_tts().await;
+    let mut stack = match Stack::start_speaking(&[], &[], Some(&ingest), Some(&tts)).await {
+        Some(s) => s,
+        None => {
+            eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+            return;
+        }
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let guard = stack.seed.user("guard", "guard-pw", "1050").await;
+    let office = stack.seed.user("office", "office-pw", "1060").await;
+    let site_id = stack.seed.site_for("alice", ALICE_ELIN).await;
+
+    // The tenant tells its office; Alice's site tells its guard alone, who
+    // may listen in.
+    let store = fcp_storage_postgres::emergency::PostgresEmergencyStore::new(
+        stack.seed.storage().pool().clone(),
+    );
+    let mut config = EmergencyConfig::defaults(stack.seed.tenant_id);
+    config.contacts = vec![NotifyContact::new(ContactKind::Call, "1060")];
+    store.put_emergency_config(&config).await.unwrap();
+    let mut site = stack
+        .seed
+        .storage()
+        .get_location(&site_id)
+        .await
+        .unwrap()
+        .expect("the site");
+    let mut listening_guard = NotifyContact::new(ContactKind::Call, "1050");
+    listening_guard.listen = true;
+    site.emergency_contacts = vec![listening_guard];
+    site.notify_tenant_contacts = false;
+    stack.seed.storage().put_location(site).await.unwrap();
+
+    let events_config = format!(
+        r#"
+[service]
+node_id = "e2e-events"
+
+[websocket]
+bind_address = "127.0.0.1:{events_port}"
+
+[event_bus]
+bus_type = "memory"
+
+[webhook]
+enabled = false
+database_url = "{db}"
+
+[notifications]
+enabled = true
+max_attempts = 1
+retry_interval_secs = 1
+
+[notifications.call]
+call_manager_url = "http://127.0.0.1:{http}"
+ring_timeout_secs = 15
+repeat = 1
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        db = stack.db_url(),
+        http = stack.http,
+    );
+    let events = Service::start(
+        "events-server",
+        fcp_testkit::bins::path("fcp-events-server", "fcp-events-server"),
+        &events_config,
+        &loopback(events_port, "/health"),
+    )
+    .await;
+
+    let guard_phone = stack.phone(&guard).await;
+    let office_phone = stack.phone(&office).await;
+    let phone = stack.phone(&alice).await;
+    let call = phone.call("933").await.unwrap();
+    if call.answered(SOON).await.is_err() {
+        let why = format!("the node did not answer the test; it is {:?}", call.phase());
+        stack.fail(&why).await;
+    }
+
+    let Some(ringing) = guard_phone.incoming(Duration::from_secs(25)).await else {
+        let logs = events.kill().await;
+        stack
+            .fail(&format!(
+                "the site's guard was never rung\nevents server:\n{logs}"
+            ))
+            .await;
+    };
+    let told = ringing.answer().await.unwrap();
+    assert!(
+        told.media().heard(NOTICE_HZ, SOON).await,
+        "the guard heard no notice"
+    );
+
+    // The guard chooses to listen and speak; the menu follows the notice.
+    let joined = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            told.media().send_dtmf('2');
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            alice_speaks(&call);
+            if told
+                .media()
+                .heard(ALICE_HZ, Duration::from_millis(300))
+                .await
+            {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+        }
+    };
+    if !joined {
+        let logs = events.kill().await;
+        stack
+            .fail(&format!(
+                "the guard never heard Alice\nevents server:\n{logs}"
+            ))
+            .await;
+    }
+    told.media().play_tone(GUARD_HZ as f32, 3000);
+    assert!(
+        call.media().heard(GUARD_HZ, SOON).await,
+        "Alice does not hear the guard who chose to speak"
+    );
+
+    assert!(
+        office_phone
+            .incoming(Duration::from_millis(500))
+            .await
+            .is_none(),
+        "the tenant's contact is not told when the site says its own are enough"
+    );
+
+    call.hangup().await.unwrap();
+    assert!(
+        told.ended(SOON).await,
+        "the guard's call ends with the emergency call"
+    );
+
+    let records = stack
+        .seed
+        .emergency_calls(1, SOON, |r| r.ended_at.is_some())
+        .await;
+    let notifications = store
+        .list_emergency_notifications(&stack.seed.tenant_id, &records[0].call_id)
+        .await
+        .unwrap();
+    assert_eq!(notifications.len(), 1, "{notifications:?}");
+    assert_eq!(notifications[0].contact.target, "1050");
+    assert!(notifications[0].contact.listen);
+
+    events.stop().await;
+    stack.finish().await;
+}
+
+/// Listening in to a live call (`docs/E911.md` "Listening in"): the
+/// tenant's guard, told of Alice's 911 call, presses 1 and hears both
+/// Alice and the emergency service without being heard. The call's media
+/// is anchored for this even though nothing else on it needs the node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_contact_listens_to_a_live_call_without_being_heard() {
+    use fcp_core::e911::notify::{ContactKind, NotifyContact};
+    use fcp_core::e911::{EmergencyConfig, EmergencyStore};
+
+    let carrier = Carrier::new("psap-primary", 1).await;
+    let events_port = free_port();
+    let ingest = loopback(events_port, "/ingest");
+    let tts = tone_tts().await;
+    let mut stack = match Stack::start_speaking(&[&carrier], &[], Some(&ingest), Some(&tts)).await {
+        Some(s) => s,
+        None => {
+            eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+            return;
+        }
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let guard = stack.seed.user("guard", "guard-pw", "1050").await;
+    stack.seed.site_for("alice", ALICE_ELIN).await;
+    let store = fcp_storage_postgres::emergency::PostgresEmergencyStore::new(
+        stack.seed.storage().pool().clone(),
+    );
+    let mut config = EmergencyConfig::defaults(stack.seed.tenant_id);
+    let mut listening_guard = NotifyContact::new(ContactKind::Call, "1050");
+    listening_guard.listen = true;
+    config.contacts = vec![listening_guard];
+    store.put_emergency_config(&config).await.unwrap();
+
+    let events_config = format!(
+        r#"
+[service]
+node_id = "e2e-events"
+
+[websocket]
+bind_address = "127.0.0.1:{events_port}"
+
+[event_bus]
+bus_type = "memory"
+
+[webhook]
+enabled = false
+database_url = "{db}"
+
+[notifications]
+enabled = true
+max_attempts = 1
+retry_interval_secs = 1
+
+[notifications.call]
+call_manager_url = "http://127.0.0.1:{http}"
+ring_timeout_secs = 15
+repeat = 1
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        db = stack.db_url(),
+        http = stack.http,
+    );
+    let events = Service::start(
+        "events-server",
+        fcp_testkit::bins::path("fcp-events-server", "fcp-events-server"),
+        &events_config,
+        &loopback(events_port, "/health"),
+    )
+    .await;
+
+    let guard_phone = stack.phone(&guard).await;
+    let phone = stack.phone(&alice).await;
+    let call = phone.call("911").await.unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the emergency trunk never rang; it is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    let psap = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+
+    let Some(ringing) = guard_phone.incoming(Duration::from_secs(25)).await else {
+        let logs = events.kill().await;
+        stack
+            .fail(&format!("the guard was never rung\nevents server:\n{logs}"))
+            .await;
+    };
+    let told = ringing.answer().await.unwrap();
+    assert!(
+        told.media().heard(NOTICE_HZ, SOON).await,
+        "the guard heard no notice"
+    );
+    let joined = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            told.media().send_dtmf('1');
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            alice_speaks(&call);
+            if told
+                .media()
+                .heard(ALICE_HZ, Duration::from_millis(300))
+                .await
+            {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+        }
+    };
+    if !joined {
+        let logs = events.kill().await;
+        stack
+            .fail(&format!(
+                "the guard never heard Alice\nevents server:\n{logs}"
+            ))
+            .await;
+    }
+    psap.media().play_tone(PSAP_HZ as f32, 2000);
+    assert!(
+        told.media().heard(PSAP_HZ, SOON).await,
+        "the guard does not hear the emergency service"
+    );
+    told.media().play_tone(GUARD_HZ as f32, 3000);
+    assert!(
+        !call.media().heard(GUARD_HZ, Duration::from_secs(2)).await,
+        "a contact who chose to listen is heard by Alice"
+    );
+    assert!(
+        !psap
+            .media()
+            .heard(GUARD_HZ, Duration::from_millis(500))
+            .await,
+        "a contact who chose to listen is heard by the emergency service"
+    );
+
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(
+        told.ended(SOON).await,
+        "the guard's call ends with the call"
+    );
+
+    events.stop().await;
+    stack.finish().await;
+}
+
+/// What the emergency service says, as a tone.
+const PSAP_HZ: u32 = 1900;
+
+/// What Alice says and the guard says, as tones.
+const ALICE_HZ: u32 = 700;
+const GUARD_HZ: u32 = 1500;
+
+fn alice_speaks(call: &fcp_testkit::Call) {
+    call.media().play_tone(ALICE_HZ as f32, 1000);
+}
+
 /// The call channel end to end (`docs/E911_BLOCK_2.md` §8.1): a test call
 /// makes the events server ask this call manager to ring the tenant's
 /// contact, an extension; the contact's phone rings, is answered and hears

@@ -17,10 +17,10 @@ pub mod webhook;
 
 use async_trait::async_trait;
 use fcp_core::e911::notify::{
-    ContactKind, EmergencyNotice, EmergencyNotification, NotificationStatus, NotifyContact,
+    contacts_for_site, ContactKind, EmergencyNotice, EmergencyNotification, NotificationStatus,
+    NotifyContact,
 };
 use fcp_core::e911::{EmergencyKind, EmergencyStore};
-use fcp_core::TenantId;
 use fcp_events::{CallEvent, EventPublisher, PlatformEvent};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -199,6 +199,7 @@ impl EmergencyNotifier {
             location_source,
             location_summary,
             client_address,
+            location_id,
             trunk_name,
             timestamp,
             ..
@@ -222,6 +223,7 @@ impl EmergencyNotifier {
             location_source: location_source.clone(),
             client_address: client_address.clone(),
             trunk_name: trunk_name.clone(),
+            location_id: location_id.clone(),
             placed_at: *timestamp,
         };
         self.notify(notice).await;
@@ -233,7 +235,7 @@ impl EmergencyNotifier {
     /// (`docs/DEEP_TESTING.md` D5b); the contacts it had reached by then
     /// have their rows, and their retries are the retry processor's.
     pub async fn notify(&self, notice: EmergencyNotice) {
-        let mut contacts = self.contacts(&notice.tenant_id).await;
+        let mut contacts = self.contacts(&notice).await;
         let tried = self.already_tried(&notice).await;
         if !tried.is_empty() {
             let before = contacts.len();
@@ -301,20 +303,38 @@ impl EmergencyNotifier {
         }
     }
 
-    /// The contacts of this tenant that can be delivered to here: those
-    /// whose kind this deployment has a channel for.
-    async fn contacts(&self, tenant_id: &TenantId) -> Vec<NotifyContact> {
-        let config = match self.store.get_emergency_config(tenant_id).await {
-            Ok(Some(config)) => config,
-            Ok(None) => return Vec::new(),
+    /// Who is told about this call and can be delivered to here: the
+    /// caller's site's contacts, then the tenant's unless the site says
+    /// not (`contacts_for_site`), those whose kind this deployment has a
+    /// channel for.
+    async fn contacts(&self, notice: &EmergencyNotice) -> Vec<NotifyContact> {
+        let tenant_id = &notice.tenant_id;
+        let tenant_contacts = match self.store.get_emergency_config(tenant_id).await {
+            Ok(Some(config)) => config.contacts,
+            Ok(None) => Vec::new(),
             Err(e) => {
-                warn!(error = %e, tenant_id = %tenant_id, "Emergency configuration unreadable; nobody can be told");
-                return Vec::new();
+                warn!(error = %e, tenant_id = %tenant_id, "Emergency configuration unreadable; telling the site's contacts alone");
+                Vec::new()
             }
         };
-        config
-            .deliverable_contacts()
+        let site = match notice
+            .location_id
+            .as_deref()
+            .and_then(|id| id.parse::<fcp_core::LocationId>().ok())
+        {
+            Some(location_id) => self
+                .store
+                .get_emergency_site(tenant_id, &location_id)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!(error = %e, tenant_id = %tenant_id, "The caller's site is unreadable; telling the tenant's contacts");
+                    None
+                }),
+            None => None,
+        };
+        contacts_for_site(&tenant_contacts, site.as_ref())
             .into_iter()
+            .filter(|contact| contact.problems().is_empty())
             .filter(|contact| {
                 let known = self.channels.contains_key(&contact.kind);
                 if !known {
@@ -326,7 +346,6 @@ impl EmergencyNotifier {
                 }
                 known
             })
-            .cloned()
             .collect()
     }
 

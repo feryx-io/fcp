@@ -8,15 +8,25 @@ import { test, expect, admin, person, signIn, settled, type Page, type Trouble }
 async function opened(page: Page, troubles: Trouble[]) {
   await expect(page.locator('main')).not.toBeEmpty()
   await expect(page.getByText('Something went wrong')).toHaveCount(0)
-  const unnamed = await page.locator('button:visible').evaluateAll((buttons) =>
-    buttons
-      .filter((b) => {
-        const name = (b.getAttribute('aria-label') || b.getAttribute('title') || b.textContent || '').trim()
-        const labelled = (b as HTMLButtonElement).labels?.length || b.getAttribute('aria-labelledby')
-        return !name && !labelled
-      })
-      .map((b) => b.outerHTML.replace(/ class="[^"]*"/g, '').slice(0, 300)),
-  )
+  const scan = () =>
+    page.locator('button:visible').evaluateAll((buttons) =>
+      buttons
+        .filter((b) => {
+          const name = (b.getAttribute('aria-label') || b.getAttribute('title') || b.textContent || '').trim()
+          const labelled = (b as HTMLButtonElement).labels?.length || b.getAttribute('aria-labelledby')
+          return !name && !labelled
+        })
+        .map((b) => b.outerHTML.replace(/ class="[^"]*"/g, '').slice(0, 300)),
+    )
+  // The page before can still be in the DOM, its labels already gone, just
+  // after the route changes: a button is unnamed only if it still is a
+  // moment later.
+  let unnamed = await scan()
+  if (unnamed.length > 0) {
+    await page.waitForTimeout(500)
+    const again = await scan()
+    unnamed = unnamed.filter((b) => again.includes(b))
+  }
   const here = new URL(page.url()).pathname
   for (const button of unnamed) troubles.push({ page: here, what: `a button without a name: ${button}` })
 }

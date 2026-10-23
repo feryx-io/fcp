@@ -20651,6 +20651,10 @@
                   "string",
                   "null"
                 ]
+              },
+              "listen": {
+                "type": "boolean",
+                "description": "A `call` contact may listen in to the emergency call."
               }
             }
           }
@@ -20663,6 +20667,7 @@
         "required": [
           "kind",
           "target",
+          "listen",
           "issues"
         ],
         "properties": {
@@ -20677,6 +20682,17 @@
               "string",
               "null"
             ]
+          },
+          "site": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The site whose contact this is; absent for the tenant's own."
+          },
+          "listen": {
+            "type": "boolean",
+            "description": "Whether this contact may listen in to the call."
           },
           "issues": {
             "type": "array",
@@ -20708,7 +20724,8 @@
         "description": "One notification contact as the API shows it.",
         "required": [
           "kind",
-          "target"
+          "target",
+          "listen"
         ],
         "properties": {
           "kind": {
@@ -20723,6 +20740,10 @@
               "string",
               "null"
             ]
+          },
+          "listen": {
+            "type": "boolean",
+            "description": "A `call` contact who may listen in to the emergency call once told\n(`docs/E911.md` \"Listening in\")."
           },
           "issues": {
             "type": "array",
@@ -21249,17 +21270,22 @@
               "null"
             ]
           },
-          "emergency_contact_name": {
+          "emergency_contacts": {
             "type": [
-              "string",
+              "array",
               "null"
-            ]
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ContactInput"
+            },
+            "description": "The site's emergency contacts, as `/emergency/config` takes them."
           },
-          "emergency_contact_phone": {
+          "notify_tenant_contacts": {
             "type": [
-              "string",
+              "boolean",
               "null"
-            ]
+            ],
+            "description": "Whether the tenant's contacts are told too (true when unsaid)."
           },
           "e911_callback_number": {
             "type": [
@@ -25356,6 +25382,8 @@
           "id",
           "tenant_id",
           "name",
+          "emergency_contacts",
+          "notify_tenant_contacts",
           "civic",
           "e911_validated",
           "created_at",
@@ -25451,17 +25479,16 @@
               "null"
             ]
           },
-          "emergency_contact_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "emergency_contacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContactResponse"
+            },
+            "description": "Who is told about an emergency call from this site, before the\ntenant's contacts (`docs/E911.md` \"On-site notification\")."
           },
-          "emergency_contact_phone": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "notify_tenant_contacts": {
+            "type": "boolean",
+            "description": "Whether the tenant's contacts are told too."
           },
           "e911_callback_number": {
             "type": [
@@ -29373,6 +29400,8 @@
                 "id",
                 "tenant_id",
                 "name",
+                "emergency_contacts",
+                "notify_tenant_contacts",
                 "civic",
                 "e911_validated",
                 "created_at",
@@ -29468,17 +29497,16 @@
                     "null"
                   ]
                 },
-                "emergency_contact_name": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                "emergency_contacts": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ContactResponse"
+                  },
+                  "description": "Who is told about an emergency call from this site, before the\ntenant's contacts (`docs/E911.md` \"On-site notification\")."
                 },
-                "emergency_contact_phone": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                "notify_tenant_contacts": {
+                  "type": "boolean",
+                  "description": "Whether the tenant's contacts are told too."
                 },
                 "e911_callback_number": {
                   "type": [
@@ -38812,15 +38840,19 @@
               "null"
             ]
           },
-          "emergency_contact_name": {
+          "emergency_contacts": {
             "type": [
-              "string",
+              "array",
               "null"
-            ]
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ContactInput"
+            },
+            "description": "Replaces the site's emergency contacts when given."
           },
-          "emergency_contact_phone": {
+          "notify_tenant_contacts": {
             "type": [
-              "string",
+              "boolean",
               "null"
             ]
           },

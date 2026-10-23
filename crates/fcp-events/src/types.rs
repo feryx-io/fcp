@@ -180,9 +180,14 @@ pub enum CallEvent {
         /// The address the caller was seen at, when one placed them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_address: Option<String>,
+        /// The tenant's site the caller was placed at, whose own contacts
+        /// are told first.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        location_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trunk_name: Option<String>,
-        /// People/URIs the tenant asked to be told about emergency calls.
+        /// People/URIs told about this call: the site's contacts, then
+        /// the tenant's.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         notify_contacts: Vec<String>,
         #[serde(with = "system_time_serde")]

@@ -590,6 +590,7 @@ async fn seed_tenant_b(app: &App) -> Seeded {
             location_source: None,
             client_address: None,
             trunk_name: None,
+            location_id: None,
             placed_at: SystemTime::now(),
         };
         let row = EmergencyNotification::first(

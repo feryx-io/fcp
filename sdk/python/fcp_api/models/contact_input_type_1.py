@@ -27,11 +27,13 @@ class ContactInputType1:
             kind (str):
             target (str):
             name (None | str | Unset):
+            listen (bool | Unset): A `call` contact may listen in to the emergency call.
      """
 
     kind: str
     target: str
     name: None | str | Unset = UNSET
+    listen: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -49,6 +51,8 @@ class ContactInputType1:
         else:
             name = self.name
 
+        listen = self.listen
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -58,6 +62,8 @@ class ContactInputType1:
         })
         if name is not UNSET:
             field_dict["name"] = name
+        if listen is not UNSET:
+            field_dict["listen"] = listen
 
         return field_dict
 
@@ -80,10 +86,13 @@ class ContactInputType1:
         name = _parse_name(d.pop("name", UNSET))
 
 
+        listen = d.pop("listen", UNSET)
+
         contact_input_type_1 = cls(
             kind=kind,
             target=target,
             name=name,
+            listen=listen,
         )
 
 

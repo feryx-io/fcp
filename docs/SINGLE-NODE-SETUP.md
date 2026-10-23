@@ -95,6 +95,11 @@ is derived from `auth_token`. The events server takes the same key as
 `[auth] session_signing_key` (`FCP_EVENTS_SESSION_SIGNING_KEY`) so the
 admin UI's live views work (`docs/API_TOKENS.md` §7).
 
+**Emergency notification calls** are placed for the events server by a
+call manager (`[notifications.call]`, `docs/E911.md` "On-site
+notification"), which it calls with the call manager's API token:
+`[notifications.call] auth_token`, or `FCP_EVENTS_NOTIFY_CALL_TOKEN`.
+
 **Single sign-on** (`[api.sso] public_url`) is where browsers reach the
 admin. Tenants' identity providers send people back there. Unset, nobody
 signs in through a provider (`docs/SSO.md`).
