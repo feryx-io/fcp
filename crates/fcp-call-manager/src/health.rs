@@ -967,6 +967,7 @@ async fn media_sessions_handler(State(state): State<Arc<AppState>>) -> Json<serd
                 "dialog_id": session.dialog_id,
                 "state": session.state,
                 "local_rtp_port": session.local_rtp_port,
+                "local_rtp_port_b": session.local_rtp_port_b,
                 "duration_secs": session.duration_secs,
                 "transcoding_active": session.transcoding_active,
                 "a_leg": {

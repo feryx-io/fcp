@@ -4,7 +4,21 @@ Designed 2026-10-24, from D8 session 3 (`docs/DEEP_TESTING.md` D8). A
 phone at home sits behind whatever router its owner bought. Some rewrite
 SIP (an ALG), most do not; several phones often share one public
 address. FCP has to give two-way audio in all of these, and today it does
-not:
+not. Agreed 2026-10-24 on every recommendation in §7.
+
+Progress: phases N1 and N2 done (v0.25.459, forge-media 2026-10-24:
+forge-engine 0.8.0, forge-ha 0.3.0, forge-api 0.5.0). A media session
+holds a socket pair per leg (`forge_engine::LegSockets`); a packet's leg
+is the socket it arrived on; media to a leg leaves from its own socket;
+`swap_leg_sockets` moves each port with its phone, called by fcp-media's
+`move_peer` (park); fcp-media's session answers `ports_for(Leg)` and every
+fcp-sip site names the leg it advertises to; a transcoded packet's
+timestamp is on the receiver's clock. Proved by `calls.rs`
+`two_phones_behind_one_address_hear_each_other` and
+`…_with_an_alg_hear_each_other`, and forge-engine's own tests (§4). Anvil
+0.2.3 (anvil #36) counts what it receives and logs to `anvil.log`.
+
+What D8 found:
 
 - **ALG on.** Anvil 0.2.2 and a Poly VVX 250 behind one router, the
   router rewriting both phones' Contact and SDP to its public address.

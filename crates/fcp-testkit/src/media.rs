@@ -76,6 +76,8 @@ pub struct RemoteAudio {
     pub telephone_event_pt: Option<u8>,
     /// `a=sendonly` / `a=inactive` from the far end: it will not send.
     pub sending: bool,
+    /// Every codec it lists, in its order.
+    pub offered: Vec<Codec>,
 }
 
 /// The audio section of an SDP: address, port, codec, telephone-event.
@@ -98,6 +100,7 @@ pub fn parse_remote_audio(sdp: &str) -> Result<RemoteAudio> {
         .parse()
         .context("SDP connection address")?;
     let mut codec = None;
+    let mut offered = Vec::new();
     let mut te = None;
     for fmt in &audio.formats {
         let pt: u8 = match fmt.parse() {
@@ -110,8 +113,14 @@ pub fn parse_remote_audio(sdp: &str) -> Result<RemoteAudio> {
             .map(|r| r.encoding_name.to_ascii_uppercase());
         match (name.as_deref(), pt) {
             (Some("TELEPHONE-EVENT"), _) => te = te.or(Some(pt)),
-            (Some("PCMU"), _) | (None, 0) => codec = codec.or(Some(Codec::Pcmu)),
-            (Some("PCMA"), _) | (None, 8) => codec = codec.or(Some(Codec::Pcma)),
+            (Some("PCMU"), _) | (None, 0) => {
+                codec = codec.or(Some(Codec::Pcmu));
+                offered.push(Codec::Pcmu);
+            }
+            (Some("PCMA"), _) | (None, 8) => {
+                codec = codec.or(Some(Codec::Pcma));
+                offered.push(Codec::Pcma);
+            }
             _ => {}
         }
     }
@@ -130,6 +139,7 @@ pub fn parse_remote_audio(sdp: &str) -> Result<RemoteAudio> {
         codec,
         telephone_event_pt: te,
         sending,
+        offered,
     })
 }
 
@@ -284,6 +294,8 @@ pub struct MediaLeg {
     /// The address its SDP names: where it is bound, or for a phone behind
     /// NAT an address it cannot be reached at.
     advertised: IpAddr,
+    /// The codec it lists first, and sends when the far end lists it.
+    prefer: Codec,
     remote: Arc<RwLock<Option<RemoteAudio>>>,
     playing: Arc<Mutex<Playing>>,
     watched: Arc<Mutex<HashSet<u32>>>,
@@ -307,6 +319,11 @@ impl MediaLeg {
     /// As [`MediaLeg::open`], bound at `bind` and naming `advertised` in
     /// its SDP.
     pub async fn open_at(bind: IpAddr, advertised: IpAddr) -> Result<Self> {
+        Self::open_preferring(bind, advertised, Codec::Pcmu).await
+    }
+
+    /// As [`MediaLeg::open_at`], preferring `prefer`.
+    pub async fn open_preferring(bind: IpAddr, advertised: IpAddr, prefer: Codec) -> Result<Self> {
         let pair = allocate_port_pair_at(bind);
         let socket = Arc::new(
             RtpSocketPair::new(
@@ -325,6 +342,7 @@ impl MediaLeg {
             socket,
             local_port: pair.rtp_port,
             advertised,
+            prefer,
             remote: Arc::new(RwLock::new(None)),
             playing: Arc::new(Mutex::new(Playing::Nothing)),
             watched: Arc::new(Mutex::new(HashSet::new())),
@@ -342,15 +360,19 @@ impl MediaLeg {
 
     /// The SDP the phone offers or answers with.
     pub fn sdp(&self, direction: &str) -> String {
+        let (first, second) = match self.prefer {
+            Codec::Pcmu => (Codec::Pcmu, Codec::Pcma),
+            Codec::Pcma => (Codec::Pcma, Codec::Pcmu),
+        };
         format!(
             "v=0\r\n\
              o=- {id} 1 IN IP4 {ip}\r\n\
              s=fcp-testkit\r\n\
              c=IN IP4 {ip}\r\n\
              t=0 0\r\n\
-             m=audio {port} RTP/AVP 0 8 {te}\r\n\
-             a=rtpmap:0 PCMU/8000\r\n\
-             a=rtpmap:8 PCMA/8000\r\n\
+             m=audio {port} RTP/AVP {first_pt} {second_pt} {te}\r\n\
+             a=rtpmap:{first_pt} {first_name}/8000\r\n\
+             a=rtpmap:{second_pt} {second_name}/8000\r\n\
              a=rtpmap:{te} telephone-event/8000\r\n\
              a=fmtp:{te} 0-16\r\n\
              a=ptime:20\r\n\
@@ -359,12 +381,19 @@ impl MediaLeg {
             ip = self.advertised,
             port = self.local_port,
             te = TELEPHONE_EVENT_PT,
+            first_pt = first.payload_type(),
+            first_name = first.sdp_name(),
+            second_pt = second.payload_type(),
+            second_name = second.sdp_name(),
         )
     }
 
     /// Point at the far end named by its SDP.
     pub async fn set_remote(&self, sdp: &str) -> Result<RemoteAudio> {
-        let remote = parse_remote_audio(sdp)?;
+        let mut remote = parse_remote_audio(sdp)?;
+        if remote.offered.contains(&self.prefer) {
+            remote.codec = self.prefer;
+        }
         self.socket
             .set_remote_endpoint(RemoteEndpoint {
                 rtp_addr: remote.addr,

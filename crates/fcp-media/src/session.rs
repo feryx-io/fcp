@@ -34,11 +34,9 @@ pub struct MediaSession {
     /// Session statistics
     stats: RwLock<MediaSessionStats>,
 
-    /// RTP port allocated for this session
-    rtp_port: u16,
-
-    /// RTCP port allocated for this session
-    rtcp_port: u16,
+    /// The session's socket pair per leg, live: a swap (a phone moved
+    /// between legs) is seen at once.
+    legs: forge_engine::LegSockets,
 }
 
 impl MediaSession {
@@ -48,8 +46,7 @@ impl MediaSession {
         dialog_id: DialogId,
         forge_session_id: String,
         config: MediaSessionConfig,
-        rtp_port: u16,
-        rtcp_port: u16,
+        legs: forge_engine::LegSockets,
     ) -> Self {
         Self {
             call_id,
@@ -61,8 +58,7 @@ impl MediaSession {
             remote_sdp: RwLock::new(None),
             negotiated_codecs: RwLock::new(Vec::new()),
             stats: RwLock::new(MediaSessionStats::default()),
-            rtp_port,
-            rtcp_port,
+            legs,
         }
     }
 
@@ -86,9 +82,15 @@ impl MediaSession {
         &self.config
     }
 
-    /// RTP/RTCP ports assigned to this session.
-    pub fn ports(&self) -> (u16, u16) {
-        (self.rtp_port, self.rtcp_port)
+    /// The RTP/RTCP ports `leg`'s peer is told: each leg has its own, so
+    /// an SDP names the leg it goes to.
+    pub fn ports_for(&self, leg: crate::backend::Leg) -> (u16, u16) {
+        let label = match leg {
+            crate::backend::Leg::A => forge_engine::ParticipantLabel::A,
+            crate::backend::Leg::B => forge_engine::ParticipantLabel::B,
+        };
+        let ports = self.legs.ports_for(label);
+        (ports.rtp_port, ports.rtcp_port)
     }
 
     /// Get current state

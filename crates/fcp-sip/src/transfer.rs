@@ -209,25 +209,34 @@ impl TransferRun {
             .then_some(call.media_session_id)
             .flatten()
             .zip(self.media_manager.clone());
-        let rtp_port = match &anchored {
-            Some((session_id, media_manager)) => Some(
-                media_manager
+        // The target takes the referrer's leg and is told its port; the
+        // party keeps its own.
+        let rtp_ports = match &anchored {
+            Some((session_id, media_manager)) => {
+                let session = media_manager
                     .get_session(session_id)
                     .await
-                    .map_err(|e| (500, "Server Internal Error", format!("media session: {e}")))?
-                    .ports()
-                    .0,
-            ),
+                    .map_err(|e| (500, "Server Internal Error", format!("media session: {e}")))?;
+                Some((
+                    session
+                        .ports_for(crate::handler::media_leg(self.referrer))
+                        .0,
+                    session.ports_for(crate::handler::media_leg(party)).0,
+                ))
+            }
             None => None,
         };
 
         // The offer: the transferred party's media (the node's own when
         // anchored), sending both ways whatever hold it is in.
         let offer = crate::hold::with_direction(
-            &match rtp_port {
-                Some(port) => {
-                    fcp_media::rewrite_sdp_for_anchoring(&party_sdp, &self.local_addr, port, None)
-                }
+            &match rtp_ports {
+                Some((target_port, _)) => fcp_media::rewrite_sdp_for_anchoring(
+                    &party_sdp,
+                    &self.local_addr,
+                    target_port,
+                    None,
+                ),
                 None => party_sdp.clone(),
             },
             "sendrecv",
@@ -300,8 +309,8 @@ impl TransferRun {
 
         // Point the transferred party at the target.
         let mut party_sdp_now = party_sdp.clone();
-        match (&anchored, rtp_port) {
-            (Some((session_id, media_manager)), Some(port)) => {
+        match (&anchored, rtp_ports) {
+            (Some((session_id, media_manager)), Some((_, port))) => {
                 let updated = match self.referrer {
                     LegSide::A => media_manager
                         .update_session(session_id, answer.clone())

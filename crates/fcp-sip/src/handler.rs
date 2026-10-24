@@ -5159,19 +5159,22 @@ impl SipMessageHandler {
             .get_session(&media_session_id)
             .await
             .with_context(|| format!("{} failed: could not load media session", label))?;
-        let (rtp_port, _rtcp_port) = session.ports();
-        let local_offer = generate_basic_sdp(&self.local_addr, rtp_port);
+        // The original caller is leg A, the picker leg B: each is told its
+        // own leg's port.
+        let (a_port, _) = session.ports_for(fcp_media::backend::Leg::A);
+        let (b_port, _) = session.ports_for(fcp_media::backend::Leg::B);
         let picker_answer = picker_offer
             .map(|offer| {
                 fcp_media::construct_answer_for_a_leg(
                     offer,
                     &self.local_addr,
-                    rtp_port,
+                    b_port,
                     picker_srtp.as_ref(),
                 )
             })
-            .or_else(|| Some(local_offer.clone()));
-        let original_answer = original_answer.or(Some(local_offer));
+            .or_else(|| Some(generate_basic_sdp(&self.local_addr, b_port)));
+        let original_answer =
+            original_answer.or_else(|| Some(generate_basic_sdp(&self.local_addr, a_port)));
 
         info!(
             call_id = %ringing_call_id,
@@ -7364,10 +7367,10 @@ impl SipMessageHandler {
             if let (Some(media_session_id), Some(media_manager)) =
                 (media_session_id, &self.media_manager)
             {
-                // Get media session to extract RTP port
+                // Get media session to extract leg B's RTP port
                 match media_manager.get_session(&media_session_id).await {
                     Ok(session) => {
-                        let (rtp_port, _rtcp_port) = session.ports();
+                        let (rtp_port, _rtcp_port) = session.ports_for(fcp_media::backend::Leg::B);
 
                         // Rewrite SDP to point to server's RTP endpoint, and
                         // offer the trunk's SRTP on it when it wants any.
@@ -8443,10 +8446,11 @@ impl SipMessageHandler {
                 if let (Some(media_session_id), Some(media_manager)) =
                     (media_session_id, &self.media_manager)
                 {
-                    // Get media session to extract RTP port
+                    // Get media session to extract leg A's RTP port
                     match media_manager.get_session(&media_session_id).await {
                         Ok(session) => {
-                            let (rtp_port, _rtcp_port) = session.ports();
+                            let (rtp_port, _rtcp_port) =
+                                session.ports_for(fcp_media::backend::Leg::A);
                             // The caller's own key, as the media backend answered its offer: an
                             // encrypted caller is answered encrypted, whichever way the answer is
                             // built.
@@ -9301,7 +9305,8 @@ impl SipMessageHandler {
                     // Get media session to extract RTP port (A-leg port)
                     match media_manager.get_session(&media_session_id).await {
                         Ok(session) => {
-                            let (rtp_port, _rtcp_port) = session.ports();
+                            let (rtp_port, _rtcp_port) =
+                                session.ports_for(fcp_media::backend::Leg::A);
                             // The caller's own key, as the media backend answered its offer: an
                             // encrypted caller is answered encrypted, whichever way the answer is
                             // built.
@@ -10425,7 +10430,9 @@ impl SipMessageHandler {
 
                 match media_manager.get_session(media_session_id).await {
                     Ok(session) => {
-                        let (rtp_port, _rtcp_port) = session.ports();
+                        // Forwarded to the other leg, told its own port.
+                        let (rtp_port, _rtcp_port) = session
+                            .ports_for(media_leg(fcp_b2bua_core::LegSide::of(is_a_leg).other()));
                         let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
                             body_str,
                             &self.local_addr,
@@ -10573,7 +10580,9 @@ impl SipMessageHandler {
 
                     match media_manager.get_session(media_session_id).await {
                         Ok(session) => {
-                            let (rtp_port, _rtcp_port) = session.ports();
+                            // The answer goes back to the sender, on its leg's port.
+                            let (rtp_port, _rtcp_port) =
+                                session.ports_for(media_leg(fcp_b2bua_core::LegSide::of(is_a_leg)));
                             // An encrypted sender is answered encrypted, with its own leg's key.
                             let a_leg_srtp = match sender_offer.as_deref() {
                                 Some(offer) if !fcp_media::parse_sdes_crypto(offer).is_empty() => {
@@ -10755,7 +10764,7 @@ impl SipMessageHandler {
                 return Ok(self.create_simple_response(request, 500, "Media Unavailable"));
             }
         };
-        let port = session.ports().0;
+        let port = session.ports_for(media_leg(sender)).0;
         // An encrypted holder is answered encrypted, with its leg's key.
         let srtp = if fcp_media::parse_sdes_crypto(offer).is_empty() {
             None
@@ -13581,20 +13590,22 @@ impl SipMessageHandler {
                     return Ok(());
                 }
             };
-            let (rtp_port, _rtcp_port) = session.ports();
+            // The original caller is leg A, the picker leg B.
+            let (a_port, _) = session.ports_for(fcp_media::backend::Leg::A);
+            let (b_port, _) = session.ports_for(fcp_media::backend::Leg::B);
 
             let original_answer = original_offer
                 .as_deref()
                 .map(|offer| {
-                    fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, rtp_port, None)
+                    fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, a_port, None)
                 })
-                .unwrap_or_else(|| generate_basic_sdp(&self.local_addr, rtp_port));
+                .unwrap_or_else(|| generate_basic_sdp(&self.local_addr, a_port));
             let picker_answer = picker_offer
                 .as_deref()
                 .map(|offer| {
-                    fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, rtp_port, None)
+                    fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, b_port, None)
                 })
-                .unwrap_or_else(|| generate_basic_sdp(&self.local_addr, rtp_port));
+                .unwrap_or_else(|| generate_basic_sdp(&self.local_addr, b_port));
 
             (Some(original_answer), Some(picker_answer))
         } else {
@@ -14374,7 +14385,10 @@ impl SipMessageHandler {
                             .await
                     }
                 };
-                let port = session.ports().0;
+                // The taker is answered on its leg's port; the party is
+                // taken off hold on its own.
+                let port = session.ports_for(media_leg(side)).0;
+                let party_port = session.ports_for(media_leg(party)).0;
                 let encrypted = !fcp_media::parse_sdes_crypto(&offer).is_empty();
                 let taker_srtp = match (side, encrypted) {
                     (fcp_b2bua_core::LegSide::A, true) => {
@@ -14394,7 +14408,7 @@ impl SipMessageHandler {
                         &fcp_media::rewrite_sdp_for_anchoring(
                             &party_sdp,
                             &self.local_addr,
-                            port,
+                            party_port,
                             party_srtp.as_ref(),
                         ),
                         "sendrecv",
@@ -15404,7 +15418,7 @@ impl SipMessageHandler {
                     if let Some(ref existing_msid) = existing_session_id {
                         // Reuse existing session — just feed it the remote SDP
                         if let Ok(session) = mm.get_session(existing_msid).await {
-                            actual_rtp_port = session.ports().0;
+                            actual_rtp_port = session.ports_for(fcp_media::backend::Leg::A).0;
                         }
                         if let Some(remote_sdp) = crate::body::request_sdp(&request) {
                             session_answer =
@@ -15417,7 +15431,7 @@ impl SipMessageHandler {
                         if let Ok(session) =
                             mm.create_session_default(core_call_id, fcp_dialog_id).await
                         {
-                            actual_rtp_port = session.ports().0;
+                            actual_rtp_port = session.ports_for(fcp_media::backend::Leg::A).0;
                             if let Some(remote_sdp) = crate::body::request_sdp(&request) {
                                 session_answer =
                                     mm.update_session(&core_call_id, remote_sdp).await.ok();
@@ -16279,7 +16293,7 @@ impl SipMessageHandler {
                         Ok(session) => Some(fcp_media::rewrite_sdp_for_anchoring(
                             sdp,
                             &self.local_addr,
-                            session.ports().0,
+                            session.ports_for(fcp_media::backend::Leg::B).0,
                             None,
                         )),
                         Err(_) => None,
@@ -17593,7 +17607,8 @@ impl SipMessageHandler {
                 {
                     match media_manager.get_session(&media_session_id).await {
                         Ok(session) => {
-                            let (rtp_port, _rtcp_port) = session.ports();
+                            let (rtp_port, _rtcp_port) =
+                                session.ports_for(fcp_media::backend::Leg::B);
                             let rewritten = fcp_media::rewrite_sdp_for_anchoring(
                                 &original_sdp,
                                 &self.local_addr,
@@ -17887,7 +17902,8 @@ impl SipMessageHandler {
             .await
             .context("could not create the notification call's media session")?;
         let session = media_manager.get_session(&session_id).await?;
-        let (rtp_port, _rtcp_port) = session.ports();
+        // The callee sits in slot A (`update_session` below).
+        let (rtp_port, _rtcp_port) = session.ports_for(fcp_media::backend::Leg::A);
         let offer = generate_basic_sdp(&self.local_addr, rtp_port);
 
         let outcome = self
@@ -20167,6 +20183,14 @@ fn ensure_supported_timer(response: &mut sip_core::Response) {
 // SDP Helpers
 // ============================================================================
 
+/// The media session's leg for a call's leg: each is told its own port.
+pub(crate) fn media_leg(side: fcp_b2bua_core::LegSide) -> fcp_media::backend::Leg {
+    match side {
+        fcp_b2bua_core::LegSide::A => fcp_media::backend::Leg::A,
+        fcp_b2bua_core::LegSide::B => fcp_media::backend::Leg::B,
+    }
+}
+
 /// Generate a basic SDP offer with `a=sendrecv` for call origination.
 ///
 /// Offers PCMU and PCMA (G.711) codecs which are universally supported.
@@ -20356,7 +20380,7 @@ impl ConferenceMigration {
                     .get_session(session_id)
                     .await
                     .map_err(|e| (500, "Server Internal Error", format!("media session: {e}")))?;
-                let (rtp_port, _) = session.ports();
+                let (rtp_port, _) = session.ports_for(fcp_media::backend::Leg::B);
                 fcp_media::rewrite_sdp_for_anchoring(&a_sdp, &self.local_addr, rtp_port, None)
             }
             None => a_sdp.clone(),

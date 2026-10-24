@@ -50,6 +50,8 @@ enable_refer = true
 max_concurrent_calls = 100
 
 [media]
+# Two pairs per anchored call (one per leg): about 249 calls, above
+# max_concurrent_calls.
 rtp_port_start = 10000
 rtp_port_end = 10999
 codecs = ["PCMU", "PCMA", "G722"]

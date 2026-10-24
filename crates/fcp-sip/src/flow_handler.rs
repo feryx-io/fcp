@@ -1219,7 +1219,8 @@ impl FlowCallHandler {
         let sdp_offer = if let Some(ref media_mgr) = self.media_manager {
             match media_mgr.get_session(&session_key).await {
                 Ok(session) => {
-                    let (rtp_port, _rtcp_port) = session.ports();
+                    // The flow's B leg, told leg B's port.
+                    let (rtp_port, _rtcp_port) = session.ports_for(fcp_media::backend::Leg::B);
                     self.generate_sdp_with_port(rtp_port)
                 }
                 Err(_) => self.generate_minimal_sdp(),

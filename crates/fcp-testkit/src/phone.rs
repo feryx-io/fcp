@@ -158,6 +158,9 @@ struct Inner {
     /// The address its Contact and SDP name: `media_ip`, or for a phone
     /// behind NAT ([`Phone::behind_nat`]) one it cannot be reached at.
     advertised: std::net::IpAddr,
+    /// The codec it offers first and, offered it, answers with
+    /// ([`Phone::prefer_codec`]).
+    codec: std::sync::Mutex<crate::media::Codec>,
     /// Every REGISTER this phone has been sent, in order — a carrier's
     /// registrar, for a test that asks who registered and as whom.
     registrations: std::sync::Mutex<Vec<SeenRegistration>>,
@@ -225,7 +228,9 @@ impl Inner {
         } else {
             format!("sip:{target}@{}{}", self.server, self.transport_param)
         };
-        let media = Arc::new(MediaLeg::open_at(self.media_ip, self.advertised).await?);
+        let codec = *self.codec.lock().unwrap();
+        let media =
+            Arc::new(MediaLeg::open_preferring(self.media_ip, self.advertised, codec).await?);
         let offer = edit(media.sdp("sendrecv"));
         let options = match multipart {
             Some(mut body) => {
@@ -617,6 +622,13 @@ impl Phone {
         .await
     }
 
+    /// The codec this phone offers first, and answers with when offered
+    /// it — PCMU unless set. Two phones preferring different codecs make
+    /// the node transcode between them.
+    pub fn prefer_codec(&self, codec: crate::media::Codec) {
+        *self.inner.codec.lock().unwrap() = codec;
+    }
+
     /// A phone behind NAT: bound at `bind`, it names `advertised` in its
     /// Contact and SDP, an address it cannot be reached at — what a phone
     /// naming its LAN address, or loopback, does from behind a router.
@@ -828,6 +840,7 @@ impl Phone {
             transport_param,
             media_ip: local_addr.ip(),
             advertised: advertised.unwrap_or(local_addr.ip()),
+            codec: std::sync::Mutex::new(crate::media::Codec::Pcmu),
         });
 
         let handler: Arc<dyn UasRequestHandler> = Arc::new(Handler(Arc::clone(&inner)));
@@ -1615,7 +1628,9 @@ impl UasRequestHandler for Handler {
 
         // A new call: media, the answer built now (so the 180 carries
         // the same To tag), sent when the test answers.
-        let media = Arc::new(MediaLeg::open_at(self.0.media_ip, self.0.advertised).await?);
+        let codec = *self.0.codec.lock().unwrap();
+        let media =
+            Arc::new(MediaLeg::open_preferring(self.0.media_ip, self.0.advertised, codec).await?);
         if !offer.is_empty() {
             if let Err(e) = media.set_remote(&offer).await {
                 warn!(error = %e, "offer SDP unusable");

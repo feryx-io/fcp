@@ -427,8 +427,12 @@ ended before the node did.
 
 Hold music (`[media] hold_music`, on by default,
 `docs/ENTERPRISE_CALLING.md` §3.3) anchors every call through the node,
-so every call takes an RTP port pair from `[media] rtp_port_start` to
-`rtp_port_end`: size that range for the concurrent calls you expect, or
+so every call takes two RTP port pairs — one per leg
+(`docs/NAT_AND_TLS.md`) — from `[media] rtp_port_start` to
+`rtp_port_end`: a range of N ports carries about N / 4 calls (the
+default 10000–20000 about 2500, compose's 10000–10999 about 249), less
+what queues and supervisors take from the same range. Size it for the
+concurrent calls you expect, or
 set `hold_music = false` to let calls without another reason to be
 anchored send their media directly — holds are then passed to the far
 phone and held callers hear silence.

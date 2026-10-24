@@ -972,6 +972,101 @@ async fn phones_behind_nat_ring_hear_each_other_and_hang_up() {
     stack.finish().await;
 }
 
+/// Two phones behind one router, as on D8 (`docs/NAT_AND_TLS.md`): one
+/// public address, each phone naming an address it cannot be reached at
+/// (no SIP ALG), on different codecs so the node transcodes. The legs'
+/// addresses are learned from their first packets; with one port for both
+/// legs the first packet from the shared address was taken as leg A's
+/// whoever sent it, and transcoding ran backwards. Both hear each other,
+/// and a hold's music reaches the held phone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_phones_behind_one_address_hear_each_other() {
+    behind_one_address(false).await;
+}
+
+/// The same router with a SIP ALG: each phone's Contact and SDP name the
+/// shared address and the phone's own port.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_phones_behind_one_address_with_an_alg_hear_each_other() {
+    behind_one_address(true).await;
+}
+
+async fn behind_one_address(alg: bool) {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let shared = "127.0.0.2";
+    let named: std::net::IpAddr = if alg { shared } else { "127.0.0.1" }.parse().unwrap();
+    let bind = format!("{shared}:0");
+    let alice_phone = Phone::behind_nat(
+        &bind,
+        named,
+        &alice.username,
+        &alice.password,
+        REALM,
+        stack.sip,
+    )
+    .await
+    .unwrap();
+    let bob_phone = Phone::behind_nat(&bind, named, &bob.username, &bob.password, REALM, stack.sip)
+        .await
+        .unwrap();
+    alice_phone.prefer_codec(fcp_testkit::media::Codec::Pcma);
+    bob_phone.prefer_codec(fcp_testkit::media::Codec::Pcmu);
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack
+            .fail(
+                "Bob's phone, behind Alice's address, did not ring",
+                &alice_phone,
+            )
+            .await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+
+    // Bob speaks first, as the VVX did.
+    bob_call.media().play_tone(880.0, 3000);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    alice_call.media().play_tone(440.0, 3000);
+    if !bob_call.media().heard(440, SOON).await {
+        let why = format!(
+            "Bob does not hear Alice's 440 Hz across PCMA to PCMU (received {} packets)",
+            bob_call.media().packets_received()
+        );
+        stack.fail(&why, &bob_phone).await;
+    }
+    if !alice_call.media().heard(880, SOON).await {
+        let why = format!(
+            "Alice does not hear Bob's 880 Hz across PCMU to PCMA (received {} packets)",
+            alice_call.media().packets_received()
+        );
+        stack.fail(&why, &alice_phone).await;
+    }
+
+    // Alice holds: the music reaches Bob, the held phone, and not Alice.
+    alice_call.media().stop_tone();
+    bob_call.media().stop_tone();
+    assert_eq!(alice_call.hold().await.unwrap(), 200);
+    if !bob_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await {
+        stack
+            .fail("Bob, held, does not hear the hold music", &bob_phone)
+            .await;
+    }
+    assert!(
+        !alice_call
+            .media()
+            .heard(DEFAULT_MUSIC_HZ, Duration::from_secs(1))
+            .await,
+        "the holder hears the held phone's music"
+    );
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    stack.finish().await;
+}
+
 /// Two registered phones with the callee answered: the start of most
 /// feature scenarios.
 async fn answered_call(stack: &Stack) -> (Phone, fcp_testkit::Call, Phone, fcp_testkit::Call) {
