@@ -53,6 +53,10 @@ pub struct MediaDecisionContext {
     /// An emergency call: anchored so that a contact told about it can
     /// listen in (`docs/E911.md` "Listening in").
     pub emergency_call: bool,
+
+    /// The caller is behind NAT: its SDP names an address nobody can send
+    /// to, so its RTP address is learned at the node (`fcp_sip::nat`).
+    pub caller_behind_nat: bool,
 }
 
 impl MediaDecisionContext {
@@ -70,6 +74,7 @@ impl MediaDecisionContext {
             conference_call: false,
             hold_music: false,
             emergency_call: false,
+            caller_behind_nat: false,
         }
     }
 
@@ -125,6 +130,15 @@ pub fn should_anchor_media(ctx: &MediaDecisionContext) -> MediaAnchoringDecision
     if ctx.emergency_call {
         return MediaAnchoringDecision::Anchored {
             reason: "Emergency call: its contacts may listen in".to_string(),
+            requires_transcoding: false,
+        };
+    }
+
+    // A caller behind NAT is only reached through the node, which learns
+    // where its RTP comes from
+    if ctx.caller_behind_nat {
+        return MediaAnchoringDecision::Anchored {
+            reason: "Caller behind NAT: its media is learned at the node".to_string(),
             requires_transcoding: false,
         };
     }
@@ -352,6 +366,19 @@ mod tests {
         assert!(matches!(
             should_anchor_media(&off),
             MediaAnchoringDecision::PassThrough { .. }
+        ));
+    }
+
+    #[test]
+    fn a_caller_behind_nat_is_anchored() {
+        let ctx = MediaDecisionContext {
+            caller_behind_nat: true,
+            dtmf_enabled: false,
+            ..MediaDecisionContext::new(true)
+        };
+        assert!(matches!(
+            should_anchor_media(&ctx),
+            MediaAnchoringDecision::Anchored { .. }
         ));
     }
 }

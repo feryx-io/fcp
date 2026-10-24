@@ -135,11 +135,16 @@ pub fn parse_remote_audio(sdp: &str) -> Result<RemoteAudio> {
 
 /// A free even RTP port with its odd RTCP neighbour, on loopback.
 pub fn allocate_port_pair() -> PortPair {
+    allocate_port_pair_at(IpAddr::V4(Ipv4Addr::LOCALHOST))
+}
+
+/// As [`allocate_port_pair`], free at `ip`.
+pub fn allocate_port_pair_at(ip: IpAddr) -> PortPair {
     for _ in 0..200 {
         // 30000–59998, even.
         let port = 30000 + (rand_u16() % 15000) * 2;
-        let rtp = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port));
-        let rtcp = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port + 1));
+        let rtp = std::net::UdpSocket::bind((ip, port));
+        let rtcp = std::net::UdpSocket::bind((ip, port + 1));
         if rtp.is_ok() && rtcp.is_ok() {
             drop((rtp, rtcp));
             return PortPair::new(port).expect("even port");
@@ -276,6 +281,9 @@ fn seq_newer(seq: u16, than: u16) -> bool {
 pub struct MediaLeg {
     socket: Arc<RtpSocketPair>,
     pub local_port: u16,
+    /// The address its SDP names: where it is bound, or for a phone behind
+    /// NAT an address it cannot be reached at.
+    advertised: IpAddr,
     remote: Arc<RwLock<Option<RemoteAudio>>>,
     playing: Arc<Mutex<Playing>>,
     watched: Arc<Mutex<HashSet<u32>>>,
@@ -292,12 +300,19 @@ impl MediaLeg {
     /// Bind a port pair; the sender and receiver tasks start now and
     /// wait for the far end.
     pub async fn open() -> Result<Self> {
-        let pair = allocate_port_pair();
+        let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        Self::open_at(loopback, loopback).await
+    }
+
+    /// As [`MediaLeg::open`], bound at `bind` and naming `advertised` in
+    /// its SDP.
+    pub async fn open_at(bind: IpAddr, advertised: IpAddr) -> Result<Self> {
+        let pair = allocate_port_pair_at(bind);
         let socket = Arc::new(
             RtpSocketPair::new(
                 pair,
                 RtpSocketConfig {
-                    bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    bind_addr: bind,
                     ..RtpSocketConfig::default()
                 },
             )
@@ -309,6 +324,7 @@ impl MediaLeg {
         let leg = Self {
             socket,
             local_port: pair.rtp_port,
+            advertised,
             remote: Arc::new(RwLock::new(None)),
             playing: Arc::new(Mutex::new(Playing::Nothing)),
             watched: Arc::new(Mutex::new(HashSet::new())),
@@ -328,9 +344,9 @@ impl MediaLeg {
     pub fn sdp(&self, direction: &str) -> String {
         format!(
             "v=0\r\n\
-             o=- {id} 1 IN IP4 127.0.0.1\r\n\
+             o=- {id} 1 IN IP4 {ip}\r\n\
              s=fcp-testkit\r\n\
-             c=IN IP4 127.0.0.1\r\n\
+             c=IN IP4 {ip}\r\n\
              t=0 0\r\n\
              m=audio {port} RTP/AVP 0 8 {te}\r\n\
              a=rtpmap:0 PCMU/8000\r\n\
@@ -340,6 +356,7 @@ impl MediaLeg {
              a=ptime:20\r\n\
              a={direction}\r\n",
             id = self.local_port,
+            ip = self.advertised,
             port = self.local_port,
             te = TELEPHONE_EVENT_PT,
         )

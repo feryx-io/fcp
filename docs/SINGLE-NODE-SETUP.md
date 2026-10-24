@@ -197,6 +197,32 @@ voicemail, `:8090` conference, `0.0.0.0:8080` media and WebRTC,
 `0.0.0.0:8000` gateway. Two services on their defaults collide; use the
 files.
 
+### Phones behind NAT
+
+A phone behind a home or office router often names, in its Contact and
+its SDP, an address nobody outside its network can reach — its LAN
+address, or loopback when it knows no better. The call manager goes by
+what the network saw instead (`fcp_sip::nat`), for a UDP phone without
+an RFC 5626 flow whose named address is local (private, loopback,
+link-local, CGNAT, IPv6 unique-local) while it was seen at a public one
+(loopback is never right, wherever it was seen from):
+
+- a call to it is sent where its REGISTER came from; the registration
+  keeps the Contact as sent, and the 200 OK echoes it;
+- the Contact of each request it sends is made the address it was seen
+  at, so the call's later requests (re-INVITE, BYE) reach it;
+- its call is anchored, and each leg behind NAT has its RTP address
+  learned from its first packet, accepted only from the address its SIP
+  came from. A leg that never sends is never sent to.
+
+A phone on the server's own network naming its own address, and a trunk
+whose media comes from another public address than its signalling, are
+left alone. `c=0.0.0.0` is an old-style hold, not an address. Over TCP or
+TLS a phone is reached down the connection it opened (its flow), so none
+of this applies. A callee behind NAT is learned only on an anchored call:
+a call nothing anchors (no caller behind NAT, no DTMF, recording, music on
+hold or emergency) passes the callee's SDP through as it is.
+
 ## 6. What connects to what
 
 Every local file already says this; here is the map.

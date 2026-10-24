@@ -847,6 +847,131 @@ async fn the_callee_can_hang_up() {
     stack.finish().await;
 }
 
+/// Phones behind NAT (`fcp_sip::nat`): each names, in its Contact and its
+/// SDP, an address it cannot be reached at — loopback, as Anvil did on D8 —
+/// and is seen at another. The callee is rung where it registered from,
+/// each side's RTP is learned from where it comes from, and requests
+/// inside the call reach both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn phones_behind_nat_ring_hear_each_other_and_hang_up() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let nowhere: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    let alice_phone = Phone::behind_nat(
+        "127.0.0.2:0",
+        nowhere,
+        &alice.username,
+        &alice.password,
+        REALM,
+        stack.sip,
+    )
+    .await
+    .unwrap();
+    let bob_phone = Phone::behind_nat(
+        "127.0.0.3:0",
+        nowhere,
+        &bob.username,
+        &bob.password,
+        REALM,
+        stack.sip,
+    )
+    .await
+    .unwrap();
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        let why = format!(
+            "Bob's phone, registered from 127.0.0.3 naming 127.0.0.1, did not ring; \
+             Alice's call is {:?}",
+            alice_call.phase()
+        );
+        stack.fail(&why, &alice_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+
+    // Both talk at once, as phones send from the answer: a leg's address
+    // is learned from what it sends, so a silent one is reached only once
+    // it speaks.
+    alice_call.media().play_tone(440.0, 1500);
+    bob_call.media().play_tone(880.0, 1500);
+    if !bob_call.media().heard(440, SOON).await {
+        let why = format!(
+            "Bob does not hear Alice's 440 Hz (received {} packets)",
+            bob_call.media().packets_received()
+        );
+        stack.fail(&why, &bob_phone).await;
+    }
+    if !alice_call.media().heard(880, SOON).await {
+        let why = format!(
+            "Alice does not hear Bob's 880 Hz (received {} packets)",
+            alice_call.media().packets_received()
+        );
+        stack.fail(&why, &alice_phone).await;
+    }
+
+    // Inside the call: an offer relayed each way reaches the far phone,
+    // Bob's BYE reaches Alice where her INVITE was seen from, and on a
+    // second call Alice's BYE reaches Bob where his answer was.
+    let (code, _) = alice_call.reinvite_answered("sendrecv").await.unwrap();
+    assert_eq!(code, 200, "Alice's re-INVITE is answered");
+    if bob_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::ReInvite { .. }))
+        .await
+        .is_none()
+    {
+        stack
+            .fail("Bob's phone did not get Alice's re-INVITE", &bob_phone)
+            .await;
+    }
+    let (code, _) = bob_call.reinvite_answered("sendrecv").await.unwrap();
+    assert_eq!(code, 200, "Bob's re-INVITE is answered");
+    if alice_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::ReInvite { .. }))
+        .await
+        .is_none()
+    {
+        stack
+            .fail("Alice's phone did not get Bob's re-INVITE", &alice_phone)
+            .await;
+    }
+    assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    if alice_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::Bye { .. }))
+        .await
+        .is_none()
+    {
+        stack
+            .fail("Alice's phone did not get the BYE", &alice_phone)
+            .await;
+    }
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let bob_call = bob_phone
+        .incoming(SOON)
+        .await
+        .expect("Bob's phone rings again")
+        .answer()
+        .await
+        .unwrap();
+    alice_call.answered(SOON).await.unwrap();
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    if bob_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::Bye { .. }))
+        .await
+        .is_none()
+    {
+        stack
+            .fail("Bob's phone did not get the BYE", &bob_phone)
+            .await;
+    }
+    assert!(bob_call.ended(SOON).await);
+
+    stack.finish().await;
+}
+
 /// Two registered phones with the callee answered: the start of most
 /// feature scenarios.
 async fn answered_call(stack: &Stack) -> (Phone, fcp_testkit::Call, Phone, fcp_testkit::Call) {

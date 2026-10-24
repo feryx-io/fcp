@@ -1452,7 +1452,7 @@ impl SipMessageHandler {
             }
             let row = rows[&aor]
                 .iter()
-                .find(|r| r.contact == binding.contact())
+                .find(|r| crate::nat::reachable_contact(r) == binding.contact())
                 .cloned();
             let wakeable = self.push.is_some() && row.as_ref().is_some_and(|r| r.push.is_some());
             // Its flow on another node this node can reach.
@@ -4643,6 +4643,17 @@ impl SipMessageHandler {
             }
         };
 
+        // Where a caller behind NAT was seen: its RTP is learned from there.
+        let caller_behind_nat = self
+            .call_manager
+            .get_call(call_id)
+            .and_then(|c| c.a_leg.contact)
+            .map(|peer| peer.ip())
+            .filter(|peer| {
+                crate::body::request_sdp(request)
+                    .is_some_and(|sdp| crate::nat::learns_media_address(&sdp, *peer))
+            });
+
         // Extract codecs from A-leg SDP
         let a_leg_codecs = if let Some(sdp) = crate::body::request_sdp(request) {
             fcp_media::extract_codecs_from_sdp(&sdp)
@@ -4674,6 +4685,7 @@ impl SipMessageHandler {
                 .call_manager
                 .get_call(call_id)
                 .is_some_and(|c| c.emergency.is_some()),
+            caller_behind_nat: caller_behind_nat.is_some(),
         };
 
         // Make anchoring decision
@@ -4734,6 +4746,10 @@ impl SipMessageHandler {
                             call.media_session_id = Some(fcp_call_id);
                             call.media_anchored = true;
                         });
+                        if let Some(peer) = caller_behind_nat {
+                            self.latch_leg(call_id, fcp_media::backend::Leg::A, peer)
+                                .await;
+                        }
                     }
                     Err(e) => {
                         error!(
@@ -9256,6 +9272,13 @@ impl SipMessageHandler {
                             error = %e,
                             "Failed to set B-leg media endpoint in parallel fork"
                         );
+                    }
+                    // A callee behind NAT answers from where it was rung.
+                    if let Some(rung) = crate::nat::uri_address(&target.to_string())
+                        .filter(|rung| crate::nat::learns_media_address(original_sdp, *rung))
+                    {
+                        self.latch_leg(&call_id, fcp_media::backend::Leg::B, rung)
+                            .await;
                     }
                     self.arrange_trunk_dtmf(&call_id, original_sdp).await;
                 }
@@ -18653,7 +18676,15 @@ impl InboundMessageHandler for SipMessageHandler {
         let raw_payload_str = String::from_utf8_lossy(&payload);
 
         // Try parsing as request first, then response
-        if let Some(req) = sip_parse::parse_request(&payload) {
+        if let Some(mut req) = sip_parse::parse_request(&payload) {
+            // A caller behind NAT is reached inside its dialog where its
+            // requests come from (`crate::nat`); a callee's dialog already
+            // sends where it was rung.
+            if matches!(transport, sip_transaction::TransportKind::Udp)
+                && req.method() != &sip_core::Method::Register
+            {
+                crate::nat::fix_contact(req.headers_mut(), peer);
+            }
             // Look up FCP internal CallId from the SIP Call-ID header
             // Priority: 1) Fast DashMap lookup, 2) Call manager dialog scan, 3) Raw SIP Call-ID
             let sip_cid = sip_parse::header(req.headers(), "Call-ID");

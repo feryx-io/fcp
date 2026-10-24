@@ -400,7 +400,7 @@ impl PushWaits {
                 found.push((
                     i,
                     LateContact {
-                        uri: stored_contact_uri(&row.contact),
+                        uri: stored_contact_uri(&crate::nat::reachable_contact(row)),
                         flow_token: row.flow_token.clone(),
                         flow_node: row.flow_node.clone(),
                     },
