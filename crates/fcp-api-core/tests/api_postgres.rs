@@ -15720,6 +15720,87 @@ async fn a_tenant_brands_its_softphone() {
     assert_eq!(fresh.json["app_name"], "Acme Calls");
     assert_ne!(fresh.headers[header::ETAG].to_str().unwrap(), etag);
 
+    // The softphone's deployment profile (Anvil's MANAGED_INSTALLS.md):
+    // this admin as the server, locked; the brand with its files.
+    let profile = app
+        .send_as(
+            &admin,
+            Method::GET,
+            "/api/v1/branding/deployment-profile?format=json",
+            None,
+        )
+        .await;
+    assert_eq!(profile.status, StatusCode::OK, "{}", profile.text);
+    let p = &profile.json;
+    assert_eq!(p["profile_version"], 1);
+    assert_eq!(p["server"], SSO_PUBLIC_URL);
+    assert_eq!(p["lock_server"], true);
+    assert_eq!(p["sign_in"], "auto", "the tenant allows passwords");
+    assert_eq!(p["updates"], "auto");
+    assert_eq!(p["username_from_system"], false, "no login domain");
+    assert!(p.get("login_domain").is_none(), "{p}");
+    assert_eq!(p["brand"]["app_name"], "Acme Calls");
+    assert_eq!(p["brand"]["colors"]["primary"], "#1A73E8");
+    assert_eq!(p["brand"]["icon"], "icon.png");
+    assert!(p["brand"]["logo"].is_string(), "{p}");
+    assert!(p["brand"]["ringtone"].is_string(), "{p}");
+    let zip = app
+        .send_as(
+            &admin,
+            Method::GET,
+            "/api/v1/branding/deployment-profile?sign_in=sso&updates=off&lock_server=false",
+            None,
+        )
+        .await;
+    assert_eq!(zip.status, StatusCode::OK, "{}", zip.text);
+    assert_eq!(zip.headers[header::CONTENT_TYPE], "application/zip");
+    assert!(zip.headers[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap()
+        .contains("acme-calls-profile.zip"));
+    assert_eq!(&zip.bytes[..4], b"PK\x03\x04");
+    let holds = |needle: &[u8]| zip.bytes.windows(needle.len()).any(|w| w == needle);
+    assert!(holds(b"profile.json") && holds(b"icon.png"));
+    assert!(holds(&icon_png), "the icon's bytes, stored");
+    assert!(holds(br#""sign_in": "sso""#) && holds(br#""updates": "off""#));
+    assert!(holds(br#""lock_server": false"#));
+    let reg = app
+        .send_as(
+            &admin,
+            Method::GET,
+            "/api/v1/branding/deployment-profile?format=reg",
+            None,
+        )
+        .await;
+    assert_eq!(reg.status, StatusCode::OK, "{}", reg.text);
+    let units: Vec<u16> = reg.bytes[2..]
+        .chunks(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let text = String::from_utf16(&units).unwrap();
+    assert!(
+        text.contains(&format!("\"Server\"=\"{SSO_PUBLIC_URL}\"")),
+        "{text}"
+    );
+    let bad = app
+        .send_as(
+            &admin,
+            Method::GET,
+            "/api/v1/branding/deployment-profile?updates=never",
+            None,
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+    let refused = app
+        .send_as(
+            &user,
+            Method::GET,
+            "/api/v1/branding/deployment-profile",
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+
     // An asset the brand names stays; another goes.
     let named = app
         .send_as(

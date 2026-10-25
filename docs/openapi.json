@@ -15376,6 +15376,89 @@
         }
       }
     },
+    "/api/v1/branding/deployment-profile": {
+      "get": {
+        "tags": [
+          "branding"
+        ],
+        "summary": "GET /api/v1/branding/deployment-profile — the tenant's softphone profile\n(Anvil's `docs/MANAGED_INSTALLS.md` §2.1): this admin's address as the\nserver, the tenant's first login domain, its sign-in, and its brand with\nthe files, for `Anvil-…-setup.exe /PROFILE=` or Windows policy.",
+        "operationId": "branding_deployment_profile",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`zip` (the default): `profile.json` and the brand's files; `json`:\n`profile.json` alone; `reg`: the same settings as Windows policy.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sign_in",
+            "in": "query",
+            "description": "`auto`, `sso` or `password`; unset, `sso` when the tenant allows no\npassword, else `auto`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "updates",
+            "in": "query",
+            "description": "`auto` (the default), `notify` or `off`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lock_server",
+            "in": "query",
+            "description": "Whether the server field is locked; unset, it is.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "username_from_system",
+            "in": "query",
+            "description": "Fill the username in from Windows' user principal name; unset, when\nthe tenant has a login domain.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The profile: a .zip, its profile.json (format=json) or a .reg (format=reg)",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/provisioning/redirection": {
       "get": {
         "tags": [

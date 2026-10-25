@@ -671,6 +671,10 @@ pub fn router() -> Router<ApiState> {
             "/branding/assets/:sha256",
             axum::routing::delete(branding::delete_asset),
         )
+        .route(
+            "/branding/deployment-profile",
+            get(branding::deployment_profile),
+        )
         // Zero-touch (docs/PROVISIONING.md §10)
         .route("/provisioning/redirection", get(redirection::list_accounts))
         .route(

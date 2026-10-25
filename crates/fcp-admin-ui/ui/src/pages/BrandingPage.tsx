@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Music, Plus, Save, Trash2, Upload } from 'lucide-react'
+import { Download, Music, Plus, Save, Trash2, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -515,6 +515,117 @@ export function BrandingPage() {
           </Table>
         </CardContent>
       </Card>
+
+      <DeploymentCard />
     </div>
+  )
+}
+
+/** `acme-voice`, as the server names the downloads. */
+function fileSlug(name: string): string {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  return slug || 'anvil'
+}
+
+/**
+ * The softphone deployed with nobody typing anything (Anvil's
+ * MANAGED_INSTALLS.md): the profile for its Windows setup, or the same
+ * settings as policy.
+ */
+function DeploymentCard() {
+  const [signIn, setSignIn] = useState('')
+  const [updates, setUpdates] = useState('auto')
+  const [lockServer, setLockServer] = useState(true)
+  const [fromSystem, setFromSystem] = useState('')
+  const query =
+    (signIn ? `&sign_in=${signIn}` : '') +
+    `&updates=${updates}&lock_server=${lockServer}` +
+    (fromSystem ? `&username_from_system=${fromSystem}` : '')
+  const profile = useQuery({
+    queryKey: ['branding-deployment', query],
+    queryFn: () => branding.deploymentProfile(query),
+  })
+  const brand = profile.data?.brand as { app_name?: string } | undefined
+  const slug = fileSlug(brand?.app_name ?? 'anvil')
+  const download = async (format: 'zip' | 'reg') => {
+    try {
+      const url = await branding.deploymentFile(format, query)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = format === 'zip' ? `${slug}-profile.zip` : `${slug}-policy.reg`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      alert((err as Error).message)
+    }
+  }
+  const select = 'h-9 w-full rounded-md border bg-background px-2 text-sm'
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Softphone deployment</CardTitle>
+        <CardDescription>
+          Install the softphone with this server, sign-in and brand already set. Give the profile to its
+          Windows setup, or set the same settings as policy.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-4 md:grid-cols-4">
+          <div className="space-y-1">
+            <Label>Sign-in</Label>
+            <select className={select} value={signIn} onChange={(e) => setSignIn(e.target.value)}>
+              <option value="">The tenant's (asked at sign-in)</option>
+              <option value="sso">Single sign-on</option>
+              <option value="password">Password</option>
+              <option value="auto">Ask the server</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label>Updates</Label>
+            <select className={select} value={updates} onChange={(e) => setUpdates(e.target.value)}>
+              <option value="auto">Installed by the app</option>
+              <option value="notify">Offered, installed by IT</option>
+              <option value="off">Never looked for</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label>Username from Windows</Label>
+            <select className={select} value={fromSystem} onChange={(e) => setFromSystem(e.target.value)}>
+              <option value="">When the tenant has a login domain</option>
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-2 pt-6">
+            <Switch checked={lockServer} onCheckedChange={setLockServer} id="lock-server" />
+            <Label htmlFor="lock-server">Server locked</Label>
+          </div>
+        </div>
+        {profile.error && <p className="text-sm text-destructive">{(profile.error as Error).message}</p>}
+        {profile.data && (
+          <pre className="max-h-64 overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
+            {JSON.stringify(profile.data, null, 2)}
+          </pre>
+        )}
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => download('zip')} disabled={!profile.data}>
+            <Download className="mr-2 h-4 w-4" /> Profile (.zip)
+          </Button>
+          <Button variant="outline" onClick={() => download('reg')} disabled={!profile.data}>
+            <Download className="mr-2 h-4 w-4" /> Windows policy (.reg)
+          </Button>
+        </div>
+        <div className="space-y-1">
+          <Label>Intune or a script</Label>
+          <pre className="overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
+            {`Anvil-<version>-windows-x86_64-setup.exe /VERYSILENT /PROFILE=${slug}-profile.zip`}
+          </pre>
+          <p className="text-xs text-muted-foreground">
+            The setup keeps the profile when the app updates itself. Policy (the .reg, or Group Policy writing the
+            same values under HKLM\Software\Policies\Anvil) goes over the profile but carries no brand.
+          </p>
+        </div>
+      </CardContent>
+    </Card>
   )
 }

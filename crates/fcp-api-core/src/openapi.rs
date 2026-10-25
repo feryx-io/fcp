@@ -367,6 +367,7 @@ use utoipa::{Modify, OpenApi};
         crate::v1::branding::list_assets,
         crate::v1::branding::upload_asset,
         crate::v1::branding::delete_asset,
+        crate::v1::branding::deployment_profile,
         crate::v1::redirection::list_accounts,
         crate::v1::redirection::put_account,
         crate::v1::redirection::delete_account,

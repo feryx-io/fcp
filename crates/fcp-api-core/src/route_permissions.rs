@@ -386,6 +386,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/branding/assets", Needs(BrandingManage)),
     (POST, "/branding/assets", Needs(BrandingManage)),
     (DELETE, "/branding/assets/:sha256", Needs(BrandingManage)),
+    (GET, "/branding/deployment-profile", Needs(BrandingManage)),
     (GET, "/provisioning/redirection", Needs(DeviceRead)),
     (
         PUT,

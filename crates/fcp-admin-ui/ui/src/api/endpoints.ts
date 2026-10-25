@@ -857,6 +857,12 @@ export const branding = {
   upload: (file: File) =>
     apiClient.uploadRaw<BrandAsset>(`/branding/assets?name=${encodeURIComponent(file.name)}`, file),
   deleteAsset: (sha256: string) => apiClient.delete<void>(`/branding/assets/${encodeURIComponent(sha256)}`),
+  /** The softphone's deployment profile (`profile.json`), with `query`'s choices. */
+  deploymentProfile: (query: string) =>
+    apiClient.get<Record<string, unknown>>(`/branding/deployment-profile?format=json${query}`),
+  /** The profile as a .zip, or its settings as a Windows policy .reg: an object URL. */
+  deploymentFile: (format: 'zip' | 'reg', query: string) =>
+    apiClient.fetchBlobUrl(`/branding/deployment-profile?format=${format}${query}`),
 }
 
 export const identityProviders = {

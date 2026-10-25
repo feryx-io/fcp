@@ -165,3 +165,49 @@ The brand is synced to the tenant's sites like the rest of its configuration
 Proved by `fcp-api-core/tests/api_postgres.rs`
 (`a_tenant_brands_its_softphone`, `a_sites_admin_leaves_the_brand_to_the_cloud`)
 and `fcp-link/tests/branding.rs`.
+
+## 5. Deploying the softphone
+
+`GET /api/v1/branding/deployment-profile` (under `branding_manage`) gives the
+tenant's softphone profile, Anvil's `docs/MANAGED_INSTALLS.md` §2.1. Anvil's
+Windows setup takes the profile with `/PROFILE=`, so the app is installed with
+the server, sign-in and brand already set, and nobody types anything:
+
+```
+Anvil-<version>-windows-x86_64-setup.exe /VERYSILENT /PROFILE=acme-voice-profile.zip
+```
+
+`profile.json` holds:
+
+- **`server`**: this admin's public address, as the brand's asset URLs use it:
+  `[api.provisioning] public_url`, else `[api.sso] public_url`, else the
+  request's host. Without one the route answers 503.
+- **`lock_server`**: true unless `lock_server=false` is asked for.
+- **`login_domain`**: the tenant's first login domain, when it has one. A bare
+  username then signs in as an email address, which finds the tenant.
+- **`sign_in`**: `sso` when the tenant allows no password, else `auto`, unless
+  `sign_in=` asks for `auto`, `sso` or `password`.
+- **`username_from_system`**: true when the tenant has a login domain, unless
+  `username_from_system=` says otherwise. Windows' user principal name is then
+  the suggested username.
+- **`updates`**: `auto`, `notify` or `off` from `updates=` (default `auto`).
+- **`brand`**: when the tenant has one, its name and colors, and its icon,
+  logo, dark logo and default ringtone as files beside `profile.json`
+  (`icon.png`, `logo.svg`, `ring.ogg`, …). The app shows it before anyone
+  signs in, and FCP's brand takes over once someone does.
+
+`format=` picks what comes back:
+
+- **`zip`** (the default): `profile.json` and the files, as
+  `<brand>-profile.zip`.
+- **`json`**: `profile.json` alone, as the admin UI shows it.
+- **`reg`**: the same settings as Windows policy under
+  `HKLM\Software\Policies\Anvil`, in a `.reg` file. Policy goes over the
+  profile and cannot be changed by the user, but it carries no brand.
+
+The admin UI's Branding page has a **Softphone deployment** section with the
+choices, the profile as it will be, both downloads and the command line.
+
+Proved by `a_tenant_brands_its_softphone` in
+`fcp-api-core/tests/api_postgres.rs`, and the `.zip` and `.reg` writers by
+unit tests in `v1::branding`.

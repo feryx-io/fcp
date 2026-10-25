@@ -4694,6 +4694,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/branding/deployment-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/branding/deployment-profile — the tenant's softphone profile
+         *     (Anvil's `docs/MANAGED_INSTALLS.md` §2.1): this admin's address as the
+         *     server, the tenant's first login domain, its sign-in, and its brand with
+         *     the files, for `Anvil-…-setup.exe /PROFILE=` or Windows policy.
+         */
+        get: operations["branding_deployment_profile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/provisioning/redirection": {
         parameters: {
             query?: never;
@@ -24091,6 +24113,55 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    branding_deployment_profile: {
+        parameters: {
+            query?: {
+                /**
+                 * @description `zip` (the default): `profile.json` and the brand's files; `json`:
+                 *     `profile.json` alone; `reg`: the same settings as Windows policy.
+                 */
+                format?: string;
+                /**
+                 * @description `auto`, `sso` or `password`; unset, `sso` when the tenant allows no
+                 *     password, else `auto`.
+                 */
+                sign_in?: string;
+                /** @description `auto` (the default), `notify` or `off`. */
+                updates?: string;
+                /** @description Whether the server field is locked; unset, it is. */
+                lock_server?: boolean;
+                /**
+                 * @description Fill the username in from Windows' user principal name; unset, when
+                 *     the tenant has a login domain.
+                 */
+                username_from_system?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The profile: a .zip, its profile.json (format=json) or a .reg (format=reg) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": number[];
+                };
             };
             /** @description An error */
             default: {
