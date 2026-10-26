@@ -375,6 +375,47 @@ async fn forward_on_busy_when_the_phone_refuses() {
     stack.finish().await;
 }
 
+/// A decline on one of Bob's phones is Bob's answer (a 6xx, RFC 3261
+/// §16.7): his other phone stops ringing and the call goes to his busy
+/// treatment at once. It rang on to the ring time, then refused the
+/// caller (`docs/DEEP_TESTING.md` D8: Anvil declined, the VVX heard
+/// ringing, then a fast busy).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_decline_on_one_phone_stops_the_others_and_is_busy() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let bob_desk = stack.phone(&bob).await;
+    stack
+        .calling(&bob, |s| {
+            s.forward_busy = Some(CallTarget::Extension(carol.extension.clone()));
+            s.no_answer_secs = Some(30);
+        })
+        .await;
+
+    let call = alice.call(&bob.extension).await.unwrap();
+    let (Some(at_bob), Some(at_desk)) = (
+        bob_phone.incoming(SOON).await,
+        bob_desk.incoming(SOON).await,
+    ) else {
+        stack.fail("both of Bob's phones should ring", &alice).await;
+    };
+    let ringing = at_desk.leave_ringing();
+    at_bob.reject(603, "Decline").await.unwrap();
+    assert!(
+        ringing.ended(SOON).await,
+        "Bob's other phone rang on after the decline"
+    );
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("Carol's phone did not ring after Bob declined", &alice)
+            .await;
+    };
+    let answered = at_carol.answer().await.unwrap();
+    call.answered(SOON).await.expect("Alice reaches Carol");
+    answered.hangup().await.unwrap();
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn do_not_disturb_is_busy_without_ringing() {
     let stack = stack_or_skip!();

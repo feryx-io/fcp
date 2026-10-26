@@ -101,7 +101,10 @@ Both answer the same tokens:
 - **One per install.** A second sign-in from the same `install_id` ends the
   first.
 - **Ending.** `POST /auth/app/revoke` `{token: <refresh token>}` signs the
-  app out (200 whether or not the token named a session, RFC 7009). Anything
+  app out (200 whether or not the token named a session, RFC 7009), and
+  removes the install's device: its registrations dropped and its SIP
+  account gone, so it leaves the Devices page. Signing in again makes a
+  new one. Anything
   that signs a user out everywhere ends app sessions too: a password change,
   an administrator's reset, the user suspended, locked or deleted.
 - **What an app may do.** Its access token is the user's, as the web

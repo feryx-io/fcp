@@ -684,8 +684,8 @@ pub struct AppRevokeRequest {
     pub token: String,
 }
 
-/// POST /api/v1/auth/app/revoke — an app signs out: its session ends.
-/// Answers 200 whether or not the token named a live session (RFC 7009
+/// POST /api/v1/auth/app/revoke — an app signs out: its session ends and
+/// the install's device is removed. Answers 200 whether or not the token named a live session (RFC 7009
 /// §2.2).
 #[utoipa::path(
     post,
@@ -715,6 +715,18 @@ pub async fn revoke(
             store
                 .revoke_login_session(&id, "the app signed out", now)
                 .await?;
+            // The install's device goes with it: its registrations
+            // dropped, its SIP account gone, off the Devices page. A
+            // signed-out app stayed there with its bindings
+            // (`docs/DEEP_TESTING.md` D8). Signing in again makes another.
+            if let Some(device_id) = row.device_id {
+                use fcp_core::storage::DeviceStore;
+                let storage = storage(&state)?;
+                if let Some(device) = storage.get_device(&device_id).await? {
+                    crate::v1::devices::remove_device(&state, storage, &device).await?;
+                    tracing::info!(device = %device.id, "An app signed out; its device removed");
+                }
+            }
         }
     }
     Ok(axum::http::StatusCode::OK)

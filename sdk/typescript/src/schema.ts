@@ -282,8 +282,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * POST /api/v1/auth/app/revoke — an app signs out: its session ends.
-         *     Answers 200 whether or not the token named a live session (RFC 7009
+         * POST /api/v1/auth/app/revoke — an app signs out: its session ends and
+         *     the install's device is removed. Answers 200 whether or not the token named a live session (RFC 7009
          *     §2.2).
          */
         post: operations["app_auth_revoke"];
@@ -6554,7 +6554,12 @@ export interface components {
         CreateMailboxRequest: {
             tenant_id: string;
             user_id: string;
-            line_binding_id: string;
+            /**
+             * @description The line the mailbox answers for, when the user has one. A mailbox
+             *     is the user's: calls find it by user, and it answers the user's
+             *     extension, so a user with no line has one too.
+             */
+            line_binding_id?: string | null;
             pin: string;
             enabled?: boolean;
             /** Format: int32 */

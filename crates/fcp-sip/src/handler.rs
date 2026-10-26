@@ -8979,6 +8979,20 @@ impl SipMessageHandler {
                                 "B-leg {} returned non-2xx {}, continuing race", i, code
                             );
                             race_failure_code = Some(code);
+                            // A 6xx is the callee's answer for every
+                            // phone (RFC 3261 §16.7): the rest are
+                            // CANCELled and the call goes to its busy
+                            // treatment now. A decline on one phone kept
+                            // the caller ringing out to the others' timeout
+                            // (`docs/DEEP_TESTING.md` D8).
+                            if code >= 600 {
+                                info!(
+                                    call_id = %call_id,
+                                    code,
+                                    "B-leg {} declined for every phone; ending the fork", i
+                                );
+                                return (None, race_failure_code);
+                            }
                         }
                     }
                     Ok(None) => {

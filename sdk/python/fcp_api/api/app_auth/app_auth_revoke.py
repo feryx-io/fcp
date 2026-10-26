@@ -68,8 +68,8 @@ def sync_detailed(
     body: AppRevokeRequest,
 
 ) -> Response[Any | ErrorResponse]:
-    """ POST /api/v1/auth/app/revoke — an app signs out: its session ends.
-    Answers 200 whether or not the token named a live session (RFC 7009
+    """ POST /api/v1/auth/app/revoke — an app signs out: its session ends and
+    the install's device is removed. Answers 200 whether or not the token named a live session (RFC 7009
     §2.2).
 
     Args:
@@ -101,8 +101,8 @@ def sync(
     body: AppRevokeRequest,
 
 ) -> Any | ErrorResponse | None:
-    """ POST /api/v1/auth/app/revoke — an app signs out: its session ends.
-    Answers 200 whether or not the token named a live session (RFC 7009
+    """ POST /api/v1/auth/app/revoke — an app signs out: its session ends and
+    the install's device is removed. Answers 200 whether or not the token named a live session (RFC 7009
     §2.2).
 
     Args:
@@ -129,8 +129,8 @@ async def asyncio_detailed(
     body: AppRevokeRequest,
 
 ) -> Response[Any | ErrorResponse]:
-    """ POST /api/v1/auth/app/revoke — an app signs out: its session ends.
-    Answers 200 whether or not the token named a live session (RFC 7009
+    """ POST /api/v1/auth/app/revoke — an app signs out: its session ends and
+    the install's device is removed. Answers 200 whether or not the token named a live session (RFC 7009
     §2.2).
 
     Args:
@@ -162,8 +162,8 @@ async def asyncio(
     body: AppRevokeRequest,
 
 ) -> Any | ErrorResponse | None:
-    """ POST /api/v1/auth/app/revoke — an app signs out: its session ends.
-    Answers 200 whether or not the token named a live session (RFC 7009
+    """ POST /api/v1/auth/app/revoke — an app signs out: its session ends and
+    the install's device is removed. Answers 200 whether or not the token named a live session (RFC 7009
     §2.2).
 
     Args:

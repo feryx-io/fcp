@@ -3381,6 +3381,28 @@ async fn voicemail_mailboxes_crud() {
         StatusCode::NOT_FOUND
     );
 
+    // A user with an extension and no line has a mailbox too: calls find
+    // it by user, and it answers the user's extension (D8: Bob, 1002, had
+    // none to bind and so no mailbox).
+    let lineless = app.create_user("vm-noline", None).await;
+    let mailbox = app
+        .admin(
+            Method::POST,
+            "/api/v1/voicemail/mailboxes",
+            Some(json!({
+                "tenant_id": app.tenant_a,
+                "user_id": lineless,
+                "pin": "8765",
+            })),
+        )
+        .await;
+    assert_eq!(mailbox.status, StatusCode::CREATED, "{}", mailbox.text);
+    assert_eq!(mailbox.json["user_id"], lineless);
+    assert!(
+        mailbox.json["line_binding_id"].is_null(),
+        "{}",
+        mailbox.text
+    );
     app.finish().await;
 }
 
@@ -15049,6 +15071,17 @@ async fn an_app_signs_in_through_the_browser_and_keeps_its_session() {
             .await
             .status,
         StatusCode::UNAUTHORIZED
+    );
+    // And the install's device with it: a signed-out app stayed on the
+    // Devices page with its registrations (D8).
+    let device = second.json["device"]["id"].as_str().expect("the device");
+    let device = device.parse::<fcp_core::DeviceId>().unwrap();
+    assert!(
+        fcp_core::storage::DeviceStore::get_device(&*app.storage, &device)
+            .await
+            .unwrap()
+            .is_none(),
+        "the signed-out app's device is still there"
     );
 }
 

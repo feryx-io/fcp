@@ -125,7 +125,11 @@ impl From<VoicemailMessage> for MessageResponse {
 pub struct CreateMailboxRequest {
     pub tenant_id: String,
     pub user_id: String,
-    pub line_binding_id: String,
+    /// The line the mailbox answers for, when the user has one. A mailbox
+    /// is the user's: calls find it by user, and it answers the user's
+    /// extension, so a user with no line has one too.
+    #[serde(default)]
+    pub line_binding_id: Option<String>,
     pub pin: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -378,7 +382,12 @@ pub async fn create_mailbox(
 
     let user_id = UserId::from_str(&req.user_id)
         .map_err(|e| ApiError::BadRequest(format!("Invalid user_id: {}", e)))?;
-    let line_binding_id = LineBindingId::from_str(&req.line_binding_id)
+    let line_binding_id = req
+        .line_binding_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .map(LineBindingId::from_str)
+        .transpose()
         .map_err(|e| ApiError::BadRequest(format!("Invalid line_binding_id: {}", e)))?;
 
     // Derive the mailbox extension from the user's username
@@ -393,18 +402,19 @@ pub async fn create_mailbox(
             req.user_id
         )));
     }
-    let line_binding = storage
-        .get_line_binding(&line_binding_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| {
-            ApiError::NotFound(format!("Line binding {} not found", req.line_binding_id))
-        })?;
-    if line_binding.tenant_id != tenant.0 {
-        return Err(ApiError::BadRequest(format!(
-            "Line binding {} is not in the authenticated tenant",
-            req.line_binding_id
-        )));
+    if let Some(line_binding_id) = &line_binding_id {
+        let line_binding = storage
+            .get_line_binding(line_binding_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("Line binding {line_binding_id} not found"))
+            })?;
+        if line_binding.tenant_id != tenant.0 {
+            return Err(ApiError::BadRequest(format!(
+                "Line binding {line_binding_id} is not in the authenticated tenant"
+            )));
+        }
     }
 
     let mut mailbox = VoicemailMailbox::new(
