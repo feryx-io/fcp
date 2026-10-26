@@ -1292,6 +1292,9 @@ async fn a_caller_parking_with_the_code_leaves_the_parked_party_only_the_music()
             .fail(&format!("*70 was not answered: {e}"), &alice)
             .await;
     }
+    // The orbit in the answer, for a phone to show: a prompt alone is lost
+    // to a speaker that wakes slowly (`docs/DEEP_TESTING.md` D8).
+    assert_eq!(park.answer_header("X-FCP-Parked").as_deref(), Some("701"));
     assert!(park.ended(RING_OUT).await, "the *70 call was never ended");
     assert!(alice_call.ended(SOON).await, "Alice's leg was not dropped");
     assert!(

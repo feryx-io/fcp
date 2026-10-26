@@ -13385,6 +13385,7 @@ impl SipMessageHandler {
             &flow_handler,
             flow_def,
             HashMap::new(),
+            Vec::new(),
             "hoteling login",
         )
         .await
@@ -14623,8 +14624,12 @@ impl SipMessageHandler {
         // SDP, and left the phone on a call nobody ended
         // (`docs/DEEP_TESTING.md` D8).
         let Some(flow_handler) = self.flow_handler.clone() else {
-            let response =
+            let mut response =
                 self.create_simple_response(request, 200, &format!("Parked Orbit {}", orbit));
+            let _ = response.headers_mut().push(
+                smol_str::SmolStr::new("X-FCP-Parked"),
+                smol_str::SmolStr::new(orbit.to_string()),
+            );
             handle.send_final(response).await;
             let _ = self.call_manager.terminate_call(call_id, None);
             return Ok(());
@@ -14636,6 +14641,7 @@ impl SipMessageHandler {
             &flow_handler,
             park_announcement(call_id, orbit),
             HashMap::new(),
+            vec![("X-FCP-Parked", orbit.to_string())],
             "park announcement",
         )
         .await
@@ -15201,6 +15207,7 @@ impl SipMessageHandler {
             &flow_handler,
             flow_def,
             initial_variables,
+            Vec::new(),
             "voicemail access",
         )
         .await
@@ -15317,6 +15324,7 @@ impl SipMessageHandler {
             &flow_handler,
             flow,
             HashMap::new(),
+            Vec::new(),
             "emergency test",
         )
         .await
@@ -15347,6 +15355,7 @@ impl SipMessageHandler {
             &flow_handler,
             feature_confirmation(call_id, text),
             HashMap::new(),
+            Vec::new(),
             "feature confirmation",
         )
         .await
@@ -15363,6 +15372,7 @@ impl SipMessageHandler {
         flow_handler: &Arc<crate::flow_handler::FlowCallHandler>,
         flow_def: fcp_flow::FlowDefinition,
         initial_variables: HashMap<String, String>,
+        answer_headers: Vec<(&'static str, String)>,
         what: &str,
     ) -> Result<()> {
         // Held for the call, not written: the call manager lets it go when
@@ -15393,6 +15403,7 @@ impl SipMessageHandler {
         // A 2xx to an INVITE carries a Contact (RFC 3261 §12.1.1): where the
         // caller's ACK and BYE go.
         let answer_contact = format!("<{}>", self.uas.contact_uri.as_str());
+        let answer_headers = Arc::new(answer_headers);
 
         let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
             let request = answer_request.clone();
@@ -15407,6 +15418,7 @@ impl SipMessageHandler {
             let media_profile = answer_media_profile.clone();
             let call_id = answer_call_id;
             let contact = answer_contact.clone();
+            let extra_headers = Arc::clone(&answer_headers);
             Box::pin(async move {
                 // Check if a media session already exists (created by evaluate_media_anchoring)
                 let mut actual_rtp_port = rtp_port;
@@ -15482,6 +15494,15 @@ impl SipMessageHandler {
                 } else {
                     sip_uas::UserAgentServer::create_response(&request, 200, "OK")
                 };
+                // What the answer tells the phone besides (the orbit `*70`
+                // parked on), for a phone to show.
+                let mut response = response;
+                for (name, value) in extra_headers.iter() {
+                    let _ = response.headers_mut().push(
+                        smol_str::SmolStr::new(*name),
+                        smol_str::SmolStr::new(value.as_str()),
+                    );
+                }
                 // The dialog before the 200 OK, as the IVR's answer does: the
                 // flow's hangup needs it to send its BYE, and a caller's BYE
                 // needs it to find the call.

@@ -110,6 +110,8 @@ struct CallState {
     timings: Mutex<CallTimings>,
     /// The SDP the far end answered with, once it has.
     answer: Mutex<Option<String>>,
+    /// The 2xx that answered this phone's INVITE, for its headers.
+    answer_response: Mutex<Option<Response>>,
 }
 
 impl CallState {
@@ -282,6 +284,7 @@ impl Inner {
             phase: phase_tx,
             timings: Mutex::new(CallTimings::default()),
             answer: Mutex::new(None),
+            answer_response: Mutex::new(None),
         });
         self.calls.insert(call_id.clone(), Arc::clone(&state));
 
@@ -350,6 +353,7 @@ impl Inner {
                     *st.dialog.write().await = Some(dialog);
                     let answer = String::from_utf8_lossy(resp.body()).to_string();
                     *st.answer.lock().unwrap() = Some(answer.clone());
+                    *st.answer_response.lock().unwrap() = Some(resp.clone());
                     if let Err(e) = st.media.set_remote(&answer).await {
                         warn!(error = %e, "answer SDP unusable");
                     }
@@ -1246,6 +1250,13 @@ impl Call {
         self.state.answer.lock().unwrap().clone()
     }
 
+    /// A header of the 2xx that answered this phone's INVITE, by name
+    /// (case-insensitive).
+    pub fn answer_header(&self, name: &str) -> Option<String> {
+        let resp = self.state.answer_response.lock().unwrap();
+        sip_parse::header(resp.as_ref()?.headers(), name).map(|v| v.to_string())
+    }
+
     /// When this call's milestones happened, measured from the INVITE
     /// leaving this phone (`docs/CAPACITY_AND_SURVIVABILITY.md` §8).
     pub fn timings(&self) -> CallTimings {
@@ -1671,6 +1682,7 @@ impl UasRequestHandler for Handler {
             phase: phase_tx,
             timings: Mutex::new(CallTimings::default()),
             answer: Mutex::new(None),
+            answer_response: Mutex::new(None),
         });
         self.0.calls.insert(call_id.clone(), Arc::clone(&state));
         let call = Call {
