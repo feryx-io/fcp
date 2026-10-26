@@ -360,7 +360,13 @@ impl MediaLeg {
 
     /// The SDP the phone offers or answers with.
     pub fn sdp(&self, direction: &str) -> String {
-        let (first, second) = match self.prefer {
+        self.sdp_preferring(direction, self.prefer)
+    }
+
+    /// As [`MediaLeg::sdp`], with `prefer` listed first: a phone offering
+    /// its list in another order, as a VVX resuming a call does.
+    pub fn sdp_preferring(&self, direction: &str, prefer: Codec) -> String {
+        let (first, second) = match prefer {
             Codec::Pcmu => (Codec::Pcmu, Codec::Pcma),
             Codec::Pcma => (Codec::Pcma, Codec::Pcmu),
         };

@@ -1347,6 +1347,17 @@ impl Call {
         self.reinvite_with(self.state.media.sdp(direction)).await
     }
 
+    /// As [`Call::reinvite_answered`], offering `first` before the codec
+    /// the phone prefers.
+    pub async fn reinvite_offering_first(
+        &self,
+        direction: &str,
+        first: crate::media::Codec,
+    ) -> Result<(u16, String)> {
+        self.reinvite_with(self.state.media.sdp_preferring(direction, first))
+            .await
+    }
+
     /// As [`Call::reinvite_answered`], offering SDES-SRTP with `crypto` as
     /// [`Phone::call_offering_srtp`] does.
     pub async fn reinvite_offering_srtp(

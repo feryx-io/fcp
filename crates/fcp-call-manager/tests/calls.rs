@@ -1067,6 +1067,65 @@ async fn behind_one_address(alg: bool) {
     stack.finish().await;
 }
 
+/// A phone resuming a call offers its codecs again, perhaps in another
+/// order: in D8 a VVX answered PCMU and resumed offering G.722 first. The
+/// node answers a resume itself under hold music, and answered in the
+/// offer's first codec while its media session went on decoding the old
+/// one, so Anvil heard white noise. It answers in the codec the leg uses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_offering_another_codec_first_keeps_the_call_s_codec() {
+    use fcp_testkit::media::Codec;
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    alice_phone.prefer_codec(Codec::Pcma);
+    bob_phone.prefer_codec(Codec::Pcmu);
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+
+    // Bob holds; Alice hears the music.
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    if !alice_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await {
+        stack
+            .fail("Alice, held, does not hear the hold music", &alice_phone)
+            .await;
+    }
+
+    // Bob resumes offering PCMA first: answered in PCMU, the call's.
+    let (code, answer) = bob_call
+        .reinvite_offering_first("sendrecv", Codec::Pcma)
+        .await
+        .unwrap();
+    assert_eq!(code, 200);
+    let media = answer
+        .lines()
+        .find(|l| l.starts_with("m=audio"))
+        .unwrap_or_default();
+    assert_eq!(
+        media.split_whitespace().nth(3),
+        Some("0"),
+        "the resume was answered in another codec than the call's:\n{answer}"
+    );
+    assert!(!answer.contains("PCMA"), "{answer}");
+
+    bob_call.media().play_tone(880.0, 3000);
+    if !alice_call.media().heard(880, SOON).await {
+        stack
+            .fail("Alice does not hear Bob after he resumed", &alice_phone)
+            .await;
+    }
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    stack.finish().await;
+}
+
 /// Two registered phones with the callee answered: the start of most
 /// feature scenarios.
 async fn answered_call(stack: &Stack) -> (Phone, fcp_testkit::Call, Phone, fcp_testkit::Call) {

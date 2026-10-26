@@ -10723,10 +10723,16 @@ impl SipMessageHandler {
         else {
             return Ok(self.create_simple_response(request, 500, "Media Unavailable"));
         };
+        // Answered in the codec the leg uses now: the media session goes on
+        // decoding it. An offer without it moves the session to the codec
+        // the answer names.
+        let kept = prior_sdp.and_then(|prior| crate::hold::keeping_codec(offer, prior));
+        let codec_changed = kept.is_none() && prior_sdp.is_some();
+        let offer = kept.as_deref().unwrap_or(offer);
         let moved = prior_sdp
             .map(|prior| crate::conference_migration::media_endpoint_changed(prior, offer))
             .unwrap_or(true);
-        if moved {
+        if moved || codec_changed {
             let updated = match sender {
                 fcp_b2bua_core::LegSide::A => media_manager
                     .update_session(&session_id, offer.to_string())
