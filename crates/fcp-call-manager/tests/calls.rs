@@ -1983,6 +1983,98 @@ async fn the_api_records_an_anchored_call_once_its_announcement_has_played() {
     stack.finish().await;
 }
 
+/// A party records their own call from their app (`docs/RECORD_AND_CONTACTS.md`
+/// §2): the API names them in `for_user`, the node checks they are on the
+/// call, both parties hear the announcement, and only they stop it. The
+/// caller's 200 OK names the call, so an app can ask for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_party_records_their_own_call_and_only_they_stop_it() {
+    use fcp_core::compliance::ConsentFailureAction;
+
+    let stack = stack_or_skip!();
+    let prompt = tone_prompt(&stack);
+    announce_recordings(&stack, &prompt, ConsentFailureAction::Record, None).await;
+    let (alice, alice_phone, bob, bob_phone) = two_phones(&stack).await;
+    let id_of = |username: String| {
+        let storage = stack.seed.storage();
+        let tenant = stack.seed.tenant_id;
+        async move {
+            fcp_core::storage::CredentialStore::get_user_in_tenant(storage, &username, &tenant)
+                .await
+                .unwrap()
+                .unwrap()
+                .id
+        }
+    };
+    let alice_id = id_of(alice.username.clone()).await;
+    let bob_id = id_of(bob.username.clone()).await;
+    let carol = stack.seed.user("carol", "carol-pw", "1003").await;
+    let carol_id = id_of(carol.username.clone()).await;
+
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+
+    let calls = stack.get("/calls").await;
+    let call_id = calls["calls"][0]["call_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        alice_call.answer_header("X-FCP-Call-Id").as_deref(),
+        Some(call_id.as_str()),
+        "the caller's 200 OK names the call"
+    );
+    let start = format!("/calls/{call_id}/recording/start");
+    let stop = format!("/calls/{call_id}/recording/stop");
+    let as_user = |user: fcp_core::UserId| format!(r#"{{"for_user": "{user}"}}"#);
+
+    // Someone not on the call finds no call.
+    assert_eq!(stack.post(&start, &as_user(carol_id)).await.0, 404);
+
+    let alices = as_user(alice_id);
+    let (started, alice_heard, bob_heard) = tokio::join!(
+        stack.post(&start, &alices),
+        alice_call.media().heard(PROMPT_HZ, SOON),
+        bob_call.media().heard(PROMPT_HZ, SOON)
+    );
+    assert_eq!(started.0, 200, "{}", started.1);
+    assert_eq!(started.1["consent"], "announced", "{}", started.1);
+    assert!(
+        alice_heard && bob_heard,
+        "Alice {alice_heard}, Bob {bob_heard}"
+    );
+
+    // Bob is on the call but did not start it; Carol is not on it.
+    assert_eq!(stack.post(&stop, &as_user(carol_id)).await.0, 404);
+    let bobs = stack.post(&stop, &as_user(bob_id)).await;
+    assert_eq!(bobs.0, 409, "{}", bobs.1);
+    assert_eq!(stack.post(&stop, &as_user(alice_id)).await.0, 200);
+
+    // A recording the API started is not Alice's to stop.
+    assert_eq!(stack.post(&start, "").await.0, 200);
+    let refused = stack.post(&stop, &as_user(alice_id)).await;
+    assert_eq!(refused.0, 409, "{}", refused.1);
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(bob_call.ended(SOON).await);
+    let cdr = stack.cdrs(1, SOON).await.remove(0);
+    let mut sources: Vec<_> = recording_rows(&stack, &cdr)
+        .await
+        .into_iter()
+        .map(|r| r.source)
+        .collect();
+    sources.sort_by_key(|s| s.as_str());
+    assert_eq!(
+        sources,
+        [
+            fcp_core::recording::CallRecordingSource::Api,
+            fcp_core::recording::CallRecordingSource::OnDemand,
+        ]
+    );
+    stack.finish().await;
+}
+
 fn uuid_like() -> &'static str {
     "00000000-0000-4000-8000-000000000000"
 }

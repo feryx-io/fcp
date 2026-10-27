@@ -68,6 +68,10 @@ pub struct SoftphoneConfig {
     pub api_url: Option<String>,
     /// The device the app is.
     pub device_id: String,
+    /// The user may record a call they are on
+    /// (`/me/calls/{call_id}/recording/start`); the app shows its record
+    /// button only then.
+    pub may_record: bool,
 }
 
 /// The app's session and device: what `/me/softphone` answers for.
@@ -195,6 +199,7 @@ pub async fn get_config(
         api_url: crate::v1::provisioning::public_base(&state, &headers)
             .map(|base| format!("{base}/api/v1")),
         device_id: device.id.to_string(),
+        may_record: user.media_preferences.record_on_demand,
     };
     let json = serde_json::to_vec(&body).map_err(|e| ApiError::Internal(e.to_string()))?;
     let digest: String = Sha256::digest(&json)

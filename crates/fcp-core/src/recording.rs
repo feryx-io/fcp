@@ -386,6 +386,9 @@ pub enum CallRecordingSource {
     Queue,
     /// `record_all_calls` on either party's user.
     User,
+    /// A party asking from their app, under `record_on_demand`
+    /// (`/me/calls/:id/recording/start`).
+    OnDemand,
     /// `recording_enabled` on the dialled or calling number.
     Number,
     /// `media.enable_recording` on the node: every anchored call.
@@ -401,6 +404,7 @@ impl CallRecordingSource {
             CallRecordingSource::Flow => "flow",
             CallRecordingSource::Queue => "queue",
             CallRecordingSource::User => "user",
+            CallRecordingSource::OnDemand => "on_demand",
             CallRecordingSource::Number => "number",
             CallRecordingSource::Platform => "platform",
             CallRecordingSource::Legacy => "legacy",
@@ -413,6 +417,7 @@ impl CallRecordingSource {
             "flow" => Some(CallRecordingSource::Flow),
             "queue" => Some(CallRecordingSource::Queue),
             "user" => Some(CallRecordingSource::User),
+            "on_demand" => Some(CallRecordingSource::OnDemand),
             "number" => Some(CallRecordingSource::Number),
             "platform" => Some(CallRecordingSource::Platform),
             "legacy" => Some(CallRecordingSource::Legacy),

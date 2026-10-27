@@ -29,12 +29,16 @@ class MediaPreferences:
             force_media_anchoring (bool | Unset): Force media to always flow through server (for testing/debugging)
             enable_dtmf_detection (bool | Unset): Enable DTMF detection for this user's calls
             record_all_calls (bool | Unset): Record all calls for this user
+            record_on_demand (bool | Unset): The user may record a call they are on, and stop that recording,
+                from their app (`docs/RECORD_AND_CONTACTS.md` §2). Set by an
+                administrator only.
             preferred_codecs (list[str] | Unset): Preferred audio codecs in priority order
      """
 
     force_media_anchoring: bool | Unset = UNSET
     enable_dtmf_detection: bool | Unset = UNSET
     record_all_calls: bool | Unset = UNSET
+    record_on_demand: bool | Unset = UNSET
     preferred_codecs: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -48,6 +52,8 @@ class MediaPreferences:
         enable_dtmf_detection = self.enable_dtmf_detection
 
         record_all_calls = self.record_all_calls
+
+        record_on_demand = self.record_on_demand
 
         preferred_codecs: list[str] | Unset = UNSET
         if not isinstance(self.preferred_codecs, Unset):
@@ -66,6 +72,8 @@ class MediaPreferences:
             field_dict["enable_dtmf_detection"] = enable_dtmf_detection
         if record_all_calls is not UNSET:
             field_dict["record_all_calls"] = record_all_calls
+        if record_on_demand is not UNSET:
+            field_dict["record_on_demand"] = record_on_demand
         if preferred_codecs is not UNSET:
             field_dict["preferred_codecs"] = preferred_codecs
 
@@ -82,6 +90,8 @@ class MediaPreferences:
 
         record_all_calls = d.pop("record_all_calls", UNSET)
 
+        record_on_demand = d.pop("record_on_demand", UNSET)
+
         preferred_codecs = cast(list[str], d.pop("preferred_codecs", UNSET))
 
 
@@ -89,6 +99,7 @@ class MediaPreferences:
             force_media_anchoring=force_media_anchoring,
             enable_dtmf_detection=enable_dtmf_detection,
             record_all_calls=record_all_calls,
+            record_on_demand=record_on_demand,
             preferred_codecs=preferred_codecs,
         )
 

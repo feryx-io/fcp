@@ -499,6 +499,11 @@ struct StartRecordingBody {
     /// the node's default tenant otherwise.
     #[serde(default)]
     tenant_id: Option<TenantId>,
+    /// The party asking from their app (`/me/calls/:id/recording`): the
+    /// call must be theirs, and the recording is `on_demand`. The API has
+    /// checked that they may record.
+    #[serde(default)]
+    for_user: Option<fcp_core::UserId>,
 }
 
 #[derive(Deserialize, Default)]
@@ -506,6 +511,9 @@ struct StartRecordingBody {
 struct StopRecordingBody {
     #[serde(default)]
     tenant_id: Option<TenantId>,
+    /// The party asking: only a recording they started on demand stops.
+    #[serde(default)]
+    for_user: Option<fcp_core::UserId>,
 }
 
 /// GET /calls/:id — one of the tenant's calls (`?tenant_id=`, the node's
@@ -558,6 +566,15 @@ fn call_not_found(id: &str) -> Response {
         .into_response()
 }
 
+/// Whether `user` is a party to the call: the effective user of either
+/// leg, so a hoteling guest is their host.
+fn party_to(state: &AppState, call_id: &fcp_b2bua_core::CallId, user: &fcp_core::UserId) -> bool {
+    state
+        .call_manager
+        .get_call(call_id)
+        .is_some_and(|c| c.caller_user_id == Some(*user) || c.callee_user_id == Some(*user))
+}
+
 fn recording_error_response(e: fcp_sip::recording::RecordingError) -> Response {
     use fcp_sip::recording::RecordingError as E;
     let status = match e {
@@ -568,6 +585,7 @@ fn recording_error_response(e: fcp_sip::recording::RecordingError) -> Response {
         | E::NotAnchored
         | E::AlreadyRecording
         | E::NotRecording
+        | E::NotStartedByUser
         | E::ConsentRefused => StatusCode::CONFLICT,
         E::Media(_) | E::NotRegistered(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -601,19 +619,29 @@ async fn start_call_recording_handler(
     let Some(call_id) = scoped_call(&state, &id, req.tenant_id) else {
         return call_not_found(&id);
     };
-    let path = match req.path {
-        Some(p) => fcp_sip::recording::RecordingPath::Supplied(p),
-        None => fcp_sip::recording::RecordingPath::wav(),
+    let started = match req.for_user {
+        Some(user) => {
+            if !party_to(&state, &call_id, &user) {
+                return call_not_found(&id);
+            }
+            state.call_recorder.start_on_demand(&call_id, user).await
+        }
+        None => {
+            let path = match req.path {
+                Some(p) => fcp_sip::recording::RecordingPath::Supplied(p),
+                None => fcp_sip::recording::RecordingPath::wav(),
+            };
+            state
+                .call_recorder
+                .start(
+                    &call_id,
+                    fcp_core::recording::CallRecordingSource::Api,
+                    path,
+                )
+                .await
+        }
     };
-    match state
-        .call_recorder
-        .start(
-            &call_id,
-            fcp_core::recording::CallRecordingSource::Api,
-            path,
-        )
-        .await
-    {
+    match started {
         Ok(started) => Json(serde_json::json!({
             "call_id": id,
             "status": "recording",
@@ -632,11 +660,22 @@ async fn stop_call_recording_handler(
     Path(id): Path<String>,
     body: Option<Json<StopRecordingBody>>,
 ) -> Response {
-    let tenant = body.and_then(|Json(b)| b.tenant_id);
+    let (tenant, for_user) = body
+        .map(|Json(b)| (b.tenant_id, b.for_user))
+        .unwrap_or_default();
     let Some(call_id) = scoped_call(&state, &id, tenant) else {
         return call_not_found(&id);
     };
-    match state.call_recorder.stop(&call_id).await {
+    let stopped = match for_user {
+        Some(user) => {
+            if !party_to(&state, &call_id, &user) {
+                return call_not_found(&id);
+            }
+            state.call_recorder.stop_on_demand(&call_id, user).await
+        }
+        None => state.call_recorder.stop(&call_id).await,
+    };
+    match stopped {
         Ok(()) => Json(serde_json::json!({"call_id": id, "status": "stopped"})).into_response(),
         Err(e) => recording_error_response(e),
     }

@@ -1075,6 +1075,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/calls/{call_id}/recording/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/calls/:call_id/recording/start — record a call the user is on,
+         *     when an administrator lets them (`record_on_demand`; 403 otherwise).
+         *     The tenant's consent announcement plays to both parties first; this
+         *     returns once the recorder runs. 404 for a call that is not theirs, 409
+         *     when it is not anchored or already recorded.
+         */
+        post: operations["self_service_start_my_recording"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/calls/{call_id}/recording/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/calls/:call_id/recording/stop — stop a recording the user
+         *     started on demand. Any other recording of the call goes on (409).
+         */
+        post: operations["self_service_stop_my_recording"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/directory": {
         parameters: {
             query?: never;
@@ -7960,6 +8003,12 @@ export interface components {
             enable_dtmf_detection?: boolean;
             /** @description Record all calls for this user */
             record_all_calls?: boolean;
+            /**
+             * @description The user may record a call they are on, and stop that recording,
+             *     from their app (`docs/RECORD_AND_CONTACTS.md` §2). Set by an
+             *     administrator only.
+             */
+            record_on_demand?: boolean;
             /** @description Preferred audio codecs in priority order */
             preferred_codecs?: string[];
         };
@@ -10273,6 +10322,8 @@ export interface components {
                  *     `offboarding.grace_days` later unless restored.
                  */
                 deprovisioned_at?: string | null;
+                /** @description Recording and media defaults for the user's calls. */
+                media_preferences: components["schemas"]["MediaPreferences"];
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -11510,6 +11561,12 @@ export interface components {
             api_url?: string | null;
             /** @description The device the app is. */
             device_id: string;
+            /**
+             * @description The user may record a call they are on
+             *     (`/me/calls/{call_id}/recording/start`); the app shows its record
+             *     button only then.
+             */
+            may_record: boolean;
         };
         /** @description The media the app offers. */
         SoftphoneMedia: {
@@ -12586,6 +12643,7 @@ export interface components {
             account_status?: string | null;
             emergency_contact_name?: string | null;
             emergency_contact_phone?: string | null;
+            media_preferences?: components["schemas"]["MediaPreferences"] | null;
         };
         UpdateVoicemailRequest: {
             pin?: string | null;
@@ -12723,6 +12781,8 @@ export interface components {
              *     `offboarding.grace_days` later unless restored.
              */
             deprovisioned_at?: string | null;
+            /** @description Recording and media defaults for the user's calls. */
+            media_preferences: components["schemas"]["MediaPreferences"];
         };
         ValidateAddressRequest: {
             address: components["schemas"]["E911AddressResponse"];
@@ -15161,6 +15221,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_MyCallResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_start_my_recording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description FCP's id for the call (`X-FCP-Call-Id`) */
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recording */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["media.RecordingResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_stop_my_recording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description FCP's id for the call (`X-FCP-Call-Id`) */
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stopped */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["media.RecordingResponse"];
                 };
             };
             /** @description An error */

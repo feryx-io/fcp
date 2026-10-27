@@ -369,3 +369,91 @@ pub async fn list_directory(
         },
     )?))
 }
+
+/// Put a recording request for `user`, a party to the call, to the node
+/// holding it (`docs/RECORD_AND_CONTACTS.md` §2), and answer what it
+/// answered without the file's path.
+async fn my_recording(
+    state: &ApiState,
+    claims: &crate::v1::auth_session::Claims,
+    call_id: &str,
+    action: &'static str,
+) -> Result<axum::response::Response, ApiError> {
+    use axum::http::StatusCode;
+
+    let storage = require_storage!(state);
+    let me = crate::v1::self_service::load_claims_user(storage, claims, state).await?;
+    if !me.media_preferences.record_on_demand {
+        return Err(ApiError::Forbidden(
+            "Recording calls is not turned on for this user".to_string(),
+        ));
+    }
+    let supervisor = state.call_supervisor.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("no call manager can be reached".to_string())
+    })?;
+    let (status, body) = supervisor
+        .supervise(
+            me.tenant_id,
+            call_id,
+            crate::SupervisionRequest::Control {
+                action,
+                body: serde_json::json!({ "for_user": me.id }),
+            },
+        )
+        .await
+        .map_err(ApiError::ServiceUnavailable)?;
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    if !status.is_success() {
+        let error = crate::error::ErrorResponse::from_upstream(status, &body);
+        return Ok((status, Json(error)).into_response());
+    }
+    let mut answer: crate::v1::media::RecordingResponse = serde_json::from_value(body)
+        .map_err(|e| ApiError::Internal(format!("the node's answer did not parse: {e}")))?;
+    answer.path = None;
+    Ok((status, Json(answer)).into_response())
+}
+
+/// POST /me/calls/:call_id/recording/start — record a call the user is on,
+/// when an administrator lets them (`record_on_demand`; 403 otherwise).
+/// The tenant's consent announcement plays to both parties first; this
+/// returns once the recorder runs. 404 for a call that is not theirs, 409
+/// when it is not anchored or already recorded.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/calls/{call_id}/recording/start",
+    tag = "self_service",
+    operation_id = "self_service_start_my_recording",
+    params(("call_id" = String, Path, description = "FCP's id for the call (`X-FCP-Call-Id`)")),
+    responses(
+        (status = 200, description = "Recording", body = crate::v1::media::RecordingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn start_my_recording(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    axum::extract::Path(call_id): axum::extract::Path<String>,
+) -> Result<axum::response::Response, ApiError> {
+    my_recording(&state, &claims, &call_id, "recording/start").await
+}
+
+/// POST /me/calls/:call_id/recording/stop — stop a recording the user
+/// started on demand. Any other recording of the call goes on (409).
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/calls/{call_id}/recording/stop",
+    tag = "self_service",
+    operation_id = "self_service_stop_my_recording",
+    params(("call_id" = String, Path, description = "FCP's id for the call (`X-FCP-Call-Id`)")),
+    responses(
+        (status = 200, description = "Stopped", body = crate::v1::media::RecordingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn stop_my_recording(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    axum::extract::Path(call_id): axum::extract::Path<String>,
+) -> Result<axum::response::Response, ApiError> {
+    my_recording(&state, &claims, &call_id, "recording/stop").await
+}

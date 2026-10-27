@@ -295,3 +295,72 @@ async fn without_a_call_manager_a_call_cannot_be_reached() {
     }
     app.finish().await;
 }
+
+/// A user records a call they are on from their app
+/// (`docs/RECORD_AND_CONTACTS.md` §2): refused until an administrator turns
+/// `record_on_demand` on, then put to the node naming them in `for_user`,
+/// answered without the file's path. Whether they are on the call is the
+/// node's to say.
+#[tokio::test]
+async fn a_user_records_their_own_call_once_an_administrator_lets_them() {
+    let asked: Asked = Default::default();
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let app = app.with_node(&asked);
+    let user_id = app.create_user_with_role("recorder", "end_user").await;
+    let login = app.login("recorder", PASSWORD).await;
+    assert_eq!(login.status, StatusCode::OK, "{}", login.text);
+    let token = login.json["token"].as_str().unwrap().to_string();
+    let start = format!("/api/v1/me/calls/{HELD}/recording/start");
+    let stop = format!("/api/v1/me/calls/{HELD}/recording/stop");
+
+    let refused = app.send_as(&token, Method::POST, &start, None).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    assert!(asked.lock().unwrap().is_empty(), "the node was not asked");
+
+    let shown = app.admin(Method::GET, "/api/v1/users/recorder", None).await;
+    assert_eq!(shown.json["media_preferences"]["record_on_demand"], false);
+    let mut prefs = shown.json["media_preferences"].clone();
+    prefs["record_on_demand"] = json!(true);
+    let updated = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/recorder",
+            Some(json!({ "media_preferences": prefs })),
+        )
+        .await;
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.text);
+    assert_eq!(updated.json["media_preferences"]["record_on_demand"], true);
+
+    let started = app.send_as(&token, Method::POST, &start, None).await;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.text);
+    assert_eq!(started.json["status"], "recording");
+    assert_eq!(started.json["recording_id"], "rec-1");
+    assert!(started.json.get("path").is_none(), "{}", started.text);
+    let stopped = app.send_as(&token, Method::POST, &stop, None).await;
+    assert_eq!(stopped.status, StatusCode::OK, "{}", stopped.text);
+
+    let elsewhere = app
+        .send_as(
+            &token,
+            Method::POST,
+            "/api/v1/me/calls/call-00000000-0000-4000-8000-000000000000/recording/start",
+            None,
+        )
+        .await;
+    assert_eq!(
+        elsewhere.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        elsewhere.text
+    );
+
+    let bare = user_id.trim_start_matches("user-");
+    let for_user = format!(r#"{{"for_user":"{bare}"}}"#);
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked[0].0, app.tenant_a);
+    assert_eq!(asked[0].2, format!("recording/start {for_user}"));
+    assert_eq!(asked[1].2, format!("recording/stop {for_user}"));
+    app.finish().await;
+}

@@ -4874,6 +4874,32 @@ impl SipMessageHandler {
         platform.then_some(CallRecordingSource::Platform)
     }
 
+    /// Name the call in the answer to a caller who is one of the tenant's
+    /// users, as the INVITE to a phone names it: an app asks for its own
+    /// call by that id (`/me/calls/{id}/recording`, `docs/RECORD_AND_CONTACTS.md`
+    /// §2). A carrier is not told.
+    fn name_call_for_caller(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        response: &mut sip_core::Response,
+    ) {
+        let named = self
+            .call_manager
+            .get_call(call_id)
+            .filter(|c| c.caller_user_id.is_some())
+            .map(|c| {
+                c.relay_for
+                    .map(|r| r.as_uuid().to_string())
+                    .unwrap_or_else(|| c.id.to_string())
+            });
+        if let Some(named) = named {
+            response.headers_mut().remove(fcp_core::CALL_ID_HEADER);
+            let _ = response
+                .headers_mut()
+                .push(SmolStr::new(fcp_core::CALL_ID_HEADER), SmolStr::new(named));
+        }
+    }
+
     fn ensure_response_hygiene(
         &self,
         request: &sip_core::Request,
@@ -8583,6 +8609,7 @@ impl SipMessageHandler {
 
             // Inject RFC 4028 session timer headers into A-leg 200 OK
             inject_session_timer_headers(&self.b2bua_config, &request, &mut a_leg_response);
+            self.name_call_for_caller(&call_id, &mut a_leg_response);
 
             // Create A-leg dialog from the 200 OK response
             let a_leg_dialog = match sip_dialog::Dialog::new_uas(
@@ -9462,6 +9489,7 @@ impl SipMessageHandler {
 
             // Inject RFC 4028 session timer headers into forked 200 OK
             inject_session_timer_headers(&self.b2bua_config, &request, &mut ok_response);
+            self.name_call_for_caller(&call_id, &mut ok_response);
 
             // Create A-leg dialog from the 200 OK response
             let a_leg_dialog = match sip_dialog::Dialog::new_uas(

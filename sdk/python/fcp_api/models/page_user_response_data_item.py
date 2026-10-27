@@ -12,6 +12,8 @@ from ..types import UNSET, Unset
 from typing import cast
 import datetime
 
+if TYPE_CHECKING:
+  from ..models.media_preferences import MediaPreferences
 
 
 
@@ -40,6 +42,8 @@ class PageUserResponseDataItem:
             sip_username (str): The name the user's phones register and authenticate as: their
                 username, or the one they had before a rename (`docs/USERS.md` §6).
             scim_managed (bool): Made by the tenant's SCIM provisioner (`docs/SCIM.md`).
+            media_preferences (MediaPreferences): Media preferences for a user account.
+                These settings control default behavior for calls to/from this user.
             display_name (None | str | Unset):
             department_id (None | str | Unset):
             email (None | str | Unset):
@@ -72,6 +76,7 @@ class PageUserResponseDataItem:
     failed_login_attempts: int
     sip_username: str
     scim_managed: bool
+    media_preferences: MediaPreferences
     display_name: None | str | Unset = UNSET
     department_id: None | str | Unset = UNSET
     email: None | str | Unset = UNSET
@@ -95,6 +100,7 @@ class PageUserResponseDataItem:
 
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.media_preferences import MediaPreferences # noqa: PLC0415
         id = self.id
 
         username = self.username
@@ -120,6 +126,8 @@ class PageUserResponseDataItem:
         sip_username = self.sip_username
 
         scim_managed = self.scim_managed
+
+        media_preferences = self.media_preferences.to_dict()
 
         display_name: None | str | Unset
         if isinstance(self.display_name, Unset):
@@ -242,6 +250,7 @@ class PageUserResponseDataItem:
             "failed_login_attempts": failed_login_attempts,
             "sip_username": sip_username,
             "scim_managed": scim_managed,
+            "media_preferences": media_preferences,
         })
         if display_name is not UNSET:
             field_dict["display_name"] = display_name
@@ -282,6 +291,7 @@ class PageUserResponseDataItem:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.media_preferences import MediaPreferences # noqa: PLC0415
         d = dict(src_dict)
         id = d.pop("id")
 
@@ -314,6 +324,11 @@ class PageUserResponseDataItem:
         sip_username = d.pop("sip_username")
 
         scim_managed = d.pop("scim_managed")
+
+        media_preferences = MediaPreferences.from_dict(d.pop("media_preferences"))
+
+
+
 
         def _parse_display_name(data: object) -> None | str | Unset:
             if data is None:
@@ -529,6 +544,7 @@ class PageUserResponseDataItem:
             failed_login_attempts=failed_login_attempts,
             sip_username=sip_username,
             scim_managed=scim_managed,
+            media_preferences=media_preferences,
             display_name=display_name,
             department_id=department_id,
             email=email,

@@ -1,6 +1,6 @@
 //! Event type definitions for the FCP platform.
 
-use fcp_core::{CallId, SessionId, TenantId};
+use fcp_core::{CallId, SessionId, TenantId, UserId};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::SystemTime;
@@ -522,12 +522,15 @@ pub enum RecordingEvent {
         recording_id: String,
         call_id: CallId,
         tenant_id: TenantId,
-        /// Why it is recorded: `api`, `flow`, `queue`, `user`, `number` or
-        /// `platform`.
+        /// Why it is recorded: `api`, `flow`, `queue`, `user`, `on_demand`,
+        /// `number` or `platform`.
         source: String,
         /// What the parties were told: `announced`, `failed` or
         /// `not_required`.
         consent: String,
+        /// The party who asked, for an `on_demand` recording.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_by: Option<UserId>,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },

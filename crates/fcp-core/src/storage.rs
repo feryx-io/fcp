@@ -516,6 +516,12 @@ pub struct MediaPreferences {
     #[serde(default)]
     pub record_all_calls: bool,
 
+    /// The user may record a call they are on, and stop that recording,
+    /// from their app (`docs/RECORD_AND_CONTACTS.md` §2). Set by an
+    /// administrator only.
+    #[serde(default)]
+    pub record_on_demand: bool,
+
     /// Preferred audio codecs in priority order
     #[serde(default = "default_codecs")]
     pub preferred_codecs: Vec<String>,
@@ -527,6 +533,7 @@ impl Default for MediaPreferences {
             force_media_anchoring: false,
             enable_dtmf_detection: true,
             record_all_calls: false,
+            record_on_demand: false,
             preferred_codecs: default_codecs(),
         }
     }

@@ -223,6 +223,14 @@ pub fn router() -> Router<ApiState> {
         .route("/me/devices", get(user_devices::list_mine))
         .route("/me/devices/:id", delete(user_devices::delete_mine))
         .route("/me/calls", get(me_data::list_my_calls))
+        .route(
+            "/me/calls/:call_id/recording/start",
+            post(me_data::start_my_recording),
+        )
+        .route(
+            "/me/calls/:call_id/recording/stop",
+            post(me_data::stop_my_recording),
+        )
         .route("/me/directory", get(me_data::list_directory))
         .route("/me/executives", get(self_service::get_my_executives))
         .route(

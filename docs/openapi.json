@@ -2775,6 +2775,90 @@
         }
       }
     },
+    "/api/v1/me/calls/{call_id}/recording/start": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/calls/:call_id/recording/start — record a call the user is on,\nwhen an administrator lets them (`record_on_demand`; 403 otherwise).\nThe tenant's consent announcement plays to both parties first; this\nreturns once the recorder runs. 404 for a call that is not theirs, 409\nwhen it is not anchored or already recorded.",
+        "operationId": "self_service_start_my_recording",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "description": "FCP's id for the call (`X-FCP-Call-Id`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recording",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/media.RecordingResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/calls/{call_id}/recording/stop": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/calls/:call_id/recording/stop — stop a recording the user\nstarted on demand. Any other recording of the call goes on (409).",
+        "operationId": "self_service_stop_my_recording",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "description": "FCP's id for the call (`X-FCP-Call-Id`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/media.RecordingResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/directory": {
       "get": {
         "tags": [
@@ -25897,6 +25981,10 @@
             "type": "boolean",
             "description": "Record all calls for this user"
           },
+          "record_on_demand": {
+            "type": "boolean",
+            "description": "The user may record a call they are on, and stop that recording,\nfrom their app (`docs/RECORD_AND_CONTACTS.md` §2). Set by an\nadministrator only."
+          },
           "preferred_codecs": {
             "type": "array",
             "items": {
@@ -33176,7 +33264,8 @@
                 "account_status",
                 "failed_login_attempts",
                 "sip_username",
-                "scim_managed"
+                "scim_managed",
+                "media_preferences"
               ],
               "properties": {
                 "id": {
@@ -33323,6 +33412,10 @@
                   ],
                   "format": "date-time",
                   "description": "When the user was deleted; they are purged the tenant's\n`offboarding.grace_days` later unless restored."
+                },
+                "media_preferences": {
+                  "$ref": "#/components/schemas/MediaPreferences",
+                  "description": "Recording and media defaults for the user's calls."
                 }
               }
             }
@@ -36829,7 +36922,8 @@
           "media",
           "username",
           "feature_codes",
-          "device_id"
+          "device_id",
+          "may_record"
         ],
         "properties": {
           "account": {
@@ -36868,6 +36962,10 @@
           "device_id": {
             "type": "string",
             "description": "The device the app is."
+          },
+          "may_record": {
+            "type": "boolean",
+            "description": "The user may record a call they are on\n(`/me/calls/{call_id}/recording/start`); the app shows its record\nbutton only then."
           }
         }
       },
@@ -40470,6 +40568,17 @@
               "string",
               "null"
             ]
+          },
+          "media_preferences": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MediaPreferences",
+                "description": "Replaces the user's media preferences whole: `record_all_calls`,\n`record_on_demand` and the rest."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -40785,7 +40894,8 @@
           "account_status",
           "failed_login_attempts",
           "sip_username",
-          "scim_managed"
+          "scim_managed",
+          "media_preferences"
         ],
         "properties": {
           "id": {
@@ -40932,6 +41042,10 @@
             ],
             "format": "date-time",
             "description": "When the user was deleted; they are purged the tenant's\n`offboarding.grace_days` later unless restored."
+          },
+          "media_preferences": {
+            "$ref": "#/components/schemas/MediaPreferences",
+            "description": "Recording and media defaults for the user's calls."
           }
         }
       },

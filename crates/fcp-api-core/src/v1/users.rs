@@ -76,6 +76,8 @@ pub struct UserResponse {
     #[serde(default, with = "crate::time::rfc3339_opt")]
     #[schema(value_type = Option<String>, format = DateTime)]
     pub deprovisioned_at: Option<std::time::SystemTime>,
+    /// Recording and media defaults for the user's calls.
+    pub media_preferences: fcp_core::MediaPreferences,
 }
 
 impl From<User> for UserResponse {
@@ -116,6 +118,7 @@ impl From<User> for UserResponse {
             sip_username,
             scim_managed: user.scim_managed,
             deprovisioned_at: user.deprovisioned_at,
+            media_preferences: user.media_preferences,
         }
     }
 }
@@ -252,6 +255,10 @@ pub struct UpdateUserRequest {
     pub account_status: Option<String>,
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
+    /// Replaces the user's media preferences whole: `record_all_calls`,
+    /// `record_on_demand` and the rest.
+    #[serde(default)]
+    pub media_preferences: Option<fcp_core::MediaPreferences>,
 }
 
 /// Update password request.
@@ -761,6 +768,9 @@ pub async fn update_user(
     }
     if let Some(emergency_phone) = req.emergency_contact_phone {
         user.emergency_contact.phone = cleared(emergency_phone);
+    }
+    if let Some(media_preferences) = req.media_preferences {
+        user.media_preferences = media_preferences;
     }
 
     user.updated_at = std::time::SystemTime::now();

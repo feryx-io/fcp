@@ -22,7 +22,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { users, locations, tenants } from '@/api/endpoints'
-import type { User, CreateUserRequest, Location } from '@/types'
+import type { User, CreateUserRequest, UpdateUserRequest, Location } from '@/types'
 import { TenantField, useEffectiveTenantId, useIsPlatformAdmin, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 import { CallingDialog } from '@/components/CallingDialog'
 
@@ -48,6 +48,8 @@ const editUserSchema = z.object({
   location_id: z.string().optional(),
   account_status: z.string().optional(),
   tenant_id: z.string().optional(),
+  record_all_calls: z.boolean().optional(),
+  record_on_demand: z.boolean().optional(),
 })
 
 const changePasswordSchema = z.object({
@@ -68,6 +70,7 @@ const digestCredentialsSchema = z.object({
 
 type CreateUserForm = z.infer<typeof createUserSchema>
 type EditUserForm = z.infer<typeof editUserSchema>
+type EditUserBody = UpdateUserRequest & { tenant_id?: string }
 type ChangePasswordForm = z.infer<typeof changePasswordSchema>
 type DigestCredentialsForm = z.infer<typeof digestCredentialsSchema>
 
@@ -141,7 +144,7 @@ export function UsersPage() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ username, data }: { username: string; data: EditUserForm }) =>
+    mutationFn: ({ username, data }: { username: string; data: EditUserBody }) =>
       users.update(username, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] })
@@ -529,7 +532,7 @@ function EditUserDialog({
 }: {
   user: User | null
   onOpenChange: (open: boolean) => void
-  mutation: ReturnType<typeof useMutation<unknown, Error, { username: string; data: EditUserForm }>>
+  mutation: ReturnType<typeof useMutation<unknown, Error, { username: string; data: EditUserBody }>>
   locationList: Location[]
 }) {
   const {
@@ -557,15 +560,22 @@ function EditUserDialog({
       location_id: user.location_id || '',
       account_status: user.account_status || 'active',
       tenant_id: user.tenant_id ?? '',
+      record_all_calls: user.media_preferences.record_all_calls ?? false,
+      record_on_demand: user.media_preferences.record_on_demand ?? false,
     })
   }
 
-  const onSubmit = (data: EditUserForm) => {
+  const onSubmit = ({ record_all_calls, record_on_demand, ...data }: EditUserForm) => {
     if (!user) return
     mutation.mutate({
       username: user.username,
       data: {
         ...data,
+        media_preferences: {
+          ...user.media_preferences,
+          record_all_calls: record_all_calls ?? false,
+          record_on_demand: record_on_demand ?? false,
+        },
         // A rename only when it changed (docs/USERS.md §6).
         username: data.username && data.username !== user.username ? data.username : undefined,
         // An emptied field is sent empty, which clears it.
@@ -659,6 +669,31 @@ function EditUserDialog({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+          <div className="space-y-3">
+            <Label>Recording</Label>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label htmlFor="edit-record-all" className="cursor-pointer">Record every call</Label>
+                <p className="text-xs text-muted-foreground">Each call they are on is recorded, after the consent announcement.</p>
+              </div>
+              <Switch
+                id="edit-record-all"
+                checked={watch('record_all_calls') ?? false}
+                onCheckedChange={(v) => setValue('record_all_calls', v)}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label htmlFor="edit-record-on-demand" className="cursor-pointer">May record calls</Label>
+                <p className="text-xs text-muted-foreground">Their app shows a record button; the consent announcement plays when they press it.</p>
+              </div>
+              <Switch
+                id="edit-record-on-demand"
+                checked={watch('record_on_demand') ?? false}
+                onCheckedChange={(v) => setValue('record_on_demand', v)}
+              />
+            </div>
           </div>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
