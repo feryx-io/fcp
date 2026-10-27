@@ -95,6 +95,7 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
         .with_offboarding_store(storage.clone() as Arc<dyn fcp_core::offboarding::OffboardingStore>)
         .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>)
         .with_brand_store(storage.clone() as Arc<dyn fcp_core::branding::BrandStore>)
+        .with_contact_store(storage.clone() as Arc<dyn fcp_core::contact::ContactStore>)
         .with_provisioning_store(
             storage.clone() as Arc<dyn fcp_core::provisioning::ProvisioningStore>
         );

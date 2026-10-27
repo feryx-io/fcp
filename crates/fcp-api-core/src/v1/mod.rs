@@ -31,6 +31,7 @@ pub mod join_tokens;
 pub mod lcr_routes;
 pub mod line_bindings;
 pub mod locations;
+pub mod me_contacts;
 pub mod me_data;
 pub mod me_events;
 pub mod media;
@@ -232,6 +233,16 @@ pub fn router() -> Router<ApiState> {
             post(me_data::stop_my_recording),
         )
         .route("/me/directory", get(me_data::list_directory))
+        .route(
+            "/me/contacts",
+            get(me_contacts::list_contacts).post(me_contacts::create_contact),
+        )
+        .route(
+            "/me/contacts/:id",
+            get(me_contacts::get_contact)
+                .put(me_contacts::update_contact)
+                .delete(me_contacts::delete_contact),
+        )
         .route("/me/executives", get(self_service::get_my_executives))
         .route(
             "/me/executives/:user_id",

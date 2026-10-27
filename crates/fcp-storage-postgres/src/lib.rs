@@ -33,6 +33,7 @@ mod cdr_archive;
 mod cdr_volume;
 pub mod compliance;
 pub mod config;
+mod contact;
 mod deletion;
 pub mod emergency;
 pub mod encryption;

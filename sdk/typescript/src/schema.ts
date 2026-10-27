@@ -1139,6 +1139,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/contacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /me/contacts — the user's contacts, by name. */
+        get: operations["self_service_list_contacts"];
+        put?: never;
+        /** POST /me/contacts — keep a new contact. */
+        post: operations["self_service_create_contact"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/contacts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /me/contacts/:id */
+        get: operations["self_service_get_contact"];
+        /** PUT /me/contacts/:id — replace a contact. */
+        put: operations["self_service_update_contact"];
+        post?: never;
+        /**
+         * DELETE /me/contacts/:id — the contact goes from every app; its
+         *     tombstone carries the delete to the tenant's sites.
+         */
+        delete: operations["self_service_delete_contact"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/events": {
         parameters: {
             query?: never;
@@ -6407,6 +6447,14 @@ export interface components {
             listen?: boolean;
         };
         /**
+         * @description One of a contact's numbers: what it is (`mobile`, `work`, …) and what
+         *     to dial.
+         */
+        ContactNumber: {
+            label?: string;
+            number: string;
+        };
+        /**
          * @description One contact and how it has fared (§8.4): a tenant should be able to
          *     see that its notifications work before it needs them to.
          */
@@ -9499,6 +9547,28 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_PersonalContactResponse: {
+            data: {
+                id: string;
+                name: string;
+                company?: string | null;
+                numbers: components["schemas"]["ContactNumber"][];
+                email?: string | null;
+                notes?: string | null;
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                updated_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_PhoneNumberResponse: {
             data: {
                 id: string;
@@ -10512,6 +10582,27 @@ export interface components {
             firmware?: string | null;
             /** Format: int32 */
             fetches: number;
+        };
+        /** @description A contact, as written. */
+        PersonalContactRequest: {
+            name: string;
+            company?: string | null;
+            numbers?: components["schemas"]["ContactNumber"][];
+            email?: string | null;
+            notes?: string | null;
+        };
+        /** @description A contact. */
+        PersonalContactResponse: {
+            id: string;
+            name: string;
+            company?: string | null;
+            numbers: components["schemas"]["ContactNumber"][];
+            email?: string | null;
+            notes?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
         };
         /** @description Phone number response. */
         PhoneNumberResponse: {
@@ -15320,6 +15411,168 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Page_DirectoryEntry"];
                 };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_list_contacts: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+                /** @description A word in a name, company, email or number. */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_PersonalContactResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_create_contact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PersonalContactRequest"];
+            };
+        };
+        responses: {
+            /** @description Kept */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonalContactResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_get_contact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonalContactResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_update_contact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PersonalContactRequest"];
+            };
+        };
+        responses: {
+            /** @description Kept */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonalContactResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_delete_contact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description An error */
             default: {

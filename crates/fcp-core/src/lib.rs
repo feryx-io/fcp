@@ -14,6 +14,7 @@ pub mod compliance;
 pub mod config;
 pub mod config_store;
 pub mod config_template;
+pub mod contact;
 pub mod device;
 pub mod e911;
 pub mod encryption;

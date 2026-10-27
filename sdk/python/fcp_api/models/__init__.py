@@ -60,6 +60,7 @@ from .config_entry_response import ConfigEntryResponse
 from .config_entry_response_value import ConfigEntryResponseValue
 from .config_template_response import ConfigTemplateResponse
 from .contact_input_type_1 import ContactInputType1
+from .contact_number import ContactNumber
 from .contact_readiness import ContactReadiness
 from .contact_response import ContactResponse
 from .create_api_token_request import CreateApiTokenRequest
@@ -293,6 +294,8 @@ from .page_number_usage_response import PageNumberUsageResponse
 from .page_number_usage_response_data_item import PageNumberUsageResponseDataItem
 from .page_pending_device_response import PagePendingDeviceResponse
 from .page_pending_device_response_data_item import PagePendingDeviceResponseDataItem
+from .page_personal_contact_response import PagePersonalContactResponse
+from .page_personal_contact_response_data_item import PagePersonalContactResponseDataItem
 from .page_phone_number_response import PagePhoneNumberResponse
 from .page_phone_number_response_data_item import PagePhoneNumberResponseDataItem
 from .page_presence_response import PagePresenceResponse
@@ -354,6 +357,8 @@ from .page_webhook_response import PageWebhookResponse
 from .page_webhook_response_data_item import PageWebhookResponseDataItem
 from .password_login import PasswordLogin
 from .pending_device_response import PendingDeviceResponse
+from .personal_contact_request import PersonalContactRequest
+from .personal_contact_response import PersonalContactResponse
 from .phone_number_response import PhoneNumberResponse
 from .place_hold_request import PlaceHoldRequest
 from .play_request import PlayRequest
@@ -592,6 +597,7 @@ __all__ = (
     "ConfigEntryResponseValue",
     "ConfigTemplateResponse",
     "ContactInputType1",
+    "ContactNumber",
     "ContactReadiness",
     "ContactResponse",
     "CreateApiTokenRequest",
@@ -825,6 +831,8 @@ __all__ = (
     "PageNumberUsageResponseDataItem",
     "PagePendingDeviceResponse",
     "PagePendingDeviceResponseDataItem",
+    "PagePersonalContactResponse",
+    "PagePersonalContactResponseDataItem",
     "PagePhoneNumberResponse",
     "PagePhoneNumberResponseDataItem",
     "PagePresenceResponse",
@@ -886,6 +894,8 @@ __all__ = (
     "PageWebhookResponseDataItem",
     "PasswordLogin",
     "PendingDeviceResponse",
+    "PersonalContactRequest",
+    "PersonalContactResponse",
     "PhoneNumberResponse",
     "PlaceHoldRequest",
     "PlayRequest",

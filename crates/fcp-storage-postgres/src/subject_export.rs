@@ -221,6 +221,12 @@ fn class_query(class: ExportClass) -> String {
              FROM webhook_delivery_logs l JOIN webhook_endpoints e ON e.id = l.endpoint_id
              WHERE e.tenant_id = $1 AND l.delivery_json::text ILIKE ANY($9)"
         }
+        ExportClass::PersonalContacts => {
+            "SELECT id, 'owned' AS link, to_jsonb(c) - 'ship_seq' AS data,
+                    created_at AS at, NULL::text AS call_id, NULL::text AS file,
+                    NULL::text[] AS ids, false AS others
+             FROM personal_contacts c WHERE tenant_id = $1 AND owner_user_id = ANY($5)"
+        }
         ExportClass::NumberLists => {
             "SELECT pn.id || ':' || x.list || ':' || x.entry AS id, 'ids' AS link,
                     jsonb_build_object('number', pn.e164, 'list', x.list, 'entry', x.entry) AS data,

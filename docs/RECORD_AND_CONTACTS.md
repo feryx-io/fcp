@@ -77,22 +77,23 @@ entry. The first entry is **Create contact**, filled in from the other party's
 number and name.
 
 **One contact shape** on both sides: `{id, name, company, numbers: [{label, number}],
-email, notes}`, plus `favourite: bool`.
+email, notes}`.
 
-**Local contacts** live in Anvil's data directory (`contacts.json`, the same store
-as its settings). They work with any account, including a plain SIP account, and
+**Local contacts** live in Anvil's data directory (`settings.json`, beside its other
+settings). They work with any account, including a plain SIP account, and
 stay on that one device.
 
 **Server contacts:** a new FCP resource.
 
-- `personal_contacts` (migration 122): `id` (a UUID made by whoever writes the
-  contact first), `owner_user_id` (a user's contacts are deleted with the user), the
-  fields above, `updated_at`, and `deleted_at` (a tombstone, so a delete reaches the
-  other side).
+- `personal_contacts` (migration 122, `fcp_core::contact`): `id` (`contact-` and a
+  UUID, made by whoever writes the contact first), `owner_user_id` (a user's contacts
+  are deleted with the user), the fields above, `updated_at`, and `deleted_at` (a
+  tombstone, so a delete reaches the other side).
 - `GET/POST /api/v1/me/contacts` and `GET/PUT/DELETE /api/v1/me/contacts/{id}`,
   paged in the one list shape, searchable with `q`, capped at 5,000 per user.
 - Because a contact is personal data, three compliance paths have to cover it:
-  subject export includes it, erasure deletes it, and a purge deletes it.
+  subject export includes it (the `personal_contacts` class), erasure deletes it,
+  and a purge deletes it (the foreign key's cascade).
 - Webhooks get nothing; a contact is not tenant configuration.
 
 **At a site, synced both ways (agreed).** A user's contacts can be written in the
@@ -104,16 +105,21 @@ cloud and at their site, and each side sees the other's.
 - **Up:** the table has a `ship_seq`, as the five record tables do, and the link
   ships rows the site wrote with `POST /link/v1/records`. The cloud applies them
   under the site's tenant.
-- **No echo:** a row applied from the other side is written with the session
-  setting `fcp.sync_apply` on. The journal trigger in the cloud and the `ship_seq`
-  trigger at a site both skip such a row, so it does not travel back.
+- **No echo:** each side takes the other's copy only when it is strictly newer
+  (`ContactStore::put_contact_if_newer`, the comparison made in SQL on the stored
+  microseconds). A change's echo comes back no newer and is let go. The cloud
+  journals a site's contact once, when it takes it; the site lets that copy go, and
+  nothing more travels. (As built, this replaces the session setting first planned:
+  no trigger needed changing.)
 - **Conflicts:** the newer `updated_at` wins on both sides, and a tombstone is an
-  update like any other. Two people editing one person's contact on both sides
+  update like any other. A tombstone is kept only for a contact the side has, so a
+  late echo of one never brings back a row already swept. Two people editing one person's contact on both sides
   within one sync is rare, and last-writer-wins is the expected answer for an
   address book.
 - **While the link is down,** the site keeps writing and its rows wait with their
   `ship_seq`, as CDRs do.
-- **Tombstones** older than 30 days are swept on both sides.
+- **Tombstones** older than 30 days are swept on both sides, by the admin's hourly
+  offboarding sweep. A row the cloud removes goes at the site through the journal.
 
 **Choosing where a contact goes.** When the app is signed in to FCP, the create
 dialog defaults to "My account". "This device" is the other choice. A local contact
@@ -135,11 +141,14 @@ done by Anvil, so FCP's caller ID is never rewritten.
    the other party and an API recording are not the user's to stop) and
    `api_postgres` `a_user_records_their_own_call_once_an_administrator_lets_them`
    (403 until the setting is on, `for_user` sent, no path in the answer).
-2. **Anvil v0.2.14:** the record toggle, `anvil-cli record`, and the "⋯" menu with
-   local contacts.
-3. **FCP v0.25.467:** `personal_contacts`, `/me/contacts`, export, erasure and purge,
-   the SDKs. Then the site sync both ways, tested in `fcp-link/tests/` (written at
-   each side, seen at the other, no echo, the newer edit wins, a delete crosses).
+2. ✅ **Anvil v0.2.14** (anvil #48): the record toggle, `anvil-cli record`, and the
+   "More" menu with local contacts, named on calls and recent calls.
+3. ✅ **FCP v0.25.467:** `personal_contacts`, `/me/contacts`, export, erasure and
+   purge, the SDKs, and the site sync both ways. Tests: `api_postgres`
+   `a_user_keeps_their_own_contacts` (made, paged and searched by name, changed,
+   deleted to a tombstone, nobody else's) and `fcp-link/tests/contacts.rs` (written at
+   each side and seen at the other, no echo, the later edit winning on both sides, a
+   delete crossing, a swept row going at the site and not coming back).
 4. **Anvil v0.2.15:** server contacts, the merged Contacts section, and name lookup.
 
 ## 5. Agreed (2026-10-26)

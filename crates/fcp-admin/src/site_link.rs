@@ -681,6 +681,25 @@ async fn records(
                     true
                 }
             }
+            // A contact written at the site: taken when newer than the
+            // cloud's copy, for a user of the site's tenant
+            // (docs/RECORD_AND_CONTACTS.md §3).
+            "personal_contacts" => {
+                let row: fcp_core::contact::PersonalContact = serde_json::from_value(put.object)
+                    .map_err(|e| bad_row(&put.table, &put.id, e))?;
+                let owner =
+                    fcp_core::CredentialStore::get_user_by_id(storage.as_ref(), &row.owner_user_id)
+                        .await?;
+                match storage.contact_store() {
+                    Some(store)
+                        if row.tenant_id == site.tenant_id
+                            && owner.is_some_and(|u| u.tenant_id == site.tenant_id) =>
+                    {
+                        store.put_contact_if_newer(&row).await?
+                    }
+                    _ => false,
+                }
+            }
             "voicemail_messages" => {
                 let mut row: fcp_core::VoicemailMessage = serde_json::from_value(put.object)
                     .map_err(|e| bad_row(&put.table, &put.id, e))?;
@@ -1103,6 +1122,12 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
     if let Some(synced) = synced_brand(storage, tenant).await? {
         items.push(item("tenant_brands", tenant, &synced)?);
     }
+    // After the users, who own them (docs/RECORD_AND_CONTACTS.md §3).
+    if let Some(contacts) = storage.contact_store() {
+        for c in contacts.tenant_contacts(tenant).await? {
+            items.push(item("personal_contacts", &c.id, &c)?);
+        }
+    }
     // After the users: a group's members name them (docs/USERS.md §5).
     if let Some(groups) = storage.group_store() {
         for g in groups.list_groups(tenant).await? {
@@ -1272,6 +1297,10 @@ async fn object_now(
         "groups" => match (storage.group_store(), id.parse()) {
             (Some(store), Ok(id)) => same_tenant!(store.get_group(&id).await?),
             _ => None,
+        },
+        "personal_contacts" => match storage.contact_store() {
+            Some(store) => same_tenant!(store.get_contact(id).await?),
+            None => None,
         },
         "group_members" => match (
             storage.group_store(),

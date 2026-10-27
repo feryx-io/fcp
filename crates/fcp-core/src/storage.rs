@@ -3658,6 +3658,7 @@ pub struct DynStorage {
     offboarding_store: Option<Arc<dyn crate::offboarding::OffboardingStore>>,
     group_store: Option<Arc<dyn crate::group::GroupStore>>,
     brand_store: Option<Arc<dyn crate::branding::BrandStore>>,
+    contact_store: Option<Arc<dyn crate::contact::ContactStore>>,
     provisioning_store: Option<Arc<dyn crate::provisioning::ProvisioningStore>>,
 }
 
@@ -3741,6 +3742,7 @@ impl DynStorage {
             offboarding_store: None,
             group_store: None,
             brand_store: None,
+            contact_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -3828,6 +3830,7 @@ impl DynStorage {
             offboarding_store: None,
             group_store: None,
             brand_store: None,
+            contact_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -4101,6 +4104,17 @@ impl DynStorage {
     pub fn with_brand_store(mut self, store: Arc<dyn crate::branding::BrandStore>) -> Self {
         self.brand_store = Some(store);
         self
+    }
+
+    /// Attach the store of users' own contacts.
+    pub fn with_contact_store(mut self, store: Arc<dyn crate::contact::ContactStore>) -> Self {
+        self.contact_store = Some(store);
+        self
+    }
+
+    /// Users' own contacts (`docs/RECORD_AND_CONTACTS.md` §3), when attached.
+    pub fn contact_store(&self) -> Option<&Arc<dyn crate::contact::ContactStore>> {
+        self.contact_store.as_ref()
     }
 
     /// Tenants' brands, when attached.

@@ -76,6 +76,7 @@ pub async fn open_site(database_url: &str, max_connections: u32) -> Result<SiteS
         .with_offboarding_store(storage.clone() as Arc<dyn fcp_core::offboarding::OffboardingStore>)
         .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>)
         .with_brand_store(storage.clone() as Arc<dyn fcp_core::branding::BrandStore>)
+        .with_contact_store(storage.clone() as Arc<dyn fcp_core::contact::ContactStore>)
         .with_provisioning_store(
             storage.clone() as Arc<dyn fcp_core::provisioning::ProvisioningStore>
         );
@@ -482,6 +483,14 @@ impl Syncer {
                 store.add_member(&member).await?;
             }
             "tenant_brands" => self.put_brand(parse!()).await?,
+            // Taken only when newer than the site's copy: the echo of
+            // the site's own change, back from the cloud, is let go
+            // (docs/RECORD_AND_CONTACTS.md §3).
+            "personal_contacts" => {
+                let store = storage.contact_store().context("no contact store")?;
+                let contact: fcp_core::contact::PersonalContact = parse!();
+                store.put_contact_if_newer(&contact).await?;
+            }
             "rate_plans" => {
                 #[derive(Deserialize)]
                 struct PlanWithRates {
@@ -668,6 +677,10 @@ impl Syncer {
                         .delete_brand_asset(&self.tenant, &asset.sha256)
                         .await?;
                 }
+            }
+            "personal_contacts" => {
+                let store = storage.contact_store().context("no contact store")?;
+                store.delete_contact_row(id).await?;
             }
             "group_members" => {
                 let store = storage.group_store().context("no group store")?;

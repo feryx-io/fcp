@@ -280,10 +280,12 @@ pub enum ExportClass {
     /// Entries naming the subject on the tenant's numbers' allow and block
     /// lists.
     NumberLists,
+    /// The contacts the subject keeps (`docs/RECORD_AND_CONTACTS.md` §3).
+    PersonalContacts,
 }
 
 impl ExportClass {
-    pub const ALL: [ExportClass; 28] = [
+    pub const ALL: [ExportClass; 29] = [
         ExportClass::Profile,
         ExportClass::ApiTokens,
         ExportClass::Devices,
@@ -312,6 +314,7 @@ impl ExportClass {
         ExportClass::PortRequests,
         ExportClass::WebhookDeliveries,
         ExportClass::NumberLists,
+        ExportClass::PersonalContacts,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -344,6 +347,7 @@ impl ExportClass {
             ExportClass::PortRequests => "port_requests",
             ExportClass::WebhookDeliveries => "webhook_deliveries",
             ExportClass::NumberLists => "number_lists",
+            ExportClass::PersonalContacts => "personal_contacts",
         }
     }
 

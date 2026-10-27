@@ -212,52 +212,56 @@ impl App {
         let sip_traces = Arc::new(PostgresSipTraceStore::new(storage.pool().clone()));
         let emergency = Arc::new(PostgresEmergencyStore::new(storage.pool().clone()));
         let compliance = Arc::new(PostgresComplianceStore::new(storage.pool().clone()));
-        let dyn_storage = Arc::new(
-            DynStorage::from_all_in_one(Arc::clone(&storage))
-                .with_api_token_store(api_tokens)
-                .with_totp_store(Arc::clone(&storage) as Arc<dyn fcp_core::totp::TotpStore>)
-                .with_identity_store(
-                    Arc::clone(&storage) as Arc<dyn fcp_core::identity::IdentityStore>
-                )
-                .with_login_session_store(Arc::new(
-                    fcp_storage_postgres::login_session::PostgresLoginSessionStore::new(
+        let dyn_storage =
+            Arc::new(
+                DynStorage::from_all_in_one(Arc::clone(&storage))
+                    .with_api_token_store(api_tokens)
+                    .with_totp_store(Arc::clone(&storage) as Arc<dyn fcp_core::totp::TotpStore>)
+                    .with_identity_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::identity::IdentityStore>
+                    )
+                    .with_login_session_store(Arc::new(
+                        fcp_storage_postgres::login_session::PostgresLoginSessionStore::new(
+                            storage.pool().clone(),
+                        ),
+                    )
+                        as Arc<dyn fcp_core::session::LoginSessionStore>)
+                    .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>)
+                    .with_sip_trace_store(Arc::clone(&sip_traces) as Arc<dyn SipTraceStore>)
+                    .with_emergency_store(
+                        Arc::clone(&emergency) as Arc<dyn fcp_core::e911::EmergencyStore>
+                    )
+                    .with_compliance_store(
+                        Arc::clone(&compliance) as Arc<dyn fcp_core::compliance::ComplianceStore>
+                    )
+                    .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
+                        as Arc<dyn fcp_core::prompt::PromptStore>)
+                    .with_recording_store(Arc::new(PostgresRecordingStore::new(
                         storage.pool().clone(),
+                    ))
+                        as Arc<dyn fcp_core::recording::RecordingStore>)
+                    .with_call_recording_store(Arc::new(PostgresRecordingStore::new(
+                        storage.pool().clone(),
+                    ))
+                        as Arc<dyn fcp_core::recording::CallRecordingStore>)
+                    .with_subject_data_store(Arc::clone(&storage)
+                        as Arc<dyn fcp_core::subject_request::SubjectDataStore>)
+                    .with_subject_erase_store(Arc::clone(&storage)
+                        as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>)
+                    .with_offboarding_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::offboarding::OffboardingStore>
+                    )
+                    .with_group_store(Arc::clone(&storage) as Arc<dyn fcp_core::group::GroupStore>)
+                    .with_brand_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::branding::BrandStore>
+                    )
+                    .with_contact_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::contact::ContactStore>
+                    )
+                    .with_provisioning_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::provisioning::ProvisioningStore>
                     ),
-                )
-                    as Arc<dyn fcp_core::session::LoginSessionStore>)
-                .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>)
-                .with_sip_trace_store(Arc::clone(&sip_traces) as Arc<dyn SipTraceStore>)
-                .with_emergency_store(
-                    Arc::clone(&emergency) as Arc<dyn fcp_core::e911::EmergencyStore>
-                )
-                .with_compliance_store(
-                    Arc::clone(&compliance) as Arc<dyn fcp_core::compliance::ComplianceStore>
-                )
-                .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
-                    as Arc<dyn fcp_core::prompt::PromptStore>)
-                .with_recording_store(
-                    Arc::new(PostgresRecordingStore::new(storage.pool().clone()))
-                        as Arc<dyn fcp_core::recording::RecordingStore>,
-                )
-                .with_call_recording_store(Arc::new(PostgresRecordingStore::new(
-                    storage.pool().clone(),
-                ))
-                    as Arc<dyn fcp_core::recording::CallRecordingStore>)
-                .with_subject_data_store(
-                    Arc::clone(&storage) as Arc<dyn fcp_core::subject_request::SubjectDataStore>
-                )
-                .with_subject_erase_store(
-                    Arc::clone(&storage) as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>
-                )
-                .with_offboarding_store(
-                    Arc::clone(&storage) as Arc<dyn fcp_core::offboarding::OffboardingStore>
-                )
-                .with_group_store(Arc::clone(&storage) as Arc<dyn fcp_core::group::GroupStore>)
-                .with_brand_store(Arc::clone(&storage) as Arc<dyn fcp_core::branding::BrandStore>)
-                .with_provisioning_store(
-                    Arc::clone(&storage) as Arc<dyn fcp_core::provisioning::ProvisioningStore>
-                ),
-        );
+            );
         let dir = tempfile::Builder::new()
             .prefix("fcp-api-test-")
             .tempdir()
@@ -16353,3 +16357,6 @@ mod voicemail;
 
 #[path = "api_postgres/platform.rs"]
 mod platform;
+
+#[path = "api_postgres/contacts.rs"]
+mod contacts;

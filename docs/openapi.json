@@ -2918,6 +2918,226 @@
         }
       }
     },
+    "/api/v1/me/contacts": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/contacts — the user's contacts, by name.",
+        "operationId": "self_service_list_contacts",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "A word in a name, company, email or number.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PersonalContactResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/contacts — keep a new contact.",
+        "operationId": "self_service_create_contact",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalContactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalContactResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/contacts/{id}": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/contacts/:id",
+        "operationId": "self_service_get_contact",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalContactResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "PUT /me/contacts/:id — replace a contact.",
+        "operationId": "self_service_update_contact",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalContactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalContactResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "DELETE /me/contacts/:id — the contact goes from every app; its\ntombstone carries the delete to the tenant's sites.",
+        "operationId": "self_service_delete_contact",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/events": {
       "get": {
         "tags": [
@@ -20828,6 +21048,21 @@
         ],
         "description": "A contact on the way in: either the plain string the API took before\nblock 2, read by its shape, or a typed object."
       },
+      "ContactNumber": {
+        "type": "object",
+        "description": "One of a contact's numbers: what it is (`mobile`, `work`, …) and what\nto dial.",
+        "required": [
+          "number"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          }
+        }
+      },
       "ContactReadiness": {
         "type": "object",
         "description": "One contact and how it has fared (§8.4): a tenant should be able to\nsee that its notifications work before it needs them to.",
@@ -30672,6 +30907,85 @@
           }
         }
       },
+      "Page_PersonalContactResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A contact.",
+              "required": [
+                "id",
+                "name",
+                "numbers",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "company": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "numbers": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ContactNumber"
+                  }
+                },
+                "email": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "notes": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_PhoneNumberResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -34002,6 +34316,93 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "PersonalContactRequest": {
+        "type": "object",
+        "description": "A contact, as written.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "company": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "numbers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContactNumber"
+            }
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PersonalContactResponse": {
+        "type": "object",
+        "description": "A contact.",
+        "required": [
+          "id",
+          "name",
+          "numbers",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "company": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "numbers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContactNumber"
+            }
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
