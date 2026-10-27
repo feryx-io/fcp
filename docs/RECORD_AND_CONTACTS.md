@@ -130,6 +130,16 @@ and server contacts merged, each marked with where it lives. Recents and the
 incoming-call screen show a contact's name when a number matches one. The match is
 done by Anvil, so FCP's caller ID is never rewritten.
 
+**In the user portal.** A user signed in to the web page (`/user`) has **Contacts**:
+their account's contacts, searched, made, changed and deleted there as in the app. A
+contact kept only on one device is not on the server and not shown. An administrator
+has no page for someone's contacts: they are personal data, reached through a subject
+export (`docs/COMPLIANCE.md`).
+
+**Any tenant.** A contact's `tenant_id` is its owner's and is not tied to a `tenants`
+row (migration 123): a single-tenant deployment's default tenant need not have one, and
+its users' contacts failed to save with a 500 until it was dropped.
+
 ## 4. Phases
 
 1. ✅ **FCP v0.25.466:** `record_on_demand`, `X-FCP-Call-Id` on the 200 OK to a
@@ -149,7 +159,15 @@ done by Anvil, so FCP's caller ID is never rewritten.
    deleted to a tombstone, nobody else's) and `fcp-link/tests/contacts.rs` (written at
    each side and seen at the other, no echo, the later edit winning on both sides, a
    delete crossing, a swept row going at the site and not coming back).
-4. **Anvil v0.2.15:** server contacts, the merged Contacts section, and name lookup.
+4. ✅ **Anvil v0.2.15** (anvil #49): server contacts — a new contact on the account
+   by default, "This device" to choose, each marked with where it lives, a device's
+   contact moved up, the account's contacts read at start, on reconnect and on
+   refresh, and named on calls and recent calls. Test: anvil-app `fcp.rs`
+   `contacts_on_the_account_reach_every_app_the_user_signs_in_to`.
+5. ✅ **FCP v0.25.468:** the portal's Contacts page (`/user/contacts`), and contacts
+   for a tenant with no row (migration 123). Tests: the UI suite's `a person keeps
+   their own contacts` and `api_postgres`
+   `a_user_in_a_tenant_with_no_row_keeps_contacts`.
 
 ## 5. Agreed (2026-10-26)
 

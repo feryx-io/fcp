@@ -22,6 +22,7 @@ export const person = () => account('FCP_UI_USER')
  */
 const NOTHING_YET = [
   '/api/v1/branding', // a tenant without a brand
+  '/api/v1/branding/deployment-profile', // a platform administrator with no tenant chosen
   '/api/v1/provisioning/key', // no provisioning key made
   '/api/v1/config/call-manager/b2bua', // no call manager has written its configuration
   '/api/v1/me/voicemail', // a user without a mailbox

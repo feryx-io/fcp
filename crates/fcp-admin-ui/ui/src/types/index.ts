@@ -542,6 +542,11 @@ export interface Page<T> {
 
 // API Tokens (docs/DEVELOPER_SURFACE.md §3, phase 1)
 export type ApiToken = S['ApiTokenResponse']
+/** A user's own contact (docs/RECORD_AND_CONTACTS.md §3). */
+export type PersonalContact = S['PersonalContactResponse']
+export type PersonalContactRequest = S['PersonalContactRequest']
+export type ContactNumber = S['ContactNumber']
+
 /** One of a user's devices, with an app install's session (docs/SOFTPHONE.md §2.1). */
 export type UserDevice = S['UserDeviceResponse']
 

@@ -159,3 +159,32 @@ async fn a_user_keeps_their_own_contacts() {
     assert!(tombstone.deleted_at.is_some());
     app.finish().await;
 }
+
+/// A single-tenant deployment need not have a row for its default tenant:
+/// its users are still in it, and keep contacts like anyone else.
+#[tokio::test]
+async fn a_user_in_a_tenant_with_no_row_keeps_contacts() {
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let jo = signed_in(&app, "contact-rowless").await;
+    sqlx::query("DELETE FROM tenants WHERE id = $1")
+        .bind(app.tenant_a.to_string())
+        .execute(app.storage.pool())
+        .await
+        .unwrap();
+    let made = app
+        .send_as(
+            &jo,
+            Method::POST,
+            "/api/v1/me/contacts",
+            Some(json!({"name": "Kim Park", "numbers": [{"number": "1004"}]})),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let list = app
+        .send_as(&jo, Method::GET, "/api/v1/me/contacts", None)
+        .await;
+    assert_eq!(list.body["data"][0]["name"], "Kim Park", "{}", list.text);
+    app.finish().await;
+}

@@ -151,6 +151,8 @@ import type {
   SubjectRequest,
   FileSubjectRequest,
   UserDevice,
+  PersonalContact,
+  PersonalContactRequest,
 } from '@/types'
 
 // Auth
@@ -946,6 +948,14 @@ export const config = {
 
 // Self-service (end-user portal)
 export const me = {
+  // Contacts: the user's own, shared with every app they sign in to
+  // (docs/RECORD_AND_CONTACTS.md §3)
+  listContacts: () => apiClient.getAll<PersonalContact>('/me/contacts'),
+  createContact: (data: PersonalContactRequest) =>
+    apiClient.post<PersonalContact>('/me/contacts', data),
+  updateContact: (id: string, data: PersonalContactRequest) =>
+    apiClient.put<PersonalContact>(`/me/contacts/${encodeURIComponent(id)}`, data),
+  deleteContact: (id: string) => apiClient.delete<void>(`/me/contacts/${encodeURIComponent(id)}`),
   // Devices: phones and app installs (docs/SOFTPHONE.md §2.1)
   listDevices: () => apiClient.getAll<UserDevice>('/me/devices'),
   removeDevice: (id: string) => apiClient.delete<void>(`/me/devices/${encodeURIComponent(id)}`),

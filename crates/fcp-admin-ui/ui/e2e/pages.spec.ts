@@ -56,12 +56,50 @@ test('a person opens every page of their portal', async ({ page, troubles }) => 
   await signIn(page, person())
   await expect(page).toHaveURL(/\/user/)
   await settled(page)
-  for (const href of ['/user', '/user/voicemail', '/user/calling', '/user/devices', '/user/api-tokens', '/user/conferences', '/user/settings']) {
+  for (const href of ['/user', '/user/voicemail', '/user/calling', '/user/contacts', '/user/devices', '/user/api-tokens', '/user/conferences', '/user/settings']) {
     await page.goto(href)
     await settled(page)
     await opened(page, troubles)
   }
   await page.goto('/user/voicemail')
   await expect(page.getByText('No voicemail mailbox is configured for your account.')).toBeVisible()
+  expect(troubles, JSON.stringify(troubles, null, 2)).toEqual([])
+})
+
+test('a person keeps their own contacts', async ({ page, troubles }) => {
+  const name = `UI Contact ${Date.now().toString(36)}`
+  await signIn(page, person())
+  await page.goto('/user/contacts')
+  await settled(page)
+  await page.getByRole('button', { name: 'New contact' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.locator('#c-name').fill(name)
+  await dialog.locator('#c-company').fill('Acme')
+  await dialog.getByLabel('Number 1', { exact: true }).fill('0412345678')
+  await dialog.getByLabel('Label 1', { exact: true }).fill('mobile')
+  await dialog.getByRole('button', { name: 'Add a number' }).click()
+  await dialog.getByLabel('Number 2', { exact: true }).fill('0298765432')
+  await dialog.getByRole('button', { name: 'Save' }).click()
+  await expect(dialog).toBeHidden()
+
+  // Kept by FCP: there after a reload, and found by its number.
+  await page.reload()
+  await settled(page)
+  await page.getByLabel('Search contacts').fill('0298765432')
+  await expect(page.getByText(name)).toBeVisible()
+  await expect(page.getByText('0412345678 (mobile)', { exact: false })).toBeVisible()
+
+  await page.getByRole('button', { name: `Edit ${name}` }).click()
+  await dialog.getByRole('button', { name: 'Remove number 1' }).click()
+  await dialog.getByRole('button', { name: 'Save' }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.getByText('0412345678', { exact: false })).toHaveCount(0)
+
+  page.once('dialog', (d) => void d.accept())
+  await page.getByRole('button', { name: `Delete ${name}` }).click()
+  await expect(page.getByText(name)).toHaveCount(0)
+  await page.reload()
+  await settled(page)
+  await expect(page.getByText(name)).toHaveCount(0)
   expect(troubles, JSON.stringify(troubles, null, 2)).toEqual([])
 })
