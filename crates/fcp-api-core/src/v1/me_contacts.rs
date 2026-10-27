@@ -168,6 +168,25 @@ async fn write(store: &Arc<dyn ContactStore>, contact: &PersonalContact) -> Resu
     Ok(())
 }
 
+/// Tell the user's apps a contact changed (`user.contact_changed`), so
+/// they read their contacts again.
+pub async fn announce(
+    events: &dyn fcp_events::EventPublisher,
+    contact: &PersonalContact,
+    change: &str,
+) {
+    let event = fcp_events::PlatformEvent::User(fcp_events::UserEvent::ContactChanged {
+        user_id: contact.owner_user_id.to_string(),
+        tenant_id: contact.tenant_id,
+        contact_id: contact.id.clone(),
+        change: change.to_string(),
+        timestamp: SystemTime::now(),
+    });
+    if let Err(e) = events.publish(event).await {
+        tracing::warn!(error = %e, "A contact's change not announced");
+    }
+}
+
 /// GET /me/contacts — the user's contacts, by name.
 #[utoipa::path(
     get,
@@ -254,6 +273,7 @@ pub async fn create_contact(
         deleted_at: None,
     };
     write(store, &contact).await?;
+    announce(state.event_bus.as_ref(), &contact, "created").await;
     let kept = mine(store, &user, &contact.id).await?;
     Ok((
         StatusCode::CREATED,
@@ -316,6 +336,7 @@ pub async fn update_contact(
         ..kept
     };
     write(store, &contact).await?;
+    announce(state.event_bus.as_ref(), &contact, "updated").await;
     Ok(Json(PersonalContactResponse::from(
         mine(store, &user, &id).await?,
     )))
@@ -349,5 +370,6 @@ pub async fn delete_contact(
         ..kept
     };
     write(store, &tombstone).await?;
+    announce(state.event_bus.as_ref(), &tombstone, "deleted").await;
     Ok(StatusCode::NO_CONTENT)
 }

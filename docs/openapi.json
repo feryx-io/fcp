@@ -41812,6 +41812,7 @@
               "user.enabled",
               "user.disabled",
               "user.calling_changed",
+              "user.contact_changed",
               "user.signed_in",
               "user.sign_in_failed",
               "hoteling.login",

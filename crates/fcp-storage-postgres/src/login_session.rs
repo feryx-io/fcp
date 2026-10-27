@@ -384,6 +384,25 @@ impl LoginSessionStore for PostgresLoginSessionStore {
             .collect())
     }
 
+    async fn abandoned_app_devices(
+        &self,
+        made_before: SystemTime,
+    ) -> fcp_core::Result<Vec<fcp_core::DeviceId>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT a.device_id FROM app_installs a
+             WHERE a.created_at < $1
+               AND NOT EXISTS (
+                 SELECT 1 FROM login_sessions s
+                 WHERE s.device_id = a.device_id
+                   AND s.revoked_at IS NULL AND s.expires_at > now())",
+        )
+        .bind(at(made_before))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(rows.into_iter().filter_map(|(d,)| d.parse().ok()).collect())
+    }
+
     async fn revoke_device_sessions(
         &self,
         device_id: &fcp_core::DeviceId,

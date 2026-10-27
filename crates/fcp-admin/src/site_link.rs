@@ -695,7 +695,23 @@ async fn records(
                         if row.tenant_id == site.tenant_id
                             && owner.is_some_and(|u| u.tenant_id == site.tenant_id) =>
                     {
-                        store.put_contact_if_newer(&row).await?
+                        let taken = store.put_contact_if_newer(&row).await?;
+                        if taken {
+                            let change = if row.deleted_at.is_some() {
+                                "deleted"
+                            } else if row.created_at == row.updated_at {
+                                "created"
+                            } else {
+                                "updated"
+                            };
+                            fcp_api_core::v1::me_contacts::announce(
+                                state.events.as_ref(),
+                                &row,
+                                change,
+                            )
+                            .await;
+                        }
+                        taken
                     }
                     _ => false,
                 }

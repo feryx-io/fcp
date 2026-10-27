@@ -753,6 +753,10 @@ async fn main() -> Result<()> {
         format!("fcp-admin:{}", config.service.node_id),
     );
 
+    // App devices nobody signs in as any more removed, once an hour
+    // (docs/APP_SIGN_IN.md).
+    fcp_api_core::v1::app_auth::spawn_device_sweep(api_state.clone());
+
     // SAML providers' metadata fetched again from its URL once a day, so a
     // rotated certificate is followed (docs/SSO.md §8).
     fcp_api_core::v1::sso::spawn_metadata_refresh(api_state.clone(), &api_config.sso);

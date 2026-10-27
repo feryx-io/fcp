@@ -15089,6 +15089,69 @@ async fn an_app_signs_in_through_the_browser_and_keeps_its_session() {
     );
 }
 
+/// An app device no live session uses is removed by the hourly sweep: an
+/// install that signed out before sign-out took its device, or one replaced
+/// without signing out whose session ended. A device a moment old, its
+/// session not yet begun, and one in use are kept (D8: Bob's Devices page
+/// showed every install he had ever signed in from).
+#[tokio::test]
+async fn app_devices_nobody_signs_in_as_are_swept() {
+    use fcp_core::storage::DeviceStore;
+    let app = require_app!();
+    app.create_user_with_role("bea", "end_user").await;
+    let token = app.login("bea", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut devices = std::collections::HashMap::new();
+    for install in ["install-gone", "install-used", "install-new"] {
+        let res = app
+            .send_as(
+                &token,
+                Method::POST,
+                "/api/v1/auth/app/sessions",
+                Some(json!({ "client_name": "Bea's laptop", "install_id": install })),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+        let id: fcp_core::DeviceId = res.json["device"]["id"].as_str().unwrap().parse().unwrap();
+        devices.insert(install, id);
+    }
+    // Two installs made two hours ago, the third just now; the first's
+    // session and the third's ended without taking their devices.
+    for install in ["install-gone", "install-used"] {
+        sqlx::query(
+            "UPDATE app_installs SET created_at = NOW() - INTERVAL '2 hours' WHERE install_id = $1",
+        )
+        .bind(install)
+        .execute(app.storage.pool())
+        .await
+        .unwrap();
+    }
+    for install in ["install-gone", "install-new"] {
+        sqlx::query(
+            "UPDATE login_sessions SET revoked_at = NOW(), revoked_reason = 'the app signed out'
+             WHERE device_id = $1",
+        )
+        .bind(devices[install].to_string())
+        .execute(app.storage.pool())
+        .await
+        .unwrap();
+    }
+
+    let removed =
+        fcp_api_core::v1::app_auth::sweep_abandoned_devices(&app.state, SystemTime::now()).await;
+    assert_eq!(removed, 1);
+    let kept = |install: &str| {
+        let id = devices[install];
+        let storage = app.storage.clone();
+        async move { storage.get_device(&id).await.unwrap().is_some() }
+    };
+    assert!(!kept("install-gone").await, "the abandoned device stayed");
+    assert!(kept("install-used").await, "a device in use was taken");
+    assert!(kept("install-new").await, "a device a moment old was taken");
+}
+
 // ---------------------------------------------------------------------------
 // The device per app install (docs/SOFTPHONE.md §2.1)
 // ---------------------------------------------------------------------------

@@ -188,3 +188,79 @@ async fn a_user_in_a_tenant_with_no_row_keeps_contacts() {
     assert_eq!(list.body["data"][0]["name"], "Kim Park", "{}", list.text);
     app.finish().await;
 }
+
+/// A contact made, changed or deleted reaches the user's apps on
+/// `/me/events` as `user.contact_changed`, naming the contact and never
+/// what it holds; another user's stream does not carry it.
+#[tokio::test]
+async fn a_change_to_a_contact_reaches_the_users_apps() {
+    use tokio_tungstenite::tungstenite::Message;
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let jo = signed_in(&app, "contact-live").await;
+    let sam = signed_in(&app, "contact-other").await;
+    let port = app.serve().await;
+    let url = format!("ws://127.0.0.1:{port}/api/v1/me/events");
+    type Ws = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+    async fn next(ws: &mut Ws, wait: Duration) -> Option<String> {
+        let frame = tokio::time::timeout(wait, ws.next()).await.ok()??.ok()?;
+        Some(frame.to_text().ok()?.to_string())
+    }
+    async fn open(url: &str, token: &str) -> Ws {
+        let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        ws.send(Message::Text(
+            json!({"type": "auth", "token": token}).to_string(),
+        ))
+        .await
+        .unwrap();
+        let wait = Duration::from_secs(5);
+        assert!(next(&mut ws, wait).await.unwrap().contains("auth_ok"));
+        assert!(next(&mut ws, wait).await.unwrap().contains("connected"));
+        ws
+    }
+    let mut mine = open(&url, &jo).await;
+    let mut theirs = open(&url, &sam).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let made = app
+        .send_as(
+            &jo,
+            Method::POST,
+            "/api/v1/me/contacts",
+            Some(json!({"name": "Secret Name", "numbers": [{"number": "5550101"}]})),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let id = made.json["id"].as_str().unwrap().to_string();
+    let path = format!("/api/v1/me/contacts/{id}");
+    let changed = app
+        .send_as(&jo, Method::PUT, &path, Some(json!({"name": "Other Name"})))
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.text);
+    let gone = app.send_as(&jo, Method::DELETE, &path, None).await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+
+    for change in ["created", "updated", "deleted"] {
+        let text = next(&mut mine, Duration::from_secs(5))
+            .await
+            .unwrap_or_else(|| panic!("no event for {change}"));
+        let event: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(event["event_type"], "user", "{text}");
+        assert_eq!(event["type"], "contact_changed", "{text}");
+        assert_eq!(event["contact_id"], id.as_str(), "{text}");
+        assert_eq!(event["change"], change, "{text}");
+        assert!(
+            !text.contains("Name") && !text.contains("5550101"),
+            "{text}"
+        );
+    }
+    assert_eq!(
+        next(&mut theirs, Duration::from_millis(500)).await,
+        None,
+        "another user hears nothing"
+    );
+    app.finish().await;
+}

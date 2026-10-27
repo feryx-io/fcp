@@ -136,6 +136,14 @@ contact kept only on one device is not on the server and not shown. An administr
 has no page for someone's contacts: they are personal data, reached through a subject
 export (`docs/COMPLIANCE.md`).
 
+**Live.** A contact made, changed or deleted, through `/me/contacts` (the app, the
+portal) or taken by the cloud from a site, is announced as `user.contact_changed`
+(`contact_id`, `change`: `created`, `updated` or `deleted`; never what the contact
+holds). `/me/events` carries it to the owner's own apps, which read their contacts
+again, so a contact made in the portal is in the app at once. A change the link writes
+at a site from the cloud is not announced there: the site's apps see it on their next
+read.
+
 **Any tenant.** A contact's `tenant_id` is its owner's and is not tied to a `tenants`
 row (migration 123): a single-tenant deployment's default tenant need not have one, and
 its users' contacts failed to save with a 500 until it was dropped.
@@ -168,6 +176,10 @@ its users' contacts failed to save with a 500 until it was dropped.
    for a tenant with no row (migration 123). Tests: the UI suite's `a person keeps
    their own contacts` and `api_postgres`
    `a_user_in_a_tenant_with_no_row_keeps_contacts`.
+6. ✅ **FCP v0.25.469:** contacts live — `user.contact_changed` on `/me/events` from
+   the API and from a site's shipped contact. Test: `api_postgres`
+   `a_change_to_a_contact_reaches_the_users_apps`. Anvil reads its contacts again
+   when it hears one.
 
 ## 5. Agreed (2026-10-26)
 

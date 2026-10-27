@@ -731,3 +731,69 @@ pub async fn revoke(
     }
     Ok(axum::http::StatusCode::OK)
 }
+
+/// How long an app device may go without a session before the sweep
+/// removes it: long enough that a device being signed in, made a moment
+/// before its session, is never taken.
+const ABANDONED_AFTER: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Remove the app devices no live session uses (`docs/APP_SIGN_IN.md`):
+/// an install that signed out before sign-out removed its device, whose
+/// session expired, or that was replaced without signing out. Its
+/// registrations go with it. How many were removed.
+pub async fn sweep_abandoned_devices(state: &ApiState, now: SystemTime) -> u64 {
+    use fcp_core::storage::DeviceStore;
+    let (Ok(sessions), Ok(storage)) = (store(state), storage(state)) else {
+        return 0;
+    };
+    let devices = match sessions.abandoned_app_devices(now - ABANDONED_AFTER).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = %e, "Abandoned app devices not listed");
+            return 0;
+        }
+    };
+    let mut removed = 0;
+    for id in devices {
+        match storage.get_device(&id).await {
+            Ok(Some(device)) => {
+                match crate::v1::devices::remove_device(state, storage, &device).await {
+                    Ok(()) => removed += 1,
+                    Err(e) => {
+                        tracing::warn!(device = %id, error = ?e, "Abandoned app device not removed")
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(device = %id, error = %e, "Abandoned app device not read"),
+        }
+    }
+    removed
+}
+
+/// Run [`sweep_abandoned_devices`] once an hour, one admin replica at a time.
+pub fn spawn_device_sweep(state: ApiState) {
+    use fcp_core::storage::CdrStore;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            interval.tick().await;
+            let Some(storage) = state.storage.clone() else {
+                continue;
+            };
+            let lock = match storage.try_maintenance_lock("fcp:app-devices").await {
+                Ok(Some(lock)) => lock,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::warn!(error = %e, "App device sweep: could not take the lock");
+                    continue;
+                }
+            };
+            let removed = sweep_abandoned_devices(&state, SystemTime::now()).await;
+            if removed > 0 {
+                tracing::info!(removed, "Abandoned app devices removed");
+            }
+            lock.release().await;
+        }
+    });
+}

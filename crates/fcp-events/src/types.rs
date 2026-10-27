@@ -903,6 +903,20 @@ pub enum UserEvent {
         timestamp: SystemTime,
     },
 
+    /// One of the user's own contacts was made, changed or deleted
+    /// (`docs/RECORD_AND_CONTACTS.md` §3), through `/me/contacts` or by a
+    /// site, so the apps they are signed in to read their contacts again.
+    /// It names the contact, never what it holds.
+    ContactChanged {
+        user_id: String,
+        tenant_id: TenantId,
+        contact_id: String,
+        /// `created`, `updated` or `deleted`.
+        change: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// A user signed in to the admin API or the user portal
     /// (`docs/IDENTITY_AND_DEVICES.md` phase 1): `method` is `password`,
     /// later `oidc`, `saml`.
@@ -1875,6 +1889,7 @@ impl PlatformEvent {
         "user.enabled",
         "user.disabled",
         "user.calling_changed",
+        "user.contact_changed",
         "user.signed_in",
         "user.sign_in_failed",
         "hoteling.login",
@@ -2029,6 +2044,7 @@ impl PlatformEvent {
                 UserEvent::Enabled { .. } => "user.enabled",
                 UserEvent::Disabled { .. } => "user.disabled",
                 UserEvent::CallingChanged { .. } => "user.calling_changed",
+                UserEvent::ContactChanged { .. } => "user.contact_changed",
                 UserEvent::HotelingLogin { .. } => "hoteling.login",
                 UserEvent::HotelingLogout { .. } => "hoteling.logout",
                 UserEvent::SignedIn { .. } => "user.signed_in",
@@ -2173,6 +2189,7 @@ impl PlatformEvent {
                 | UserEvent::Enabled { tenant_id, .. }
                 | UserEvent::Disabled { tenant_id, .. }
                 | UserEvent::CallingChanged { tenant_id, .. }
+                | UserEvent::ContactChanged { tenant_id, .. }
                 | UserEvent::HotelingLogin { tenant_id, .. }
                 | UserEvent::HotelingLogout { tenant_id, .. }
                 | UserEvent::SignedIn { tenant_id, .. } => Some(tenant_id),
@@ -2359,6 +2376,7 @@ impl UserEvent {
             | UserEvent::Enabled { timestamp, .. }
             | UserEvent::Disabled { timestamp, .. }
             | UserEvent::CallingChanged { timestamp, .. }
+            | UserEvent::ContactChanged { timestamp, .. }
             | UserEvent::HotelingLogin { timestamp, .. }
             | UserEvent::HotelingLogout { timestamp, .. }
             | UserEvent::SignedIn { timestamp, .. }

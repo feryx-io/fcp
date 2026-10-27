@@ -136,6 +136,10 @@ own (`app-` and ten hex digits) and a password FCP makes.
     hearing events stops ringing it at once (one with a registration cache
     and no events keeps the binding until the cache's TTL);
   - its credentials go with it, so its next REGISTER is refused.
+- **Abandoned.** An app device that no live app session has used for an hour
+  is removed as above by the admin's hourly sweep: an install that signed out
+  before sign-out took its device, one whose session expired, or one replaced
+  without signing out (uninstalled, or its files lost) once its session ends.
 - **Seeing them.** `GET /me/devices` lists the user's devices, each app
   install with `app` (`install_id`, `platform`, `version`, `signed_in`,
   `signed_in_at`, `last_seen`); an administrator reads the same at

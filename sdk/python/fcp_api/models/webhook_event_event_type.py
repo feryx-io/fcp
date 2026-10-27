@@ -120,6 +120,7 @@ class WebhookEventEventType(StrEnum):
     TRUNK_REGISTERED = "trunk.registered"
     TRUNK_REGISTRATION_FAILED = "trunk.registration_failed"
     USER_CALLING_CHANGED = "user.calling_changed"
+    USER_CONTACT_CHANGED = "user.contact_changed"
     USER_CREATED = "user.created"
     USER_DELETED = "user.deleted"
     USER_DEPROVISIONED = "user.deprovisioned"

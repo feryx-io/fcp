@@ -343,6 +343,17 @@ mod tests {
         };
         assert!(s.admit(&calling("u1")));
         assert!(!s.admit(&calling("u2")));
+        let contact = |user: &str| {
+            PlatformEvent::User(fcp_events::UserEvent::ContactChanged {
+                user_id: user.into(),
+                tenant_id: TenantId::nil(),
+                contact_id: "contact-1".into(),
+                change: "updated".into(),
+                timestamp: SystemTime::now(),
+            })
+        };
+        assert!(s.admit(&contact("u1")), "their own contact");
+        assert!(!s.admit(&contact("u2")), "nobody else's");
         let presence = PlatformEvent::Presence(PresenceEvent::StatusChanged {
             aor: "dan@a.test".into(),
             tenant_id: TenantId::nil(),

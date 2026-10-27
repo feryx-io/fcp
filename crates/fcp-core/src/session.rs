@@ -279,6 +279,15 @@ pub trait LoginSessionStore: Send + Sync {
         user_id: &UserId,
     ) -> crate::Result<Vec<(crate::DeviceId, String)>>;
 
+    /// App devices no live session uses, made before `made_before`: the
+    /// install signed out, its session expired, or it was replaced without
+    /// a word (uninstalled, its files lost). A device being signed in has
+    /// its session a moment after it is made, hence `made_before`.
+    async fn abandoned_app_devices(
+        &self,
+        made_before: SystemTime,
+    ) -> crate::Result<Vec<crate::DeviceId>>;
+
     /// Revoke the live sessions of a device's app; how many.
     async fn revoke_device_sessions(
         &self,
