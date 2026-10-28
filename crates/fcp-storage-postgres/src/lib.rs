@@ -889,7 +889,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              WHERE username = $1",
         )
@@ -919,7 +919,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              WHERE username = $1 AND tenant_id = $2",
         )
@@ -942,7 +942,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              WHERE username = $1
              ORDER BY tenant_id",
@@ -972,7 +972,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              WHERE tenant_id = $1 AND LOWER(email) = LOWER($2)",
         )
@@ -995,7 +995,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              WHERE id = $1",
         )
@@ -1053,9 +1053,9 @@ impl CredentialStore for PostgresStorage {
                 extension, department, job_title, location, location_id, language, timezone,
                 account_status, last_login, emergency_contact_json,
                 primary_phone_number_id, voicemail_box_id, profile_picture,
-                failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              )
-	             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38)
+	             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39)
 	             ON CONFLICT(username, tenant_id) DO UPDATE SET
 	                 password_hash = EXCLUDED.password_hash,
 	                 digest_password = EXCLUDED.digest_password,
@@ -1090,7 +1090,8 @@ impl CredentialStore for PostgresStorage {
                  deprovisioned_at = EXCLUDED.deprovisioned_at,
                  sip_username = EXCLUDED.sip_username,
                  scim_managed = EXCLUDED.scim_managed,
-                 scim_external_id = EXCLUDED.scim_external_id",
+                 scim_external_id = EXCLUDED.scim_external_id,
+                 directory_listed = EXCLUDED.directory_listed",
         )
         .bind(&id)
         .bind(&user.username)
@@ -1130,6 +1131,7 @@ impl CredentialStore for PostgresStorage {
         .bind(&user.sip_username)
         .bind(user.scim_managed)
         .bind(&user.scim_external_id)
+        .bind(user.directory_listed)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1194,7 +1196,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              WHERE tenant_id = $1
                AND ($2::TEXT IS NULL OR account_status = $2)
@@ -1310,7 +1312,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              ORDER BY username",
         )
@@ -3200,6 +3202,7 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         sip_ha1_hash: row.get("sip_ha1_hash"),
         sip_provisioning_password: row.get("sip_provisioning_password"),
         display_name: row.get("display_name"),
+        directory_listed: row.get("directory_listed"),
         tenant_id,
         role,
         department_id: row.get("department_id"),

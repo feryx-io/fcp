@@ -1,4 +1,5 @@
 // Every page in the navigation opens without an error (docs/DEEP_TESTING.md D7).
+import { readFileSync } from 'node:fs'
 import { test, expect, admin, person, signIn, settled, type Page, type Trouble } from './fixtures'
 
 /**
@@ -75,10 +76,14 @@ test('a person keeps their own contacts', async ({ page, troubles }) => {
   const dialog = page.getByRole('dialog')
   await dialog.locator('#c-name').fill(name)
   await dialog.locator('#c-company').fill('Acme')
+  // The first number is a mobile unless chosen; the second, Work, is
+  // changed to a label of the person's own.
   await dialog.getByLabel('Number 1', { exact: true }).fill('0412345678')
-  await dialog.getByLabel('Label 1', { exact: true }).fill('mobile')
   await dialog.getByRole('button', { name: 'Add a number' }).click()
   await dialog.getByLabel('Number 2', { exact: true }).fill('0298765432')
+  await dialog.getByLabel('Label 2', { exact: true }).click()
+  await page.getByRole('option', { name: 'Custom…' }).click()
+  await dialog.getByLabel('Label 2', { exact: true }).fill('Boat')
   await dialog.getByRole('button', { name: 'Save' }).click()
   await expect(dialog).toBeHidden()
 
@@ -87,7 +92,25 @@ test('a person keeps their own contacts', async ({ page, troubles }) => {
   await settled(page)
   await page.getByLabel('Search contacts').fill('0298765432')
   await expect(page.getByText(name)).toBeVisible()
-  await expect(page.getByText('0412345678 (mobile)', { exact: false })).toBeVisible()
+  await expect(page.getByText('0412345678 (Mobile)', { exact: false })).toBeVisible()
+  await expect(page.getByText('0298765432 (Boat)', { exact: false })).toBeVisible()
+
+  // Out as a vCard, and that file in again: nothing new.
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: 'Export' }).click().then(() =>
+      page.getByRole('menuitem', { name: /vCard/ }).click()),
+  ])
+  expect(download.suggestedFilename()).toBe('contacts.vcf')
+  const vcard = readFileSync(await download.path(), 'utf8')
+  expect(vcard).toContain(`FN:${name}`)
+  await page.getByLabel('Contacts file to import').setInputFiles({
+    name: 'contacts.vcf',
+    mimeType: 'text/vcard',
+    buffer: Buffer.from(vcard),
+  })
+  await expect(page.getByRole('status')).toContainText('Imported 0 contacts')
+  await expect(page.getByRole('status')).toContainText('you already had')
 
   await page.getByRole('button', { name: `Edit ${name}` }).click()
   await dialog.getByRole('button', { name: 'Remove number 1' }).click()

@@ -173,6 +173,7 @@ pub async fn signup(
         sip_ha1_hash: Some(sip_ha1_hash),
         sip_provisioning_password: None,
         display_name: Some(req.company_name.trim().to_string()),
+        directory_listed: true,
         tenant_id,
         enabled: true,
         role: UserRole::TenantAdmin,

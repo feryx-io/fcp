@@ -50,6 +50,7 @@ const editUserSchema = z.object({
   tenant_id: z.string().optional(),
   record_all_calls: z.boolean().optional(),
   record_on_demand: z.boolean().optional(),
+  directory_listed: z.boolean().optional(),
 })
 
 const changePasswordSchema = z.object({
@@ -562,6 +563,7 @@ function EditUserDialog({
       tenant_id: user.tenant_id ?? '',
       record_all_calls: user.media_preferences.record_all_calls ?? false,
       record_on_demand: user.media_preferences.record_on_demand ?? false,
+      directory_listed: user.directory_listed ?? true,
     })
   }
 
@@ -694,6 +696,19 @@ function EditUserDialog({
                 onCheckedChange={(v) => setValue('record_on_demand', v)}
               />
             </div>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <Label htmlFor="edit-directory-listed" className="cursor-pointer">Listed in the directory</Label>
+              <p className="text-xs text-muted-foreground">
+                Others see them in their apps&rsquo; directory. Unlisted, they still ring on their extension.
+              </p>
+            </div>
+            <Switch
+              id="edit-directory-listed"
+              checked={watch('directory_listed') ?? true}
+              onCheckedChange={(v) => setValue('directory_listed', v)}
+            />
           </div>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>

@@ -237,6 +237,11 @@ pub fn router() -> Router<ApiState> {
             "/me/contacts",
             get(me_contacts::list_contacts).post(me_contacts::create_contact),
         )
+        .route("/me/contacts/export", get(me_contacts::export_contacts))
+        .route(
+            "/me/contacts/import",
+            post(me_contacts::import_contacts).layer(DefaultBodyLimit::max(10 * 1024 * 1024)),
+        )
         .route(
             "/me/contacts/:id",
             get(me_contacts::get_contact)

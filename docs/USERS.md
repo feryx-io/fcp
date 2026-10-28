@@ -239,6 +239,23 @@ number, a device, a service) is refused with 409, a malformed one with
 400, before anything is saved. Before v0.25.354 the field was a label only,
 and an extension had to be made separately (`/api/v1/extensions`).
 
+## 7a. Listed in the directory
+
+Every user is in the tenant's directory for its users (`GET /me/directory`,
+the apps' Directory tab) unless taken out (D8 finding 27, v0.25.471):
+`directory_listed` on `POST`/`PUT /api/v1/users`, a switch on the user's
+page, on by default. An unlisted user still rings on their extension, still
+lights busy lamps others have set up, and is seen by administrators
+everywhere; only the users' directory leaves them out.
+
+A user changes their own listing only when the tenant lets them: the
+tenant's `directory.users_may_unlist` (off by default; "Users may change
+their own listing" on the tenant form). Then `directory_listed` on
+`PUT /me/profile` changes it, as the portal's Settings page and the app do;
+otherwise that answers 403. `GET /me/profile` and `/me/softphone` say both
+`directory_listed` and `may_change_directory_listing`. The column is
+`users.directory_listed` (migration 124), synced to sites with the user.
+
 ## 8. Who may give a role
 
 Making a user, changing their role, setting their password or SIP

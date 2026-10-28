@@ -62,6 +62,44 @@ pub struct ProfileResponse {
     pub timezone: String,
     pub role: String,
     pub has_profile_picture: bool,
+    /// Listed in the tenant's directory for its users.
+    pub directory_listed: bool,
+    /// The tenant lets its users take themselves out of the directory, or
+    /// put themselves back (`directory_listed` on `PUT /me/profile`).
+    pub may_change_directory_listing: bool,
+}
+
+/// Whether `user`'s tenant lets its users change their own listing; a
+/// tenant with no row does not.
+pub(crate) async fn may_change_listing(
+    storage: &std::sync::Arc<fcp_core::DynStorage>,
+    user: &fcp_core::User,
+) -> Result<bool, ApiError> {
+    use fcp_core::TenantStore;
+    Ok(storage
+        .get_tenant(&user.tenant_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .is_some_and(|t| t.directory.users_may_unlist))
+}
+
+fn profile_of(user: fcp_core::User, may_change_directory_listing: bool) -> ProfileResponse {
+    ProfileResponse {
+        has_profile_picture: user.profile_picture.is_some(),
+        role: crate::v1::auth_session::role_to_string(&user.role),
+        directory_listed: user.directory_listed,
+        may_change_directory_listing,
+        username: user.username,
+        display_name: user.display_name,
+        email: user.email,
+        phone_number: user.phone_number,
+        extension: user.extension,
+        department: user.department,
+        job_title: user.job_title,
+        location: user.location,
+        language: user.language,
+        timezone: user.timezone,
+    }
 }
 
 /// GET /me/profile
@@ -82,22 +120,8 @@ pub async fn get_profile(
     let storage = require_storage!(state);
 
     let user = load_claims_user(storage, &claims, &state).await?;
-
-    let has_profile_picture = user.profile_picture.is_some();
-    Ok(Json(ProfileResponse {
-        username: user.username,
-        display_name: user.display_name,
-        email: user.email,
-        phone_number: user.phone_number,
-        extension: user.extension,
-        department: user.department,
-        job_title: user.job_title,
-        location: user.location,
-        language: user.language,
-        timezone: user.timezone,
-        role: crate::v1::auth_session::role_to_string(&user.role),
-        has_profile_picture,
-    }))
+    let may_change = may_change_listing(storage, &user).await?;
+    Ok(Json(profile_of(user, may_change)))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -107,6 +131,10 @@ pub struct UpdateProfileRequest {
     pub phone_number: Option<String>,
     pub timezone: Option<String>,
     pub language: Option<String>,
+    /// Listed in the tenant's directory, or not: 403 unless the tenant
+    /// lets its users change it (`directory.users_may_unlist`).
+    #[serde(default)]
+    pub directory_listed: Option<bool>,
 }
 
 /// PUT /me/profile
@@ -145,6 +173,19 @@ pub async fn update_profile(
     if let Some(language) = body.language {
         user.language = language;
     }
+    let may_change = may_change_listing(storage, &user).await?;
+    if let Some(listed) = body
+        .directory_listed
+        .filter(|l| *l != user.directory_listed)
+    {
+        if !may_change {
+            return Err(ApiError::Forbidden(
+                "Your administrator sets whether you are listed in the directory".to_string(),
+            ));
+        }
+        user.directory_listed = listed;
+        info!(username = %claims.sub, listed, "User changed their directory listing");
+    }
     user.updated_at = SystemTime::now();
 
     storage
@@ -154,21 +195,7 @@ pub async fn update_profile(
 
     info!(username = %claims.sub, "User updated own profile");
 
-    let has_profile_picture = user.profile_picture.is_some();
-    Ok(Json(ProfileResponse {
-        username: user.username,
-        display_name: user.display_name,
-        email: user.email,
-        phone_number: user.phone_number,
-        extension: user.extension,
-        department: user.department,
-        job_title: user.job_title,
-        location: user.location,
-        language: user.language,
-        timezone: user.timezone,
-        role: crate::v1::auth_session::role_to_string(&user.role),
-        has_profile_picture,
-    }))
+    Ok(Json(profile_of(user, may_change)))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]

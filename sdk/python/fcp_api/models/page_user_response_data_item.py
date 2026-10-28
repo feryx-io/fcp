@@ -44,6 +44,7 @@ class PageUserResponseDataItem:
             scim_managed (bool): Made by the tenant's SCIM provisioner (`docs/SCIM.md`).
             media_preferences (MediaPreferences): Media preferences for a user account.
                 These settings control default behavior for calls to/from this user.
+            directory_listed (bool): Listed in the tenant's directory for its users (`/me/directory`).
             display_name (None | str | Unset):
             department_id (None | str | Unset):
             email (None | str | Unset):
@@ -77,6 +78,7 @@ class PageUserResponseDataItem:
     sip_username: str
     scim_managed: bool
     media_preferences: MediaPreferences
+    directory_listed: bool
     display_name: None | str | Unset = UNSET
     department_id: None | str | Unset = UNSET
     email: None | str | Unset = UNSET
@@ -128,6 +130,8 @@ class PageUserResponseDataItem:
         scim_managed = self.scim_managed
 
         media_preferences = self.media_preferences.to_dict()
+
+        directory_listed = self.directory_listed
 
         display_name: None | str | Unset
         if isinstance(self.display_name, Unset):
@@ -251,6 +255,7 @@ class PageUserResponseDataItem:
             "sip_username": sip_username,
             "scim_managed": scim_managed,
             "media_preferences": media_preferences,
+            "directory_listed": directory_listed,
         })
         if display_name is not UNSET:
             field_dict["display_name"] = display_name
@@ -329,6 +334,8 @@ class PageUserResponseDataItem:
 
 
 
+
+        directory_listed = d.pop("directory_listed")
 
         def _parse_display_name(data: object) -> None | str | Unset:
             if data is None:
@@ -545,6 +552,7 @@ class PageUserResponseDataItem:
             sip_username=sip_username,
             scim_managed=scim_managed,
             media_preferences=media_preferences,
+            directory_listed=directory_listed,
             display_name=display_name,
             department_id=department_id,
             email=email,

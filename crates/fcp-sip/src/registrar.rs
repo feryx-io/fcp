@@ -2606,6 +2606,7 @@ mod tests {
             sip_ha1_hash: None,
             sip_provisioning_password: None,
             display_name: Some("Alice".to_string()),
+            directory_listed: true,
             tenant_id: fcp_core::TenantId::nil(), // Default tenant for test
             role: fcp_core::UserRole::default(),
             department_id: None,
@@ -3322,6 +3323,7 @@ mod tests {
             )),
             sip_provisioning_password: None,
             display_name: Some("Alice".to_string()),
+            directory_listed: true,
             tenant_id: fcp_core::TenantId::nil(),
             role: fcp_core::UserRole::default(),
             department_id: None,

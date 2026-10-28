@@ -59,6 +59,8 @@ from .cluster_view import ClusterView
 from .config_entry_response import ConfigEntryResponse
 from .config_entry_response_value import ConfigEntryResponseValue
 from .config_template_response import ConfigTemplateResponse
+from .contact_import_response import ContactImportResponse
+from .contact_import_skip import ContactImportSkip
 from .contact_input_type_1 import ContactInputType1
 from .contact_number import ContactNumber
 from .contact_readiness import ContactReadiness
@@ -596,6 +598,8 @@ __all__ = (
     "ConfigEntryResponse",
     "ConfigEntryResponseValue",
     "ConfigTemplateResponse",
+    "ContactImportResponse",
+    "ContactImportSkip",
     "ContactInputType1",
     "ContactNumber",
     "ContactReadiness",

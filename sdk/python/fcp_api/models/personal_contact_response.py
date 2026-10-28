@@ -36,6 +36,7 @@ class PersonalContactResponse:
             company (None | str | Unset):
             email (None | str | Unset):
             notes (None | str | Unset):
+            ringtone (None | str | Unset):
      """
 
     id: str
@@ -46,6 +47,7 @@ class PersonalContactResponse:
     company: None | str | Unset = UNSET
     email: None | str | Unset = UNSET
     notes: None | str | Unset = UNSET
+    ringtone: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -87,6 +89,12 @@ class PersonalContactResponse:
         else:
             notes = self.notes
 
+        ringtone: None | str | Unset
+        if isinstance(self.ringtone, Unset):
+            ringtone = UNSET
+        else:
+            ringtone = self.ringtone
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -103,6 +111,8 @@ class PersonalContactResponse:
             field_dict["email"] = email
         if notes is not UNSET:
             field_dict["notes"] = notes
+        if ringtone is not UNSET:
+            field_dict["ringtone"] = ringtone
 
         return field_dict
 
@@ -166,6 +176,16 @@ class PersonalContactResponse:
         notes = _parse_notes(d.pop("notes", UNSET))
 
 
+        def _parse_ringtone(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        ringtone = _parse_ringtone(d.pop("ringtone", UNSET))
+
+
         personal_contact_response = cls(
             id=id,
             name=name,
@@ -175,6 +195,7 @@ class PersonalContactResponse:
             company=company,
             email=email,
             notes=notes,
+            ringtone=ringtone,
         )
 
 

@@ -264,3 +264,250 @@ async fn a_change_to_a_contact_reaches_the_users_apps() {
     );
     app.finish().await;
 }
+
+/// A contact's ringtone is kept, kept through a change that does not name
+/// it (an older app, the portal), and cleared by `null`.
+#[tokio::test]
+async fn a_contacts_ringtone_is_kept_until_cleared() {
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let jo = signed_in(&app, "contact-tone").await;
+    let made = app
+        .send_as(
+            &jo,
+            Method::POST,
+            "/api/v1/me/contacts",
+            Some(json!({"name": "Kim Park", "ringtone": "classic"})),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    assert_eq!(made.json["ringtone"], "classic");
+    let path = format!("/api/v1/me/contacts/{}", made.json["id"].as_str().unwrap());
+    let changed = app
+        .send_as(
+            &jo,
+            Method::PUT,
+            &path,
+            Some(json!({"name": "Kim Park Jr"})),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.text);
+    assert_eq!(changed.json["ringtone"], "classic", "not named: kept");
+    let cleared = app
+        .send_as(
+            &jo,
+            Method::PUT,
+            &path,
+            Some(json!({"name": "Kim Park Jr", "ringtone": null})),
+        )
+        .await;
+    assert!(cleared.json["ringtone"].is_null(), "{}", cleared.text);
+    app.finish().await;
+}
+
+/// Contacts go out as a vCard or a CSV file and come in from one: a file
+/// from a phone made into contacts, what is already kept not made again,
+/// an entry with nothing to call it by skipped by its place, and the apps
+/// told once.
+#[tokio::test]
+async fn contacts_are_imported_and_exported_as_files() {
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let jo = signed_in(&app, "contact-files").await;
+    let kept = app
+        .send_as(
+            &jo,
+            Method::POST,
+            "/api/v1/me/contacts",
+            Some(json!({"name": "Amy Adams", "numbers": [{"label": "work", "number": "1001"}]})),
+        )
+        .await;
+    assert_eq!(kept.status, StatusCode::CREATED, "{}", kept.text);
+
+    let vcard = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Amy Adams\r\nTEL;TYPE=WORK:1001\r\nEND:VCARD\r\n\
+                 BEGIN:VCARD\r\nVERSION:3.0\r\nN:Park;Kim;;;\r\nORG:Boats\r\n\
+                 TEL;TYPE=CELL:0400 111 222\r\nitem1.TEL:555\r\nitem1.X-ABLabel:Boat\r\n\
+                 EMAIL:kim@example.com\r\nEND:VCARD\r\n\
+                 BEGIN:VCARD\r\nVERSION:3.0\r\nNOTE:nobody\r\nEND:VCARD\r\n";
+    let imported = app
+        .send_raw(
+            &jo,
+            Method::POST,
+            "/api/v1/me/contacts/import",
+            "text/vcard",
+            vcard.as_bytes().to_vec(),
+        )
+        .await;
+    assert_eq!(imported.status, StatusCode::OK, "{}", imported.text);
+    assert_eq!(imported.json["imported"], 1, "{}", imported.text);
+    assert_eq!(imported.json["duplicates"], 1, "Amy is kept already");
+    assert_eq!(imported.json["skipped"][0]["entry"], 3, "{}", imported.text);
+
+    let list = app
+        .send_as(&jo, Method::GET, "/api/v1/me/contacts", None)
+        .await;
+    let kim = list
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Kim Park")
+        .cloned()
+        .unwrap();
+    assert_eq!(kim["company"], "Boats");
+    assert_eq!(
+        kim["numbers"][0],
+        json!({"label": "mobile", "number": "0400 111 222"})
+    );
+    assert_eq!(kim["numbers"][1], json!({"label": "Boat", "number": "555"}));
+
+    // Out as CSV, then in again: nothing new.
+    let csv = app
+        .send_as(
+            &jo,
+            Method::GET,
+            "/api/v1/me/contacts/export?format=csv",
+            None,
+        )
+        .await;
+    assert_eq!(csv.status, StatusCode::OK, "{}", csv.text);
+    assert!(csv.headers[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .starts_with("text/csv"));
+    assert!(
+        csv.text.starts_with("Name,Organization 1 - Name"),
+        "{}",
+        csv.text
+    );
+    assert!(
+        csv.text
+            .contains("Kim Park,Boats,kim@example.com,,Mobile,0400 111 222,Boat,555"),
+        "{}",
+        csv.text
+    );
+    let again = app
+        .send_raw(
+            &jo,
+            Method::POST,
+            "/api/v1/me/contacts/import?format=csv",
+            "text/csv",
+            csv.bytes.clone(),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.text);
+    assert_eq!(again.json["imported"], 0);
+    assert_eq!(again.json["duplicates"], 2);
+
+    let vcf = app
+        .send_as(&jo, Method::GET, "/api/v1/me/contacts/export", None)
+        .await;
+    assert!(vcf.headers[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap()
+        .contains("contacts.vcf"));
+    assert_eq!(vcf.text.matches("BEGIN:VCARD").count(), 2, "{}", vcf.text);
+    let bad = app
+        .send_as(
+            &jo,
+            Method::GET,
+            "/api/v1/me/contacts/export?format=pdf",
+            None,
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    app.finish().await;
+}
+
+/// A user an administrator takes out of the directory is not in it for
+/// the tenant's users; a user changes their own listing only when the
+/// tenant lets them.
+#[tokio::test]
+async fn a_user_taken_out_of_the_directory_is_not_listed() {
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let viewer = signed_in(&app, "dir-viewer").await;
+    let exec = signed_in(&app, "dir-exec").await;
+    let names = |r: &Response| -> Vec<String> {
+        r.json
+            .as_array()
+            .unwrap_or_else(|| panic!("not a list: {}", r.text))
+            .iter()
+            .filter_map(|e| e["username"].as_str().map(String::from))
+            .collect()
+    };
+    let listed = app
+        .send_as(&viewer, Method::GET, "/api/v1/me/directory", None)
+        .await;
+    assert!(
+        names(&listed).contains(&"dir-exec".to_string()),
+        "{}",
+        listed.text
+    );
+
+    // The administrator unlists them.
+    let hidden = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/dir-exec",
+            Some(json!({"directory_listed": false})),
+        )
+        .await;
+    assert_eq!(hidden.status, StatusCode::OK, "{}", hidden.text);
+    assert_eq!(hidden.json["directory_listed"], false);
+    let listed = app
+        .send_as(&viewer, Method::GET, "/api/v1/me/directory", None)
+        .await;
+    assert!(
+        !names(&listed).contains(&"dir-exec".to_string()),
+        "{}",
+        listed.text
+    );
+
+    // Not theirs to change unless the tenant says so.
+    let profile = app
+        .send_as(&exec, Method::GET, "/api/v1/me/profile", None)
+        .await;
+    assert_eq!(profile.json["directory_listed"], false);
+    assert_eq!(profile.json["may_change_directory_listing"], false);
+    let refused = app
+        .send_as(
+            &exec,
+            Method::PUT,
+            "/api/v1/me/profile",
+            Some(json!({"directory_listed": true})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let allowed = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"directory": {"visible_to_users": true, "users_may_unlist": true}})),
+        )
+        .await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text);
+    let back = app
+        .send_as(
+            &exec,
+            Method::PUT,
+            "/api/v1/me/profile",
+            Some(json!({"directory_listed": true})),
+        )
+        .await;
+    assert_eq!(back.status, StatusCode::OK, "{}", back.text);
+    assert_eq!(back.json["directory_listed"], true);
+    assert_eq!(back.json["may_change_directory_listing"], true);
+    let listed = app
+        .send_as(&viewer, Method::GET, "/api/v1/me/directory", None)
+        .await;
+    assert!(
+        names(&listed).contains(&"dir-exec".to_string()),
+        "{}",
+        listed.text
+    );
+    app.finish().await;
+}

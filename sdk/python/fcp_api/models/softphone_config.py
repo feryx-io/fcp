@@ -37,6 +37,9 @@ class SoftphoneConfig:
             may_record (bool): The user may record a call they are on
                 (`/me/calls/{call_id}/recording/start`); the app shows its record
                 button only then.
+            directory_listed (bool): Listed in the tenant's directory, and whether the user may change
+                that themselves (`directory_listed` on `PUT /me/profile`).
+            may_change_directory_listing (bool):
             extension (None | str | Unset):
             api_url (None | str | Unset): Where this admin is, for the app's API calls.
      """
@@ -47,6 +50,8 @@ class SoftphoneConfig:
     feature_codes: SoftphoneConfigFeatureCodes
     device_id: str
     may_record: bool
+    directory_listed: bool
+    may_change_directory_listing: bool
     extension: None | str | Unset = UNSET
     api_url: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -71,6 +76,10 @@ class SoftphoneConfig:
 
         may_record = self.may_record
 
+        directory_listed = self.directory_listed
+
+        may_change_directory_listing = self.may_change_directory_listing
+
         extension: None | str | Unset
         if isinstance(self.extension, Unset):
             extension = UNSET
@@ -93,6 +102,8 @@ class SoftphoneConfig:
             "feature_codes": feature_codes,
             "device_id": device_id,
             "may_record": may_record,
+            "directory_listed": directory_listed,
+            "may_change_directory_listing": may_change_directory_listing,
         })
         if extension is not UNSET:
             field_dict["extension"] = extension
@@ -130,6 +141,10 @@ class SoftphoneConfig:
 
         may_record = d.pop("may_record")
 
+        directory_listed = d.pop("directory_listed")
+
+        may_change_directory_listing = d.pop("may_change_directory_listing")
+
         def _parse_extension(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -157,6 +172,8 @@ class SoftphoneConfig:
             feature_codes=feature_codes,
             device_id=device_id,
             may_record=may_record,
+            directory_listed=directory_listed,
+            may_change_directory_listing=may_change_directory_listing,
             extension=extension,
             api_url=api_url,
         )

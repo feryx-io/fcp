@@ -72,6 +72,10 @@ pub struct SoftphoneConfig {
     /// (`/me/calls/{call_id}/recording/start`); the app shows its record
     /// button only then.
     pub may_record: bool,
+    /// Listed in the tenant's directory, and whether the user may change
+    /// that themselves (`directory_listed` on `PUT /me/profile`).
+    pub directory_listed: bool,
+    pub may_change_directory_listing: bool,
 }
 
 /// The app's session and device: what `/me/softphone` answers for.
@@ -200,6 +204,9 @@ pub async fn get_config(
             .map(|base| format!("{base}/api/v1")),
         device_id: device.id.to_string(),
         may_record: user.media_preferences.record_on_demand,
+        directory_listed: user.directory_listed,
+        may_change_directory_listing: crate::v1::self_service::may_change_listing(storage, &user)
+            .await?,
     };
     let json = serde_json::to_vec(&body).map_err(|e| ApiError::Internal(e.to_string()))?;
     let digest: String = Sha256::digest(&json)

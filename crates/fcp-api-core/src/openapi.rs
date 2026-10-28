@@ -100,6 +100,8 @@ use utoipa::{Modify, OpenApi};
         crate::v1::me_contacts::get_contact,
         crate::v1::me_contacts::update_contact,
         crate::v1::me_contacts::delete_contact,
+        crate::v1::me_contacts::export_contacts,
+        crate::v1::me_contacts::import_contacts,
         crate::v1::me_events::my_events,
         crate::v1::self_service::get_my_calling,
         crate::v1::self_service::update_my_calling,

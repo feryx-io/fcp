@@ -545,6 +545,7 @@ export type ApiToken = S['ApiTokenResponse']
 /** A user's own contact (docs/RECORD_AND_CONTACTS.md §3). */
 export type PersonalContact = S['PersonalContactResponse']
 export type PersonalContactRequest = S['PersonalContactRequest']
+export type ContactImportResponse = S['ContactImportResponse']
 export type ContactNumber = S['ContactNumber']
 
 /** One of a user's devices, with an app install's session (docs/SOFTPHONE.md §2.1). */

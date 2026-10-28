@@ -145,6 +145,7 @@ mod tests {
             sip_ha1_hash: None,
             sip_provisioning_password: None,
             display_name: Some(username.to_uppercase()),
+            directory_listed: true,
             tenant_id: tenant,
             enabled: true,
             role,

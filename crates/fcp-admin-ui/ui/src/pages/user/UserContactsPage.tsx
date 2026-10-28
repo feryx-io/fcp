@@ -1,15 +1,80 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Pencil, Plus, Search, Trash2, X } from 'lucide-react'
+import { Download, List, Pencil, Plus, Search, Trash2, Upload, X } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import { me } from '@/api/endpoints'
-import type { PersonalContact, PersonalContactRequest } from '@/types'
+import type { ContactImportResponse, PersonalContact, PersonalContactRequest } from '@/types'
+
+/**
+ * A number's labels from a list, kept in these words so the app shows the
+ * same; anything else is the user's own (D8 finding 23).
+ */
+const LABELS: [string, string][] = [
+  ['mobile', 'Mobile'],
+  ['work', 'Work'],
+  ['home', 'Home'],
+  ['main', 'Main'],
+  ['work fax', 'Work fax'],
+  ['other', 'Other'],
+]
+const CUSTOM = '__custom'
+const labelShown = (label: string) =>
+  LABELS.find(([v]) => v === label.trim().toLowerCase())?.[1] ?? label
+const isListed = (label: string) =>
+  !label.trim() || LABELS.some(([v]) => v === label.trim().toLowerCase())
+
+/** A number's label: one from the list, or "Custom…" and typed. */
+function NumberLabel({ index, value, onChange }: { index: number; value: string; onChange: (v: string) => void }) {
+  const [typing, setTyping] = useState(() => !isListed(value))
+  if (typing) {
+    return (
+      <div className="flex flex-[2] gap-1">
+        <Input
+          aria-label={`Label ${index + 1}`}
+          placeholder="Label"
+          autoFocus={!value}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <Button
+          variant="ghost"
+          size="icon"
+          type="button"
+          aria-label={`Choose label ${index + 1} from the list`}
+          onClick={() => { setTyping(false); onChange('mobile') }}
+        >
+          <List className="h-4 w-4" />
+        </Button>
+      </div>
+    )
+  }
+  return (
+    <Select
+      value={value.trim().toLowerCase() || undefined}
+      onValueChange={(v) => {
+        if (v === CUSTOM) { setTyping(true); onChange('') } else onChange(v)
+      }}
+    >
+      <SelectTrigger aria-label={`Label ${index + 1}`} className="flex-[2]">
+        <SelectValue placeholder="Label" />
+      </SelectTrigger>
+      <SelectContent>
+        {LABELS.map(([v, shown]) => <SelectItem key={v} value={v}>{shown}</SelectItem>)}
+        <SelectItem value={CUSTOM}>Custom…</SelectItem>
+      </SelectContent>
+    </Select>
+  )
+}
 
 /** A contact being made (no id) or changed. */
 interface Editing {
@@ -20,15 +85,17 @@ interface Editing {
 const blank = (): PersonalContactRequest => ({
   name: '',
   company: null,
-  numbers: [{ label: '', number: '' }],
+  numbers: [{ label: 'mobile', number: '' }],
   email: null,
   notes: null,
 })
 
+// The ringtone is left out of a change: the apps set it, and a change
+// that does not name it keeps it.
 const asRequest = (c: PersonalContact): PersonalContactRequest => ({
   name: c.name,
   company: c.company ?? null,
-  numbers: c.numbers.length ? c.numbers.map((n) => ({ ...n })) : [{ label: '', number: '' }],
+  numbers: c.numbers.length ? c.numbers.map((n) => ({ ...n })) : [{ label: 'mobile', number: '' }],
   email: c.email ?? null,
   notes: c.notes ?? null,
 })
@@ -49,6 +116,8 @@ export function UserContactsPage() {
   const [query, setQuery] = useState('')
   const [editing, setEditing] = useState<Editing | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [imported, setImported] = useState<ContactImportResponse | null>(null)
+  const file = useRef<HTMLInputElement>(null)
   const { data: contacts = [], isLoading } = useQuery({
     queryKey: ['me', 'contacts'],
     queryFn: me.listContacts,
@@ -72,6 +141,27 @@ export function UserContactsPage() {
     onError: fail,
   })
   const remove = useMutation({ mutationFn: me.deleteContact, onSuccess: refresh, onError: fail })
+  const importFile = useMutation({
+    mutationFn: (f: File) => me.importContacts(f, /\.csv$/i.test(f.name) ? 'csv' : 'vcard'),
+    onSuccess: (r) => {
+      setImported(r)
+      setError(null)
+      refresh()
+    },
+    onError: fail,
+  })
+  const exportAs = async (format: 'vcard' | 'csv') => {
+    try {
+      const url = await me.exportContacts(format)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = format === 'csv' ? 'contacts.csv' : 'contacts.vcf'
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      fail(e)
+    }
+  }
 
   const req = editing?.req
   const update = (change: Partial<PersonalContactRequest>) =>
@@ -96,11 +186,56 @@ export function UserContactsPage() {
             The people you keep. The app has them wherever you sign in, and names them when they call.
           </p>
         </div>
-        <Button onClick={() => { setError(null); setEditing({ req: blank() }) }}>
-          <Plus className="mr-2 h-4 w-4" /> New contact
-        </Button>
+        <div className="flex gap-2">
+          <input
+            ref={file}
+            type="file"
+            accept=".vcf,.vcard,.csv,text/vcard,text/csv"
+            className="hidden"
+            aria-label="Contacts file to import"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) importFile.mutate(f)
+              e.target.value = ''
+            }}
+          />
+          <Button variant="outline" disabled={importFile.isPending} onClick={() => file.current?.click()}>
+            <Upload className="mr-2 h-4 w-4" /> {importFile.isPending ? 'Importing…' : 'Import'}
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" disabled={contacts.length === 0}>
+                <Download className="mr-2 h-4 w-4" /> Export
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => exportAs('vcard')}>vCard (.vcf): phones, Outlook, Google</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => exportAs('csv')}>CSV (.csv): spreadsheets</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button onClick={() => { setError(null); setEditing({ req: blank() }) }}>
+            <Plus className="mr-2 h-4 w-4" /> New contact
+          </Button>
+        </div>
       </div>
       {error && !editing && <div className="rounded-md bg-destructive/15 p-3 text-sm text-destructive">{error}</div>}
+      {imported && (
+        <div className="flex items-start justify-between rounded-md border p-3 text-sm" role="status">
+          <div>
+            <div>
+              Imported {imported.imported} contact{imported.imported === 1 ? '' : 's'}
+              {imported.duplicates > 0 && `; ${imported.duplicates} you already had`}
+              {imported.skipped.length > 0 && `; ${imported.skipped.length} skipped`}.
+            </div>
+            {imported.skipped.slice(0, 5).map((s) => (
+              <div key={s.entry} className="text-muted-foreground">Entry {s.entry}: {s.reason}</div>
+            ))}
+          </div>
+          <Button variant="ghost" size="icon" aria-label="Dismiss" onClick={() => setImported(null)}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
       <Card>
         <CardHeader>
           <CardTitle>Your contacts</CardTitle>
@@ -131,7 +266,7 @@ export function UserContactsPage() {
                 <div className="text-sm text-muted-foreground">
                   {[
                     c.company,
-                    ...c.numbers.map((n) => (n.label ? `${n.number} (${n.label})` : n.number)),
+                    ...c.numbers.map((n) => (n.label ? `${n.number} (${labelShown(n.label)})` : n.number)),
                     c.email,
                   ].filter(Boolean).join(' · ')}
                 </div>
@@ -192,12 +327,11 @@ export function UserContactsPage() {
                       value={n.number}
                       onChange={(e) => setNumber(i, { number: e.target.value })}
                     />
-                    <Input
-                      aria-label={`Label ${i + 1}`}
-                      placeholder="mobile, work…"
-                      className="flex-[2]"
+                    <NumberLabel
+                      key={`label-${i}-${numbers.length}`}
+                      index={i}
                       value={n.label ?? ''}
-                      onChange={(e) => setNumber(i, { label: e.target.value })}
+                      onChange={(label) => setNumber(i, { label })}
                     />
                     {numbers.length > 1 && (
                       <Button
@@ -216,7 +350,7 @@ export function UserContactsPage() {
                   variant="outline"
                   size="sm"
                   type="button"
-                  onClick={() => update({ numbers: [...numbers, { label: '', number: '' }] })}
+                  onClick={() => update({ numbers: [...numbers, { label: numbers.length ? 'work' : 'mobile', number: '' }] })}
                 >
                   <Plus className="mr-2 h-4 w-4" /> Add a number
                 </Button>

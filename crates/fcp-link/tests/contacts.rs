@@ -46,6 +46,7 @@ fn contact(tenant: TenantId, owner: UserId, name: &str, at: SystemTime) -> Perso
         }],
         email: None,
         notes: None,
+        ringtone: None,
         created_at: at,
         updated_at: at,
         deleted_at: None,

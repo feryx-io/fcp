@@ -204,6 +204,7 @@ impl SiteAccounts {
             )),
             sip_provisioning_password: None,
             display_name: Some(trunk.name.clone()),
+            directory_listed: true,
             tenant_id,
             role: fcp_core::UserRole::EndUser,
             department_id: None,

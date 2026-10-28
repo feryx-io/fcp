@@ -283,6 +283,13 @@ pub struct User {
     /// Display name (optional)
     pub display_name: Option<String>,
 
+    /// Listed in the tenant's directory (`/me/directory`), as every user is
+    /// unless an administrator, or the user where the tenant lets them,
+    /// takes them out (an executive, say). An unlisted user still rings on
+    /// their extension and is seen by administrators.
+    #[serde(default = "default_directory_listed")]
+    pub directory_listed: bool,
+
     /// Tenant ID for multi-tenant isolation
     #[serde(default = "default_tenant_id")]
     pub tenant_id: crate::TenantId,
@@ -384,6 +391,10 @@ pub struct User {
     /// `Deprovisioned`.
     #[serde(with = "optional_system_time_serde", default)]
     pub deprovisioned_at: Option<SystemTime>,
+}
+
+fn default_directory_listed() -> bool {
+    true
 }
 
 fn default_language() -> String {
@@ -5606,6 +5617,7 @@ mod tests {
             sip_ha1_hash: None,
             sip_provisioning_password: None,
             display_name: Some("Alice".to_string()),
+            directory_listed: true,
             tenant_id: crate::TenantId::nil(), // Default tenant for test
             enabled: true,
             role: crate::UserRole::EndUser,

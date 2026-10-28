@@ -153,6 +153,7 @@ import type {
   UserDevice,
   PersonalContact,
   PersonalContactRequest,
+  ContactImportResponse,
 } from '@/types'
 
 // Auth
@@ -956,6 +957,12 @@ export const me = {
   updateContact: (id: string, data: PersonalContactRequest) =>
     apiClient.put<PersonalContact>(`/me/contacts/${encodeURIComponent(id)}`, data),
   deleteContact: (id: string) => apiClient.delete<void>(`/me/contacts/${encodeURIComponent(id)}`),
+  /** The contacts as a vCard or CSV file: an object URL. */
+  exportContacts: (format: 'vcard' | 'csv') =>
+    apiClient.fetchBlobUrl(`/me/contacts/export?format=${format}`),
+  /** Contacts from a vCard or CSV file, kept on the account. */
+  importContacts: (file: Blob, format: 'vcard' | 'csv') =>
+    apiClient.uploadRaw<ContactImportResponse>(`/me/contacts/import?format=${format}`, file),
   // Devices: phones and app installs (docs/SOFTPHONE.md §2.1)
   listDevices: () => apiClient.getAll<UserDevice>('/me/devices'),
   removeDevice: (id: string) => apiClient.delete<void>(`/me/devices/${encodeURIComponent(id)}`),

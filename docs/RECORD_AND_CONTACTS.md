@@ -144,6 +144,26 @@ again, so a contact made in the portal is in the app at once. A change the link 
 at a site from the cloud is not announced there: the site's apps see it on their next
 read.
 
+**A ringtone of its own.** A contact may name the ringtone the owner's apps
+ring with for a call from one of its numbers (`ringtone`, the app's id for
+it: `anvil`, `classic`, `file:…`; migration 124). A change that leaves the
+field out keeps it, so an app or the portal that offers no ringtone does not
+clear it; `null` clears it. It crosses to sites with the contact. A
+ringtone from a file stays on the device it was added on: another app plays
+its own default for that contact (D8 finding 31).
+
+**Files.** `GET /me/contacts/export?format=vcard|csv` writes the user's
+contacts as vCard 3.0 or CSV with Google's columns (`fcp_core::contact_file`);
+`POST /me/contacts/import` takes either (the file says which, or `format`)
+and keeps what it reads on the account: name, company, numbers with their
+labels (vCard's TYPE and Apple's `X-ABLabel`, Outlook's and Google's CSV
+columns, read into `mobile`, `work`, …), email and notes. An entry with the
+same name and numbers as a contact kept, or an earlier one in the file, is
+counted as a duplicate and not made; one with nothing to call it by is
+skipped by its place. The apps hear one `user.contact_changed` (`imported`).
+The portal's Contacts page imports and exports; so does the app (D8 finding
+29). Labels are picked from a list there as in the app (finding 23).
+
 **Any tenant.** A contact's `tenant_id` is its owner's and is not tied to a `tenants`
 row (migration 123): a single-tenant deployment's default tenant need not have one, and
 its users' contacts failed to save with a 500 until it was dropped.
@@ -180,6 +200,13 @@ its users' contacts failed to save with a 500 until it was dropped.
    the API and from a site's shipped contact. Test: `api_postgres`
    `a_change_to_a_contact_reaches_the_users_apps`. Anvil reads its contacts again
    when it hears one.
+7. ✅ **FCP v0.25.471:** a contact's `ringtone`, import and export as vCard
+   or CSV, labels from a list in the portal, and the directory listing
+   (`docs/USERS.md` §7a). Tests: `api_postgres` `a_contacts_ringtone_is_kept_until_cleared`,
+   `contacts_are_imported_and_exported_as_files`,
+   `a_user_taken_out_of_the_directory_is_not_listed`; `fcp_core::contact_file`'s
+   own (both formats round trip, an Apple card, Outlook's and Google's CSV,
+   duplicates); the UI suite's contacts test.
 
 ## 5. Agreed (2026-10-26)
 

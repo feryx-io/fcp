@@ -26,9 +26,13 @@ class TenantDirectory:
         Attributes:
             visible_to_users (bool | Unset): Whether its users may list the tenant's users, extensions and
                 presence; on unless a tenant turns it off.
+            users_may_unlist (bool | Unset): Whether a user may take themselves out of the directory, or put
+                themselves back (`PUT /me/directory-listing`); off, only an
+                administrator sets a user's `directory_listed`.
      """
 
     visible_to_users: bool | Unset = UNSET
+    users_may_unlist: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -38,6 +42,8 @@ class TenantDirectory:
     def to_dict(self) -> dict[str, Any]:
         visible_to_users = self.visible_to_users
 
+        users_may_unlist = self.users_may_unlist
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -45,6 +51,8 @@ class TenantDirectory:
         })
         if visible_to_users is not UNSET:
             field_dict["visible_to_users"] = visible_to_users
+        if users_may_unlist is not UNSET:
+            field_dict["users_may_unlist"] = users_may_unlist
 
         return field_dict
 
@@ -55,8 +63,11 @@ class TenantDirectory:
         d = dict(src_dict)
         visible_to_users = d.pop("visible_to_users", UNSET)
 
+        users_may_unlist = d.pop("users_may_unlist", UNSET)
+
         tenant_directory = cls(
             visible_to_users=visible_to_users,
+            users_may_unlist=users_may_unlist,
         )
 
 

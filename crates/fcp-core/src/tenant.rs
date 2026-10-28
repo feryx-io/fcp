@@ -175,6 +175,11 @@ pub struct TenantDirectory {
     /// presence; on unless a tenant turns it off.
     #[serde(default = "default_visible_to_users")]
     pub visible_to_users: bool,
+    /// Whether a user may take themselves out of the directory, or put
+    /// themselves back (`PUT /me/directory-listing`); off, only an
+    /// administrator sets a user's `directory_listed`.
+    #[serde(default)]
+    pub users_may_unlist: bool,
 }
 
 fn default_visible_to_users() -> bool {
@@ -185,6 +190,7 @@ impl Default for TenantDirectory {
     fn default() -> Self {
         Self {
             visible_to_users: true,
+            users_may_unlist: false,
         }
     }
 }

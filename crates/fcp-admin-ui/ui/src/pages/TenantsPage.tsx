@@ -56,6 +56,7 @@ const editSchema = z.object({
   provisioning_networks: z.string().optional(),
   meetings_owner: z.string().optional(),
   directory_visible: z.boolean().optional(),
+  users_may_unlist: z.boolean().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -244,6 +245,7 @@ export function TenantsPage() {
       provisioning_networks: (editItem.provisioning?.networks ?? []).join('\n'),
       meetings_owner: editItem.offboarding?.meetings_owner ?? '',
       directory_visible: editItem.directory?.visible_to_users ?? true,
+      users_may_unlist: editItem.directory?.users_may_unlist ?? false,
     })
   }
 
@@ -276,6 +278,7 @@ export function TenantsPage() {
       require_device_credentials,
       provisioning_networks,
       directory_visible,
+      users_may_unlist,
       ...rest
     } = data
     updateMutation.mutate({
@@ -302,7 +305,10 @@ export function TenantsPage() {
           require_device_credentials: require_device_credentials ?? false,
           networks: (provisioning_networks ?? '').split(/[\s,]+/).map((n) => n.trim()).filter(Boolean),
         },
-        directory: { visible_to_users: directory_visible ?? true },
+        directory: {
+          visible_to_users: directory_visible ?? true,
+          users_may_unlist: users_may_unlist ?? false,
+        },
         offboarding: {
           grace_days: grace_days ?? 30,
           meetings_owner: meetings_owner?.trim() || null,
@@ -672,6 +678,20 @@ export function TenantsPage() {
                 id="e-directory_visible"
                 checked={editForm.watch('directory_visible') ?? true}
                 onCheckedChange={(v) => editForm.setValue('directory_visible', v)}
+              />
+            </div>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="space-y-0.5 pr-4">
+                <Label htmlFor="e-users_may_unlist">Users may change their own listing</Label>
+                <p className="text-xs text-muted-foreground">
+                  Let each person take themselves out of the directory, or put themselves
+                  back, from their app or their page. Off, only an administrator does.
+                </p>
+              </div>
+              <Switch
+                id="e-users_may_unlist"
+                checked={editForm.watch('users_may_unlist') ?? false}
+                onCheckedChange={(v) => editForm.setValue('users_may_unlist', v)}
               />
             </div>
             <div className="flex justify-end gap-2">

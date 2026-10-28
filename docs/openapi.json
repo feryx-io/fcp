@@ -2864,7 +2864,7 @@
         "tags": [
           "self_service"
         ],
-        "summary": "GET /me/directory — the tenant's people and the extensions that ring\nno one person, each with its presence, while the tenant lets its users\nsee them (`directory.visible_to_users`; 403 otherwise).",
+        "summary": "GET /me/directory — the tenant's people and the extensions that ring\nno one person, each with its presence, while the tenant lets its users\nsee them (`directory.visible_to_users`; 403 otherwise). A user taken out\nof the directory (`directory_listed`) is not among them.",
         "operationId": "self_service_list_directory",
         "parameters": [
           {
@@ -3124,6 +3124,116 @@
         "responses": {
           "204": {
             "description": "Deleted"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/contacts/export": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/contacts/export — the user's contacts as one file, vCard 3.0 or\nCSV (Google's columns), to take to another phone or address book.",
+        "operationId": "self_service_export_contacts",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`vcard` or `csv`. On import, left out, the file says (`BEGIN:VCARD`\nis vCard, anything else CSV); on export, vCard.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "text/vcard": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/contacts/import": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/contacts/import — contacts from a vCard or CSV file (the body),\nkept on the user's account. One already kept, with the same name and\nnumbers, is not made again. The user's apps hear one\n`user.contact_changed` (`change`: `imported`) for the lot.",
+        "operationId": "self_service_import_contacts",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`vcard` or `csv`. On import, left out, the file says (`BEGIN:VCARD`\nis vCard, anything else CSV); on export, vCard.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The file: vCard or CSV",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            },
+            "text/csv": {
+              "schema": {
+                "type": "string"
+              }
+            },
+            "text/vcard": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Imported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactImportResponse"
+                }
+              }
+            }
           },
           "default": {
             "description": "An error",
@@ -21015,6 +21125,50 @@
           }
         }
       },
+      "ContactImportResponse": {
+        "type": "object",
+        "description": "What an import did.",
+        "required": [
+          "imported",
+          "duplicates",
+          "skipped"
+        ],
+        "properties": {
+          "imported": {
+            "type": "integer",
+            "description": "Contacts made.",
+            "minimum": 0
+          },
+          "duplicates": {
+            "type": "integer",
+            "description": "Entries already among the user's contacts (the same name and\nnumbers), or twice in the file: not made again.",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContactImportSkip"
+            },
+            "description": "Entries not made, each with its place in the file (a vCard's\nnumber, a CSV row's line) and why."
+          }
+        }
+      },
+      "ContactImportSkip": {
+        "type": "object",
+        "required": [
+          "entry",
+          "reason"
+        ],
+        "properties": {
+          "entry": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
       "ContactInput": {
         "oneOf": [
           {
@@ -22827,6 +22981,10 @@
           },
           "media_preferences": {
             "$ref": "#/components/schemas/MediaPreferences"
+          },
+          "directory_listed": {
+            "type": "boolean",
+            "description": "Listed in the tenant's directory for its users; listed unless false."
           },
           "email": {
             "type": [
@@ -30957,6 +31115,12 @@
                     "null"
                   ]
                 },
+                "ringtone": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "created_at": {
                   "type": "string",
                   "format": "date-time"
@@ -33579,7 +33743,8 @@
                 "failed_login_attempts",
                 "sip_username",
                 "scim_managed",
-                "media_preferences"
+                "media_preferences",
+                "directory_listed"
               ],
               "properties": {
                 "id": {
@@ -33730,6 +33895,10 @@
                 "media_preferences": {
                   "$ref": "#/components/schemas/MediaPreferences",
                   "description": "Recording and media defaults for the user's calls."
+                },
+                "directory_listed": {
+                  "type": "boolean",
+                  "description": "Listed in the tenant's directory for its users (`/me/directory`)."
                 }
               }
             }
@@ -34352,6 +34521,13 @@
               "string",
               "null"
             ]
+          },
+          "ringtone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ringtone the user's apps ring with for this contact, by the\napp's id for it; `null` rings with the app's own choice, and left\nout a change keeps the one set (an app or page that has none to\noffer does not clear it)."
           }
         }
       },
@@ -34391,6 +34567,12 @@
             ]
           },
           "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ringtone": {
             "type": [
               "string",
               "null"
@@ -34950,7 +35132,9 @@
           "language",
           "timezone",
           "role",
-          "has_profile_picture"
+          "has_profile_picture",
+          "directory_listed",
+          "may_change_directory_listing"
         ],
         "properties": {
           "username": {
@@ -35009,6 +35193,14 @@
           },
           "has_profile_picture": {
             "type": "boolean"
+          },
+          "directory_listed": {
+            "type": "boolean",
+            "description": "Listed in the tenant's directory for its users."
+          },
+          "may_change_directory_listing": {
+            "type": "boolean",
+            "description": "The tenant lets its users take themselves out of the directory, or\nput themselves back (`directory_listed` on `PUT /me/profile`)."
           }
         }
       },
@@ -37324,7 +37516,9 @@
           "username",
           "feature_codes",
           "device_id",
-          "may_record"
+          "may_record",
+          "directory_listed",
+          "may_change_directory_listing"
         ],
         "properties": {
           "account": {
@@ -37367,6 +37561,13 @@
           "may_record": {
             "type": "boolean",
             "description": "The user may record a call they are on\n(`/me/calls/{call_id}/recording/start`); the app shows its record\nbutton only then."
+          },
+          "directory_listed": {
+            "type": "boolean",
+            "description": "Listed in the tenant's directory, and whether the user may change\nthat themselves (`directory_listed` on `PUT /me/profile`)."
+          },
+          "may_change_directory_listing": {
+            "type": "boolean"
           }
         }
       },
@@ -37895,6 +38096,10 @@
           "visible_to_users": {
             "type": "boolean",
             "description": "Whether its users may list the tenant's users, extensions and\npresence; on unless a tenant turns it off."
+          },
+          "users_may_unlist": {
+            "type": "boolean",
+            "description": "Whether a user may take themselves out of the directory, or put\nthemselves back (`PUT /me/directory-listing`); off, only an\nadministrator sets a user's `directory_listed`."
           }
         }
       },
@@ -40110,6 +40315,13 @@
               "string",
               "null"
             ]
+          },
+          "directory_listed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Listed in the tenant's directory, or not: 403 unless the tenant\nlets its users change it (`directory.users_may_unlist`)."
           }
         }
       },
@@ -40980,6 +41192,13 @@
                 "type": "null"
               }
             ]
+          },
+          "directory_listed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Listed in the tenant's directory for its users (`/me/directory`);\nan unlisted user still rings and is seen by administrators."
           }
         }
       },
@@ -41296,7 +41515,8 @@
           "failed_login_attempts",
           "sip_username",
           "scim_managed",
-          "media_preferences"
+          "media_preferences",
+          "directory_listed"
         ],
         "properties": {
           "id": {
@@ -41447,6 +41667,10 @@
           "media_preferences": {
             "$ref": "#/components/schemas/MediaPreferences",
             "description": "Recording and media defaults for the user's calls."
+          },
+          "directory_listed": {
+            "type": "boolean",
+            "description": "Listed in the tenant's directory for its users (`/me/directory`)."
           }
         }
       },

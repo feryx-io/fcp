@@ -38,6 +38,18 @@ pub struct PersonalContactRequest {
     pub email: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    /// The ringtone the user's apps ring with for this contact, by the
+    /// app's id for it; `null` rings with the app's own choice, and left
+    /// out a change keeps the one set (an app or page that has none to
+    /// offer does not clear it).
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<String>)]
+    pub ringtone: Option<Option<String>>,
+}
+
+/// A field that may be left out (`None`), `null` (`Some(None)`) or set.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(d).map(Some)
 }
 
 /// A contact.
@@ -49,6 +61,7 @@ pub struct PersonalContactResponse {
     pub numbers: Vec<ContactNumber>,
     pub email: Option<String>,
     pub notes: Option<String>,
+    pub ringtone: Option<String>,
     #[serde(with = "crate::time::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
@@ -66,6 +79,7 @@ impl From<PersonalContact> for PersonalContactResponse {
             numbers: c.numbers,
             email: c.email,
             notes: c.notes,
+            ringtone: c.ringtone,
             created_at: c.created_at,
             updated_at: c.updated_at,
         }
@@ -136,6 +150,10 @@ fn checked(req: PersonalContactRequest) -> Result<PersonalContactRequest, ApiErr
         numbers,
         email: trimmed(req.email, "email", MAX_TEXT)?,
         notes: trimmed(req.notes, "notes", MAX_NOTES)?,
+        ringtone: match req.ringtone {
+            Some(r) => Some(trimmed(r, "ringtone", MAX_TEXT)?),
+            None => None,
+        },
     })
 }
 
@@ -268,6 +286,7 @@ pub async fn create_contact(
         numbers: req.numbers,
         email: req.email,
         notes: req.notes,
+        ringtone: req.ringtone.flatten(),
         created_at: now,
         updated_at: now,
         deleted_at: None,
@@ -332,6 +351,7 @@ pub async fn update_contact(
         numbers: req.numbers,
         email: req.email,
         notes: req.notes,
+        ringtone: req.ringtone.unwrap_or_else(|| kept.ringtone.clone()),
         updated_at: SystemTime::now().max(kept.updated_at + std::time::Duration::from_micros(1)),
         ..kept
     };
@@ -372,4 +392,218 @@ pub async fn delete_contact(
     write(store, &tombstone).await?;
     announce(state.event_bus.as_ref(), &tombstone, "deleted").await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ContactFileQuery {
+    /// `vcard` or `csv`. On import, left out, the file says (`BEGIN:VCARD`
+    /// is vCard, anything else CSV); on export, vCard.
+    pub format: Option<String>,
+}
+
+fn format_of(q: &ContactFileQuery) -> Result<Option<fcp_core::contact_file::Format>, ApiError> {
+    q.format
+        .as_deref()
+        .map(|f| {
+            fcp_core::contact_file::Format::parse(f)
+                .ok_or_else(|| ApiError::BadRequest(format!("{f:?} is not vcard or csv")))
+        })
+        .transpose()
+}
+
+/// All of the user's contacts, by name.
+async fn all_of(
+    store: &Arc<dyn ContactStore>,
+    user: &fcp_core::storage::User,
+) -> Result<Vec<PersonalContact>, ApiError> {
+    let mut all = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let page = store
+            .list_contacts(&user.id, None, after.as_deref(), 500)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let more = page.len() == 500;
+        after = page.last().map(|c| c.id.clone());
+        all.extend(page);
+        if !more {
+            return Ok(all);
+        }
+    }
+}
+
+/// GET /me/contacts/export — the user's contacts as one file, vCard 3.0 or
+/// CSV (Google's columns), to take to another phone or address book.
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/contacts/export",
+    tag = "self_service",
+    operation_id = "self_service_export_contacts",
+    params(ContactFileQuery),
+    responses(
+        (status = 200, description = "The file", content_type = "text/vcard", body = String),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn export_contacts(
+    State(state): State<ApiState>,
+    me_: Me,
+    Query(query): Query<ContactFileQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    use fcp_core::contact_file::Format;
+    let format = format_of(&query)?.unwrap_or(Format::VCard);
+    let user = me(&state, &me_).await?;
+    let contacts = all_of(store(&state)?, &user).await?;
+    let (content_type, file) = match format {
+        Format::VCard => ("text/vcard; charset=utf-8", "contacts.vcf"),
+        Format::Csv => ("text/csv; charset=utf-8", "contacts.csv"),
+    };
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, content_type.to_string()),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{file}\""),
+            ),
+        ],
+        fcp_core::contact_file::write(format, &contacts),
+    ))
+}
+
+/// What an import did.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ContactImportResponse {
+    /// Contacts made.
+    pub imported: usize,
+    /// Entries already among the user's contacts (the same name and
+    /// numbers), or twice in the file: not made again.
+    pub duplicates: usize,
+    /// Entries not made, each with its place in the file (a vCard's
+    /// number, a CSV row's line) and why.
+    pub skipped: Vec<ContactImportSkip>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ContactImportSkip {
+    pub entry: usize,
+    pub reason: String,
+}
+
+/// POST /me/contacts/import — contacts from a vCard or CSV file (the body),
+/// kept on the user's account. One already kept, with the same name and
+/// numbers, is not made again. The user's apps hear one
+/// `user.contact_changed` (`change`: `imported`) for the lot.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/contacts/import",
+    tag = "self_service",
+    operation_id = "self_service_import_contacts",
+    params(ContactFileQuery),
+    request_body(
+        description = "The file: vCard or CSV",
+        content(
+            (Vec<u8> = "application/octet-stream"),
+            (String = "text/vcard"),
+            (String = "text/csv"),
+        ),
+    ),
+    responses(
+        (status = 200, description = "Imported", body = ContactImportResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn import_contacts(
+    State(state): State<ApiState>,
+    me_: Me,
+    Query(query): Query<ContactFileQuery>,
+    body: String,
+) -> Result<impl IntoResponse, ApiError> {
+    use fcp_core::contact_file::{self, Format, ImportedContact};
+    let user = me(&state, &me_).await?;
+    let store = store(&state)?;
+    let format = format_of(&query)?.unwrap_or_else(|| Format::guess(&body));
+    let read = contact_file::read(format, &body);
+    let mut kept: Vec<ImportedContact> = all_of(store, &user)
+        .await?
+        .into_iter()
+        .map(|c| ImportedContact {
+            name: c.name,
+            numbers: c.numbers,
+            ..Default::default()
+        })
+        .collect();
+    let mut room = MAX_CONTACTS_PER_USER.saturating_sub(kept.len() as u64);
+    let mut answer = ContactImportResponse {
+        imported: 0,
+        duplicates: 0,
+        skipped: read
+            .skipped
+            .into_iter()
+            .map(|(entry, reason)| ContactImportSkip { entry, reason })
+            .collect(),
+    };
+    let mut first: Option<PersonalContact> = None;
+    for (i, found) in read.contacts.into_iter().enumerate() {
+        if kept.iter().any(|k| found.same_as(&k.name, &k.numbers)) {
+            answer.duplicates += 1;
+            continue;
+        }
+        let entry = i + 1;
+        if room == 0 {
+            answer.skipped.push(ContactImportSkip {
+                entry,
+                reason: format!("a user may keep at most {MAX_CONTACTS_PER_USER} contacts"),
+            });
+            continue;
+        }
+        let req = match checked(PersonalContactRequest {
+            name: found.name.clone(),
+            company: found.company.clone(),
+            numbers: found.numbers.clone(),
+            email: found.email.clone(),
+            notes: found.notes.clone(),
+            ringtone: None,
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                answer.skipped.push(ContactImportSkip {
+                    entry,
+                    reason: e.message().to_string(),
+                });
+                continue;
+            }
+        };
+        let now = SystemTime::now();
+        let contact = PersonalContact {
+            id: fcp_core::contact::new_contact_id(),
+            tenant_id: user.tenant_id,
+            owner_user_id: user.id,
+            name: req.name,
+            company: req.company,
+            numbers: req.numbers,
+            email: req.email,
+            notes: req.notes,
+            ringtone: None,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        };
+        write(store, &contact).await?;
+        kept.push(found);
+        room -= 1;
+        answer.imported += 1;
+        first.get_or_insert(contact);
+    }
+    if let Some(first) = &first {
+        announce(state.event_bus.as_ref(), first, "imported").await;
+    }
+    tracing::info!(
+        user = %user.username,
+        imported = answer.imported,
+        duplicates = answer.duplicates,
+        skipped = answer.skipped.len(),
+        "Contacts imported"
+    );
+    Ok(Json(answer))
 }

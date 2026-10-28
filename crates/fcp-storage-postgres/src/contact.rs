@@ -11,7 +11,7 @@ use sqlx::Row;
 
 use crate::{datetime_to_system_time_micros, system_time_to_datetime, PostgresStorage};
 
-const COLS: &str = "id, tenant_id, owner_user_id, name, company, numbers, email, notes, \
+const COLS: &str = "id, tenant_id, owner_user_id, name, company, numbers, email, notes, ringtone, \
                     created_at, updated_at, deleted_at, ship_seq";
 
 /// Times to the microsecond, as stored: which copy is newer is decided on
@@ -26,6 +26,7 @@ fn row_to_contact(row: &sqlx::postgres::PgRow) -> anyhow::Result<PersonalContact
         numbers: serde_json::from_value(row.try_get("numbers")?)?,
         email: row.try_get("email")?,
         notes: row.try_get("notes")?,
+        ringtone: row.try_get("ringtone")?,
         created_at: datetime_to_system_time_micros(row.try_get::<DateTime<Utc>, _>("created_at")?),
         updated_at: datetime_to_system_time_micros(row.try_get::<DateTime<Utc>, _>("updated_at")?),
         deleted_at: row
@@ -115,12 +116,13 @@ impl ContactStore for PostgresStorage {
         let done = sqlx::query(
             "INSERT INTO personal_contacts
                  (id, tenant_id, owner_user_id, name, company, numbers, email, notes,
-                  created_at, updated_at, deleted_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                  created_at, updated_at, deleted_at, ringtone)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
              ON CONFLICT (id) DO UPDATE SET
                  name = EXCLUDED.name, company = EXCLUDED.company,
                  numbers = EXCLUDED.numbers, email = EXCLUDED.email,
-                 notes = EXCLUDED.notes, updated_at = EXCLUDED.updated_at,
+                 notes = EXCLUDED.notes, ringtone = EXCLUDED.ringtone,
+                 updated_at = EXCLUDED.updated_at,
                  deleted_at = NULL
              WHERE personal_contacts.updated_at < EXCLUDED.updated_at
                AND personal_contacts.tenant_id = EXCLUDED.tenant_id
@@ -137,6 +139,7 @@ impl ContactStore for PostgresStorage {
         .bind(system_time_to_datetime(c.created_at))
         .bind(system_time_to_datetime(c.updated_at))
         .bind(None::<chrono::DateTime<Utc>>)
+        .bind(&c.ringtone)
         .execute(self.writes())
         .await?;
         Ok(done.rows_affected() > 0)

@@ -223,7 +223,8 @@ pub struct DirectoryQuery {
 
 /// GET /me/directory — the tenant's people and the extensions that ring
 /// no one person, each with its presence, while the tenant lets its users
-/// see them (`directory.visible_to_users`; 403 otherwise).
+/// see them (`directory.visible_to_users`; 403 otherwise). A user taken out
+/// of the directory (`directory_listed`) is not among them.
 #[utoipa::path(
     get,
     path = "/api/v1/me/directory",
@@ -298,7 +299,11 @@ pub async fn list_directory(
         .list_users_in_tenant(&me.tenant_id, &UserFilter::default())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    for u in users.iter().filter(|u| u.may_use_services()) {
+    // An unlisted user is left out; they still ring on their extension.
+    for u in users
+        .iter()
+        .filter(|u| u.may_use_services() && u.directory_listed)
+    {
         let fields = [
             Some(u.username.as_str()),
             u.display_name.as_deref(),

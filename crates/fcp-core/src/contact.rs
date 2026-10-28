@@ -59,6 +59,12 @@ pub struct PersonalContact {
     pub email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// The ringtone the owner's apps ring with for a call from one of its
+    /// numbers, by the app's id for it (`anvil`, `classic`, `file:…`);
+    /// `None` rings with the app's own choice. An app that has no such
+    /// ringtone rings with its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ringtone: Option<String>,
     pub created_at: SystemTime,
     /// When it last changed, on whichever side changed it: what decides
     /// which copy wins.
@@ -151,6 +157,7 @@ mod tests {
             }],
             email: None,
             notes: None,
+            ringtone: None,
             created_at: t,
             updated_at: t,
             deleted_at: None,

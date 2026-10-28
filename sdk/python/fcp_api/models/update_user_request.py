@@ -48,6 +48,8 @@ class UpdateUserRequest:
             emergency_contact_name (None | str | Unset):
             emergency_contact_phone (None | str | Unset):
             media_preferences (MediaPreferences | None | Unset):
+            directory_listed (bool | None | Unset): Listed in the tenant's directory for its users (`/me/directory`);
+                an unlisted user still rings and is seen by administrators.
      """
 
     username: None | str | Unset = UNSET
@@ -70,6 +72,7 @@ class UpdateUserRequest:
     emergency_contact_name: None | str | Unset = UNSET
     emergency_contact_phone: None | str | Unset = UNSET
     media_preferences: MediaPreferences | None | Unset = UNSET
+    directory_listed: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -200,6 +203,12 @@ class UpdateUserRequest:
         else:
             media_preferences = self.media_preferences
 
+        directory_listed: bool | None | Unset
+        if isinstance(self.directory_listed, Unset):
+            directory_listed = UNSET
+        else:
+            directory_listed = self.directory_listed
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -245,6 +254,8 @@ class UpdateUserRequest:
             field_dict["emergency_contact_phone"] = emergency_contact_phone
         if media_preferences is not UNSET:
             field_dict["media_preferences"] = media_preferences
+        if directory_listed is not UNSET:
+            field_dict["directory_listed"] = directory_listed
 
         return field_dict
 
@@ -464,6 +475,16 @@ class UpdateUserRequest:
         media_preferences = _parse_media_preferences(d.pop("media_preferences", UNSET))
 
 
+        def _parse_directory_listed(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        directory_listed = _parse_directory_listed(d.pop("directory_listed", UNSET))
+
+
         update_user_request = cls(
             username=username,
             display_name=display_name,
@@ -485,6 +506,7 @@ class UpdateUserRequest:
             emergency_contact_name=emergency_contact_name,
             emergency_contact_phone=emergency_contact_phone,
             media_preferences=media_preferences,
+            directory_listed=directory_listed,
         )
 
 

@@ -88,6 +88,8 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/me/directory", Open),
     (GET, "/me/contacts", Open),
     (POST, "/me/contacts", Open),
+    (GET, "/me/contacts/export", Open),
+    (POST, "/me/contacts/import", Open),
     (GET, "/me/contacts/:id", Open),
     (PUT, "/me/contacts/:id", Open),
     (DELETE, "/me/contacts/:id", Open),

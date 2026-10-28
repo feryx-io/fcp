@@ -32,6 +32,10 @@ class PersonalContactRequest:
             numbers (list[ContactNumber] | Unset):
             email (None | str | Unset):
             notes (None | str | Unset):
+            ringtone (None | str | Unset): The ringtone the user's apps ring with for this contact, by the
+                app's id for it; `null` rings with the app's own choice, and left
+                out a change keeps the one set (an app or page that has none to
+                offer does not clear it).
      """
 
     name: str
@@ -39,6 +43,7 @@ class PersonalContactRequest:
     numbers: list[ContactNumber] | Unset = UNSET
     email: None | str | Unset = UNSET
     notes: None | str | Unset = UNSET
+    ringtone: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -76,6 +81,12 @@ class PersonalContactRequest:
         else:
             notes = self.notes
 
+        ringtone: None | str | Unset
+        if isinstance(self.ringtone, Unset):
+            ringtone = UNSET
+        else:
+            ringtone = self.ringtone
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -90,6 +101,8 @@ class PersonalContactRequest:
             field_dict["email"] = email
         if notes is not UNSET:
             field_dict["notes"] = notes
+        if ringtone is not UNSET:
+            field_dict["ringtone"] = ringtone
 
         return field_dict
 
@@ -143,12 +156,23 @@ class PersonalContactRequest:
         notes = _parse_notes(d.pop("notes", UNSET))
 
 
+        def _parse_ringtone(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        ringtone = _parse_ringtone(d.pop("ringtone", UNSET))
+
+
         personal_contact_request = cls(
             name=name,
             company=company,
             numbers=numbers,
             email=email,
             notes=notes,
+            ringtone=ringtone,
         )
 
 

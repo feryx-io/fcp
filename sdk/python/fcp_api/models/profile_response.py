@@ -30,6 +30,9 @@ class ProfileResponse:
             timezone (str):
             role (str):
             has_profile_picture (bool):
+            directory_listed (bool): Listed in the tenant's directory for its users.
+            may_change_directory_listing (bool): The tenant lets its users take themselves out of the directory, or
+                put themselves back (`directory_listed` on `PUT /me/profile`).
             display_name (None | str | Unset):
             email (None | str | Unset):
             phone_number (None | str | Unset):
@@ -44,6 +47,8 @@ class ProfileResponse:
     timezone: str
     role: str
     has_profile_picture: bool
+    directory_listed: bool
+    may_change_directory_listing: bool
     display_name: None | str | Unset = UNSET
     email: None | str | Unset = UNSET
     phone_number: None | str | Unset = UNSET
@@ -67,6 +72,10 @@ class ProfileResponse:
         role = self.role
 
         has_profile_picture = self.has_profile_picture
+
+        directory_listed = self.directory_listed
+
+        may_change_directory_listing = self.may_change_directory_listing
 
         display_name: None | str | Unset
         if isinstance(self.display_name, Unset):
@@ -119,6 +128,8 @@ class ProfileResponse:
             "timezone": timezone,
             "role": role,
             "has_profile_picture": has_profile_picture,
+            "directory_listed": directory_listed,
+            "may_change_directory_listing": may_change_directory_listing,
         })
         if display_name is not UNSET:
             field_dict["display_name"] = display_name
@@ -151,6 +162,10 @@ class ProfileResponse:
         role = d.pop("role")
 
         has_profile_picture = d.pop("has_profile_picture")
+
+        directory_listed = d.pop("directory_listed")
+
+        may_change_directory_listing = d.pop("may_change_directory_listing")
 
         def _parse_display_name(data: object) -> None | str | Unset:
             if data is None:
@@ -228,6 +243,8 @@ class ProfileResponse:
             timezone=timezone,
             role=role,
             has_profile_picture=has_profile_picture,
+            directory_listed=directory_listed,
+            may_change_directory_listing=may_change_directory_listing,
             display_name=display_name,
             email=email,
             phone_number=phone_number,

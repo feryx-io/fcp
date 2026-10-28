@@ -1128,7 +1128,8 @@ export interface paths {
         /**
          * GET /me/directory — the tenant's people and the extensions that ring
          *     no one person, each with its presence, while the tenant lets its users
-         *     see them (`directory.visible_to_users`; 403 otherwise).
+         *     see them (`directory.visible_to_users`; 403 otherwise). A user taken out
+         *     of the directory (`directory_listed`) is not among them.
          */
         get: operations["self_service_list_directory"];
         put?: never;
@@ -1174,6 +1175,48 @@ export interface paths {
          *     tombstone carries the delete to the tenant's sites.
          */
         delete: operations["self_service_delete_contact"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/contacts/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /me/contacts/export — the user's contacts as one file, vCard 3.0 or
+         *     CSV (Google's columns), to take to another phone or address book.
+         */
+        get: operations["self_service_export_contacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/contacts/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/contacts/import — contacts from a vCard or CSV file (the body),
+         *     kept on the user's account. One already kept, with the same name and
+         *     numbers, is not made again. The user's apps hear one
+         *     `user.contact_changed` (`change`: `imported`) for the lot.
+         */
+        post: operations["self_service_import_contacts"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -6435,6 +6478,25 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description What an import did. */
+        ContactImportResponse: {
+            /** @description Contacts made. */
+            imported: number;
+            /**
+             * @description Entries already among the user's contacts (the same name and
+             *     numbers), or twice in the file: not made again.
+             */
+            duplicates: number;
+            /**
+             * @description Entries not made, each with its place in the file (a vCard's
+             *     number, a CSV row's line) and why.
+             */
+            skipped: components["schemas"]["ContactImportSkip"][];
+        };
+        ContactImportSkip: {
+            entry: number;
+            reason: string;
+        };
         /**
          * @description A contact on the way in: either the plain string the API took before
          *     block 2, read by its shape, or a typed object.
@@ -6935,6 +6997,8 @@ export interface components {
             role?: string | null;
             department_id?: string | null;
             media_preferences?: components["schemas"]["MediaPreferences"];
+            /** @description Listed in the tenant's directory for its users; listed unless false. */
+            directory_listed?: boolean;
             email?: string | null;
             phone_number?: string | null;
             mobile_number?: string | null;
@@ -9555,6 +9619,7 @@ export interface components {
                 numbers: components["schemas"]["ContactNumber"][];
                 email?: string | null;
                 notes?: string | null;
+                ringtone?: string | null;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -10394,6 +10459,8 @@ export interface components {
                 deprovisioned_at?: string | null;
                 /** @description Recording and media defaults for the user's calls. */
                 media_preferences: components["schemas"]["MediaPreferences"];
+                /** @description Listed in the tenant's directory for its users (`/me/directory`). */
+                directory_listed: boolean;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -10590,6 +10657,13 @@ export interface components {
             numbers?: components["schemas"]["ContactNumber"][];
             email?: string | null;
             notes?: string | null;
+            /**
+             * @description The ringtone the user's apps ring with for this contact, by the
+             *     app's id for it; `null` rings with the app's own choice, and left
+             *     out a change keeps the one set (an app or page that has none to
+             *     offer does not clear it).
+             */
+            ringtone?: string | null;
         };
         /** @description A contact. */
         PersonalContactResponse: {
@@ -10599,6 +10673,7 @@ export interface components {
             numbers: components["schemas"]["ContactNumber"][];
             email?: string | null;
             notes?: string | null;
+            ringtone?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -10811,6 +10886,13 @@ export interface components {
             timezone: string;
             role: string;
             has_profile_picture: boolean;
+            /** @description Listed in the tenant's directory for its users. */
+            directory_listed: boolean;
+            /**
+             * @description The tenant lets its users take themselves out of the directory, or
+             *     put themselves back (`directory_listed` on `PUT /me/profile`).
+             */
+            may_change_directory_listing: boolean;
         };
         /** @description `POST /prompts/:id/audio`. */
         PromptAudioUpload: {
@@ -11658,6 +11740,12 @@ export interface components {
              *     button only then.
              */
             may_record: boolean;
+            /**
+             * @description Listed in the tenant's directory, and whether the user may change
+             *     that themselves (`directory_listed` on `PUT /me/profile`).
+             */
+            directory_listed: boolean;
+            may_change_directory_listing: boolean;
         };
         /** @description The media the app offers. */
         SoftphoneMedia: {
@@ -11844,6 +11932,12 @@ export interface components {
              *     presence; on unless a tenant turns it off.
              */
             visible_to_users?: boolean;
+            /**
+             * @description Whether a user may take themselves out of the directory, or put
+             *     themselves back (`PUT /me/directory-listing`); off, only an
+             *     administrator sets a user's `directory_listed`.
+             */
+            users_may_unlist?: boolean;
         };
         /** @description A TenantId: `tenant-<uuid>`, or the bare UUID */
         TenantId: string;
@@ -12553,6 +12647,11 @@ export interface components {
             phone_number?: string | null;
             timezone?: string | null;
             language?: string | null;
+            /**
+             * @description Listed in the tenant's directory, or not: 403 unless the tenant
+             *     lets its users change it (`directory.users_may_unlist`).
+             */
+            directory_listed?: boolean | null;
         };
         UpdatePromptRequest: {
             description?: string | null;
@@ -12735,6 +12834,11 @@ export interface components {
             emergency_contact_name?: string | null;
             emergency_contact_phone?: string | null;
             media_preferences?: components["schemas"]["MediaPreferences"] | null;
+            /**
+             * @description Listed in the tenant's directory for its users (`/me/directory`);
+             *     an unlisted user still rings and is seen by administrators.
+             */
+            directory_listed?: boolean | null;
         };
         UpdateVoicemailRequest: {
             pin?: string | null;
@@ -12874,6 +12978,8 @@ export interface components {
             deprovisioned_at?: string | null;
             /** @description Recording and media defaults for the user's calls. */
             media_preferences: components["schemas"]["MediaPreferences"];
+            /** @description Listed in the tenant's directory for its users (`/me/directory`). */
+            directory_listed: boolean;
         };
         ValidateAddressRequest: {
             address: components["schemas"]["E911AddressResponse"];
@@ -15573,6 +15679,83 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_export_contacts: {
+        parameters: {
+            query?: {
+                /**
+                 * @description `vcard` or `csv`. On import, left out, the file says (`BEGIN:VCARD`
+                 *     is vCard, anything else CSV); on export, vCard.
+                 */
+                format?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/vcard": string;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_import_contacts: {
+        parameters: {
+            query?: {
+                /**
+                 * @description `vcard` or `csv`. On import, left out, the file says (`BEGIN:VCARD`
+                 *     is vCard, anything else CSV); on export, vCard.
+                 */
+                format?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The file: vCard or CSV */
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+                "text/csv": string;
+                "text/vcard": string;
+            };
+        };
+        responses: {
+            /** @description Imported */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContactImportResponse"];
+                };
             };
             /** @description An error */
             default: {
