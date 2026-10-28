@@ -15104,13 +15104,19 @@ async fn app_devices_nobody_signs_in_as_are_swept() {
         .unwrap()
         .to_string();
     let mut devices = std::collections::HashMap::new();
-    for install in ["install-gone", "install-used", "install-new"] {
+    for (install, name) in [
+        ("install-gone", "Bea's laptop"),
+        ("install-used", "Bea's laptop"),
+        ("install-new", "Bea's laptop"),
+        ("install-replaced", "Bea's laptop"),
+        ("install-idle", "Bea's phone"),
+    ] {
         let res = app
             .send_as(
                 &token,
                 Method::POST,
                 "/api/v1/auth/app/sessions",
-                Some(json!({ "client_name": "Bea's laptop", "install_id": install })),
+                Some(json!({ "client_name": name, "install_id": install })),
             )
             .await;
         assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
@@ -15138,10 +15144,28 @@ async fn app_devices_nobody_signs_in_as_are_swept() {
         .await
         .unwrap();
     }
+    // Two signed in a month ago and quiet since: the laptop's install was
+    // replaced by a newer one of the same app; the phone's has none.
+    for install in ["install-replaced", "install-idle"] {
+        sqlx::query(
+            "UPDATE app_installs SET created_at = NOW() - INTERVAL '30 days' WHERE install_id = $1",
+        )
+        .bind(install)
+        .execute(app.storage.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE login_sessions SET refreshed_at = NOW() - INTERVAL '30 days' WHERE device_id = $1",
+        )
+        .bind(devices[install].to_string())
+        .execute(app.storage.pool())
+        .await
+        .unwrap();
+    }
 
     let removed =
         fcp_api_core::v1::app_auth::sweep_abandoned_devices(&app.state, SystemTime::now()).await;
-    assert_eq!(removed, 1);
+    assert_eq!(removed, 2);
     let kept = |install: &str| {
         let id = devices[install];
         let storage = app.storage.clone();
@@ -15150,6 +15174,19 @@ async fn app_devices_nobody_signs_in_as_are_swept() {
     assert!(!kept("install-gone").await, "the abandoned device stayed");
     assert!(kept("install-used").await, "a device in use was taken");
     assert!(kept("install-new").await, "a device a moment old was taken");
+    assert!(
+        !kept("install-replaced").await,
+        "the replaced install stayed"
+    );
+    assert!(kept("install-idle").await, "a device only unused was taken");
+    let (live,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM login_sessions WHERE device_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(devices["install-replaced"].to_string())
+    .fetch_one(app.storage.pool())
+    .await
+    .unwrap();
+    assert_eq!(live, 0, "the replaced install's session went on");
 }
 
 // ---------------------------------------------------------------------------

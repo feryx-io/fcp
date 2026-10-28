@@ -736,17 +736,26 @@ pub async fn revoke(
 /// removes it: long enough that a device being signed in, made a moment
 /// before its session, is never taken.
 const ABANDONED_AFTER: std::time::Duration = std::time::Duration::from_secs(3600);
+/// How long an install's session may go unrefreshed, with a newer install
+/// of the same app signed in as the same user, before its device is taken
+/// as replaced (uninstalled and installed again). A device that is only
+/// unused keeps its session until `app_session_days`.
+const REPLACED_AFTER: std::time::Duration = std::time::Duration::from_secs(14 * 86_400);
 
 /// Remove the app devices no live session uses (`docs/APP_SIGN_IN.md`):
 /// an install that signed out before sign-out removed its device, whose
-/// session expired, or that was replaced without signing out. Its
-/// registrations go with it. How many were removed.
+/// session expired, or that was replaced without signing out (its session
+/// idle for [`REPLACED_AFTER`] behind a newer install of the same app). Its
+/// sessions and registrations go with it. How many were removed.
 pub async fn sweep_abandoned_devices(state: &ApiState, now: SystemTime) -> u64 {
     use fcp_core::storage::DeviceStore;
     let (Ok(sessions), Ok(storage)) = (store(state), storage(state)) else {
         return 0;
     };
-    let devices = match sessions.abandoned_app_devices(now - ABANDONED_AFTER).await {
+    let devices = match sessions
+        .abandoned_app_devices(now - ABANDONED_AFTER, now - REPLACED_AFTER)
+        .await
+    {
         Ok(d) => d,
         Err(e) => {
             tracing::warn!(error = %e, "Abandoned app devices not listed");

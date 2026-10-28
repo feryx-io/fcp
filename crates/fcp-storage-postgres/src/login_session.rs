@@ -387,16 +387,26 @@ impl LoginSessionStore for PostgresLoginSessionStore {
     async fn abandoned_app_devices(
         &self,
         made_before: SystemTime,
+        idle_before: SystemTime,
     ) -> fcp_core::Result<Vec<fcp_core::DeviceId>> {
+        // A live session keeps its device, unless it has been idle and a
+        // newer install of the same app signed in as the same user since.
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT a.device_id FROM app_installs a
              WHERE a.created_at < $1
                AND NOT EXISTS (
                  SELECT 1 FROM login_sessions s
                  WHERE s.device_id = a.device_id
-                   AND s.revoked_at IS NULL AND s.expires_at > now())",
+                   AND s.revoked_at IS NULL AND s.expires_at > now()
+                   AND (s.refreshed_at >= $2 OR NOT EXISTS (
+                     SELECT 1 FROM app_installs b
+                     JOIN login_sessions n ON n.device_id = b.device_id
+                     WHERE b.user_id = a.user_id AND b.created_at > a.created_at
+                       AND n.app_name = s.app_name
+                       AND n.revoked_at IS NULL AND n.expires_at > now())))",
         )
         .bind(at(made_before))
+        .bind(at(idle_before))
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?;
