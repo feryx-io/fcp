@@ -430,6 +430,7 @@ pub async fn create_status(
         state: req.state,
         position: own.iter().map(|s| s.position + 1).max().unwrap_or(0),
         updated_at: SystemTime::now(),
+        deleted_at: None,
     };
     store.put_own_status(&status).await.map_err(internal)?;
     Ok((StatusCode::CREATED, Json(OwnStatusResponse::from(status))))

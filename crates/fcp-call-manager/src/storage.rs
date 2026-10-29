@@ -80,6 +80,11 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
         // address (docs/PROVISIONING.md §8).
         .with_provisioning_store(
             storage.clone() as Arc<dyn fcp_core::provisioning::ProvisioningStore>
+        )
+        // A watched person's chosen status, read when nobody has announced
+        // it since the node started (docs/PRESENCE.md §3).
+        .with_presence_status_store(
+            storage.clone() as Arc<dyn fcp_core::presence_status::PresenceStatusStore>
         );
 
     info!(

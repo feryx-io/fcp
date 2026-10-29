@@ -94,6 +94,19 @@ impl Shown {
             Self::Offline => "offline",
         }
     }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "available" => Self::Available,
+            "away" => Self::Away,
+            "busy" => Self::Busy,
+            "dnd" => Self::Dnd,
+            "ringing" => Self::Ringing,
+            "on_call" => Self::OnCall,
+            "offline" => Self::Offline,
+            _ => return None,
+        })
+    }
 }
 
 impl From<StatusState> for Shown {
@@ -119,9 +132,19 @@ pub struct OwnStatus {
     /// Where it is in the user's list, from 0.
     pub position: i32,
     pub updated_at: SystemTime,
+    /// Deleted: kept as a tombstone for [`TOMBSTONE_DAYS`] so the delete
+    /// reaches the other side of a site's link (`docs/PRESENCE.md` §3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<SystemTime>,
 }
 
-/// The status a user chose. No row is [`StatusState::Available`].
+/// How long a deleted status's tombstone is kept.
+pub const TOMBSTONE_DAYS: u64 = 30;
+
+/// The status a user chose. No row is [`StatusState::Available`], and so
+/// is a row saying `available` with no note or time: clearing a status
+/// writes that, so the clearing crosses a site's link
+/// (`docs/PRESENCE.md` §3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChosenStatus {
     pub tenant_id: TenantId,
@@ -135,6 +158,13 @@ pub struct ChosenStatus {
 }
 
 impl ChosenStatus {
+    /// Available with nothing to say: the same as no status.
+    pub fn is_plain_available(&self) -> bool {
+        self.status == StatusState::Available.as_str()
+            && self.note.is_none()
+            && self.until.is_none()
+    }
+
     /// Whether it has cleared by `now`.
     pub fn cleared(&self, now: SystemTime) -> bool {
         self.until.is_some_and(|u| u <= now)
@@ -263,26 +293,81 @@ pub fn effective(chosen: &Resolved, now: Happening) -> Presence {
 /// Where chosen statuses and users' own statuses are kept.
 #[async_trait]
 pub trait PresenceStatusStore: Send + Sync {
-    /// The status a user chose; `None` is Available.
+    /// The status a user chose; `None` is Available (a plain `available`
+    /// row reads as `None`).
     async fn get_chosen_status(&self, user: &UserId) -> anyhow::Result<Option<ChosenStatus>>;
 
-    /// Every chosen status kept (the admin reads them at start).
+    /// Every chosen status kept other than plain Available (the admin
+    /// reads them at start).
     async fn list_chosen_statuses(&self) -> anyhow::Result<Vec<ChosenStatus>>;
 
     /// Write a user's chosen status.
     async fn put_chosen_status(&self, chosen: &ChosenStatus) -> anyhow::Result<()>;
 
-    /// Back to Available.
+    /// Back to Available: the row says `available`, with no note or time,
+    /// as of now, so the clearing reaches a site's other side.
     async fn delete_chosen_status(&self, user: &UserId) -> anyhow::Result<()>;
 
-    /// A user's own statuses, in their order.
+    /// A user's own statuses, in their order; tombstones left out.
     async fn list_own_statuses(&self, user: &UserId) -> anyhow::Result<Vec<OwnStatus>>;
 
     /// Write one of a user's own statuses.
     async fn put_own_status(&self, status: &OwnStatus) -> anyhow::Result<()>;
 
-    /// Remove one of a user's own statuses; whether it was theirs.
+    /// Delete one of a user's own statuses to a tombstone; whether it was
+    /// theirs.
     async fn delete_own_status(&self, user: &UserId, id: &str) -> anyhow::Result<bool>;
+
+    // Syncing with sites (`docs/PRESENCE.md` §3): rows as they are, plain
+    // Available and tombstones included.
+
+    /// A user's chosen-status row as it is.
+    async fn get_chosen_status_row(&self, user: &UserId) -> anyhow::Result<Option<ChosenStatus>>;
+
+    /// A tenant's chosen-status rows, for a site's snapshot.
+    async fn tenant_chosen_statuses(&self, tenant: &TenantId) -> anyhow::Result<Vec<ChosenStatus>>;
+
+    /// Write `chosen` when it is newer than the row kept (or none is) and
+    /// names the same tenant; whether it was written.
+    async fn put_chosen_status_if_newer(&self, chosen: &ChosenStatus) -> anyhow::Result<bool>;
+
+    /// Remove a user's chosen-status row outright (the user went).
+    async fn delete_chosen_status_row(&self, user: &UserId) -> anyhow::Result<bool>;
+
+    /// Chosen-status rows written after shipping sequence `after`, in
+    /// that order.
+    async fn chosen_statuses_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(i64, ChosenStatus)>>;
+
+    /// One own status as it is, tombstone or not.
+    async fn get_own_status(&self, id: &str) -> anyhow::Result<Option<OwnStatus>>;
+
+    /// A tenant's own statuses, tombstones included, for a site's
+    /// snapshot.
+    async fn tenant_own_statuses(&self, tenant: &TenantId) -> anyhow::Result<Vec<OwnStatus>>;
+
+    /// Write `status` when it is newer than the row kept (or none is) and
+    /// names the same tenant and user; a tombstone only marks a status
+    /// kept here, so a late echo brings no swept row back. Whether it was
+    /// written.
+    async fn put_own_status_if_newer(&self, status: &OwnStatus) -> anyhow::Result<bool>;
+
+    /// Remove an own status's row outright.
+    async fn delete_own_status_row(&self, id: &str) -> anyhow::Result<bool>;
+
+    /// Own statuses written after shipping sequence `after`, in that
+    /// order.
+    async fn own_statuses_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(i64, OwnStatus)>>;
+
+    /// Remove the tombstones of statuses deleted before `before`.
+    async fn sweep_status_tombstones(&self, before: SystemTime) -> anyhow::Result<u64>;
 }
 
 #[cfg(test)]
@@ -298,6 +383,7 @@ mod tests {
             state,
             position: 0,
             updated_at: SystemTime::UNIX_EPOCH,
+            deleted_at: None,
         }
     }
 
@@ -324,7 +410,11 @@ mod tests {
     fn a_status_is_built_in_or_one_of_theirs_until_it_clears() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
         let wfh = own("WFH", StatusState::Available);
-        let r = Resolved::of(Some(&chosen("status-wfh", None)), std::slice::from_ref(&wfh), now);
+        let r = Resolved::of(
+            Some(&chosen("status-wfh", None)),
+            std::slice::from_ref(&wfh),
+            now,
+        );
         assert_eq!(
             (r.state, r.label.as_deref()),
             (StatusState::Available, Some("WFH"))

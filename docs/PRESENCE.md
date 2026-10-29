@@ -94,10 +94,13 @@ is what "only DND stops calls" means for them.
 
 - `user_presence`: `user_id` (key, deleted with the user), `tenant_id`, `status`
   (`available`/`away`/`busy`/`dnd` or a status id of the user's), `note`, `until`,
-  `updated_at`. No row is Available. The admin clears a status whose `until` has
-  passed (a timer per person, and once at start).
+  `updated_at`. No row is Available, and so is a row saying `available` with no note
+  or `until`: clearing a status writes that (migration 126), so the clearing crosses a
+  site's link. The admin clears a status whose `until` has passed (a timer per person,
+  and once at start).
 - `presence_statuses`: `id` (`status-` and a UUID), `user_id`, `label`, `state`,
-  `position`, `updated_at`.
+  `position`, `updated_at`; a deleted status is a tombstone (`deleted_at`, migration
+  126), swept after 30 days by the admin's hourly offboarding sweep.
 
 `fcp_core::presence_status` holds the model, the store trait and one pure function,
 `effective(chosen, dnd, calls, idle, registered) -> Presence`, which every reader uses.
@@ -136,9 +139,45 @@ user's chosen status and registrations, so a restart loses nothing.
 - The admin's presence pub/sub is no longer needed for any of this; the per-address
   routes (`/api/v1/presence/*`) stay for SIP presentities that are not users.
 
+As built (v0.25.474): the admin publishes `presence.user_changed` on its bus and posts
+it to the events server's ingest (`fcp_events::LocalAndCluster` over the admin's
+`IngestPublisher`); the copy the events server sends back over its WebSocket is let
+go, so the admin's apps hear each change once. With several admins each posts its own,
+so a tenant webhook hears a change once per admin. `fcp_sip::person_presence`
+(`PeopleOnPhones`) lays a person's presence on their SIP name and extension on each of
+the tenant's domains, and on any other address of theirs a phone has asked about (a
+phone using the node's address as its domain): `closed` only for offline, the RPID
+activity, and the label and note as the note ("At lunch — back at 2", "On the phone ·
+WFH", "Do not disturb", "Idle"). A change of note alone is told to watchers by the
+call manager directly, since `presence.status_changed` is only raised for a change of
+state. A person nobody has announced since the node started is read from the database
+when a phone first subscribes to them (chosen status, DND, registrations; no calls),
+before the watcher is added, so it is told once. The call manager's own listener keeps
+only the busy lamps' dialogs; the conference "In conference" and voicemail-count notes
+are gone. The admin's per-address mirror takes each `presence.status_changed` in its own
+tenant. PIDF parsing reads RPID activities (on-the-phone; busy, meeting and the like;
+away, vacation and the like) before the note's exact text. Queues and hunt groups ask
+`PeopleOnPhones::unavailable`: DND or on a call, by extension or SIP name, in any tenant
+(they ask without one); someone not heard of is available. A site's `presence.user_changed`
+stays at the site (`fcp-link` holds it back like `cdr.written`): each side works its own
+out, and the cloud's call managers would otherwise be told two.
+
 **Sites.** The two tables are journaled down and shipped up like contacts
 (`docs/RECORD_AND_CONTACTS.md` §3): a status chosen at a site reaches the cloud and back.
 Each side works out presence from its own registrations and calls.
+
+As built: migration 126 journals both tables (`user_presence` by its user) and gives
+them `ship_seq`; the cloud's link API puts them in a site's snapshot and per-row read,
+and `POST /link/v1/records` takes them from a site for a user of the site's tenant;
+`fcp-link` applies them downward and ships them upward with a cursor per table
+(`presence_statuses`, `user_presence`). Each side takes the other's copy only when it is
+strictly newer by `updated_at`, compared in SQL (`put_own_status_if_newer`,
+`put_chosen_status_if_newer`), so an echo is let go. Shipping carries rows, not
+deletes, so neither table deletes: a cleared status is a plain `available` row and a
+deleted own status a tombstone, which is kept only for a status a side has (a late echo
+brings no swept row back); the sweep's hard delete reaches a site through the journal.
+A side's presence reads the other's change on its next read of the tenant (every five
+minutes), not at once. Test: `fcp-link/tests/presence.rs`.
 
 ## 4. Anvil
 
@@ -175,7 +214,7 @@ Each side works out presence from its own registrations and calls.
    forwarding it to the events server, for the call managers and webhooks, is phase 2,
    and so are queues and hunt groups, which ask by extension without a tenant and
    cannot wait on the database.
-2. **FCP: phones, queues and sites.** `presence.user_changed` forwarded to the events
+2. ✅ **FCP v0.25.474: phones, queues and sites.** `presence.user_changed` forwarded to the events
    server once (no echo back onto the admin's bus) and delivered to tenant webhooks;
    the call manager's presence fed by person, its own overwriting listener and the
    admin's address-keyed one retired, PIDF parsing reading RPID activities; queues and
@@ -183,6 +222,18 @@ Each side works out presence from its own registrations and calls.
    now hears; the tables synced with sites. Tests: `fcp-call-manager/tests/presence.rs`
    (a watcher's NOTIFY says away with the label, on-the-phone during a call, and away
    again after; a queue agent who chose Busy still offered calls), `fcp-link/tests`.
+   Sites done (§3 Sites): migration 126 (journal triggers, `ship_seq`, own-status
+   tombstones, a cleared status as a plain `available` row), the link API's snapshot,
+   per-row read and records, `fcp-link`'s apply and ship cursors;
+   `fcp-link/tests/presence.rs`
+   (`presence_a_person_sets_is_synced_both_ways_with_their_site`). Phones and queues
+   done (§3 "As built (v0.25.474)"): `fcp-call-manager/tests/presence.rs`
+   `a_watcher_sees_the_persons_presence_over_their_calls` (first NOTIFY from the
+   database, on the phone with the label, a new note alone, closed) and
+   `a_queue_offers_calls_to_an_agent_who_chose_busy_and_not_to_one_in_dnd`;
+   `fcp_sip::person_presence` and `fcp_presence::pidf` unit tests. Not done: the
+   standalone `fcp-presence-server` is not fed people's presence; it serves what
+   phones PUBLISH.
 3. **Anvil: the presence chip**, statuses, notes, idle, the CLI.
 
 ## 6. Agreed (2026-10-29)

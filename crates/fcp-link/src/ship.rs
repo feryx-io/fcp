@@ -34,6 +34,10 @@ pub struct ShipCursors {
     pub deletions: i64,
     #[serde(default)]
     pub personal_contacts: i64,
+    #[serde(default)]
+    pub presence_statuses: i64,
+    #[serde(default)]
+    pub user_presence: i64,
 }
 
 /// What the status page shows of the shipping.
@@ -306,6 +310,33 @@ impl Shipper {
                 }
             }
         }
+        // Presence a person sets, the same way (docs/PRESENCE.md §3): a
+        // deleted status is a tombstone and a cleared one a plain
+        // `available` row, so both cross as rows.
+        if let Some(store) = storage.presence_status_store() {
+            for (seq, row) in store
+                .own_statuses_after(cursors.presence_statuses, self.batch)
+                .await
+                .context("reading the site's presence statuses")?
+            {
+                next.presence_statuses = seq;
+                if row.tenant_id == self.tenant {
+                    batch.puts.push(record("presence_statuses", &row.id, &row)?);
+                }
+            }
+            for (seq, row) in store
+                .chosen_statuses_after(cursors.user_presence, self.batch)
+                .await
+                .context("reading the site's chosen statuses")?
+            {
+                next.user_presence = seq;
+                if row.tenant_id == self.tenant {
+                    batch
+                        .puts
+                        .push(record("user_presence", &row.user_id, &row)?);
+                }
+            }
+        }
         if let Some(store) = storage.compliance_store() {
             let deletions: Vec<DeletionRecord> = store
                 .deletions_after(cursors.deletions, self.batch)
@@ -333,7 +364,7 @@ impl Shipper {
             self.post(
                 "/link/v1/records",
                 &batch,
-                "the site's recordings, voicemail and contacts",
+                "the site's recordings, voicemail, contacts and presence",
             )
             .await?
         };

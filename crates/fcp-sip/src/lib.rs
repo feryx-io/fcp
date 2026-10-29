@@ -40,6 +40,7 @@ pub mod mwi;
 pub mod mwi_subscriptions;
 pub mod nat;
 pub mod own_leg;
+pub mod person_presence;
 pub mod presence;
 pub mod presence_checker;
 pub mod push;

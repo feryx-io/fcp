@@ -1346,19 +1346,25 @@ async fn run() -> Result<()> {
             }
         }
 
-        // Wire presence into queue distribution so DND/Busy agents are skipped
-        if let Some(ref qm) = queue_manager {
-            let checker = Arc::new(fcp_sip::presence_checker::PresenceCheckerAdapter::new(
-                pm.clone(),
-            ));
-            qm.set_presence_checker(checker);
-            info!("Queue agent selection will respect presence DND state");
-        }
-
         Some(pm)
     } else {
         None
     };
+    // People's presence as the admin announces it, laid on their addresses
+    // (docs/PRESENCE.md §3): what phones watching them see, and whom queues
+    // and hunt groups skip.
+    let people_on_phones = presence_manager.as_ref().map(|pm| {
+        Arc::new(fcp_sip::person_presence::PeopleOnPhones::new(
+            pm.clone(),
+            Arc::clone(&dyn_storage),
+        ))
+    });
+    if let (Some(qm), Some(people)) = (&queue_manager, &people_on_phones) {
+        qm.set_presence_checker(Arc::new(
+            fcp_sip::presence_checker::PresenceCheckerAdapter::new(Arc::clone(people)),
+        ));
+        info!("Queue agent selection skips agents in do not disturb or on a call");
+    }
 
     // 17c. Create SIP presence handler (if enabled)
     let concrete_presence_handler: Option<Arc<SipPresenceHandler>> =
@@ -1372,6 +1378,10 @@ async fn run() -> Result<()> {
             // Whose presence a request is about: its domain's tenant.
             .with_tenant_store(Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::TenantStore>)
             .with_identity(Arc::clone(&dyn_storage));
+            let handler = match &people_on_phones {
+                Some(people) => handler.with_people(Arc::clone(people)),
+                None => handler,
+            };
             let handler = if config.registrar.auth_enabled {
                 handler.with_digest_auth(
                     Arc::clone(&dyn_storage) as Arc<dyn fcp_core::CredentialStore>,
@@ -2181,8 +2191,9 @@ async fn run() -> Result<()> {
         if let Some(ref ph) = presence_handler {
             let ph_clone = Arc::clone(ph);
             let event_bus_notify = Arc::clone(&event_bus);
+            let people = people_on_phones.clone();
             tokio::spawn(async move {
-                run_presence_notifier(event_bus_notify, ph_clone).await;
+                run_presence_notifier(event_bus_notify, ph_clone, people).await;
             });
             info!("Presence NOTIFY dispatcher started");
         }
@@ -3202,48 +3213,6 @@ fn forwarded(event: &fcp_events::PlatformEvent) -> bool {
     }
 }
 
-/// Resolve a conference participant_id to an AOR.
-///
-/// The participant_id may be a SIP URI, extension number, or user@domain.
-/// We try extract_aor first, then fall back to searching known presences
-/// by matching the user part against existing AORs.
-fn resolve_conference_participant_aor(
-    participant_id: &str,
-    presence: &fcp_presence::PresenceManager,
-) -> Option<String> {
-    // Try direct extraction if it looks like a SIP URI
-    if let Some(aor) = extract_aor(participant_id) {
-        return Some(aor);
-    }
-    // Fall back: participant_id is likely just an extension number (e.g., "5001").
-    // Search known presences for a matching user part.
-    for info in presence.get_all_presences() {
-        let user_part = info.aor.split('@').next().unwrap_or("");
-        if user_part == participant_id {
-            return Some(info.aor.clone());
-        }
-    }
-    None
-}
-
-/// Resolve a voicemail mailbox_id to an AOR.
-///
-/// Mailbox IDs are typically the extension number (e.g., "5001").
-/// Searches known presences for a matching user part.
-fn resolve_mailbox_aor(
-    mailbox_id: &str,
-    presence: &fcp_presence::PresenceManager,
-) -> Option<String> {
-    // Search known presences for a matching user part
-    for info in presence.get_all_presences() {
-        let user_part = info.aor.split('@').next().unwrap_or("");
-        if user_part == mailbox_id {
-            return Some(info.aor.clone());
-        }
-    }
-    None
-}
-
 /// Resolve an extension AOR (e.g., "1234@host") to device AOR(s) (e.g., "polycom@host").
 ///
 /// Looks up the extension by number, resolves its target to device(s),
@@ -3723,12 +3692,7 @@ async fn run_presence_listener(
 ) {
     use fcp_events::PlatformEvent;
 
-    let filter = EventFilter::new().types(vec![
-        EventType::Call,
-        EventType::Registration,
-        EventType::Conference,
-        EventType::Voicemail,
-    ]);
+    let filter = EventFilter::new().types(vec![EventType::Call]);
 
     let mut stream = match event_bus.subscribe(filter.clone()).await {
         Ok(s) => s,
@@ -3749,7 +3713,7 @@ async fn run_presence_listener(
         match stream.next().await {
             Some(event) => {
                 match &event {
-                    // Call answered → update dialog state to Confirmed, transition Ringing→OnThePhone
+                    // Call answered → the busy lamps' dialog is confirmed
                     PlatformEvent::Call(fcp_events::CallEvent::Answered { call_id, .. }) => {
                         let call_id_str = call_id.to_string();
                         let tenant_id = call_tenants
@@ -3758,7 +3722,7 @@ async fn run_presence_listener(
                             .unwrap_or(default_tenant_id);
                         // Find AORs with active calls for this call_id
                         let affected_aors = presence.get_aors_with_active_call(&call_id_str);
-                        tracing::info!(%call_id, ?affected_aors, "Call answered — updating presence for affected AORs");
+                        tracing::info!(%call_id, ?affected_aors, "Call answered — updating busy lamps for affected AORs");
                         for aor in &affected_aors {
                             presence.update_call_state(
                                 aor,
@@ -3774,22 +3738,11 @@ async fn run_presence_listener(
                                 &tenant_id,
                             )
                             .await;
-                            // Transition Ringing → OnThePhone for the callee
-                            if let Some(info) = presence.get_presence_for_tenant(aor, &tenant_id) {
-                                if info.state == fcp_presence::PresenceState::Ringing {
-                                    let update = fcp_presence::PresenceUpdate {
-                                        aor: aor.clone(),
-                                        state: fcp_presence::PresenceState::OnThePhone,
-                                        note: Some("On the phone".to_string()),
-                                    };
-                                    let _ = presence.update_presence(update, &tenant_id).await;
-                                    tracing::info!(%call_id, aor = %aor, "Transitioned Ringing → OnThePhone on answer");
-                                }
-                            }
                         }
                     }
 
-                    // Call initiated (inbound) → set Ringing for callee, track active call
+                    // Call initiated → the callee's and caller's busy lamps (the person's
+                    // presence is the admin's: docs/PRESENCE.md)
                     PlatformEvent::Call(fcp_events::CallEvent::Initiated {
                         from,
                         to,
@@ -3803,14 +3756,6 @@ async fn run_presence_listener(
                         tracing::info!(%call_id, from = %from, to = %to, "Presence: CallEvent::Initiated received");
 
                         if let Some(callee_aor) = extract_aor(to) {
-                            // Set Ringing for the extension AOR
-                            let update = fcp_presence::PresenceUpdate {
-                                aor: callee_aor.clone(),
-                                state: fcp_presence::PresenceState::Ringing,
-                                note: Some("Ringing".to_string()),
-                            };
-                            let _ = presence.update_presence(update, &tenant_id).await;
-
                             // Track active call for callee (Recipient, Early state)
                             let caller_uri = from.clone();
                             presence.add_active_call(
@@ -3833,7 +3778,7 @@ async fn run_presence_listener(
                             )
                             .await;
 
-                            // Also set Ringing for device AOR(s) that the extension resolves to,
+                            // Also light device AOR(s) that the extension resolves to,
                             // and for the user it rings, where watchers watch them.
                             let mut device_aors =
                                 resolve_extension_to_device_aors(&callee_aor, &tenant_id, &storage)
@@ -3846,12 +3791,6 @@ async fn run_presence_listener(
                                 }
                             }
                             for dev_aor in &device_aors {
-                                let update = fcp_presence::PresenceUpdate {
-                                    aor: dev_aor.clone(),
-                                    state: fcp_presence::PresenceState::Ringing,
-                                    note: Some("Ringing".to_string()),
-                                };
-                                let _ = presence.update_presence(update, &tenant_id).await;
                                 presence.add_active_call(
                                     dev_aor,
                                     &tenant_id,
@@ -3871,7 +3810,7 @@ async fn run_presence_listener(
                                     &tenant_id,
                                 )
                                 .await;
-                                tracing::info!(ext_aor = %callee_aor, dev_aor = %dev_aor, "Mirrored Ringing to device AOR");
+                                tracing::info!(ext_aor = %callee_aor, dev_aor = %dev_aor, "Mirrored the lamp to device AOR");
                             }
 
                             // If the callee AOR is a phone number, also mirror presence
@@ -3883,12 +3822,6 @@ async fn run_presence_listener(
                             )
                             .await;
                             for ext_aor in &ext_aors {
-                                let update = fcp_presence::PresenceUpdate {
-                                    aor: ext_aor.clone(),
-                                    state: fcp_presence::PresenceState::Ringing,
-                                    note: Some("Ringing".to_string()),
-                                };
-                                let _ = presence.update_presence(update, &tenant_id).await;
                                 presence.add_active_call(
                                     ext_aor,
                                     &tenant_id,
@@ -3908,19 +3841,13 @@ async fn run_presence_listener(
                                     &tenant_id,
                                 )
                                 .await;
-                                tracing::info!(phone_aor = %callee_aor, ext_aor = %ext_aor, "Mirrored Ringing from phone number to extension AOR");
+                                tracing::info!(phone_aor = %callee_aor, ext_aor = %ext_aor, "Mirrored the lamp from phone number to extension AOR");
 
                                 // Also mirror to the extension's device AOR(s)
                                 let ext_device_aors =
                                     resolve_extension_to_device_aors(ext_aor, &tenant_id, &storage)
                                         .await;
                                 for ext_dev_aor in &ext_device_aors {
-                                    let update = fcp_presence::PresenceUpdate {
-                                        aor: ext_dev_aor.clone(),
-                                        state: fcp_presence::PresenceState::Ringing,
-                                        note: Some("Ringing".to_string()),
-                                    };
-                                    let _ = presence.update_presence(update, &tenant_id).await;
                                     presence.add_active_call(
                                         ext_dev_aor,
                                         &tenant_id,
@@ -3940,7 +3867,7 @@ async fn run_presence_listener(
                                         &tenant_id,
                                     )
                                     .await;
-                                    tracing::info!(phone_aor = %callee_aor, ext_aor = %ext_aor, dev_aor = %ext_dev_aor, "Mirrored Ringing from phone number to extension device AOR");
+                                    tracing::info!(phone_aor = %callee_aor, ext_aor = %ext_aor, dev_aor = %ext_dev_aor, "Mirrored the lamp from phone number to extension device AOR");
                                 }
                             }
 
@@ -3953,12 +3880,6 @@ async fn run_presence_listener(
                             )
                             .await;
                             for ext_aor in &dev_ext_aors {
-                                let update = fcp_presence::PresenceUpdate {
-                                    aor: ext_aor.clone(),
-                                    state: fcp_presence::PresenceState::Ringing,
-                                    note: Some("Ringing".to_string()),
-                                };
-                                let _ = presence.update_presence(update, &tenant_id).await;
                                 presence.add_active_call(
                                     ext_aor,
                                     &tenant_id,
@@ -3978,12 +3899,10 @@ async fn run_presence_listener(
                                     &tenant_id,
                                 )
                                 .await;
-                                tracing::info!(device_aor = %callee_aor, ext_aor = %ext_aor, "Mirrored Ringing from device AOR to extension");
+                                tracing::info!(device_aor = %callee_aor, ext_aor = %ext_aor, "Mirrored the lamp from device AOR to extension");
                             }
                         }
                         if let Some(caller_aor) = extract_aor(from) {
-                            presence.set_on_the_phone(&caller_aor, &tenant_id).await;
-
                             // Track active call for caller (Initiator, Confirmed state)
                             let callee_uri = to.clone();
                             presence.add_active_call(
@@ -4008,7 +3927,7 @@ async fn run_presence_listener(
                         }
                     }
 
-                    // Call ended or failed → remove active call tracking, revert presence
+                    // Call ended or failed → remove active call tracking
                     PlatformEvent::Call(fcp_events::CallEvent::Ended { call_id, .. })
                     | PlatformEvent::Call(fcp_events::CallEvent::Failed { call_id, .. }) => {
                         let call_id_str = call_id.to_string();
@@ -4030,161 +3949,8 @@ async fn run_presence_listener(
                                 &tenant_id,
                             )
                             .await;
-                            // If this AOR has no remaining active calls, revert
-                            // presence to Open (only if in a call-related state).
-                            if presence
-                                .get_active_calls_for_tenant(aor, &tenant_id)
-                                .is_empty()
-                            {
-                                // Bypass auto_phone_state — the system set the
-                                // state on Initiated, so the system must clear it.
-                                // Also revert if no presentity exists yet (conference
-                                // calls may set OnThePhone without creating a record
-                                // in every path).
-                                let is_call_state = presence
-                                    .get_presence_for_tenant(aor, &tenant_id)
-                                    .map(|p| {
-                                        matches!(
-                                            p.state,
-                                            fcp_presence::PresenceState::OnThePhone
-                                                | fcp_presence::PresenceState::Ringing
-                                        )
-                                    })
-                                    .unwrap_or(true);
-                                if is_call_state {
-                                    let update = fcp_presence::PresenceUpdate {
-                                        aor: aor.clone(),
-                                        state: fcp_presence::PresenceState::Open,
-                                        note: None,
-                                    };
-                                    let _ = presence.update_presence(update, &tenant_id).await;
-                                }
-                            }
                         }
                         tracing::debug!(%call_id, "Call ended/failed — active call removed from dialog tracking");
-                    }
-
-                    // Registration → set Open
-                    PlatformEvent::Registration(fcp_events::RegistrationEvent::Registered {
-                        aor,
-                        tenant_id: event_tenant,
-                        ..
-                    }) => {
-                        let tenant_id = *event_tenant;
-                        if let Some(aor) = extract_aor(aor) {
-                            let update = fcp_presence::PresenceUpdate {
-                                aor: aor.clone(),
-                                state: fcp_presence::PresenceState::Open,
-                                note: None,
-                            };
-                            let _ = presence.update_presence(update, &tenant_id).await;
-
-                            // Also set Open for extension(s) this device belongs to
-                            let ext_aors =
-                                resolve_device_aor_to_extension_aors(&aor, &tenant_id, &storage)
-                                    .await;
-                            for ext_aor in &ext_aors {
-                                let update = fcp_presence::PresenceUpdate {
-                                    aor: ext_aor.clone(),
-                                    state: fcp_presence::PresenceState::Open,
-                                    note: None,
-                                };
-                                let _ = presence.update_presence(update, &tenant_id).await;
-                                tracing::info!(device_aor = %aor, ext_aor = %ext_aor, "Mirrored registration Open to extension");
-                            }
-                        }
-                    }
-
-                    // Unregistration → set Closed
-                    PlatformEvent::Registration(fcp_events::RegistrationEvent::Unregistered {
-                        aor,
-                        tenant_id: event_tenant,
-                        ..
-                    }) => {
-                        let tenant_id = *event_tenant;
-                        if let Some(aor) = extract_aor(aor) {
-                            let update = fcp_presence::PresenceUpdate {
-                                aor: aor.clone(),
-                                state: fcp_presence::PresenceState::Closed,
-                                note: None,
-                            };
-                            let _ = presence.update_presence(update, &tenant_id).await;
-
-                            // Also set Closed for extension(s) this device belongs to
-                            let ext_aors =
-                                resolve_device_aor_to_extension_aors(&aor, &tenant_id, &storage)
-                                    .await;
-                            for ext_aor in &ext_aors {
-                                let update = fcp_presence::PresenceUpdate {
-                                    aor: ext_aor.clone(),
-                                    state: fcp_presence::PresenceState::Closed,
-                                    note: None,
-                                };
-                                let _ = presence.update_presence(update, &tenant_id).await;
-                                tracing::info!(device_aor = %aor, ext_aor = %ext_aor, "Mirrored unregistration Closed to extension");
-                            }
-                        }
-                    }
-
-                    // Conference participant joined → set Busy (in conference)
-                    PlatformEvent::Conference(fcp_events::ConferenceEvent::ParticipantJoined {
-                        participant_id,
-                        tenant_id: event_tenant_id,
-                        ..
-                    }) => {
-                        let aor = resolve_conference_participant_aor(participant_id, &presence);
-                        if let Some(aor) = aor {
-                            let update = fcp_presence::PresenceUpdate {
-                                aor,
-                                state: fcp_presence::PresenceState::Busy,
-                                note: Some("In conference".to_string()),
-                            };
-                            let _ = presence.update_presence(update, event_tenant_id).await;
-                        }
-                    }
-
-                    // Conference participant left → revert to Open if no other active calls
-                    PlatformEvent::Conference(fcp_events::ConferenceEvent::ParticipantLeft {
-                        participant_id,
-                        tenant_id: event_tenant_id,
-                        ..
-                    }) => {
-                        let aor = resolve_conference_participant_aor(participant_id, &presence);
-                        if let Some(aor) = aor {
-                            if presence
-                                .get_active_calls_for_tenant(&aor, event_tenant_id)
-                                .is_empty()
-                            {
-                                let update = fcp_presence::PresenceUpdate {
-                                    aor,
-                                    state: fcp_presence::PresenceState::Open,
-                                    note: None,
-                                };
-                                let _ = presence.update_presence(update, event_tenant_id).await;
-                            }
-                        }
-                    }
-
-                    // MWI updated → annotate presence note with voicemail count
-                    PlatformEvent::Voicemail(fcp_events::VoicemailEvent::MwiUpdated {
-                        mailbox_id,
-                        new_messages,
-                        ..
-                    }) if *new_messages > 0 => {
-                        let aor = resolve_mailbox_aor(mailbox_id, &presence);
-                        if let Some(aor) = aor {
-                            if let Some(info) =
-                                presence.get_presence_for_tenant(&aor, &default_tenant_id)
-                            {
-                                let note = format!("{} new voicemail(s)", new_messages);
-                                let update = fcp_presence::PresenceUpdate {
-                                    aor,
-                                    state: info.state,
-                                    note: Some(note),
-                                };
-                                let _ = presence.update_presence(update, &default_tenant_id).await;
-                            }
-                        }
                     }
 
                     _ => {}
@@ -4313,10 +4079,13 @@ async fn run_cache_invalidation_listener(
     }
 }
 
-/// Subscribe to presence StatusChanged events and send NOTIFY to all watchers.
+/// Subscribe to presence StatusChanged events and send NOTIFY to all
+/// watchers; lay each person's presence the admin announces
+/// (`presence.user_changed`) on their addresses.
 async fn run_presence_notifier(
     event_bus: Arc<InMemoryEventBus>,
     presence_handler: Arc<dyn fcp_sip::presence::PresenceHandler>,
+    people: Option<Arc<fcp_sip::person_presence::PeopleOnPhones>>,
 ) {
     use fcp_events::PlatformEvent;
 
@@ -4351,6 +4120,40 @@ async fn run_presence_notifier(
                 }) => {
                     if let Err(e) = presence_handler.notify_watchers(aor, tenant_id).await {
                         warn!(aor = %aor, error = %e, "Failed to notify dialog watchers");
+                    }
+                }
+                PlatformEvent::Presence(fcp_events::PresenceEvent::UserChanged {
+                    user_id,
+                    extension,
+                    state,
+                    label,
+                    note,
+                    idle,
+                    tenant_id,
+                    ..
+                }) => {
+                    let (Some(people), Ok(user_id), Some(state)) = (
+                        &people,
+                        user_id.parse::<fcp_core::UserId>(),
+                        fcp_core::presence_status::Shown::parse(state),
+                    ) else {
+                        continue;
+                    };
+                    let shown = fcp_core::presence_status::Presence {
+                        state,
+                        label: label.clone(),
+                        note: note.clone(),
+                        idle: *idle,
+                    };
+                    // A change of state is told by its status_changed; a
+                    // change of note alone is told here.
+                    for aor in people
+                        .apply(tenant_id, &user_id, extension.as_deref(), &shown)
+                        .await
+                    {
+                        if let Err(e) = presence_handler.notify_watchers(&aor, tenant_id).await {
+                            warn!(aor = %aor, error = %e, "Failed to notify watchers");
+                        }
                     }
                 }
                 _ => {}

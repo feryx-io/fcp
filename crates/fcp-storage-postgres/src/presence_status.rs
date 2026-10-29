@@ -1,7 +1,8 @@
 //! Presence a person sets (`docs/PRESENCE.md`): users' chosen statuses and
-//! their own statuses.
+//! their own statuses, synced with sites (§3) as contacts are.
 
 use std::str::FromStr;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -11,6 +12,8 @@ use sqlx::Row;
 
 use crate::{datetime_to_system_time_micros, system_time_to_datetime, PostgresStorage};
 
+/// Times to the microsecond, as stored: which copy is newer is decided on
+/// them.
 fn row_to_chosen(row: &sqlx::postgres::PgRow) -> anyhow::Result<ChosenStatus> {
     Ok(ChosenStatus {
         tenant_id: TenantId::from_str(&row.try_get::<String, _>("tenant_id")?)?,
@@ -35,17 +38,23 @@ fn row_to_own(row: &sqlx::postgres::PgRow) -> anyhow::Result<OwnStatus> {
             .ok_or_else(|| anyhow::anyhow!("unknown status state {state}"))?,
         position: row.try_get("position")?,
         updated_at: datetime_to_system_time_micros(row.try_get::<DateTime<Utc>, _>("updated_at")?),
+        deleted_at: row
+            .try_get::<Option<DateTime<Utc>>, _>("deleted_at")?
+            .map(datetime_to_system_time_micros),
     })
 }
 
-const CHOSEN: &str = "tenant_id, user_id, status, note, until, updated_at";
-const OWN: &str = "id, tenant_id, user_id, label, state, position, updated_at";
+const CHOSEN: &str = "tenant_id, user_id, status, note, until, updated_at, ship_seq";
+const OWN: &str =
+    "id, tenant_id, user_id, label, state, position, updated_at, deleted_at, ship_seq";
+/// A chosen status that is something other than plain Available.
+const CHOSEN_SOMETHING: &str = "NOT (status = 'available' AND note IS NULL AND until IS NULL)";
 
 #[async_trait]
 impl PresenceStatusStore for PostgresStorage {
     async fn get_chosen_status(&self, user: &UserId) -> anyhow::Result<Option<ChosenStatus>> {
         let row = sqlx::query(&format!(
-            "SELECT {CHOSEN} FROM user_presence WHERE user_id = $1"
+            "SELECT {CHOSEN} FROM user_presence WHERE user_id = $1 AND {CHOSEN_SOMETHING}"
         ))
         .bind(user.to_string())
         .fetch_optional(&self.pool)
@@ -54,9 +63,11 @@ impl PresenceStatusStore for PostgresStorage {
     }
 
     async fn list_chosen_statuses(&self) -> anyhow::Result<Vec<ChosenStatus>> {
-        let rows = sqlx::query(&format!("SELECT {CHOSEN} FROM user_presence"))
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(&format!(
+            "SELECT {CHOSEN} FROM user_presence WHERE {CHOSEN_SOMETHING}"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(row_to_chosen).collect()
     }
 
@@ -81,16 +92,25 @@ impl PresenceStatusStore for PostgresStorage {
     }
 
     async fn delete_chosen_status(&self, user: &UserId) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM user_presence WHERE user_id = $1")
-            .bind(user.to_string())
-            .execute(&self.pool)
-            .await?;
+        // A row, not a delete: shipping carries rows, so the clearing
+        // reaches the other side of a site's link. Already plain
+        // Available is left alone.
+        sqlx::query(&format!(
+            "UPDATE user_presence
+             SET status = 'available', note = NULL, until = NULL,
+                 updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+             WHERE user_id = $1 AND {CHOSEN_SOMETHING}"
+        ))
+        .bind(user.to_string())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     async fn list_own_statuses(&self, user: &UserId) -> anyhow::Result<Vec<OwnStatus>> {
         let rows = sqlx::query(&format!(
-            "SELECT {OWN} FROM presence_statuses WHERE user_id = $1 ORDER BY position, id"
+            "SELECT {OWN} FROM presence_statuses
+             WHERE user_id = $1 AND deleted_at IS NULL ORDER BY position, id"
         ))
         .bind(user.to_string())
         .fetch_all(&self.pool)
@@ -122,11 +142,183 @@ impl PresenceStatusStore for PostgresStorage {
     }
 
     async fn delete_own_status(&self, user: &UserId, id: &str) -> anyhow::Result<bool> {
-        let done = sqlx::query("DELETE FROM presence_statuses WHERE id = $1 AND user_id = $2")
-            .bind(id)
+        // A tombstone, so the delete reaches the other side of a site's
+        // link; swept after `TOMBSTONE_DAYS`.
+        let done = sqlx::query(
+            "UPDATE presence_statuses
+             SET deleted_at = clock_timestamp(),
+                 updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+             WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(id)
+        .bind(user.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn get_chosen_status_row(&self, user: &UserId) -> anyhow::Result<Option<ChosenStatus>> {
+        let row = sqlx::query(&format!(
+            "SELECT {CHOSEN} FROM user_presence WHERE user_id = $1"
+        ))
+        .bind(user.to_string())
+        .fetch_optional(self.writes())
+        .await?;
+        row.as_ref().map(row_to_chosen).transpose()
+    }
+
+    async fn tenant_chosen_statuses(&self, tenant: &TenantId) -> anyhow::Result<Vec<ChosenStatus>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {CHOSEN} FROM user_presence WHERE tenant_id = $1 ORDER BY user_id"
+        ))
+        .bind(tenant.to_string())
+        .fetch_all(self.reads())
+        .await?;
+        rows.iter().map(row_to_chosen).collect()
+    }
+
+    async fn put_chosen_status_if_newer(&self, c: &ChosenStatus) -> anyhow::Result<bool> {
+        let done = sqlx::query(
+            "INSERT INTO user_presence (user_id, tenant_id, status, note, until, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (user_id) DO UPDATE SET
+                status = EXCLUDED.status, note = EXCLUDED.note,
+                until = EXCLUDED.until, updated_at = EXCLUDED.updated_at
+             WHERE user_presence.updated_at < EXCLUDED.updated_at
+               AND user_presence.tenant_id = EXCLUDED.tenant_id",
+        )
+        .bind(c.user_id.to_string())
+        .bind(c.tenant_id.to_string())
+        .bind(&c.status)
+        .bind(&c.note)
+        .bind(c.until.map(system_time_to_datetime))
+        .bind(system_time_to_datetime(c.updated_at))
+        .execute(self.writes())
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn delete_chosen_status_row(&self, user: &UserId) -> anyhow::Result<bool> {
+        let done = sqlx::query("DELETE FROM user_presence WHERE user_id = $1")
             .bind(user.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(done.rows_affected() > 0)
+    }
+
+    async fn chosen_statuses_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(i64, ChosenStatus)>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {CHOSEN} FROM user_presence
+             WHERE ship_seq > $1 ORDER BY ship_seq LIMIT $2"
+        ))
+        .bind(after)
+        .bind(limit as i64)
+        .fetch_all(self.writes())
+        .await?;
+        rows.iter()
+            .map(|row| Ok((row.try_get("ship_seq")?, row_to_chosen(row)?)))
+            .collect()
+    }
+
+    async fn get_own_status(&self, id: &str) -> anyhow::Result<Option<OwnStatus>> {
+        let row = sqlx::query(&format!(
+            "SELECT {OWN} FROM presence_statuses WHERE id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(self.writes())
+        .await?;
+        row.as_ref().map(row_to_own).transpose()
+    }
+
+    async fn tenant_own_statuses(&self, tenant: &TenantId) -> anyhow::Result<Vec<OwnStatus>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {OWN} FROM presence_statuses WHERE tenant_id = $1 ORDER BY id"
+        ))
+        .bind(tenant.to_string())
+        .fetch_all(self.reads())
+        .await?;
+        rows.iter().map(row_to_own).collect()
+    }
+
+    async fn put_own_status_if_newer(&self, s: &OwnStatus) -> anyhow::Result<bool> {
+        // A tombstone only marks a status kept here: one for a status
+        // already gone (swept, or never here) is not kept, so a late echo
+        // brings nothing back.
+        if let Some(deleted_at) = s.deleted_at {
+            let done = sqlx::query(
+                "UPDATE presence_statuses SET deleted_at = $2, updated_at = $3
+                 WHERE id = $1 AND updated_at < $3 AND tenant_id = $4 AND user_id = $5",
+            )
+            .bind(&s.id)
+            .bind(system_time_to_datetime(deleted_at))
+            .bind(system_time_to_datetime(s.updated_at))
+            .bind(s.tenant_id.to_string())
+            .bind(s.user_id.to_string())
+            .execute(self.writes())
+            .await?;
+            return Ok(done.rows_affected() > 0);
+        }
+        let done = sqlx::query(
+            "INSERT INTO presence_statuses
+                 (id, tenant_id, user_id, label, state, position, updated_at, deleted_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
+             ON CONFLICT (id) DO UPDATE SET
+                label = EXCLUDED.label, state = EXCLUDED.state,
+                position = EXCLUDED.position, updated_at = EXCLUDED.updated_at,
+                deleted_at = NULL
+             WHERE presence_statuses.updated_at < EXCLUDED.updated_at
+               AND presence_statuses.tenant_id = EXCLUDED.tenant_id
+               AND presence_statuses.user_id = EXCLUDED.user_id",
+        )
+        .bind(&s.id)
+        .bind(s.tenant_id.to_string())
+        .bind(s.user_id.to_string())
+        .bind(&s.label)
+        .bind(s.state.as_str())
+        .bind(s.position)
+        .bind(system_time_to_datetime(s.updated_at))
+        .execute(self.writes())
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn delete_own_status_row(&self, id: &str) -> anyhow::Result<bool> {
+        let done = sqlx::query("DELETE FROM presence_statuses WHERE id = $1")
+            .bind(id)
+            .execute(self.writes())
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn own_statuses_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(i64, OwnStatus)>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {OWN} FROM presence_statuses
+             WHERE ship_seq > $1 ORDER BY ship_seq LIMIT $2"
+        ))
+        .bind(after)
+        .bind(limit as i64)
+        .fetch_all(self.writes())
+        .await?;
+        rows.iter()
+            .map(|row| Ok((row.try_get("ship_seq")?, row_to_own(row)?)))
+            .collect()
+    }
+
+    async fn sweep_status_tombstones(&self, before: SystemTime) -> anyhow::Result<u64> {
+        let done = sqlx::query(
+            "DELETE FROM presence_statuses WHERE deleted_at IS NOT NULL AND deleted_at < $1",
+        )
+        .bind(system_time_to_datetime(before))
+        .execute(self.writes())
+        .await?;
+        Ok(done.rows_affected())
     }
 }

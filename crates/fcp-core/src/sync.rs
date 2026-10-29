@@ -53,6 +53,11 @@ pub const SYNC_TABLES: &[&str] = &[
     // Users' own contacts (docs/RECORD_AND_CONTACTS.md §3), tombstones
     // included; a site writes its own and ships them up.
     "personal_contacts",
+    // Presence a person sets (docs/PRESENCE.md §3): users' own statuses
+    // (tombstones included) and the one each chose; a site writes its own
+    // and ships them up.
+    "presence_statuses",
+    "user_presence",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

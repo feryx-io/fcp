@@ -203,6 +203,9 @@ pub struct SweepReport {
     /// Deleted contacts whose tombstones had done their work
     /// (`fcp_core::contact::TOMBSTONE_DAYS`).
     pub contact_tombstones_removed: u64,
+    /// Deleted presence statuses whose tombstones had done their work
+    /// (`fcp_core::presence_status::TOMBSTONE_DAYS`).
+    pub status_tombstones_removed: u64,
     pub errors: Vec<String>,
 }
 
@@ -261,6 +264,17 @@ pub async fn run_sweep(state: &ApiState, now: SystemTime, actor: &str) -> SweepR
         match contacts.sweep_contact_tombstones(before).await {
             Ok(n) => report.contact_tombstones_removed += n,
             Err(e) => report.errors.push(format!("contact tombstones: {e}")),
+        }
+    }
+    if let Some(statuses) = storage.presence_status_store() {
+        let before = now
+            .checked_sub(Duration::from_secs(
+                fcp_core::presence_status::TOMBSTONE_DAYS * 24 * 3600,
+            ))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        match statuses.sweep_status_tombstones(before).await {
+            Ok(n) => report.status_tombstones_removed += n,
+            Err(e) => report.errors.push(format!("status tombstones: {e}")),
         }
     }
     report

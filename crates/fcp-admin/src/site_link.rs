@@ -716,6 +716,43 @@ async fn records(
                     _ => false,
                 }
             }
+            // A user's own status or chosen status written at the site:
+            // taken when newer than the cloud's copy, for a user of the
+            // site's tenant (docs/PRESENCE.md §3). The cloud's presence
+            // reads it on its next read of the tenant.
+            "presence_statuses" => {
+                let row: fcp_core::presence_status::OwnStatus = serde_json::from_value(put.object)
+                    .map_err(|e| bad_row(&put.table, &put.id, e))?;
+                let owner =
+                    fcp_core::CredentialStore::get_user_by_id(storage.as_ref(), &row.user_id)
+                        .await?;
+                match storage.presence_status_store() {
+                    Some(store)
+                        if row.tenant_id == site.tenant_id
+                            && owner.is_some_and(|u| u.tenant_id == site.tenant_id) =>
+                    {
+                        store.put_own_status_if_newer(&row).await?
+                    }
+                    _ => false,
+                }
+            }
+            "user_presence" => {
+                let row: fcp_core::presence_status::ChosenStatus =
+                    serde_json::from_value(put.object)
+                        .map_err(|e| bad_row(&put.table, &put.id, e))?;
+                let owner =
+                    fcp_core::CredentialStore::get_user_by_id(storage.as_ref(), &row.user_id)
+                        .await?;
+                match storage.presence_status_store() {
+                    Some(store)
+                        if row.tenant_id == site.tenant_id
+                            && owner.is_some_and(|u| u.tenant_id == site.tenant_id) =>
+                    {
+                        store.put_chosen_status_if_newer(&row).await?
+                    }
+                    _ => false,
+                }
+            }
             "voicemail_messages" => {
                 let mut row: fcp_core::VoicemailMessage = serde_json::from_value(put.object)
                     .map_err(|e| bad_row(&put.table, &put.id, e))?;
@@ -1144,6 +1181,15 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
             items.push(item("personal_contacts", &c.id, &c)?);
         }
     }
+    // After the users, who own them (docs/PRESENCE.md §3).
+    if let Some(statuses) = storage.presence_status_store() {
+        for s in statuses.tenant_own_statuses(tenant).await? {
+            items.push(item("presence_statuses", &s.id, &s)?);
+        }
+        for c in statuses.tenant_chosen_statuses(tenant).await? {
+            items.push(item("user_presence", &c.user_id, &c)?);
+        }
+    }
     // After the users: a group's members name them (docs/USERS.md §5).
     if let Some(groups) = storage.group_store() {
         for g in groups.list_groups(tenant).await? {
@@ -1317,6 +1363,14 @@ async fn object_now(
         "personal_contacts" => match storage.contact_store() {
             Some(store) => same_tenant!(store.get_contact(id).await?),
             None => None,
+        },
+        "presence_statuses" => match storage.presence_status_store() {
+            Some(store) => same_tenant!(store.get_own_status(id).await?),
+            None => None,
+        },
+        "user_presence" => match (storage.presence_status_store(), id.parse()) {
+            (Some(store), Ok(user)) => same_tenant!(store.get_chosen_status_row(&user).await?),
+            _ => None,
         },
         "group_members" => match (
             storage.group_store(),
