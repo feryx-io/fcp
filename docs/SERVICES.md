@@ -201,6 +201,45 @@ it went, start it, see it back; stop the TTS server, see voicemail `degraded` wi
   `stopping`), `compose_stack.rs` (a beacon from each of the twelve default services on
   this release).
 
+### 4.2 S2 as built (v0.25.477)
+
+- **The record**: `fcp_core::service_registry` (`ServiceInstance`,
+  `ServiceInstanceStore`), migration 127 `service_instances` keyed by (`site_id`,
+  `id`), `''` for the platform's own; `fcp-storage-postgres/src/service_registry.rs`.
+- **`fcp-admin/src/services.rs`**: `reconcile` (one scope's known records against its
+  live beacons: new or back is up, gone is down once, `stopping` is down at once and
+  stopped), `ServiceRegistry::observe`, and the sweep — every 5 s, while holding
+  `fcp:services:sweep` (15 s) in the admin's Redis, so one admin of several speaks;
+  nothing is said down while the beacons cannot be read; hourly, records down longer
+  than `[services] forget_after_days` (7) are dropped.
+- **Events**: `system.service_up` (`down_secs` when it was down) and
+  `system.service_down` (`stopped`, `last_seen`), on the admin's bus and posted to the
+  events server for webhooks.
+- **Sites**: `SiteHeartbeat.services`, the beacons in the site's Redis read by the link
+  (`ServiceBeacon::read_all`); the cloud's heartbeat handler observes them under the
+  site's id. A site whose link is down shows its services `unknown`. `ServiceRecord`
+  moved to `fcp_core::service_health` for this.
+- **API** (`/api/v1/system/services`, the routes behind `require_platform_admin` and
+  `system_view_logs`; forgetting needs `system_config`): the list (`kind`, `state`,
+  `site_id` or `platform`; paged), `summary` (counts, whether Redis can be read, when
+  it was last read), one service, and `DELETE` for one that is down (409 while up).
+  A service's state: `serving`, `degraded`, `draining`, `stopping`, `down`, `stopped`,
+  or `unknown` while Redis or the site's link cannot be read. In the contract, the UI's
+  types and both SDKs.
+- **Metrics**: `fcp_api_core::MetricsSource`, which the admin's `/metrics` renders:
+  `fcp_service_up{id,kind,site}` and `fcp_service_check_failing{id,kind,site,check}`.
+- **Tests**: `services::tests` (seen, lost once, back with how long, stopped; scopes
+  apart), `fcp-admin/tests/services.rs` (an admin with Redis: itself listed, a beacon
+  seen with its checks and load, 409 while up, down, back with its first seen kept,
+  stopped, the summary and filters, the metrics, forgotten, 403 for a tenant's
+  administrator), `fcp-link/tests/services.rs` (the link's own beacon reaches the
+  cloud's record under the site by name, not among the platform's; unknown or stopped
+  once the link stops).
+- **Found on the way**: `/api/v1/cluster/nodes` and `/cluster/stats` need only
+  `system_view_logs`, which a tenant's administrator holds, so in a hosted deployment a
+  tenant's administrator can read the platform's cluster. Left for S3, where the
+  System section is made platform-only.
+
 ## 5. What this does not do
 
 - No restart button. The admin is not the process supervisor (Docker, systemd,

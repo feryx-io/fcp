@@ -14,6 +14,9 @@ pub struct StorageResult {
     pub dyn_storage: Arc<DynStorage>,
     pub config_store: Arc<dyn fcp_core::config_store::ConfigStore>,
     pub flow_store: Arc<dyn fcp_flow::storage::FlowStore>,
+    /// The store itself, for what only the admin keeps (the services
+    /// record, `docs/SERVICES.md`).
+    pub postgres: Arc<PostgresStorage>,
 }
 
 /// Initialize PostgreSQL storage backend from configuration.
@@ -107,6 +110,7 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
     Ok(StorageResult {
         dyn_storage: Arc::new(dyn_st),
         flow_store: storage.clone() as Arc<dyn fcp_flow::storage::FlowStore>,
+        postgres: storage.clone(),
         config_store: storage,
     })
 }

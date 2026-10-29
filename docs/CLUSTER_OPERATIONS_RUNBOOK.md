@@ -190,6 +190,22 @@ half-open` when it probes, `closing (probe succeeded)` or `reopening
 breaker OPENED — event forwarding paused` when the events server stops
 answering it.
 
+**Services** (`docs/SERVICES.md`). Every binary with a Redis writes a
+service beacon (`fcp:service:<id>`, 5 s, 15 s TTL) whether or not it is a
+cluster member: what it is, its release, `serving`/`degraded`/`draining`/
+`stopping`, its checks (database, Redis, the services it calls) and its
+load. `/ready` answers 503 for a failing required check (database,
+Redis) as well as draining. The admin with `[cluster] redis_url` keeps a
+record of every one it has seen (`service_instances`) and a site's,
+carried up by its link: `GET /api/v1/system/services` (platform
+administrators only), `fcp_service_up{id,kind,site}` and
+`fcp_service_check_failing{id,kind,site,check}` on its `/metrics`. A
+service whose beacon goes is `down` since then — `stopped` if it said so
+— until it returns, is forgotten (`DELETE /api/v1/system/services/<id>`),
+or has been down for `[services] forget_after_days` (7). With several
+admins one sweeps, holding `fcp:services:sweep`. Alert on
+`fcp_service_up == 0`.
+
 **The admin UI's cluster page** (`/admin/`) shows every node's record:
 region, load, draining, version, a banner over the nodes whose view of
 the cluster is not whole, and a banner naming who is on what while the
@@ -199,7 +215,9 @@ nodes run more than one release.
 `system.cluster_view_changed`, `system.version_skew` (the cluster
 started or stopped running more than one release —
 `docs/BACKUP_AND_RESTORE.md` §5), `system.site_link_changed` (a tenant's
-site's link came up or went quiet — `docs/HYBRID_CONTROL_PLANE.md`) and
+site's link came up or went quiet — `docs/HYBRID_CONTROL_PLANE.md`),
+`system.service_up` and `system.service_down` (once each, by the admin
+that sweeps; never said down while Redis cannot be read) and
 `trunk.health_changed` reach webhooks and WebSocket clients through the
 events server. The admin's `[link]` listeners, when on, are what sites
 enroll to (TLS) and heartbeat at (mutual TLS); the cluster page's Sites

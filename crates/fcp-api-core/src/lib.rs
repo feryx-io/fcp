@@ -43,6 +43,14 @@ pub trait TrunkNodeReports: Send + Sync {
     async fn reports(&self) -> Vec<fcp_core::trunk_report::TrunkNodeReport>;
 }
 
+/// More lines for `/metrics` from whatever wires the API up — the admin's
+/// record of services (`docs/SERVICES.md`).
+#[async_trait::async_trait]
+pub trait MetricsSource: Send + Sync {
+    /// Prometheus text exposition lines, `# HELP` and `# TYPE` included.
+    async fn render(&self) -> String;
+}
+
 /// What a call manager would do with a call, asked of a live one
 /// (`docs/TENANT_TRUNKS.md` §12, phase 6d). The API does not route calls,
 /// so it does not guess: whatever wires it up knows how to reach a node.

@@ -48,6 +48,7 @@ pub mod primary_health;
 pub mod prompt;
 mod provisioning;
 pub mod recording;
+mod service_registry;
 pub mod sip_trace;
 mod subject_erase;
 mod subject_export;

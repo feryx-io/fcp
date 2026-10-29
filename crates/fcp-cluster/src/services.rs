@@ -8,9 +8,9 @@
 //! every binary with a Redis runs one. The admin reads them for its Services
 //! page (`ServiceBeacon::read_all`).
 
-use fcp_core::service_health::{CheckResult, ServiceHealth, ServiceState};
+pub use fcp_core::service_health::ServiceRecord;
+use fcp_core::service_health::{ServiceHealth, ServiceState};
 use fcp_storage_redis::RedisStorage;
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -26,42 +26,6 @@ pub const SERVICE_INTERVAL_SECS: u64 = 5;
 pub const SERVICE_TTL_SECS: u64 = 15;
 /// How long one check may take before it counts as failing.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// What one running process says about itself.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct ServiceRecord {
-    /// `[service] node_id`, unique among the deployment's processes.
-    pub id: String,
-    /// What it is: `call_manager`, `sbc`, `voicemail`, `conference`, `ivr`,
-    /// `media`, `presence`, `tts`, `webrtc_gateway`, `events`, `jobs`,
-    /// `api_gateway`, `registrar`, `admin`, `link`.
-    pub kind: String,
-    /// The machine or container it runs on.
-    pub host: String,
-    pub version: String,
-    /// Unix seconds.
-    pub started_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
-    /// Whether it is also a cluster member (`[cluster] enabled`).
-    #[serde(default)]
-    pub member: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub http_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sip_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub public_url: Option<String>,
-    pub state: ServiceState,
-    #[serde(default)]
-    pub checks: Vec<CheckResult>,
-    /// Numbers the kind has: `calls`, `rooms`, `sessions`, `jobs_queued`, …
-    #[serde(default)]
-    pub load: BTreeMap<String, u64>,
-    /// When this record was written (Unix seconds).
-    pub beat_at: u64,
-}
 
 /// Who a process is, for its beacon.
 #[derive(Debug, Clone)]

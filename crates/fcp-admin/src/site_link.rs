@@ -159,6 +159,9 @@ pub struct LinkState {
     /// The call managers, one of which sends a site's pushes with the
     /// publisher's keys (`docs/PUSH.md` §2.4).
     pub pushes: Option<Arc<crate::call_supervision::NodeCallSupervisor>>,
+    /// The record of every service, which a site's beacons join under its
+    /// id (`docs/SERVICES.md`).
+    pub services: Option<Arc<crate::services::ServiceRegistry>>,
 }
 
 /// `POST /link/v1/enroll`.
@@ -439,6 +442,7 @@ async fn heartbeat(
         None
     };
     site.last_seen_at = Some(now);
+    let services = beat.services.clone();
     site.last_heartbeat = Some(beat);
     site.link_up = true;
     if came_up {
@@ -448,6 +452,14 @@ async fn heartbeat(
     state.storage.put_site(site.clone()).await?;
     if came_up {
         announce(&state, &site, true, lasted).await;
+    }
+    if let Some(registry) = &state.services {
+        if let Err(e) = registry
+            .observe(Some(&site.id.to_string()), &services)
+            .await
+        {
+            warn!(site_id = %site.id, error = %e, "Could not keep the site's services");
+        }
     }
     Ok(Json(HeartbeatResponse {
         ok: true,

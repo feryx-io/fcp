@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 /// The routes `fcp-admin` binds on top of the API's router; this harness
 /// serves only the API's, so they answer the router's 404 here.
 fn bound_elsewhere(path: &str) -> bool {
-    path.starts_with("/cluster/")
+    path.starts_with("/cluster/") || path.starts_with("/system/services")
 }
 
 /// `template` with each `:param` replaced by `fill(prefix)`, where

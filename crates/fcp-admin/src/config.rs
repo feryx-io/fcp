@@ -51,6 +51,10 @@ pub struct AdminConfig {
     #[serde(default)]
     pub cluster: ClusterConfig,
 
+    /// The record of every service (`docs/SERVICES.md`).
+    #[serde(default)]
+    pub services: ServicesConfig,
+
     /// Conference server used for live room controls
     #[serde(default)]
     pub conference: ConferenceConfig,
@@ -724,6 +728,28 @@ impl Default for ClusterConfig {
         Self {
             redis_url: None,
             key_prefix: default_key_prefix(),
+        }
+    }
+}
+
+/// `[services]`: how long a service that is down stays on the Services
+/// page before it is forgotten.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServicesConfig {
+    /// Days a service may be down before its record is dropped (default 7).
+    #[serde(default = "default_forget_after_days")]
+    pub forget_after_days: u64,
+}
+
+fn default_forget_after_days() -> u64 {
+    7
+}
+
+impl Default for ServicesConfig {
+    fn default() -> Self {
+        Self {
+            forget_after_days: default_forget_after_days(),
         }
     }
 }

@@ -193,6 +193,9 @@ pub struct CloudOptions<'a> {
     pub call_manager_url: Option<String>,
     /// What the site's call managers carry to the link's `/push`.
     pub site_push_token: Option<String>,
+    /// The cloud admin's Redis, where it keeps the services record
+    /// (`docs/SERVICES.md`).
+    pub cloud_redis_url: Option<String>,
 }
 
 /// As [`cloud_with_site_at`], with everything a cloud may be started with.
@@ -208,6 +211,10 @@ pub async fn cloud_with_site_opts(opts: CloudOptions<'_>) -> Option<Cloud> {
     };
     let firmware_section = match &opts.cloud_firmware_dir {
         Some(d) => format!("\n[api.firmware]\ndirectory = \"{d}\"\n"),
+        None => String::new(),
+    };
+    let cluster_section = match &opts.cloud_redis_url {
+        Some(url) => format!("\n[cluster]\nredis_url = \"{url}\"\n"),
         None => String::new(),
     };
     let call_manager_section = match &opts.call_manager_url {
@@ -239,7 +246,7 @@ node_id = "link-test-admin"
 bind_address = "127.0.0.1:{http}"
 auth_enabled = true
 auth_token = "{ADMIN_TOKEN}"
-{firmware_section}{call_manager_section}
+{firmware_section}{call_manager_section}{cluster_section}
 [storage]
 database_url = "{db}"
 

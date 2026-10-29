@@ -162,6 +162,8 @@ pub struct ApiState {
     /// (`docs/TENANT_TRUNKS.md` §9). Absent on a deployment with no
     /// cluster, where this server's own probes are the only view there is.
     pub trunk_reports: Option<Arc<dyn crate::TrunkNodeReports>>,
+    /// More lines for `/metrics`.
+    pub metrics_sources: Vec<Arc<dyn crate::MetricsSource>>,
     /// Where a route preview is asked (`docs/TENANT_TRUNKS.md` §12, phase
     /// 6d). Absent when no call manager can be reached: the preview then
     /// answers 503.
@@ -275,6 +277,7 @@ impl ApiState {
             firmware_files: None,
             trunk_health: None,
             trunk_reports: None,
+            metrics_sources: Vec::new(),
             route_previewer: None,
             call_supervisor: None,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
@@ -483,6 +486,12 @@ impl ApiState {
     /// Where to read what each node sees of its trunks.
     pub fn with_trunk_reports(mut self, reports: Arc<dyn crate::TrunkNodeReports>) -> Self {
         self.trunk_reports = Some(reports);
+        self
+    }
+
+    /// Add lines to `/metrics`.
+    pub fn with_metrics_source(mut self, source: Arc<dyn crate::MetricsSource>) -> Self {
+        self.metrics_sources.push(source);
         self
     }
 

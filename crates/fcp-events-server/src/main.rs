@@ -1489,6 +1489,19 @@ fn process_event_for_state(
                 } => {
                     info!(site_id = %site_id, name = %name, up = %up, "A site's link changed");
                 }
+                SystemEvent::ServiceUp {
+                    service_id, kind, ..
+                } => {
+                    info!(service_id = %service_id, kind = %kind, "A service came up");
+                }
+                SystemEvent::ServiceDown {
+                    service_id,
+                    kind,
+                    stopped,
+                    ..
+                } => {
+                    info!(service_id = %service_id, kind = %kind, stopped = %stopped, "A service went down");
+                }
             }
         }
         _ => {

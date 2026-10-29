@@ -734,6 +734,44 @@ pub enum SystemEvent {
         timestamp: SystemTime,
     },
 
+    /// A service came up: first seen, or back after it was down
+    /// (`docs/SERVICES.md` §2). Said once by the admin that keeps the
+    /// record of every service.
+    ServiceUp {
+        /// `[service] node_id` of the process.
+        service_id: String,
+        /// `call_manager`, `voicemail`, …
+        kind: String,
+        host: String,
+        version: String,
+        /// The site it runs at; none for the platform's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site_id: Option<String>,
+        /// How long it was down, when it was down before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        down_secs: Option<u64>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A service stopped saying it is there (`docs/SERVICES.md` §2). Said
+    /// once, by the admin, when its beacon expired; never while Redis
+    /// itself cannot be read.
+    ServiceDown {
+        service_id: String,
+        kind: String,
+        host: String,
+        version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site_id: Option<String>,
+        /// It said it was stopping: shut down on purpose, not lost.
+        stopped: bool,
+        /// Its last beacon (Unix seconds).
+        last_seen: u64,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// A phone registered running another firmware than its tenant's
     /// target points it at (`docs/PROVISIONING.md` §11): said once each
     /// time what it runs changes, by the node that took the REGISTER.
@@ -1914,6 +1952,8 @@ impl PlatformEvent {
         "system.cluster_view_changed",
         "system.version_skew",
         "system.site_link_changed",
+        "system.service_up",
+        "system.service_down",
         "device.firmware_behind",
         "device.push_failed",
         "user.created",
@@ -2069,6 +2109,8 @@ impl PlatformEvent {
                 SystemEvent::ClusterViewChanged { .. } => "system.cluster_view_changed",
                 SystemEvent::VersionSkew { .. } => "system.version_skew",
                 SystemEvent::SiteLinkChanged { .. } => "system.site_link_changed",
+                SystemEvent::ServiceUp { .. } => "system.service_up",
+                SystemEvent::ServiceDown { .. } => "system.service_down",
                 SystemEvent::DeviceFirmwareBehind { .. } => "device.firmware_behind",
                 SystemEvent::DevicePushFailed { .. } => "device.push_failed",
             },
@@ -2314,7 +2356,9 @@ impl PlatformEvent {
                 | SystemEvent::NodeLeft { .. }
                 | SystemEvent::ClusterViewChanged { .. }
                 | SystemEvent::VersionSkew { .. }
-                | SystemEvent::SiteLinkChanged { .. } => None,
+                | SystemEvent::SiteLinkChanged { .. }
+                | SystemEvent::ServiceUp { .. }
+                | SystemEvent::ServiceDown { .. } => None,
             },
             PlatformEvent::Voicemail(e) => match e {
                 VoicemailEvent::MessageTranscribed { tenant_id, .. }
@@ -2577,6 +2621,8 @@ impl SystemEvent {
             | SystemEvent::ClusterViewChanged { timestamp, .. }
             | SystemEvent::VersionSkew { timestamp, .. }
             | SystemEvent::SiteLinkChanged { timestamp, .. }
+            | SystemEvent::ServiceUp { timestamp, .. }
+            | SystemEvent::ServiceDown { timestamp, .. }
             | SystemEvent::DeviceFirmwareBehind { timestamp, .. }
             | SystemEvent::DevicePushFailed { timestamp, .. } => *timestamp,
         }

@@ -15,6 +15,7 @@ use utoipa::OpenApi;
 pub fn spec() -> utoipa::openapi::OpenApi {
     let mut doc = fcp_api_core::openapi::ApiDoc::openapi();
     doc.merge(crate::cluster_api::ClusterDoc::openapi());
+    doc.merge(crate::services::ServicesDoc::openapi());
     doc
 }
 
@@ -126,6 +127,9 @@ mod tests {
             "/api/v1/cluster/nodes",
             "/api/v1/cluster/stats",
             "/api/v1/cluster/sites",
+            "/api/v1/system/services",
+            "/api/v1/system/services/summary",
+            "/api/v1/system/services/{id}",
         ] {
             assert!(spec["paths"][path]["get"].is_object(), "{path}");
         }

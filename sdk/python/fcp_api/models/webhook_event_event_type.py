@@ -114,6 +114,8 @@ class WebhookEventEventType(StrEnum):
     SYSTEM_NODE_DRAINING = "system.node_draining"
     SYSTEM_NODE_JOINED = "system.node_joined"
     SYSTEM_NODE_LEFT = "system.node_left"
+    SYSTEM_SERVICE_DOWN = "system.service_down"
+    SYSTEM_SERVICE_UP = "system.service_up"
     SYSTEM_SITE_LINK_CHANGED = "system.site_link_changed"
     SYSTEM_STARTED = "system.started"
     SYSTEM_STOPPING = "system.stopping"

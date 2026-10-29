@@ -687,6 +687,12 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/cluster/nodes", Needs(SystemViewLogs)),
     (GET, "/cluster/stats", Needs(SystemViewLogs)),
     (GET, "/cluster/sites", Needs(SiteRead)),
+    // fcp-admin's services (`services.rs`, docs/SERVICES.md), behind the
+    // platform administrator's gate as well.
+    (GET, "/system/services", Needs(SystemViewLogs)),
+    (GET, "/system/services/summary", Needs(SystemViewLogs)),
+    (GET, "/system/services/:id", Needs(SystemViewLogs)),
+    (DELETE, "/system/services/:id", Needs(SystemConfig)),
 ];
 
 /// The gate for a route, by method and path template relative to
@@ -822,6 +828,9 @@ mod tests {
         let mut bound = bound_routes(&v1[start..]);
         bound.extend(bound_routes(include_str!(
             "../../fcp-admin/src/cluster_api.rs"
+        )));
+        bound.extend(bound_routes(include_str!(
+            "../../fcp-admin/src/services.rs"
         )));
         assert!(bound.len() > 250, "parsed only {} routes", bound.len());
 

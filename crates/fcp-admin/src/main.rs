@@ -48,6 +48,7 @@ mod cluster_api;
 mod config;
 mod firmware_s3;
 mod route_preview;
+mod services;
 mod site_files;
 mod site_link;
 mod storage;
@@ -209,6 +210,7 @@ async fn main() -> Result<()> {
     let storage = storage_result.dyn_storage;
     let flow_store = storage_result.flow_store;
     let config_store = storage_result.config_store;
+    let postgres = storage_result.postgres;
 
     info!("Storage backend initialized successfully");
 
@@ -599,6 +601,7 @@ async fn main() -> Result<()> {
             requests: Arc::clone(&site_requests),
             firmware: firmware_files.clone(),
             pushes: None,
+            services: None,
         })
     } else {
         info!("Sites cannot enroll here ([link] enabled is false)");
@@ -831,6 +834,41 @@ async fn main() -> Result<()> {
         })
     });
 
+    // The record of every service, kept from the beacons
+    // (`docs/SERVICES.md`): up and down said once, on this bus and to the
+    // events server for webhooks.
+    let services_registry = config.cluster.redis_url.as_ref().map(|url| {
+        let events: Arc<dyn fcp_events::EventPublisher> = match &config.events.server_url {
+            Some(events_url) => Arc::new(fcp_events::LocalAndCluster::new(
+                Arc::clone(&local_bus),
+                Arc::new(site_files::IngestPublisher::new(
+                    events_url.clone(),
+                    config.events.auth_token.clone(),
+                    config.service.node_id.clone(),
+                )),
+            )),
+            None => Arc::clone(&local_bus) as Arc<dyn fcp_events::EventPublisher>,
+        };
+        let registry = Arc::new(services::ServiceRegistry::new(
+            Arc::clone(&postgres) as Arc<dyn fcp_core::service_registry::ServiceInstanceStore>,
+            events,
+        ));
+        Arc::clone(&registry).spawn_sweep(
+            fcp_storage_redis::RedisConfig {
+                url: url.clone(),
+                key_prefix: config.cluster.key_prefix.clone(),
+            },
+            config.service.node_id.clone(),
+            std::time::Duration::from_secs(config.services.forget_after_days * 86_400),
+        );
+        registry
+    });
+    let api_state = match &services_registry {
+        Some(registry) => api_state
+            .with_metrics_source(Arc::clone(registry) as Arc<dyn fcp_api_core::MetricsSource>),
+        None => api_state,
+    };
+
     // What every node sees of its trunks, once there is somewhere to read
     // it from.
     let api_state = match trunk_reports {
@@ -865,6 +903,10 @@ async fn main() -> Result<()> {
         None => api_state,
     };
 
+    let services_state = services::ServicesApiState {
+        registry: services_registry.clone(),
+        storage: Arc::clone(&storage),
+    };
     let cluster_state = cluster_api::ClusterApiState {
         reader: cluster_reader,
         storage: Some(cluster_storage),
@@ -873,6 +915,7 @@ async fn main() -> Result<()> {
     // A site's pushes are sent by a call manager with the publisher's keys
     // (`docs/PUSH.md` §2.4).
     let link_state = link_state.map(|mut state| {
+        state.services = services_registry.clone();
         state.pushes = call_supervision::NodeCallSupervisor::new(
             config.call_manager.clone(),
             cluster_state.reader.clone(),
@@ -896,24 +939,30 @@ async fn main() -> Result<()> {
     );
 
     let bind_addr = config.api.bind_address;
-    let api_handle = tokio::spawn(async move {
-        // Cluster routes live inside the /api/v1 nest next to the core API
-        // (routes merged outside the nest would be shadowed by axum's prefix
-        // matching); create_router_with does the auth/CORS/pre-auth wiring.
-        let cluster_routes: axum::Router<fcp_api_core::ApiState> =
-            cluster_api::cluster_router(cluster_state)
-                .layer(axum::middleware::from_fn(fcp_api_core::auth::require_admin));
-        let mut app = fcp_api_core::create_router_with(api_state, &api_config, cluster_routes);
-        app = app.merge(fcp_admin_ui::admin_ui_router());
-        // The contract and its reference page (docs/DEVELOPER_SURFACE.md
-        // §3, phase 3), outside the bearer layer.
-        app = app.merge(api_docs::router());
+    let api_handle =
+        tokio::spawn(async move {
+            // Cluster routes live inside the /api/v1 nest next to the core API
+            // (routes merged outside the nest would be shadowed by axum's prefix
+            // matching); create_router_with does the auth/CORS/pre-auth wiring.
+            let cluster_routes: axum::Router<fcp_api_core::ApiState> =
+                cluster_api::cluster_router(cluster_state)
+                    .layer(axum::middleware::from_fn(fcp_api_core::auth::require_admin))
+                    // The platform's services: a tenant's administrator sees
+                    // none of them (`docs/SERVICES.md` Q5).
+                    .merge(services::services_router(services_state).layer(
+                        axum::middleware::from_fn(fcp_api_core::auth::require_platform_admin),
+                    ));
+            let mut app = fcp_api_core::create_router_with(api_state, &api_config, cluster_routes);
+            app = app.merge(fcp_admin_ui::admin_ui_router());
+            // The contract and its reference page (docs/DEVELOPER_SURFACE.md
+            // §3, phase 3), outside the bearer layer.
+            app = app.merge(api_docs::router());
 
-        let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-        tracing::info!("API server listening on {}", bind_addr);
-        axum::serve(listener, app).await?;
-        Ok::<(), anyhow::Error>(())
-    });
+            let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+            tracing::info!("API server listening on {}", bind_addr);
+            axum::serve(listener, app).await?;
+            Ok::<(), anyhow::Error>(())
+        });
 
     // Event forwarding from admin is handled by ApiState::publish_event(),
     // which POSTs directly to the events server ingest endpoint. This avoids

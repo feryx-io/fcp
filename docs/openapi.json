@@ -19042,6 +19042,218 @@
           }
         }
       }
+    },
+    "/api/v1/system/services": {
+      "get": {
+        "tags": [
+          "services"
+        ],
+        "operationId": "services_list",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "description": "Only this kind (`voicemail`, …).",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "state",
+            "in": "path",
+            "description": "Only this state (`down`, `degraded`, …).",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "site_id",
+            "in": "path",
+            "description": "Only this site's; `platform` for the platform's own.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every service the platform has seen, its own and its sites'",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ServiceView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/services/summary": {
+      "get": {
+        "tags": [
+          "services"
+        ],
+        "operationId": "services_summary",
+        "responses": {
+          "200": {
+            "description": "Every service in one number each",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServicesSummary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/services/{id}": {
+      "get": {
+        "tags": [
+          "services"
+        ],
+        "operationId": "services_get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The service's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "site_id",
+            "in": "path",
+            "description": "The site the service runs at; absent for the platform's own.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One service",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "services"
+        ],
+        "operationId": "services_forget",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The service's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "site_id",
+            "in": "path",
+            "description": "The site the service runs at; absent for the platform's own.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Forgotten"
+          },
+          "default": {
+            "description": "An error; 409 for a service that is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "webhooks": {
@@ -33091,6 +33303,149 @@
           }
         }
       },
+      "Page_ServiceView": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One service.",
+              "required": [
+                "id",
+                "kind",
+                "host",
+                "version",
+                "state",
+                "first_seen",
+                "last_seen",
+                "member",
+                "checks",
+                "load"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "site_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The site it runs at; null for the platform's own."
+                },
+                "site_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "host": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "description": "`serving`, `degraded`, `draining`, `stopping`, `down` (its beacon\nwent), `stopped` (it said it was stopping), or `unknown` (Redis, or\nthe site's link, cannot be read now)."
+                },
+                "first_seen": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "last_seen": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "down_since": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "started_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "When the process started, from its last beacon."
+                },
+                "region": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "member": {
+                  "type": "boolean",
+                  "description": "Also a cluster member."
+                },
+                "http_address": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sip_address": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "public_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "checks": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ServiceCheckView"
+                  }
+                },
+                "load": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_SessionResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -37489,6 +37844,214 @@
           "sealed": {
             "type": "string",
             "description": "The sealed form (`enc:v1:…`) to put in a configuration file."
+          }
+        }
+      },
+      "ServiceCheckView": {
+        "type": "object",
+        "description": "One check, as the page shows it.",
+        "required": [
+          "name",
+          "required",
+          "ok",
+          "since"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it came to its current answer."
+          }
+        }
+      },
+      "ServiceView": {
+        "type": "object",
+        "description": "One service.",
+        "required": [
+          "id",
+          "kind",
+          "host",
+          "version",
+          "state",
+          "first_seen",
+          "last_seen",
+          "member",
+          "checks",
+          "load"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The site it runs at; null for the platform's own."
+          },
+          "site_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`serving`, `degraded`, `draining`, `stopping`, `down` (its beacon\nwent), `stopped` (it said it was stopping), or `unknown` (Redis, or\nthe site's link, cannot be read now)."
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "down_since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the process started, from its last beacon."
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "member": {
+            "type": "boolean",
+            "description": "Also a cluster member."
+          },
+          "http_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sip_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceCheckView"
+            }
+          },
+          "load": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ServicesSummary": {
+        "type": "object",
+        "description": "Every service in one number each, for the dashboard.",
+        "required": [
+          "total",
+          "serving",
+          "attention",
+          "down",
+          "unknown",
+          "redis_reachable"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "serving": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Serving.",
+            "minimum": 0
+          },
+          "attention": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Degraded or draining.",
+            "minimum": 0
+          },
+          "down": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Down or stopped.",
+            "minimum": 0
+          },
+          "unknown": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "redis_reachable": {
+            "type": "boolean",
+            "description": "Whether this admin can read the platform's Redis now."
+          },
+          "redis_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it cannot, when it cannot."
+          },
+          "read_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the beacons were last read."
           }
         }
       },
@@ -42644,6 +43207,8 @@
               "system.cluster_view_changed",
               "system.version_skew",
               "system.site_link_changed",
+              "system.service_up",
+              "system.service_down",
               "device.firmware_behind",
               "device.push_failed",
               "user.created",

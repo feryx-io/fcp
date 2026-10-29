@@ -41,6 +41,42 @@ pub struct CheckResult {
     pub since: u64,
 }
 
+/// What one running process says about itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ServiceRecord {
+    /// `[service] node_id`, unique among the deployment's processes.
+    pub id: String,
+    /// What it is: `call_manager`, `sbc`, `voicemail`, `conference`, `ivr`,
+    /// `media`, `presence`, `tts`, `webrtc_gateway`, `events`, `jobs`,
+    /// `api_gateway`, `registrar`, `admin`, `link`.
+    pub kind: String,
+    /// The machine or container it runs on.
+    pub host: String,
+    pub version: String,
+    /// Unix seconds.
+    pub started_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Whether it is also a cluster member (`[cluster] enabled`).
+    #[serde(default)]
+    pub member: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sip_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<String>,
+    pub state: ServiceState,
+    #[serde(default)]
+    pub checks: Vec<CheckResult>,
+    /// Numbers the kind has: `calls`, `rooms`, `sessions`, `jobs_queued`, …
+    #[serde(default)]
+    pub load: BTreeMap<String, u64>,
+    /// When this record was written (Unix seconds).
+    pub beat_at: u64,
+}
+
 /// The checks a service last ran and its load, shared between the beacon
 /// that writes them and the `/ready` handler that answers from them.
 #[derive(Debug, Clone, Default)]
