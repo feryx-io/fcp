@@ -265,6 +265,8 @@ pub struct ClusterSection {
     /// `docs/MULTI_REGION.md`.
     #[serde(default)]
     pub region: Option<String>,
+    /// The Redis membership heartbeats into, and the service beacon
+    /// (`docs/SERVICES.md`) whether or not this node is a member.
     #[serde(default = "default_redis_url")]
     pub redis_url: String,
     #[serde(default = "default_heartbeat_interval")]

@@ -18,6 +18,7 @@ fcp-billing = { path = "../fcp-billing" }
 fcp-cdr = { path = "../fcp-cdr" }
 fcp-events = { path = "../fcp-events" }
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+fcp-cluster = { path = "../fcp-cluster" }
 fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus", "cdr"] }
 
 # HTTP server for health checks

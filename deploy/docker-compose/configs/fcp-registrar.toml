@@ -29,6 +29,8 @@ max_expires = 86400
 [storage]
 # Overridden by FCP_REGISTRAR_DATABASE_URL.
 database_url = "postgresql://fcp:change-me@127.0.0.1:5432/fcp"
+# The service beacon (docs/SERVICES.md), for the admin's Services page.
+redis_url = "redis://127.0.0.1:6379"
 
 [http]
 bind_address = "0.0.0.0:8083"

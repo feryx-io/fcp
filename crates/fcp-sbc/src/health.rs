@@ -138,14 +138,18 @@ async fn readiness_check(
     let trunks_healthy = state.health_monitor.any_healthy();
     let draining = state.drain.is_draining();
     let carrying = state.drain.carrying().await;
+    // A failing required check of the service beacon (`docs/SERVICES.md`).
+    let checks_ready = state.drain.health().is_none_or(|h| h.ready());
     let status = if draining {
         "draining"
+    } else if !checks_ready {
+        "not_ready"
     } else if trunks_healthy {
         "ready"
     } else {
         "not_ready"
     };
-    let code = if draining {
+    let code = if draining || !checks_ready {
         StatusCode::SERVICE_UNAVAILABLE
     } else {
         StatusCode::OK
@@ -158,6 +162,7 @@ async fn readiness_check(
             "trunks_healthy": trunks_healthy,
             "draining": draining,
             "active_calls": carrying,
+            "checks": state.drain.health().map(|h| h.checks()).unwrap_or_default(),
             "replica": state.replica.json(),
         })),
     )

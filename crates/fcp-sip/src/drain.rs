@@ -158,6 +158,9 @@ pub struct Drain {
     /// Bumped by every start and every stop, so a wait that is no longer
     /// the current drain gives up quietly.
     generation: AtomicU64,
+    /// The service beacon's checks (`docs/SERVICES.md` §2), once it runs:
+    /// `/ready` answers from them as well.
+    health: std::sync::OnceLock<fcp_core::service_health::ServiceHealth>,
 }
 
 impl Drain {
@@ -175,7 +178,18 @@ impl Drain {
             node_id,
             wait: Duration::from_secs(wait_secs),
             generation: AtomicU64::new(0),
+            health: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Answer `/ready` from the service beacon's checks too.
+    pub fn set_health(&self, health: fcp_core::service_health::ServiceHealth) {
+        let _ = self.health.set(health);
+    }
+
+    /// The beacon's checks, when it runs.
+    pub fn health(&self) -> Option<&fcp_core::service_health::ServiceHealth> {
+        self.health.get()
     }
 
     /// Whether this node is leaving service.
@@ -316,16 +330,24 @@ impl Drain {
 // own shape and its own authentication.
 
 /// `503` while this node is draining, so a load balancer stops choosing it
-/// before it stops taking calls. `/health` keeps answering `200`
+/// before it stops taking calls, and while a required check of the service
+/// beacon fails (`docs/SERVICES.md` §2). `/health` keeps answering `200`
 /// throughout, so a liveness probe does not kill the process mid-drain.
 pub async fn ready_body(drain: &Drain) -> (u16, serde_json::Value) {
     let draining = drain.is_draining();
-    let body = serde_json::json!({
-        "ready": !draining,
+    // A failing required check (the database, Redis) is not ready; a
+    // dependency the node serves without is only reported.
+    let checks_ready = drain.health().is_none_or(|h| h.ready());
+    let ready = !draining && checks_ready;
+    let mut body = serde_json::json!({
+        "ready": ready,
         "draining": draining,
         "active_calls": drain.carrying().await,
     });
-    (if draining { 503 } else { 200 }, body)
+    if let Some(health) = drain.health() {
+        body["checks"] = serde_json::to_value(health.checks()).unwrap_or_default();
+    }
+    (if ready { 200 } else { 503 }, body)
 }
 
 /// `POST /drain`: this node takes no new calls, keeps the ones it has
@@ -509,6 +531,28 @@ mod tests {
 
         assert_eq!(drain.wait_then_end(generation).await, Some(2));
         assert_eq!(node.ended.load(Ordering::SeqCst), 2, "both got their BYE");
+    }
+
+    /// `/ready` answers from the service beacon's checks too
+    /// (`docs/SERVICES.md` §2): a failing database is not ready, a failing
+    /// dependency the node serves without is only reported.
+    #[tokio::test]
+    async fn ready_answers_from_the_services_checks() {
+        let (drain, _) = drain(Arc::new(Node::default()), 30);
+        assert_eq!(ready_body(&drain).await.0, 200);
+
+        let health = fcp_core::service_health::ServiceHealth::new();
+        drain.set_health(health.clone());
+        health.record("tts", false, Err("refused".into()), 1);
+        let (code, body) = ready_body(&drain).await;
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(body["checks"][0]["name"], "tts");
+
+        health.record("database", true, Err("timed out".into()), 2);
+        let (code, body) = ready_body(&drain).await;
+        assert_eq!(code, 503);
+        assert_eq!(body["ready"], false);
+        assert_eq!(body["draining"], false);
     }
 
     /// What a binary does before the wait runs once, with new work

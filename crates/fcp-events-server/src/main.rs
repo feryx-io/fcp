@@ -312,6 +312,31 @@ async fn main() -> Result<()> {
     let remote_event_bus = Arc::new(InMemoryEventBus::new());
     let local_region = fcp_core::region::resolve_region(config.cluster.region.as_deref());
 
+    // Say this process is there, member or not (`docs/SERVICES.md`).
+    #[cfg(feature = "storage-redis")]
+    let beacon = config
+        .cluster
+        .redis_url
+        .as_ref()
+        .or(config.event_bus.redis_url.as_ref())
+        .map(|url| {
+            let mut beacon = fcp_cluster::ServiceBeacon::new(
+                fcp_cluster::ServiceIdentity::new(&config.service.node_id, "events")
+                    .region(local_region.clone())
+                    .member(config.cluster.enabled)
+                    .http(config.websocket.bind_address),
+            );
+            if let Some(storage) = &storage_result {
+                beacon = beacon.check(fcp_cluster::Check::database(
+                    storage.pg_storage.ping_check(),
+                ));
+            }
+            beacon.start(fcp_storage_redis::RedisConfig {
+                url: url.clone(),
+                ..Default::default()
+            })
+        });
+
     // Initialize cluster membership (if configured)
     #[cfg(feature = "storage-redis")]
     let _cluster_manager = if config.cluster.enabled {
@@ -742,6 +767,10 @@ async fn main() -> Result<()> {
     #[cfg(feature = "storage-redis")]
     if let Some(ref cm) = _cluster_manager {
         cm.shutdown().await;
+    }
+    #[cfg(feature = "storage-redis")]
+    if let Some(beacon) = &beacon {
+        beacon.shutdown().await;
     }
 
     info!("FCP Events Server shutdown complete");

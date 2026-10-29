@@ -20,6 +20,8 @@ fcp-events = { path = "../fcp-events" }
 
 # Storage backend
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+fcp-cluster = { path = "../fcp-cluster" }
+fcp-storage-redis = { path = "../fcp-storage-redis" }
 
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }

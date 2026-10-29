@@ -34,6 +34,8 @@ anyhow = { workspace = true }
 
 # Concurrency
 dashmap = "6"
+futures = "0.3"
+uuid = { workspace = true }
 
 # HTTP client for inter-node calls
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -41,7 +43,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 [features]
 # ToSchema on the cluster view the admin API returns
 # (docs/DEVELOPER_SURFACE.md §3, phase 3).
-openapi = ["dep:utoipa"]
+openapi = ["dep:utoipa", "fcp-core/openapi"]
 
 [dev-dependencies]
 uuid = { workspace = true }

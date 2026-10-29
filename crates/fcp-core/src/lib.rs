@@ -53,6 +53,7 @@ pub mod sca;
 pub mod schedule;
 pub mod secret;
 pub mod service;
+pub mod service_health;
 pub mod session;
 pub mod sip_trace;
 pub mod site;

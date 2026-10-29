@@ -182,6 +182,21 @@ async fn main() -> Result<()> {
         start_cluster(&config).await;
     }
 
+    // Say this process is there, member or not (`docs/SERVICES.md`).
+    #[cfg(feature = "storage-redis")]
+    let beacon = fcp_cluster::ServiceBeacon::new(
+        fcp_cluster::ServiceIdentity::new(&config.service.node_id, "tts")
+            .region(fcp_cluster::resolve_region(
+                config.cluster.region.as_deref(),
+            ))
+            .member(config.cluster.enabled)
+            .http(&config.http.bind_address),
+    )
+    .start(fcp_storage_redis::RedisConfig {
+        url: config.cluster.redis_url.clone(),
+        ..Default::default()
+    });
+
     // 7. Bind and serve
     let bind_addr: std::net::SocketAddr = config
         .http
@@ -206,6 +221,8 @@ async fn main() -> Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    #[cfg(feature = "storage-redis")]
+    beacon.shutdown().await;
 
     info!("fcp-tts shutdown complete");
     Ok(())

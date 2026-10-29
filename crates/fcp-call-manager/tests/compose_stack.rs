@@ -12,7 +12,8 @@
 //! second phone registers over SIPS with it while the WebRTC gateway and
 //! the media server answer over HTTPS; the master key beside them has
 //! every service sealing the database's secrets, which the admin's
-//! encryption status shows. The compose file's ports are used
+//! encryption status shows. Every service writes its service beacon
+//! (`docs/SERVICES.md`). The compose file's ports are used
 //! as they are, so this is the one test in this binary.
 
 use fcp_testkit::compose::ComposeStack;
@@ -133,6 +134,52 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
             .is_some_and(|nodes| nodes.iter().any(|n| n == NODE_ID_BY_REFERENCE)),
         "the call manager's status groups itself under this release: {status}"
     );
+
+    // Every service says it is there, member or not (`docs/SERVICES.md`
+    // phase S1): one beacon per process in the stack's Redis, on this
+    // release, its required checks passing.
+    let beacons = fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+        url: redis.clone(),
+        ..Default::default()
+    })
+    .await
+    .expect("the stack's redis");
+    let kinds = [
+        "events",
+        "admin",
+        "api_gateway",
+        "call_manager",
+        "conference",
+        "ivr",
+        "voicemail",
+        "presence",
+        "sbc",
+        "media",
+        "webrtc_gateway",
+        "jobs",
+    ];
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    let records = loop {
+        let records = fcp_cluster::ServiceBeacon::read_all(&beacons)
+            .await
+            .expect("read the beacons");
+        if kinds.iter().all(|k| records.iter().any(|r| r.kind == *k)) {
+            break records;
+        }
+        let seen: Vec<_> = records.iter().map(|r| r.kind.as_str()).collect();
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a beacon from every service: {seen:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    for r in &records {
+        assert_eq!(r.version, version, "{r:?}");
+        assert!(
+            r.checks.iter().all(|c| c.ok || !c.required),
+            "required checks pass: {r:?}"
+        );
+    }
 
     // The call manager runs with the node id its configuration took from
     // the environment through `${FCP_STACK_TEST_NODE_ID}`: `/trunks`

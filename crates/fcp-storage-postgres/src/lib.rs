@@ -808,6 +808,30 @@ impl PostgresStorage {
         &self.pool
     }
 
+    /// One trivial query on the primary: the service beacon's `database`
+    /// check (`docs/SERVICES.md` §2).
+    pub async fn ping(&self) -> Result<(), String> {
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// [`Self::ping`] as a closure, for `fcp_cluster::Check::database`.
+    pub fn ping_check(
+        self: &Arc<Self>,
+    ) -> impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+           + Send
+           + Sync
+           + 'static {
+        let storage = Arc::clone(self);
+        move || {
+            let storage = Arc::clone(&storage);
+            Box::pin(async move { storage.ping().await })
+        }
+    }
+
     /// Close the connection pool and wait for all connections to be released.
     pub async fn close(&self) {
         self.pool.close().await;

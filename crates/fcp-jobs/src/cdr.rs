@@ -108,6 +108,8 @@ pub struct CdrRole {
     consumer: tokio::sync::Mutex<Option<Consumer>>,
     pub source: Arc<RedisCdrStream>,
     pub processor: Arc<Processor>,
+    /// The processor's database, for the service beacon's check.
+    pub database: Arc<fcp_storage_postgres::PostgresStorage>,
 }
 
 impl CdrRole {
@@ -185,6 +187,7 @@ impl CdrRole {
             consumer: tokio::sync::Mutex::new(Some(consumer)),
             source,
             processor,
+            database: pg,
         })
     }
 

@@ -639,7 +639,7 @@ async fn main() -> Result<()> {
 
     // Create API state
     let api_state = fcp_api_core::ApiState::new(
-        Some(storage),
+        Some(Arc::clone(&storage)),
         Some(flow_store),
         dialog_manager,
         subscription_manager,
@@ -810,6 +810,27 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Say this process is there (`docs/SERVICES.md`).
+    let beacon = config.cluster.redis_url.as_ref().map(|url| {
+        let mut beacon = fcp_cluster::ServiceBeacon::new(
+            fcp_cluster::ServiceIdentity::new(&config.service.node_id, "admin")
+                .http(config.api.bind_address),
+        )
+        .check(fcp_cluster::Check::tenants(
+            Arc::clone(&storage) as Arc<dyn fcp_core::storage::TenantStore>
+        ));
+        if let Some(events) = &events_server_url {
+            beacon = beacon.check(fcp_cluster::Check::http(
+                "events",
+                format!("{}/health", events.trim_end_matches('/')),
+            ));
+        }
+        beacon.start(fcp_storage_redis::RedisConfig {
+            url: url.clone(),
+            key_prefix: config.cluster.key_prefix.clone(),
+        })
+    });
+
     // What every node sees of its trunks, once there is somewhere to read
     // it from.
     let api_state = match trunk_reports {
@@ -920,6 +941,9 @@ async fn main() -> Result<()> {
 
     // Shutdown API server
     api_handle.abort();
+    if let Some(beacon) = &beacon {
+        beacon.shutdown().await;
+    }
 
     info!("FCP Admin API shutdown complete");
     Ok(())

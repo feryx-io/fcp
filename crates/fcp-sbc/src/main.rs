@@ -628,7 +628,7 @@ async fn main() -> Result<()> {
             None, // no routing service
             Arc::clone(&call_manager),
             Some(Arc::clone(&uac)),
-            dyn_storage,
+            dyn_storage.clone(),
             media_manager,
             media_config,
             None, // no flow handler
@@ -872,6 +872,47 @@ async fn main() -> Result<()> {
         deploy_config.service.drain_wait_secs,
     ));
 
+    // Say this process is there, member or not (`docs/SERVICES.md`).
+    #[cfg(feature = "storage-redis")]
+    let beacon = deploy_config.redis_url.as_ref().map(|url| {
+        let (load, leaving) = (Arc::clone(&drain), Arc::clone(&drain));
+        let mut beacon = fcp_cluster::ServiceBeacon::new(
+            fcp_cluster::ServiceIdentity::new(&deploy_config.service.node_id, "sbc")
+                .region(fcp_cluster::resolve_region(
+                    deploy_config.cluster.region.as_deref(),
+                ))
+                .member(deploy_config.cluster.enabled)
+                .http(fcp_cluster::advertised_address(
+                    cli.health_bind
+                        .parse()
+                        .unwrap_or_else(|_| "0.0.0.0:8080".parse().unwrap()),
+                    Some(&local_ip),
+                ))
+                .sip(fcp_cluster::advertised_address(bind_addr, Some(&local_ip))),
+        )
+        .load(move || {
+            let drain = Arc::clone(&load);
+            async move {
+                std::collections::BTreeMap::from([(
+                    "calls".to_string(),
+                    drain.carrying().await as u64,
+                )])
+            }
+        })
+        .draining(move || leaving.is_draining());
+        if let Some(storage) = &dyn_storage {
+            beacon = beacon.check(fcp_cluster::Check::tenants(
+                Arc::clone(storage) as Arc<dyn fcp_core::storage::TenantStore>
+            ));
+        }
+        let handle = beacon.start(fcp_storage_redis::RedisConfig {
+            url: url.clone(),
+            ..Default::default()
+        });
+        drain.set_health(handle.health());
+        handle
+    });
+
     let health_state = Arc::new(HealthState {
         admission: Arc::clone(&admission),
         health_monitor: Arc::clone(&trunk_health),
@@ -1034,6 +1075,10 @@ async fn main() -> Result<()> {
     #[cfg(feature = "storage-redis")]
     if let Some(ref cm) = _cluster_manager {
         cm.shutdown().await;
+    }
+    #[cfg(feature = "storage-redis")]
+    if let Some(beacon) = &beacon {
+        beacon.shutdown().await;
     }
 
     // 24. Graceful shutdown — signal registration task to de-register trunks,

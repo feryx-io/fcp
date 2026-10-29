@@ -450,6 +450,41 @@ async fn main() -> Result<()> {
         config.service.drain_wait_secs,
     ));
 
+    // Say this process is there, member or not (`docs/SERVICES.md`).
+    #[cfg(feature = "storage-redis")]
+    let beacon = config.storage.redis_url.as_ref().map(|url| {
+        let (load, leaving) = (Arc::clone(&drain), Arc::clone(&drain));
+        let beacon = fcp_cluster::ServiceBeacon::new(
+            fcp_cluster::ServiceIdentity::new(&config.service.node_id, "webrtc_gateway")
+                .region(fcp_cluster::resolve_region(
+                    config.cluster.region.as_deref(),
+                ))
+                .member(config.cluster.enabled)
+                .http(fcp_cluster::advertised_address(
+                    config.http.bind_address,
+                    config.sip.local_ip.as_deref(),
+                ))
+                .sip(&config.sip.udp_bind)
+                .public_url(config.http.public_url.clone()),
+        )
+        .load(move || {
+            let drain = Arc::clone(&load);
+            async move {
+                std::collections::BTreeMap::from([(
+                    "sessions".to_string(),
+                    drain.carrying().await as u64,
+                )])
+            }
+        })
+        .draining(move || leaving.is_draining());
+        let handle = beacon.start(fcp_storage_redis::RedisConfig {
+            url: url.clone(),
+            ..Default::default()
+        });
+        drain.set_health(handle.health());
+        handle
+    });
+
     // What this node is carrying, in the heartbeat: a draining peer picks
     // the emptiest gateway to hand its browsers to, and conference
     // placement reads the same field
@@ -671,6 +706,10 @@ async fn main() -> Result<()> {
     #[cfg(feature = "storage-redis")]
     if let Some(ref cm) = _cluster_manager {
         cm.shutdown().await;
+    }
+    #[cfg(feature = "storage-redis")]
+    if let Some(beacon) = &beacon {
+        beacon.shutdown().await;
     }
 
     // The last sessions' records leave before we do.

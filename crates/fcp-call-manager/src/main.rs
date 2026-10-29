@@ -1833,6 +1833,55 @@ async fn run() -> Result<()> {
         config.service.drain_wait_secs,
     ));
 
+    // Say this process is there, member or not (`docs/SERVICES.md`).
+    #[cfg(feature = "storage-redis")]
+    let beacon = config.storage.redis_url.as_ref().map(|url| {
+        let (load, leaving) = (Arc::clone(&drain), Arc::clone(&drain));
+        let mut beacon = fcp_cluster::ServiceBeacon::new(
+            fcp_cluster::ServiceIdentity::new(&config.service.node_id, "call_manager")
+                .region(fcp_cluster::resolve_region(
+                    config.cluster.region.as_deref(),
+                ))
+                .member(config.cluster.enabled)
+                .http(fcp_cluster::advertised_address(
+                    config.http.bind_address,
+                    config.sip.local_ip.as_deref(),
+                ))
+                .sip(&config.sip.udp_bind),
+        )
+        .check(fcp_cluster::Check::tenants(
+            Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::TenantStore>
+        ))
+        .load(move || {
+            let drain = Arc::clone(&load);
+            async move {
+                std::collections::BTreeMap::from([(
+                    "calls".to_string(),
+                    drain.carrying().await as u64,
+                )])
+            }
+        })
+        .draining(move || leaving.is_draining());
+        if let Some(events) = &config.events.server_url {
+            beacon = beacon.check(fcp_cluster::Check::http(
+                "events",
+                format!("{}/health", events.trim_end_matches('/')),
+            ));
+        }
+        if let Some(tts) = &config.media.tts_remote_url {
+            beacon = beacon.check(fcp_cluster::Check::http(
+                "tts",
+                format!("{}/health", tts.trim_end_matches('/')),
+            ));
+        }
+        let handle = beacon.start(fcp_storage_redis::RedisConfig {
+            url: url.clone(),
+            ..Default::default()
+        });
+        drain.set_health(handle.health());
+        handle
+    });
+
     // 16. Create and start TransportListener
     let udp_bind: std::net::SocketAddr = config
         .sip
@@ -2427,6 +2476,10 @@ async fn run() -> Result<()> {
     #[cfg(feature = "storage-redis")]
     if let Some((cm, _, _)) = &_cluster_manager {
         cm.shutdown().await;
+    }
+    #[cfg(feature = "storage-redis")]
+    if let Some(beacon) = &beacon {
+        beacon.shutdown().await;
     }
 
     // Signal presence manager to shutdown (persists state, signals cleanup task)

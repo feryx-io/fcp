@@ -6,7 +6,7 @@ node etc." Then: "we need at least a services view so we can see all the running
 nodes, the services they are running, their health, etc." — under a System menu with
 the cluster and any future system pages.
 
-*Drafted 2026-10-29. The questions in §6 are open.*
+*Drafted 2026-10-29. Agreed the same day: every question on its recommendation.*
 
 ## 1. What exists
 
@@ -76,8 +76,10 @@ log once.
   gateway sessions, jobs queued and failed, events delivered — and the capacity it
   advertises where it has one.
 
-`degraded` is a failing check. Readiness (`/ready`) uses the same checks, so a load
-balancer and the page agree.
+`degraded` is a failing check. Readiness (`/ready`) carries the same checks, so a load
+balancer and the page agree; it answers 503 only for a failing *required* check (the
+database, Redis), not for a dependency the process can serve without. Compose's
+health checks stay on `/health`, so a dependency's outage never restarts a container.
 
 **The admin keeps a record of every service it has seen**, in Postgres
 (`service_instances`, migration 127): id, kind, host, first seen, last seen, last
@@ -150,6 +152,55 @@ Then D8 by hand: stop the voicemail container, see it red within 15 s with the t
 it went, start it, see it back; stop the TTS server, see voicemail `degraded` with its
 `tts` check failing.
 
+### 4.1 S1 as built (v0.25.476)
+
+- **`fcp_core::service_health`**: `ServiceState` (`serving`, `degraded`, `draining`,
+  `stopping`), `CheckResult` (name, required, ok, error, since) and `ServiceHealth`, the
+  checks and load shared by the beacon and `/ready`.
+- **`fcp_cluster::services`**: `ServiceIdentity`, `ServiceBeacon` (builder: `check`,
+  `load`, `draining`; `start(RedisConfig)` → `BeaconHandle`), `ServiceRecord`, and
+  `ServiceBeacon::read_all` for the admin. The beacon connects in its own task and
+  again while Redis is away, so a process never waits on it; every five seconds it
+  runs its checks (three seconds each, together), its load, and writes
+  `fcp:service:<id>` with a fifteen-second TTL. The `redis` check is the write
+  itself. On shutdown it writes `stopping` once and leaves it to expire.
+- **Checks**: `Check::tenants` (a tenant that does not exist, read through the
+  binary's store), `Check::database` over `PostgresStorage::ping` (`SELECT 1`),
+  `Check::http` (a dependency's `/health`, not required), `Check::new` for anything
+  else.
+- **`/ready`**: `fcp_sip::drain::Drain::set_health`, and `ready_body` answering 503
+  for a failing required check as well as draining, with `checks` in the body; the
+  SBC's own readiness does the same.
+- **Every binary**:
+
+| Binary | Kind | Redis from | Checks | Load |
+|---|---|---|---|---|
+| call manager | `call_manager` | `[storage] redis_url` | database, events, tts | calls |
+| SBC | `sbc` | `redis_url` | database | calls |
+| voicemail | `voicemail` | `[storage] redis_url` | database, events | calls |
+| conference | `conference` | `[storage] redis_url` | database, events | participants |
+| IVR | `ivr` | `[storage] redis_url` | database, events | calls |
+| presence | `presence` | `[storage] redis_url` | database | subscriptions |
+| WebRTC gateway | `webrtc_gateway` | `[storage] redis_url` | — | sessions |
+| media | `media` | `[storage] redis_url` | database | — |
+| TTS | `tts` | `[cluster] redis_url` | — | — |
+| events server | `events` | `[cluster]` or `[event_bus] redis_url` | database (with webhooks or notifications) | — |
+| jobs | `jobs` | `[redis] url` | database (with the CDR processor) | jobs_queued, jobs_failed |
+| API gateway | `api_gateway` | `[redis] url` | — | — |
+| registrar | `registrar` | `[storage] redis_url` (new, optional) | database | registrations |
+| admin | `admin` | `[cluster] redis_url` | database, events | — |
+| link | `link` | `[site] redis_url` | cloud (not required) | — |
+
+- **Compose**: the media server's and TTS server's configurations gained a Redis
+  (`[storage] redis_url`, `[cluster] redis_url`), the registrar's `[storage]
+  redis_url`; membership flags unchanged.
+- **Tests**: `fcp-cluster/tests/services.rs` (written, refreshed, degraded, not ready,
+  draining, stopping and expired; started without Redis), `drain::tests`
+  `ready_answers_from_the_services_checks`, `fcp-registrar` smoke
+  `a_registrar_says_it_is_there` (the binary's beacon, `/ready`'s checks, its last
+  `stopping`), `compose_stack.rs` (a beacon from each of the twelve default services on
+  this release).
+
 ## 5. What this does not do
 
 - No restart button. The admin is not the process supervisor (Docker, systemd,
@@ -158,7 +209,7 @@ it went, start it, see it back; stop the TTS server, see voicemail `degraded` wi
 - The nginx proxy and Postgres, Redis, Prometheus themselves are not FCP services; the
   `database` and `redis` checks of every service stand in for the last two.
 
-## 6. Questions
+## 6. Questions (agreed 2026-10-29, every recommendation)
 
 **Q1. Turn membership on in the shipped configs as well?** With S1 the page no longer
 needs it. *Recommendation:* no; membership stays a clustering choice, documented in
