@@ -1654,6 +1654,42 @@ pub enum PresenceEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// What others see of a person changed (`presence.user_changed`,
+    /// `docs/PRESENCE.md`): the status they chose with calls, do not
+    /// disturb, idleness and being signed out laid over it. `state` is
+    /// `available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or
+    /// `offline`; `label` is their own status's, `idle` says an away is
+    /// the app's doing.
+    UserChanged {
+        user_id: String,
+        username: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extension: Option<String>,
+        state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        #[serde(default)]
+        idle: bool,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A call began or stopped counting against one of its parties
+    /// (`presence.user_call`): the call manager's word, from the parties
+    /// it counts for call waiting, that a person is on a call. The admin
+    /// works presence out from it; apps are not sent it.
+    UserCall {
+        user_id: String,
+        call_id: String,
+        on_call: bool,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Voicemail-related events.
@@ -1955,6 +1991,8 @@ impl PlatformEvent {
         "presence.watcher_removed",
         "presence.publish_received",
         "presence.dialog_changed",
+        "presence.user_changed",
+        "presence.user_call",
         "presence.publish_expiry_warning",
         "presence.publish_expired",
         "line.appearance_changed",
@@ -2123,6 +2161,8 @@ impl PlatformEvent {
                 PresenceEvent::PublishExpiryWarning { .. } => "presence.publish_expiry_warning",
                 PresenceEvent::PublishExpired { .. } => "presence.publish_expired",
                 PresenceEvent::AppearanceChanged { .. } => "line.appearance_changed",
+                PresenceEvent::UserChanged { .. } => "presence.user_changed",
+                PresenceEvent::UserCall { .. } => "presence.user_call",
             },
             PlatformEvent::Sip(e) => match e {
                 SipTraceEvent::MessageCaptured { .. } => "sip.message_captured",
@@ -2257,7 +2297,9 @@ impl PlatformEvent {
                 | PresenceEvent::DialogChanged { tenant_id, .. }
                 | PresenceEvent::PublishExpiryWarning { tenant_id, .. }
                 | PresenceEvent::PublishExpired { tenant_id, .. }
-                | PresenceEvent::AppearanceChanged { tenant_id, .. } => Some(tenant_id),
+                | PresenceEvent::AppearanceChanged { tenant_id, .. }
+                | PresenceEvent::UserChanged { tenant_id, .. }
+                | PresenceEvent::UserCall { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::System(e) => match e {
                 SystemEvent::ConfigChanged { tenant_id, .. }
@@ -2636,7 +2678,9 @@ impl PresenceEvent {
             | PresenceEvent::DialogChanged { timestamp, .. }
             | PresenceEvent::PublishExpiryWarning { timestamp, .. }
             | PresenceEvent::PublishExpired { timestamp, .. }
-            | PresenceEvent::AppearanceChanged { timestamp, .. } => *timestamp,
+            | PresenceEvent::AppearanceChanged { timestamp, .. }
+            | PresenceEvent::UserChanged { timestamp, .. }
+            | PresenceEvent::UserCall { timestamp, .. } => *timestamp,
         }
     }
 }

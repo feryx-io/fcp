@@ -86,6 +86,11 @@ impl UserStream {
             PlatformEvent::Presence(
                 PresenceEvent::StatusChanged { .. } | PresenceEvent::DialogChanged { .. },
             ) => self.presence,
+            // A person's presence (docs/PRESENCE.md): everyone's while the
+            // tenant shows its directory, their own always.
+            PlatformEvent::Presence(PresenceEvent::UserChanged { user_id, .. }) => {
+                self.presence || *user_id == self.user_id
+            }
             other => other.call_id().is_some_and(|c| self.calls.contains(c)),
         }
     }
@@ -364,5 +369,33 @@ mod tests {
         assert!(s.admit(&presence));
         let mut hidden = UserStream::new("u1".into(), None, SubjectMatcher::new(["carol"]), false);
         assert!(!hidden.admit(&presence));
+
+        let person = |user: &str| {
+            PlatformEvent::Presence(PresenceEvent::UserChanged {
+                user_id: user.into(),
+                username: "x".into(),
+                extension: None,
+                state: "away".into(),
+                label: Some("WFH".into()),
+                note: None,
+                idle: false,
+                tenant_id: TenantId::nil(),
+                timestamp: SystemTime::now(),
+            })
+        };
+        assert!(s.admit(&person("u2")), "a colleague's, the directory shown");
+        assert!(
+            !hidden.admit(&person("u2")),
+            "not with the directory hidden"
+        );
+        assert!(hidden.admit(&person("u1")), "their own always");
+        let call = PlatformEvent::Presence(PresenceEvent::UserCall {
+            user_id: "u1".into(),
+            call_id: "call-1".into(),
+            on_call: true,
+            tenant_id: TenantId::nil(),
+            timestamp: SystemTime::now(),
+        });
+        assert!(!s.admit(&call), "the call managers' word to the admin");
     }
 }

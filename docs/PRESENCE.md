@@ -125,7 +125,7 @@ user's chosen status and registrations, so a restart loses nothing.
 
 - A change is announced as `presence.user_changed` (`user_id`, `username`,
   `extension`, `state`, `label`, `note`, `tenant_id`), carried by `/me/events` while the
-  tenant shows its directory, and by tenant webhooks.
+  tenant shows its directory, and (phase 2) by tenant webhooks.
 - `/me/directory` gives each person `presence`, `presence_label` and `presence_note`
   from the same map, and stops reading the per-address mirror.
 - **Phones.** The call manager feeds each of the person's addresses in its presence
@@ -157,18 +157,32 @@ Each side works out presence from its own registrations and calls.
 
 ## 5. Phases
 
-1. **FCP: the person's presence.** Migration 125, `fcp_core::presence_status`,
-   `/me/presence` and its statuses, DND both ways, the admin working presence out per
-   person (registrations from the store, calls, DND, idle), `presence.user_changed`,
-   `/me/directory`, the admin read route and user page, queues and hunt groups skipping
-   DND and calls only, the SDKs. Tests: `api_postgres` (statuses kept and ordered, a
-   DND status turning DND on and `*79` turning it back, idle lapsing, one device of two
-   leaving, another tenant seeing its own people), `fcp-admin/tests` (a call shown and
-   the chosen status back after it).
-2. **FCP: phones and sites.** The call manager's presence fed by person, its own
-   overwriting listener retired, PIDF parsing reading RPID activities, the tables synced
-   with sites. Tests: `fcp-call-manager/tests/presence.rs` (a watcher's NOTIFY says away
-   with the label, on-the-phone during a call, and away again after), `fcp-link/tests`.
+1. ✅ **FCP v0.25.473: the person's presence.** Migration 125 (`user_presence`,
+   `presence_statuses`), `fcp_core::presence_status` (the model and `effective`),
+   `/me/presence` and its statuses, DND both ways, `fcp_api_core::people_presence` run
+   by the admin (registrations read from the store, `call.initiated` for ringing,
+   `presence.user_call` from the call managers' counted parties for calls,
+   `user.calling_changed` for DND, idle per app session, `until` and a re-read every
+   five minutes on a 30-second tick), `presence.user_changed` on the admin's bus and
+   `/me/events` (everyone's while the directory is shown, a person's own always),
+   `/me/directory` (`presence_label`, `presence_idle`), `GET /users/{username}/presence`
+   and the line in the admin UI's calling dialog, the SDKs. Tests: `api_postgres`
+   `presence.rs` (`a_user_keeps_their_own_statuses_and_picks_one`,
+   `do_not_disturb_is_one_switch`,
+   `others_see_signing_out_calls_and_idleness_over_the_chosen_status`,
+   `a_status_clears_itself_when_its_time_comes`) and `fcp_core::presence_status`'s own.
+   As built: `presence.user_changed` stays on the admin's bus (its apps and UI);
+   forwarding it to the events server, for the call managers and webhooks, is phase 2,
+   and so are queues and hunt groups, which ask by extension without a tenant and
+   cannot wait on the database.
+2. **FCP: phones, queues and sites.** `presence.user_changed` forwarded to the events
+   server once (no echo back onto the admin's bus) and delivered to tenant webhooks;
+   the call manager's presence fed by person, its own overwriting listener and the
+   admin's address-keyed one retired, PIDF parsing reading RPID activities; queues and
+   hunt groups skipping DND and calls only, from the person's presence the call manager
+   now hears; the tables synced with sites. Tests: `fcp-call-manager/tests/presence.rs`
+   (a watcher's NOTIFY says away with the label, on-the-phone during a call, and away
+   again after; a queue agent who chose Busy still offered calls), `fcp-link/tests`.
 3. **Anvil: the presence chip**, statuses, notes, idle, the CLI.
 
 ## 6. Agreed (2026-10-29)

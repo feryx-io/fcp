@@ -20,6 +20,7 @@ pub mod offboarding;
 pub mod oidc;
 pub mod openapi;
 pub mod page;
+pub mod people_presence;
 pub mod rate_limit;
 pub mod redirection;
 pub mod route_log;

@@ -3248,6 +3248,311 @@
         }
       }
     },
+    "/api/v1/me/presence": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/presence",
+        "operationId": "self_service_get_presence",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyPresenceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "PUT /me/presence",
+        "operationId": "self_service_update_presence",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMyPresenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyPresenceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/presence/statuses": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/presence/statuses",
+        "operationId": "self_service_list_presence_statuses",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_OwnStatusResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/presence/statuses",
+        "operationId": "self_service_create_presence_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnStatusResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/presence/statuses/{id}": {
+      "put": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "PUT /me/presence/statuses/{id}",
+        "operationId": "self_service_update_presence_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateOwnStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnStatusResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "DELETE /me/presence/statuses/{id}",
+        "operationId": "self_service_delete_presence_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/presence/statuses/order": {
+      "put": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "PUT /me/presence/statuses/order",
+        "operationId": "self_service_order_presence_statuses",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderStatusesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_OwnStatusResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{username}/presence": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "GET /users/{username}/presence",
+        "operationId": "users_get_presence",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserPresenceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/events": {
       "get": {
         "tags": [
@@ -23870,13 +24175,24 @@
               "string",
               "null"
             ],
-            "description": "Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`\nor `ringing`; unset when nothing is known."
+            "description": "What others see of them (`docs/PRESENCE.md`): for a user,\n`available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or\n`offline`; for an extension, its SIP presence (`open`, `closed`,\n`away`, `busy`, `on_the_phone`, `ringing`); unset when nothing is\nknown."
+          },
+          "presence_label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A user's own status's label (\"WFH\")."
           },
           "presence_note": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "presence_idle": {
+            "type": "boolean",
+            "description": "A user shown away because their apps say they are idle."
           }
         }
       },
@@ -26828,6 +27144,50 @@
           }
         }
       },
+      "MyPresenceResponse": {
+        "type": "object",
+        "description": "A user's presence: what others see, what they chose, and their own\nstatuses to choose from.",
+        "required": [
+          "presence",
+          "status",
+          "status_state",
+          "statuses"
+        ],
+        "properties": {
+          "presence": {
+            "$ref": "#/components/schemas/Presence",
+            "description": "What others see."
+          },
+          "status": {
+            "type": "string",
+            "description": "What they chose: a built-in state's name or one of `statuses`' ids."
+          },
+          "status_state": {
+            "$ref": "#/components/schemas/StatusState",
+            "description": "The chosen status's state."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the chosen status clears back to available."
+          },
+          "statuses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OwnStatusResponse"
+            }
+          }
+        }
+      },
       "NetworkResponse": {
         "type": "object",
         "required": [
@@ -27145,6 +27505,57 @@
               "null"
             ],
             "format": "date-time"
+          }
+        }
+      },
+      "OrderStatusesRequest": {
+        "type": "object",
+        "description": "A user's own statuses in a new order: every id, once.",
+        "required": [
+          "ids"
+        ],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "OwnStatusRequest": {
+        "type": "object",
+        "description": "One of a user's own statuses, as written.",
+        "required": [
+          "label",
+          "state"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/StatusState"
+          }
+        }
+      },
+      "OwnStatusResponse": {
+        "type": "object",
+        "description": "One of a user's own statuses.",
+        "required": [
+          "id",
+          "label",
+          "state"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/StatusState"
           }
         }
       },
@@ -28530,13 +28941,24 @@
                     "string",
                     "null"
                   ],
-                  "description": "Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`\nor `ringing`; unset when nothing is known."
+                  "description": "What others see of them (`docs/PRESENCE.md`): for a user,\n`available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or\n`offline`; for an extension, its SIP presence (`open`, `closed`,\n`away`, `busy`, `on_the_phone`, `ringing`); unset when nothing is\nknown."
+                },
+                "presence_label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A user's own status's label (\"WFH\")."
                 },
                 "presence_note": {
                   "type": [
                     "string",
                     "null"
                   ]
+                },
+                "presence_idle": {
+                  "type": "boolean",
+                  "description": "A user shown away because their apps say they are idle."
                 }
               }
             }
@@ -30957,6 +31379,54 @@
                   "type": "integer",
                   "format": "int64",
                   "minimum": 0
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_OwnStatusResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One of a user's own statuses.",
+              "required": [
+                "id",
+                "label",
+                "state"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "state": {
+                  "$ref": "#/components/schemas/StatusState"
                 }
               }
             }
@@ -34917,6 +35387,35 @@
           }
         }
       },
+      "Presence": {
+        "type": "object",
+        "description": "What others see of a person.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/Shown"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their own status's label, kept beside a call (\"On a call · WFH\")."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idle": {
+            "type": "boolean",
+            "description": "Shown away because they are idle, not because they said so."
+          }
+        }
+      },
       "PresenceAuthPolicy": {
         "type": "object",
         "description": "Authorization policy for presence subscriptions.\n\nDetermines which watchers are allowed to subscribe to a presentity's state.\nIf no policy is set for a presentity, all watchers are allowed (default open).\n\nEvaluation order (first match wins):\n1. Block list (AOR exact match) → deny\n2. Per-event block list → deny\n3. Block patterns (domain wildcard) → deny\n4. Allow list (AOR exact match) → allow\n5. Per-event allow list → allow (if non-empty, restricts to listed AORs)\n6. Allow patterns (domain wildcard) → allow\n7. Time window check → deny if outside windows\n8. Default",
@@ -37077,6 +37576,19 @@
           }
         }
       },
+      "Shown": {
+        "type": "string",
+        "description": "What others see of a person.",
+        "enum": [
+          "available",
+          "away",
+          "busy",
+          "dnd",
+          "ringing",
+          "on_call",
+          "offline"
+        ]
+      },
       "SignupRequest": {
         "type": "object",
         "required": [
@@ -37678,6 +38190,16 @@
             "description": "The realm SIP digest hashes are computed in: the registrars' own\nmust say the same (`[sip] realm`)."
           }
         }
+      },
+      "StatusState": {
+        "type": "string",
+        "description": "The state a status carries: what colour it is and what others' phones\nare told.",
+        "enum": [
+          "available",
+          "away",
+          "busy",
+          "dnd"
+        ]
       },
       "SubjectExpansion": {
         "type": "object",
@@ -40031,6 +40553,38 @@
           }
         }
       },
+      "UpdateMyPresenceRequest": {
+        "type": "object",
+        "description": "What may change. `status` sets the chosen status (a built-in state's\nname or one of the user's statuses' ids) with `note` and `until`, both\ncleared when left out; without `status`, a `note` or `until` given\nchanges only that (`null` clears it). `idle` is an app's word that its\nperson is idle (`true`) or back (`false`), lasting 15 minutes unless\nrepeated.",
+        "properties": {
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "RFC 3339, in the future and within 7 days."
+          },
+          "idle": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
       "UpdateNetworkRequest": {
         "type": "object",
         "properties": {
@@ -40063,6 +40617,28 @@
             "type": [
               "string",
               "null"
+            ]
+          }
+        }
+      },
+      "UpdateOwnStatusRequest": {
+        "type": "object",
+        "description": "What may change of one of a user's own statuses.",
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StatusState"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         }
@@ -41456,6 +42032,49 @@
           }
         }
       },
+      "UserPresenceResponse": {
+        "type": "object",
+        "description": "A user's presence, as an administrator reads it.",
+        "required": [
+          "username",
+          "presence",
+          "status",
+          "status_state"
+        ],
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "presence": {
+            "$ref": "#/components/schemas/Presence"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_state": {
+            "$ref": "#/components/schemas/StatusState"
+          },
+          "status_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
       "UserReadiness": {
         "type": "object",
         "required": [
@@ -42102,6 +42721,8 @@
               "presence.watcher_removed",
               "presence.publish_received",
               "presence.dialog_changed",
+              "presence.user_changed",
+              "presence.user_call",
               "presence.publish_expiry_warning",
               "presence.publish_expired",
               "line.appearance_changed",

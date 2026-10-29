@@ -206,10 +206,19 @@ pub struct DirectoryEntry {
     pub email: Option<String>,
     pub department: Option<String>,
     pub job_title: Option<String>,
-    /// Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`
-    /// or `ringing`; unset when nothing is known.
+    /// What others see of them (`docs/PRESENCE.md`): for a user,
+    /// `available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or
+    /// `offline`; for an extension, its SIP presence (`open`, `closed`,
+    /// `away`, `busy`, `on_the_phone`, `ringing`); unset when nothing is
+    /// known.
     pub presence: Option<String>,
+    /// A user's own status's label ("WFH").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_label: Option<String>,
     pub presence_note: Option<String>,
+    /// A user shown away because their apps say they are idle.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub presence_idle: bool,
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -294,6 +303,11 @@ pub async fn list_directory(
             .any(|f| f.to_lowercase().contains(n.as_str())),
     };
 
+    // A person's presence from the admin's reckoning, where it is kept.
+    let people = match &state.people_presence {
+        Some(p) => Some(p.tenant_presence(&me.tenant_id).await),
+        None => None,
+    };
     let mut entries = Vec::new();
     let users = storage
         .list_users_in_tenant(&me.tenant_id, &UserFilter::default())
@@ -313,7 +327,21 @@ pub async fn list_directory(
         if !found(&fields) {
             continue;
         }
-        let (state, note) = presence_of(&[Some(u.sip_name()), u.extension.as_deref()]);
+        let (state, label, note, idle) = match &people {
+            Some(people) => match people.get(&u.id) {
+                Some(p) => (
+                    Some(p.state.as_str().to_string()),
+                    p.label.clone(),
+                    p.note.clone(),
+                    p.idle,
+                ),
+                None => (None, None, None, false),
+            },
+            None => {
+                let (state, note) = presence_of(&[Some(u.sip_name()), u.extension.as_deref()]);
+                (state, None, note, false)
+            }
+        };
         entries.push(DirectoryEntry {
             kind: "user",
             user_id: Some(u.id.to_string()),
@@ -324,7 +352,9 @@ pub async fn list_directory(
             department: u.department.clone(),
             job_title: u.job_title.clone(),
             presence: state,
+            presence_label: label,
             presence_note: note,
+            presence_idle: idle,
         });
     }
     let extensions = storage
@@ -349,7 +379,9 @@ pub async fn list_directory(
             department: None,
             job_title: None,
             presence: state,
+            presence_label: None,
             presence_note: note,
+            presence_idle: false,
         });
     }
     let page = crate::page::PageQuery {

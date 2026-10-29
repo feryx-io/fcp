@@ -72,6 +72,8 @@ class WebhookEventEventType(StrEnum):
     PRESENCE_PUBLISH_EXPIRY_WARNING = "presence.publish_expiry_warning"
     PRESENCE_PUBLISH_RECEIVED = "presence.publish_received"
     PRESENCE_STATUS_CHANGED = "presence.status_changed"
+    PRESENCE_USER_CALL = "presence.user_call"
+    PRESENCE_USER_CHANGED = "presence.user_changed"
     PRESENCE_WATCHER_ADDED = "presence.watcher_added"
     PRESENCE_WATCHER_REMOVED = "presence.watcher_removed"
     QUEUE_AGENT_KICKED = "queue.agent_kicked"

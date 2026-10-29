@@ -258,6 +258,8 @@ impl App {
                     .with_contact_store(
                         Arc::clone(&storage) as Arc<dyn fcp_core::contact::ContactStore>
                     )
+                    .with_presence_status_store(Arc::clone(&storage)
+                        as Arc<dyn fcp_core::presence_status::PresenceStatusStore>)
                     .with_provisioning_store(
                         Arc::clone(&storage) as Arc<dyn fcp_core::provisioning::ProvisioningStore>
                     ),
@@ -330,6 +332,11 @@ impl App {
             tenant_a,
         )
         .with_deployment_mode(mode)
+        // Each person's presence; a test hands it events itself.
+        .with_people_presence(fcp_api_core::people_presence::PeoplePresence::new(
+            Arc::clone(&dyn_storage),
+            Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+        ))
         .with_config_store(Arc::clone(&storage) as Arc<dyn fcp_core::config_store::ConfigStore>)
         .with_managed_by(managed_by)
         .with_conference_server_url(conference_url)
@@ -16460,3 +16467,6 @@ mod platform;
 
 #[path = "api_postgres/contacts.rs"]
 mod contacts;
+
+#[path = "api_postgres/presence.rs"]
+mod presence;

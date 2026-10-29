@@ -34,9 +34,14 @@ class DirectoryEntry:
             email (None | str | Unset):
             department (None | str | Unset):
             job_title (None | str | Unset):
-            presence (None | str | Unset): Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`
-                or `ringing`; unset when nothing is known.
+            presence (None | str | Unset): What others see of them (`docs/PRESENCE.md`): for a user,
+                `available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or
+                `offline`; for an extension, its SIP presence (`open`, `closed`,
+                `away`, `busy`, `on_the_phone`, `ringing`); unset when nothing is
+                known.
+            presence_label (None | str | Unset): A user's own status's label ("WFH").
             presence_note (None | str | Unset):
+            presence_idle (bool | Unset): A user shown away because their apps say they are idle.
      """
 
     kind: str
@@ -48,7 +53,9 @@ class DirectoryEntry:
     department: None | str | Unset = UNSET
     job_title: None | str | Unset = UNSET
     presence: None | str | Unset = UNSET
+    presence_label: None | str | Unset = UNSET
     presence_note: None | str | Unset = UNSET
+    presence_idle: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -106,11 +113,19 @@ class DirectoryEntry:
         else:
             presence = self.presence
 
+        presence_label: None | str | Unset
+        if isinstance(self.presence_label, Unset):
+            presence_label = UNSET
+        else:
+            presence_label = self.presence_label
+
         presence_note: None | str | Unset
         if isinstance(self.presence_note, Unset):
             presence_note = UNSET
         else:
             presence_note = self.presence_note
+
+        presence_idle = self.presence_idle
 
 
         field_dict: dict[str, Any] = {}
@@ -134,8 +149,12 @@ class DirectoryEntry:
             field_dict["job_title"] = job_title
         if presence is not UNSET:
             field_dict["presence"] = presence
+        if presence_label is not UNSET:
+            field_dict["presence_label"] = presence_label
         if presence_note is not UNSET:
             field_dict["presence_note"] = presence_note
+        if presence_idle is not UNSET:
+            field_dict["presence_idle"] = presence_idle
 
         return field_dict
 
@@ -226,6 +245,16 @@ class DirectoryEntry:
         presence = _parse_presence(d.pop("presence", UNSET))
 
 
+        def _parse_presence_label(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        presence_label = _parse_presence_label(d.pop("presence_label", UNSET))
+
+
         def _parse_presence_note(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -235,6 +264,8 @@ class DirectoryEntry:
 
         presence_note = _parse_presence_note(d.pop("presence_note", UNSET))
 
+
+        presence_idle = d.pop("presence_idle", UNSET)
 
         directory_entry = cls(
             kind=kind,
@@ -246,7 +277,9 @@ class DirectoryEntry:
             department=department,
             job_title=job_title,
             presence=presence,
+            presence_label=presence_label,
             presence_note=presence_note,
+            presence_idle=presence_idle,
         )
 
 

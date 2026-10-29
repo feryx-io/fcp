@@ -198,6 +198,7 @@ from .missing_file import MissingFile
 from .my_call_response import MyCallResponse
 from .my_executive import MyExecutive
 from .my_greeting_upload import MyGreetingUpload
+from .my_presence_response import MyPresenceResponse
 from .network_response import NetworkResponse
 from .node_capacity import NodeCapacity
 from .notification_readiness import NotificationReadiness
@@ -206,6 +207,9 @@ from .notify_call_request import NotifyCallRequest
 from .notify_call_response import NotifyCallResponse
 from .number_usage_response import NumberUsageResponse
 from .number_validation_response import NumberValidationResponse
+from .order_statuses_request import OrderStatusesRequest
+from .own_status_request import OwnStatusRequest
+from .own_status_response import OwnStatusResponse
 from .page_agent_response import PageAgentResponse
 from .page_agent_response_data_item import PageAgentResponseDataItem
 from .page_api_token_response import PageApiTokenResponse
@@ -294,6 +298,8 @@ from .page_notification_response import PageNotificationResponse
 from .page_notification_response_data_item import PageNotificationResponseDataItem
 from .page_number_usage_response import PageNumberUsageResponse
 from .page_number_usage_response_data_item import PageNumberUsageResponseDataItem
+from .page_own_status_response import PageOwnStatusResponse
+from .page_own_status_response_data_item import PageOwnStatusResponseDataItem
 from .page_pending_device_response import PagePendingDeviceResponse
 from .page_pending_device_response_data_item import PagePendingDeviceResponseDataItem
 from .page_personal_contact_response import PagePersonalContactResponse
@@ -365,6 +371,7 @@ from .phone_number_response import PhoneNumberResponse
 from .place_hold_request import PlaceHoldRequest
 from .play_request import PlayRequest
 from .policy_response import PolicyResponse
+from .presence import Presence
 from .presence_auth_policy import PresenceAuthPolicy
 from .presence_auth_policy_event_allow import PresenceAuthPolicyEventAllow
 from .presence_auth_policy_event_block import PresenceAuthPolicyEventBlock
@@ -428,6 +435,7 @@ from .seal_response import SealResponse
 from .session_response import SessionResponse
 from .set_greeting_active_request import SetGreetingActiveRequest
 from .set_layout_request import SetLayoutRequest
+from .shown import Shown
 from .signup_request import SignupRequest
 from .signup_response import SignupResponse
 from .sip_trace_list_response import SipTraceListResponse
@@ -447,6 +455,7 @@ from .softphone_password import SoftphonePassword
 from .sso_exchange_request import SsoExchangeRequest
 from .start_recording_request import StartRecordingRequest
 from .status_response import StatusResponse
+from .status_state import StatusState
 from .subject_expansion import SubjectExpansion
 from .subject_identifier_type_0 import SubjectIdentifierType0
 from .subject_identifier_type_0_type import SubjectIdentifierType0Type
@@ -498,7 +507,9 @@ from .update_meeting_request import UpdateMeetingRequest
 from .update_message_request import UpdateMessageRequest
 from .update_my_conference_request import UpdateMyConferenceRequest
 from .update_my_executive import UpdateMyExecutive
+from .update_my_presence_request import UpdateMyPresenceRequest
 from .update_network_request import UpdateNetworkRequest
+from .update_own_status_request import UpdateOwnStatusRequest
 from .update_password_request import UpdatePasswordRequest
 from .update_phone_number_request import UpdatePhoneNumberRequest
 from .update_policy_request import UpdatePolicyRequest
@@ -517,6 +528,7 @@ from .upsert_rate_request import UpsertRateRequest
 from .usage_response import UsageResponse
 from .user_device_response import UserDeviceResponse
 from .user_identity_response import UserIdentityResponse
+from .user_presence_response import UserPresenceResponse
 from .user_readiness import UserReadiness
 from .user_response import UserResponse
 from .validate_address_request import ValidateAddressRequest
@@ -737,6 +749,7 @@ __all__ = (
     "MyCallResponse",
     "MyExecutive",
     "MyGreetingUpload",
+    "MyPresenceResponse",
     "NetworkResponse",
     "NodeCapacity",
     "NotificationReadiness",
@@ -745,6 +758,9 @@ __all__ = (
     "NotifyCallResponse",
     "NumberUsageResponse",
     "NumberValidationResponse",
+    "OrderStatusesRequest",
+    "OwnStatusRequest",
+    "OwnStatusResponse",
     "PageAgentResponse",
     "PageAgentResponseDataItem",
     "PageApiTokenResponse",
@@ -833,6 +849,8 @@ __all__ = (
     "PageNotificationResponseDataItem",
     "PageNumberUsageResponse",
     "PageNumberUsageResponseDataItem",
+    "PageOwnStatusResponse",
+    "PageOwnStatusResponseDataItem",
     "PagePendingDeviceResponse",
     "PagePendingDeviceResponseDataItem",
     "PagePersonalContactResponse",
@@ -904,6 +922,7 @@ __all__ = (
     "PlaceHoldRequest",
     "PlayRequest",
     "PolicyResponse",
+    "Presence",
     "PresenceAuthPolicy",
     "PresenceAuthPolicyEventAllow",
     "PresenceAuthPolicyEventBlock",
@@ -967,6 +986,7 @@ __all__ = (
     "SessionResponse",
     "SetGreetingActiveRequest",
     "SetLayoutRequest",
+    "Shown",
     "SignupRequest",
     "SignupResponse",
     "SipTraceListResponse",
@@ -986,6 +1006,7 @@ __all__ = (
     "SsoExchangeRequest",
     "StartRecordingRequest",
     "StatusResponse",
+    "StatusState",
     "SubjectExpansion",
     "SubjectIdentifierType0",
     "SubjectIdentifierType0Type",
@@ -1037,7 +1058,9 @@ __all__ = (
     "UpdateMessageRequest",
     "UpdateMyConferenceRequest",
     "UpdateMyExecutive",
+    "UpdateMyPresenceRequest",
     "UpdateNetworkRequest",
+    "UpdateOwnStatusRequest",
     "UpdatePasswordRequest",
     "UpdatePhoneNumberRequest",
     "UpdatePolicyRequest",
@@ -1056,6 +1079,7 @@ __all__ = (
     "UsageResponse",
     "UserDeviceResponse",
     "UserIdentityResponse",
+    "UserPresenceResponse",
     "UserReadiness",
     "UserResponse",
     "ValidateAddressRequest",

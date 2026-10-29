@@ -218,6 +218,11 @@ export const users = {
     apiClient.get<CallingSettings>(`/users/${encodeURIComponent(username)}/calling`),
   updateCalling: (username: string, data: UpdateCallingRequest) =>
     apiClient.put<CallingSettings>(`/users/${encodeURIComponent(username)}/calling`, data),
+  /** What others see of a user and the status they chose (docs/PRESENCE.md); read only. */
+  getPresence: (username: string) =>
+    apiClient.get<components['schemas']['UserPresenceResponse']>(
+      `/users/${encodeURIComponent(username)}/presence`,
+    ),
 }
 
 // Tenants

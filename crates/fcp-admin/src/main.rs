@@ -624,6 +624,14 @@ async fn main() -> Result<()> {
         },
     ));
 
+    // Each person's presence (docs/PRESENCE.md), from the events the
+    // events server sends this admin's bus, announced on it.
+    let people_presence = fcp_api_core::people_presence::PeoplePresence::new(
+        Arc::clone(&storage),
+        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+    );
+    people_presence.clone().run(Arc::clone(&event_bus));
+
     // Create API state
     let api_state = fcp_api_core::ApiState::new(
         Some(storage),
@@ -639,6 +647,7 @@ async fn main() -> Result<()> {
         realm,
         default_tenant_id,
     )
+    .with_people_presence(people_presence)
     .with_events_server_url(events_server_url.clone())
     .with_events_server_auth_token(config.events.auth_token.clone())
     .with_events_node_id(config.service.node_id.clone())

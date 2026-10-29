@@ -3670,6 +3670,7 @@ pub struct DynStorage {
     group_store: Option<Arc<dyn crate::group::GroupStore>>,
     brand_store: Option<Arc<dyn crate::branding::BrandStore>>,
     contact_store: Option<Arc<dyn crate::contact::ContactStore>>,
+    presence_status_store: Option<Arc<dyn crate::presence_status::PresenceStatusStore>>,
     provisioning_store: Option<Arc<dyn crate::provisioning::ProvisioningStore>>,
 }
 
@@ -3754,6 +3755,7 @@ impl DynStorage {
             group_store: None,
             brand_store: None,
             contact_store: None,
+            presence_status_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -3842,6 +3844,7 @@ impl DynStorage {
             group_store: None,
             brand_store: None,
             contact_store: None,
+            presence_status_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -4121,6 +4124,22 @@ impl DynStorage {
     pub fn with_contact_store(mut self, store: Arc<dyn crate::contact::ContactStore>) -> Self {
         self.contact_store = Some(store);
         self
+    }
+
+    /// Attach the store of users' chosen and own statuses.
+    pub fn with_presence_status_store(
+        mut self,
+        store: Arc<dyn crate::presence_status::PresenceStatusStore>,
+    ) -> Self {
+        self.presence_status_store = Some(store);
+        self
+    }
+
+    /// Users' chosen and own statuses (`docs/PRESENCE.md`), when attached.
+    pub fn presence_status_store(
+        &self,
+    ) -> Option<&Arc<dyn crate::presence_status::PresenceStatusStore>> {
+        self.presence_status_store.as_ref()
     }
 
     /// Users' own contacts (`docs/RECORD_AND_CONTACTS.md` §3), when attached.

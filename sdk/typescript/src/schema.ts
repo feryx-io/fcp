@@ -1222,6 +1222,94 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/presence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /me/presence */
+        get: operations["self_service_get_presence"];
+        /** PUT /me/presence */
+        put: operations["self_service_update_presence"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/presence/statuses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /me/presence/statuses */
+        get: operations["self_service_list_presence_statuses"];
+        put?: never;
+        /** POST /me/presence/statuses */
+        post: operations["self_service_create_presence_status"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/presence/statuses/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /me/presence/statuses/{id} */
+        put: operations["self_service_update_presence_status"];
+        post?: never;
+        /** DELETE /me/presence/statuses/{id} */
+        delete: operations["self_service_delete_presence_status"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/presence/statuses/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /me/presence/statuses/order */
+        put: operations["self_service_order_presence_statuses"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{username}/presence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /users/{username}/presence */
+        get: operations["users_get_presence"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/events": {
         parameters: {
             query?: never;
@@ -7251,11 +7339,18 @@ export interface components {
             department?: string | null;
             job_title?: string | null;
             /**
-             * @description Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`
-             *     or `ringing`; unset when nothing is known.
+             * @description What others see of them (`docs/PRESENCE.md`): for a user,
+             *     `available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or
+             *     `offline`; for an extension, its SIP presence (`open`, `closed`,
+             *     `away`, `busy`, `on_the_phone`, `ringing`); unset when nothing is
+             *     known.
              */
             presence?: string | null;
+            /** @description A user's own status's label ("WFH"). */
+            presence_label?: string | null;
             presence_note?: string | null;
+            /** @description A user shown away because their apps say they are idle. */
+            presence_idle?: boolean;
         };
         /** @description What a login may sign in with. */
         DiscoverRequest: {
@@ -8269,6 +8364,25 @@ export interface components {
              */
             expires_in?: number | null;
         };
+        /**
+         * @description A user's presence: what others see, what they chose, and their own
+         *     statuses to choose from.
+         */
+        MyPresenceResponse: {
+            /** @description What others see. */
+            presence: components["schemas"]["Presence"];
+            /** @description What they chose: a built-in state's name or one of `statuses`' ids. */
+            status: string;
+            /** @description The chosen status's state. */
+            status_state: components["schemas"]["StatusState"];
+            note?: string | null;
+            /**
+             * Format: date-time
+             * @description When the chosen status clears back to available.
+             */
+            until?: string | null;
+            statuses: components["schemas"]["OwnStatusResponse"][];
+        };
         NetworkResponse: {
             id: string;
             tenant_id: string;
@@ -8397,6 +8511,21 @@ export interface components {
             validated: boolean;
             /** Format: date-time */
             validated_at?: string | null;
+        };
+        /** @description A user's own statuses in a new order: every id, once. */
+        OrderStatusesRequest: {
+            ids: string[];
+        };
+        /** @description One of a user's own statuses, as written. */
+        OwnStatusRequest: {
+            label: string;
+            state: components["schemas"]["StatusState"];
+        };
+        /** @description One of a user's own statuses. */
+        OwnStatusResponse: {
+            id: string;
+            label: string;
+            state: components["schemas"]["StatusState"];
         };
         /** @description A page of a list. */
         Page_AgentResponse: {
@@ -8819,11 +8948,18 @@ export interface components {
                 department?: string | null;
                 job_title?: string | null;
                 /**
-                 * @description Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`
-                 *     or `ringing`; unset when nothing is known.
+                 * @description What others see of them (`docs/PRESENCE.md`): for a user,
+                 *     `available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or
+                 *     `offline`; for an extension, its SIP presence (`open`, `closed`,
+                 *     `away`, `busy`, `on_the_phone`, `ringing`); unset when nothing is
+                 *     known.
                  */
                 presence?: string | null;
+                /** @description A user's own status's label ("WFH"). */
+                presence_label?: string | null;
                 presence_note?: string | null;
+                /** @description A user shown away because their apps say they are idle. */
+                presence_idle?: boolean;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -9577,6 +9713,21 @@ export interface components {
                 inbound_calls: number;
                 /** Format: int64 */
                 outbound_calls: number;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_OwnStatusResponse: {
+            data: {
+                id: string;
+                label: string;
+                state: components["schemas"]["StatusState"];
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -10785,6 +10936,15 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description What others see of a person. */
+        Presence: {
+            state: components["schemas"]["Shown"];
+            /** @description Their own status's label, kept beside a call ("On a call · WFH"). */
+            label?: string | null;
+            note?: string | null;
+            /** @description Shown away because they are idle, not because they said so. */
+            idle?: boolean;
+        };
         /**
          * @description Authorization policy for presence subscriptions.
          *
@@ -11566,6 +11726,11 @@ export interface components {
         SetLayoutRequest: {
             layout: string;
         };
+        /**
+         * @description What others see of a person.
+         * @enum {string}
+         */
+        Shown: "available" | "away" | "busy" | "dnd" | "ringing" | "on_call" | "offline";
         SignupRequest: {
             company_name: string;
             username: string;
@@ -11789,6 +11954,12 @@ export interface components {
              */
             sip_realm: string;
         };
+        /**
+         * @description The state a status carries: what colour it is and what others' phones
+         *     are told.
+         * @enum {string}
+         */
+        StatusState: "available" | "away" | "busy" | "dnd";
         /**
          * @description A subject as the tenant knows them: every spelling that identifies them,
          *     and the platform objects that are theirs (`docs/COMPLIANCE_FOLLOWUPS.md`
@@ -12585,6 +12756,24 @@ export interface components {
         UpdateMyExecutive: {
             opted_in: boolean;
         };
+        /**
+         * @description What may change. `status` sets the chosen status (a built-in state's
+         *     name or one of the user's statuses' ids) with `note` and `until`, both
+         *     cleared when left out; without `status`, a `note` or `until` given
+         *     changes only that (`null` clears it). `idle` is an app's word that its
+         *     person is idle (`true`) or back (`false`), lasting 15 minutes unless
+         *     repeated.
+         */
+        UpdateMyPresenceRequest: {
+            status?: string | null;
+            note?: string | null;
+            /**
+             * Format: date-time
+             * @description RFC 3339, in the future and within 7 days.
+             */
+            until?: string | null;
+            idle?: boolean | null;
+        };
         UpdateNetworkRequest: {
             cidr?: string | null;
             location_id?: string | null;
@@ -12592,6 +12781,11 @@ export interface components {
             /** Format: int32 */
             priority?: number | null;
             applies_to?: string | null;
+        };
+        /** @description What may change of one of a user's own statuses. */
+        UpdateOwnStatusRequest: {
+            label?: string | null;
+            state?: components["schemas"]["StatusState"] | null;
         };
         /** @description Update password request. */
         UpdatePasswordRequest: {
@@ -12916,6 +13110,17 @@ export interface components {
             /** Format: date-time */
             last_sign_in_at?: string | null;
         };
+        /** @description A user's presence, as an administrator reads it. */
+        UserPresenceResponse: {
+            username: string;
+            presence: components["schemas"]["Presence"];
+            status: string;
+            status_state: components["schemas"]["StatusState"];
+            status_label?: string | null;
+            note?: string | null;
+            /** Format: date-time */
+            until?: string | null;
+        };
         UserReadiness: {
             user_id: string;
             username: string;
@@ -13092,7 +13297,7 @@ export interface components {
              * @description A name from `/api/v1/webhooks/event-types`, or `webhook.test`
              * @enum {string}
              */
-            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
+            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
             /**
              * Format: date-time
              * @description When the event happened, RFC 3339.
@@ -15755,6 +15960,258 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ContactImportResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_get_presence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyPresenceResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_update_presence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMyPresenceRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyPresenceResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_list_presence_statuses: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_OwnStatusResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_create_presence_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OwnStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description Kept */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OwnStatusResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_update_presence_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOwnStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OwnStatusResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_delete_presence_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_order_presence_statuses: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrderStatusesRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_OwnStatusResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    users_get_presence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserPresenceResponse"];
                 };
             };
             /** @description An error */

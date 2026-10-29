@@ -65,6 +65,10 @@ pub struct ApiState {
     /// Presence manager for presence/BLF operations (optional)
     pub presence_manager: Option<fcp_presence::PresenceManager>,
 
+    /// Each person's presence (`docs/PRESENCE.md`), worked out by the
+    /// admin; none elsewhere.
+    pub people_presence: Option<crate::people_presence::PeoplePresence>,
+
     /// SIP realm for authentication
     pub realm: String,
 
@@ -242,6 +246,7 @@ impl ApiState {
             event_bus,
             queue_manager,
             presence_manager,
+            people_presence: None,
             realm,
             default_tenant_id,
             start_time: std::time::Instant::now(),
@@ -288,6 +293,12 @@ impl ApiState {
     }
 
     /// Set the events server URL for proxying cluster-wide queries.
+    /// Work out each person's presence (`docs/PRESENCE.md`).
+    pub fn with_people_presence(mut self, people: crate::people_presence::PeoplePresence) -> Self {
+        self.people_presence = Some(people);
+        self
+    }
+
     pub fn with_events_server_url(mut self, url: Option<String>) -> Self {
         self.events_server_url = url;
         self

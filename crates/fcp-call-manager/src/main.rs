@@ -3185,7 +3185,8 @@ async fn run_event_forwarder(
 
 /// Whether the event forwarder sends `event` to the events server. Of
 /// presence, a user's status and their dialogs (the busy lamp) go: an app
-/// shows them (`/me/events`, docs/SOFTPHONE.md). Watchers, PUBLISH
+/// shows them (`/me/events`, docs/SOFTPHONE.md). So does a person's call,
+/// which the admin shows them on (docs/PRESENCE.md). Watchers, PUBLISH
 /// bookkeeping and shared-line appearances stay on the node, whose NOTIFY
 /// dispatcher is their only reader.
 fn forwarded(event: &fcp_events::PlatformEvent) -> bool {
@@ -3193,7 +3194,9 @@ fn forwarded(event: &fcp_events::PlatformEvent) -> bool {
     match event {
         PlatformEvent::Presence(p) => matches!(
             p,
-            PresenceEvent::StatusChanged { .. } | PresenceEvent::DialogChanged { .. }
+            PresenceEvent::StatusChanged { .. }
+                | PresenceEvent::DialogChanged { .. }
+                | PresenceEvent::UserCall { .. }
         ),
         _ => true,
     }

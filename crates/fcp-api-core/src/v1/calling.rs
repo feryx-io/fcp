@@ -348,7 +348,7 @@ fn parse_target(name: &str, given: &str) -> Result<Option<CallTarget>, ApiError>
         .map_err(|e| ApiError::BadRequest(format!("{name}: {e}")))
 }
 
-async fn user_named(
+pub(crate) async fn user_named(
     state: &ApiState,
     tenant: &fcp_core::TenantId,
     username: &str,

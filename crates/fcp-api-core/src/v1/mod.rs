@@ -34,6 +34,7 @@ pub mod locations;
 pub mod me_contacts;
 pub mod me_data;
 pub mod me_events;
+pub mod me_presence;
 pub mod media;
 pub mod metrics;
 pub mod phone_numbers;
@@ -248,6 +249,22 @@ pub fn router() -> Router<ApiState> {
                 .put(me_contacts::update_contact)
                 .delete(me_contacts::delete_contact),
         )
+        .route(
+            "/me/presence",
+            get(me_presence::get_my_presence).put(me_presence::update_my_presence),
+        )
+        .route(
+            "/me/presence/statuses",
+            get(me_presence::list_statuses).post(me_presence::create_status),
+        )
+        .route(
+            "/me/presence/statuses/order",
+            put(me_presence::order_statuses),
+        )
+        .route(
+            "/me/presence/statuses/:id",
+            put(me_presence::update_status).delete(me_presence::delete_status),
+        )
         .route("/me/executives", get(self_service::get_my_executives))
         .route(
             "/me/executives/:user_id",
@@ -453,6 +470,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/users/:username/calling",
             get(calling::get_user_calling).put(calling::update_user_calling),
+        )
+        .route(
+            "/users/:username/presence",
+            get(me_presence::get_user_presence),
         )
         .route("/users/:username/devices", get(user_devices::list_users))
         // Registrations
