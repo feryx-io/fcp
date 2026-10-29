@@ -349,8 +349,19 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # The Services page's admin keeps services from Redis (docs/SERVICES.md).
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       FCP_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      FCP_TEST_REDIS_URL: redis://localhost:6379
       FCP_UI_TESTS: required
     steps:
       - uses: actions/checkout@v5

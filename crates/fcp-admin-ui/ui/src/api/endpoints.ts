@@ -732,6 +732,23 @@ export const cluster = {
   sites: () => apiClient.get<ClusterSitesResponse>('/cluster/sites'),
 }
 
+// Every running service, the platform's and its sites' (docs/SERVICES.md):
+// platform administrators only.
+export type ServiceView = components['schemas']['ServiceView']
+export type ServicesSummary = components['schemas']['ServicesSummary']
+
+const siteQuery = (siteId?: string | null) =>
+  siteId ? `?site_id=${encodeURIComponent(siteId)}` : ''
+
+export const services = {
+  list: () => apiClient.getAll<ServiceView>('/system/services'),
+  summary: () => apiClient.get<ServicesSummary>('/system/services/summary'),
+  get: (id: string, siteId?: string | null) =>
+    apiClient.get<ServiceView>(`/system/services/${encodeURIComponent(id)}${siteQuery(siteId)}`),
+  forget: (id: string, siteId?: string | null) =>
+    apiClient.delete<void>(`/system/services/${encodeURIComponent(id)}${siteQuery(siteId)}`),
+}
+
 // Audit Log
 export const recordings = {
   list: (params?: RecordingQueryParams) => {

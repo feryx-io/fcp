@@ -7,7 +7,10 @@
 //! The suite is told where the admin is and who may sign in through
 //! `FCP_UI_URL`, `FCP_UI_TOKEN` (the static token, for checking what a
 //! form did through the API), `FCP_UI_ADMIN` (a super admin),
-//! `FCP_UI_TENANT_ADMIN` and `FCP_UI_USER` (each `name:password`).
+//! `FCP_UI_TENANT_ADMIN` and `FCP_UI_USER` (each `name:password`). With
+//! `FCP_TEST_REDIS_URL` the admin keeps services (`docs/SERVICES.md`) and
+//! a stopped one, `ui-vm-1`, is waiting for the Services page to forget;
+//! the suite is told so by `FCP_UI_SERVICES`.
 //!
 //! Skipped without `FCP_TEST_DATABASE_URL`, and when the admin was built
 //! without the UI (`npm run build` in `crates/fcp-admin-ui/ui` before
@@ -63,6 +66,63 @@ fn cannot_run(index: &str) -> Option<String> {
     None
 }
 
+/// Write a stopping voicemail server's beacon, `ui-vm-1`, and wait for the
+/// admin to keep it as stopped.
+async fn stopped_service(redis_url: &str, http: u16) {
+    use fcp_core::service_health::{ServiceRecord, ServiceState};
+    let redis = fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+        url: redis_url.to_string(),
+        ..Default::default()
+    })
+    .await
+    .expect("redis");
+    let record = ServiceRecord {
+        id: "ui-vm-1".into(),
+        kind: "voicemail".into(),
+        host: "vm-host".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        started_at: 1_700_000_000,
+        region: None,
+        member: false,
+        http_address: Some("10.0.0.5:8083".into()),
+        sip_address: None,
+        public_url: None,
+        state: ServiceState::Stopping,
+        checks: Vec::new(),
+        load: Default::default(),
+        beat_at: 1_700_000_000,
+    };
+    let mut conn = redis.connection();
+    let _: () = redis::cmd("SET")
+        .arg(redis.key("service:ui-vm-1"))
+        .arg(serde_json::to_string(&record).unwrap())
+        .arg("EX")
+        .arg(30)
+        .query_async(&mut conn)
+        .await
+        .expect("write the beacon");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let res = reqwest::Client::new()
+            .get(loopback(http, "/api/v1/system/services/ui-vm-1"))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .expect("the admin answers");
+        if res.status().is_success() {
+            let body: serde_json::Value = res.json().await.unwrap();
+            if body["state"] == "stopped" {
+                return;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "ui-vm-1 never kept as stopped"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
 /// Make a user through the API; `name:password` for the suite.
 async fn user(url: &str, name: &str, role: &str) -> String {
     let res = reqwest::Client::new()
@@ -89,11 +149,21 @@ async fn the_admin_ui_works_in_a_browser() {
         eprintln!("FCP_TEST_DATABASE_URL not set; skipping");
         return;
     };
+    let redis = fcp_testkit::cluster::private_redis_url();
+    assert!(
+        redis.is_some() || !required(),
+        "FCP_TEST_REDIS_URL is needed for the Services page"
+    );
+    let cluster = match &redis {
+        Some(url) => format!("[cluster]\nredis_url = \"{url}\"\n"),
+        None => String::new(),
+    };
     let dir = smoke::temp_dir();
     let http = free_port();
     let config = format!(
         r#"prompts_dir = "{dir}/prompts"
 
+{cluster}
 [service]
 node_id = "ui-admin"
 
@@ -131,6 +201,12 @@ format = "compact"
         return;
     }
 
+    // A voicemail server that said it was stopping: the Services page
+    // shows it stopped, and forgets it.
+    if let Some(redis_url) = &redis {
+        stopped_service(redis_url, http).await;
+    }
+
     let admin = user(&url, "root", "super_admin").await;
     let tenant_admin = user(&url, "ta", "tenant_admin").await;
     let person = user(&url, "pat", "end_user").await;
@@ -144,6 +220,7 @@ format = "compact"
             .env("FCP_UI_ADMIN", admin)
             .env("FCP_UI_TENANT_ADMIN", tenant_admin)
             .env("FCP_UI_USER", person)
+            .env("FCP_UI_SERVICES", if redis.is_some() { "1" } else { "" })
             .output()
             .expect("npx playwright test")
     })

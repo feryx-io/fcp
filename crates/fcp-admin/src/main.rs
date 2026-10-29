@@ -939,30 +939,33 @@ async fn main() -> Result<()> {
     );
 
     let bind_addr = config.api.bind_address;
-    let api_handle =
-        tokio::spawn(async move {
-            // Cluster routes live inside the /api/v1 nest next to the core API
-            // (routes merged outside the nest would be shadowed by axum's prefix
-            // matching); create_router_with does the auth/CORS/pre-auth wiring.
-            let cluster_routes: axum::Router<fcp_api_core::ApiState> =
-                cluster_api::cluster_router(cluster_state)
-                    .layer(axum::middleware::from_fn(fcp_api_core::auth::require_admin))
+    let api_handle = tokio::spawn(async move {
+        // Cluster routes live inside the /api/v1 nest next to the core API
+        // (routes merged outside the nest would be shadowed by axum's prefix
+        // matching); create_router_with does the auth/CORS/pre-auth wiring.
+        let cluster_routes: axum::Router<fcp_api_core::ApiState> =
+                // The platform's cluster and every tenant's sites: a
+                // tenant's administrator sees their own sites at `/sites`,
+                // and none of this (`docs/SERVICES.md` §4.3).
+                cluster_api::cluster_router(cluster_state).layer(axum::middleware::from_fn(
+                    fcp_api_core::auth::require_platform_admin,
+                ))
                     // The platform's services: a tenant's administrator sees
                     // none of them (`docs/SERVICES.md` Q5).
                     .merge(services::services_router(services_state).layer(
                         axum::middleware::from_fn(fcp_api_core::auth::require_platform_admin),
                     ));
-            let mut app = fcp_api_core::create_router_with(api_state, &api_config, cluster_routes);
-            app = app.merge(fcp_admin_ui::admin_ui_router());
-            // The contract and its reference page (docs/DEVELOPER_SURFACE.md
-            // §3, phase 3), outside the bearer layer.
-            app = app.merge(api_docs::router());
+        let mut app = fcp_api_core::create_router_with(api_state, &api_config, cluster_routes);
+        app = app.merge(fcp_admin_ui::admin_ui_router());
+        // The contract and its reference page (docs/DEVELOPER_SURFACE.md
+        // §3, phase 3), outside the bearer layer.
+        app = app.merge(api_docs::router());
 
-            let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-            tracing::info!("API server listening on {}", bind_addr);
-            axum::serve(listener, app).await?;
-            Ok::<(), anyhow::Error>(())
-        });
+        let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+        tracing::info!("API server listening on {}", bind_addr);
+        axum::serve(listener, app).await?;
+        Ok::<(), anyhow::Error>(())
+    });
 
     // Event forwarding from admin is handled by ApiState::publish_event(),
     // which POSTs directly to the events server ingest endpoint. This avoids

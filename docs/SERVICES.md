@@ -237,8 +237,34 @@ it went, start it, see it back; stop the TTS server, see voicemail `degraded` wi
   once the link stops).
 - **Found on the way**: `/api/v1/cluster/nodes` and `/cluster/stats` need only
   `system_view_logs`, which a tenant's administrator holds, so in a hosted deployment a
-  tenant's administrator can read the platform's cluster. Left for S3, where the
-  System section is made platform-only.
+  tenant's administrator can read the platform's cluster. Closed in S3.
+
+### 4.3 S3 as built (v0.25.478)
+
+- **The System section** (`AdminLayout.tsx`): Services, Cluster, Sites, System
+  Settings, Audit Log and Compliance, moved out of Advanced; Services and Cluster are
+  `platformOnly` and hidden from anyone but a platform administrator
+  (`role === 'super_admin'`).
+- **The Services page** (`pages/ServicesPage.tsx`, `/admin/services`): four counts
+  (serving, needs attention, down, unknown) that filter on a click, a banner while the
+  admin cannot read Redis, filters by kind, state (or "not serving") and where (the
+  platform or a site) kept in the URL, and a table of state, service, kind, site and
+  host, version, up or down for how long, failing checks, and load. **A service's
+  page** (`/admin/services/:id`, `?site_id=` for a site's): its state in words, checks
+  with their errors and since when, load, addresses and times, and Forget once it is
+  down or stopped. Both refetch every five seconds and at once on
+  `system.service_up`/`_down` from the admin's event stream.
+- **The dashboard** shows a platform administrator "N of M serving", leading to the
+  services not serving; the command palette finds Services.
+- **The gap S2 found, closed**: the whole cluster router (`/cluster/nodes`,
+  `/cluster/stats`, `/cluster/sites`) is behind `require_platform_admin`; a tenant's
+  administrator sees their own sites at `/sites`.
+- **Tests**: `e2e/services.spec.ts` (the tile; Services in the navigation; the admin
+  serving and a stopped voicemail server; "not serving" in the URL; its page and
+  Forget; a tenant's administrator sees neither Services nor Cluster nor the tile),
+  with `fcp-admin/tests/ui.rs` giving the admin a Redis and writing the stopped
+  service; CI's browser job gained a Redis. `pages.spec.ts` opens both new pages with
+  every other one.
 
 ## 5. What this does not do
 

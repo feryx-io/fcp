@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, Phone, MonitorSmartphone, Link2, Building2, PhoneCall, FileText, Headphones, Voicemail, Radio, Server, Shield, Workflow, Globe, Key, Coins, ScrollText, Search, Disc, Siren, Cable, Webhook,
+  LayoutDashboard, Users, Phone, MonitorSmartphone, Link2, Building2, PhoneCall, FileText, Headphones, Voicemail, Radio, Server, Shield, Workflow, Globe, Key, Coins, ScrollText, Search, Disc, Siren, Cable, Webhook, HeartPulse,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -32,6 +32,7 @@ const commands: CommandItem[] = [
   { label: 'Routing Rules', href: '/admin/routing', icon: Shield, keywords: ['policy', 'dialplan', 'rules'] },
   { label: 'Least-Cost Routes', href: '/admin/lcr', icon: Coins, keywords: ['lcr', 'cost', 'rates', 'carriers'] },
   { label: 'IVR Flows', href: '/admin/flows', icon: Workflow, keywords: ['ivr', 'menu', 'builder'] },
+  { label: 'Services', href: '/admin/services', icon: HeartPulse, keywords: ['health', 'down', 'nodes', 'processes', 'system'] },
   { label: 'Cluster Monitor', href: '/admin/cluster', icon: Globe, keywords: ['nodes', 'health', 'system'] },
   { label: 'Sites', href: '/admin/sites', icon: Cable, keywords: ['site', 'hybrid', 'link', 'enroll', 'premises'] },
   { label: 'Recordings', href: '/admin/recordings', icon: Disc, keywords: ['recording', 'conference', 'webm', 'mp4', 'wav', 'playback'] },
