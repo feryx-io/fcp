@@ -111,11 +111,15 @@ export function ParkingPage() {
 
   const lotList = lots.data ?? []
   const parked = calls.data ?? []
-  const bySlot = new Map(parked.map((c) => [c.slot, c]))
+  // The cloud's own calls by slot; a site's calls, which number the same
+  // lots, are shown apart under their site.
+  const own = parked.filter((c) => !c.site_id)
+  const bySlot = new Map(own.map((c) => [c.slot, c]))
   // Calls in the node's own range when the tenant has no lot, or in a
   // lot since removed: shown apart, so none is out of sight.
   const lotSlots = new Set(lotList.flatMap(slotsOf))
-  const elsewhere = parked.filter((c) => !lotSlots.has(c.slot))
+  const elsewhere = own.filter((c) => !lotSlots.has(c.slot))
+  const atSites = parked.filter((c) => c.site_id)
 
   const req = editing?.req
   const update = (patch: Partial<ParkingLotRequest>) =>
@@ -127,8 +131,13 @@ export function ParkingPage() {
         {call.caller?.name || call.caller?.uri || 'Unknown caller'}
       </div>
       <div className="text-xs text-muted-foreground">
-        by {call.parker_extension} · {waited(call.parked_secs)} of {waited(call.timeout_secs)}
+        by {call.parker_extension} · {waited(call.parked_secs)}
+        {call.timeout_secs > 0 ? ` of ${waited(call.timeout_secs)}` : ''}
       </div>
+      {call.site_name ? (
+        // A site's call is taken back or hung up at the site.
+        <Badge variant="secondary">At {call.site_name}</Badge>
+      ) : (
       <div className="flex gap-1">
         <Button
           variant="outline"
@@ -149,6 +158,7 @@ export function ParkingPage() {
           <PhoneOff className="h-3 w-3" />
         </Button>
       </div>
+      )}
     </div>
   )
 
@@ -269,6 +279,23 @@ export function ParkingPage() {
             </CardContent>
           </Card>
         ))}
+        {atSites.length > 0 && (
+          <Card>
+            <CardHeader className="py-3">
+              <CardTitle className="text-base">At the sites</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                {atSites.map((call) => (
+                  <div key={`${call.site_id}-${call.slot}`} className="rounded-md border border-amber-500 p-2">
+                    <div className="font-mono text-sm font-semibold">{call.slot}</div>
+                    {callCell(call)}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
         {elsewhere.length > 0 && (
           <Card>
             <CardHeader className="py-3">

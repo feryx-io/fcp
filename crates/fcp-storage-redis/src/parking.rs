@@ -93,6 +93,43 @@ impl RedisParkingStore {
             .transpose()
     }
 
+    /// The tenant's parked calls, by slot: what a site's link reports to
+    /// the cloud (`docs/PARKING.md` phase 4).
+    pub async fn list(&self, tenant_id: &TenantId) -> Result<Vec<RedisParkedCall>> {
+        let mut conn = self.storage.connection();
+        let pattern = self.storage.key(&format!("park:{tenant_id}:*"));
+        let mut found = Vec::new();
+        let mut cursor = 0u64;
+        loop {
+            let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| anyhow::anyhow!("Redis SCAN failed: {e}"))?;
+            for key in keys {
+                let json: Option<String> = conn
+                    .get(&key)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Redis park GET failed: {e}"))?;
+                if let Some(parked) = json.and_then(|j| serde_json::from_str(&j).ok()) {
+                    found.push(parked);
+                }
+            }
+            if next == 0 {
+                break;
+            }
+            cursor = next;
+        }
+        found.sort_by(|a: &RedisParkedCall, b: &RedisParkedCall| {
+            (a.slot.len(), &a.slot).cmp(&(b.slot.len(), &b.slot))
+        });
+        Ok(found)
+    }
+
     /// Unpark (remove) a call from a slot. Returns the parked call if it existed.
     ///
     /// Uses a Lua script for true atomicity — only one caller can retrieve the

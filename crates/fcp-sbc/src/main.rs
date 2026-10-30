@@ -49,8 +49,22 @@ use hooks::SbcEventHooks;
 use metrics::SbcRuntimeMetrics;
 use registration_store::InMemoryRegistrationStore;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Each runtime worker's stack, as the call manager's: the SBC runs the
+/// same call path (`fcp_sip`'s forking, plan and appearance steps), and a
+/// debug build's frames overflowed tokio's 2 MiB default sending a call
+/// down a site's flow (fcp-link's calls test). Eight leaves room.
+const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+fn main() -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(WORKER_STACK_BYTES)
+        .build()
+        .context("Failed to start the runtime")?
+        .block_on(run())
+}
+
+async fn run() -> Result<()> {
     // 1. Parse CLI arguments
     let cli = Cli::parse();
 

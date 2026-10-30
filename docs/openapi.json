@@ -32151,6 +32151,19 @@
                 "node_id": {
                   "type": "string",
                   "description": "The call manager holding it."
+                },
+                "site_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A site's call (`docs/PARKING.md` phase 4), as its link last told\nthe cloud: taken back or hung up at the site, not here."
+                },
+                "site_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               }
             }
@@ -35915,6 +35928,19 @@
           "node_id": {
             "type": "string",
             "description": "The call manager holding it."
+          },
+          "site_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A site's call (`docs/PARKING.md` phase 4), as its link last told\nthe cloud: taken back or hung up at the site, not here."
+          },
+          "site_name": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

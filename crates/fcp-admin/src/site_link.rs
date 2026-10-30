@@ -1107,6 +1107,11 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
     for sched in storage.list_schedules(tenant).await? {
         items.push(item("schedules", &sched.id, &sched)?);
     }
+    if let Some(store) = storage.parking_lot_store() {
+        for lot in store.list_parking_lots(tenant).await? {
+            items.push(item("parking_lots", &lot.id, &lot)?);
+        }
+    }
     for class in storage.list_classes_of_service(tenant).await? {
         items.push(item("classes_of_service", &class.id, &class)?);
     }
@@ -1252,6 +1257,10 @@ async fn object_now(
         "schedules" => match id.parse() {
             Ok(id) => same_tenant!(storage.get_schedule(&id).await?),
             Err(_) => None,
+        },
+        "parking_lots" => match storage.parking_lot_store() {
+            Some(store) => same_tenant!(store.get_parking_lot(tenant, id).await?),
+            None => None,
         },
         "classes_of_service" => match id.parse() {
             Ok(id) => same_tenant!(storage.get_class_of_service(&id).await?),

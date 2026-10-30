@@ -9924,6 +9924,12 @@ export interface components {
                 timeout_secs: number;
                 /** @description The call manager holding it. */
                 node_id: string;
+                /**
+                 * @description A site's call (`docs/PARKING.md` phase 4), as its link last told
+                 *     the cloud: taken back or hung up at the site, not here.
+                 */
+                site_id?: string | null;
+                site_name?: string | null;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -11075,6 +11081,12 @@ export interface components {
             timeout_secs: number;
             /** @description The call manager holding it. */
             node_id: string;
+            /**
+             * @description A site's call (`docs/PARKING.md` phase 4), as its link last told
+             *     the cloud: taken back or hung up at the site, not here.
+             */
+            site_id?: string | null;
+            site_name?: string | null;
         };
         /** @description Who a parked call is from. */
         ParkedCaller: {

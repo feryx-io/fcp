@@ -382,6 +382,12 @@ pub struct ParkedCallResponse {
     pub timeout_secs: u64,
     /// The call manager holding it.
     pub node_id: String,
+    /// A site's call (`docs/PARKING.md` phase 4), as its link last told
+    /// the cloud: taken back or hung up at the site, not here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_name: Option<String>,
 }
 
 /// Where a parked call is sent.
@@ -438,16 +444,64 @@ pub async fn list_calls(
             .map_err(ApiError::ServiceUnavailable)?,
         None => Vec::new(),
     };
-    let calls: Vec<ParkedCallResponse> = calls
+    let mut calls: Vec<ParkedCallResponse> = calls
         .into_iter()
         .filter_map(|c| serde_json::from_value(c).ok())
         .collect();
+    calls.extend(site_calls(&state, &tenant.0).await?);
     Ok(Json(crate::page::paginate(
         calls,
         &page,
         crate::page::Order::Ascending,
         |c| format!("{:08}/{}/{}", c.slot.len(), c.slot, c.call_id),
     )?))
+}
+
+/// The calls parked at the tenant's sites, from each site's last
+/// heartbeat.
+async fn site_calls(
+    state: &ApiState,
+    tenant: &TenantId,
+) -> Result<Vec<ParkedCallResponse>, ApiError> {
+    let Some(storage) = state.storage.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let sites = fcp_core::site::SiteStore::list_sites(storage.as_ref(), tenant)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let lots = match storage.parking_lot_store() {
+        Some(store) => store
+            .list_parking_lots(tenant)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?,
+        None => Vec::new(),
+    };
+    let now = secs(SystemTime::now());
+    let mut calls = Vec::new();
+    for site in sites {
+        let Some(heartbeat) = site.last_heartbeat.as_ref() else {
+            continue;
+        };
+        for parked in &heartbeat.parked {
+            calls.push(ParkedCallResponse {
+                slot: parked.slot.clone(),
+                lot_id: parked.lot_id.clone(),
+                call_id: parked.call_id.clone(),
+                caller: None,
+                parker_extension: parked.parker_extension.clone(),
+                parked_secs: now.saturating_sub(parked.parked_at_unix),
+                timeout_secs: lots
+                    .iter()
+                    .find(|l| l.id == parked.lot_id)
+                    .map(|l| u64::from(l.timeout_secs))
+                    .unwrap_or(0),
+                node_id: parked.node_id.clone(),
+                site_id: Some(site.id.to_string()),
+                site_name: Some(site.name.clone()),
+            });
+        }
+    }
+    Ok(calls)
 }
 
 /// POST /api/v1/parking/calls/:slot/retrieve — ring `target` with the

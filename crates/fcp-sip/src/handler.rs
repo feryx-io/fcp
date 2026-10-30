@@ -4132,31 +4132,15 @@ impl SipMessageHandler {
                         .handle_pbx_feature_code(request, handle, &call_id, action)
                         .await;
                 }
-                // A lot's park number parks as `*70` does (`docs/PARKING.md` §3).
-                if let Some(user) = user_of_uri(&dialed) {
-                    if fcp_core::parking::is_number(&user)
-                        && self
-                            .parking_lots_of(&tenant_id)
-                            .await
-                            .iter()
-                            .any(|l| l.enabled && l.park_number.as_deref() == Some(user.as_str()))
-                    {
-                        info!(call_id = %call_id, park_number = %user, "A lot's park number");
-                        return self.handle_park_call(request, handle, &call_id).await;
-                    }
-                    // A slot dialed takes back the call parked in it.
-                    if fcp_core::parking::is_number(&user)
-                        && self
-                            .parking_lots_of(&tenant_id)
-                            .await
-                            .iter()
-                            .any(|l| l.enabled && l.contains(&user))
-                    {
-                        info!(call_id = %call_id, slot = %user, "A parking slot dialed");
-                        return self
-                            .handle_retrieve_parked(request, handle, &call_id, &user)
-                            .await;
-                    }
+                // A lot's park number or one of its slots (`docs/PARKING.md`
+                // §3). Boxed and apart, as the test-call read-back is: this
+                // future is deep, and what it holds across an await here
+                // overflowed the SBC's worker stack (fcp-link's calls test).
+                if let Some(done) =
+                    Box::pin(self.park_by_number(request, handle, &call_id, tenant_id, &dialed))
+                        .await
+                {
+                    return done;
                 }
             }
         }
@@ -14067,6 +14051,36 @@ impl SipMessageHandler {
             self.sip_call_id_map.remove(id.call_id());
         }
         Ok(orbit)
+    }
+
+    /// A call to one of the tenant's lots: its park number parks as `*70`
+    /// does, one of its slots takes back the call parked there. `None` for
+    /// any other number.
+    async fn park_by_number(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        tenant_id: fcp_core::TenantId,
+        dialed: &str,
+    ) -> Option<Result<()>> {
+        let user = user_of_uri(dialed).filter(|u| fcp_core::parking::is_number(u))?;
+        let lots = self.parking_lots_of(&tenant_id).await;
+        let lots = lots.iter().filter(|l| l.enabled);
+        if lots
+            .clone()
+            .any(|l| l.park_number.as_deref() == Some(user.as_str()))
+        {
+            info!(call_id = %call_id, park_number = %user, "A lot's park number");
+            return Some(Box::pin(self.handle_park_call(request, handle, call_id)).await);
+        }
+        if lots.clone().any(|l| l.contains(&user)) {
+            info!(call_id = %call_id, slot = %user, "A parking slot dialed");
+            return Some(
+                Box::pin(self.handle_retrieve_parked(request, handle, call_id, &user)).await,
+            );
+        }
+        None
     }
 
     /// The tenant's parking lots, read at most every few seconds.

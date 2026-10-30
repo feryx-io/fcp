@@ -35,6 +35,9 @@ class PageParkedCallResponseDataItem:
             timeout_secs (int):
             node_id (str): The call manager holding it.
             caller (None | ParkedCaller | Unset):
+            site_id (None | str | Unset): A site's call (`docs/PARKING.md` phase 4), as its link last told
+                the cloud: taken back or hung up at the site, not here.
+            site_name (None | str | Unset):
      """
 
     slot: str
@@ -45,6 +48,8 @@ class PageParkedCallResponseDataItem:
     timeout_secs: int
     node_id: str
     caller: None | ParkedCaller | Unset = UNSET
+    site_id: None | str | Unset = UNSET
+    site_name: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -75,6 +80,18 @@ class PageParkedCallResponseDataItem:
         else:
             caller = self.caller
 
+        site_id: None | str | Unset
+        if isinstance(self.site_id, Unset):
+            site_id = UNSET
+        else:
+            site_id = self.site_id
+
+        site_name: None | str | Unset
+        if isinstance(self.site_name, Unset):
+            site_name = UNSET
+        else:
+            site_name = self.site_name
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -89,6 +106,10 @@ class PageParkedCallResponseDataItem:
         })
         if caller is not UNSET:
             field_dict["caller"] = caller
+        if site_id is not UNSET:
+            field_dict["site_id"] = site_id
+        if site_name is not UNSET:
+            field_dict["site_name"] = site_name
 
         return field_dict
 
@@ -132,6 +153,26 @@ class PageParkedCallResponseDataItem:
         caller = _parse_caller(d.pop("caller", UNSET))
 
 
+        def _parse_site_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        site_id = _parse_site_id(d.pop("site_id", UNSET))
+
+
+        def _parse_site_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        site_name = _parse_site_name(d.pop("site_name", UNSET))
+
+
         page_parked_call_response_data_item = cls(
             slot=slot,
             lot_id=lot_id,
@@ -141,6 +182,8 @@ class PageParkedCallResponseDataItem:
             timeout_secs=timeout_secs,
             node_id=node_id,
             caller=caller,
+            site_id=site_id,
+            site_name=site_name,
         )
 
 

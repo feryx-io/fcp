@@ -167,6 +167,19 @@ lamp on the slot (`docs/PROVISIONING.md`). A lot's fallback may not be a flow.
 Tested: presence.rs `a_parking_slots_lamp_lights_while_a_call_waits_in_it`; the
 template tests; `e2e/parking.spec.ts`.
 
+**Phase 4 (v0.25.486).** Lots are journaled (migration 129) and in
+`fcp_core::sync::SYNC_TABLES`: the cloud's snapshot and change feed carry them, and the
+link writes them into the site's database, changes and removals too; a site's admin
+refuses writes to `parking/lots` (`fcp_api_core::managed`) and keeps `parking/calls` its
+own. A site parks in its own Redis, as before. The link's heartbeat carries the site's
+parked calls (`SiteHeartbeat.parked`, read from `park:{tenant}:*` in the site's Redis),
+and the cloud's `GET /api/v1/parking/calls` adds them with `site_id` and `site_name`;
+the board shows them under "At the sites", without Retrieve or Hang up, which are the
+site's. Tested: fcp-link `a_lot_reaches_its_site_and_the_sites_parked_calls_reach_the_cloud`.
+Found on the way: the SBC ran `fcp_sip`'s call path on tokio's 2 MiB worker stack and a
+debug build overflowed it sending a call down a site's flow (fcp-link's calls test);
+it now has the call manager's 8 MiB, and the park checks on the INVITE path are boxed.
+
 ## 7. Questions (agreed 2026-10-30 on their recommendations)
 
 1. **A slot is dialable on its own** (`705` retrieves), as well as `*71705`. Recommended:

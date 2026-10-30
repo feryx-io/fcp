@@ -58,6 +58,8 @@ pub const SYNC_TABLES: &[&str] = &[
     // and ships them up.
     "presence_statuses",
     "user_presence",
+    // Parking lots (docs/PARKING.md phase 4); a site parks in its own Redis.
+    "parking_lots",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

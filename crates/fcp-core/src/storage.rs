@@ -3182,7 +3182,7 @@ mod optional_system_time_serde {
 // ---------------------------------------------------------------------------
 
 /// A parked call entry stored in the cluster (Redis) for cross-node pickup.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterParkedCall {
     /// Internal call ID (string form of fcp_b2bua_core::CallId).
     pub call_id: String,

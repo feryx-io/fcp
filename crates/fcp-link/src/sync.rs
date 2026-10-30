@@ -77,6 +77,7 @@ pub async fn open_site(database_url: &str, max_connections: u32) -> Result<SiteS
         .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>)
         .with_brand_store(storage.clone() as Arc<dyn fcp_core::branding::BrandStore>)
         .with_contact_store(storage.clone() as Arc<dyn fcp_core::contact::ContactStore>)
+        .with_parking_lot_store(storage.clone() as Arc<dyn fcp_core::parking::ParkingLotStore>)
         .with_presence_status_store(
             storage.clone() as Arc<dyn fcp_core::presence_status::PresenceStatusStore>
         )
@@ -406,6 +407,13 @@ impl Syncer {
             "users" => storage.put_user(parse!()).await?,
             "user_calling_settings" => storage.put_calling_settings(parse!()).await?,
             "schedules" => storage.put_schedule(parse!()).await?,
+            "parking_lots" => match storage.parking_lot_store() {
+                Some(store) => {
+                    let lot: fcp_core::parking::ParkingLot = parse!();
+                    store.put_parking_lot(&lot).await?
+                }
+                None => warn!(table, id, "No parking lot store at the site; skipped"),
+            },
             "classes_of_service" => storage.put_class_of_service(parse!()).await?,
             "devices" => storage.put_device(parse!()).await?,
             "extensions" => storage.put_extension(parse!()).await?,
@@ -601,6 +609,11 @@ impl Syncer {
                 }
             }
             "schedules" => storage.delete_schedule(&id!()).await?,
+            "parking_lots" => {
+                if let Some(store) = storage.parking_lot_store() {
+                    store.delete_parking_lot(&self.tenant, id).await?;
+                }
+            }
             "classes_of_service" => storage.delete_class_of_service(&id!()).await?,
             "user_calling_settings" => {
                 storage
