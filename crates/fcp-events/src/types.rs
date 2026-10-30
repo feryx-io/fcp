@@ -366,6 +366,22 @@ pub enum CallEvent {
         timestamp: SystemTime,
     },
 
+    /// A parked call nobody took back in its lot's time
+    /// (`docs/PARKING.md` §3): it rings its parker, and `fallback` is
+    /// where it goes if the parker does not take it.
+    ParkTimedOut {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
+        call_id: CallId,
+        slot: String,
+        lot_id: String,
+        parker_extension: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fallback: Option<String>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// A leg put on hold by its far party (`docs/ENTERPRISE_CALLING.md`
     /// §3.2): `held_leg` is `a` or `b`.
     Held {
@@ -1929,6 +1945,7 @@ impl PlatformEvent {
         "emergency.notification_failed",
         "call.parked",
         "call.unparked",
+        "call.park_timed_out",
         "call.held",
         "call.resumed",
         "call.transcript",
@@ -2076,6 +2093,7 @@ impl PlatformEvent {
                 CallEvent::EmergencyNotificationFailed { .. } => "emergency.notification_failed",
                 CallEvent::Parked { .. } => "call.parked",
                 CallEvent::Unparked { .. } => "call.unparked",
+                CallEvent::ParkTimedOut { .. } => "call.park_timed_out",
                 CallEvent::Held { .. } => "call.held",
                 CallEvent::Resumed { .. } => "call.resumed",
                 CallEvent::Transcript { .. } => "call.transcript",
@@ -2265,6 +2283,7 @@ impl PlatformEvent {
                 | CallEvent::Failed { tenant_id, .. }
                 | CallEvent::Parked { tenant_id, .. }
                 | CallEvent::Unparked { tenant_id, .. }
+                | CallEvent::ParkTimedOut { tenant_id, .. }
                 | CallEvent::Held { tenant_id, .. }
                 | CallEvent::Resumed { tenant_id, .. }
                 | CallEvent::PartyJoined { tenant_id, .. }
@@ -2528,6 +2547,7 @@ impl CallEvent {
             | CallEvent::EmergencyNotificationFailed { call_id, .. }
             | CallEvent::Parked { call_id, .. }
             | CallEvent::Unparked { call_id, .. }
+            | CallEvent::ParkTimedOut { call_id, .. }
             | CallEvent::Held { call_id, .. }
             | CallEvent::Resumed { call_id, .. }
             | CallEvent::Transcript { call_id, .. }
@@ -2547,6 +2567,7 @@ impl CallEvent {
             | CallEvent::EmergencyNotificationFailed { timestamp, .. }
             | CallEvent::Parked { timestamp, .. }
             | CallEvent::Unparked { timestamp, .. }
+            | CallEvent::ParkTimedOut { timestamp, .. }
             | CallEvent::Held { timestamp, .. }
             | CallEvent::Resumed { timestamp, .. }
             | CallEvent::Transcript { timestamp, .. }

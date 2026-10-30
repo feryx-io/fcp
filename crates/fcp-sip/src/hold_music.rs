@@ -99,6 +99,15 @@ impl HoldMusic {
     /// silence.
     async fn music_for(&self, call: &Call, held: LegSide) -> Option<String> {
         if let Some(storage) = &self.storage {
+            // The lot a parked call waits in.
+            if call.state == fcp_b2bua_core::CallState::Parked {
+                if let Some(id) = call.parked_music.as_deref() {
+                    if let Some(path) = self.prompt_audio(storage, call, id).await {
+                        return Some(path);
+                    }
+                    warn!(call_id = %call.id, prompt = %id, "The parking lot's music has no audio; using the parker's");
+                }
+            }
             // The holder: the parker of a parked call, the callee the plan
             // rang (phase 1 keeps it on the call), or whoever the leg's
             // address names — an extension or a username.

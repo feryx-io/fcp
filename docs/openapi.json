@@ -17702,6 +17702,134 @@
         }
       }
     },
+    "/api/v1/parking/calls": {
+      "get": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "GET /api/v1/parking/calls — the tenant's parked calls on every call\nmanager, by slot.",
+        "operationId": "parking_list_calls",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ParkedCallResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/parking/calls/{slot}/retrieve": {
+      "post": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "POST /api/v1/parking/calls/:slot/retrieve — ring `target` with the\ncall in the slot (202); 404 when the slot is empty.",
+        "operationId": "parking_retrieve_call",
+        "parameters": [
+          {
+            "name": "slot",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetrieveParkedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Ringing the target"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/parking/calls/{slot}": {
+      "delete": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "DELETE /api/v1/parking/calls/:slot — hang up the call in the slot.",
+        "operationId": "parking_hang_up_call",
+        "parameters": [
+          {
+            "name": "slot",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ended"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/routing/rules": {
       "get": {
         "tags": [
@@ -31964,6 +32092,87 @@
           }
         }
       },
+      "Page_ParkedCallResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A call waiting in a slot, on whichever call manager holds it.",
+              "required": [
+                "slot",
+                "lot_id",
+                "call_id",
+                "parker_extension",
+                "parked_secs",
+                "timeout_secs",
+                "node_id"
+              ],
+              "properties": {
+                "slot": {
+                  "type": "string"
+                },
+                "lot_id": {
+                  "type": "string",
+                  "description": "The lot; `default` for the node's own range."
+                },
+                "call_id": {
+                  "type": "string"
+                },
+                "caller": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ParkedCaller"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "parker_extension": {
+                  "type": "string"
+                },
+                "parked_secs": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "How long it has waited, and how long it may.",
+                  "minimum": 0
+                },
+                "timeout_secs": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "node_id": {
+                  "type": "string",
+                  "description": "The call manager holding it."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_ParkingLotResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -35656,6 +35865,77 @@
           }
         }
       },
+      "ParkedCallResponse": {
+        "type": "object",
+        "description": "A call waiting in a slot, on whichever call manager holds it.",
+        "required": [
+          "slot",
+          "lot_id",
+          "call_id",
+          "parker_extension",
+          "parked_secs",
+          "timeout_secs",
+          "node_id"
+        ],
+        "properties": {
+          "slot": {
+            "type": "string"
+          },
+          "lot_id": {
+            "type": "string",
+            "description": "The lot; `default` for the node's own range."
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "caller": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ParkedCaller"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parker_extension": {
+            "type": "string"
+          },
+          "parked_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long it has waited, and how long it may.",
+            "minimum": 0
+          },
+          "timeout_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "node_id": {
+            "type": "string",
+            "description": "The call manager holding it."
+          }
+        }
+      },
+      "ParkedCaller": {
+        "type": "object",
+        "description": "Who a parked call is from.",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "ParkingLotRequest": {
         "type": "object",
         "description": "What a lot is written as; a `PUT` replaces it whole.",
@@ -38011,6 +38291,20 @@
             }
           }
         }
+      },
+      "RetrieveParkedRequest": {
+        "type": "object",
+        "description": "Where a parked call is sent.",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "An extension or a user: their phones ring, and answering takes the\ncall. Unanswered, their own plan decides (their voicemail)."
+          }
+        },
+        "additionalProperties": false
       },
       "RewrapReport": {
         "type": "object",
@@ -43721,6 +44015,7 @@
               "emergency.notification_failed",
               "call.parked",
               "call.unparked",
+              "call.park_timed_out",
               "call.held",
               "call.resumed",
               "call.transcript",

@@ -235,6 +235,11 @@ consumers, and `0` when the slot is not one (a leading zero, or more than
 `unparked` carries `slot`, `orbit` and `retriever_extension` instead of
 `parker_extension`.
 
+`park_timed_out` is sent when a parked call waited its lot's time and is
+rung back to its parker: `slot`, `lot_id`, `parker_extension`, and
+`fallback`, the address it goes to if the parker does not take it (absent
+when the lot has none).
+
 ### Media Events
 
 #### Session Started

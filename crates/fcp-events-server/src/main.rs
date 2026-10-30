@@ -1613,6 +1613,7 @@ fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
         | CallEvent::EmergencyNotificationFailed { node_id, .. } => node_id.clone(),
         CallEvent::Parked { .. }
         | CallEvent::Unparked { .. }
+        | CallEvent::ParkTimedOut { .. }
         | CallEvent::Held { .. }
         | CallEvent::Resumed { .. }
         | CallEvent::Transcript { .. }

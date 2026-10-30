@@ -139,6 +139,29 @@ pub trait CallSupervisor: Send + Sync {
         let _ = (tenant, device_id);
         Err("no call manager can push".to_string())
     }
+
+    /// The tenant's parked calls on every call manager
+    /// (`docs/PARKING.md` §4), as each node lists them.
+    async fn parked_calls(
+        &self,
+        tenant: fcp_core::TenantId,
+    ) -> std::result::Result<Vec<serde_json::Value>, String> {
+        let _ = tenant;
+        Err("no call manager to ask".to_string())
+    }
+
+    /// Send the call parked in the tenant's `slot` to `target`, or hang it
+    /// up when `target` is `None`, at the node holding it: the node's
+    /// status and body.
+    async fn parked_call(
+        &self,
+        tenant: fcp_core::TenantId,
+        slot: &str,
+        target: Option<&str>,
+    ) -> std::result::Result<(u16, serde_json::Value), String> {
+        let _ = (tenant, slot, target);
+        Err("no call manager to ask".to_string())
+    }
 }
 
 /// What a route preview asks about.

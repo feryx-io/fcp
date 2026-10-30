@@ -990,6 +990,12 @@ pub fn router() -> Router<ApiState> {
             "/parking/lots",
             get(parking::list_lots).post(parking::create_lot),
         )
+        .route("/parking/calls", get(parking::list_calls))
+        .route(
+            "/parking/calls/:slot/retrieve",
+            post(parking::retrieve_call),
+        )
+        .route("/parking/calls/:slot", delete(parking::hang_up_call))
         .route(
             "/parking/lots/:id",
             get(parking::get_lot)

@@ -1489,6 +1489,195 @@ async fn a_tenants_own_lot_numbers_the_slots() {
     stack.finish().await;
 }
 
+/// A lot of the tenant's own, written as the API would.
+async fn parking_lot(
+    stack: &Stack,
+    first: &str,
+    last: &str,
+    edit: impl FnOnce(&mut fcp_core::parking::ParkingLot),
+) {
+    let mut lot =
+        fcp_core::parking::ParkingLot::new(stack.seed.tenant_id, "Front desk", first, last);
+    edit(&mut lot);
+    fcp_core::parking::ParkingLotStore::put_parking_lot(stack.seed.storage(), &lot)
+        .await
+        .unwrap();
+}
+
+/// The tenant's calls parked on the node (`GET /parking/calls`).
+async fn parked(stack: &Stack) -> Vec<serde_json::Value> {
+    let url = loopback(
+        stack.http,
+        &format!("/parking/calls?tenant_id={}", stack.seed.tenant_id),
+    );
+    let (code, body) = fcp_testkit::smoke::http_get(&url)
+        .await
+        .expect("GET /parking/calls");
+    assert_eq!(code, 200, "{body}");
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    body["calls"].as_array().cloned().unwrap_or_default()
+}
+
+/// Phase 2 of `docs/PARKING.md`: a transfer to a slot parks there (and a
+/// taken slot is refused 486), and dialing the slot takes the call back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transfer_parks_in_the_slot_it_names_and_dialing_it_takes_the_call() {
+    let stack = stack_or_skip!();
+    parking_lot(&stack, "4320", "4329", |_| {}).await;
+    let [(alice, alice_phone), (bob, bob_phone), (_, carol_phone)] = three_phones(&stack).await;
+
+    // Bob transfers Alice to 4325: she waits there.
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    let to_slot = format!("sip:4325@{}", stack.sip);
+    assert_eq!(bob_call.refer(&to_slot).await.unwrap(), 202);
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+    let calls = parked(&stack).await;
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0]["slot"], "4325");
+    assert_eq!(calls[0]["parker_extension"], bob.extension);
+
+    // Carol, transferred to the same slot, is refused it.
+    let (carol_call, bob_again) = answered(&stack, &carol_phone, &bob, &bob_phone).await;
+    assert_eq!(
+        bob_again.refer(&to_slot).await.unwrap(),
+        486,
+        "the slot is taken"
+    );
+    carol_call.hangup().await.unwrap();
+
+    // Dialing 4325 takes Alice back.
+    let retrieve = bob_phone.call("4325").await.unwrap();
+    if let Err(e) = retrieve.answered(SOON).await {
+        stack
+            .fail(
+                &format!("dialing the slot was not answered: {e}"),
+                &bob_phone,
+            )
+            .await;
+    }
+    retrieve.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Bob after he dialed her slot"
+    );
+    assert!(parked(&stack).await.is_empty(), "the slot is free again");
+    let _ = alice;
+    retrieve.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// A parked call nobody takes back rings its parker, and when the parker
+/// does not answer either, the lot's fallback takes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parked_call_its_parker_lets_ring_goes_to_the_lots_fallback() {
+    let Some(stack) = Stack::start_with("[pbx.parking]\nenabled = true\n").await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let [(_, alice_phone), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    parking_lot(&stack, "4320", "4321", |lot| {
+        lot.timeout_secs = 2;
+        lot.fallback = Some(fcp_core::CallTarget::Extension(carol.extension.clone()));
+    })
+    .await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    let park = bob_phone.call("*70").await.unwrap();
+    park.answered(SOON).await.expect("*70 answered");
+    assert!(park.ended(RING_OUT).await, "the *70 call was never ended");
+
+    // Bob's phone rings with the parked call; he lets it ring out.
+    let Some(at_bob) = bob_phone.incoming(Duration::from_secs(15)).await else {
+        stack.fail("the parker was not rung", &alice_phone).await;
+    };
+    let shown = at_bob.header("From").unwrap_or_default();
+    assert!(shown.contains("Parked 4320"), "the slot is shown: {shown}");
+    let Some(at_carol) = carol_phone.incoming(Duration::from_secs(20)).await else {
+        stack
+            .fail("the lot's fallback was not rung", &alice_phone)
+            .await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    carol_call.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Carol"
+    );
+    carol_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// The node's parked calls, sent on to someone and hung up
+/// (`/parking/calls`, which the admin API asks of every call manager).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_node_lists_sends_on_and_hangs_up_parked_calls() {
+    let stack = stack_or_skip!();
+    parking_lot(&stack, "4320", "4329", |_| {}).await;
+    let [(_, alice_phone), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(
+        bob_call
+            .refer(&format!("sip:4320@{}", stack.sip))
+            .await
+            .unwrap(),
+        202
+    );
+    assert_eq!(parked(&stack).await.len(), 1);
+
+    // Sent on to Carol: her phone rings, and answering takes the call.
+    let url = loopback(stack.http, "/parking/calls/4320/retrieve");
+    let body = serde_json::json!({ "target": carol.extension, "tenant_id": stack.seed.tenant_id });
+    let (code, text) = fcp_testkit::smoke::http_post(&url, &body.to_string())
+        .await
+        .unwrap();
+    assert_eq!(code, 202, "{text}");
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("Carol was not rung with the parked call", &alice_phone)
+            .await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    carol_call.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Carol"
+    );
+    carol_call.hangup().await.unwrap();
+    assert!(alice_call.ended(SOON).await);
+
+    // Parked again, then hung up from the node.
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(
+        bob_call
+            .refer(&format!("sip:4321@{}", stack.sip))
+            .await
+            .unwrap(),
+        202
+    );
+    let empty = loopback(
+        stack.http,
+        &format!("/parking/calls/4329?tenant_id={}", stack.seed.tenant_id),
+    );
+    let (code, _) = fcp_testkit::smoke::http_request("DELETE", &empty, &[], None)
+        .await
+        .unwrap();
+    assert_eq!(code, 404, "nothing parked in 4329");
+    let slot = loopback(
+        stack.http,
+        &format!("/parking/calls/4321?tenant_id={}", stack.seed.tenant_id),
+    );
+    let (code, text) = fcp_testkit::smoke::http_request("DELETE", &slot, &[], None)
+        .await
+        .unwrap();
+    assert_eq!(code, 200, "{text}");
+    assert!(
+        alice_call.ended(SOON).await,
+        "the parked call was not hung up"
+    );
+    assert!(parked(&stack).await.is_empty());
+    stack.finish().await;
+}
+
 /// An encrypted caller transfers the callee to a plain phone: the plain
 /// phone takes the caller's side, so the node's keys for that side must go
 /// — kept, the node would encrypt toward it and refuse its plain packets.

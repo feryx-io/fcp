@@ -650,6 +650,9 @@ async fn seed_tenant_b(app: &App) -> Seeded {
     ids.insert("/cdrs", call_id.to_string());
     ids.insert("/flow-traces", call_id.to_string());
     ids.insert("/calls", call_id.to_string());
+    // A slot of B's lot below; the calls in it are held by a call manager,
+    // which this router has none of (503).
+    ids.insert("/parking/calls", "880".to_string());
     app.seed_sip_trace(&call_id.to_string(), &sip_call_id, b, "inbound", "INVITE")
         .await;
     let recording = register_recording(app, b, "2800", "node-b", true).await;

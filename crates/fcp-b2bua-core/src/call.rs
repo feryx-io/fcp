@@ -535,6 +535,10 @@ pub struct Call {
     /// (`docs/PARKING.md`): a digit string, as the tenant numbers it.
     pub parked_slot: Option<String>,
 
+    /// The hold music prompt of the lot the call is parked in, which
+    /// plays before the parker's or the tenant's (`docs/PARKING.md` §2).
+    pub parked_music: Option<String>,
+
     /// Extension of the user who parked this call.
     pub parker_extension: Option<String>,
 
@@ -716,6 +720,7 @@ impl Call {
             max_duration: None,
             custom_data: None,
             parked_slot: None,
+            parked_music: None,
             parker_extension: None,
             line_binding_id: None,
             number_binding_id: None,
@@ -838,6 +843,7 @@ impl Call {
             max_duration: None,
             custom_data: None,
             parked_slot: None,
+            parked_music: None,
             parker_extension: None,
             line_binding_id: None,
             number_binding_id: None,

@@ -37,6 +37,7 @@ mod cli;
 mod conference_placement;
 mod config;
 mod health;
+mod parking;
 mod queue_audio;
 mod queue_handler;
 mod queue_recording;

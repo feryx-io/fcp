@@ -4144,6 +4144,19 @@ impl SipMessageHandler {
                         info!(call_id = %call_id, park_number = %user, "A lot's park number");
                         return self.handle_park_call(request, handle, &call_id).await;
                     }
+                    // A slot dialed takes back the call parked in it.
+                    if fcp_core::parking::is_number(&user)
+                        && self
+                            .parking_lots_of(&tenant_id)
+                            .await
+                            .iter()
+                            .any(|l| l.enabled && l.contains(&user))
+                    {
+                        info!(call_id = %call_id, slot = %user, "A parking slot dialed");
+                        return self
+                            .handle_retrieve_parked(request, handle, &call_id, &user)
+                            .await;
+                    }
                 }
             }
         }
@@ -13804,13 +13817,31 @@ impl SipMessageHandler {
             return self.create_simple_response(request, 481, "Call/Transaction Does Not Exist");
         };
 
-        // A park code: the transferred party waits in an orbit.
+        // A park code or a lot's park number: the transferred party waits
+        // in the next free slot; a slot itself: in that one, a directed
+        // park (`docs/PARKING.md` §3).
         if target.replaces.is_none() {
             if let Some(pbx) = self.pbx_handler.as_ref().filter(|p| p.is_enabled()) {
-                if matches!(
+                let park_in = if matches!(
                     pbx.parse_feature_code(&target.user),
                     Some(fcp_pbx::FeatureCodeAction::ParkCall)
                 ) {
+                    Some(None)
+                } else {
+                    let lots = self.parking_lots_of(&call.tenant_id).await;
+                    let lot = lots.iter().filter(|l| l.enabled);
+                    if lot
+                        .clone()
+                        .any(|l| l.park_number.as_deref() == Some(target.user.as_str()))
+                    {
+                        Some(None)
+                    } else {
+                        lot.clone()
+                            .find(|l| l.contains(&target.user))
+                            .map(|_| Some(target.user.clone()))
+                    }
+                };
+                if let Some(only) = park_in {
                     let parker = match referrer {
                         fcp_b2bua_core::LegSide::A => call.a_leg.remote_uri.clone(),
                         fcp_b2bua_core::LegSide::B => call
@@ -13820,7 +13851,10 @@ impl SipMessageHandler {
                             .unwrap_or_default(),
                     };
                     let parker = user_of_uri(&parker).unwrap_or_default();
-                    return match self.park_party(pbx, call, referrer, &parker).await {
+                    return match self
+                        .park_party(pbx, call, referrer, &parker, only.as_deref())
+                        .await
+                    {
                         Ok(slot) => {
                             info!(call_id = %call.id, slot = %slot, parker = %parker, "Parked by transfer");
                             let local_uri = self.uas.local_uri.clone();
@@ -13848,6 +13882,10 @@ impl SipMessageHandler {
                                 drop.await;
                             });
                             self.create_simple_response(request, 202, "Accepted")
+                        }
+                        Err(e) if e.downcast_ref::<SlotTaken>().is_some() => {
+                            info!(call_id = %call.id, slot = ?only, "Directed park: the slot is taken");
+                            self.create_simple_response(request, 486, "Parking Slot Taken")
                         }
                         Err(e) => {
                             warn!(call_id = %call.id, error = %e, "Park by transfer failed");
@@ -13942,6 +13980,7 @@ impl SipMessageHandler {
             headers,
             caller,
             notify_referrer,
+            fallback: None,
         }
     }
 
@@ -13954,9 +13993,20 @@ impl SipMessageHandler {
         call: &fcp_b2bua_core::Call,
         parker: fcp_b2bua_core::LegSide,
         parker_ext: &str,
+        only: Option<&str>,
     ) -> Result<String> {
-        let lot = self.parking_lot_for(pbx, &call.tenant_id).await;
-        let orbit = self.claim_slot(pbx, &lot, call, parker_ext).await?;
+        let lot = match only {
+            Some(slot) => self
+                .parking_lots_of(&call.tenant_id)
+                .await
+                .iter()
+                .find(|l| l.enabled && l.contains(slot))
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("{slot} is in none of the tenant's lots"))?,
+            None => self.parking_lot_for(pbx, &call.tenant_id).await,
+        };
+        let orbit = self.claim_slot(pbx, &lot, call, parker_ext, only).await?;
+        let lot_music = lot.music.clone();
         // The parked party goes to the A slot; its media side follows, and
         // the B side, the parker's, is left with no one on it until the
         // call is retrieved: still naming the parked party, it relayed the
@@ -14010,6 +14060,7 @@ impl SipMessageHandler {
             // Held, whatever the parker did: the parked party hears the
             // hold music (`docs/ENTERPRISE_CALLING.md` §3.3).
             c.held = Some(fcp_b2bua_core::LegSide::A);
+            c.parked_music = lot_music.clone();
             c.park(orbit.clone(), parker_ext.clone());
         })?;
         if let Some(id) = parker_dialog_id {
@@ -14071,10 +14122,11 @@ impl SipMessageHandler {
         lot: &fcp_core::parking::ParkingLot,
         call: &fcp_b2bua_core::Call,
         parker_ext: &str,
+        only: Option<&str>,
     ) -> Result<String> {
         let tenant = call.tenant_id;
         let parking = pbx.parking_manager();
-        for slot in lot.slots() {
+        for slot in lot.slots().filter(|s| only.is_none_or(|o| o == s)) {
             if parking.is_held(&tenant, &slot) {
                 continue;
             }
@@ -14119,6 +14171,9 @@ impl SipMessageHandler {
                     }
                 }
             }
+        }
+        if only.is_some() {
+            return Err(SlotTaken.into());
         }
         Err(anyhow::anyhow!(
             "no slot free in the parking lot {:?}",
@@ -14751,7 +14806,7 @@ impl SipMessageHandler {
                 .and_then(|b| b.flow_token.clone()),
         };
         let orbit = match self
-            .park_party(pbx, &active_call, parker_side, &caller_ext)
+            .park_party(pbx, &active_call, parker_side, &caller_ext, None)
             .await
         {
             Ok(orbit) => orbit,
@@ -14985,24 +15040,13 @@ impl SipMessageHandler {
                 warn!(slot = %parked.slot, error = %e, "Failed to free an expired call's cluster slot");
             }
         }
-
-        // Verify the call is still in Parked state
-        let parked_call = match call_manager.get_call(&parked_call_id) {
-            Some(c) if c.state == fcp_b2bua_core::CallState::Parked => c,
-            Some(c) => {
-                debug!(
-                    call_id = %parked_call_id,
-                    state = ?c.state,
-                    "Expired parked call is no longer in Parked state, skipping"
-                );
-                return Ok(());
-            }
-            None => {
-                debug!(call_id = %parked_call_id, "Expired parked call not found, skipping");
-                return Ok(());
-            }
-        };
-
+        if !call_manager
+            .get_call(&parked_call_id)
+            .is_some_and(|c| c.state == fcp_b2bua_core::CallState::Parked)
+        {
+            debug!(call_id = %parked_call_id, "Expired parked call is gone or no longer parked, skipping");
+            return Ok(());
+        }
         info!(
             call_id = %parked_call_id,
             slot = %parked.slot,
@@ -15010,31 +15054,87 @@ impl SipMessageHandler {
             "Parked call expired, routing back to parker"
         );
 
-        // Back to the parker as a transfer from the empty slot
-        // (`docs/ENTERPRISE_CALLING.md` §3.2): the parker is dialed
-        // through this node, so their own plan applies — a forward, their
-        // voicemail — and a failure ends the call.
+        // The lot's fallback, should the parker not take it back.
+        let lot = self
+            .parking_lots_of(&parked.tenant_id)
+            .await
+            .iter()
+            .find(|l| l.id == parked.lot_id)
+            .cloned();
+        let fallback = match lot.as_ref().and_then(|l| l.fallback.as_ref()) {
+            Some(target) => {
+                self.parking_fallback_uri(&parked_call_id, target, parker_ext, &self.own_host())
+                    .await
+            }
+            None => None,
+        };
+        self.call_manager.publish(fcp_events::PlatformEvent::Call(
+            fcp_events::CallEvent::ParkTimedOut {
+                tenant_id: Some(parked.tenant_id),
+                call_id: fcp_core::CallId::from_uuid(*parked_call_id.as_uuid()),
+                slot: parked.slot.clone(),
+                lot_id: parked.lot_id.clone(),
+                parker_extension: parker_ext.clone(),
+                fallback: fallback.clone(),
+                timestamp: std::time::SystemTime::now(),
+            },
+        ));
+        self.send_parked_call(parked, parker_ext, fallback).await;
+        Ok(())
+    }
+
+    /// This node's SIP host and port, where a number dialed is a new call
+    /// into its own plan.
+    fn own_host(&self) -> String {
+        match self.uas.local_uri.port() {
+            Some(port) => format!("{}:{}", self.uas.local_uri.host(), port),
+            None => self.uas.local_uri.host().to_string(),
+        }
+    }
+
+    /// Ring `target` (an extension or a user, dialed through this node so
+    /// their own plan applies) with a parked call, shown as "Parked
+    /// <slot>"; answering takes it. If nobody takes it, `fallback` is
+    /// tried, else the call ends (`docs/ENTERPRISE_CALLING.md` §3.2,
+    /// `docs/PARKING.md` §3).
+    async fn send_parked_call(
+        &self,
+        parked: &fcp_pbx::ParkedCall,
+        target: &str,
+        fallback: Option<String>,
+    ) {
+        let parked_call_id = parked.call_id;
+        let Some(parked_call) = self
+            .call_manager
+            .get_call(&parked_call_id)
+            .filter(|c| c.state == fcp_b2bua_core::CallState::Parked)
+        else {
+            return;
+        };
         let Some(uac) = self.uac.clone() else {
             warn!(call_id = %parked_call_id, "No UAC configured, terminating parked call");
             self.terminate_parked_a_leg(&parked_call_id).await;
-            return Ok(());
+            return;
         };
         if self
             .conference_migrations
             .insert(parked_call_id, ())
             .is_some()
         {
-            return Ok(());
+            return;
         }
-        let host = match self.uas.local_uri.port() {
-            Some(port) => format!("{}:{}", self.uas.local_uri.host(), port),
-            None => self.uas.local_uri.host().to_string(),
-        };
+        // Whoever rings sees whose call it is and the slot it waited in.
         let caller = parked_call
             .original_invite
             .as_ref()
             .and_then(|invite| extract_from_uri(invite).ok().map(|uri| (invite, uri)))
-            .map(|(invite, uri)| (extract_from_display_name(invite), normalize_from_uri(uri)));
+            .map(|(invite, uri)| {
+                let name = match extract_from_display_name(invite) {
+                    Some(name) => format!("Parked {}: {name}", parked.slot),
+                    None => format!("Parked {}", parked.slot),
+                };
+                (Some(name), normalize_from_uri(uri))
+            });
         let run = crate::transfer::TransferRun {
             uac,
             local_uri: self.uas.local_uri.clone(),
@@ -15050,16 +15150,146 @@ impl SipMessageHandler {
             call_id: parked_call_id,
             referrer: fcp_b2bua_core::LegSide::B,
             referrer_dialog: None,
-            target: format!("sip:{}@{}", parker_ext, host),
+            target: format!("sip:{}@{}", target, self.own_host()),
             headers: vec![(
                 TRANSFERRED_FROM_HEADER.to_string(),
                 parked_call_id.to_string(),
             )],
             caller,
             notify_referrer: true,
+            fallback,
         };
         run.run().await;
-        Ok(())
+    }
+
+    /// The tenant's calls parked on this node, as `GET /parking/calls`
+    /// lists them (`docs/PARKING.md` §4).
+    pub fn parked_calls(&self, tenant_id: &fcp_core::TenantId) -> Vec<serde_json::Value> {
+        let Some(pbx) = self.pbx_handler.as_ref() else {
+            return Vec::new();
+        };
+        pbx.parking_manager()
+            .list(tenant_id)
+            .into_iter()
+            .map(|parked| {
+                let call = self.call_manager.get_call(&parked.call_id);
+                let caller = call.as_ref().and_then(|c| {
+                    c.original_invite.as_ref().and_then(|invite| {
+                        extract_from_uri(invite).ok().map(|uri| {
+                            serde_json::json!({
+                                "uri": normalize_from_uri(uri).as_str(),
+                                "name": extract_from_display_name(invite),
+                            })
+                        })
+                    })
+                });
+                let waited = parked.parked_at.elapsed().as_secs();
+                serde_json::json!({
+                    "slot": parked.slot,
+                    "lot_id": parked.lot_id,
+                    "call_id": parked.call_id.to_string(),
+                    "caller": caller,
+                    "parker_extension": parked.parker_extension,
+                    "parked_secs": waited,
+                    "timeout_secs": parked.timeout.as_secs(),
+                    "node_id": self.node_id,
+                })
+            })
+            .collect()
+    }
+
+    /// Take the tenant's parked call out of its slot and ring `target`
+    /// with it, in the background. `Err` with the status the API answers:
+    /// 404 for an empty slot.
+    pub async fn retrieve_parked_to(
+        self: &Arc<Self>,
+        tenant_id: &fcp_core::TenantId,
+        slot: &str,
+        target: &str,
+    ) -> std::result::Result<String, (u16, String)> {
+        let parked = self.take_parked(tenant_id, slot).await?;
+        let call_id = parked.call_id.to_string();
+        info!(call_id = %call_id, slot, target, "A parked call sent on");
+        let handler = Arc::clone(self);
+        let target = target.to_string();
+        tokio::spawn(async move { handler.send_parked_call(&parked, &target, None).await });
+        Ok(call_id)
+    }
+
+    /// Hang up the tenant's call parked in `slot`.
+    pub async fn hang_up_parked(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        slot: &str,
+    ) -> std::result::Result<String, (u16, String)> {
+        let parked = self.take_parked(tenant_id, slot).await?;
+        info!(call_id = %parked.call_id, slot, "A parked call hung up");
+        self.terminate_parked_a_leg(&parked.call_id).await;
+        Ok(parked.call_id.to_string())
+    }
+
+    /// The parked call in the tenant's slot on this node, taken out of it
+    /// here and in the cluster.
+    async fn take_parked(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        slot: &str,
+    ) -> std::result::Result<fcp_pbx::ParkedCall, (u16, String)> {
+        let pbx = self
+            .pbx_handler
+            .as_ref()
+            .ok_or((503, "parking is not enabled on this node".to_string()))?;
+        let parked = pbx
+            .retrieve_parked_call(tenant_id, slot)
+            .map_err(|_| (404, format!("No call is parked in {slot}")))?;
+        if let Some(cp) = self.cluster_parking.as_ref() {
+            if let Err(e) = cp.cluster_unpark(tenant_id, slot).await {
+                warn!(slot, error = %e, "Failed to free a cluster parking slot");
+            }
+        }
+        Ok(parked)
+    }
+
+    /// Where a lot's fallback is dialed for a parked call nobody took back:
+    /// a number, an extension, a user or a queue at this node, so its own
+    /// plan applies; an address as it is; `voicemail` the parker's mailbox.
+    async fn parking_fallback_uri(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        target: &fcp_core::CallTarget,
+        parker: &str,
+        host: &str,
+    ) -> Option<String> {
+        match target {
+            fcp_core::CallTarget::Voicemail => {
+                let server = self
+                    .voicemail_server_uri_override
+                    .read()
+                    .ok()
+                    .and_then(|o| o.clone())
+                    .or_else(|| self.b2bua_config.voicemail_server_uri.clone())?;
+                let vm_host = server
+                    .trim_start_matches("sips:")
+                    .trim_start_matches("sip:")
+                    .rsplit('@')
+                    .next()
+                    .unwrap_or(&server)
+                    .to_string();
+                Some(format!("sip:{parker}@{vm_host};reason=no-answer"))
+            }
+            fcp_core::CallTarget::Sip(uri) => Some(uri.clone()),
+            other => {
+                let destination = self.forward_destination(*call_id, other).await?;
+                if destination.starts_with("sip:") || destination.starts_with("sips:") {
+                    return Some(destination);
+                }
+                if destination.contains("~") || destination.starts_with("flow:") {
+                    warn!(call_id = %call_id, target = %other.as_string(), "A parking lot's fallback cannot be dialed");
+                    return None;
+                }
+                Some(format!("sip:{destination}@{host}"))
+            }
+        }
     }
 
     /// Handle intercom (*80ext / *81ext): send INVITE with auto-answer headers.
@@ -17431,6 +17661,7 @@ impl SipMessageHandler {
             headers: vec![(TRANSFERRED_FROM_HEADER.to_string(), call.id.to_string())],
             caller,
             notify_referrer: true,
+            fallback: None,
         };
         tokio::spawn(run.run());
         self.confirm_feature(request, handle, call_id, "Call pushed.")
@@ -19198,6 +19429,18 @@ fn spawn_race_task(
 
 /// What a parker hears on `*70`: the orbit, digit by digit, then the end
 /// of the call. Held for the call alone, like `*98`'s flow.
+/// A directed park's slot holds a call already.
+#[derive(Debug)]
+struct SlotTaken;
+
+impl std::fmt::Display for SlotTaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the parking slot holds a call")
+    }
+}
+
+impl std::error::Error for SlotTaken {}
+
 fn park_announcement(call_id: &fcp_b2bua_core::CallId, slot: &str) -> fcp_flow::FlowDefinition {
     let digits: Vec<String> = slot.chars().map(String::from).collect();
     spoken_confirmation(

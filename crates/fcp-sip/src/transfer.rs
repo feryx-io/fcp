@@ -119,16 +119,34 @@ pub(crate) struct TransferRun {
     /// REFER. A transfer the API asks for has a referrer that asked for
     /// nothing, and is only dropped.
     pub notify_referrer: bool,
+    /// Where a parked call goes when its parker does not take it back
+    /// (`docs/PARKING.md` §3): tried once the target fails, before the
+    /// call is ended. A transfer with a referrer has none.
+    pub fallback: Option<String>,
 }
 
 /// Why a transfer did not happen: what the referrer is told, and why.
 type TransferFailure = (u16, &'static str, String);
 
 impl TransferRun {
-    pub async fn run(self) {
+    pub async fn run(mut self) {
         let call_id = self.call_id;
         let outcome = self.transfer().await;
         self.in_flight.remove(&call_id);
+        if outcome.is_err() && self.referrer_dialog.is_none() {
+            if let Some(fallback) = self.fallback.take() {
+                let still_parked = self
+                    .call_manager
+                    .get_call(&call_id)
+                    .is_some_and(|c| c.state == fcp_b2bua_core::CallState::Parked);
+                if still_parked {
+                    info!(call_id = %call_id, parker = %self.target, fallback = %fallback, "The parker did not take the call back; its lot's fallback does");
+                    self.target = fallback;
+                    self.in_flight.insert(call_id, ());
+                    return Box::pin(self.run()).await;
+                }
+            }
+        }
         match outcome {
             Ok(()) => {
                 info!(call_id = %call_id, target = %self.target, "Transfer completed");

@@ -259,6 +259,8 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         )
         // Live call control (`docs/DEVELOPER_SURFACE.md` phase 8)
         .merge(crate::call_control::routes())
+        // Parked calls (`docs/PARKING.md` §4)
+        .merge(crate::parking::routes())
         // Supervisor endpoints
         .route("/calls/:id/monitor", post(monitor_call_handler))
         .route("/calls/:id/whisper", post(whisper_call_handler))

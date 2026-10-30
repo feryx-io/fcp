@@ -133,6 +133,27 @@ say 0). Tested: `a_tenants_own_lot_numbers_the_slots` (calling.rs),
 `two_tenants_number_their_slots_alike` (fcp-pbx),
 `parking_lots_are_the_tenants_and_clash_with_its_dial_plan` and the route matrix.
 
+**Phase 2 (v0.25.484).** Dialing one of a lot's slots retrieves it (an empty slot is
+480, as `*71` is); a transfer to a slot is a directed park, refused 486 when the slot
+holds a call; a transfer to a lot's park number parks in the next free slot. A
+timed-out call rings its parker shown as "Parked <slot>: <caller>", through the node
+so the parker's plan applies, and if that fails the lot's fallback is rung (a number,
+extension, user or queue at the node; a SIP address; `voicemail` as the parker's
+mailbox), else the call ends. The lot's music plays to the parked party before the
+parker's or the tenant's. The events are the calls' own: `call.parked`,
+`call.unparked` and the new `call.park_timed_out` (slot, lot, parker, fallback), not a
+`parking.*` family. The node answers `GET /parking/calls`,
+`POST /parking/calls/:slot/retrieve` and `DELETE /parking/calls/:slot`; the admin API's
+`GET /api/v1/parking/calls` (`parking_read`) asks every call manager and puts the lists
+together by slot, and `POST …/{slot}/retrieve` and `DELETE …/{slot}` (`parking_manage`)
+go to the node holding it. A call sent on that nobody answers ends, as a timed-out one
+with no fallback does. Tested: calling.rs
+`a_transfer_parks_in_the_slot_it_names_and_dialing_it_takes_the_call`,
+`a_parked_call_its_parker_lets_ring_goes_to_the_lots_fallback`,
+`the_node_lists_sends_on_and_hangs_up_parked_calls`; api_postgres
+`parked_calls_are_listed_sent_on_and_hung_up_through_the_node`; fcp-admin
+`parked_calls_are_asked_of_the_call_managers`. The lot's music has no test of its own.
+
 ## 7. Questions (agreed 2026-10-30 on their recommendations)
 
 1. **A slot is dialable on its own** (`705` retrieves), as well as `*71705`. Recommended:

@@ -352,3 +352,155 @@ pub async fn delete_lot(
     announce(&state, &lot).await;
     Ok(StatusCode::NO_CONTENT)
 }
+
+// ─── Parked calls (`docs/PARKING.md` §4) ─────────────────────────────────
+
+/// Who a parked call is from.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ParkedCaller {
+    pub uri: String,
+    pub name: Option<String>,
+}
+
+/// A call waiting in a slot, on whichever call manager holds it.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ParkedCallResponse {
+    pub slot: String,
+    /// The lot; `default` for the node's own range.
+    pub lot_id: String,
+    pub call_id: String,
+    pub caller: Option<ParkedCaller>,
+    pub parker_extension: String,
+    /// How long it has waited, and how long it may.
+    pub parked_secs: u64,
+    pub timeout_secs: u64,
+    /// The call manager holding it.
+    pub node_id: String,
+}
+
+/// Where a parked call is sent.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RetrieveParkedRequest {
+    /// An extension or a user: their phones ring, and answering takes the
+    /// call. Unanswered, their own plan decides (their voicemail).
+    pub target: String,
+}
+
+fn supervisor(state: &ApiState) -> Result<&Arc<dyn crate::CallSupervisor>, ApiError> {
+    state
+        .call_supervisor
+        .as_ref()
+        .ok_or_else(|| ApiError::ServiceUnavailable("no call manager can be reached".to_string()))
+}
+
+/// What a node answered, in the API's shape.
+fn node_answer(status: u16, body: serde_json::Value) -> axum::response::Response {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    if !status.is_success() {
+        let error = crate::error::ErrorResponse::from_upstream(status, &body);
+        return (status, Json(error)).into_response();
+    }
+    (status, Json(body)).into_response()
+}
+
+/// GET /api/v1/parking/calls — the tenant's parked calls on every call
+/// manager, by slot.
+#[utoipa::path(
+    get,
+    path = "/api/v1/parking/calls",
+    tag = "parking",
+    operation_id = "parking_list_calls",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<ParkedCallResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn list_calls(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::ParkingRead, state.deployment_mode)?;
+    let calls = supervisor(&state)?
+        .parked_calls(tenant.0)
+        .await
+        .map_err(ApiError::ServiceUnavailable)?;
+    let calls: Vec<ParkedCallResponse> = calls
+        .into_iter()
+        .filter_map(|c| serde_json::from_value(c).ok())
+        .collect();
+    Ok(Json(crate::page::paginate(
+        calls,
+        &page,
+        crate::page::Order::Ascending,
+        |c| format!("{:08}/{}/{}", c.slot.len(), c.slot, c.call_id),
+    )?))
+}
+
+/// POST /api/v1/parking/calls/:slot/retrieve — ring `target` with the
+/// call in the slot (202); 404 when the slot is empty.
+#[utoipa::path(
+    post,
+    path = "/api/v1/parking/calls/{slot}/retrieve",
+    tag = "parking",
+    operation_id = "parking_retrieve_call",
+    params(("slot" = String, Path)),
+    request_body = RetrieveParkedRequest,
+    responses(
+        (status = 202, description = "Ringing the target"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn retrieve_call(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Path(slot): Path<String>,
+    Json(req): Json<RetrieveParkedRequest>,
+) -> Result<axum::response::Response, ApiError> {
+    crate::auth::check_permission(&identity, Permission::ParkingManage, state.deployment_mode)?;
+    if !fcp_core::parking::is_number(&slot) {
+        return Err(ApiError::BadRequest(format!("{slot:?} is not a slot")));
+    }
+    let target = req.target.trim();
+    if target.is_empty() {
+        return Err(ApiError::BadRequest("target is required".to_string()));
+    }
+    let (status, body) = supervisor(&state)?
+        .parked_call(tenant.0, &slot, Some(target))
+        .await
+        .map_err(ApiError::ServiceUnavailable)?;
+    Ok(node_answer(status, body))
+}
+
+/// DELETE /api/v1/parking/calls/:slot — hang up the call in the slot.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/parking/calls/{slot}",
+    tag = "parking",
+    operation_id = "parking_hang_up_call",
+    params(("slot" = String, Path)),
+    responses(
+        (status = 200, description = "Ended"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn hang_up_call(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Path(slot): Path<String>,
+) -> Result<axum::response::Response, ApiError> {
+    crate::auth::check_permission(&identity, Permission::ParkingManage, state.deployment_mode)?;
+    if !fcp_core::parking::is_number(&slot) {
+        return Err(ApiError::BadRequest(format!("{slot:?} is not a slot")));
+    }
+    let (status, body) = supervisor(&state)?
+        .parked_call(tenant.0, &slot, None)
+        .await
+        .map_err(ApiError::ServiceUnavailable)?;
+    Ok(node_answer(status, body))
+}

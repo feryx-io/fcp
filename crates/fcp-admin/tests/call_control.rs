@@ -313,3 +313,172 @@ format = "compact"
     service.stop().await;
     db.drop_db().await;
 }
+
+/// A call manager with one call parked in `4320`: its list, a retrieve
+/// (to whoever is named) and a hangup; any other slot is 404.
+async fn parking_node(asked: Arc<Mutex<Vec<Asked>>>) -> u16 {
+    use axum::routing::delete;
+    let port = free_port();
+    let (listed, sent, ended) = (Arc::clone(&asked), Arc::clone(&asked), asked);
+    let app = Router::new()
+        .route(
+            "/parking/calls",
+            get(
+                move |headers: HeaderMap,
+                      Query(query): Query<std::collections::HashMap<String, String>>| {
+                    let asked = Arc::clone(&listed);
+                    async move {
+                        asked.lock().unwrap().push(Asked {
+                            path: "/parking/calls".into(),
+                            authorization: headers
+                                .get("authorization")
+                                .and_then(|v| v.to_str().ok())
+                                .map(str::to_string),
+                            body: serde_json::json!({ "tenant_id": query.get("tenant_id") }),
+                        });
+                        Json(serde_json::json!({ "calls": [{
+                            "slot": "4320", "lot_id": "lot-1", "call_id": CALL,
+                            "caller": { "uri": "sip:alice@x", "name": "Alice" },
+                            "parker_extension": "1002", "parked_secs": 5,
+                            "timeout_secs": 60, "node_id": "cm-1"
+                        }]}))
+                    }
+                },
+            ),
+        )
+        .route(
+            "/parking/calls/:slot/retrieve",
+            post(
+                move |Path(slot): Path<String>, Json(body): Json<serde_json::Value>| {
+                    let asked = Arc::clone(&sent);
+                    async move {
+                        asked.lock().unwrap().push(Asked {
+                            path: format!("/parking/calls/{slot}/retrieve"),
+                            authorization: None,
+                            body: body.clone(),
+                        });
+                        if slot != "4320" {
+                            return (
+                                StatusCode::NOT_FOUND,
+                                Json(serde_json::json!({ "error": format!("No call is parked in {slot}") })),
+                            );
+                        }
+                        (
+                            StatusCode::ACCEPTED,
+                            Json(serde_json::json!({ "slot": slot, "target": body["target"] })),
+                        )
+                    }
+                },
+            ),
+        )
+        .route(
+            "/parking/calls/:slot",
+            delete(move |Path(slot): Path<String>| {
+                let asked = Arc::clone(&ended);
+                async move {
+                    asked.lock().unwrap().push(Asked {
+                        path: format!("DELETE /parking/calls/{slot}"),
+                        authorization: None,
+                        body: serde_json::json!({}),
+                    });
+                    if slot != "4320" {
+                        return (
+                            StatusCode::NOT_FOUND,
+                            Json(serde_json::json!({ "error": format!("No call is parked in {slot}") })),
+                        );
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "slot": slot, "status": "ended" })))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .expect("bind the stand-in");
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    port
+}
+
+/// `docs/PARKING.md` §4: the admin asks the call managers for the
+/// tenant's parked calls, and puts a retrieve or a hangup to the node
+/// holding the slot, with its token and the caller's tenant.
+#[tokio::test]
+async fn parked_calls_are_asked_of_the_call_managers() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping");
+        return;
+    };
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let node = parking_node(Arc::clone(&asked)).await;
+    let dir = smoke::temp_dir();
+    let http = free_port();
+    let config = format!(
+        r#"prompts_dir = "{dir}/prompts"
+
+[service]
+node_id = "parking-admin"
+
+[api]
+bind_address = "127.0.0.1:{http}"
+auth_enabled = false
+
+[storage]
+database_url = "{db}"
+
+[call_manager]
+url = "http://127.0.0.1:{node}"
+auth_token = "cm-secret"
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        db = db.url(),
+        dir = smoke::toml_path(dir.path()),
+    );
+    let service = Service::start("admin", BIN, &config, &loopback(http, "/api/v1/health")).await;
+    let client = reqwest::Client::new();
+
+    let list: serde_json::Value = client
+        .get(loopback(http, "/api/v1/parking/calls"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list["data"][0]["slot"], "4320", "{list}");
+    assert_eq!(list["data"][0]["node_id"], "cm-1");
+    let seen = asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(seen.authorization.as_deref(), Some("Bearer cm-secret"));
+    assert!(seen.body["tenant_id"]
+        .as_str()
+        .is_some_and(|t| !t.is_empty()));
+
+    let sent = client
+        .post(loopback(http, "/api/v1/parking/calls/4320/retrieve"))
+        .json(&serde_json::json!({ "target": "1003" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sent.status().as_u16(), 202);
+    let seen = asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(seen.body["target"], "1003");
+    assert!(seen.body["tenant_id"]
+        .as_str()
+        .is_some_and(|t| !t.is_empty()));
+
+    let missing = client
+        .delete(loopback(http, "/api/v1/parking/calls/4329"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status().as_u16(), 404);
+    let ended = client
+        .delete(loopback(http, "/api/v1/parking/calls/4320"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ended.status().as_u16(), 200);
+    service.stop().await;
+    db.drop_db().await;
+}

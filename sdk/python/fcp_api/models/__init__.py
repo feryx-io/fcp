@@ -300,6 +300,8 @@ from .page_number_usage_response import PageNumberUsageResponse
 from .page_number_usage_response_data_item import PageNumberUsageResponseDataItem
 from .page_own_status_response import PageOwnStatusResponse
 from .page_own_status_response_data_item import PageOwnStatusResponseDataItem
+from .page_parked_call_response import PageParkedCallResponse
+from .page_parked_call_response_data_item import PageParkedCallResponseDataItem
 from .page_parking_lot_response import PageParkingLotResponse
 from .page_parking_lot_response_data_item import PageParkingLotResponseDataItem
 from .page_pending_device_response import PagePendingDeviceResponse
@@ -368,6 +370,8 @@ from .page_webhook_event_type import PageWebhookEventType
 from .page_webhook_event_type_data_item import PageWebhookEventTypeDataItem
 from .page_webhook_response import PageWebhookResponse
 from .page_webhook_response_data_item import PageWebhookResponseDataItem
+from .parked_call_response import ParkedCallResponse
+from .parked_caller import ParkedCaller
 from .parking_lot_request import ParkingLotRequest
 from .parking_lot_response import ParkingLotResponse
 from .password_login import PasswordLogin
@@ -426,6 +430,7 @@ from .required_claim import RequiredClaim
 from .resource_counts import ResourceCounts
 from .resync_response import ResyncResponse
 from .retention_run_response import RetentionRunResponse
+from .retrieve_parked_request import RetrieveParkedRequest
 from .rewrap_report import RewrapReport
 from .rollout_stage import RolloutStage
 from .rotate_api_token_request import RotateApiTokenRequest
@@ -862,6 +867,8 @@ __all__ = (
     "PageNumberUsageResponseDataItem",
     "PageOwnStatusResponse",
     "PageOwnStatusResponseDataItem",
+    "PageParkedCallResponse",
+    "PageParkedCallResponseDataItem",
     "PageParkingLotResponse",
     "PageParkingLotResponseDataItem",
     "PagePendingDeviceResponse",
@@ -930,6 +937,8 @@ __all__ = (
     "PageWebhookEventTypeDataItem",
     "PageWebhookResponse",
     "PageWebhookResponseDataItem",
+    "ParkedCaller",
+    "ParkedCallResponse",
     "ParkingLotRequest",
     "ParkingLotResponse",
     "PasswordLogin",
@@ -988,6 +997,7 @@ __all__ = (
     "ResourceCounts",
     "ResyncResponse",
     "RetentionRunResponse",
+    "RetrieveParkedRequest",
     "RewrapReport",
     "RolloutStage",
     "RotateApiTokenRequest",

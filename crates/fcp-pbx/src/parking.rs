@@ -125,6 +125,25 @@ impl ParkingManager {
             .ok_or_else(|| PbxError::OrbitNotOccupied(slot.to_string()))
     }
 
+    /// The tenant's calls parked on this node, by slot.
+    pub fn list(&self, tenant_id: &TenantId) -> Vec<ParkedCall> {
+        let mut calls: Vec<ParkedCall> = self
+            .parked
+            .iter()
+            .filter(|e| e.key().0 == *tenant_id)
+            .map(|e| e.value().clone())
+            .collect();
+        calls.sort_by(|a, b| (a.slot.len(), &a.slot).cmp(&(b.slot.len(), &b.slot)));
+        calls
+    }
+
+    /// The call in the tenant's slot, left where it is.
+    pub fn peek(&self, tenant_id: &TenantId, slot: &str) -> Option<ParkedCall> {
+        self.parked
+            .get(&(*tenant_id, slot.to_string()))
+            .map(|e| e.value().clone())
+    }
+
     /// Collect and remove all expired parked calls.
     ///
     /// Returns a list of expired calls so the handler can route them

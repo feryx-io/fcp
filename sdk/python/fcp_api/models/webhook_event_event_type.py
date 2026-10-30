@@ -15,6 +15,7 @@ class WebhookEventEventType(StrEnum):
     CALL_HELD = "call.held"
     CALL_INITIATED = "call.initiated"
     CALL_PARKED = "call.parked"
+    CALL_PARK_TIMED_OUT = "call.park_timed_out"
     CALL_PARTY_JOINED = "call.party_joined"
     CALL_PARTY_LEFT = "call.party_left"
     CALL_PROGRESS = "call.progress"
