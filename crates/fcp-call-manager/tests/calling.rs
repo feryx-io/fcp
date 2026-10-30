@@ -3520,6 +3520,122 @@ async fn make_executive(
         .expect("store settings");
 }
 
+/// Lines on a device (`docs/DEVICE_LINES.md` phase 1b): Bob's desk phone
+/// carries his own line, another extension of his and Mary's as her
+/// assistant, each registered with the desk's credentials; a call rings it
+/// saying which line it is for, and Mary's line is told her messages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_desk_phone_registers_its_lines_and_is_told_which_a_call_is_for() {
+    use fcp_core::storage::{CredentialStore, DeviceStore, ExtensionStore};
+    const DESK: &str = "bobdesk";
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let mary = stack.seed.user("mary", "mary-pw", "1009").await;
+    let storage = stack.seed.storage();
+    let bob_row = storage
+        .get_user_in_tenant(&bob.username, &stack.seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    storage
+        .put_extension(
+            fcp_core::Extension::new(
+                "1005".into(),
+                fcp_core::ExtensionTarget::User(bob_row.id),
+                stack.seed.tenant_id,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    make_executive(&stack, &mary, &[&bob], fcp_core::ExecutiveFilter::All).await;
+    stack.mailbox(&mary, "+15125550919").await;
+
+    let mut desk = fcp_core::Device::new(
+        "Bob's desk".into(),
+        fcp_core::DeviceType::DeskPhone,
+        stack.seed.tenant_id,
+    );
+    desk.owner_user_id = Some(bob_row.id);
+    desk.sip_uri = Some(format!("sip:{DESK}@{REALM}"));
+    desk.sip_username = Some(DESK.into());
+    desk.sip_ha1_hash = Some(fcp_core::storage::password::compute_ha1(
+        DESK,
+        REALM,
+        DESK_PASSWORD,
+    ));
+    let line = |kind, value: &str| fcp_core::DeviceLine {
+        kind,
+        value: value.into(),
+        label: None,
+        ring: true,
+    };
+    desk.lines = vec![
+        line(fcp_core::LineKind::Own, ""),
+        line(fcp_core::LineKind::Extension, "1005"),
+        line(fcp_core::LineKind::OnBehalf, "mary"),
+    ];
+    storage.put_device(desk).await.unwrap();
+
+    // Each line registers with the desk's credentials; a line it is not,
+    // Alice's, is refused.
+    let mut phones = Vec::new();
+    for aor in [DESK, "1005", "mary"] {
+        let phone = Phone::with_credentials(aor, DESK, DESK_PASSWORD, REALM, stack.sip)
+            .await
+            .unwrap();
+        assert_eq!(
+            phone.register().await.unwrap(),
+            200,
+            "the desk registers {aor}"
+        );
+        phones.push(phone);
+    }
+    let not_its = Phone::with_credentials("alice", DESK, DESK_PASSWORD, REALM, stack.sip)
+        .await
+        .unwrap();
+    assert_ne!(
+        not_its.register().await.unwrap(),
+        200,
+        "not the desk's line"
+    );
+    let desk_phone = &phones[0];
+    let alice_phone = stack.phone(&alice).await;
+
+    // Rung for the line the call is for.
+    for (dialed, line) in [
+        ("1005", "extension:1005"),
+        ("1002", "own"),
+        ("1009", "on_behalf:mary"),
+    ] {
+        let call = alice_phone.call(dialed).await.unwrap();
+        let Some(incoming) = desk_phone.incoming(SOON).await else {
+            stack
+                .fail(&format!("the desk did not ring for {dialed}"), &alice_phone)
+                .await;
+        };
+        assert_eq!(
+            incoming.header("X-FCP-Line").as_deref(),
+            Some(line),
+            "a call to {dialed}"
+        );
+        // Declined, so the next call rings it afresh.
+        incoming.reject(486, "Busy Here").await.unwrap();
+        let _ = call.ended(SOON).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    // Mary's line is told Mary's messages.
+    let sub = phones[2]
+        .subscribe("mary", "message-summary", 600, None)
+        .await
+        .unwrap();
+    assert_eq!(sub.code, 200, "Mary's line subscribes to her mailbox");
+    let _ = bob;
+    stack.finish().await;
+}
+
 /// Dial a feature code and hang up once it is taken.
 /// A feature code is answered, told, and hung up on by the node: a bare
 /// 200 left the phone on a call nobody ended (`docs/DEEP_TESTING.md` D8).

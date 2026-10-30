@@ -109,7 +109,11 @@ impl MwiSubscriptions {
             // A device of its own (an app install, a hot desk): its owner.
             None => match self.storage.get_device_by_sip_name(&tenant, &from).await {
                 Ok(Some(device)) => device.owner_user_id,
-                _ => None,
+                // A shared line (`docs/DEVICE_LINES.md` §3): its owner's
+                // mailbox, on that line of every device that has it.
+                _ => crate::hoteling::line_of_number(&self.storage, &tenant, &from)
+                    .await
+                    .and_then(|line| line.owner_user_id),
             },
         }?;
         self.storage

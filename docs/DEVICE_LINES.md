@@ -127,8 +127,23 @@ lines when it has any (a hoteling host lent to a guest keeps the guest's), and
 address, as `account` is, while a desk phone's first account stays the device's own
 name. Tested: `a_devices_lines_are_checked_shown_and_named` (checks, the app's lines,
 renaming on and off, a VVX written with three accounts), the line rules' unit tests.
-Not yet: `X-FCP-Line` on the INVITEs a device is rung with, and MWI per line (phase
-1b). A user's names are not synced to sites.
+A user's names are not synced to sites.
+
+**Phase 1b (v0.25.488).** Every INVITE the node sends a user's phone (never one toward
+a trunk) names the line the call is for in `X-FCP-Line`, as a line's key rather than
+an index, so it means the same on every device: `on_behalf:<executive>` for an
+executive's screened call ringing the assistants, `shared:<number>` for a call on a
+shared line, `extension:<number>` for a call to another of the user's extensions,
+`own` otherwise (`fcp_sip::device_lines::line_of_call`). A phone finds its line by
+that key among `/me/softphone`'s `lines`; the resolver's keys are canonical
+(`shared:+e164`, `on_behalf:<username>`) whatever the administrator typed. Message
+waiting per line: a line's `message-summary` subscription is the mailbox of the user
+the line is — an executive's on their assistant's device, a shared line's owner's.
+Tested: calling.rs `a_desk_phone_registers_its_lines_and_is_told_which_a_call_is_for`
+(three lines registered with the desk's credentials and another's refused, the line
+named for a call to each, the executive's line subscribing to her mailbox).
+
+Phase 1 is done; phase 2 is Anvil's.
 
 ## 7. Questions
 

@@ -128,7 +128,7 @@ pub async fn may_act_as(
 
 /// The tenant's line for a number written as a user part: `+15551234567`
 /// or its digits.
-async fn line_of_number(
+pub(crate) async fn line_of_number(
     storage: &DynStorage,
     tenant_id: &TenantId,
     name: &str,

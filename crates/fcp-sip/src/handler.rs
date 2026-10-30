@@ -8061,6 +8061,16 @@ impl SipMessageHandler {
         {
             let _ = extra_headers.push(SmolStr::new("Alert-Info"), SmolStr::new(alert));
         }
+        // Which of the phone's lines the call is for (`docs/DEVICE_LINES.md`
+        // §3); boxed, for this future's depth.
+        if let Some(line) =
+            Box::pin(self.line_header_for(&call_id_clone, &target_contact.uri)).await
+        {
+            let _ = extra_headers.push(
+                SmolStr::new(crate::device_lines::LINE_HEADER),
+                SmolStr::new(line),
+            );
+        }
         if let Some((_, token)) = &target_contact.relay {
             let _ = extra_headers.push(
                 SmolStr::new(crate::push::FLOW_RELAY_HEADER),
@@ -14081,6 +14091,41 @@ impl SipMessageHandler {
             );
         }
         None
+    }
+
+    /// The line key a phone is rung with for the call (`X-FCP-Line`): only
+    /// for a call to a user or a shared line, and never toward a trunk.
+    async fn line_header_for(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        target_uri: &str,
+    ) -> Option<String> {
+        let storage = self.storage.as_ref()?;
+        let call = self.call_manager.get_call(call_id)?;
+        if answering_trunk(&call.route_trunks, target_uri).is_some() {
+            return None;
+        }
+        let shared_number = match call.number_binding_id {
+            Some(id) => match storage.get_line_binding(&id).await {
+                Ok(Some(binding)) if binding.shared => storage
+                    .get_phone_number(&binding.phone_number_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|n| n.e164),
+                _ => None,
+            },
+            None => None,
+        };
+        crate::device_lines::line_of_call(
+            storage,
+            &call.tenant_id,
+            call.callee_user_id.as_ref(),
+            call.original_callee.as_deref(),
+            shared_number.as_deref(),
+            call.leg_alert_info.is_some(),
+        )
+        .await
     }
 
     /// The tenant's parking lots, read at most every few seconds.

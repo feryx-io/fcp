@@ -16,8 +16,10 @@ pub struct ResolvedLine {
     /// 1 for the first.
     pub index: u32,
     pub kind: LineKind,
-    /// The line itself (`DeviceLine::key`): what a user's name for it is
-    /// kept under.
+    /// The line itself, canonical whatever the administrator typed:
+    /// `own`, `extension:1005`, `shared:+15551234567`,
+    /// `on_behalf:<username>` — what a user's name for it is kept under,
+    /// and what `X-FCP-Line` names on a call for it.
     pub key: String,
     /// The user part the device registers the line as.
     pub aor_user: String,
@@ -90,7 +92,7 @@ async fn resolve_one(
     device: &Device,
     owner: Option<&User>,
     line: &DeviceLine,
-) -> Result<(String, String, bool, u32), String> {
+) -> Result<(String, String, String, bool, u32), String> {
     let tenant = &device.tenant_id;
     let value = line.value.trim();
     match line.kind {
@@ -108,7 +110,7 @@ async fn resolve_one(
                 ),
                 None => device.name.clone(),
             };
-            Ok((aor, label, false, 0))
+            Ok(("own".to_string(), aor, label, false, 0))
         }
         LineKind::Extension => {
             let owner = owner.ok_or("a device with no owner holds no extension")?;
@@ -121,6 +123,7 @@ async fn resolve_one(
                 return Err(format!("{value} is not {}'s extension", owner.username));
             }
             Ok((
+                format!("extension:{value}"),
                 value.to_string(),
                 fcp_core::device::default_line_label(value, Some(&display(owner))),
                 false,
@@ -155,6 +158,7 @@ async fn resolve_one(
                 None => None,
             };
             Ok((
+                format!("shared:{e164}"),
                 e164.clone(),
                 fcp_core::device::default_line_label(&e164, name.as_deref()),
                 true,
@@ -173,6 +177,7 @@ async fn resolve_one(
                 ));
             }
             Ok((
+                format!("on_behalf:{}", executive.username),
                 executive.sip_name().to_string(),
                 fcp_core::device::default_line_label(
                     executive
@@ -197,14 +202,14 @@ pub async fn resolve(
 ) -> Result<Vec<ResolvedLine>, String> {
     let mut out = Vec::with_capacity(lines.len());
     for (i, line) in lines.iter().enumerate() {
-        let (aor_user, default_label, shared, appearances) =
+        let (key, aor_user, default_label, shared, appearances) =
             resolve_one(storage, device, owner, line)
                 .await
                 .map_err(|why| format!("line {}: {why}", i + 1))?;
         out.push(ResolvedLine {
             index: i as u32 + 1,
             kind: line.kind,
-            key: line.key(),
+            key,
             label: line
                 .label
                 .clone()
@@ -278,4 +283,56 @@ pub async fn acts_for(
         }
     }
     false
+}
+
+/// The header naming which of a device's lines a call rings it for
+/// (`docs/DEVICE_LINES.md` §3): a line's key, as `/me/softphone` gives it.
+pub const LINE_HEADER: &str = "X-FCP-Line";
+
+/// Which line a call to a user is for, as a line's key: an executive's
+/// screened call ringing the assistants is `on_behalf:<executive>`, a
+/// shared line's call `shared:<number>`, a call to another of the user's
+/// extensions `extension:<number>`, anything else `own`.
+pub async fn line_of_call(
+    storage: &DynStorage,
+    tenant: &TenantId,
+    callee: Option<&UserId>,
+    dialed: Option<&str>,
+    shared_number: Option<&str>,
+    screened_for_executive: bool,
+) -> Option<String> {
+    if let Some(number) = shared_number {
+        return Some(format!("shared:{number}"));
+    }
+    let user = match callee {
+        Some(id) => storage.get_user_by_id(id).await.ok().flatten()?,
+        None => return None,
+    };
+    if screened_for_executive {
+        return Some(format!("on_behalf:{}", user.username));
+    }
+    let dialed = dialed
+        .map(|d| {
+            let d = d.trim().trim_start_matches('<');
+            let d = d
+                .strip_prefix("sips:")
+                .or_else(|| d.strip_prefix("sip:"))
+                .unwrap_or(d);
+            d.split(['@', ';', '>']).next().unwrap_or(d).to_string()
+        })
+        .filter(|d| !d.is_empty());
+    match dialed {
+        Some(d)
+            if user.extension.as_deref() != Some(d.as_str())
+                && !d.eq_ignore_ascii_case(&user.username)
+                && !d.eq_ignore_ascii_case(user.sip_name())
+                && matches!(
+                    storage.get_extension_by_number(tenant, &d).await,
+                    Ok(Some(ext)) if ext.target == ExtensionTarget::User(user.id)
+                ) =>
+        {
+            Some(format!("extension:{d}"))
+        }
+        _ => Some("own".to_string()),
+    }
 }
