@@ -20,6 +20,7 @@ def _get_kwargs(
     actor: str | Unset = UNSET,
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
+    until: int | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -35,6 +36,8 @@ def _get_kwargs(
     params["action"] = action
 
     params["since"] = since
+
+    params["until"] = until
 
     params["limit"] = limit
 
@@ -86,6 +89,7 @@ def sync_detailed(
     actor: str | Unset = UNSET,
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
+    until: int | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -97,6 +101,7 @@ def sync_detailed(
         actor (str | Unset):
         action (str | Unset):
         since (int | Unset):
+        until (int | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -113,6 +118,7 @@ def sync_detailed(
         actor=actor,
 action=action,
 since=since,
+until=until,
 limit=limit,
 cursor=cursor,
 
@@ -130,6 +136,7 @@ def sync(
     actor: str | Unset = UNSET,
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
+    until: int | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -141,6 +148,7 @@ def sync(
         actor (str | Unset):
         action (str | Unset):
         since (int | Unset):
+        until (int | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -158,6 +166,7 @@ def sync(
 actor=actor,
 action=action,
 since=since,
+until=until,
 limit=limit,
 cursor=cursor,
 
@@ -169,6 +178,7 @@ async def asyncio_detailed(
     actor: str | Unset = UNSET,
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
+    until: int | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -180,6 +190,7 @@ async def asyncio_detailed(
         actor (str | Unset):
         action (str | Unset):
         since (int | Unset):
+        until (int | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -196,6 +207,7 @@ async def asyncio_detailed(
         actor=actor,
 action=action,
 since=since,
+until=until,
 limit=limit,
 cursor=cursor,
 
@@ -213,6 +225,7 @@ async def asyncio(
     actor: str | Unset = UNSET,
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
+    until: int | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -224,6 +237,7 @@ async def asyncio(
         actor (str | Unset):
         action (str | Unset):
         since (int | Unset):
+        until (int | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -241,6 +255,7 @@ async def asyncio(
 actor=actor,
 action=action,
 since=since,
+until=until,
 limit=limit,
 cursor=cursor,
 

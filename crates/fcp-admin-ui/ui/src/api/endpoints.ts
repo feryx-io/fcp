@@ -789,6 +789,9 @@ export const auditLog = {
   // The newest `limit` entries (the log grows without bound: one page).
   list: (params?: AuditQueryParams) =>
     apiClient.getPage<AuditEntry>(`/audit-log${query(params)}`).then((p) => p.data),
+  /** Every entry the filters match, as a CSV or JSON Lines file: an object URL. */
+  exportUrl: (format: 'csv' | 'jsonl', params?: Omit<AuditQueryParams, 'limit'>) =>
+    apiClient.fetchBlobUrl(`/audit-log/export${query({ ...params, format })}`),
   deletions: (params?: DeletionQueryParams) =>
     apiClient
       .getPage<DeletionEntry>(`/compliance/deletions${query(params)}`)

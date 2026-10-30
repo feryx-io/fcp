@@ -8411,6 +8411,17 @@
             }
           },
           {
+            "name": "until",
+            "in": "query",
+            "description": "Unix seconds: only events before it.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -8435,6 +8446,87 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Page_AuditEventResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/audit-log/export": {
+      "get": {
+        "tags": [
+          "compliance"
+        ],
+        "summary": "`GET /audit-log/export`: every event the listing's filters match,\nnewest first, streamed page by page as CSV or JSON Lines (D8, finding\n36). Who may see what is the listing's.",
+        "operationId": "compliance_export_audit_log",
+        "parameters": [
+          {
+            "name": "actor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Route-template prefix, e.g. `POST /api/v1/users`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Unix seconds.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Unix seconds: only events before it.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`csv` (the default) or `jsonl`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The events, streamed as CSV or JSON Lines",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }

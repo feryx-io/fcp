@@ -2964,6 +2964,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/audit-log/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /audit-log/export`: every event the listing's filters match,
+         *     newest first, streamed page by page as CSV or JSON Lines (D8, finding
+         *     36). Who may see what is the listing's.
+         */
+        get: operations["compliance_export_audit_log"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/compliance/deletions": {
         parameters: {
             query?: never;
@@ -19989,6 +20010,8 @@ export interface operations {
                 action?: string;
                 /** @description Unix seconds. */
                 since?: number;
+                /** @description Unix seconds: only events before it. */
+                until?: number;
                 limit?: number;
                 cursor?: string;
             };
@@ -20005,6 +20028,45 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_AuditEventResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    compliance_export_audit_log: {
+        parameters: {
+            query?: {
+                actor?: string;
+                /** @description Route-template prefix, e.g. `POST /api/v1/users`. */
+                action?: string;
+                /** @description Unix seconds. */
+                since?: number;
+                /** @description Unix seconds: only events before it. */
+                until?: number;
+                /** @description `csv` (the default) or `jsonl`. */
+                format?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The events, streamed as CSV or JSON Lines */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
                 };
             };
             /** @description An error */

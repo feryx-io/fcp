@@ -2600,6 +2600,52 @@ async fn every_list_pages_by_cursor() {
     unique.dedup();
     assert_eq!(unique.len(), ids.len(), "each row once: {ids:?}");
 
+    // The log exported (D8, finding 36): every event the listing walked,
+    // newest first, as CSV with a header or as JSON Lines.
+    let csv = app
+        .admin(Method::GET, "/api/v1/audit-log/export", None)
+        .await;
+    assert_eq!(csv.status, StatusCode::OK, "{}", csv.text);
+    let mut lines = csv.text.lines();
+    assert_eq!(
+        lines.next(),
+        Some(
+            "id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail"
+        )
+    );
+    let exported: Vec<i64> = lines
+        .map(|l| l.split(',').next().unwrap().parse().unwrap())
+        .collect();
+    assert!(
+        ids.iter().all(|id| exported.contains(id)),
+        "every listed event exported: {ids:?} vs {exported:?}"
+    );
+    let jsonl = app
+        .admin(Method::GET, "/api/v1/audit-log/export?format=jsonl", None)
+        .await;
+    assert_eq!(jsonl.status, StatusCode::OK, "{}", jsonl.text);
+    let first: serde_json::Value =
+        serde_json::from_str(jsonl.text.lines().next().expect("a line")).unwrap();
+    assert_eq!(
+        first["id"].as_i64(),
+        exported.first().copied(),
+        "newest first"
+    );
+    // The listing's filters: nothing before the epoch's first second.
+    let none = app
+        .admin(Method::GET, "/api/v1/audit-log/export?until=1", None)
+        .await;
+    assert_eq!(
+        none.text.lines().count(),
+        1,
+        "the header alone: {}",
+        none.text
+    );
+    let bad = app
+        .admin(Method::GET, "/api/v1/audit-log/export?format=xml", None)
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+
     // A limit or a cursor the API cannot use is a 400.
     for bad in [
         "/api/v1/users?limit=0",

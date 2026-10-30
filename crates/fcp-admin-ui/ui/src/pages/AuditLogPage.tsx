@@ -34,6 +34,12 @@ const causeBadge = (cause: string) => {
 const sinceOf = (date: string): number | undefined =>
   date ? Math.floor(new Date(`${date}T00:00:00`).getTime() / 1000) : undefined
 
+/** Unix seconds for the end of a `YYYY-MM-DD` date input: the next day's start. */
+const untilOf = (date: string): number | undefined => {
+  const start = sinceOf(date)
+  return start === undefined ? undefined : start + 24 * 60 * 60
+}
+
 const when = (at: string) => new Date(at).toLocaleString()
 
 const LIMITS = [100, 500, 1000]
@@ -48,6 +54,8 @@ export function AuditLogPage() {
   const [requestFilters, setRequestFilters] = useState<AuditQueryParams>({ limit: 100 })
   const [deletionFilters, setDeletionFilters] = useState<DeletionQueryParams>({ limit: 100 })
   const [requestDate, setRequestDate] = useState('')
+  const [requestUntil, setRequestUntil] = useState('')
+  const [exportError, setExportError] = useState<string | null>(null)
   const [deletionDate, setDeletionDate] = useState('')
   const [selected, setSelected] = useState<AuditEntry | DeletionEntry | null>(null)
 
@@ -154,6 +162,22 @@ export function AuditLogPage() {
     },
   ]
 
+  // The whole log the filters match, not the page shown (D8, finding 36).
+  const exportAs = async (format: 'csv' | 'jsonl') => {
+    setExportError(null)
+    try {
+      const { limit: _limit, ...filters } = requestFilters
+      const url = await auditLog.exportUrl(format, filters)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `audit-log.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const limitSelect = (value: number | undefined, set: (limit: number) => void) => (
     <div className="space-y-1">
       <Label className="text-xs">Show</Label>
@@ -196,7 +220,7 @@ export function AuditLogPage() {
 
       {view === 'requests' ? (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 rounded-lg border bg-card">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 p-4 rounded-lg border bg-card">
             <div className="space-y-1">
               <Label className="text-xs">Actor</Label>
               <Input
@@ -224,7 +248,24 @@ export function AuditLogPage() {
                 }}
               />
             </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Until</Label>
+              <Input
+                type="date"
+                value={requestUntil}
+                onChange={(e) => {
+                  setRequestUntil(e.target.value)
+                  setRequestFilters((f) => ({ ...f, until: untilOf(e.target.value) }))
+                }}
+              />
+            </div>
             {limitSelect(requestFilters.limit, (limit) => setRequestFilters((f) => ({ ...f, limit })))}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Export everything these filters match:</span>
+            <Button variant="outline" size="sm" onClick={() => exportAs('csv')}>CSV</Button>
+            <Button variant="outline" size="sm" onClick={() => exportAs('jsonl')}>JSON Lines</Button>
+            {exportError && <span className="text-sm text-destructive">{exportError}</span>}
           </div>
           {requests.isLoading ? (
             <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>

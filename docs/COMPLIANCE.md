@@ -436,10 +436,20 @@ a `GET`/`HEAD`/`OPTIONS`, plus every CDR export, as an audit event:
 Writes are asynchronous and best-effort; the response is never delayed or
 failed by the audit log.
 
-`GET /api/v1/audit-log?actor=&action=&since=&limit=` lists events. Tenant
+`GET /api/v1/audit-log?actor=&action=&since=&until=&limit=` lists events,
+newest first (`since` and `until` in Unix seconds, `until` exclusive). Tenant
 admins see their tenant; the platform token sees everything unless it
 selected a tenant with the override header. The older `GET /config/audit`
 (configuration-store change history) is unchanged.
+
+`GET /api/v1/audit-log/export` takes the same filters and returns every
+event they match, newest first, streamed as it is read: `text/csv` with a
+header line (`id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail`,
+`occurred_at` in RFC 3339, `detail` as JSON), or JSON Lines with
+`format=jsonl`, one listing entry per line. It needs `audit_view`, as the
+listing does, and is itself audited. The Audit Log page's **CSV** and
+**JSON Lines** buttons export what its filters match, not just the page
+shown.
 
 ## CDR export
 
@@ -485,7 +495,7 @@ recorded. The admin UI's **Recordings** page lists them with a player.
    archive, then set `cdr_archive_required` so retention waits for it.
 4. Run `POST /compliance/retention/run` (or **Run now** on the Compliance
    page) once and read the report.
-5. Give your compliance officer `GET /audit-log` and `GET /cdrs/export`, and
+5. Give your compliance officer `GET /audit-log`, `GET /audit-log/export` and `GET /cdrs/export`, and
    `subject_request_manage` for the requests people make; set
    `subject_request_days` to your regime's deadline, and `cdr_erasure` to
    `delete` if your records need not outlive an erasure.

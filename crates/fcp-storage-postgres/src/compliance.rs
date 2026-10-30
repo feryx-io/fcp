@@ -220,6 +220,9 @@ impl ComplianceStore for PostgresComplianceStore {
         if query.since.is_some() {
             sql.push_str(&format!(" AND occurred_at >= ${}", next()));
         }
+        if query.until.is_some() {
+            sql.push_str(&format!(" AND occurred_at < ${}", next()));
+        }
         if query.before.is_some() {
             let (at, id) = (next(), next());
             sql.push_str(&format!(" AND (occurred_at, id) < (${at}, ${id})"));
@@ -239,6 +242,9 @@ impl ComplianceStore for PostgresComplianceStore {
         }
         if let Some(since) = query.since {
             q = q.bind(to_datetime(since));
+        }
+        if let Some(until) = query.until {
+            q = q.bind(to_datetime(until));
         }
         if let Some((at, id)) = query.before {
             q = q.bind(to_datetime(at)).bind(id);

@@ -491,6 +491,8 @@ export interface AuditQueryParams {
   action?: string
   /** Unix seconds. */
   since?: number
+  /** Unix seconds: only events before it. */
+  until?: number
   limit?: number
 }
 

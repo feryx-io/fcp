@@ -535,6 +535,7 @@ pub fn router() -> Router<ApiState> {
             get(compliance::list_retention_runs),
         )
         .route("/audit-log", get(compliance::list_audit_log))
+        .route("/audit-log/export", get(compliance::export_audit_log))
         .route("/compliance/deletions", get(compliance::list_deletions))
         .route(
             "/compliance/holds",

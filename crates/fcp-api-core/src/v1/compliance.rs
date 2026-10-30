@@ -5,7 +5,7 @@ use crate::auth::{can_access_all_tenants, AuthIdentity, TenantContext, PLATFORM_
 use crate::{error::ApiError, state::ApiState};
 use axum::{
     extract::{Extension, Query, State},
-    http::HeaderMap,
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -458,6 +458,25 @@ pub struct AuditLogQuery {
     pub action: Option<String>,
     /// Unix seconds.
     pub since: Option<u64>,
+    /// Unix seconds: only events before it.
+    pub until: Option<u64>,
+}
+
+impl AuditLogQuery {
+    /// The store's query for these filters, in `tenant_id` (every tenant
+    /// when `None`).
+    fn to_query(&self, tenant_id: Option<TenantId>, limit: usize) -> AuditQuery {
+        let at = |s: u64| UNIX_EPOCH + std::time::Duration::from_secs(s);
+        AuditQuery {
+            tenant_id,
+            actor: self.actor.clone(),
+            action_prefix: self.action.clone(),
+            since: self.since.map(at),
+            until: self.until.map(at),
+            limit,
+            before: None,
+        }
+    }
 }
 
 /// The keyset cursor of a time-ordered log: `(nanoseconds, id)`.
@@ -540,18 +559,11 @@ pub async fn list_audit_log(
     let platform_wide = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
         && !headers.contains_key(PLATFORM_TENANT_HEADER);
     let tenant_id: Option<TenantId> = if platform_wide { None } else { Some(tenant.0) };
+    // One more than the page, to know whether there is another.
+    let mut query = q.to_query(tenant_id, page.limit()? + 1);
+    query.before = page.after()?.as_deref().map(parse_log_key).transpose()?;
     let events = store
-        .list_audit_events(&AuditQuery {
-            tenant_id,
-            actor: q.actor,
-            action_prefix: q.action,
-            since: q
-                .since
-                .map(|s| UNIX_EPOCH + std::time::Duration::from_secs(s)),
-            // One more than the page, to know whether there is another.
-            limit: page.limit()? + 1,
-            before: page.after()?.as_deref().map(parse_log_key).transpose()?,
-        })
+        .list_audit_events(&query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let limit = page.limit()?;
@@ -561,6 +573,170 @@ pub async fn list_audit_log(
     });
     let out: Vec<AuditEventResponse> = events.into_iter().take(limit).map(Into::into).collect();
     Ok(Json(crate::page::Page::new(out, next_key, None)))
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct AuditExportQuery {
+    /// `csv` (the default) or `jsonl`.
+    pub format: Option<String>,
+}
+
+/// One audit event as a CSV line; the header is [`AUDIT_CSV_HEADER`].
+fn audit_csv_row(e: &AuditEventResponse) -> String {
+    let field = |v: &str| {
+        if v.contains([',', '"', '\n', '\r']) {
+            format!("\"{}\"", v.replace('"', "\"\""))
+        } else {
+            v.to_string()
+        }
+    };
+    let opt = |v: &Option<String>| field(v.as_deref().unwrap_or(""));
+    let occurred = crate::time::format(std::time::Duration::from_secs(e.occurred_at));
+    let detail = e.detail.as_ref().map(|d| d.to_string()).unwrap_or_default();
+    let mut line = [
+        e.id.to_string(),
+        field(&occurred),
+        opt(&e.tenant_id),
+        field(&e.actor),
+        field(&e.actor_kind),
+        field(&e.method),
+        field(&e.path),
+        e.status.to_string(),
+        field(&e.action),
+        opt(&e.source_ip),
+        field(&detail),
+    ]
+    .join(",");
+    line.push('\n');
+    line
+}
+
+const AUDIT_CSV_HEADER: &str =
+    "id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail\n";
+
+/// The rows an export reads from the store at a time.
+const AUDIT_EXPORT_PAGE: usize = 1000;
+
+/// `GET /audit-log/export`: every event the listing's filters match,
+/// newest first, streamed page by page as CSV or JSON Lines (D8, finding
+/// 36). Who may see what is the listing's.
+#[utoipa::path(
+    get,
+    path = "/api/v1/audit-log/export",
+    tag = "compliance",
+    operation_id = "compliance_export_audit_log",
+    params(AuditLogQuery, AuditExportQuery),
+    responses(
+        (status = 200, description = "The events, streamed as CSV or JSON Lines", content_type = "text/csv", body = String),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn export_audit_log(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
+    Query(q): Query<AuditLogQuery>,
+    Query(export): Query<AuditExportQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::AuditView)?;
+    let store = Arc::clone(require_store(&state)?);
+    let jsonl = match export.format.as_deref().unwrap_or("csv") {
+        "csv" => false,
+        "jsonl" => true,
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "Invalid format: {other}. Valid values: csv, jsonl"
+            )))
+        }
+    };
+    let platform_wide = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+        && !headers.contains_key(PLATFORM_TENANT_HEADER);
+    let tenant_id: Option<TenantId> = if platform_wide { None } else { Some(tenant.0) };
+    let query = q.to_query(tenant_id, AUDIT_EXPORT_PAGE);
+
+    // The first page before the response starts: a failing query is an
+    // error status, not an empty file.
+    let first = store
+        .list_audit_events(&query)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    struct Walk {
+        store: Arc<dyn ComplianceStore>,
+        query: AuditQuery,
+        page: Option<Vec<AuditEvent>>,
+        header_sent: bool,
+    }
+    let walk = Walk {
+        store,
+        query,
+        page: Some(first),
+        header_sent: jsonl,
+    };
+    let stream = futures_util::stream::unfold(walk, move |mut walk| async move {
+        if !walk.header_sent {
+            walk.header_sent = true;
+            return Some((
+                Ok::<_, std::io::Error>(axum::body::Bytes::from(AUDIT_CSV_HEADER)),
+                walk,
+            ));
+        }
+        let page = walk.page.take()?;
+        if page.is_empty() {
+            return None;
+        }
+        let full = page.len() == AUDIT_EXPORT_PAGE;
+        let last = page.last().map(|e| (e.occurred_at, e.id));
+        let mut chunk = String::new();
+        for event in page {
+            let event = AuditEventResponse::from(event);
+            if jsonl {
+                chunk.push_str(&serde_json::to_string(&event).unwrap_or_default());
+                chunk.push('\n');
+            } else {
+                chunk.push_str(&audit_csv_row(&event));
+            }
+        }
+        if full {
+            walk.query.before = last;
+            match walk.store.list_audit_events(&walk.query).await {
+                Ok(next) => walk.page = Some(next),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Audit log export failed part way");
+                    return Some((
+                        Err(std::io::Error::other("audit log export failed part way")),
+                        walk,
+                    ));
+                }
+            }
+        } else {
+            walk.page = Some(Vec::new());
+        }
+        Some((Ok(axum::body::Bytes::from(chunk)), walk))
+    });
+
+    let (content_type, filename) = if jsonl {
+        (
+            "application/x-ndjson",
+            "attachment; filename=\"audit-log.jsonl\"",
+        )
+    } else {
+        (
+            "text/csv; charset=utf-8",
+            "attachment; filename=\"audit-log.csv\"",
+        )
+    };
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CONTENT_DISPOSITION, filename),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        axum::body::Body::from_stream(stream),
+    ))
 }
 
 // ─── Deletion log ────────────────────────────────────────────────────────

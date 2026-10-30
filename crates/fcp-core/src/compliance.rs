@@ -569,6 +569,8 @@ pub struct AuditQuery {
     /// Match on the route template prefix (`POST /api/v1/users`).
     pub action_prefix: Option<String>,
     pub since: Option<SystemTime>,
+    /// Only events before this instant.
+    pub until: Option<SystemTime>,
     pub limit: usize,
     /// Only events older than this `(occurred_at, id)`: the keyset cursor
     /// of the API's pages (docs/DEVELOPER_SURFACE.md §3, phase 2c).

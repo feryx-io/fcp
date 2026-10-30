@@ -296,6 +296,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (POST, "/compliance/retention/run", Needs(ComplianceManage)),
     (GET, "/compliance/retention/runs", Needs(ComplianceManage)),
     (GET, "/audit-log", Needs(AuditView)),
+    (GET, "/audit-log/export", Needs(AuditView)),
     (GET, "/compliance/deletions", Needs(AuditView)),
     (GET, "/compliance/holds", Needs(LegalHoldManage)),
     (POST, "/compliance/holds", Needs(LegalHoldManage)),
