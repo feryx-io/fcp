@@ -162,6 +162,10 @@ softphone's branding. Only `super_admin` and `tenant_admin` hold it.
 `super_admin` and `tenant_admin` hold it: the provisioner makes users,
 administrators among them.
 
+`parking_read` and `parking_manage` (`/parking/lots`, `docs/PARKING.md`)
+came with parking lots. `super_admin`, `tenant_admin` and `telecom_admin`
+hold both; `department_admin` and `read_only` hold `parking_read`.
+
 A user's group roles count wherever their own role does: a session's
 permissions are what their own role and their groups' hold together,
 and a token they make may carry what any of those roles' tokens may.

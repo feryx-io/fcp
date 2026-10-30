@@ -659,7 +659,8 @@ impl CallManager {
                     Some(PlatformEvent::Call(CallEvent::Parked {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
                         tenant_id: Some(updated_call.tenant_id),
-                        orbit: updated_call.parked_orbit.unwrap_or_default(),
+                        slot: updated_call.parked_slot.clone().unwrap_or_default(),
+                        orbit: legacy_orbit(updated_call.parked_slot.as_deref()),
                         parker_extension: updated_call.parker_extension.clone().unwrap_or_default(),
                         timestamp: std::time::SystemTime::now(),
                     }))
@@ -668,7 +669,8 @@ impl CallManager {
                     Some(PlatformEvent::Call(CallEvent::Unparked {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
                         tenant_id: Some(updated_call.tenant_id),
-                        orbit: 0,
+                        slot: updated_call.parked_slot.clone().unwrap_or_default(),
+                        orbit: legacy_orbit(updated_call.parked_slot.as_deref()),
                         retriever_extension: updated_call
                             .b_leg
                             .as_ref()
@@ -1321,6 +1323,14 @@ pub struct CallStats {
 
     /// Number of failed calls
     pub failed: usize,
+}
+
+/// A slot as the events' old `orbit` number: 0 when it is not one, or when
+/// a leading zero would be lost.
+fn legacy_orbit(slot: Option<&str>) -> u16 {
+    slot.filter(|s| !s.starts_with('0'))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

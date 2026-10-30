@@ -338,6 +338,11 @@ pub enum CallEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tenant_id: Option<TenantId>,
         call_id: CallId,
+        /// The slot, as the tenant numbers it (`docs/PARKING.md`).
+        #[serde(default)]
+        slot: String,
+        /// The slot as a number, for consumers of the old field: 0 when it
+        /// is not one (a leading zero, more than 65535). Use `slot`.
         orbit: u16,
         parker_extension: String,
         #[serde(with = "system_time_serde")]
@@ -351,6 +356,10 @@ pub enum CallEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tenant_id: Option<TenantId>,
         call_id: CallId,
+        /// The slot it was retrieved from.
+        #[serde(default)]
+        slot: String,
+        /// The slot as a number (see `Parked`). Use `slot`.
         orbit: u16,
         retriever_extension: String,
         #[serde(with = "system_time_serde")]

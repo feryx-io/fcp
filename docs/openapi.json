@@ -17491,6 +17491,217 @@
         }
       }
     },
+    "/api/v1/parking/lots": {
+      "get": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "GET /api/v1/parking/lots — none listed means the node's own range\n(`[pbx.parking]`) is the tenant's.",
+        "operationId": "parking_list_lots",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ParkingLotResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "POST /api/v1/parking/lots — 409 when one of its numbers is taken.",
+        "operationId": "parking_create_lot",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParkingLotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParkingLotResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/parking/lots/{id}": {
+      "get": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "GET /api/v1/parking/lots/:id",
+        "operationId": "parking_get_lot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParkingLotResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "PUT /api/v1/parking/lots/:id — the whole lot, replaced.",
+        "operationId": "parking_update_lot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParkingLotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParkingLotResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "DELETE /api/v1/parking/lots/:id — calls parked in it stay until taken\nor timed out.",
+        "operationId": "parking_delete_lot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/routing/rules": {
       "get": {
         "tags": [
@@ -31753,6 +31964,113 @@
           }
         }
       },
+      "Page_ParkingLotResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "tenant_id",
+                "name",
+                "first",
+                "last",
+                "slots",
+                "timeout_secs",
+                "enabled",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "tenant_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "first": {
+                  "type": "string",
+                  "description": "The first and last slot: digit strings of one width."
+                },
+                "last": {
+                  "type": "string"
+                },
+                "slots": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "park_number": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "timeout_secs": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "fallback": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Where a call goes when its parker does not take it back\n(`ext:1001`, `queue:support`, `voicemail`, …)."
+                },
+                "music": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "location_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_PendingDeviceResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -35335,6 +35653,142 @@
             "format": "int64",
             "description": "How many items the whole list holds, where that is known.",
             "minimum": 0
+          }
+        }
+      },
+      "ParkingLotRequest": {
+        "type": "object",
+        "description": "What a lot is written as; a `PUT` replaces it whole.",
+        "required": [
+          "name",
+          "first",
+          "last"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "first": {
+            "type": "string"
+          },
+          "last": {
+            "type": "string"
+          },
+          "park_number": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeout_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Seconds; 60 when unset.",
+            "minimum": 0
+          },
+          "fallback": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "music": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParkingLotResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "name",
+          "first",
+          "last",
+          "slots",
+          "timeout_secs",
+          "enabled",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "first": {
+            "type": "string",
+            "description": "The first and last slot: digit strings of one width."
+          },
+          "last": {
+            "type": "string"
+          },
+          "slots": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "park_number": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeout_secs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "fallback": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where a call goes when its parker does not take it back\n(`ext:1001`, `queue:support`, `voicemail`, …)."
+          },
+          "music": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },

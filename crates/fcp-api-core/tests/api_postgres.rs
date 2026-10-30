@@ -258,6 +258,9 @@ impl App {
                     .with_contact_store(
                         Arc::clone(&storage) as Arc<dyn fcp_core::contact::ContactStore>
                     )
+                    .with_parking_lot_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::parking::ParkingLotStore>
+                    )
                     .with_presence_status_store(Arc::clone(&storage)
                         as Arc<dyn fcp_core::presence_status::PresenceStatusStore>)
                     .with_provisioning_store(
@@ -8670,6 +8673,119 @@ async fn sites_are_made_with_a_token_shown_once_and_managed_in_their_tenant() {
         .await;
     assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.text);
 
+    app.finish().await;
+}
+
+// ─── Parking lots (docs/PARKING.md) ──────────────────────────────────────
+
+#[tokio::test]
+async fn parking_lots_are_the_tenants_and_clash_with_its_dial_plan() {
+    let app = require_app!();
+    let lot =
+        |name: &str, first: &str, last: &str| json!({ "name": name, "first": first, "last": last });
+    // A range of the tenant's own numbering, leading zero kept.
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/parking/lots",
+            Some(lot("Lobby", "050", "059")),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    assert_eq!(created.json["first"], "050");
+    assert_eq!(created.json["slots"], 10);
+    assert_eq!(created.json["timeout_secs"], 60);
+    let id = created.json["id"].as_str().unwrap().to_string();
+
+    // Ranges no phone could dial.
+    for bad in [
+        lot("Mixed", "701", "7020"),
+        lot("Backwards", "720", "701"),
+        lot("Letters", "70a", "720"),
+        lot("Huge", "1000", "2000"),
+    ] {
+        let res = app
+            .admin(Method::POST, "/api/v1/parking/lots", Some(bad.clone()))
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{bad}: {}", res.text);
+    }
+
+    // Overlapping another lot, or a number something else dials.
+    let overlap = app
+        .admin(
+            Method::POST,
+            "/api/v1/parking/lots",
+            Some(lot("Over", "055", "065")),
+        )
+        .await;
+    assert_eq!(overlap.status, StatusCode::CONFLICT, "{}", overlap.text);
+    assert!(
+        overlap.text.contains("Lobby"),
+        "names the clash: {}",
+        overlap.text
+    );
+    let bob = app.create_user_with_role("bob", "end_user").await;
+    let ext = app
+        .admin(
+            Method::POST,
+            "/api/v1/extensions",
+            Some(json!({ "number": "705", "target": { "type": "user", "id": bob } })),
+        )
+        .await;
+    assert_eq!(ext.status, StatusCode::CREATED, "{}", ext.text);
+    let on_ext = app
+        .admin(
+            Method::POST,
+            "/api/v1/parking/lots",
+            Some(lot("Main", "701", "720")),
+        )
+        .await;
+    assert_eq!(on_ext.status, StatusCode::CONFLICT, "{}", on_ext.text);
+    assert!(on_ext.text.contains("705"), "{}", on_ext.text);
+    let main = app
+        .admin(
+            Method::POST,
+            "/api/v1/parking/lots",
+            Some(json!({
+                "name": "Main", "first": "4320", "last": "4329",
+                "park_number": "4300", "timeout_secs": 90, "fallback": "voicemail"
+            })),
+        )
+        .await;
+    assert_eq!(main.status, StatusCode::CREATED, "{}", main.text);
+    assert_eq!(main.json["fallback"], "voicemail");
+
+    // Listed in order of their numbering (another tenant's are the route
+    // matrix's to try).
+    let list = app.admin(Method::GET, "/api/v1/parking/lots", None).await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text);
+    let firsts: Vec<&str> = list
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["first"].as_str().unwrap())
+        .collect();
+    assert_eq!(firsts, ["050", "4320"]);
+
+    // Replaced whole, then removed.
+    let updated = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/parking/lots/{id}"),
+            Some(lot("Lobby", "050", "054")),
+        )
+        .await;
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.text);
+    assert_eq!(updated.json["slots"], 5);
+    let gone = app
+        .admin(Method::DELETE, &format!("/api/v1/parking/lots/{id}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+    let after = app
+        .admin(Method::GET, &format!("/api/v1/parking/lots/{id}"), None)
+        .await;
+    assert_eq!(after.status, StatusCode::NOT_FOUND);
     app.finish().await;
 }
 

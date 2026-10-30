@@ -36,6 +36,7 @@ pub mod meeting;
 pub mod metrics;
 pub mod migration_ticket;
 pub mod offboarding;
+pub mod parking;
 pub mod permissions;
 pub mod phone_number;
 pub mod pidf_lo;

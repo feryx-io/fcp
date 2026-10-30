@@ -675,6 +675,13 @@ pub struct SipMessageHandler {
     /// Optional cluster-wide parking store for cross-node park/pickup.
     cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>>,
 
+    /// Tenants' parking lots as last read, briefly (`docs/PARKING.md`):
+    /// every dialed number is checked against their park numbers.
+    parking_lots: dashmap::DashMap<
+        fcp_core::TenantId,
+        (std::time::Instant, Arc<Vec<fcp_core::parking::ParkingLot>>),
+    >,
+
     /// Cluster-aware conference placement (None = static conference_server_uri).
     conference_node_selector: Option<Arc<dyn ConferenceNodeSelector>>,
 
@@ -1116,6 +1123,7 @@ impl SipMessageHandler {
             pbx_handler,
             presence_handler,
             cluster_parking,
+            parking_lots: dashmap::DashMap::new(),
             conference_node_selector: None,
             node_id,
             flow_registry: Arc::new(crate::flow::FlowRegistry::new()),
@@ -4123,6 +4131,19 @@ impl SipMessageHandler {
                     return self
                         .handle_pbx_feature_code(request, handle, &call_id, action)
                         .await;
+                }
+                // A lot's park number parks as `*70` does (`docs/PARKING.md` §3).
+                if let Some(user) = user_of_uri(&dialed) {
+                    if fcp_core::parking::is_number(&user)
+                        && self
+                            .parking_lots_of(&tenant_id)
+                            .await
+                            .iter()
+                            .any(|l| l.enabled && l.park_number.as_deref() == Some(user.as_str()))
+                    {
+                        info!(call_id = %call_id, park_number = %user, "A lot's park number");
+                        return self.handle_park_call(request, handle, &call_id).await;
+                    }
                 }
             }
         }
@@ -13262,8 +13283,8 @@ impl SipMessageHandler {
             fcp_pbx::FeatureCodeAction::ParkCall => {
                 self.handle_park_call(request, handle, call_id).await
             }
-            fcp_pbx::FeatureCodeAction::RetrieveParkedCall { orbit } => {
-                self.handle_retrieve_parked(request, handle, call_id, orbit)
+            fcp_pbx::FeatureCodeAction::RetrieveParkedCall { slot } => {
+                self.handle_retrieve_parked(request, handle, call_id, &slot)
                     .await
             }
             fcp_pbx::FeatureCodeAction::IntercomOneWay { extension } => {
@@ -13800,8 +13821,8 @@ impl SipMessageHandler {
                     };
                     let parker = user_of_uri(&parker).unwrap_or_default();
                     return match self.park_party(pbx, call, referrer, &parker).await {
-                        Ok(orbit) => {
-                            info!(call_id = %call.id, orbit, parker = %parker, "Parked by transfer");
+                        Ok(slot) => {
+                            info!(call_id = %call.id, slot = %slot, parker = %parker, "Parked by transfer");
                             let local_uri = self.uas.local_uri.clone();
                             let mut dialog = referrer_dialog.clone();
                             let flow = match referrer {
@@ -13933,29 +13954,9 @@ impl SipMessageHandler {
         call: &fcp_b2bua_core::Call,
         parker: fcp_b2bua_core::LegSide,
         parker_ext: &str,
-    ) -> Result<u16> {
-        let orbit = pbx
-            .park_call(call.id, parker_ext.to_string(), call.tenant_id)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        if let Some(ref cluster_parking) = self.cluster_parking {
-            let info = fcp_core::ClusterParkedCall {
-                call_id: call.id.to_string(),
-                node_id: self.node_id.clone(),
-                parker_extension: parker_ext.to_string(),
-                tenant_id: call.tenant_id.to_string(),
-                parked_at_unix: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            };
-            let timeout_secs = pbx.parking_manager().config().timeout_seconds;
-            let cp = Arc::clone(cluster_parking);
-            tokio::spawn(async move {
-                if let Err(e) = cp.cluster_park(orbit, info, timeout_secs).await {
-                    warn!(orbit = orbit, error = %e, "Failed to write parked call to cluster store");
-                }
-            });
-        }
+    ) -> Result<String> {
+        let lot = self.parking_lot_for(pbx, &call.tenant_id).await;
+        let orbit = self.claim_slot(pbx, &lot, call, parker_ext).await?;
         // The parked party goes to the A slot; its media side follows, and
         // the B side, the parker's, is left with no one on it until the
         // call is retrieved: still naming the parked party, it relayed the
@@ -14009,12 +14010,120 @@ impl SipMessageHandler {
             // Held, whatever the parker did: the parked party hears the
             // hold music (`docs/ENTERPRISE_CALLING.md` §3.3).
             c.held = Some(fcp_b2bua_core::LegSide::A);
-            c.park(orbit, parker_ext.clone());
+            c.park(orbit.clone(), parker_ext.clone());
         })?;
         if let Some(id) = parker_dialog_id {
             self.sip_call_id_map.remove(id.call_id());
         }
         Ok(orbit)
+    }
+
+    /// The tenant's parking lots, read at most every few seconds.
+    async fn parking_lots_of(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+    ) -> Arc<Vec<fcp_core::parking::ParkingLot>> {
+        const FRESH: std::time::Duration = std::time::Duration::from_secs(10);
+        if let Some(entry) = self.parking_lots.get(tenant_id) {
+            if entry.0.elapsed() < FRESH {
+                return Arc::clone(&entry.1);
+            }
+        }
+        let Some(store) = self.storage.as_ref().and_then(|s| s.parking_lot_store()) else {
+            return Arc::new(Vec::new());
+        };
+        let lots = match store.list_parking_lots(tenant_id).await {
+            Ok(lots) => Arc::new(lots),
+            Err(e) => {
+                warn!(tenant_id = %tenant_id, error = %e, "The tenant's parking lots could not be read");
+                return self
+                    .parking_lots
+                    .get(tenant_id)
+                    .map(|e| Arc::clone(&e.1))
+                    .unwrap_or_default();
+            }
+        };
+        self.parking_lots
+            .insert(*tenant_id, (std::time::Instant::now(), Arc::clone(&lots)));
+        lots
+    }
+
+    /// The lot a call of the tenant parks in: one of its own, else this
+    /// node's range (`[pbx.parking]`).
+    async fn parking_lot_for(
+        &self,
+        pbx: &fcp_pbx::PbxHandler,
+        tenant_id: &fcp_core::TenantId,
+    ) -> fcp_core::parking::ParkingLot {
+        let lots = self.parking_lots_of(tenant_id).await;
+        fcp_core::parking::lot_for(&lots, None)
+            .cloned()
+            .unwrap_or_else(|| pbx.parking_manager().node_lot(*tenant_id))
+    }
+
+    /// Take the lot's first free slot for `call`: claimed cluster-wide
+    /// first, so no other node parks in it, then held here
+    /// (`docs/PARKING.md` §2). A claim that cannot be made — Redis down —
+    /// is not waited out: the slot is taken on this node alone.
+    async fn claim_slot(
+        &self,
+        pbx: &fcp_pbx::PbxHandler,
+        lot: &fcp_core::parking::ParkingLot,
+        call: &fcp_b2bua_core::Call,
+        parker_ext: &str,
+    ) -> Result<String> {
+        let tenant = call.tenant_id;
+        let parking = pbx.parking_manager();
+        for slot in lot.slots() {
+            if parking.is_held(&tenant, &slot) {
+                continue;
+            }
+            if let Some(cp) = self.cluster_parking.as_ref() {
+                let info = fcp_core::ClusterParkedCall {
+                    call_id: call.id.to_string(),
+                    node_id: self.node_id.clone(),
+                    parker_extension: parker_ext.to_string(),
+                    tenant_id: tenant.to_string(),
+                    slot: slot.clone(),
+                    lot_id: lot.id.clone(),
+                    parked_at_unix: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                };
+                // Past the lot's timeout, so the claim outlives the wait
+                // until this node sends the call back.
+                let ttl = u64::from(lot.timeout_secs) + 60;
+                match cp.cluster_park(&tenant, &slot, info, ttl).await {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(e) => {
+                        warn!(slot = %slot, error = %e, "A parking slot could not be claimed in the cluster; taking it on this node");
+                    }
+                }
+            }
+            let held = parking.hold(fcp_pbx::ParkedCall {
+                call_id: call.id,
+                slot: slot.clone(),
+                lot_id: lot.id.clone(),
+                parker_extension: parker_ext.to_string(),
+                tenant_id: tenant,
+                parked_at: std::time::Instant::now(),
+                timeout: std::time::Duration::from_secs(u64::from(lot.timeout_secs)),
+            });
+            match held {
+                Ok(()) => return Ok(slot),
+                Err(_) => {
+                    if let Some(cp) = self.cluster_parking.as_ref() {
+                        let _ = cp.cluster_unpark(&tenant, &slot).await;
+                    }
+                }
+            }
+        }
+        Err(anyhow::anyhow!(
+            "no slot free in the parking lot {:?}",
+            lot.name
+        ))
     }
 
     /// Drop a leg no call holds any more: its timer stopped, its dialog
@@ -14667,10 +14776,10 @@ impl SipMessageHandler {
         // (`docs/DEEP_TESTING.md` D8).
         let Some(flow_handler) = self.flow_handler.clone() else {
             let mut response =
-                self.create_simple_response(request, 200, &format!("Parked Orbit {}", orbit));
+                self.create_simple_response(request, 200, &format!("Parked Orbit {orbit}"));
             let _ = response.headers_mut().push(
                 smol_str::SmolStr::new("X-FCP-Parked"),
-                smol_str::SmolStr::new(orbit.to_string()),
+                smol_str::SmolStr::new(&orbit),
             );
             handle.send_final(response).await;
             let _ = self.call_manager.terminate_call(call_id, None);
@@ -14681,9 +14790,9 @@ impl SipMessageHandler {
             handle,
             call_id,
             &flow_handler,
-            park_announcement(call_id, orbit),
+            park_announcement(call_id, &orbit),
             HashMap::new(),
-            vec![("X-FCP-Parked", orbit.to_string())],
+            vec![("X-FCP-Parked", orbit.clone())],
             "park announcement",
         )
         .await
@@ -14702,7 +14811,7 @@ impl SipMessageHandler {
         request: &sip_core::Request,
         handle: &ServerTransactionHandle,
         call_id: &fcp_b2bua_core::CallId,
-        orbit: u16,
+        slot: &str,
     ) -> Result<()> {
         let pbx = match self.pbx_handler.as_ref() {
             Some(p) => p,
@@ -14712,31 +14821,37 @@ impl SipMessageHandler {
                 return Ok(());
             }
         };
+        // The retriever's tenant's slot: another tenant's `701` is not
+        // theirs to take (`docs/PARKING.md` §1).
+        let Some(tenant) = self.call_manager.get_call(call_id).map(|c| c.tenant_id) else {
+            let response = self.create_simple_response(request, 480, "Call Not Found");
+            handle.send_final(response).await;
+            return Ok(());
+        };
+        let slot = slot.to_string();
 
-        // Retrieve from local parking manager (removes from orbit)
-        let parked = match pbx.retrieve_parked_call(orbit) {
+        // Retrieve from local parking manager (removes it from the slot)
+        let parked = match pbx.retrieve_parked_call(&tenant, &slot) {
             Ok(p) => {
                 // Also remove from cluster store (fire-and-forget)
                 if let Some(ref cp) = self.cluster_parking {
                     let cp = Arc::clone(cp);
+                    let slot = slot.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = cp.cluster_unpark(orbit).await {
-                            tracing::warn!(orbit = orbit, error = %e, "Failed to clean up cluster parking entry");
+                        if let Err(e) = cp.cluster_unpark(&tenant, &slot).await {
+                            tracing::warn!(slot = %slot, error = %e, "Failed to clean up cluster parking entry");
                         }
                     });
                 }
                 p
             }
             Err(_local_err) => {
-                // Local orbit is empty — check cluster store for cross-node parked calls
+                // Not here: the cluster store says whether another node has it
                 if let Some(ref cp) = self.cluster_parking {
-                    match cp.cluster_lookup(orbit).await {
+                    match cp.cluster_lookup(&tenant, &slot).await {
                         Ok(Some(remote)) if remote.node_id != self.node_id => {
-                            // Call is parked on a different node.
-                            // Respond 302 with the owning node's info so the caller
-                            // or a higher-level proxy can redirect, or log it.
                             info!(
-                                orbit = orbit,
+                                slot = %slot,
                                 remote_node = %remote.node_id,
                                 call_id = %remote.call_id,
                                 "Parked call is on remote node — cross-node pickup not yet supported inline"
@@ -14754,16 +14869,14 @@ impl SipMessageHandler {
                             return Ok(());
                         }
                         Ok(Some(_stale)) => {
-                            // Redis says this node owns it, but it's not in local DashMap.
-                            // Stale entry — clean it up.
-                            warn!(
-                                orbit = orbit,
-                                "Stale cluster parking entry for this node, cleaning up"
-                            );
+                            // Redis says this node owns it, but it is not held here:
+                            // a claim a restart left behind.
+                            warn!(slot = %slot, "Stale cluster parking entry for this node, cleaning up");
                             let cp = Arc::clone(cp);
+                            let slot = slot.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = cp.cluster_unpark(orbit).await {
-                                    tracing::warn!(orbit = orbit, error = %e, "Failed to clean up cluster parking entry");
+                                if let Err(e) = cp.cluster_unpark(&tenant, &slot).await {
+                                    tracing::warn!(slot = %slot, error = %e, "Failed to clean up cluster parking entry");
                                 }
                             });
                         }
@@ -14771,7 +14884,7 @@ impl SipMessageHandler {
                     }
                 }
 
-                info!(call_id = %call_id, orbit = orbit, "Failed to retrieve parked call (not found locally or in cluster)");
+                info!(call_id = %call_id, slot = %slot, "Failed to retrieve parked call (not found locally or in cluster)");
                 let response = self.create_simple_response(request, 480, "Orbit Not Occupied");
                 handle.send_final(response).await;
                 let _ = self
@@ -14812,7 +14925,7 @@ impl SipMessageHandler {
 
         info!(
             call_id = %parked_call_id,
-            orbit = orbit,
+            slot = %slot,
             "Retrieved parked call, bridging to retriever"
         );
 
@@ -14866,6 +14979,12 @@ impl SipMessageHandler {
     ) -> Result<()> {
         let parked_call_id = parked.call_id;
         let parker_ext = &parked.parker_extension;
+        // The slot is free again for the cluster as it is here.
+        if let Some(cp) = self.cluster_parking.as_ref() {
+            if let Err(e) = cp.cluster_unpark(&parked.tenant_id, &parked.slot).await {
+                warn!(slot = %parked.slot, error = %e, "Failed to free an expired call's cluster slot");
+            }
+        }
 
         // Verify the call is still in Parked state
         let parked_call = match call_manager.get_call(&parked_call_id) {
@@ -14886,7 +15005,7 @@ impl SipMessageHandler {
 
         info!(
             call_id = %parked_call_id,
-            orbit = parked.orbit,
+            slot = %parked.slot,
             parker = %parker_ext,
             "Parked call expired, routing back to parker"
         );
@@ -19079,8 +19198,8 @@ fn spawn_race_task(
 
 /// What a parker hears on `*70`: the orbit, digit by digit, then the end
 /// of the call. Held for the call alone, like `*98`'s flow.
-fn park_announcement(call_id: &fcp_b2bua_core::CallId, orbit: u16) -> fcp_flow::FlowDefinition {
-    let digits: Vec<String> = orbit.to_string().chars().map(String::from).collect();
+fn park_announcement(call_id: &fcp_b2bua_core::CallId, slot: &str) -> fcp_flow::FlowDefinition {
+    let digits: Vec<String> = slot.chars().map(String::from).collect();
     spoken_confirmation(
         &format!("park-{call_id}"),
         "Park",

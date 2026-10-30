@@ -3192,31 +3192,46 @@ pub struct ClusterParkedCall {
     pub parker_extension: String,
     /// Tenant ID (string form).
     pub tenant_id: String,
+    /// The slot, as the tenant numbers it (`docs/PARKING.md`).
+    #[serde(default)]
+    pub slot: String,
+    /// The lot the slot is in.
+    #[serde(default)]
+    pub lot_id: String,
     /// Unix timestamp (seconds) when the call was parked.
     pub parked_at_unix: u64,
 }
 
 /// Distributed parking store for cross-node park/pickup.
 ///
-/// The local `ParkingManager` (in-memory DashMap) handles the primary parking
-/// state on each node. This trait provides a cluster-wide secondary store
-/// (backed by Redis) so that any node can discover parked calls and route
-/// cross-node pickups.
+/// A slot is one call's cluster-wide: a node parks only in a slot it
+/// claimed here, and the claim is the tenant's (`docs/PARKING.md` §2). The
+/// local `ParkingManager` holds the node's own parked calls.
 #[async_trait]
 pub trait ClusterParkingStore: Send + Sync {
-    /// Store a parked call in the cluster.
+    /// Claim the tenant's slot for `info`'s call, for `ttl_secs`; `false`
+    /// when another call holds it.
     async fn cluster_park(
         &self,
-        orbit: u16,
+        tenant_id: &crate::TenantId,
+        slot: &str,
         info: ClusterParkedCall,
-        timeout_secs: u64,
-    ) -> Result<()>;
+        ttl_secs: u64,
+    ) -> Result<bool>;
 
-    /// Look up a parked call by orbit across the cluster.
-    async fn cluster_lookup(&self, orbit: u16) -> Result<Option<ClusterParkedCall>>;
+    /// The call in the tenant's slot, anywhere in the cluster.
+    async fn cluster_lookup(
+        &self,
+        tenant_id: &crate::TenantId,
+        slot: &str,
+    ) -> Result<Option<ClusterParkedCall>>;
 
-    /// Remove a parked call from the cluster store. Returns it if it existed.
-    async fn cluster_unpark(&self, orbit: u16) -> Result<Option<ClusterParkedCall>>;
+    /// Free the tenant's slot; the call that held it, if one did.
+    async fn cluster_unpark(
+        &self,
+        tenant_id: &crate::TenantId,
+        slot: &str,
+    ) -> Result<Option<ClusterParkedCall>>;
 }
 
 /// In-memory storage with JSON file persistence.
@@ -3671,6 +3686,7 @@ pub struct DynStorage {
     brand_store: Option<Arc<dyn crate::branding::BrandStore>>,
     contact_store: Option<Arc<dyn crate::contact::ContactStore>>,
     presence_status_store: Option<Arc<dyn crate::presence_status::PresenceStatusStore>>,
+    parking_lot_store: Option<Arc<dyn crate::parking::ParkingLotStore>>,
     provisioning_store: Option<Arc<dyn crate::provisioning::ProvisioningStore>>,
 }
 
@@ -3756,6 +3772,7 @@ impl DynStorage {
             brand_store: None,
             contact_store: None,
             presence_status_store: None,
+            parking_lot_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -3845,6 +3862,7 @@ impl DynStorage {
             brand_store: None,
             contact_store: None,
             presence_status_store: None,
+            parking_lot_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -4140,6 +4158,20 @@ impl DynStorage {
         &self,
     ) -> Option<&Arc<dyn crate::presence_status::PresenceStatusStore>> {
         self.presence_status_store.as_ref()
+    }
+
+    /// Attach the store of tenants' parking lots.
+    pub fn with_parking_lot_store(
+        mut self,
+        store: Arc<dyn crate::parking::ParkingLotStore>,
+    ) -> Self {
+        self.parking_lot_store = Some(store);
+        self
+    }
+
+    /// Tenants' parking lots (`docs/PARKING.md`), when attached.
+    pub fn parking_lot_store(&self) -> Option<&Arc<dyn crate::parking::ParkingLotStore>> {
+        self.parking_lot_store.as_ref()
     }
 
     /// Users' own contacts (`docs/RECORD_AND_CONTACTS.md` §3), when attached.

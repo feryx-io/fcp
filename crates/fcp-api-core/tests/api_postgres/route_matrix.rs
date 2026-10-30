@@ -309,6 +309,16 @@ async fn seed_tenant_b(app: &App) -> Seeded {
         .await,
     );
     ids.insert(
+        "/parking/lots",
+        make_in_b(
+            app,
+            "/api/v1/parking/lots",
+            json!({"name": "Bravo lot", "first": "880", "last": "889"}),
+            "id",
+        )
+        .await,
+    );
+    ids.insert(
         "/lcr-routes",
         make_in_b(
             app,

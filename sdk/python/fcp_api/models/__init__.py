@@ -300,6 +300,8 @@ from .page_number_usage_response import PageNumberUsageResponse
 from .page_number_usage_response_data_item import PageNumberUsageResponseDataItem
 from .page_own_status_response import PageOwnStatusResponse
 from .page_own_status_response_data_item import PageOwnStatusResponseDataItem
+from .page_parking_lot_response import PageParkingLotResponse
+from .page_parking_lot_response_data_item import PageParkingLotResponseDataItem
 from .page_pending_device_response import PagePendingDeviceResponse
 from .page_pending_device_response_data_item import PagePendingDeviceResponseDataItem
 from .page_personal_contact_response import PagePersonalContactResponse
@@ -366,6 +368,8 @@ from .page_webhook_event_type import PageWebhookEventType
 from .page_webhook_event_type_data_item import PageWebhookEventTypeDataItem
 from .page_webhook_response import PageWebhookResponse
 from .page_webhook_response_data_item import PageWebhookResponseDataItem
+from .parking_lot_request import ParkingLotRequest
+from .parking_lot_response import ParkingLotResponse
 from .password_login import PasswordLogin
 from .pending_device_response import PendingDeviceResponse
 from .personal_contact_request import PersonalContactRequest
@@ -858,6 +862,8 @@ __all__ = (
     "PageNumberUsageResponseDataItem",
     "PageOwnStatusResponse",
     "PageOwnStatusResponseDataItem",
+    "PageParkingLotResponse",
+    "PageParkingLotResponseDataItem",
     "PagePendingDeviceResponse",
     "PagePendingDeviceResponseDataItem",
     "PagePersonalContactResponse",
@@ -924,6 +930,8 @@ __all__ = (
     "PageWebhookEventTypeDataItem",
     "PageWebhookResponse",
     "PageWebhookResponseDataItem",
+    "ParkingLotRequest",
+    "ParkingLotResponse",
     "PasswordLogin",
     "PendingDeviceResponse",
     "PersonalContactRequest",

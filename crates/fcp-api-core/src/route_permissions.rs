@@ -597,6 +597,12 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/schedules/:id", Needs(RoutingRuleRead)),
     (PUT, "/schedules/:id", Needs(RoutingRuleManage)),
     (DELETE, "/schedules/:id", Needs(RoutingRuleManage)),
+    // Parking lots (docs/PARKING.md).
+    (GET, "/parking/lots", Needs(ParkingRead)),
+    (POST, "/parking/lots", Needs(ParkingManage)),
+    (GET, "/parking/lots/:id", Needs(ParkingRead)),
+    (PUT, "/parking/lots/:id", Needs(ParkingManage)),
+    (DELETE, "/parking/lots/:id", Needs(ParkingManage)),
     (GET, "/routing/rules", Needs(RoutingRuleRead)),
     (POST, "/routing/rules", Needs(RoutingRuleManage)),
     (GET, "/routing/rules/:id", Needs(RoutingRuleRead)),

@@ -320,9 +320,7 @@ async fn run() -> Result<()> {
     #[cfg(feature = "storage-redis")]
     let cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>> =
         if let Some(ref redis) = redis_storage {
-            let parking_timeout = config.pbx.parking.timeout_seconds;
-            let store =
-                fcp_storage_redis::parking::RedisParkingStore::new(redis.clone(), parking_timeout);
+            let store = fcp_storage_redis::parking::RedisParkingStore::new(redis.clone());
             info!("Cluster parking store initialized (Redis)");
             Some(Arc::new(store) as Arc<dyn fcp_core::ClusterParkingStore>)
         } else {
@@ -2079,7 +2077,7 @@ async fn run() -> Result<()> {
                     let expired = pbx_clone.parking_manager().expired_calls();
                     for parked in expired {
                         info!(
-                            orbit = parked.orbit,
+                            slot = %parked.slot,
                             call_id = %parked.call_id,
                             parker = %parked.parker_extension,
                             "Parked call expired, routing back to parker"

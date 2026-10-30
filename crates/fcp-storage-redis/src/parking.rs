@@ -1,16 +1,21 @@
 //! Redis-backed call parking store for cross-node park/pickup.
 //!
-//! Key design:
+//! Key design (`docs/PARKING.md` §2):
 //! ```text
-//! Key:    {prefix}park:{orbit}
-//! Type:   Hash { call_id, node_id, parker_extension, tenant_id, parked_at }
-//! TTL:    parking timeout (default 120s)
+//! Key:    {prefix}park:{tenant}:{slot}
+//! Value:  JSON { call_id, node_id, parker_extension, tenant_id, slot, lot_id, parked_at }
+//! TTL:    the lot's timeout and a margin, set when the slot is claimed
 //! ```
+//!
+//! A slot is claimed with `SET NX`: one call holds it, whichever node
+//! parked it. Keyed by orbit alone, two tenants shared every slot and two
+//! nodes parking at once both wrote the same key.
 
 use crate::RedisStorage;
 use anyhow::Result;
 use async_trait::async_trait;
 use fcp_core::storage::{ClusterParkedCall, ClusterParkingStore};
+use fcp_core::TenantId;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -26,6 +31,10 @@ pub struct RedisParkedCall {
     pub parker_extension: String,
     /// Tenant ID.
     pub tenant_id: String,
+    #[serde(default)]
+    pub slot: String,
+    #[serde(default)]
+    pub lot_id: String,
     /// Unix timestamp when the call was parked.
     pub parked_at: u64,
 }
@@ -34,76 +43,67 @@ pub struct RedisParkedCall {
 #[derive(Clone)]
 pub struct RedisParkingStore {
     storage: RedisStorage,
-    default_timeout_secs: u64,
 }
 
 impl RedisParkingStore {
     /// Create a new parking store.
-    pub fn new(storage: RedisStorage, default_timeout_secs: u64) -> Self {
-        Self {
-            storage,
-            default_timeout_secs,
-        }
+    pub fn new(storage: RedisStorage) -> Self {
+        Self { storage }
     }
 
-    fn park_key(&self, orbit: u16) -> String {
-        self.storage.key(&format!("park:{}", orbit))
+    fn park_key(&self, tenant_id: &TenantId, slot: &str) -> String {
+        self.storage.key(&format!("park:{tenant_id}:{slot}"))
     }
 
-    /// Park a call in a specific orbit.
-    pub async fn park(
+    /// Claim the slot for `parked_call` unless a call holds it; whether it
+    /// was claimed.
+    pub async fn claim(
         &self,
-        orbit: u16,
-        parked_call: RedisParkedCall,
-        timeout_secs: Option<u64>,
-    ) -> Result<()> {
-        let key = self.park_key(orbit);
+        tenant_id: &TenantId,
+        slot: &str,
+        parked_call: &RedisParkedCall,
+        ttl_secs: u64,
+    ) -> Result<bool> {
+        let key = self.park_key(tenant_id, slot);
         let mut conn = self.storage.connection();
-        let ttl = timeout_secs.unwrap_or(self.default_timeout_secs);
-
-        let json = serde_json::to_string(&parked_call)?;
-
-        let (): () = redis::pipe()
-            .atomic()
-            .set(&key, &json)
-            .expire(&key, ttl as i64)
+        let json = serde_json::to_string(parked_call)?;
+        let set: Option<String> = redis::cmd("SET")
+            .arg(&key)
+            .arg(&json)
+            .arg("NX")
+            .arg("EX")
+            .arg(ttl_secs.max(1))
             .query_async(&mut conn)
             .await
-            .map_err(|e| anyhow::anyhow!("Redis park SET failed: {}", e))?;
-
-        debug!(orbit = orbit, call_id = %parked_call.call_id, ttl_secs = ttl, "Parked call in Redis");
-        Ok(())
+            .map_err(|e| anyhow::anyhow!("Redis park SET NX failed: {e}"))?;
+        let claimed = set.is_some();
+        debug!(slot, call_id = %parked_call.call_id, claimed, ttl_secs, "Claimed parking slot in Redis");
+        Ok(claimed)
     }
 
     /// Retrieve (peek) a parked call without removing it.
-    pub async fn get(&self, orbit: u16) -> Result<Option<RedisParkedCall>> {
-        let key = self.park_key(orbit);
+    pub async fn get(&self, tenant_id: &TenantId, slot: &str) -> Result<Option<RedisParkedCall>> {
+        let key = self.park_key(tenant_id, slot);
         let mut conn = self.storage.connection();
-
         let json: Option<String> = conn
             .get(&key)
             .await
             .map_err(|e| anyhow::anyhow!("Redis park GET failed: {}", e))?;
-
-        match json {
-            Some(j) => {
-                let parked: RedisParkedCall = serde_json::from_str(&j)?;
-                Ok(Some(parked))
-            }
-            None => Ok(None),
-        }
+        json.map(|j| serde_json::from_str(&j).map_err(Into::into))
+            .transpose()
     }
 
-    /// Unpark (remove) a call from an orbit. Returns the parked call if it existed.
+    /// Unpark (remove) a call from a slot. Returns the parked call if it existed.
     ///
     /// Uses a Lua script for true atomicity — only one caller can retrieve the
-    /// value even when multiple nodes race to unpark the same orbit.
-    pub async fn unpark(&self, orbit: u16) -> Result<Option<RedisParkedCall>> {
-        let key = self.park_key(orbit);
+    /// value even when multiple nodes race to unpark the same slot.
+    pub async fn unpark(
+        &self,
+        tenant_id: &TenantId,
+        slot: &str,
+    ) -> Result<Option<RedisParkedCall>> {
+        let key = self.park_key(tenant_id, slot);
         let mut conn = self.storage.connection();
-
-        // Lua script runs atomically on the Redis server.
-        // Only one caller can get the value — others see nil.
         let script = redis::Script::new(
             r#"
             local val = redis.call('GET', KEYS[1])
@@ -113,27 +113,21 @@ impl RedisParkingStore {
             return val
             "#,
         );
-
         let json: Option<String> = script
             .key(&key)
             .invoke_async(&mut conn)
             .await
             .map_err(|e| anyhow::anyhow!("Redis unpark failed: {}", e))?;
-
         match json {
             Some(j) => {
                 let parked: RedisParkedCall = serde_json::from_str(&j)?;
-                debug!(orbit = orbit, call_id = %parked.call_id, "Unparked call from Redis");
+                debug!(slot, call_id = %parked.call_id, "Unparked call from Redis");
                 Ok(Some(parked))
             }
             None => Ok(None),
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// ClusterParkingStore trait implementation
-// ---------------------------------------------------------------------------
 
 impl RedisParkedCall {
     /// Convert from the fcp-core cluster type.
@@ -143,6 +137,8 @@ impl RedisParkedCall {
             node_id: info.node_id.clone(),
             parker_extension: info.parker_extension.clone(),
             tenant_id: info.tenant_id.clone(),
+            slot: info.slot.clone(),
+            lot_id: info.lot_id.clone(),
             parked_at: info.parked_at_unix,
         }
     }
@@ -154,6 +150,8 @@ impl RedisParkedCall {
             node_id: self.node_id.clone(),
             parker_extension: self.parker_extension.clone(),
             tenant_id: self.tenant_id.clone(),
+            slot: self.slot.clone(),
+            lot_id: self.lot_id.clone(),
             parked_at_unix: self.parked_at,
         }
     }
@@ -163,19 +161,33 @@ impl RedisParkedCall {
 impl ClusterParkingStore for RedisParkingStore {
     async fn cluster_park(
         &self,
-        orbit: u16,
+        tenant_id: &TenantId,
+        slot: &str,
         info: ClusterParkedCall,
-        timeout_secs: u64,
-    ) -> Result<()> {
-        let redis_call = RedisParkedCall::from_cluster(&info);
-        self.park(orbit, redis_call, Some(timeout_secs)).await
+        ttl_secs: u64,
+    ) -> Result<bool> {
+        self.claim(
+            tenant_id,
+            slot,
+            &RedisParkedCall::from_cluster(&info),
+            ttl_secs,
+        )
+        .await
     }
 
-    async fn cluster_lookup(&self, orbit: u16) -> Result<Option<ClusterParkedCall>> {
-        Ok(self.get(orbit).await?.map(|r| r.to_cluster()))
+    async fn cluster_lookup(
+        &self,
+        tenant_id: &TenantId,
+        slot: &str,
+    ) -> Result<Option<ClusterParkedCall>> {
+        Ok(self.get(tenant_id, slot).await?.map(|r| r.to_cluster()))
     }
 
-    async fn cluster_unpark(&self, orbit: u16) -> Result<Option<ClusterParkedCall>> {
-        Ok(self.unpark(orbit).await?.map(|r| r.to_cluster()))
+    async fn cluster_unpark(
+        &self,
+        tenant_id: &TenantId,
+        slot: &str,
+    ) -> Result<Option<ClusterParkedCall>> {
+        Ok(self.unpark(tenant_id, slot).await?.map(|r| r.to_cluster()))
     }
 }

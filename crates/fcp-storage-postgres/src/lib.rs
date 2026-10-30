@@ -43,6 +43,7 @@ mod holds;
 mod identity;
 pub mod login_session;
 mod offboarding;
+mod parking;
 mod presence_status;
 pub mod primary_health;
 pub mod prompt;

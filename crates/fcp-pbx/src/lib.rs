@@ -84,20 +84,13 @@ impl PbxHandler {
         self.hunt_groups.get(extension).map(|hg| hg.resolve())
     }
 
-    /// Park a call and return the assigned orbit.
-    pub fn park_call(
+    /// Take a parked call out of the tenant's slot on this node.
+    pub fn retrieve_parked_call(
         &self,
-        call_id: CallId,
-        parker_extension: String,
-        tenant_id: fcp_core::TenantId,
-    ) -> Result<u16, PbxError> {
-        self.parking_manager
-            .park(call_id, parker_extension, tenant_id)
-    }
-
-    /// Retrieve a parked call from the given orbit.
-    pub fn retrieve_parked_call(&self, orbit: u16) -> Result<ParkedCall, PbxError> {
-        self.parking_manager.retrieve(orbit)
+        tenant_id: &fcp_core::TenantId,
+        slot: &str,
+    ) -> Result<ParkedCall, PbxError> {
+        self.parking_manager.retrieve(tenant_id, slot)
     }
 
     /// Check whether a destination requires CMC, FAC, or both.
@@ -311,12 +304,14 @@ mod tests {
         let call_id = CallId::new();
         let tenant = fcp_core::TenantId::nil();
 
-        let orbit = handler
-            .park_call(call_id, "1001".to_string(), tenant)
+        let lot = handler.parking_manager().node_lot(tenant);
+        let slot = handler
+            .parking_manager()
+            .park_in(&lot, call_id, "1001".to_string())
             .unwrap();
-        assert_eq!(orbit, 701);
+        assert_eq!(slot, "701");
 
-        let parked = handler.retrieve_parked_call(701).unwrap();
+        let parked = handler.retrieve_parked_call(&tenant, "701").unwrap();
         assert_eq!(parked.call_id, call_id);
     }
 

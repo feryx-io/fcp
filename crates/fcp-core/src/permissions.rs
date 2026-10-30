@@ -252,6 +252,11 @@ pub enum Permission {
     /// made, changed and removed through `/scim/v2`. A tenant admin's, to
     /// put on the provisioner's token.
     ScimProvision,
+    /// The tenant's parking lots and the calls parked in them
+    /// (`docs/PARKING.md`).
+    ParkingRead,
+    /// Making, changing and removing parking lots.
+    ParkingManage,
 }
 
 impl FromStr for Permission {
@@ -325,6 +330,8 @@ impl FromStr for Permission {
             "branding_manage" => Ok(Self::BrandingManage),
             "group_read" => Ok(Self::GroupRead),
             "group_manage" => Ok(Self::GroupManage),
+            "parking_read" => Ok(Self::ParkingRead),
+            "parking_manage" => Ok(Self::ParkingManage),
             "scim_provision" => Ok(Self::ScimProvision),
             other => Err(format!("unknown permission: {}", other)),
         }
@@ -401,6 +408,8 @@ impl Permission {
         Self::GroupRead,
         Self::GroupManage,
         Self::ScimProvision,
+        Self::ParkingRead,
+        Self::ParkingManage,
     ];
 
     /// The area a permission belongs to, for grouping it in a picker.
@@ -452,6 +461,7 @@ impl Permission {
             Self::IdentityProviderManage => "Single sign-on",
             Self::BrandingManage => "Branding",
             Self::GroupRead | Self::GroupManage => "Groups",
+            Self::ParkingRead | Self::ParkingManage => "Parking",
             Self::ScimProvision => "SCIM provisioning",
         }
     }
@@ -525,6 +535,8 @@ impl Permission {
             Self::BrandingManage => "branding_manage",
             Self::GroupRead => "group_read",
             Self::GroupManage => "group_manage",
+            Self::ParkingRead => "parking_read",
+            Self::ParkingManage => "parking_manage",
             Self::ScimProvision => "scim_provision",
         }
     }
@@ -598,6 +610,8 @@ impl Permission {
             Self::BrandingManage => "Manage Branding",
             Self::GroupRead => "View Groups",
             Self::GroupManage => "Manage Groups",
+            Self::ParkingRead => "View Parking",
+            Self::ParkingManage => "Manage Parking",
             Self::ScimProvision => "Provision Users (SCIM)",
         }
     }
@@ -693,6 +707,13 @@ impl UserRole {
             // groups: the tenant administrator's to grant.
             (TenantAdmin, ScimProvision, _) => true,
             (_, ScimProvision, _) => false,
+
+            // Parking lots are dial plan: the tenant's or its telephony's
+            // administrators make them; whoever may look at the dial plan
+            // may see them.
+            (TenantAdmin | TelecomAdmin, ParkingRead | ParkingManage, _) => true,
+            (DepartmentAdmin | ReadOnly, ParkingRead, _) => true,
+            (_, ParkingRead | ParkingManage, _) => false,
 
             // A tenant's routing rules are its call policy — barring premium
             // numbers, sending international calls to a trunk group — and

@@ -5345,6 +5345,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/parking/lots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/parking/lots — none listed means the node's own range
+         *     (`[pbx.parking]`) is the tenant's.
+         */
+        get: operations["parking_list_lots"];
+        put?: never;
+        /** POST /api/v1/parking/lots — 409 when one of its numbers is taken. */
+        post: operations["parking_create_lot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/parking/lots/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/parking/lots/:id */
+        get: operations["parking_get_lot"];
+        /** PUT /api/v1/parking/lots/:id — the whole lot, replaced. */
+        put: operations["parking_update_lot"];
+        post?: never;
+        /**
+         * DELETE /api/v1/parking/lots/:id — calls parked in it stay until taken
+         *     or timed out.
+         */
+        delete: operations["parking_delete_lot"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/routing/rules": {
         parameters: {
             query?: never;
@@ -9807,6 +9850,41 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_ParkingLotResponse: {
+            data: {
+                id: string;
+                tenant_id: string;
+                name: string;
+                /** @description The first and last slot: digit strings of one width. */
+                first: string;
+                last: string;
+                /** Format: int64 */
+                slots: number;
+                park_number?: string | null;
+                /** Format: int32 */
+                timeout_secs: number;
+                /**
+                 * @description Where a call goes when its parker does not take it back
+                 *     (`ext:1001`, `queue:support`, `voicemail`, …).
+                 */
+                fallback?: string | null;
+                music?: string | null;
+                location_id?: string | null;
+                enabled: boolean;
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                updated_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_PendingDeviceResponse: {
             data: {
                 mac_address: string;
@@ -10895,6 +10973,47 @@ export interface components {
              * @description How many items the whole list holds, where that is known.
              */
             total?: number | null;
+        };
+        /** @description What a lot is written as; a `PUT` replaces it whole. */
+        ParkingLotRequest: {
+            name: string;
+            first: string;
+            last: string;
+            park_number?: string | null;
+            /**
+             * Format: int32
+             * @description Seconds; 60 when unset.
+             */
+            timeout_secs?: number | null;
+            fallback?: string | null;
+            music?: string | null;
+            location_id?: string | null;
+            enabled?: boolean;
+        };
+        ParkingLotResponse: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            /** @description The first and last slot: digit strings of one width. */
+            first: string;
+            last: string;
+            /** Format: int64 */
+            slots: number;
+            park_number?: string | null;
+            /** Format: int32 */
+            timeout_secs: number;
+            /**
+             * @description Where a call goes when its parker does not take it back
+             *     (`ext:1001`, `queue:support`, `voicemail`, …).
+             */
+            fallback?: string | null;
+            music?: string | null;
+            location_id?: string | null;
+            enabled: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
         };
         /**
          * @description Who may sign in with a password.
@@ -26324,6 +26443,166 @@ export interface operations {
         };
     };
     schedules_delete_schedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    parking_list_lots: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_ParkingLotResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    parking_create_lot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ParkingLotRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParkingLotResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    parking_get_lot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParkingLotResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    parking_update_lot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ParkingLotRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParkingLotResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    parking_delete_lot: {
         parameters: {
             query?: never;
             header?: never;

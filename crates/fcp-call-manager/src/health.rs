@@ -2490,7 +2490,8 @@ fn verify_cluster_secret(
 /// Request body for POST /internal/unpark
 #[derive(Deserialize)]
 struct InternalUnparkRequest {
-    orbit: u16,
+    tenant_id: fcp_core::TenantId,
+    slot: String,
 }
 
 /// Unpark a call on this node. Called by another node's retrieve handler.
@@ -2529,10 +2530,10 @@ async fn internal_unpark_handler(
     };
 
     // Retrieve from local parking manager
-    match pbx.retrieve_parked_call(req.orbit) {
+    match pbx.retrieve_parked_call(&req.tenant_id, &req.slot) {
         Ok(parked) => {
             info!(
-                orbit = req.orbit,
+                slot = %req.slot,
                 call_id = %parked.call_id,
                 "Internal unpark: retrieved parked call"
             );
@@ -2540,10 +2541,10 @@ async fn internal_unpark_handler(
             // Also remove from cluster store
             if let Some(ref cp) = state.cluster_parking {
                 let cp = Arc::clone(cp);
-                let orbit = req.orbit;
+                let (tenant, slot) = (req.tenant_id, req.slot.clone());
                 tokio::spawn(async move {
-                    if let Err(e) = cp.cluster_unpark(orbit).await {
-                        tracing::warn!(orbit = orbit, error = %e, "Failed to clean up cluster parking entry");
+                    if let Err(e) = cp.cluster_unpark(&tenant, &slot).await {
+                        tracing::warn!(slot = %slot, error = %e, "Failed to clean up cluster parking entry");
                     }
                 });
             }
@@ -2553,17 +2554,17 @@ async fn internal_unpark_handler(
                 Json(serde_json::json!({
                     "status": "ok",
                     "call_id": parked.call_id.to_string(),
-                    "orbit": parked.orbit,
+                    "slot": parked.slot,
                     "parker_extension": parked.parker_extension,
                 })),
             )
                 .into_response()
         }
         Err(e) => {
-            info!(orbit = req.orbit, error = %e, "Internal unpark: orbit not occupied");
+            info!(slot = %req.slot, error = %e, "Internal unpark: slot not occupied");
             (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": format!("Orbit not occupied: {}", e)})),
+                Json(serde_json::json!({"error": format!("Slot not occupied: {}", e)})),
             )
                 .into_response()
         }

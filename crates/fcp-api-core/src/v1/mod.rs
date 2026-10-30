@@ -37,6 +37,7 @@ pub mod me_events;
 pub mod me_presence;
 pub mod media;
 pub mod metrics;
+pub mod parking;
 pub mod phone_numbers;
 pub mod presence;
 pub mod prompts;
@@ -984,6 +985,16 @@ pub fn router() -> Router<ApiState> {
             get(schedules::get_schedule)
                 .put(schedules::update_schedule)
                 .delete(schedules::delete_schedule),
+        )
+        .route(
+            "/parking/lots",
+            get(parking::list_lots).post(parking::create_lot),
+        )
+        .route(
+            "/parking/lots/:id",
+            get(parking::get_lot)
+                .put(parking::update_lot)
+                .delete(parking::delete_lot),
         )
         .route(
             "/routing/rules",

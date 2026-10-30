@@ -5,17 +5,17 @@ use thiserror::Error;
 /// Errors returned by PBX operations.
 #[derive(Debug, Error)]
 pub enum PbxError {
-    /// No parking orbits available in the configured range.
-    #[error("no parking orbits available")]
+    /// Every slot of the lot holds a call.
+    #[error("no parking slot free")]
     NoParkingOrbitsAvailable,
 
-    /// The requested parking orbit is not occupied.
-    #[error("orbit {0} is not occupied")]
-    OrbitNotOccupied(u16),
+    /// No call is parked in the slot.
+    #[error("slot {0} is not occupied")]
+    OrbitNotOccupied(String),
 
-    /// The parking orbit is out of the configured range.
-    #[error("orbit {0} is out of range ({1}-{2})")]
-    OrbitOutOfRange(u16, u16, u16),
+    /// The slot already holds a call.
+    #[error("slot {0} is taken")]
+    SlotTaken(String),
 
     /// The requested hunt group was not found.
     #[error("hunt group '{0}' not found")]

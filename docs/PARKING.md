@@ -115,7 +115,25 @@ today. Its first save in the API makes it an ordinary lot.
 4. **Sites.** Lots journaled and synced; a site's parking in its own Redis; the cloud's
    board shows a site's calls through its link.
 
-## 6. Questions
+## 6. Done
+
+**Phase 1 (v0.25.483).** `fcp_core::parking` (the lot, its range as digit strings,
+`lot_for`, `ParkingLotStore`), `parking_lots` (migration 128), `/api/v1/parking/lots`
+under `parking_read` / `parking_manage` with the clash check against the tenant's other
+lots, extensions, queues and meeting rooms (409 naming it). A call manager reads a
+tenant's lots at most every 10 s; `*70` and a lot's `park_number` park in the lot,
+else in the node's `[pbx.parking]` range as before. A slot is held by tenant and slot
+on the node (`ParkingManager`) and claimed in Redis with `SET NX` on
+`park:{tenant}:{slot}` before it is taken, with an expiry of the lot's timeout and a
+minute; an expired call frees its claim. With Redis unreachable a slot is taken on the
+node alone. `*71<slot>` retrieves within the caller's tenant. `call.parked` and
+`call.unparked` carry `slot` (and `orbit` as a number for a release; `unparked` used to
+say 0). Tested: `a_tenants_own_lot_numbers_the_slots` (calling.rs),
+`a_slot_is_one_calls_and_each_tenant_has_its_own` (fcp-storage-redis),
+`two_tenants_number_their_slots_alike` (fcp-pbx),
+`parking_lots_are_the_tenants_and_clash_with_its_dial_plan` and the route matrix.
+
+## 7. Questions (agreed 2026-10-30 on their recommendations)
 
 1. **A slot is dialable on its own** (`705` retrieves), as well as `*71705`. Recommended:
    yes; it is what people expect from a park key and an attendant.

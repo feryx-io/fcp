@@ -1433,6 +1433,62 @@ async fn a_callee_parking_with_the_code_parks_the_caller() {
     stack.finish().await;
 }
 
+/// A tenant numbers its own slots (`docs/PARKING.md`, D8 finding 35): with
+/// a lot `4320`–`4321` and the park number `4300`, dialing `4300` parks in
+/// `4320`, the node's own `701`–`720` is not the tenant's, and `*714320`
+/// takes the call back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tenants_own_lot_numbers_the_slots() {
+    let stack = stack_or_skip!();
+    let mut lot =
+        fcp_core::parking::ParkingLot::new(stack.seed.tenant_id, "Front desk", "4320", "4321");
+    lot.park_number = Some("4300".to_string());
+    fcp_core::parking::ParkingLotStore::put_parking_lot(stack.seed.storage(), &lot)
+        .await
+        .unwrap();
+    let [(_, alice), (bob, bob_phone), _] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+
+    let park = bob_phone.call("4300").await.unwrap();
+    if let Err(e) = park.answered(SOON).await {
+        stack
+            .fail(
+                &format!("the park number was not answered: {e}"),
+                &bob_phone,
+            )
+            .await;
+    }
+    assert_eq!(
+        park.answer_header("X-FCP-Parked").as_deref(),
+        Some("4320"),
+        "parked in the lot's first slot"
+    );
+    assert!(park.ended(RING_OUT).await, "the park call was never ended");
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+
+    // The node's own range is not this tenant's any more.
+    let wrong = bob_phone.call("*71701").await.unwrap();
+    assert!(
+        wrong.answered(Duration::from_secs(3)).await.is_err(),
+        "701 held nothing"
+    );
+
+    let retrieve = bob_phone.call("*714320").await.unwrap();
+    if let Err(e) = retrieve.answered(SOON).await {
+        stack
+            .fail(&format!("the retrieve was not answered: {e}"), &bob_phone)
+            .await;
+    }
+    retrieve.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Bob after the retrieve"
+    );
+    retrieve.hangup().await.unwrap();
+    stack.finish().await;
+}
+
 /// An encrypted caller transfers the callee to a plain phone: the plain
 /// phone takes the caller's side, so the node's keys for that side must go
 /// — kept, the node would encrypt toward it and refuse its plain packets.

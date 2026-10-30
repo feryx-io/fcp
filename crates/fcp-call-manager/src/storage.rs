@@ -81,6 +81,8 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
         .with_provisioning_store(
             storage.clone() as Arc<dyn fcp_core::provisioning::ProvisioningStore>
         )
+        // The lots a call parks in (docs/PARKING.md).
+        .with_parking_lot_store(storage.clone() as Arc<dyn fcp_core::parking::ParkingLotStore>)
         // A watched person's chosen status, read when nobody has announced
         // it since the node started (docs/PRESENCE.md §3).
         .with_presence_status_store(

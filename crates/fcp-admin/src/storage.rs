@@ -99,6 +99,7 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
         .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>)
         .with_brand_store(storage.clone() as Arc<dyn fcp_core::branding::BrandStore>)
         .with_contact_store(storage.clone() as Arc<dyn fcp_core::contact::ContactStore>)
+        .with_parking_lot_store(storage.clone() as Arc<dyn fcp_core::parking::ParkingLotStore>)
         .with_presence_status_store(
             storage.clone() as Arc<dyn fcp_core::presence_status::PresenceStatusStore>
         )
