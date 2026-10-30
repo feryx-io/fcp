@@ -261,6 +261,9 @@ impl App {
                     .with_parking_lot_store(
                         Arc::clone(&storage) as Arc<dyn fcp_core::parking::ParkingLotStore>
                     )
+                    .with_line_label_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::line_label::LineLabelStore>
+                    )
                     .with_presence_status_store(Arc::clone(&storage)
                         as Arc<dyn fcp_core::presence_status::PresenceStatusStore>)
                     .with_provisioning_store(
@@ -16362,6 +16365,238 @@ async fn a_user_sees_the_directory_while_the_tenant_shows_it() {
         .send_as(&frank, Method::GET, "/api/v1/me/directory", None)
         .await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Lines on a device (docs/DEVICE_LINES.md)
+// ---------------------------------------------------------------------------
+
+/// A device's lines are checked against what its owner may be, shown to
+/// the app with their labels, and named by the user only where the tenant
+/// lets them — the name kept by the line, on every device that has it.
+#[tokio::test]
+async fn a_devices_lines_are_checked_shown_and_named() {
+    let app = require_app!();
+    let bob = app.create_user_with_role("bob", "end_user").await;
+    app.create_user_with_role("mary", "end_user").await;
+    let carol = app.create_user_with_role("carol", "end_user").await;
+    for (who, ext) in [("bob", "1002"), ("carol", "1003")] {
+        let set = app
+            .admin(
+                Method::PUT,
+                &format!("/api/v1/users/{who}"),
+                Some(json!({ "extension": ext })),
+            )
+            .await;
+        assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    }
+    let extra = app
+        .admin(
+            Method::POST,
+            "/api/v1/extensions",
+            Some(json!({ "number": "1005", "target": { "type": "user", "id": bob } })),
+        )
+        .await;
+    assert_eq!(extra.status, StatusCode::CREATED, "{}", extra.text);
+    let assists = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/mary/calling",
+            Some(json!({ "executive": { "enabled": true, "assistants": ["bob"] } })),
+        )
+        .await;
+    assert_eq!(assists.status, StatusCode::OK, "{}", assists.text);
+    let _ = carol;
+
+    // Bob's app, signed in: a device of his own.
+    let web = app.login("bob", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let signed_in = app
+        .send_as(
+            &web,
+            Method::POST,
+            "/api/v1/auth/app/sessions",
+            Some(json!({ "client_name": "Bob's laptop", "install_id": "bob-laptop" })),
+        )
+        .await;
+    assert_eq!(signed_in.status, StatusCode::CREATED, "{}", signed_in.text);
+    let access = signed_in.json["access_token"].as_str().unwrap().to_string();
+    let device = signed_in.json["device"]["id"].as_str().unwrap().to_string();
+    let device_path = format!("/api/v1/devices/{device}");
+
+    // Lines the device may not be are refused, naming why.
+    for (lines, why) in [
+        (json!([{ "kind": "extension", "value": "1005" }]), "own"),
+        (
+            json!([{ "kind": "own" }, { "kind": "extension", "value": "1003" }]),
+            "1003",
+        ),
+        (
+            json!([{ "kind": "own" }, { "kind": "on_behalf", "value": "carol" }]),
+            "assistants",
+        ),
+        (
+            json!([{ "kind": "own" }, { "kind": "extension", "value": "1005" },
+                { "kind": "extension", "value": "1005" }]),
+            "twice",
+        ),
+    ] {
+        let res = app
+            .admin(Method::PATCH, &device_path, Some(json!({ "lines": lines })))
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{lines}: {}", res.text);
+        assert!(res.text.contains(why), "{why} in {}", res.text);
+    }
+
+    // His own, another extension of his, and Mary's, whom he assists.
+    let set = app
+        .admin(
+            Method::PATCH,
+            &device_path,
+            Some(json!({ "lines": [
+                { "kind": "own" },
+                { "kind": "extension", "value": "1005", "label": "Sales" },
+                { "kind": "on_behalf", "value": "mary", "ring": false },
+            ] })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    assert_eq!(
+        set.json["lines"].as_array().map(Vec::len),
+        Some(3),
+        "{}",
+        set.text
+    );
+
+    let shown = |config: &Value| -> Vec<(String, String, String, bool)> {
+        config["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["line"].as_str().unwrap().to_string(),
+                    l["aor"].as_str().unwrap().to_string(),
+                    l["label"].as_str().unwrap().to_string(),
+                    l["ring"].as_bool().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let config = app
+        .send_as(&access, Method::GET, "/api/v1/me/softphone", None)
+        .await;
+    assert_eq!(config.status, StatusCode::OK, "{}", config.text);
+    let lines = shown(&config.json);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[0].0, "own");
+    assert!(
+        lines[0].1.starts_with("sip:bob@"),
+        "the app's own address: {lines:?}"
+    );
+    assert_eq!(lines[0].2, "1002 - bob", "the default label");
+    assert_eq!(lines[1].0, "extension:1005");
+    assert!(lines[1].1.starts_with("sip:1005@"), "{lines:?}");
+    assert_eq!(lines[1].2, "Sales", "the administrator's label");
+    assert_eq!(lines[2].0, "on_behalf:mary");
+    assert!(lines[2].1.starts_with("sip:mary@"), "{lines:?}");
+    assert!(!lines[2].3, "a line it only calls out on");
+    assert_eq!(config.json["may_rename_lines"], false);
+
+    // Renaming is the tenant's to allow.
+    let label = |line: &str, name: &str| {
+        let (app, access) = (&app, &access);
+        let path = format!("/api/v1/me/lines/{line}/label");
+        let body = json!({ "label": name });
+        async move { app.send_as(access, Method::PUT, &path, Some(body)).await }
+    };
+    let refused = label("own", "Desk").await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let allow = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({ "lines": { "users_may_rename": true } })),
+        )
+        .await;
+    assert_eq!(allow.status, StatusCode::OK, "{}", allow.text);
+    assert_eq!(allow.json["lines"]["users_may_rename"], true);
+    let named = label("own", "Desk").await;
+    assert_eq!(named.status, StatusCode::NO_CONTENT, "{}", named.text);
+    let unknown = label("extension:1003", "Not mine").await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.text);
+    let config = app
+        .send_as(&access, Method::GET, "/api/v1/me/softphone", None)
+        .await;
+    let lines = shown(&config.json);
+    assert_eq!(lines[0].2, "Desk", "his own name for it");
+    assert_eq!(lines[1].2, "Sales", "the others keep theirs");
+    assert_eq!(config.json["may_rename_lines"], true);
+
+    // Cleared, the line shows its default again; the tenant taking the
+    // choice back hides his names too.
+    assert_eq!(label("own", "").await.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        label("extension:1005", "My sales").await.status,
+        StatusCode::NO_CONTENT
+    );
+    let back = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({ "lines": { "users_may_rename": false } })),
+        )
+        .await;
+    assert_eq!(back.status, StatusCode::OK, "{}", back.text);
+    let config = app
+        .send_as(&access, Method::GET, "/api/v1/me/softphone", None)
+        .await;
+    let lines = shown(&config.json);
+    assert_eq!(lines[0].2, "1002 - bob");
+    assert_eq!(
+        lines[1].2, "Sales",
+        "his name is not shown while renaming is off"
+    );
+
+    // A VVX written from the same lines: an account each, with its label.
+    let template = app
+        .admin(
+            Method::POST,
+            "/api/v1/config-templates/library/polycom",
+            None,
+        )
+        .await;
+    assert_eq!(template.status, StatusCode::CREATED, "{}", template.text);
+    let template_id = template.json["id"].as_str().unwrap().to_string();
+    let on_vvx = app
+        .admin(
+            Method::PATCH,
+            &device_path,
+            Some(json!({ "vendor": "polycom", "config_template_id": template_id })),
+        )
+        .await;
+    assert_eq!(on_vvx.status, StatusCode::OK, "{}", on_vvx.text);
+    let rendered = app
+        .admin(Method::POST, &format!("{device_path}/render"), None)
+        .await;
+    assert_eq!(rendered.status, StatusCode::OK, "{}", rendered.text);
+    let body = rendered.json["content"].as_str().unwrap();
+    for want in [
+        r#"reg.1.label="1002 - bob""#,
+        r#"reg.2.address="1005@"#,
+        r#"reg.2.label="Sales""#,
+        r#"reg.3.address="mary@"#,
+        r#"reg.3.label="mary""#,
+    ] {
+        assert!(body.contains(want), "{want} in\n{body}");
+    }
+    assert!(
+        !body.contains("reg.4."),
+        "three lines, three accounts:\n{body}"
+    );
     app.finish().await;
 }
 

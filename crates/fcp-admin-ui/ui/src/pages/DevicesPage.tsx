@@ -21,7 +21,7 @@ import { devices, emergency, locations, provisioning, tenants, users } from '@/a
 import type { AddressValidation, Device, CreateDeviceRequest, UpdateDeviceRequest } from '@/types'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 import { ProvisioningUrlCard, DeviceFetchesDialog, PendingPhonesCard, DeviceConfigDialog, RedirectionCard } from '@/components/ProvisioningUrl'
-import type { LineKey } from '@/types'
+import type { DeviceLine, LineKey } from '@/types'
 
 /** The vendors a phone can be (docs/PROVISIONING.md §5). */
 const VENDORS = ['yealink', 'polycom', 'grandstream', 'cisco', 'fanvil', 'snom']
@@ -40,6 +40,39 @@ function textToLineKeys(text: string): LineKey[] {
     .map((line) => {
       const [kind, value, ...label] = line.split(',').map((p) => p.trim())
       return { kind: kind as LineKey['kind'], value: value ?? '', label: label.join(', ') || undefined }
+    })
+}
+
+/**
+ * Lines as text, one per line: `kind, value, label`, with `no ring` last
+ * for a line the device only calls out on (docs/DEVICE_LINES.md).
+ */
+function linesToText(lines: DeviceLine[] | undefined): string {
+  return (lines ?? [])
+    .map((l) =>
+      [l.kind, l.value ?? '', l.label ?? '', l.ring === false ? 'no ring' : '']
+        .join(', ')
+        .replace(/(, )+$/, ''),
+    )
+    .join('\n')
+}
+
+function textToLines(text: string): DeviceLine[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split(',').map((p) => p.trim())
+      const ring = parts[parts.length - 1]?.toLowerCase() !== 'no ring'
+      if (!ring) parts.pop()
+      const [kind, value, ...label] = parts
+      return {
+        kind: kind as DeviceLine['kind'],
+        value: value ?? '',
+        label: label.join(', ') || undefined,
+        ring,
+      }
     })
 }
 
@@ -63,6 +96,9 @@ const editSchema = z.object({
   vendor: z.string().optional(),
   // One per line: `blf, 202, Bob` (docs/PROVISIONING.md §5).
   line_keys: z.string().optional(),
+  // One per line: `own`, `extension, 1005`, `shared, +15551234567`,
+  // `on_behalf, mary` (docs/DEVICE_LINES.md).
+  lines: z.string().optional(),
   firmware_version: z.string().optional(),
   location: z.string().optional(),
   location_id: z.string().optional(),
@@ -521,6 +557,7 @@ export function DevicesPage() {
       model: editItem.model || '',
       vendor: editItem.vendor ?? '',
       line_keys: lineKeysToText(editItem.line_keys),
+      lines: linesToText(editItem.lines),
       firmware_version: editItem.firmware_version || '',
       location: editItem.location || '',
       location_id: editItem.location_id || '',
@@ -572,6 +609,7 @@ export function DevicesPage() {
         model: data.model ?? '',
         vendor: data.vendor ?? '',
         line_keys: textToLineKeys(data.line_keys ?? ''),
+        lines: textToLines(data.lines ?? ''),
         firmware_version: data.firmware_version ?? '',
         location: data.location ?? '',
         location_id: data.location_id ?? '',
@@ -785,6 +823,21 @@ export function DevicesPage() {
                 {...editForm.register('line_keys')}
               />
               <p className="text-xs text-muted-foreground">One per line: blf, speed_dial or park; then the extension or number; then a label.</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="e-lines">Lines</Label>
+              <textarea
+                id="e-lines"
+                rows={4}
+                placeholder={'own\nextension, 1005, Sales\nshared, +15551234567, Front desk\non_behalf, mary, , no ring'}
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                {...editForm.register('lines')}
+              />
+              <p className="text-xs text-muted-foreground">
+                Up to ten, the first own: another extension of the owner&apos;s, a shared line the device is on, or
+                someone the owner assists. Then a label (empty for &quot;1001 - Bob&quot;); &quot;no ring&quot; for a line
+                it only calls out on. Empty: its own line, as before.
+              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="e-firmware_version">Firmware Version</Label>

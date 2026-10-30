@@ -165,6 +165,19 @@ pub struct Tenant {
     /// §2.7).
     #[serde(default)]
     pub directory: TenantDirectory,
+    /// Whether a user may name their own lines (`docs/DEVICE_LINES.md`
+    /// §2); off, the apps show the administrator's labels.
+    #[serde(default)]
+    pub lines: TenantLines,
+}
+
+/// What a tenant's people may do with the lines on their devices.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TenantLines {
+    /// A user may rename their lines (`PUT /me/lines/{line}/label`).
+    #[serde(default)]
+    pub users_may_rename: bool,
 }
 
 /// What a tenant's people see of each other through `/me/directory`.
@@ -455,6 +468,7 @@ impl Tenant {
             offboarding: TenantOffboarding::default(),
             provisioning: Default::default(),
             directory: TenantDirectory::default(),
+            lines: TenantLines::default(),
         }
     }
 

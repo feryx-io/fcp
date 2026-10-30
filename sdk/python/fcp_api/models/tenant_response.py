@@ -15,6 +15,7 @@ import datetime
 if TYPE_CHECKING:
   from ..models.tenant_calling import TenantCalling
   from ..models.tenant_directory import TenantDirectory
+  from ..models.tenant_lines import TenantLines
   from ..models.tenant_offboarding import TenantOffboarding
   from ..models.tenant_provisioning import TenantProvisioning
   from ..models.tenant_sign_in import TenantSignIn
@@ -47,6 +48,7 @@ class TenantResponse:
             offboarding (TenantOffboarding): What happens to a tenant's deleted user (`docs/USERS.md` §4): they are
                 suspended at once and purged `grace_days` later.
             directory (TenantDirectory): What a tenant's people see of each other through `/me/directory`.
+            lines (TenantLines): What a tenant's people may do with the lines on their devices.
             provisioning (TenantProvisioning): A tenant's provisioning settings (`docs/PROVISIONING.md` §3).
             description (None | str | Unset):
             contact_email (None | str | Unset):
@@ -71,6 +73,7 @@ class TenantResponse:
     sign_in: TenantSignIn
     offboarding: TenantOffboarding
     directory: TenantDirectory
+    lines: TenantLines
     provisioning: TenantProvisioning
     description: None | str | Unset = UNSET
     contact_email: None | str | Unset = UNSET
@@ -90,6 +93,7 @@ class TenantResponse:
     def to_dict(self) -> dict[str, Any]:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
         from ..models.tenant_directory import TenantDirectory # noqa: PLC0415
+        from ..models.tenant_lines import TenantLines # noqa: PLC0415
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
         from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
@@ -120,6 +124,8 @@ class TenantResponse:
         offboarding = self.offboarding.to_dict()
 
         directory = self.directory.to_dict()
+
+        lines = self.lines.to_dict()
 
         provisioning = self.provisioning.to_dict()
 
@@ -195,6 +201,7 @@ class TenantResponse:
             "sign_in": sign_in,
             "offboarding": offboarding,
             "directory": directory,
+            "lines": lines,
             "provisioning": provisioning,
         })
         if description is not UNSET:
@@ -224,6 +231,7 @@ class TenantResponse:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
         from ..models.tenant_directory import TenantDirectory # noqa: PLC0415
+        from ..models.tenant_lines import TenantLines # noqa: PLC0415
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
         from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
@@ -268,6 +276,11 @@ class TenantResponse:
 
 
         directory = TenantDirectory.from_dict(d.pop("directory"))
+
+
+
+
+        lines = TenantLines.from_dict(d.pop("lines"))
 
 
 
@@ -390,6 +403,7 @@ class TenantResponse:
             sign_in=sign_in,
             offboarding=offboarding,
             directory=directory,
+            lines=lines,
             provisioning=provisioning,
             description=description,
             contact_email=contact_email,

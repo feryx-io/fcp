@@ -333,6 +333,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/lines/{line}/label": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * PUT /api/v1/me/lines/{line}/label — name one of your lines, on every
+         *     device that has it (`docs/DEVICE_LINES.md` §2). 403 unless the tenant
+         *     lets its users rename; 404 for a line none of your devices has.
+         */
+        put: operations["softphone_set_line_label"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/devices": {
         parameters: {
             query?: never;
@@ -6860,6 +6881,8 @@ export interface components {
             supports_blf?: boolean | null;
             /** @description The keys programmed on the phone. */
             line_keys?: components["schemas"]["LineKey"][] | null;
+            /** @description Its lines: the first `own`, at most ten, each one the device may be. */
+            lines?: components["schemas"]["DeviceLine"][] | null;
             config_template_id?: string | null;
             location?: string | null;
             location_id?: string | null;
@@ -7153,6 +7176,7 @@ export interface components {
             sign_in?: components["schemas"]["TenantSignIn"] | null;
             offboarding?: components["schemas"]["TenantOffboarding"] | null;
             directory?: components["schemas"]["TenantDirectory"] | null;
+            lines?: components["schemas"]["TenantLines"] | null;
             provisioning?: components["schemas"]["TenantProvisioning"] | null;
         };
         /** @description Credit or adjustment request. */
@@ -7392,6 +7416,22 @@ export interface components {
             /** @description `served`, `unauthorized`, `not_served` (disabled, or no template)… */
             outcome: string;
         };
+        /**
+         * @description A line on a device (`docs/DEVICE_LINES.md` §2): an account it registers
+         *     and takes calls on, as a desk phone's line keys are.
+         */
+        DeviceLine: {
+            kind: components["schemas"]["LineKind"];
+            /**
+             * @description The extension (`extension`), the number (`shared`) or the user's
+             *     name or id (`on_behalf`); empty for `own`.
+             */
+            value?: string;
+            /** @description The administrator's label; unset, the line's default. */
+            label?: string | null;
+            /** @description Whether calls to the line ring this device. */
+            ring?: boolean;
+        };
         /** @description Where a device stands with its vendor's service. */
         DeviceRedirectionResponse: {
             service: components["schemas"]["RedirectionService"];
@@ -7451,6 +7491,11 @@ export interface components {
             codec_support: string[];
             /** @description The keys programmed on the phone, in order. */
             line_keys: components["schemas"]["LineKey"][];
+            /**
+             * @description The lines it registers and takes calls on (`docs/DEVICE_LINES.md`);
+             *     empty, its own line (and a phone's shared line) as before lines.
+             */
+            lines: components["schemas"]["DeviceLine"][];
             location?: string | null;
             location_id?: string | null;
             e911_override?: components["schemas"]["E911AddressResponse"] | null;
@@ -8214,6 +8259,16 @@ export interface components {
          * @enum {string}
          */
         LineKeyKind: "blf" | "speed_dial" | "park";
+        /**
+         * @description What a line is.
+         * @enum {string}
+         */
+        LineKind: "own" | "extension" | "shared" | "on_behalf";
+        /** @description A user's name for one of their lines. */
+        LineLabelRequest: {
+            /** @description Empty clears it: the line shows the administrator's label again. */
+            label: string;
+        };
         /**
          * @description A page of CDRs: the list envelope (`crate::page`), whose cursor is the
          *     CDR store's own keyset cursor, and whose total may be an estimate.
@@ -9050,6 +9105,11 @@ export interface components {
                 codec_support: string[];
                 /** @description The keys programmed on the phone, in order. */
                 line_keys: components["schemas"]["LineKey"][];
+                /**
+                 * @description The lines it registers and takes calls on (`docs/DEVICE_LINES.md`);
+                 *     empty, its own line (and a phone's shared line) as before lines.
+                 */
+                lines: components["schemas"]["DeviceLine"][];
                 location?: string | null;
                 location_id?: string | null;
                 e911_override?: components["schemas"]["E911AddressResponse"] | null;
@@ -10688,6 +10748,8 @@ export interface components {
                 offboarding: components["schemas"]["TenantOffboarding"];
                 /** @description What the tenant's people see of each other (`/me/directory`). */
                 directory: components["schemas"]["TenantDirectory"];
+                /** @description Whether its users may name their own lines. */
+                lines: components["schemas"]["TenantLines"];
                 /**
                  * @description How the tenant's phones fetch their configuration
                  *     (`docs/PROVISIONING.md` §3).
@@ -12352,6 +12414,41 @@ export interface components {
              */
             directory_listed: boolean;
             may_change_directory_listing: boolean;
+            /**
+             * @description The app's lines, its own first; `account` is the first, kept for a
+             *     release.
+             */
+            lines: components["schemas"]["SoftphoneLine"][];
+            /** @description Whether the user may name their lines (the tenant's choice). */
+            may_rename_lines: boolean;
+        };
+        /**
+         * @description A line on the app (`docs/DEVICE_LINES.md`): an account it registers
+         *     with its own credentials and takes calls on.
+         */
+        SoftphoneLine: {
+            /**
+             * Format: int32
+             * @description 1 for the first; the first is the user's own.
+             */
+            index: number;
+            /** @description `own`, `extension`, `shared` or `on_behalf`. */
+            kind: string;
+            /** @description The line itself, as `PUT /me/lines/{line}/label` names it. */
+            line: string;
+            /** @description What the app registers the line as. */
+            aor: string;
+            /**
+             * @description What it is called: the user's name, the administrator's, or
+             *     `default_label`.
+             */
+            label: string;
+            default_label: string;
+            shared: boolean;
+            /** Format: int32 */
+            appearances: number;
+            /** @description Whether calls to the line ring the app. */
+            ring: boolean;
         };
         /** @description The media the app offers. */
         SoftphoneMedia: {
@@ -12553,6 +12650,11 @@ export interface components {
         };
         /** @description A TenantId: `tenant-<uuid>`, or the bare UUID */
         TenantId: string;
+        /** @description What a tenant's people may do with the lines on their devices. */
+        TenantLines: {
+            /** @description A user may rename their lines (`PUT /me/lines/{line}/label`). */
+            users_may_rename?: boolean;
+        };
         /**
          * @description What happens to a tenant's deleted user (`docs/USERS.md` §4): they are
          *     suspended at once and purged `grace_days` later.
@@ -12625,6 +12727,8 @@ export interface components {
             offboarding: components["schemas"]["TenantOffboarding"];
             /** @description What the tenant's people see of each other (`/me/directory`). */
             directory: components["schemas"]["TenantDirectory"];
+            /** @description Whether its users may name their own lines. */
+            lines: components["schemas"]["TenantLines"];
             /**
              * @description How the tenant's phones fetch their configuration
              *     (`docs/PROVISIONING.md` §3).
@@ -12979,6 +13083,8 @@ export interface components {
             supports_blf?: boolean | null;
             /** @description The keys programmed on the phone, replacing what it had. */
             line_keys?: components["schemas"]["LineKey"][] | null;
+            /** @description Its lines, replacing what it had; empty goes back to its own line. */
+            lines?: components["schemas"]["DeviceLine"][] | null;
             location?: string | null;
             location_id?: string | null;
             e911_override?: components["schemas"]["E911AddressResponse"] | null;
@@ -13389,6 +13495,7 @@ export interface components {
             sign_in?: components["schemas"]["TenantSignIn"] | null;
             offboarding?: components["schemas"]["TenantOffboarding"] | null;
             directory?: components["schemas"]["TenantDirectory"] | null;
+            lines?: components["schemas"]["TenantLines"] | null;
             provisioning?: components["schemas"]["TenantProvisioning"] | null;
         };
         /** @description Update trunk request. */
@@ -14439,6 +14546,40 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SoftphonePassword"];
                 };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    softphone_set_line_label: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `own`, `extension:1005`, `shared:+15551234567`, `on_behalf:<user>` */
+                line: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LineLabelRequest"];
+            };
+        };
+        responses: {
+            /** @description Named */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description An error */
             default: {

@@ -697,6 +697,51 @@
         }
       }
     },
+    "/api/v1/me/lines/{line}/label": {
+      "put": {
+        "tags": [
+          "softphone"
+        ],
+        "summary": "PUT /api/v1/me/lines/{line}/label — name one of your lines, on every\ndevice that has it (`docs/DEVICE_LINES.md` §2). 403 unless the tenant\nlets its users rename; 404 for a line none of your devices has.",
+        "operationId": "softphone_set_line_label",
+        "parameters": [
+          {
+            "name": "line",
+            "in": "path",
+            "description": "`own`, `extension:1005`, `shared:+15551234567`, `on_behalf:<user>`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LineLabelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Named"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/devices": {
       "get": {
         "tags": [
@@ -22429,6 +22474,16 @@
             },
             "description": "The keys programmed on the phone."
           },
+          "lines": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/DeviceLine"
+            },
+            "description": "Its lines: the first `own`, at most ten, each one the device may be."
+          },
           "config_template_id": {
             "type": [
               "string",
@@ -23578,6 +23633,17 @@
               }
             ]
           },
+          "lines": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantLines",
+                "description": "Whether its users may name their own lines; unset, they may not."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "provisioning": {
             "oneOf": [
               {
@@ -24420,6 +24486,33 @@
           }
         }
       },
+      "DeviceLine": {
+        "type": "object",
+        "description": "A line on a device (`docs/DEVICE_LINES.md` §2): an account it registers\nand takes calls on, as a desk phone's line keys are.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/LineKind"
+          },
+          "value": {
+            "type": "string",
+            "description": "The extension (`extension`), the number (`shared`) or the user's\nname or id (`on_behalf`); empty for `own`."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The administrator's label; unset, the line's default."
+          },
+          "ring": {
+            "type": "boolean",
+            "description": "Whether calls to the line ring this device."
+          }
+        }
+      },
       "DeviceRedirectionResponse": {
         "type": "object",
         "description": "Where a device stands with its vendor's service.",
@@ -24472,6 +24565,7 @@
           "supports_blf",
           "codec_support",
           "line_keys",
+          "lines",
           "has_provisioning_token",
           "enabled",
           "created_at",
@@ -24610,6 +24704,13 @@
               "$ref": "#/components/schemas/LineKey"
             },
             "description": "The keys programmed on the phone, in order."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceLine"
+            },
+            "description": "The lines it registers and takes calls on (`docs/DEVICE_LINES.md`);\nempty, its own line (and a phone's shared line) as before lines."
           },
           "location": {
             "type": [
@@ -26864,6 +26965,30 @@
           "speed_dial",
           "park"
         ]
+      },
+      "LineKind": {
+        "type": "string",
+        "description": "What a line is.",
+        "enum": [
+          "own",
+          "extension",
+          "shared",
+          "on_behalf"
+        ]
+      },
+      "LineLabelRequest": {
+        "type": "object",
+        "description": "A user's name for one of their lines.",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Empty clears it: the line shows the administrator's label again."
+          }
+        },
+        "additionalProperties": false
       },
       "ListCdrsResponse": {
         "type": "object",
@@ -29212,6 +29337,7 @@
                 "supports_blf",
                 "codec_support",
                 "line_keys",
+                "lines",
                 "has_provisioning_token",
                 "enabled",
                 "created_at",
@@ -29350,6 +29476,13 @@
                     "$ref": "#/components/schemas/LineKey"
                   },
                   "description": "The keys programmed on the phone, in order."
+                },
+                "lines": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeviceLine"
+                  },
+                  "description": "The lines it registers and takes calls on (`docs/DEVICE_LINES.md`);\nempty, its own line (and a phone's shared line) as before lines."
                 },
                 "location": {
                   "type": [
@@ -34591,6 +34724,7 @@
                 "sign_in",
                 "offboarding",
                 "directory",
+                "lines",
                 "provisioning"
               ],
               "properties": {
@@ -34705,6 +34839,10 @@
                 "directory": {
                   "$ref": "#/components/schemas/TenantDirectory",
                   "description": "What the tenant's people see of each other (`/me/directory`)."
+                },
+                "lines": {
+                  "$ref": "#/components/schemas/TenantLines",
+                  "description": "Whether its users may name their own lines."
                 },
                 "provisioning": {
                   "$ref": "#/components/schemas/TenantProvisioning",
@@ -39459,7 +39597,9 @@
           "device_id",
           "may_record",
           "directory_listed",
-          "may_change_directory_listing"
+          "may_change_directory_listing",
+          "lines",
+          "may_rename_lines"
         ],
         "properties": {
           "account": {
@@ -39509,6 +39649,71 @@
           },
           "may_change_directory_listing": {
             "type": "boolean"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SoftphoneLine"
+            },
+            "description": "The app's lines, its own first; `account` is the first, kept for a\nrelease."
+          },
+          "may_rename_lines": {
+            "type": "boolean",
+            "description": "Whether the user may name their lines (the tenant's choice)."
+          }
+        }
+      },
+      "SoftphoneLine": {
+        "type": "object",
+        "description": "A line on the app (`docs/DEVICE_LINES.md`): an account it registers\nwith its own credentials and takes calls on.",
+        "required": [
+          "index",
+          "kind",
+          "line",
+          "aor",
+          "label",
+          "default_label",
+          "shared",
+          "appearances",
+          "ring"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 for the first; the first is the user's own.",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "description": "`own`, `extension`, `shared` or `on_behalf`."
+          },
+          "line": {
+            "type": "string",
+            "description": "The line itself, as `PUT /me/lines/{line}/label` names it."
+          },
+          "aor": {
+            "type": "string",
+            "description": "What the app registers the line as."
+          },
+          "label": {
+            "type": "string",
+            "description": "What it is called: the user's name, the administrator's, or\n`default_label`."
+          },
+          "default_label": {
+            "type": "string"
+          },
+          "shared": {
+            "type": "boolean"
+          },
+          "appearances": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "ring": {
+            "type": "boolean",
+            "description": "Whether calls to the line ring the app."
           }
         }
       },
@@ -40058,6 +40263,16 @@
         "type": "string",
         "description": "A TenantId: `tenant-<uuid>`, or the bare UUID"
       },
+      "TenantLines": {
+        "type": "object",
+        "description": "What a tenant's people may do with the lines on their devices.",
+        "properties": {
+          "users_may_rename": {
+            "type": "boolean",
+            "description": "A user may rename their lines (`PUT /me/lines/{line}/label`)."
+          }
+        }
+      },
       "TenantOffboarding": {
         "type": "object",
         "description": "What happens to a tenant's deleted user (`docs/USERS.md` §4): they are\nsuspended at once and purged `grace_days` later.",
@@ -40110,6 +40325,7 @@
           "sign_in",
           "offboarding",
           "directory",
+          "lines",
           "provisioning"
         ],
         "properties": {
@@ -40224,6 +40440,10 @@
           "directory": {
             "$ref": "#/components/schemas/TenantDirectory",
             "description": "What the tenant's people see of each other (`/me/directory`)."
+          },
+          "lines": {
+            "$ref": "#/components/schemas/TenantLines",
+            "description": "Whether its users may name their own lines."
           },
           "provisioning": {
             "$ref": "#/components/schemas/TenantProvisioning",
@@ -41133,6 +41353,16 @@
               "$ref": "#/components/schemas/LineKey"
             },
             "description": "The keys programmed on the phone, replacing what it had."
+          },
+          "lines": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/DeviceLine"
+            },
+            "description": "Its lines, replacing what it had; empty goes back to its own line."
           },
           "location": {
             "type": [
@@ -42800,6 +43030,17 @@
               {
                 "$ref": "#/components/schemas/TenantDirectory",
                 "description": "Replaces what the tenant's people see of each other."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lines": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantLines",
+                "description": "Replaces whether its users may name their own lines."
               },
               {
                 "type": "null"

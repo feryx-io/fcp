@@ -100,6 +100,8 @@ pub struct TenantResponse {
     pub offboarding: fcp_core::TenantOffboarding,
     /// What the tenant's people see of each other (`/me/directory`).
     pub directory: fcp_core::TenantDirectory,
+    /// Whether its users may name their own lines.
+    pub lines: fcp_core::tenant::TenantLines,
     /// How the tenant's phones fetch their configuration
     /// (`docs/PROVISIONING.md` §3).
     pub provisioning: fcp_core::provisioning::TenantProvisioning,
@@ -142,6 +144,7 @@ impl From<Tenant> for TenantResponse {
             offboarding: tenant.offboarding,
             provisioning: tenant.provisioning,
             directory: tenant.directory,
+            lines: tenant.lines,
         }
     }
 }
@@ -187,6 +190,9 @@ pub struct CreateTenantRequest {
     /// directory.
     #[serde(default)]
     pub directory: Option<fcp_core::TenantDirectory>,
+    /// Whether its users may name their own lines; unset, they may not.
+    #[serde(default)]
+    pub lines: Option<fcp_core::tenant::TenantLines>,
     /// How the tenant's phones fetch their configuration.
     #[serde(default)]
     pub provisioning: Option<fcp_core::provisioning::TenantProvisioning>,
@@ -225,6 +231,9 @@ pub struct UpdateTenantRequest {
     /// Replaces what the tenant's people see of each other.
     #[serde(default)]
     pub directory: Option<fcp_core::TenantDirectory>,
+    /// Replaces whether its users may name their own lines.
+    #[serde(default)]
+    pub lines: Option<fcp_core::tenant::TenantLines>,
     /// Replaces how the tenant's phones fetch their configuration.
     pub provisioning: Option<fcp_core::provisioning::TenantProvisioning>,
 }
@@ -560,6 +569,7 @@ pub async fn create_tenant(
         sign_in,
         offboarding,
         directory: req.directory.clone().unwrap_or_default(),
+        lines: req.lines.clone().unwrap_or_default(),
         provisioning: req
             .provisioning
             .clone()
@@ -715,6 +725,9 @@ pub async fn update_tenant(
     }
     if let Some(directory) = req.directory {
         tenant.directory = directory;
+    }
+    if let Some(lines) = req.lines {
+        tenant.lines = lines;
     }
 
     if let Some(provisioning) = req.provisioning {

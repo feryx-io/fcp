@@ -219,6 +219,7 @@ pub fn router() -> Router<ApiState> {
         )
         // Your devices: phones and app installs (docs/SOFTPHONE.md §2.1)
         .route("/me/softphone", get(softphone::get_config))
+        .route("/me/lines/:line/label", put(softphone::set_line_label))
         .route(
             "/me/softphone/rotate-password",
             post(softphone::rotate_password),

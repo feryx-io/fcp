@@ -103,6 +103,7 @@ from .destination_override import DestinationOverride
 from .device_app_response import DeviceAppResponse
 from .device_binding_response import DeviceBindingResponse
 from .device_fetch_response import DeviceFetchResponse
+from .device_line import DeviceLine
 from .device_redirection_response import DeviceRedirectionResponse
 from .device_response import DeviceResponse
 from .device_validation_response import DeviceValidationResponse
@@ -174,6 +175,8 @@ from .library_template_response import LibraryTemplateResponse
 from .line_binding_response import LineBindingResponse
 from .line_key import LineKey
 from .line_key_kind import LineKeyKind
+from .line_kind import LineKind
+from .line_label_request import LineLabelRequest
 from .list_cdrs_response import ListCdrsResponse
 from .location_response import LocationResponse
 from .location_validation_response import LocationValidationResponse
@@ -466,6 +469,7 @@ from .site_with_token_response import SiteWithTokenResponse
 from .softphone_account import SoftphoneAccount
 from .softphone_config import SoftphoneConfig
 from .softphone_config_feature_codes import SoftphoneConfigFeatureCodes
+from .softphone_line import SoftphoneLine
 from .softphone_media import SoftphoneMedia
 from .softphone_password import SoftphonePassword
 from .sso_exchange_request import SsoExchangeRequest
@@ -488,6 +492,7 @@ from .synthesize_greeting_request import SynthesizeGreetingRequest
 from .template_resync_response import TemplateResyncResponse
 from .tenant_calling import TenantCalling
 from .tenant_directory import TenantDirectory
+from .tenant_lines import TenantLines
 from .tenant_offboarding import TenantOffboarding
 from .tenant_provisioning import TenantProvisioning
 from .tenant_response import TenantResponse
@@ -670,6 +675,7 @@ __all__ = (
     "DeviceAppResponse",
     "DeviceBindingResponse",
     "DeviceFetchResponse",
+    "DeviceLine",
     "DeviceRedirectionResponse",
     "DeviceResponse",
     "DeviceValidationResponse",
@@ -741,6 +747,8 @@ __all__ = (
     "LineBindingResponse",
     "LineKey",
     "LineKeyKind",
+    "LineKind",
+    "LineLabelRequest",
     "ListCdrsResponse",
     "LocationResponse",
     "LocationValidationResponse",
@@ -1033,6 +1041,7 @@ __all__ = (
     "SoftphoneAccount",
     "SoftphoneConfig",
     "SoftphoneConfigFeatureCodes",
+    "SoftphoneLine",
     "SoftphoneMedia",
     "SoftphonePassword",
     "SsoExchangeRequest",
@@ -1055,6 +1064,7 @@ __all__ = (
     "TemplateResyncResponse",
     "TenantCalling",
     "TenantDirectory",
+    "TenantLines",
     "TenantOffboarding",
     "TenantProvisioning",
     "TenantResponse",

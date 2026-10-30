@@ -691,6 +691,8 @@ export type DeviceFetch = S['DeviceFetchResponse']
 export type PendingDevice = S['PendingDeviceResponse']
 export type ClaimDeviceRequest = S['ClaimDeviceRequest']
 export type LineKey = S['LineKey']
+/** A line on a device (`docs/DEVICE_LINES.md`). */
+export type DeviceLine = S['DeviceLine']
 export type RenderedConfig = S['RenderedConfigResponse']
 export type RenderDeviceRequest = S['RenderDeviceRequest']
 export type ConfigTemplate = S['ConfigTemplateResponse']

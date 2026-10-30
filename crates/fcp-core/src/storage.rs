@@ -3687,6 +3687,7 @@ pub struct DynStorage {
     contact_store: Option<Arc<dyn crate::contact::ContactStore>>,
     presence_status_store: Option<Arc<dyn crate::presence_status::PresenceStatusStore>>,
     parking_lot_store: Option<Arc<dyn crate::parking::ParkingLotStore>>,
+    line_label_store: Option<Arc<dyn crate::line_label::LineLabelStore>>,
     provisioning_store: Option<Arc<dyn crate::provisioning::ProvisioningStore>>,
 }
 
@@ -3773,6 +3774,7 @@ impl DynStorage {
             contact_store: None,
             presence_status_store: None,
             parking_lot_store: None,
+            line_label_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -3863,6 +3865,7 @@ impl DynStorage {
             contact_store: None,
             presence_status_store: None,
             parking_lot_store: None,
+            line_label_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -4167,6 +4170,20 @@ impl DynStorage {
     ) -> Self {
         self.parking_lot_store = Some(store);
         self
+    }
+
+    /// Attach the store of users' names for their lines.
+    pub fn with_line_label_store(
+        mut self,
+        store: Arc<dyn crate::line_label::LineLabelStore>,
+    ) -> Self {
+        self.line_label_store = Some(store);
+        self
+    }
+
+    /// Users' names for their lines (`docs/DEVICE_LINES.md`), when attached.
+    pub fn line_label_store(&self) -> Option<&Arc<dyn crate::line_label::LineLabelStore>> {
+        self.line_label_store.as_ref()
     }
 
     /// Tenants' parking lots (`docs/PARKING.md`), when attached.

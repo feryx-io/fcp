@@ -32,6 +32,7 @@ pub mod join_token;
 pub mod lcr_route;
 pub mod legal_hold;
 pub mod line_binding;
+pub mod line_label;
 pub mod meeting;
 pub mod metrics;
 pub mod migration_ticket;
@@ -91,7 +92,9 @@ pub use crate::config_store::{
     get_config_with_tenant_fallback, load_or_seed_config, reconcile_with_seed,
     spawn_config_poll_loop, AuditEntry, ConfigEntry, ConfigStore, ConfigWatcher,
 };
-pub use crate::device::{Device, DeviceType, LineKey, LineKeyKind, RegistrationState};
+pub use crate::device::{
+    Device, DeviceLine, DeviceType, LineKey, LineKeyKind, LineKind, RegistrationState,
+};
 pub use crate::encryption::{EncryptionStatus, EncryptionStore, ReencryptReport, RewrapReport};
 pub use crate::error::{
     DialogError, Error, MediaError, ParseError, Result, StorageError, TransactionError,

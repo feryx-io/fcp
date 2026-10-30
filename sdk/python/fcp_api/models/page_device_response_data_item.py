@@ -14,6 +14,7 @@ from typing import cast
 import datetime
 
 if TYPE_CHECKING:
+  from ..models.device_line import DeviceLine
   from ..models.e911_address_response import E911AddressResponse
   from ..models.line_key import LineKey
 
@@ -42,6 +43,8 @@ class PageDeviceResponseDataItem:
             supports_blf (bool):
             codec_support (list[str]):
             line_keys (list[LineKey]): The keys programmed on the phone, in order.
+            lines (list[DeviceLine]): The lines it registers and takes calls on (`docs/DEVICE_LINES.md`);
+                empty, its own line (and a phone's shared line) as before lines.
             has_provisioning_token (bool):
             enabled (bool):
             created_at (datetime.datetime):
@@ -86,6 +89,7 @@ class PageDeviceResponseDataItem:
     supports_blf: bool
     codec_support: list[str]
     line_keys: list[LineKey]
+    lines: list[DeviceLine]
     has_provisioning_token: bool
     enabled: bool
     created_at: datetime.datetime
@@ -117,6 +121,7 @@ class PageDeviceResponseDataItem:
 
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.device_line import DeviceLine # noqa: PLC0415
         from ..models.e911_address_response import E911AddressResponse # noqa: PLC0415
         from ..models.line_key import LineKey # noqa: PLC0415
         id = self.id
@@ -147,6 +152,13 @@ class PageDeviceResponseDataItem:
         for line_keys_item_data in self.line_keys:
             line_keys_item = line_keys_item_data.to_dict()
             line_keys.append(line_keys_item)
+
+
+
+        lines = []
+        for lines_item_data in self.lines:
+            lines_item = lines_item_data.to_dict()
+            lines.append(lines_item)
 
 
 
@@ -300,6 +312,7 @@ class PageDeviceResponseDataItem:
             "supports_blf": supports_blf,
             "codec_support": codec_support,
             "line_keys": line_keys,
+            "lines": lines,
             "has_provisioning_token": has_provisioning_token,
             "enabled": enabled,
             "created_at": created_at,
@@ -352,6 +365,7 @@ class PageDeviceResponseDataItem:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.device_line import DeviceLine # noqa: PLC0415
         from ..models.e911_address_response import E911AddressResponse # noqa: PLC0415
         from ..models.line_key import LineKey # noqa: PLC0415
         d = dict(src_dict)
@@ -386,6 +400,16 @@ class PageDeviceResponseDataItem:
 
 
             line_keys.append(line_keys_item)
+
+
+        lines = []
+        _lines = d.pop("lines")
+        for lines_item_data in (_lines):
+            lines_item = DeviceLine.from_dict(lines_item_data)
+
+
+
+            lines.append(lines_item)
 
 
         has_provisioning_token = d.pop("has_provisioning_token")
@@ -645,6 +669,7 @@ class PageDeviceResponseDataItem:
             supports_blf=supports_blf,
             codec_support=codec_support,
             line_keys=line_keys,
+            lines=lines,
             has_provisioning_token=has_provisioning_token,
             enabled=enabled,
             created_at=created_at,

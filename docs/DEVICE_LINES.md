@@ -106,7 +106,31 @@ an admin can see them; they are ignored while the setting is off.
 3. **Anvil: shared lines in full.** Appearances shown and seized, barge, the line's
    held calls retrievable from any device on it.
 
-## 6. Questions
+## 6. Done
+
+**Phase 1a (v0.25.487).** `Device.lines` (`DeviceLine`: `kind`, `value`, `label`,
+`ring`; `devices.lines_json`, migration 130), set on the device's create and `PATCH`
+(not a route of their own) and shown in its response; the Devices page's edit dialog
+takes them as text, one per line (`own`, `extension, 1005, Sales`, `shared,
++15551234567`, `on_behalf, mary, , no ring`). `fcp_sip::device_lines` resolves each
+line — what it registers as, its default label `<extension> - <name>` — and refuses one
+the device may not be: an extension that is not the owner's, a shared line the device is
+not on, a user the owner does not assist. "May act as" lets a device be an executive's
+line when its owner is one of their assistants and the line is on it. A user's names
+are kept by the line itself (`user_line_labels`: `own`, `extension:1005`, …), not by
+device and index, so one name reaches every device with the line; the tenant's
+`lines.users_may_rename` (off by default; the Tenants page's switch) decides whether
+they are shown, and `PUT /me/lines/{line}/label` (403 while off, 404 for a line none of
+the user's devices has; empty clears). Provisioning writes a device's accounts from its
+lines when it has any (a hoteling host lent to a guest keeps the guest's), and
+`/me/softphone` answers `lines` and `may_rename_lines`; the app's own line is the user's
+address, as `account` is, while a desk phone's first account stays the device's own
+name. Tested: `a_devices_lines_are_checked_shown_and_named` (checks, the app's lines,
+renaming on and off, a VVX written with three accounts), the line rules' unit tests.
+Not yet: `X-FCP-Line` on the INVITEs a device is rung with, and MWI per line (phase
+1b). A user's names are not synced to sites.
+
+## 7. Questions
 
 1. **The user's names are stored on FCP**, so they follow the user to every app.
    Recommended: yes (the alternative is per install, lost on reinstall).

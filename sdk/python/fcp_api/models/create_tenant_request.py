@@ -15,6 +15,7 @@ import datetime
 if TYPE_CHECKING:
   from ..models.tenant_calling import TenantCalling
   from ..models.tenant_directory import TenantDirectory
+  from ..models.tenant_lines import TenantLines
   from ..models.tenant_offboarding import TenantOffboarding
   from ..models.tenant_provisioning import TenantProvisioning
   from ..models.tenant_sign_in import TenantSignIn
@@ -53,6 +54,7 @@ class CreateTenantRequest:
             sign_in (None | TenantSignIn | Unset):
             offboarding (None | TenantOffboarding | Unset):
             directory (None | TenantDirectory | Unset):
+            lines (None | TenantLines | Unset):
             provisioning (None | TenantProvisioning | Unset):
      """
 
@@ -74,6 +76,7 @@ class CreateTenantRequest:
     sign_in: None | TenantSignIn | Unset = UNSET
     offboarding: None | TenantOffboarding | Unset = UNSET
     directory: None | TenantDirectory | Unset = UNSET
+    lines: None | TenantLines | Unset = UNSET
     provisioning: None | TenantProvisioning | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -84,6 +87,7 @@ class CreateTenantRequest:
     def to_dict(self) -> dict[str, Any]:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
         from ..models.tenant_directory import TenantDirectory # noqa: PLC0415
+        from ..models.tenant_lines import TenantLines # noqa: PLC0415
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
         from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
@@ -201,6 +205,14 @@ class CreateTenantRequest:
         else:
             directory = self.directory
 
+        lines: dict[str, Any] | None | Unset
+        if isinstance(self.lines, Unset):
+            lines = UNSET
+        elif isinstance(self.lines, TenantLines):
+            lines = self.lines.to_dict()
+        else:
+            lines = self.lines
+
         provisioning: dict[str, Any] | None | Unset
         if isinstance(self.provisioning, Unset):
             provisioning = UNSET
@@ -249,6 +261,8 @@ class CreateTenantRequest:
             field_dict["offboarding"] = offboarding
         if directory is not UNSET:
             field_dict["directory"] = directory
+        if lines is not UNSET:
+            field_dict["lines"] = lines
         if provisioning is not UNSET:
             field_dict["provisioning"] = provisioning
 
@@ -260,6 +274,7 @@ class CreateTenantRequest:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
         from ..models.tenant_directory import TenantDirectory # noqa: PLC0415
+        from ..models.tenant_lines import TenantLines # noqa: PLC0415
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
         from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
@@ -472,6 +487,26 @@ class CreateTenantRequest:
         directory = _parse_directory(d.pop("directory", UNSET))
 
 
+        def _parse_lines(data: object) -> None | TenantLines | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                lines_type_0 = TenantLines.from_dict(data)
+
+
+
+                return lines_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TenantLines | Unset, data)
+
+        lines = _parse_lines(d.pop("lines", UNSET))
+
+
         def _parse_provisioning(data: object) -> None | TenantProvisioning | Unset:
             if data is None:
                 return data
@@ -511,6 +546,7 @@ class CreateTenantRequest:
             sign_in=sign_in,
             offboarding=offboarding,
             directory=directory,
+            lines=lines,
             provisioning=provisioning,
         )
 

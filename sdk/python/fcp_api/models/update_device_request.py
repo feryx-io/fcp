@@ -12,6 +12,7 @@ from ..types import UNSET, Unset
 from typing import cast
 
 if TYPE_CHECKING:
+  from ..models.device_line import DeviceLine
   from ..models.e911_address_response import E911AddressResponse
   from ..models.line_key import LineKey
 
@@ -44,6 +45,7 @@ class UpdateDeviceRequest:
             supports_video (bool | None | Unset):
             supports_blf (bool | None | Unset):
             line_keys (list[LineKey] | None | Unset): The keys programmed on the phone, replacing what it had.
+            lines (list[DeviceLine] | None | Unset): Its lines, replacing what it had; empty goes back to its own line.
             location (None | str | Unset):
             location_id (None | str | Unset):
             e911_override (E911AddressResponse | None | Unset):
@@ -70,6 +72,7 @@ class UpdateDeviceRequest:
     supports_video: bool | None | Unset = UNSET
     supports_blf: bool | None | Unset = UNSET
     line_keys: list[LineKey] | None | Unset = UNSET
+    lines: list[DeviceLine] | None | Unset = UNSET
     location: None | str | Unset = UNSET
     location_id: None | str | Unset = UNSET
     e911_override: E911AddressResponse | None | Unset = UNSET
@@ -85,6 +88,7 @@ class UpdateDeviceRequest:
 
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.device_line import DeviceLine # noqa: PLC0415
         from ..models.e911_address_response import E911AddressResponse # noqa: PLC0415
         from ..models.line_key import LineKey # noqa: PLC0415
         name: None | str | Unset
@@ -178,6 +182,19 @@ class UpdateDeviceRequest:
         else:
             line_keys = self.line_keys
 
+        lines: list[dict[str, Any]] | None | Unset
+        if isinstance(self.lines, Unset):
+            lines = UNSET
+        elif isinstance(self.lines, list):
+            lines = []
+            for lines_type_0_item_data in self.lines:
+                lines_type_0_item = lines_type_0_item_data.to_dict()
+                lines.append(lines_type_0_item)
+
+
+        else:
+            lines = self.lines
+
         location: None | str | Unset
         if isinstance(self.location, Unset):
             location = UNSET
@@ -261,6 +278,8 @@ class UpdateDeviceRequest:
             field_dict["supports_blf"] = supports_blf
         if line_keys is not UNSET:
             field_dict["line_keys"] = line_keys
+        if lines is not UNSET:
+            field_dict["lines"] = lines
         if location is not UNSET:
             field_dict["location"] = location
         if location_id is not UNSET:
@@ -284,6 +303,7 @@ class UpdateDeviceRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.device_line import DeviceLine # noqa: PLC0415
         from ..models.e911_address_response import E911AddressResponse # noqa: PLC0415
         from ..models.line_key import LineKey # noqa: PLC0415
         d = dict(src_dict)
@@ -442,6 +462,31 @@ class UpdateDeviceRequest:
         line_keys = _parse_line_keys(d.pop("line_keys", UNSET))
 
 
+        def _parse_lines(data: object) -> list[DeviceLine] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                lines_type_0 = []
+                _lines_type_0 = data
+                for lines_type_0_item_data in (_lines_type_0):
+                    lines_type_0_item = DeviceLine.from_dict(lines_type_0_item_data)
+
+
+
+                    lines_type_0.append(lines_type_0_item)
+
+                return lines_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[DeviceLine] | None | Unset, data)
+
+        lines = _parse_lines(d.pop("lines", UNSET))
+
+
         def _parse_location(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -547,6 +592,7 @@ class UpdateDeviceRequest:
             supports_video=supports_video,
             supports_blf=supports_blf,
             line_keys=line_keys,
+            lines=lines,
             location=location,
             location_id=location_id,
             e911_override=e911_override,

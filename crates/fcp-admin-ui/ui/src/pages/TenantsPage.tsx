@@ -57,6 +57,7 @@ const editSchema = z.object({
   meetings_owner: z.string().optional(),
   directory_visible: z.boolean().optional(),
   users_may_unlist: z.boolean().optional(),
+  users_may_rename_lines: z.boolean().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -246,6 +247,7 @@ export function TenantsPage() {
       meetings_owner: editItem.offboarding?.meetings_owner ?? '',
       directory_visible: editItem.directory?.visible_to_users ?? true,
       users_may_unlist: editItem.directory?.users_may_unlist ?? false,
+      users_may_rename_lines: editItem.lines?.users_may_rename ?? false,
     })
   }
 
@@ -279,6 +281,7 @@ export function TenantsPage() {
       provisioning_networks,
       directory_visible,
       users_may_unlist,
+      users_may_rename_lines,
       ...rest
     } = data
     updateMutation.mutate({
@@ -309,6 +312,7 @@ export function TenantsPage() {
           visible_to_users: directory_visible ?? true,
           users_may_unlist: users_may_unlist ?? false,
         },
+        lines: { users_may_rename: users_may_rename_lines ?? false },
         offboarding: {
           grace_days: grace_days ?? 30,
           meetings_owner: meetings_owner?.trim() || null,
@@ -692,6 +696,20 @@ export function TenantsPage() {
                 id="e-users_may_unlist"
                 checked={editForm.watch('users_may_unlist') ?? false}
                 onCheckedChange={(v) => editForm.setValue('users_may_unlist', v)}
+              />
+            </div>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="space-y-0.5 pr-4">
+                <Label htmlFor="e-users_may_rename_lines">Users may rename their lines</Label>
+                <p className="text-xs text-muted-foreground">
+                  Let each person give their lines their own names in their app, shown on all their
+                  devices. Off, the lines show the administrator&rsquo;s labels.
+                </p>
+              </div>
+              <Switch
+                id="e-users_may_rename_lines"
+                checked={editForm.watch('users_may_rename_lines') ?? false}
+                onCheckedChange={(v) => editForm.setValue('users_may_rename_lines', v)}
               />
             </div>
             <div className="flex justify-end gap-2">

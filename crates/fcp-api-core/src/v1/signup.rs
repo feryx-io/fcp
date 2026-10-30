@@ -147,6 +147,7 @@ pub async fn signup(
         offboarding: Default::default(),
         provisioning: Default::default(),
         directory: Default::default(),
+        lines: Default::default(),
         created_at: now,
         updated_at: now,
         trial_expires_at: Some(now + Duration::from_secs(14 * 24 * 3600)),
