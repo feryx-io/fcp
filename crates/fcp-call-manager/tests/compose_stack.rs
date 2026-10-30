@@ -137,7 +137,7 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
 
     // Every service says it is there, member or not (`docs/SERVICES.md`
     // phase S1): one beacon per process in the stack's Redis, on this
-    // release, its required checks passing.
+    // release, its required checks passing and the events server reached.
     let beacons = fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
         url: redis.clone(),
         ..Default::default()
@@ -163,13 +163,18 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
         let records = fcp_cluster::ServiceBeacon::read_all(&beacons)
             .await
             .expect("read the beacons");
-        if kinds.iter().all(|k| records.iter().any(|r| r.kind == *k)) {
+        // The events server runs in the stack, so every service that
+        // checks it finds it (a check once asked `/ingest/health`).
+        let events_reached = records
+            .iter()
+            .flat_map(|r| &r.checks)
+            .all(|c| c.name != "events" || c.ok);
+        if kinds.iter().all(|k| records.iter().any(|r| r.kind == *k)) && events_reached {
             break records;
         }
-        let seen: Vec<_> = records.iter().map(|r| r.kind.as_str()).collect();
         assert!(
             tokio::time::Instant::now() < deadline,
-            "a beacon from every service: {seen:?}"
+            "a beacon from every service, each reaching the events server: {records:?}"
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     };

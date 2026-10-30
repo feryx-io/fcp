@@ -1237,10 +1237,7 @@ async fn main() -> Result<()> {
         })
         .draining(move || leaving.is_draining());
         if let Some(events) = &config.events.server_url {
-            beacon = beacon.check(fcp_cluster::Check::http(
-                "events",
-                format!("{}/health", events.trim_end_matches('/')),
-            ));
+            beacon = beacon.check(fcp_cluster::Check::health("events", events));
         }
         let handle = beacon.start(fcp_storage_redis::RedisConfig {
             url: url.clone(),

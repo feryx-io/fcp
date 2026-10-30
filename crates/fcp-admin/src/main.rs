@@ -823,10 +823,7 @@ async fn main() -> Result<()> {
             Arc::clone(&storage) as Arc<dyn fcp_core::storage::TenantStore>
         ));
         if let Some(events) = &events_server_url {
-            beacon = beacon.check(fcp_cluster::Check::http(
-                "events",
-                format!("{}/health", events.trim_end_matches('/')),
-            ));
+            beacon = beacon.check(fcp_cluster::Check::health("events", events));
         }
         beacon.start(fcp_storage_redis::RedisConfig {
             url: url.clone(),

@@ -180,6 +180,28 @@ impl Check {
             }
         })
     }
+
+    /// A service this one calls, named by any of its URLs: its `/health`
+    /// at that URL's origin (`health_url`).
+    pub fn health(name: impl Into<String>, url: &str) -> Self {
+        Self::http(name, health_url(url))
+    }
+}
+
+/// Where a service named by any of its URLs answers its health: the
+/// URL's origin and `/health`. `[events] server_url` is the events
+/// server's ingest endpoint (`http://host:8081/ingest`), whose health is
+/// at `http://host:8081/health`, not under it.
+pub fn health_url(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(mut u) => {
+            u.set_path("/health");
+            u.set_query(None);
+            u.set_fragment(None);
+            u.to_string()
+        }
+        Err(_) => format!("{}/health", url.trim_end_matches('/')),
+    }
 }
 
 fn short_error(e: &reqwest::Error) -> String {
@@ -467,4 +489,25 @@ fn host_name() -> String {
                 .filter(|h| !h.is_empty())
         })
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::health_url;
+
+    #[test]
+    fn health_is_asked_at_the_origin() {
+        assert_eq!(
+            health_url("http://127.0.0.1:8081/ingest"),
+            "http://127.0.0.1:8081/health"
+        );
+        assert_eq!(
+            health_url("http://fcp-tts:8093/"),
+            "http://fcp-tts:8093/health"
+        );
+        assert_eq!(
+            health_url("https://events.example/ingest?x=1"),
+            "https://events.example/health"
+        );
+    }
 }
