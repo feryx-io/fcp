@@ -162,7 +162,8 @@ format = "compact"
     }
 
     /// Give a user a number, a line binding and an enabled mailbox.
-    async fn mailbox(&self, user: &SeededUser, e164: &str) {
+    /// A mailbox on a number of the user's own; its id.
+    async fn mailbox(&self, user: &SeededUser, e164: &str) -> String {
         let storage = self.seed.storage();
         let row = fcp_core::storage::CredentialStore::get_user_in_tenant(
             storage,
@@ -189,7 +190,9 @@ format = "compact"
         );
         storage.put_phone_number(number).await.expect("number");
         storage.put_line_binding(binding).await.expect("binding");
+        let id = mailbox.id.to_string();
         storage.put_mailbox(mailbox).await.expect("mailbox");
+        id
     }
 
     /// The node's view of its calls (`GET /calls`).
@@ -552,7 +555,7 @@ async fn a_user_with_no_phone_reaches_voicemail_by_extension() {
     let stack = stack_or_skip!();
     let alice = stack.seed.user("alice", "alice-pw", "1001").await;
     let carol = stack.seed.user("carol", "carol-pw", "1003").await;
-    stack.mailbox(&carol, "+15125550103").await;
+    let mailbox_id = stack.mailbox(&carol, "+15125550103").await;
     let alice_phone = stack.phone(&alice).await;
     let voicemail = stack.voicemail_server().await;
 
@@ -564,7 +567,12 @@ async fn a_user_with_no_phone_reaches_voicemail_by_extension() {
             .await;
     };
     let uri = at_voicemail.request_uri();
-    assert!(uri.contains(&carol.extension), "the mailbox dialed: {uri}");
+    // By the mailbox's id: the voicemail server routes every mailbox by
+    // it, where an extension may be one it does not know (D8, 37–38).
+    assert!(
+        uri.starts_with(&format!("sip:{mailbox_id}@")),
+        "the mailbox dialed: {uri}"
+    );
     assert!(uri.contains("reason=unreachable"), "the reason: {uri}");
     let answered = at_voicemail.answer().await.unwrap();
     call.answered(SOON).await.expect("Alice reaches voicemail");

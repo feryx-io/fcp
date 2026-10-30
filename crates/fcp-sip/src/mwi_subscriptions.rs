@@ -144,11 +144,21 @@ impl MwiSubscriptions {
             }
             return Ok(());
         }
+        // A refresh of a subscription this node does not hold — it went with
+        // a restart — is 481, so the phone subscribes afresh (RFC 6665
+        // §4.2.1.2). Challenged instead, a VVX resent the same refresh on
+        // its old nonce for ever and never lit (`docs/DEEP_TESTING.md` D8,
+        // finding 39).
+        if header(request, "To").as_deref().and_then(tag_of).is_some() {
+            info!(call_id = %call_id, "A message-summary refresh for no subscription here: 481");
+            return respond(handle, request, 481, "Subscription Does Not Exist").await;
+        }
 
         if let Some(registrar) = &self.registrar {
             match registrar.authenticate_invite(request).await {
                 InviteAuth::Admitted { .. } | InviteAuth::NotRequired => {}
                 InviteAuth::WrongUser { .. } => {
+                    info!(call_id = %call_id, "A message-summary SUBSCRIBE for someone else's mailbox: 403");
                     return respond(handle, request, 403, "Forbidden").await;
                 }
                 InviteAuth::Challenge { stale } => {
@@ -168,6 +178,7 @@ impl MwiSubscriptions {
             }
         }
         let Some(mailbox_id) = self.mailbox_of(request).await else {
+            info!(call_id = %call_id, from = ?header(request, "From"), "A message-summary SUBSCRIBE from someone with no mailbox: 404");
             return respond(handle, request, 404, "No Mailbox").await;
         };
         if expires == 0 {

@@ -130,6 +130,61 @@ format = "compact"
     db.drop_db().await;
 }
 
+/// D8 findings 37–38: a call to Bob at 1002 that he declined or let ring
+/// was forwarded as `sip:1002@voicemail` and failed — his mailbox has no
+/// line, its extension is his username, and only the extensions dialing a
+/// number were routed. A mailbox is reached by its id (what the call
+/// manager forwards to now) and by the extension dialing its owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mailbox_with_no_line_answers_its_id_and_its_owners_extension() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    seed.user("bob", "Bob-pw-2026!", "1002").await;
+    let storage = seed.storage();
+    let bob = storage
+        .get_user_in_tenant("bob", &seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mailbox =
+        fcp_core::VoicemailMailbox::new(seed.tenant_id, bob.id, None, "bob".into(), "1234".into());
+    let mailbox_id = mailbox.id.to_string();
+    storage.put_mailbox(mailbox).await.unwrap();
+
+    let dir = smoke::temp_dir();
+    let (sip, http) = (free_port(), free_port());
+    let config = config(db.url(), dir.path(), sip, http, "");
+    let server = Service::start("voicemail", BIN, &config, &loopback(http, "/health")).await;
+    let caller = Phone::new(
+        "caller",
+        "x",
+        REALM,
+        SocketAddr::from(([127, 0, 0, 1], sip)),
+    )
+    .await
+    .expect("caller binds");
+
+    for user in ["1002", mailbox_id.as_str()] {
+        for reason in ["no-answer", "busy"] {
+            let call = caller
+                .call(&format!("sip:{user}@127.0.0.1:{sip};reason={reason}"))
+                .await
+                .expect("INVITE sent");
+            if call.answered(SOON).await.is_err() {
+                let logs = server.kill().await;
+                db.drop_db().await;
+                panic!("the mailbox did not answer as {user} ({reason})\n{logs}");
+            }
+            call.hangup().await.expect("BYE");
+        }
+    }
+    server.stop().await;
+    db.drop_db().await;
+}
+
 /// A voicemail server's configuration: `extra` is added to `[voicemail]`.
 fn config(db: &str, dir: &std::path::Path, sip: u16, http: u16, extra: &str) -> String {
     format!(

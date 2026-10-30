@@ -16923,15 +16923,21 @@ impl SipMessageHandler {
     /// The flow the callee's mailbox hands its calls to, if it has one and
     /// is enabled.
     async fn mailbox_flow_of_callee(&self, call_id: fcp_b2bua_core::CallId) -> Option<String> {
+        let mailbox = self.mailbox_of_callee(call_id).await?;
+        mailbox.flow_id.filter(|id| !id.trim().is_empty())
+    }
+
+    /// The enabled mailbox of the user a call is for.
+    async fn mailbox_of_callee(
+        &self,
+        call_id: fcp_b2bua_core::CallId,
+    ) -> Option<fcp_core::VoicemailMailbox> {
         let storage = self.storage.as_ref()?;
         let user = self.call_manager.get_call(&call_id)?.callee_user_id?;
-        let mailbox =
-            fcp_core::storage::VoicemailStore::get_mailbox_by_user(storage.as_ref(), &user)
-                .await
-                .ok()??;
-        mailbox
-            .flow_id
-            .filter(|id| mailbox.enabled && !id.trim().is_empty())
+        fcp_core::storage::VoicemailStore::get_mailbox_by_user(storage.as_ref(), &user)
+            .await
+            .ok()?
+            .filter(|mailbox| mailbox.enabled)
     }
 
     async fn apply_treatment(
@@ -17602,6 +17608,11 @@ impl SipMessageHandler {
             let into_node = !destination.eq_ignore_ascii_case("voicemail")
                 && !destination.starts_with("sip:")
                 && !destination.starts_with("sips:");
+            let mailbox_id = if destination.eq_ignore_ascii_case("voicemail") {
+                self.mailbox_of_callee(call_id).await.map(|mb| mb.id)
+            } else {
+                None
+            };
             // Resolve the target URI
             let target_uri = if destination.eq_ignore_ascii_case("voicemail") {
                 // Read the runtime-reloadable override first, fall back to static config
@@ -17624,8 +17635,14 @@ impl SipMessageHandler {
                     .next_back()
                     .unwrap_or(vm_uri);
 
-                // Use the original callee as the user part
-                let user = original_callee.unwrap_or("unknown");
+                // The callee's mailbox by its id when the callee is a user:
+                // the dialed name may be one the voicemail server does not
+                // route (`docs/DEEP_TESTING.md` D8, findings 37–38). Else
+                // the original callee as the user part.
+                let user = mailbox_id
+                    .as_deref()
+                    .or(original_callee)
+                    .unwrap_or("unknown");
                 // Strip sip: prefix and @host from callee to get just the user part
                 let user_part = user
                     .strip_prefix("sip:")

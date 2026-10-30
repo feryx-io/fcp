@@ -201,6 +201,17 @@ async fn a_subscribed_phone_is_told_its_messages() {
     let body = summary(&phone).await.expect("told it was deleted");
     assert!(body.contains("Voice-Message: 2/0"), "{body}");
 
+    // A refresh of a subscription the node does not hold — one a restart
+    // took — is 481, so the phone subscribes afresh. Challenged instead, a
+    // VVX resent its refresh on a dead nonce for ever (D8, finding 39).
+    let mut forgotten = sub.clone();
+    forgotten.call_id = format!("{}@127.0.0.1", uuid::Uuid::new_v4().simple());
+    assert_eq!(
+        phone.resubscribe(&mut forgotten, 600, None).await.unwrap(),
+        481,
+        "a refresh for no subscription here"
+    );
+
     // Ended: one last NOTIFY.
     assert_eq!(phone.resubscribe(&mut sub, 0, None).await.unwrap(), 200);
     assert!(summary(&phone).await.is_some(), "the closing NOTIFY");
