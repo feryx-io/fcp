@@ -511,3 +511,108 @@ agents = ["eve", "dana"]
     service.stop().await;
     db.drop_db().await;
 }
+
+/// A parking slot's busy lamp (`docs/PARKING.md` §3): a phone watching
+/// `4320` sees it confirmed while a call waits there, and idle once the
+/// call is taken back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parking_slots_lamp_lights_while_a_call_waits_in_it() {
+    let (Some(db), Some(redis)) = (TestDatabase::create().await, private_redis_url()) else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL or FCP_TEST_REDIS_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (service, sip) = node_on_redis(
+        db.url(),
+        &redis,
+        dir.path(),
+        "\n[pbx.parking]\nenabled = true\n",
+    )
+    .await;
+    let globex = seed.tenant("globex", GLOBEX).await;
+    let lot = fcp_core::parking::ParkingLot::new(globex, "Lobby", "4320", "4321");
+    fcp_core::parking::ParkingLotStore::put_parking_lot(seed.storage(), &lot)
+        .await
+        .unwrap();
+    let carol = seed
+        .user_in(globex, "carol-globex", "carol-pw", "2101")
+        .await;
+    let bob = seed.user_in(globex, "bob-globex", "bob-pw", "2102").await;
+    let alice = seed
+        .user_in(globex, "alice-globex", "alice-pw", "2103")
+        .await;
+    let phone = |u: &fcp_testkit::seed::SeededUser| {
+        let (name, pw) = (u.username.clone(), u.password.clone());
+        async move {
+            let p = Phone::new(&name, &pw, GLOBEX, sip).await.unwrap();
+            assert_eq!(p.register().await.unwrap(), 200, "{name} registers");
+            p
+        }
+    };
+    let (carol_phone, bob_phone, alice_phone) =
+        (phone(&carol).await, phone(&bob).await, phone(&alice).await);
+
+    let slot = format!("sip:4320@{GLOBEX}");
+    let sub = carol_phone
+        .subscribe(&slot, "dialog", 600, None)
+        .await
+        .unwrap();
+    if sub.code != 200 {
+        let logs = service.kill().await;
+        panic!("the slot's subscription was answered {}\n{logs}", sub.code);
+    }
+    let first = lamp(&carol_phone).await.expect("the lamp at once");
+    assert!(!first.contains("<state>confirmed"), "empty: {first}");
+
+    // Bob parks Alice in 4320: the lamp lights.
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        let logs = service.kill().await;
+        panic!("Bob's phone did not ring\n{logs}");
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    call.answered(SOON).await.expect("answered");
+    assert_eq!(
+        bob_call.refer(&format!("sip:4320@{sip}")).await.unwrap(),
+        202
+    );
+    let mut lit = None;
+    for _ in 0..8 {
+        match lamp(&carol_phone).await {
+            Some(body) if body.contains("<state>confirmed") => {
+                lit = Some(body);
+                break;
+            }
+            Some(_) => continue,
+            None => break,
+        }
+    }
+    let Some(lit) = lit else {
+        let logs = service.kill().await;
+        panic!("the slot's lamp did not light\n{logs}");
+    };
+    assert!(lit.contains("4320"), "{lit}");
+
+    // Bob dials 4320 and takes her back: the lamp goes out.
+    let retrieve = bob_phone.call("4320").await.unwrap();
+    retrieve
+        .answered(SOON)
+        .await
+        .expect("the retrieve is answered");
+    let mut out = false;
+    for _ in 0..8 {
+        match lamp(&carol_phone).await {
+            Some(body) if !body.contains("<state>confirmed") => {
+                out = true;
+                break;
+            }
+            Some(_) => continue,
+            None => break,
+        }
+    }
+    assert!(out, "the slot's lamp did not go out");
+    retrieve.hangup().await.unwrap();
+    service.stop().await;
+    db.drop_db().await;
+}

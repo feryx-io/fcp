@@ -563,7 +563,7 @@ static.firmware.url = {{ firmware_url }}
 # Line keys after the accounts' own.
 {% for key in line_keys %}
 {% set n = accounts|length + key.index %}
-linekey.{{ n }}.type = {{ {"blf": 16, "speed_dial": 13, "park": 10}[key.kind] }}
+linekey.{{ n }}.type = {{ {"blf": 16, "speed_dial": 13, "park": 16}[key.kind] }}
 linekey.{{ n }}.line = 1
 linekey.{{ n }}.value = {{ key.value }}
 linekey.{{ n }}.label = {{ key.label }}
@@ -601,7 +601,7 @@ linekey.{{ n }}.label = {{ key.label }}
 {% for key in line_keys %}
     attendant.resourceList.{{ key.index }}.address="{{ key.value }}"
     attendant.resourceList.{{ key.index }}.label="{{ key.label }}"
-    attendant.resourceList.{{ key.index }}.type="{{ "normal" if key.kind == "blf" else "automata" }}"
+    attendant.resourceList.{{ key.index }}.type="{{ "automata" if key.kind == "speed_dial" else "normal" }}"
 {% endfor %}
   />
 </PHONE_CONFIG>
@@ -674,7 +674,7 @@ linekey.{{ n }}.label = {{ key.label }}
   <Upgrade_Rule ua="na">{{ firmware_url }}</Upgrade_Rule>
 {% endif %}
 {% for key in line_keys %}
-  <Extended_Function_{{ key.index }}_ ua="na">fnc={{ {"blf": "blf+sd+cp", "speed_dial": "sd", "park": "prk"}[key.kind] }};sub={{ key.value }}@{{ sip_domain }};nme={{ key.label }}</Extended_Function_{{ key.index }}_>
+  <Extended_Function_{{ key.index }}_ ua="na">fnc={{ {"blf": "blf+sd+cp", "speed_dial": "sd", "park": "blf+sd"}[key.kind] }};sub={{ key.value }}@{{ sip_domain }};nme={{ key.label }}</Extended_Function_{{ key.index }}_>
 {% endfor %}
 </flat-profile>
 "#;
@@ -700,7 +700,7 @@ SIP{{ account.index }} Transport          :{{ {"udp": 0, "tcp": 1, "tls": 3}[sip
 <DSS CONFIG MODULE>
 {% for key in line_keys %}
 Fkey{{ key.index }} Type                  :{{ {"blf": 1, "speed_dial": 1, "park": 1}[key.kind] }}
-Fkey{{ key.index }} Value                 :{{ key.value }}@1/{{ {"blf": "b", "speed_dial": "f", "park": "f"}[key.kind] }}
+Fkey{{ key.index }} Value                 :{{ key.value }}@1/{{ {"blf": "b", "speed_dial": "f", "park": "b"}[key.kind] }}
 Fkey{{ key.index }} Title                 :{{ key.label }}
 {% endfor %}
 <<END OF FILE>>
@@ -729,7 +729,7 @@ Fkey{{ key.index }} Title                 :{{ key.label }}
   </phone-settings>
   <functionKeys>
 {% for key in line_keys %}
-    <fkey idx="{{ key.index - 1 }}" context="active" label="{{ key.label }}" perm="">{{ {"blf": "blf <sip:", "speed_dial": "speed ", "park": "speed "}[key.kind] }}{{ key.value }}{% if key.kind == "blf" %}@{{ sip_domain }}>{% endif %}</fkey>
+    <fkey idx="{{ key.index - 1 }}" context="active" label="{{ key.label }}" perm="">{{ {"blf": "blf <sip:", "speed_dial": "speed ", "park": "blf <sip:"}[key.kind] }}{{ key.value }}{% if key.kind != "speed_dial" %}@{{ sip_domain }}>{% endif %}</fkey>
 {% endfor %}
   </functionKeys>
 </settings>
@@ -984,7 +984,8 @@ mod tests {
             "local_time.time_zone = ",
             "linekey.3.type = 16\n",
             "linekey.3.value = 202\n",
-            "linekey.5.type = 10\n",
+            // A park key watches its slot (docs/PARKING.md §3).
+            "linekey.5.type = 16\n",
             "static.auto_provision.server.url = https://pbx.example.com/provision/",
             "static.firmware.url = https://pbx.example.com/provision/",
             "account.1.subscribe_mwi = 1\n",
@@ -1010,6 +1011,11 @@ mod tests {
             r#"msg.mwi.1.subscribe="alice@acme.example.com""#,
             r#"msg.mwi.1.callBack="*98""#,
             r#"dialplan.digitmap="*x.T|x.T""#,
+            // A park key watches its slot like a colleague's line
+            // (docs/PARKING.md §3); a speed dial does not.
+            r#"attendant.resourceList.3.address="701""#,
+            r#"attendant.resourceList.3.type="normal""#,
+            r#"attendant.resourceList.2.type="automata""#,
         ] {
             assert!(out.contains(want), "{want:?} in\n{out}");
         }

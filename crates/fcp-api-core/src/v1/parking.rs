@@ -122,6 +122,12 @@ fn apply(lot: &mut ParkingLot, req: ParkingLotRequest) -> Result<(), ApiError> {
         .map(|f| CallTarget::parse(&f))
         .transpose()
         .map_err(|e| ApiError::BadRequest(format!("fallback: {e}")))?;
+    if matches!(lot.fallback, Some(CallTarget::Flow(_))) {
+        return Err(ApiError::BadRequest(
+            "fallback: a flow cannot take a parked call; name a number, an extension, a user, a queue or voicemail"
+                .to_string(),
+        ));
+    }
     lot.music = blank(req.music);
     lot.location_id = blank(req.location_id);
     lot.enabled = req.enabled;
@@ -424,10 +430,14 @@ pub async fn list_calls(
     axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(&identity, Permission::ParkingRead, state.deployment_mode)?;
-    let calls = supervisor(&state)?
-        .parked_calls(tenant.0)
-        .await
-        .map_err(ApiError::ServiceUnavailable)?;
+    // No call manager to ask: nothing can be parked.
+    let calls = match state.call_supervisor.as_ref() {
+        Some(supervisor) => supervisor
+            .parked_calls(tenant.0)
+            .await
+            .map_err(ApiError::ServiceUnavailable)?,
+        None => Vec::new(),
+    };
     let calls: Vec<ParkedCallResponse> = calls
         .into_iter()
         .filter_map(|c| serde_json::from_value(c).ok())

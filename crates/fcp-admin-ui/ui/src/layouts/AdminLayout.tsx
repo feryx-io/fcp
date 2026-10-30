@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, UsersRound, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Scale, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable, CalendarClock, ShieldCheck, BedDouble, Webhook, KeyRound, Palette, HeartPulse,
+  LayoutDashboard, Users, UsersRound, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Scale, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable, CalendarClock, ShieldCheck, BedDouble, Webhook, KeyRound, Palette, HeartPulse, CircleParking,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -51,6 +51,7 @@ const navItems: NavItem[] = [
   { label: 'Recordings', href: '/admin/recordings', icon: Disc, section: 'Operations' },
   { label: 'Presence', href: '/admin/presence', icon: Radio, section: 'Operations' },
   { label: 'Hoteling', href: '/admin/hoteling', icon: BedDouble, section: 'Operations' },
+  { label: 'Parking', href: '/admin/parking', icon: CircleParking, section: 'Operations' },
   { label: 'Audio Prompts', href: '/admin/prompts', icon: FileAudio, section: 'Operations' },
   { label: 'Events', href: '/admin/events', icon: Activity, section: 'Operations' },
   { label: 'Emergency', href: '/admin/emergency', icon: Siren, section: 'Operations' },

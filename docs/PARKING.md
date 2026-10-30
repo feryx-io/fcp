@@ -154,6 +154,19 @@ with no fallback does. Tested: calling.rs
 `parked_calls_are_listed_sent_on_and_hung_up_through_the_node`; fcp-admin
 `parked_calls_are_asked_of_the_call_managers`. The lot's music has no test of its own.
 
+**Phase 3 (v0.25.485).** The admin UI's Parking page (Operations): the lots, made and
+changed in a form whose clash refusal it shows, and a board of every slot, refreshed
+every 3 s, a parked call showing its caller, parker and wait, with Retrieve to… and
+Hang up; calls in a slot of no lot (the node's range, a removed lot) apart. With no
+call manager to ask, `GET /parking/calls` is an empty list. A slot is a presentity:
+`call.parked` lights `<slot>@<domain>` for each of the tenant's SIP domains and every
+address a phone of the tenant already watches with the slot as its user, as a
+confirmed dialog; `call.unparked` and `call.park_timed_out` put it out (the call
+manager's presence listener, `slot_aors`). The starters write a `park` line key as a
+lamp on the slot (`docs/PROVISIONING.md`). A lot's fallback may not be a flow.
+Tested: presence.rs `a_parking_slots_lamp_lights_while_a_call_waits_in_it`; the
+template tests; `e2e/parking.spec.ts`.
+
 ## 7. Questions (agreed 2026-10-30 on their recommendations)
 
 1. **A slot is dialable on its own** (`705` retrieves), as well as `*71705`. Recommended:

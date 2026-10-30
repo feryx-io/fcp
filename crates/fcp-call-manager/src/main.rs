@@ -3973,6 +3973,75 @@ async fn run_presence_listener(
                         }
                     }
 
+                    // Parked → the slot's busy lamp lights (`docs/PARKING.md`
+                    // §3): the slot at the tenant's domains, and wherever a
+                    // phone already watches it.
+                    PlatformEvent::Call(fcp_events::CallEvent::Parked {
+                        call_id,
+                        tenant_id: Some(tenant_id),
+                        slot,
+                        parker_extension,
+                        ..
+                    }) if !slot.is_empty() => {
+                        let call_id_str = call_id.to_string();
+                        for aor in slot_aors(&presence, &storage, tenant_id, slot).await {
+                            presence.add_active_call(
+                                &aor,
+                                tenant_id,
+                                fcp_presence::ActiveCallInfo {
+                                    call_id: call_id_str.clone(),
+                                    remote_uri: format!("sip:{parker_extension}"),
+                                    remote_display_name: Some(format!(
+                                        "Parked by {parker_extension}"
+                                    )),
+                                    direction: fcp_presence::CallDirection::Recipient,
+                                    dialog_state: fcp_presence::DialogState::Confirmed,
+                                },
+                            );
+                            fcp_presence::events::dialog_changed(
+                                presence.event_publisher(),
+                                &aor,
+                                &call_id_str,
+                                "confirmed",
+                                tenant_id,
+                            )
+                            .await;
+                        }
+                    }
+
+                    // Out of its slot — taken back, or rung back to its
+                    // parker — the slot's lamp goes out; the call goes on.
+                    PlatformEvent::Call(fcp_events::CallEvent::Unparked {
+                        call_id,
+                        tenant_id: Some(tenant_id),
+                        slot,
+                        ..
+                    })
+                    | PlatformEvent::Call(fcp_events::CallEvent::ParkTimedOut {
+                        call_id,
+                        tenant_id: Some(tenant_id),
+                        slot,
+                        ..
+                    }) if !slot.is_empty() => {
+                        let call_id_str = call_id.to_string();
+                        let lit: Vec<String> = presence
+                            .get_aors_with_active_call(&call_id_str)
+                            .into_iter()
+                            .filter(|aor| aor.split('@').next() == Some(slot.as_str()))
+                            .collect();
+                        for aor in lit {
+                            presence.remove_active_call(&aor, tenant_id, &call_id_str);
+                            fcp_presence::events::dialog_changed(
+                                presence.event_publisher(),
+                                &aor,
+                                &call_id_str,
+                                "terminated",
+                                tenant_id,
+                            )
+                            .await;
+                        }
+                    }
+
                     // Call ended or failed → remove active call tracking
                     PlatformEvent::Call(fcp_events::CallEvent::Ended { call_id, .. })
                     | PlatformEvent::Call(fcp_events::CallEvent::Failed { call_id, .. }) => {
@@ -4018,6 +4087,36 @@ async fn run_presence_listener(
             }
         }
     }
+}
+
+/// The addresses a parking slot's busy lamp is shown at: the slot at each
+/// of the tenant's SIP domains, and any address a phone of the tenant
+/// already watches whose user is the slot.
+async fn slot_aors(
+    presence: &fcp_presence::PresenceManager,
+    storage: &fcp_core::DynStorage,
+    tenant_id: &fcp_core::TenantId,
+    slot: &str,
+) -> Vec<String> {
+    let mut aors: Vec<String> =
+        match fcp_core::storage::TenantStore::get_tenant(storage, tenant_id).await {
+            Ok(Some(tenant)) => tenant
+                .sip_domains
+                .iter()
+                .map(|domain| format!("{slot}@{domain}"))
+                .collect(),
+            _ => Vec::new(),
+        };
+    for watcher in presence.get_all_watchers() {
+        let watched = watcher.presentity_aor.to_ascii_lowercase();
+        if watcher.tenant_id == *tenant_id
+            && watched.split('@').next() == Some(slot)
+            && !aors.iter().any(|a| a.eq_ignore_ascii_case(&watched))
+        {
+            aors.push(watched);
+        }
+    }
+    aors
 }
 
 /// Subscribe to ConfigChanged events and evict matching cache entries.

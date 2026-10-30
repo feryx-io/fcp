@@ -676,6 +676,11 @@ export type Holiday = S['Holiday']
 
 export type Schedule = S['ScheduleResponse']
 
+/** A tenant's parking lot and the calls waiting in its slots (`docs/PARKING.md`). */
+export type ParkingLot = S['ParkingLotResponse']
+export type ParkingLotRequest = S['ParkingLotRequest']
+export type ParkedCall = S['ParkedCallResponse']
+
 /** A tenant's group (`docs/USERS.md` §5). */
 export type Group = S['GroupResponse']
 

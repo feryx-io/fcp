@@ -1,6 +1,7 @@
 import type { components } from '@/api/schema'
 import { apiClient, ApiRequestError } from './client'
 import type {
+  ParkingLot, ParkingLotRequest, ParkedCall,
   Brand, BrandAsset, BrandRequest,
   DiscoverResponse,
   IdentityProvider,
@@ -679,6 +680,20 @@ export const schedules = {
   update: (id: string, data: ScheduleRequest) =>
     apiClient.put<Schedule>(`/schedules/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/schedules/${encodeURIComponent(id)}`),
+}
+
+export const parking = {
+  lots: () => apiClient.getAll<ParkingLot>('/parking/lots'),
+  createLot: (data: ParkingLotRequest) => apiClient.post<ParkingLot>('/parking/lots', data),
+  updateLot: (id: string, data: ParkingLotRequest) =>
+    apiClient.put<ParkingLot>(`/parking/lots/${encodeURIComponent(id)}`, data),
+  deleteLot: (id: string) => apiClient.delete<void>(`/parking/lots/${encodeURIComponent(id)}`),
+  /** The calls parked now, on every call manager. */
+  calls: () => apiClient.getAll<ParkedCall>('/parking/calls'),
+  /** Ring `target` (an extension or a user) with the call in the slot. */
+  retrieve: (slot: string, target: string) =>
+    apiClient.post<unknown>(`/parking/calls/${encodeURIComponent(slot)}/retrieve`, { target }),
+  hangUp: (slot: string) => apiClient.delete<unknown>(`/parking/calls/${encodeURIComponent(slot)}`),
 }
 
 export const groups = {

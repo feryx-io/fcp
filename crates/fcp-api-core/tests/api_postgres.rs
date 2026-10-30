@@ -8699,6 +8699,7 @@ async fn parking_lots_are_the_tenants_and_clash_with_its_dial_plan() {
 
     // Ranges no phone could dial.
     for bad in [
+        json!({ "name": "Flow", "first": "601", "last": "609", "fallback": "flow:menu" }),
         lot("Mixed", "701", "7020"),
         lot("Backwards", "720", "701"),
         lot("Letters", "70a", "720"),

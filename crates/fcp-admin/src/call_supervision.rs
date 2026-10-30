@@ -233,10 +233,16 @@ impl CallSupervisor for NodeCallSupervisor {
         let mut calls = Vec::new();
         let mut answered = false;
         let mut last_error = None;
-        for base in self
+        let nodes = match self
             .nodes_where(|status| status != ClusterNodeStatus::Offline)
-            .await?
+            .await
         {
+            Ok(nodes) => nodes,
+            // No call manager in the cluster holds anything parked.
+            Err(_) if self.config.url.is_none() => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        for base in nodes {
             let builder = self
                 .http
                 .get(format!("{base}/parking/calls"))
