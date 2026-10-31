@@ -21,6 +21,7 @@ import {
   Upload, Volume2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useThemeStore } from '@/stores/theme'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
@@ -344,6 +345,8 @@ function reactFlowToFlowNodes(
 }
 
 export function FlowBuilderPage() {
+  // The canvas's controls and dots follow the app's theme (D8 finding 47).
+  const theme = useThemeStore((s) => s.theme)
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -1262,6 +1265,7 @@ export function FlowBuilderPage() {
             onConnect={onConnect}
             onNodeClick={(_, node) => setSelectedNode(node.id)}
             onPaneClick={() => setSelectedNode(null)}
+            colorMode={theme}
             fitView
           >
             <Controls />
