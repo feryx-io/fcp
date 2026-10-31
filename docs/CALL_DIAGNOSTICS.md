@@ -73,12 +73,12 @@ capture, 200 MB in all), deleted after 7 days; the user can open the folder or d
 them.
 
 **Uploaded to FCP** when the call ends, over the app's session
-(`POST /me/devices/{id}/captures`, the body the file). FCP stores it like a
-recording: a `device_captures` row (tenant, device, user, call id, size, SHA-256,
-expiry) and the file in the recordings store, under the tenant's retention and legal
-holds, deleted after 30 days by default. The admin sees them on the device's page
-(`GET /devices/{id}/captures`, download under `device_manage`, each download
-audited). The user is told captures are uploaded before they turn it on.
+(`POST /me/devices/{id}/captures`, the body the file). FCP keeps a
+`device_captures` row (tenant, device, user, call id, size, SHA-256, expiry) and the
+file in the captures' store (`[api.captures]`: a directory or a bucket), under legal
+holds, deleted after 30 days by default. The admin sees them on the device's
+Captures (`GET /captures?device_id=…`; download `GET /captures/{id}/file`, each
+download audited). The user is told captures are uploaded before they turn it on.
 
 ## 4. Phases
 
@@ -132,6 +132,54 @@ audited). The user is told captures are uploaded before they turn it on.
     like its CDRs. Subject export and erasure do not list the reports as their own
     class: the reports hold no addresses but the phone's own media address.
   - Anvil sends the report when a call ends: anvil #63.
+- **Phase 4** (v0.25.491): captures allowed and kept.
+  - The tenant's `diagnostics` (migration 132's `diagnostics_json`):
+    `capture_allowed` (off), `capture_max_mb` (50, at most 500) and
+    `capture_keep_days` (30, at most 365), on the Tenants page.
+  - Allows (`capture_allows`): a user — every app they sign in to — or one device,
+    until a date at most 30 days away, with a reason.
+    - `GET`/`POST /api/v1/captures/allows`, `DELETE /captures/allows/{id}` to end one.
+    - An allow is refused while the tenant has captures off (409).
+    - A purged user's or removed device's allows go with them.
+  - `/me/softphone` answers `capture: {allowed, until, max_mb}`. It is allowed only
+    when the tenant has captures on, an allow covers the user or the app, and this
+    admin has `[api.captures]` (a directory, or `[api.captures.s3]` with keys under
+    `captures/`).
+  - `POST /api/v1/me/devices/{id}/captures?call_id=…` takes the pcapng as the body.
+    - It is accepted from the app's own session, for its own device, while allowed;
+      otherwise 400 from a web session, 404 for another device and 403 when not
+      allowed.
+    - The body must start with pcapng's section header (else 400) and be at most
+      the tenant's limit (else 413, a new error code).
+    - A named call must be the user's (404 when its record names others; one not yet
+      written is taken, as for quality).
+    - The file is staged, hashed, stored, then its row written.
+    - The response says `held` when a legal hold covers it.
+  - Listing and download:
+    - `GET /api/v1/captures` (by `device_id` or `username`) and `GET /me/captures`.
+    - `GET /captures/{id}/file`; the audit middleware records every download.
+    - `DELETE /captures/{id}` answers 409 while held.
+    - The Devices page's **Captures** (on a softphone) allows the app or its owner
+      for 1, 7 or 30 days, ends an allow, and downloads or removes a capture.
+  - Permissions: listing under `device_read`, allows and downloads under
+    `device_update`, removal under `device_delete`. There is no `device_manage`; Q5's
+    meaning is `device_update`.
+  - Legal holds: `device_capture` is a hold class.
+    - A capture is held by the user's subject keys taken at upload, or by its call.
+    - Migration 132 adds it to `fcp_guard_held_deletion`, so a delete of a held row
+      is refused whatever path it takes.
+    - The Compliance page offers it.
+  - Retention: the admin's hourly sweep (`fcp:captures` lock) removes captures past
+    their expiry that no hold covers.
+  - Files: every removed capture's file (by an administrator, by the sweep, or with
+    a purged user) is queued by a trigger in `device_capture_file_deletions` and
+    removed from the store. A failed removal is retried an hour later.
+  - **Not yet:**
+    - A site's admin keeps its own captures and does not ship them up.
+    - Subject export and erasure do not list captures. Erasure reaches them only
+      through the purge.
+    - Captures are not in the trigger-written deletion log.
+    - A capture file restored without its row is neither served nor removed.
 
 ## 5. Questions
 

@@ -39,6 +39,9 @@ from .call_quality_report import CallQualityReport
 from .call_quality_response import CallQualityResponse
 from .caller_id_policy import CallerIdPolicy
 from .calling_response import CallingResponse
+from .capture_allow_request import CaptureAllowRequest
+from .capture_allow_response import CaptureAllowResponse
+from .capture_response import CaptureResponse
 from .cdr_response import CdrResponse
 from .change_expired_password_request import ChangeExpiredPasswordRequest
 from .change_password_request import ChangePasswordRequest
@@ -234,6 +237,10 @@ from .page_call_info import PageCallInfo
 from .page_call_info_data_item import PageCallInfoDataItem
 from .page_call_quality_response import PageCallQualityResponse
 from .page_call_quality_response_data_item import PageCallQualityResponseDataItem
+from .page_capture_allow_response import PageCaptureAllowResponse
+from .page_capture_allow_response_data_item import PageCaptureAllowResponseDataItem
+from .page_capture_response import PageCaptureResponse
+from .page_capture_response_data_item import PageCaptureResponseDataItem
 from .page_class_of_service_response import PageClassOfServiceResponse
 from .page_class_of_service_response_data_item import PageClassOfServiceResponseDataItem
 from .page_config_entry_response import PageConfigEntryResponse
@@ -472,6 +479,7 @@ from .site_response_versions import SiteResponseVersions
 from .site_status import SiteStatus
 from .site_with_token_response import SiteWithTokenResponse
 from .softphone_account import SoftphoneAccount
+from .softphone_capture import SoftphoneCapture
 from .softphone_config import SoftphoneConfig
 from .softphone_config_feature_codes import SoftphoneConfigFeatureCodes
 from .softphone_line import SoftphoneLine
@@ -496,6 +504,7 @@ from .supervise_request import SuperviseRequest
 from .synthesize_greeting_request import SynthesizeGreetingRequest
 from .template_resync_response import TemplateResyncResponse
 from .tenant_calling import TenantCalling
+from .tenant_diagnostics import TenantDiagnostics
 from .tenant_directory import TenantDirectory
 from .tenant_lines import TenantLines
 from .tenant_offboarding import TenantOffboarding
@@ -616,6 +625,9 @@ __all__ = (
     "CallingResponse",
     "CallQualityReport",
     "CallQualityResponse",
+    "CaptureAllowRequest",
+    "CaptureAllowResponse",
+    "CaptureResponse",
     "CdrResponse",
     "ChangeExpiredPasswordRequest",
     "ChangePasswordRequest",
@@ -811,6 +823,10 @@ __all__ = (
     "PageCallInfoDataItem",
     "PageCallQualityResponse",
     "PageCallQualityResponseDataItem",
+    "PageCaptureAllowResponse",
+    "PageCaptureAllowResponseDataItem",
+    "PageCaptureResponse",
+    "PageCaptureResponseDataItem",
     "PageClassOfServiceResponse",
     "PageClassOfServiceResponseDataItem",
     "PageConfigEntryResponse",
@@ -1049,6 +1065,7 @@ __all__ = (
     "SiteStatus",
     "SiteWithTokenResponse",
     "SoftphoneAccount",
+    "SoftphoneCapture",
     "SoftphoneConfig",
     "SoftphoneConfigFeatureCodes",
     "SoftphoneLine",
@@ -1073,6 +1090,7 @@ __all__ = (
     "SynthesizeGreetingRequest",
     "TemplateResyncResponse",
     "TenantCalling",
+    "TenantDiagnostics",
     "TenantDirectory",
     "TenantLines",
     "TenantOffboarding",

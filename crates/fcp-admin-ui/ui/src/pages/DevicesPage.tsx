@@ -21,6 +21,7 @@ import { devices, emergency, locations, provisioning, tenants, users } from '@/a
 import type { AddressValidation, Device, CreateDeviceRequest, UpdateDeviceRequest } from '@/types'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 import { ProvisioningUrlCard, DeviceFetchesDialog, PendingPhonesCard, DeviceConfigDialog, RedirectionCard } from '@/components/ProvisioningUrl'
+import { DeviceCapturesDialog } from '@/components/DeviceCaptures'
 import type { DeviceLine, LineKey } from '@/types'
 
 /** The vendors a phone can be (docs/PROVISIONING.md §5). */
@@ -167,6 +168,7 @@ function credentialChange(
 
 export function DevicesPage() {
   const [fetchesOf, setFetchesOf] = useState<Device | null>(null)
+  const [capturesOf, setCapturesOf] = useState<Device | null>(null)
   const [configOf, setConfigOf] = useState<Device | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
@@ -473,6 +475,12 @@ export function DevicesPage() {
               <FileUp className="mr-2 h-4 w-4" />
               Configuration
             </DropdownMenuItem>
+            {row.original.device_type === 'softphone' && (
+              <DropdownMenuItem onClick={() => setCapturesOf(row.original)}>
+                <Download className="mr-2 h-4 w-4" />
+                Captures
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               disabled={!row.original.mac_address || redirectMutation.isPending}
               onClick={() => redirectMutation.mutate(row.original)}
@@ -683,6 +691,7 @@ export function DevicesPage() {
 
       <DeviceFetchesDialog device={fetchesOf} onClose={() => setFetchesOf(null)} />
       <DeviceConfigDialog device={configOf} onClose={() => setConfigOf(null)} />
+      <DeviceCapturesDialog device={capturesOf} onClose={() => setCapturesOf(null)} />
 
       {/* Create Dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

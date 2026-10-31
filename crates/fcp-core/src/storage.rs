@@ -3689,6 +3689,7 @@ pub struct DynStorage {
     parking_lot_store: Option<Arc<dyn crate::parking::ParkingLotStore>>,
     line_label_store: Option<Arc<dyn crate::line_label::LineLabelStore>>,
     call_quality_store: Option<Arc<dyn crate::call_quality::CallQualityStore>>,
+    device_capture_store: Option<Arc<dyn crate::device_capture::DeviceCaptureStore>>,
     provisioning_store: Option<Arc<dyn crate::provisioning::ProvisioningStore>>,
 }
 
@@ -3777,6 +3778,7 @@ impl DynStorage {
             parking_lot_store: None,
             line_label_store: None,
             call_quality_store: None,
+            device_capture_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -3869,6 +3871,7 @@ impl DynStorage {
             parking_lot_store: None,
             line_label_store: None,
             call_quality_store: None,
+            device_capture_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -4197,6 +4200,23 @@ impl DynStorage {
     /// when attached.
     pub fn call_quality_store(&self) -> Option<&Arc<dyn crate::call_quality::CallQualityStore>> {
         self.call_quality_store.as_ref()
+    }
+
+    /// Attach the store of phones' captures and who may take them.
+    pub fn with_device_capture_store(
+        mut self,
+        store: Arc<dyn crate::device_capture::DeviceCaptureStore>,
+    ) -> Self {
+        self.device_capture_store = Some(store);
+        self
+    }
+
+    /// Phones' captures and the allows behind them
+    /// (`docs/CALL_DIAGNOSTICS.md` §3), when attached.
+    pub fn device_capture_store(
+        &self,
+    ) -> Option<&Arc<dyn crate::device_capture::DeviceCaptureStore>> {
+        self.device_capture_store.as_ref()
     }
 
     /// Users' names for their lines (`docs/DEVICE_LINES.md`), when attached.

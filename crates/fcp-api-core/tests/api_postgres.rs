@@ -267,6 +267,8 @@ impl App {
                     .with_call_quality_store(
                         Arc::clone(&storage) as Arc<dyn fcp_core::call_quality::CallQualityStore>
                     )
+                    .with_device_capture_store(Arc::clone(&storage)
+                        as Arc<dyn fcp_core::device_capture::DeviceCaptureStore>)
                     .with_presence_status_store(Arc::clone(&storage)
                         as Arc<dyn fcp_core::presence_status::PresenceStatusStore>)
                     .with_provisioning_store(
@@ -16871,6 +16873,408 @@ async fn an_apps_call_quality_is_kept_shown_and_a_poor_call_announced() {
         elsewhere.text
     );
     app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Captures from the app (docs/CALL_DIAGNOSTICS.md §3)
+// ---------------------------------------------------------------------------
+
+impl App {
+    /// The app keeping captures in `dir`.
+    fn with_captures(mut self, dir: &std::path::Path) -> Self {
+        let api_config = ApiConfig {
+            captures: fcp_core::ApiCapturesConfig {
+                directory: Some(dir.to_string_lossy().into_owned()),
+                s3: None,
+            },
+            ..test_api_config()
+        };
+        self.router = create_router(self.state.clone(), &api_config);
+        self
+    }
+}
+
+#[tokio::test]
+async fn an_app_captures_only_while_allowed_and_its_captures_are_kept_held_and_swept() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().expect("a directory");
+    let app = require_app!().with_captures(dir.path());
+    let domains = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"sip_domains": ["calls.test"]})),
+        )
+        .await;
+    assert_eq!(domains.status, StatusCode::OK, "{}", domains.text);
+    app.create_user_with_role("carol", "end_user").await;
+    let web = app.login("carol", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let signed_in = app
+        .send_as(
+            &web,
+            Method::POST,
+            "/api/v1/auth/app/sessions",
+            Some(json!({ "client_name": "Carol's phone", "install_id": "carol-phone" })),
+        )
+        .await;
+    assert_eq!(signed_in.status, StatusCode::CREATED, "{}", signed_in.text);
+    let access = signed_in.json["access_token"].as_str().unwrap().to_string();
+    let device = signed_in.json["device"]["id"].as_str().unwrap().to_string();
+
+    let now = SystemTime::now();
+    let mut hers = cdr_record(app.tenant_a, Some(30_000), None, now);
+    hers.from_uri = "sip:carol@calls.test".into();
+    hers.to_uri = "sip:+15550001@calls.test".into();
+    let call = hers.call_id.to_string();
+    app.storage.insert_cdr(hers).await.unwrap();
+    let mut theirs = cdr_record(app.tenant_a, Some(30_000), None, now);
+    theirs.from_uri = "sip:dan@calls.test".into();
+    theirs.to_uri = "sip:erin@calls.test".into();
+    let not_hers = theirs.call_id.to_string();
+    app.storage.insert_cdr(theirs).await.unwrap();
+
+    // A pcapng file: its section header block, then anything.
+    let mut pcapng = vec![
+        0x0a, 0x0d, 0x0d, 0x0a, 0x1c, 0, 0, 0, 0x4d, 0x3c, 0x2b, 0x1a,
+    ];
+    pcapng.extend(b"SIP/2.0 200 OK ".repeat(100));
+    let upload = |token: String, path: String, body: Vec<u8>| {
+        let app = &app;
+        async move {
+            app.send_raw(
+                &token,
+                Method::POST,
+                &path,
+                "application/vnd.tcpdump.pcapng",
+                body,
+            )
+            .await
+        }
+    };
+    let mine = format!("/api/v1/me/devices/{device}/captures?call_id={call}");
+    let config = || app.send_as(&access, Method::GET, "/api/v1/me/softphone", None);
+    let until = |days: u64| {
+        fcp_api_core::time::format_system_time(
+            SystemTime::now() + Duration::from_secs(days * 86_400),
+        )
+    };
+
+    // Off by default: the app is told so, and nothing is taken.
+    let told = config().await;
+    assert_eq!(told.json["capture"]["allowed"], false, "{}", told.text);
+    assert_eq!(told.json["capture"]["max_mb"], 50);
+    let refused = upload(access.clone(), mine.clone(), pcapng.clone()).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let allow = json!({ "device_id": device, "until": until(2), "reason": "one-way audio" });
+    let off = app
+        .admin(Method::POST, "/api/v1/captures/allows", Some(allow.clone()))
+        .await;
+    assert_eq!(off.status, StatusCode::CONFLICT, "{}", off.text);
+
+    // The tenant turns captures on, with its own limits.
+    let on = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"diagnostics": {
+                "capture_allowed": true, "capture_max_mb": 1, "capture_keep_days": 1
+            }})),
+        )
+        .await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.text);
+    assert_eq!(on.json["diagnostics"]["capture_max_mb"], 1);
+    for bad in [
+        json!({"diagnostics": {"capture_allowed": true, "capture_max_mb": 0}}),
+        json!({"diagnostics": {"capture_allowed": true, "capture_keep_days": 400}}),
+    ] {
+        let res = app
+            .admin(
+                Method::PUT,
+                &format!("/api/v1/tenants/{}", app.tenant_a),
+                Some(bad),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.text);
+    }
+
+    // An allow ends within 30 days, names one user or device of the tenant.
+    for bad in [
+        json!({ "device_id": device, "until": until(31) }),
+        json!({ "username": "carol", "until": fcp_api_core::time::format_system_time(now - Duration::from_secs(60)) }),
+        json!({ "until": until(1) }),
+        json!({ "username": "carol", "device_id": device, "until": until(1) }),
+    ] {
+        let res = app
+            .admin(Method::POST, "/api/v1/captures/allows", Some(bad.clone()))
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{bad}: {}", res.text);
+    }
+    let nobody = app
+        .admin(
+            Method::POST,
+            "/api/v1/captures/allows",
+            Some(json!({ "username": "nobody", "until": until(1) })),
+        )
+        .await;
+    assert_eq!(nobody.status, StatusCode::NOT_FOUND, "{}", nobody.text);
+    let allowed = app
+        .admin(Method::POST, "/api/v1/captures/allows", Some(allow))
+        .await;
+    assert_eq!(allowed.status, StatusCode::CREATED, "{}", allowed.text);
+    assert_eq!(allowed.json["kind"], "device");
+    assert_eq!(allowed.json["active"], true);
+    assert_eq!(allowed.json["device_name"], "Carol's phone");
+    let allow_id = allowed.json["id"].as_str().unwrap().to_string();
+    let listed = app
+        .admin(Method::GET, "/api/v1/captures/allows", None)
+        .await;
+    assert_eq!(
+        listed.json.as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        listed.text
+    );
+
+    // Now the app may, until the allow ends, at most the tenant's 1 MB.
+    let told = config().await;
+    assert_eq!(told.json["capture"]["allowed"], true, "{}", told.text);
+    assert_eq!(told.json["capture"]["max_mb"], 1);
+    assert!(told.json["capture"]["until"].is_string());
+    for (token, path, body, status) in [
+        (
+            web.clone(),
+            mine.clone(),
+            pcapng.clone(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            access.clone(),
+            format!("/api/v1/me/devices/{}/captures", fcp_core::DeviceId::new()),
+            pcapng.clone(),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            access.clone(),
+            format!("/api/v1/me/devices/{device}/captures?call_id={not_hers}"),
+            pcapng.clone(),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            access.clone(),
+            mine.clone(),
+            b"not a capture".to_vec(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            access.clone(),
+            mine.clone(),
+            Vec::new(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            access.clone(),
+            mine.clone(),
+            [pcapng.clone(), vec![0u8; 1024 * 1024]].concat(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+        ),
+    ] {
+        let res = upload(token, path.clone(), body).await;
+        assert_eq!(res.status, status, "{path}: {}", res.text);
+    }
+    let kept = upload(access.clone(), mine.clone(), pcapng.clone()).await;
+    assert_eq!(kept.status, StatusCode::CREATED, "{}", kept.text);
+    let capture = kept.json["id"].as_str().unwrap().to_string();
+    assert!(capture.starts_with("cap-"), "{capture}");
+    assert_eq!(kept.json["call_id"], call.as_str());
+    assert_eq!(kept.json["username"], "carol");
+    assert_eq!(kept.json["size"], pcapng.len());
+    assert_eq!(
+        kept.json["sha256"],
+        format!("{:x}", Sha256::digest(&pcapng))
+    );
+    assert_eq!(kept.json["held"], false);
+    // The rejected uploads left nothing staged: only the kept file.
+    let files: Vec<_> = walk(dir.path());
+    assert_eq!(files.len(), 1, "{files:?}");
+
+    // The administrator finds it by the device; Carol sees her own.
+    let by_device = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/captures?device_id={device}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        by_device.json.as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        by_device.text
+    );
+    let by_user = app
+        .admin(Method::GET, "/api/v1/captures?username=carol", None)
+        .await;
+    assert_eq!(
+        by_user.json.as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        by_user.text
+    );
+    let by_other = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/captures?device_id={}", fcp_core::DeviceId::new()),
+            None,
+        )
+        .await;
+    assert_eq!(
+        by_other.json.as_array().map(Vec::len),
+        Some(0),
+        "{}",
+        by_other.text
+    );
+    let own = app
+        .send_as(&web, Method::GET, "/api/v1/me/captures", None)
+        .await;
+    assert_eq!(own.json.as_array().map(Vec::len), Some(1), "{}", own.text);
+
+    // Downloaded as it was sent, and the download audited.
+    let file_path = format!("/api/v1/captures/{capture}/file");
+    let got = app.admin(Method::GET, &file_path, None).await;
+    assert_eq!(got.status, StatusCode::OK);
+    assert_eq!(got.bytes, pcapng);
+    assert_eq!(
+        got.headers["content-type"],
+        "application/vnd.tcpdump.pcapng"
+    );
+    let audited = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let log = app
+                .admin(Method::GET, "/api/v1/audit-log?limit=1000", None)
+                .await;
+            if log
+                .json
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["method"] == "GET" && e["path"] == file_path.as_str())
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    assert!(audited.is_ok(), "the download is in the audit log");
+    let elsewhere = app
+        .admin_in(app.tenant_b, Method::GET, &file_path, None)
+        .await;
+    assert_eq!(
+        elsewhere.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        elsewhere.text
+    );
+
+    // A hold on Carol keeps it: past its expiry, and from a delete.
+    let placed = app
+        .admin(
+            Method::POST,
+            "/api/v1/compliance/holds",
+            Some(json!({
+                "matter": "Capture review",
+                "subjects": [{ "type": "user", "username": "carol" }],
+                "classes": ["device_capture"],
+            })),
+        )
+        .await;
+    assert_eq!(placed.status, StatusCode::CREATED, "{}", placed.text);
+    let hold_id = placed.json["id"].as_str().unwrap().to_string();
+    let one = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/compliance/holds/{hold_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(one.json["held"]["device_capture"], 1, "{}", one.text);
+    let held = app
+        .admin(Method::DELETE, &format!("/api/v1/captures/{capture}"), None)
+        .await;
+    assert_eq!(held.status, StatusCode::CONFLICT, "{}", held.text);
+    assert!(held.text.contains(&hold_id), "{}", held.text);
+    let state = app
+        .state
+        .clone()
+        .with_captures_config(&fcp_core::ApiCapturesConfig {
+            directory: Some(dir.path().to_string_lossy().into_owned()),
+            s3: None,
+        });
+    let later = SystemTime::now() + Duration::from_secs(2 * 86_400);
+    let swept = fcp_api_core::v1::device_captures::run_sweep(&state, later).await;
+    assert_eq!(swept.expired, 0, "{swept:?}");
+    let still = app.admin(Method::GET, "/api/v1/captures", None).await;
+    assert_eq!(still.json[0]["held"], true, "{}", still.text);
+
+    // Released, the sweep removes it and its file.
+    let released = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/compliance/holds/{hold_id}/release"),
+            Some(json!({ "reason": "reviewed" })),
+        )
+        .await;
+    assert_eq!(released.status, StatusCode::OK, "{}", released.text);
+    let swept = fcp_api_core::v1::device_captures::run_sweep(&state, later).await;
+    assert_eq!((swept.expired, swept.files_removed), (1, 1), "{swept:?}");
+    assert!(swept.errors.is_empty(), "{swept:?}");
+    assert!(walk(dir.path()).is_empty());
+    let gone = app.admin(Method::GET, "/api/v1/captures", None).await;
+    assert_eq!(gone.json.as_array().map(Vec::len), Some(0), "{}", gone.text);
+
+    // A second capture, removed by the administrator before its time.
+    let again = upload(access.clone(), mine.clone(), pcapng.clone()).await;
+    assert_eq!(again.status, StatusCode::CREATED, "{}", again.text);
+    let removed = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/captures/{}", again.json["id"].as_str().unwrap()),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
+    assert!(walk(dir.path()).is_empty());
+
+    // The allow ended, the app may not.
+    let ended = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/captures/allows/{allow_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(ended.status, StatusCode::NO_CONTENT, "{}", ended.text);
+    assert_eq!(config().await.json["capture"]["allowed"], false);
+    let refused = upload(access.clone(), mine.clone(), pcapng.clone()).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    app.finish().await;
+}
+
+/// Every file under `dir`.
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

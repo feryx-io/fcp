@@ -17,6 +17,7 @@ pub mod config;
 pub mod config_templates;
 pub mod dashboard;
 pub mod debug;
+pub mod device_captures;
 pub mod devices;
 pub mod emergency;
 pub mod emergency_networks;
@@ -240,6 +241,13 @@ pub fn router() -> Router<ApiState> {
             "/me/calls/:call_id/quality",
             post(call_quality::report_call_quality),
         )
+        // Captures from the app (docs/CALL_DIAGNOSTICS.md §3); the body
+        // limit is the handler's (the tenant's capture_max_mb).
+        .route(
+            "/me/devices/:id/captures",
+            post(device_captures::upload_capture).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/me/captures", get(device_captures::list_my_captures))
         .route("/me/directory", get(me_data::list_directory))
         .route(
             "/me/contacts",
@@ -588,6 +596,18 @@ pub fn router() -> Router<ApiState> {
             "/cdrs/:call_id/quality",
             get(call_quality::get_call_quality),
         )
+        // Apps' captures and who may take them (docs/CALL_DIAGNOSTICS.md §3)
+        .route("/captures", get(device_captures::list_captures))
+        .route(
+            "/captures/allows",
+            get(device_captures::list_allows).post(device_captures::create_allow),
+        )
+        .route(
+            "/captures/allows/:id",
+            delete(device_captures::delete_allow),
+        )
+        .route("/captures/:id", delete(device_captures::delete_capture))
+        .route("/captures/:id/file", get(device_captures::download_capture))
         // Flow execution traces
         .route("/flow-traces", get(flow_traces::list_flow_traces))
         .route(

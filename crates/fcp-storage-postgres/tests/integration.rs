@@ -1292,6 +1292,127 @@ async fn a_calls_quality_is_one_report_per_phone_and_goes_with_its_record() {
     assert!(s.call_quality(&a.id, &gone_call).await.unwrap().is_empty());
 }
 
+/// Captures from apps (docs/CALL_DIAGNOSTICS.md §3): an allow by user or
+/// device, expired captures listed for the sweep, and every removed
+/// capture's file queued — a purged user's too.
+#[tokio::test]
+async fn a_captures_file_is_queued_however_its_row_goes() {
+    use fcp_core::device_capture::{
+        allowed_until, AllowSubject, CaptureAllow, DeviceCapture, DeviceCaptureStore,
+    };
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+    let carol = user(a.id, "carol");
+    s.put_user(carol.clone()).await.unwrap();
+    let device = fcp_core::Device::new("App".into(), fcp_core::device::DeviceType::Softphone, a.id);
+    s.put_device(device.clone()).await.unwrap();
+
+    let now = SystemTime::now();
+    let day = Duration::from_secs(86_400);
+    for (subject, until) in [
+        (AllowSubject::User { user_id: carol.id }, now + day),
+        (
+            AllowSubject::Device {
+                device_id: device.id.clone(),
+            },
+            now + 3 * day,
+        ),
+    ] {
+        s.put_capture_allow(&CaptureAllow {
+            id: uuid::Uuid::new_v4(),
+            tenant_id: a.id,
+            subject,
+            until,
+            reason: None,
+            created_by: "admin".into(),
+            created_at: now,
+        })
+        .await
+        .unwrap();
+    }
+    let allows = s
+        .capture_allows_for(&a.id, &carol.id, &device.id)
+        .await
+        .unwrap();
+    assert_eq!(allows.len(), 2);
+    let until = allowed_until(&allows, &carol.id, &device.id, now).unwrap();
+    assert!(until > now + 2 * day, "the device's, the later");
+
+    let capture = |uploaded_at: SystemTime, expires_at: SystemTime| {
+        let id = uuid::Uuid::new_v4();
+        DeviceCapture {
+            id,
+            tenant_id: a.id,
+            device_id: device.id.clone(),
+            user_id: carol.id,
+            call_id: Some(CallId::new()),
+            size: 12,
+            sha256: "ab".repeat(32),
+            file_key: DeviceCapture::key_for(&a.id, &id),
+            subject_keys: vec!["user:carol".into()],
+            uploaded_at,
+            expires_at,
+        }
+    };
+    let (old, new) = (capture(now - 2 * day, now - day), capture(now, now + day));
+    s.put_device_capture(&old).await.unwrap();
+    s.put_device_capture(&new).await.unwrap();
+    let ids = |list: Vec<DeviceCapture>| list.into_iter().map(|c| c.id).collect::<Vec<_>>();
+    let listed = s
+        .list_device_captures(&a.id, Some(&device.id), None)
+        .await
+        .unwrap();
+    assert_eq!(listed[0].file_key, new.file_key);
+    assert_eq!(listed[0].subject_keys, new.subject_keys);
+    assert_eq!(ids(listed), vec![new.id, old.id], "newest first");
+    let expired = s.expired_device_captures(now, 10).await.unwrap();
+    assert_eq!(ids(expired), vec![old.id]);
+
+    // Removed by hand: the file is queued.
+    assert!(s
+        .delete_device_capture(&a.id, &old.id)
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        s.due_capture_files(10).await.unwrap(),
+        vec![old.file_key.clone()]
+    );
+    s.capture_file_failed(&old.file_key, "unreachable", day)
+        .await
+        .unwrap();
+    assert!(s.due_capture_files(10).await.unwrap().is_empty(), "later");
+
+    // The user purged: their capture and allow go, the file is queued.
+    s.delete_user_in_tenant(&carol.username, &a.id)
+        .await
+        .unwrap();
+    assert!(s
+        .list_device_captures(&a.id, None, None)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        s.capture_allows_for(&a.id, &carol.id, &device.id)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the device's allow is the device's"
+    );
+    let queued: Vec<String> =
+        sqlx::query_scalar("SELECT file_key FROM device_capture_file_deletions ORDER BY file_key")
+            .fetch_all(s.pool())
+            .await
+            .unwrap();
+    let mut expected = vec![old.file_key.clone(), new.file_key.clone()];
+    expected.sort();
+    assert_eq!(queued, expected);
+    s.capture_file_removed(&new.file_key).await.unwrap();
+}
+
 #[tokio::test]
 async fn the_archive_walks_days_notes_late_records_and_holds_each_tenants_frontier() {
     use chrono::{Duration as Days, NaiveDate, Utc};

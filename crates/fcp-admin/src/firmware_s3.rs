@@ -1,6 +1,7 @@
-//! Firmware images in an S3-compatible bucket (`[api.firmware.s3]`,
-//! `docs/PROVISIONING.md` §11), through the CDR archive's S3 client: every
-//! admin of a deployment serves the same images.
+//! Firmware images (`[api.firmware.s3]`, `docs/PROVISIONING.md` §11) and
+//! apps' captures (`[api.captures.s3]`, `docs/CALL_DIAGNOSTICS.md` §3) in an
+//! S3-compatible bucket, through the CDR archive's S3 client: every admin
+//! of a deployment serves the same files.
 
 use async_trait::async_trait;
 use axum::body::Body;
@@ -15,7 +16,13 @@ pub struct S3Files {
 }
 
 impl S3Files {
-    pub fn new(config: &fcp_core::FirmwareS3Config) -> anyhow::Result<Self> {
+    /// The bucket `config` names, read as `section`, with keys under its
+    /// prefix or `default_prefix`.
+    pub fn new(
+        config: &fcp_core::FirmwareS3Config,
+        section: &str,
+        default_prefix: &str,
+    ) -> anyhow::Result<Self> {
         let target = S3Target::new(S3Config {
             region: config.region.clone(),
             endpoint: config.endpoint.clone(),
@@ -25,11 +32,14 @@ impl S3Files {
             session_token: config.session_token.clone(),
             ..S3Config::new(config.bucket.clone())
         })
-        .map_err(|e| anyhow::anyhow!("api.firmware.s3: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("{section}: {e}"))?;
         Ok(Self {
             target,
             bucket: config.bucket.clone(),
-            prefix: config.prefix.clone(),
+            prefix: config
+                .prefix
+                .clone()
+                .unwrap_or_else(|| default_prefix.to_string()),
         })
     }
 

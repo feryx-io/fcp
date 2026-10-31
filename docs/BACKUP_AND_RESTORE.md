@@ -46,6 +46,7 @@ wherever it backs up.
 | `fcp-voicemail` | `[voicemail] recordings_dir`, `greetings_dir` | `/var/fcp/voicemail/…` | `/var/lib/fcp/voicemail/…` (`voicemail-data`) |
 | `fcp-admin` | `[compliance] exports_dir` | `/var/lib/fcp/exports` | `/app/data/exports` (`admin-data`) |
 | | `[api.firmware] directory` | unset (no uploads) | `/app/data/firmware` (`admin-data`): uploaded firmware images, re-derivable by uploading them again, but the rows in `firmware_images` name them |
+| | `[api.captures] directory` | unset (no captures) | `/app/data/captures` (`admin-data`): captures apps uploaded (`docs/CALL_DIAGNOSTICS.md` §3), not re-derivable; the rows in `device_captures` name them, and a file restored without its row is never served or removed |
 | `fcp-tts` | `[tts] cache_dir` | `/tmp/fcp/tts_cache` | `/var/lib/fcp/tts_cache` (`tts-cache`; a cache) |
 | every binary that opens Postgres | `FCP_MASTER_KEY_FILE` | unset (encryption off) | `/var/lib/fcp/certs/master.key` (`fcp-certs`) |
 

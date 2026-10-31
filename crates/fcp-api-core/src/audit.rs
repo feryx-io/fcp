@@ -30,6 +30,7 @@ pub fn should_audit(method: &Method, path: &str) -> bool {
         Method::GET => {
             path.ends_with("/cdrs/export")
                 || (path.contains("/compliance/subject-requests/") && path.ends_with("/bundle"))
+                || (path.contains("/captures/") && path.ends_with("/file"))
         }
         Method::HEAD | Method::OPTIONS => false,
         _ => true,
@@ -199,6 +200,8 @@ mod tests {
             &Method::GET,
             "/api/v1/compliance/subject-requests/sreq-1"
         ));
+        assert!(should_audit(&Method::GET, "/api/v1/captures/cap-1/file"));
+        assert!(!should_audit(&Method::GET, "/api/v1/captures"));
         assert!(!should_audit(&Method::GET, "/api/v1/cdrs"));
         assert!(!should_audit(&Method::OPTIONS, "/api/v1/users"));
     }

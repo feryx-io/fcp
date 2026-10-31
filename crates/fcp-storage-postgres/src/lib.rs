@@ -36,6 +36,7 @@ pub mod compliance;
 pub mod config;
 mod contact;
 mod deletion;
+mod device_capture;
 pub mod emergency;
 pub mod encryption;
 pub mod flow_trace;
@@ -1587,7 +1588,7 @@ const TENANT_SELECT_COLS: &str = "id, name, description, status, contact_email, 
     max_users, max_phone_numbers, max_concurrent_calls, billing_id,
     created_at, updated_at, trial_expires_at, metadata, sip_domains,
     platform_trunk_fallback, calling_json, login_domains, sign_in_json, offboarding_json,
-    provisioning_json, directory_json, lines_json";
+    provisioning_json, directory_json, lines_json, diagnostics_json";
 
 #[async_trait]
 impl TenantStore for PostgresStorage {
@@ -1709,9 +1710,9 @@ impl TenantStore for PostgresStorage {
                 max_users, max_phone_numbers, max_concurrent_calls, billing_id,
                 created_at, updated_at, trial_expires_at, metadata, sip_domains,
                 platform_trunk_fallback, data, calling_json, login_domains, sign_in_json,
-                offboarding_json, provisioning_json, directory_json, lines_json
+                offboarding_json, provisioning_json, directory_json, lines_json, diagnostics_json
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17, $18, $19, $20, $21, $22, $23)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17, $18, $19, $20, $21, $22, $23, $24)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
@@ -1733,7 +1734,8 @@ impl TenantStore for PostgresStorage {
                  offboarding_json = EXCLUDED.offboarding_json,
                  provisioning_json = EXCLUDED.provisioning_json,
                  directory_json = EXCLUDED.directory_json,
-                 lines_json = EXCLUDED.lines_json",
+                 lines_json = EXCLUDED.lines_json,
+                 diagnostics_json = EXCLUDED.diagnostics_json",
         )
         .bind(&id)
         .bind(&tenant.name)
@@ -1758,6 +1760,7 @@ impl TenantStore for PostgresStorage {
         .bind(serde_json::to_value(&tenant.provisioning)?)
         .bind(serde_json::to_value(&tenant.directory)?)
         .bind(serde_json::to_value(&tenant.lines)?)
+        .bind(serde_json::to_value(&tenant.diagnostics)?)
         .execute(self.writes())
         .await?;
 
@@ -1831,6 +1834,8 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
         directory: serde_json::from_value(row.get("directory_json"))
             .context("a tenant's directory")?,
         lines: serde_json::from_value(row.get("lines_json")).context("a tenant's lines")?,
+        diagnostics: serde_json::from_value(row.get("diagnostics_json"))
+            .context("a tenant's diagnostics")?,
     })
 }
 

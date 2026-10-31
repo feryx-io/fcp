@@ -156,6 +156,12 @@ pub struct ApiState {
     /// The images' store: the directory's, or a bucket the admin wires in.
     pub firmware_files: Option<Arc<dyn crate::firmware_files::FirmwareFiles>>,
 
+    /// Where apps' captures are kept (`[api.captures]`): a directory or a
+    /// bucket the admin wires in. None, no app may capture.
+    pub capture_files: Option<Arc<dyn crate::firmware_files::FirmwareFiles>>,
+    /// Where an upload is staged before it goes to a bucket.
+    pub capture_staging: Option<std::path::PathBuf>,
+
     /// Trunk health monitoring map (populated by background health probe task).
     pub trunk_health: Option<crate::trunk_health::TrunkHealthMap>,
     /// Where the view each node has of its trunks is read from
@@ -275,6 +281,8 @@ impl ApiState {
             redirection: fcp_core::ApiRedirectionConfig::default(),
             firmware: fcp_core::ApiFirmwareConfig::default(),
             firmware_files: None,
+            capture_files: None,
+            capture_staging: None,
             trunk_health: None,
             trunk_reports: None,
             metrics_sources: Vec::new(),
@@ -412,6 +420,32 @@ impl ApiState {
         files: Arc<dyn crate::firmware_files::FirmwareFiles>,
     ) -> Self {
         self.firmware_files = Some(files);
+        self
+    }
+
+    /// Where captures are kept, from `[api.captures]`. Without a store
+    /// already given (a bucket), a directory set here is the store, and
+    /// uploads are staged in it.
+    pub fn with_captures_config(mut self, config: &fcp_core::ApiCapturesConfig) -> Self {
+        if let Some(dir) = config.directory.as_deref() {
+            if self.capture_files.is_none() && config.s3.is_none() {
+                self.capture_files =
+                    Some(Arc::new(crate::firmware_files::DirectoryFiles::new(dir)));
+            }
+            self.capture_staging.get_or_insert_with(|| dir.into());
+        }
+        self
+    }
+
+    /// The captures' store, and where uploads are staged
+    /// (`docs/CALL_DIAGNOSTICS.md` §3).
+    pub fn with_capture_files(
+        mut self,
+        files: Arc<dyn crate::firmware_files::FirmwareFiles>,
+        staging: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.capture_files = Some(files);
+        self.capture_staging = staging;
         self
     }
 

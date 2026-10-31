@@ -93,6 +93,15 @@ fn class_sql(class: DataClass) -> ClassSql {
             keys: "fcp_subject_keys(actor)",
             call: "NULL::text",
         },
+        DataClass::DeviceCapture => ClassSql {
+            table: "device_captures",
+            id: "id",
+            at: "uploaded_at",
+            tenant: "tenant_id = $1",
+            hold: "fcp_device_capture_hold(tenant_id, uploaded_at, subject_keys, call_id)",
+            keys: "fcp_device_capture_keys(subject_keys, call_id)",
+            call: "call_id",
+        },
     }
 }
 

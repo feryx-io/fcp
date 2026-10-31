@@ -1162,6 +1162,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/devices/{id}/captures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/devices/:id/captures — the app uploads a capture it took
+         *     (pcapng, as the body), from its own session and while it is allowed.
+         *     403 when it is not allowed, 413 over the tenant's limit, 404 when the
+         *     call named was not the user's.
+         */
+        post: operations["self_service_upload_capture"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/captures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /me/captures — the user's own captures, newest first. */
+        get: operations["self_service_list_captures"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/directory": {
         parameters: {
             query?: never;
@@ -3325,6 +3364,107 @@ export interface paths {
          *     tenant's call.
          */
         get: operations["cdrs_get_call_quality"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/captures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /captures — the tenant's captures, newest first, of one device or
+         *     user when named.
+         */
+        get: operations["captures_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/captures/allows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /captures/allows — the tenant's allows, ended ones too, newest
+         *     first.
+         */
+        get: operations["captures_list_allows"];
+        put?: never;
+        /**
+         * POST /captures/allows — allow a user or a device to capture until a
+         *     date. 409 while the tenant has captures off.
+         */
+        post: operations["captures_create_allow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/captures/allows/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /captures/allows/:id — end an allow now. */
+        delete: operations["captures_delete_allow"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/captures/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /captures/:id — remove a capture before its expiry; 409 while a
+         *     legal hold keeps it.
+         */
+        delete: operations["captures_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/captures/{id}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /captures/:id/file — the capture itself (pcapng). Every download
+         *     is in the audit log.
+         */
+        get: operations["captures_download"];
         put?: never;
         post?: never;
         delete?: never;
@@ -6562,6 +6702,62 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description Allow a user (every app they sign in to) or one device to capture. */
+        CaptureAllowRequest: {
+            /** @description The user; or name `device_id`. */
+            username?: string | null;
+            device_id?: string | null;
+            /**
+             * Format: date-time
+             * @description When the allow ends: in the future, at most 30 days away.
+             */
+            until: string;
+            /** @description Why, for the record. */
+            reason?: string | null;
+        };
+        /** @description An administrator's allow. */
+        CaptureAllowResponse: {
+            id: string;
+            /** @description `user` or `device`. */
+            kind: string;
+            user_id?: string | null;
+            /** @description The user's name, while they exist. */
+            username?: string | null;
+            device_id?: string | null;
+            /** @description The device's name, while it exists. */
+            device_name?: string | null;
+            /** Format: date-time */
+            until: string;
+            /** @description Not yet ended. */
+            active: boolean;
+            reason?: string | null;
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        /** @description An uploaded capture. */
+        CaptureResponse: {
+            id: string;
+            /** @description The app that took it, which may since have been removed. */
+            device_id: string;
+            device_name?: string | null;
+            user_id: string;
+            username?: string | null;
+            /** @description The call it holds, when the app named one. */
+            call_id?: string | null;
+            /** Format: int64 */
+            size: number;
+            sha256: string;
+            /** Format: date-time */
+            uploaded_at: string;
+            /**
+             * Format: date-time
+             * @description When retention removes it, unless a hold keeps it.
+             */
+            expires_at: string;
+            /** @description A legal hold keeps it past its expiry. */
+            held: boolean;
+        };
         /** @description CDR response model. */
         CdrResponse: {
             /** @description The record's own identity (`docs/CDR_PIPELINE.md` §5). */
@@ -7323,6 +7519,7 @@ export interface components {
             offboarding?: components["schemas"]["TenantOffboarding"] | null;
             directory?: components["schemas"]["TenantDirectory"] | null;
             lines?: components["schemas"]["TenantLines"] | null;
+            diagnostics?: components["schemas"]["TenantDiagnostics"] | null;
             provisioning?: components["schemas"]["TenantProvisioning"] | null;
         };
         /** @description Credit or adjustment request. */
@@ -7462,7 +7659,7 @@ export interface components {
          * @description The classes of data a hold can cover.
          * @enum {string}
          */
-        DataClass: "cdr" | "call_recording" | "conference_recording" | "voicemail" | "sip_trace" | "flow_trace" | "audit_event";
+        DataClass: "cdr" | "call_recording" | "conference_recording" | "voicemail" | "sip_trace" | "flow_trace" | "audit_event" | "device_capture";
         DeadLetterReport: {
             /** @description Whether this host reached the dead letters. */
             reached: boolean;
@@ -9148,6 +9345,67 @@ export interface components {
                 remote_rtp?: string | null;
                 /** Format: date-time */
                 reported_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_CaptureAllowResponse: {
+            data: {
+                id: string;
+                /** @description `user` or `device`. */
+                kind: string;
+                user_id?: string | null;
+                /** @description The user's name, while they exist. */
+                username?: string | null;
+                device_id?: string | null;
+                /** @description The device's name, while it exists. */
+                device_name?: string | null;
+                /** Format: date-time */
+                until: string;
+                /** @description Not yet ended. */
+                active: boolean;
+                reason?: string | null;
+                created_by: string;
+                /** Format: date-time */
+                created_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_CaptureResponse: {
+            data: {
+                id: string;
+                /** @description The app that took it, which may since have been removed. */
+                device_id: string;
+                device_name?: string | null;
+                user_id: string;
+                username?: string | null;
+                /** @description The call it holds, when the app named one. */
+                call_id?: string | null;
+                /** Format: int64 */
+                size: number;
+                sha256: string;
+                /** Format: date-time */
+                uploaded_at: string;
+                /**
+                 * Format: date-time
+                 * @description When retention removes it, unless a hold keeps it.
+                 */
+                expires_at: string;
+                /** @description A legal hold keeps it past its expiry. */
+                held: boolean;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -10963,6 +11221,11 @@ export interface components {
                 /** @description Whether its users may name their own lines. */
                 lines: components["schemas"]["TenantLines"];
                 /**
+                 * @description Whether its people's apps may capture calls, and how captures are
+                 *     kept.
+                 */
+                diagnostics: components["schemas"]["TenantDiagnostics"];
+                /**
                  * @description How the tenant's phones fetch their configuration
                  *     (`docs/PROVISIONING.md` §3).
                  */
@@ -12599,6 +12862,24 @@ export interface components {
              */
             register_expires: number;
         };
+        /** @description Whether the app may capture (`capture` on `/me/softphone`). */
+        SoftphoneCapture: {
+            /**
+             * @description The tenant has captures on, an administrator allows this user or
+             *     app, and this admin keeps captures.
+             */
+            allowed: boolean;
+            /**
+             * Format: date-time
+             * @description Until when, while allowed.
+             */
+            until?: string | null;
+            /**
+             * Format: int32
+             * @description The largest capture the app should keep or upload, in MB.
+             */
+            max_mb: number;
+        };
         /** @description Everything the app needs. */
         SoftphoneConfig: {
             account: components["schemas"]["SoftphoneAccount"];
@@ -12633,6 +12914,11 @@ export interface components {
             lines: components["schemas"]["SoftphoneLine"][];
             /** @description Whether the user may name their lines (the tenant's choice). */
             may_rename_lines: boolean;
+            /**
+             * @description Whether the app may capture calls, until when, and how large a
+             *     capture may be (`docs/CALL_DIAGNOSTICS.md` §3).
+             */
+            capture: components["schemas"]["SoftphoneCapture"];
         };
         /**
          * @description A line on the app (`docs/DEVICE_LINES.md`): an account it registers
@@ -12848,6 +13134,24 @@ export interface components {
              */
             hold_music?: string | null;
         };
+        /**
+         * @description A tenant's word on captures from its people's apps: off unless it turns
+         *     them on, and then only for a user or device an administrator allows.
+         */
+        TenantDiagnostics: {
+            /** @description Captures may be allowed at all. */
+            capture_allowed?: boolean;
+            /**
+             * Format: int32
+             * @description The largest capture an app keeps or uploads, in MB (1 to 500).
+             */
+            capture_max_mb?: number;
+            /**
+             * Format: int32
+             * @description Days an uploaded capture is kept (1 to 365), unless a hold keeps it.
+             */
+            capture_keep_days?: number;
+        };
         /** @description What a tenant's people see of each other through `/me/directory`. */
         TenantDirectory: {
             /**
@@ -12943,6 +13247,11 @@ export interface components {
             directory: components["schemas"]["TenantDirectory"];
             /** @description Whether its users may name their own lines. */
             lines: components["schemas"]["TenantLines"];
+            /**
+             * @description Whether its people's apps may capture calls, and how captures are
+             *     kept.
+             */
+            diagnostics: components["schemas"]["TenantDiagnostics"];
             /**
              * @description How the tenant's phones fetch their configuration
              *     (`docs/PROVISIONING.md` §3).
@@ -13710,6 +14019,7 @@ export interface components {
             offboarding?: components["schemas"]["TenantOffboarding"] | null;
             directory?: components["schemas"]["TenantDirectory"] | null;
             lines?: components["schemas"]["TenantLines"] | null;
+            diagnostics?: components["schemas"]["TenantDiagnostics"] | null;
             provisioning?: components["schemas"]["TenantProvisioning"] | null;
         };
         /** @description Update trunk request. */
@@ -16519,6 +16829,77 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CallQualityResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_upload_capture: {
+        parameters: {
+            query?: {
+                /** @description FCP's id for the call the capture holds (`X-FCP-Call-Id`). */
+                call_id?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The app's device */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/vnd.tcpdump.pcapng": number[];
+            };
+        };
+        responses: {
+            /** @description Kept */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_list_captures: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_CaptureResponse"];
                 };
             };
             /** @description An error */
@@ -21352,6 +21733,196 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_CallQualityResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    captures_list: {
+        parameters: {
+            query?: {
+                /** @description One device's captures. */
+                device_id?: string;
+                /** @description One user's captures. */
+                username?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_CaptureResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    captures_list_allows: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_CaptureAllowResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    captures_create_allow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaptureAllowRequest"];
+            };
+        };
+        responses: {
+            /** @description Made */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureAllowResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    captures_delete_allow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    captures_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    captures_download: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The capture */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.tcpdump.pcapng": number[];
                 };
             };
             /** @description An error */

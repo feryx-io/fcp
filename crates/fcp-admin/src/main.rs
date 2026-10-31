@@ -438,6 +438,7 @@ async fn main() -> Result<()> {
         provisioning: config.api.provisioning.clone(),
         redirection: config.api.redirection.clone(),
         firmware: config.api.firmware.clone(),
+        captures: config.api.captures.clone(),
     };
     // The realm digest hashes are computed in, the registrars' (`[sip]
     // realm`, else the call managers' from the operational configuration);
@@ -545,7 +546,7 @@ async fn main() -> Result<()> {
         config.api.firmware.directory.as_deref(),
     ) {
         (Some(s3), _) => {
-            let files = firmware_s3::S3Files::new(s3)?;
+            let files = firmware_s3::S3Files::new(s3, "api.firmware.s3", "firmware/")?;
             info!(
                 location = %fcp_api_core::firmware_files::FirmwareFiles::location(&files),
                 "Firmware images in a bucket"
@@ -557,6 +558,20 @@ async fn main() -> Result<()> {
         ))),
         (None, None) => None,
     };
+    // Apps' captures in a bucket ([api.captures.s3]); a directory is
+    // made the store below (docs/CALL_DIAGNOSTICS.md §3).
+    let capture_bucket: Option<Arc<dyn fcp_api_core::firmware_files::FirmwareFiles>> =
+        match &config.api.captures.s3 {
+            Some(s3) => {
+                let files = firmware_s3::S3Files::new(s3, "api.captures.s3", "captures/")?;
+                info!(
+                    location = %fcp_api_core::firmware_files::FirmwareFiles::location(&files),
+                    "Captures in a bucket"
+                );
+                Some(Arc::new(files))
+            }
+            None => None,
+        };
     let link_state = if config.link.enabled {
         site_link::ensure_crypto_provider();
         let ca = site_link::LinkCa::load_or_create(&site_link::ca_dir(&config.link))
@@ -678,6 +693,13 @@ async fn main() -> Result<()> {
         Some(files) => api_state.with_firmware_files(Arc::clone(files)),
         None => api_state,
     };
+    // The captures' store: the bucket, else the directory; this state's
+    // too, for the sweep, not only the router's.
+    let api_state = match capture_bucket {
+        Some(files) => api_state.with_capture_files(files, None),
+        None => api_state,
+    }
+    .with_captures_config(&config.api.captures);
 
     // Set security policy from config
     let api_state = api_state.with_security_policy(fcp_api_core::SecurityPolicy {
@@ -773,6 +795,10 @@ async fn main() -> Result<()> {
     // App devices nobody signs in as any more removed, once an hour
     // (docs/APP_SIGN_IN.md).
     fcp_api_core::v1::app_auth::spawn_device_sweep(api_state.clone());
+
+    // Apps' captures removed when they expire, and their files, once an
+    // hour (docs/CALL_DIAGNOSTICS.md §3).
+    fcp_api_core::v1::device_captures::spawn_sweep(api_state.clone());
 
     // SAML providers' metadata fetched again from its URL once a day, so a
     // rotated certificate is followed (docs/SSO.md §8).

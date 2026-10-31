@@ -16,6 +16,9 @@ import type {
   GroupMember,
   ProvisioningKey,
   DeviceFetch,
+  CaptureResponse,
+  CaptureAllowResponse,
+  CaptureAllowRequest,
   PendingDevice,
   ClaimDeviceRequest,
   RenderedConfig,
@@ -200,6 +203,7 @@ export const system = {
 export const users = {
   list: () => apiClient.getAll<User>('/users'),
   get: (username: string) => apiClient.get<User>(`/users/${encodeURIComponent(username)}`),
+  byId: (id: string) => apiClient.get<User>(`/users/by-id/${encodeURIComponent(id)}`),
   create: (data: CreateUserRequest) => apiClient.post<User>('/users', data),
   update: (username: string, data: UpdateUserRequest) =>
     apiClient.put<User>(`/users/${encodeURIComponent(username)}`, data),
@@ -425,6 +429,30 @@ export const calls = {
 }
 
 // CDRs (Phase 2 - call detail records)
+// Apps' captures and who may take them (docs/CALL_DIAGNOSTICS.md §3)
+export const captures = {
+  list: (params: { device_id?: string; username?: string } = {}) => {
+    const q = new URLSearchParams()
+    if (params.device_id) q.set('device_id', params.device_id)
+    if (params.username) q.set('username', params.username)
+    const qs = q.toString()
+    return apiClient.getAll<CaptureResponse>(`/captures${qs ? `?${qs}` : ''}`)
+  },
+  allows: () => apiClient.getAll<CaptureAllowResponse>('/captures/allows'),
+  allow: (data: CaptureAllowRequest) => apiClient.post<CaptureAllowResponse>('/captures/allows', data),
+  endAllow: (id: string) => apiClient.delete<void>(`/captures/allows/${encodeURIComponent(id)}`),
+  delete: (id: string) => apiClient.delete<void>(`/captures/${encodeURIComponent(id)}`),
+  /** Save the capture's file; the download is in the audit log. */
+  download: async (capture: CaptureResponse) => {
+    const url = await apiClient.fetchBlobUrl(`/captures/${encodeURIComponent(capture.id)}/file`)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${capture.id}.pcapng`
+    a.click()
+    URL.revokeObjectURL(url)
+  },
+}
+
 export const cdrs = {
   list: (params?: CdrQueryParams) => {
     const searchParams = new URLSearchParams()

@@ -102,6 +102,9 @@ pub struct TenantResponse {
     pub directory: fcp_core::TenantDirectory,
     /// Whether its users may name their own lines.
     pub lines: fcp_core::tenant::TenantLines,
+    /// Whether its people's apps may capture calls, and how captures are
+    /// kept.
+    pub diagnostics: fcp_core::tenant::TenantDiagnostics,
     /// How the tenant's phones fetch their configuration
     /// (`docs/PROVISIONING.md` §3).
     pub provisioning: fcp_core::provisioning::TenantProvisioning,
@@ -145,6 +148,7 @@ impl From<Tenant> for TenantResponse {
             provisioning: tenant.provisioning,
             directory: tenant.directory,
             lines: tenant.lines,
+            diagnostics: tenant.diagnostics,
         }
     }
 }
@@ -193,6 +197,9 @@ pub struct CreateTenantRequest {
     /// Whether its users may name their own lines; unset, they may not.
     #[serde(default)]
     pub lines: Option<fcp_core::tenant::TenantLines>,
+    /// Captures from its people's apps; unset, none may be taken.
+    #[serde(default)]
+    pub diagnostics: Option<fcp_core::tenant::TenantDiagnostics>,
     /// How the tenant's phones fetch their configuration.
     #[serde(default)]
     pub provisioning: Option<fcp_core::provisioning::TenantProvisioning>,
@@ -234,6 +241,9 @@ pub struct UpdateTenantRequest {
     /// Replaces whether its users may name their own lines.
     #[serde(default)]
     pub lines: Option<fcp_core::tenant::TenantLines>,
+    /// Replaces its word on captures.
+    #[serde(default)]
+    pub diagnostics: Option<fcp_core::tenant::TenantDiagnostics>,
     /// Replaces how the tenant's phones fetch their configuration.
     pub provisioning: Option<fcp_core::provisioning::TenantProvisioning>,
 }
@@ -570,6 +580,7 @@ pub async fn create_tenant(
         offboarding,
         directory: req.directory.clone().unwrap_or_default(),
         lines: req.lines.clone().unwrap_or_default(),
+        diagnostics: checked_diagnostics(req.diagnostics.clone().unwrap_or_default())?,
         provisioning: req
             .provisioning
             .clone()
@@ -728,6 +739,9 @@ pub async fn update_tenant(
     }
     if let Some(lines) = req.lines {
         tenant.lines = lines;
+    }
+    if let Some(diagnostics) = req.diagnostics {
+        tenant.diagnostics = checked_diagnostics(diagnostics)?;
     }
 
     if let Some(provisioning) = req.provisioning {
@@ -888,4 +902,22 @@ pub async fn get_tenant_deletion(
         .find(|r| r.kind == SubjectRequestKind::TenantDeletion)
         .map(|r| Json(super::compliance::SubjectRequestResponse::from(r)))
         .ok_or_else(|| ApiError::NotFound(format!("Tenant {id} has no deletion request")))
+}
+
+/// A tenant's capture settings, within their bounds.
+fn checked_diagnostics(
+    d: fcp_core::tenant::TenantDiagnostics,
+) -> Result<fcp_core::tenant::TenantDiagnostics, ApiError> {
+    use fcp_core::tenant::{MAX_CAPTURE_KEEP_DAYS, MAX_CAPTURE_MAX_MB};
+    if !(1..=MAX_CAPTURE_MAX_MB).contains(&d.capture_max_mb) {
+        return Err(ApiError::BadRequest(format!(
+            "diagnostics.capture_max_mb is from 1 to {MAX_CAPTURE_MAX_MB}"
+        )));
+    }
+    if !(1..=MAX_CAPTURE_KEEP_DAYS).contains(&d.capture_keep_days) {
+        return Err(ApiError::BadRequest(format!(
+            "diagnostics.capture_keep_days is from 1 to {MAX_CAPTURE_KEEP_DAYS}"
+        )));
+    }
+    Ok(d)
 }

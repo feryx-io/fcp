@@ -105,6 +105,9 @@ pub struct SoftphoneConfig {
     pub lines: Vec<SoftphoneLine>,
     /// Whether the user may name their lines (the tenant's choice).
     pub may_rename_lines: bool,
+    /// Whether the app may capture calls, until when, and how large a
+    /// capture may be (`docs/CALL_DIAGNOSTICS.md` §3).
+    pub capture: crate::v1::device_captures::SoftphoneCapture,
 }
 
 /// The app's session and device: what `/me/softphone` answers for.
@@ -264,6 +267,7 @@ pub async fn get_config(
             .await?,
         lines,
         may_rename_lines,
+        capture: crate::v1::device_captures::capture_permit(&state, &user, &device.id).await?,
     };
     let json = serde_json::to_vec(&body).map_err(|e| ApiError::Internal(e.to_string()))?;
     let digest: String = Sha256::digest(&json)

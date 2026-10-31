@@ -169,6 +169,51 @@ pub struct Tenant {
     /// §2); off, the apps show the administrator's labels.
     #[serde(default)]
     pub lines: TenantLines,
+    /// Whether its people's apps may capture calls, and how captures are
+    /// kept (`docs/CALL_DIAGNOSTICS.md` §3).
+    #[serde(default)]
+    pub diagnostics: TenantDiagnostics,
+}
+
+/// A tenant's word on captures from its people's apps: off unless it turns
+/// them on, and then only for a user or device an administrator allows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TenantDiagnostics {
+    /// Captures may be allowed at all.
+    #[serde(default)]
+    pub capture_allowed: bool,
+    /// The largest capture an app keeps or uploads, in MB (1 to 500).
+    #[serde(default = "default_capture_max_mb")]
+    pub capture_max_mb: u32,
+    /// Days an uploaded capture is kept (1 to 365), unless a hold keeps it.
+    #[serde(default = "default_capture_keep_days")]
+    pub capture_keep_days: u32,
+}
+
+/// The largest capture when a tenant names none.
+pub const DEFAULT_CAPTURE_MAX_MB: u32 = 50;
+pub const MAX_CAPTURE_MAX_MB: u32 = 500;
+/// Days an uploaded capture is kept when a tenant names none.
+pub const DEFAULT_CAPTURE_KEEP_DAYS: u32 = 30;
+pub const MAX_CAPTURE_KEEP_DAYS: u32 = 365;
+
+fn default_capture_max_mb() -> u32 {
+    DEFAULT_CAPTURE_MAX_MB
+}
+
+fn default_capture_keep_days() -> u32 {
+    DEFAULT_CAPTURE_KEEP_DAYS
+}
+
+impl Default for TenantDiagnostics {
+    fn default() -> Self {
+        Self {
+            capture_allowed: false,
+            capture_max_mb: DEFAULT_CAPTURE_MAX_MB,
+            capture_keep_days: DEFAULT_CAPTURE_KEEP_DAYS,
+        }
+    }
 }
 
 /// What a tenant's people may do with the lines on their devices.
@@ -469,6 +514,7 @@ impl Tenant {
             provisioning: Default::default(),
             directory: TenantDirectory::default(),
             lines: TenantLines::default(),
+            diagnostics: TenantDiagnostics::default(),
         }
     }
 

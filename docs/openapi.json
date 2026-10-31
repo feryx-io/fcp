@@ -2956,6 +2956,122 @@
         }
       }
     },
+    "/api/v1/me/devices/{id}/captures": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/devices/:id/captures — the app uploads a capture it took\n(pcapng, as the body), from its own session and while it is allowed.\n403 when it is not allowed, 413 over the tenant's limit, 404 when the\ncall named was not the user's.",
+        "operationId": "self_service_upload_capture",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The app's device",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "call_id",
+            "in": "query",
+            "description": "FCP's id for the call the capture holds (`X-FCP-Call-Id`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/vnd.tcpdump.pcapng": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/captures": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/captures — the user's own captures, newest first.",
+        "operationId": "self_service_list_captures",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CaptureResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/directory": {
       "get": {
         "tags": [
@@ -9711,6 +9827,277 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Page_CallQualityResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/captures": {
+      "get": {
+        "tags": [
+          "captures"
+        ],
+        "summary": "GET /captures — the tenant's captures, newest first, of one device or\nuser when named.",
+        "operationId": "captures_list",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "query",
+            "description": "One device's captures.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "username",
+            "in": "query",
+            "description": "One user's captures.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CaptureResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/captures/allows": {
+      "get": {
+        "tags": [
+          "captures"
+        ],
+        "summary": "GET /captures/allows — the tenant's allows, ended ones too, newest\nfirst.",
+        "operationId": "captures_list_allows",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CaptureAllowResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "captures"
+        ],
+        "summary": "POST /captures/allows — allow a user or a device to capture until a\ndate. 409 while the tenant has captures off.",
+        "operationId": "captures_create_allow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureAllowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Made",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureAllowResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/captures/allows/{id}": {
+      "delete": {
+        "tags": [
+          "captures"
+        ],
+        "summary": "DELETE /captures/allows/:id — end an allow now.",
+        "operationId": "captures_delete_allow",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/captures/{id}": {
+      "delete": {
+        "tags": [
+          "captures"
+        ],
+        "summary": "DELETE /captures/:id — remove a capture before its expiry; 409 while a\nlegal hold keeps it.",
+        "operationId": "captures_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/captures/{id}/file": {
+      "get": {
+        "tags": [
+          "captures"
+        ],
+        "summary": "GET /captures/:id/file — the capture itself (pcapng). Every download\nis in the audit log.",
+        "operationId": "captures_download",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The capture",
+            "content": {
+              "application/vnd.tcpdump.pcapng": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
                 }
               }
             }
@@ -21445,6 +21832,175 @@
           }
         }
       },
+      "CaptureAllowRequest": {
+        "type": "object",
+        "description": "Allow a user (every app they sign in to) or one device to capture.",
+        "required": [
+          "until"
+        ],
+        "properties": {
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The user; or name `device_id`."
+          },
+          "device_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the allow ends: in the future, at most 30 days away."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why, for the record."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaptureAllowResponse": {
+        "type": "object",
+        "description": "An administrator's allow.",
+        "required": [
+          "id",
+          "kind",
+          "until",
+          "active",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`user` or `device`."
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The user's name, while they exist."
+          },
+          "device_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "device_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The device's name, while it exists."
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Not yet ended."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CaptureResponse": {
+        "type": "object",
+        "description": "An uploaded capture.",
+        "required": [
+          "id",
+          "device_id",
+          "user_id",
+          "size",
+          "sha256",
+          "uploaded_at",
+          "expires_at",
+          "held"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string",
+            "description": "The app that took it, which may since have been removed."
+          },
+          "device_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "call_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The call it holds, when the app named one."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "uploaded_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When retention removes it, unless a hold keeps it."
+          },
+          "held": {
+            "type": "boolean",
+            "description": "A legal hold keeps it past its expiry."
+          }
+        }
+      },
       "CdrResponse": {
         "type": "object",
         "description": "CDR response model.",
@@ -24001,6 +24557,17 @@
               }
             ]
           },
+          "diagnostics": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantDiagnostics",
+                "description": "Captures from its people's apps; unset, none may be taken."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "provisioning": {
             "oneOf": [
               {
@@ -24522,7 +25089,8 @@
           "voicemail",
           "sip_trace",
           "flow_trace",
-          "audit_event"
+          "audit_event",
+          "device_capture"
         ]
       },
       "DeadLetterReport": {
@@ -29497,6 +30065,196 @@
                 "reported_at": {
                   "type": "string",
                   "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_CaptureAllowResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "An administrator's allow.",
+              "required": [
+                "id",
+                "kind",
+                "until",
+                "active",
+                "created_by",
+                "created_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`user` or `device`."
+                },
+                "user_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "username": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The user's name, while they exist."
+                },
+                "device_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "device_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The device's name, while it exists."
+                },
+                "until": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "active": {
+                  "type": "boolean",
+                  "description": "Not yet ended."
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_by": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_CaptureResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "An uploaded capture.",
+              "required": [
+                "id",
+                "device_id",
+                "user_id",
+                "size",
+                "sha256",
+                "uploaded_at",
+                "expires_at",
+                "held"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "device_id": {
+                  "type": "string",
+                  "description": "The app that took it, which may since have been removed."
+                },
+                "device_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "user_id": {
+                  "type": "string"
+                },
+                "username": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "call_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The call it holds, when the app named one."
+                },
+                "size": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "sha256": {
+                  "type": "string"
+                },
+                "uploaded_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "expires_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When retention removes it, unless a hold keeps it."
+                },
+                "held": {
+                  "type": "boolean",
+                  "description": "A legal hold keeps it past its expiry."
                 }
               }
             }
@@ -35303,6 +36061,7 @@
                 "offboarding",
                 "directory",
                 "lines",
+                "diagnostics",
                 "provisioning"
               ],
               "properties": {
@@ -35421,6 +36180,10 @@
                 "lines": {
                   "$ref": "#/components/schemas/TenantLines",
                   "description": "Whether its users may name their own lines."
+                },
+                "diagnostics": {
+                  "$ref": "#/components/schemas/TenantDiagnostics",
+                  "description": "Whether its people's apps may capture calls, and how captures are\nkept."
                 },
                 "provisioning": {
                   "$ref": "#/components/schemas/TenantProvisioning",
@@ -40164,6 +40927,34 @@
           }
         }
       },
+      "SoftphoneCapture": {
+        "type": "object",
+        "description": "Whether the app may capture (`capture` on `/me/softphone`).",
+        "required": [
+          "allowed",
+          "max_mb"
+        ],
+        "properties": {
+          "allowed": {
+            "type": "boolean",
+            "description": "The tenant has captures on, an administrator allows this user or\napp, and this admin keeps captures."
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Until when, while allowed."
+          },
+          "max_mb": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The largest capture the app should keep or upload, in MB.",
+            "minimum": 0
+          }
+        }
+      },
       "SoftphoneConfig": {
         "type": "object",
         "description": "Everything the app needs.",
@@ -40177,7 +40968,8 @@
           "directory_listed",
           "may_change_directory_listing",
           "lines",
-          "may_rename_lines"
+          "may_rename_lines",
+          "capture"
         ],
         "properties": {
           "account": {
@@ -40238,6 +41030,10 @@
           "may_rename_lines": {
             "type": "boolean",
             "description": "Whether the user may name their lines (the tenant's choice)."
+          },
+          "capture": {
+            "$ref": "#/components/schemas/SoftphoneCapture",
+            "description": "Whether the app may capture calls, until when, and how large a\ncapture may be (`docs/CALL_DIAGNOSTICS.md` §3)."
           }
         }
       },
@@ -40828,6 +41624,28 @@
           }
         }
       },
+      "TenantDiagnostics": {
+        "type": "object",
+        "description": "A tenant's word on captures from its people's apps: off unless it turns\nthem on, and then only for a user or device an administrator allows.",
+        "properties": {
+          "capture_allowed": {
+            "type": "boolean",
+            "description": "Captures may be allowed at all."
+          },
+          "capture_max_mb": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The largest capture an app keeps or uploads, in MB (1 to 500).",
+            "minimum": 0
+          },
+          "capture_keep_days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Days an uploaded capture is kept (1 to 365), unless a hold keeps it.",
+            "minimum": 0
+          }
+        }
+      },
       "TenantDirectory": {
         "type": "object",
         "description": "What a tenant's people see of each other through `/me/directory`.",
@@ -40909,6 +41727,7 @@
           "offboarding",
           "directory",
           "lines",
+          "diagnostics",
           "provisioning"
         ],
         "properties": {
@@ -41027,6 +41846,10 @@
           "lines": {
             "$ref": "#/components/schemas/TenantLines",
             "description": "Whether its users may name their own lines."
+          },
+          "diagnostics": {
+            "$ref": "#/components/schemas/TenantDiagnostics",
+            "description": "Whether its people's apps may capture calls, and how captures are\nkept."
           },
           "provisioning": {
             "$ref": "#/components/schemas/TenantProvisioning",
@@ -43624,6 +44447,17 @@
               {
                 "$ref": "#/components/schemas/TenantLines",
                 "description": "Replaces whether its users may name their own lines."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnostics": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantDiagnostics",
+                "description": "Replaces its word on captures."
               },
               {
                 "type": "null"

@@ -83,6 +83,8 @@ pub enum ApiError {
     ServiceUnavailable(String),
     /// What was asked for existed and is gone for good.
     Gone(String),
+    /// The body is over what the route takes.
+    PayloadTooLarge(String),
 }
 
 impl ApiError {
@@ -96,6 +98,7 @@ impl ApiError {
             | ApiError::Internal(msg)
             | ApiError::Conflict(msg)
             | ApiError::Gone(msg)
+            | ApiError::PayloadTooLarge(msg)
             | ApiError::ServiceUnavailable(msg) => msg,
         }
     }
@@ -110,6 +113,7 @@ impl ApiError {
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::Gone(_) => StatusCode::GONE,
+            ApiError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
@@ -126,6 +130,7 @@ impl IntoResponse for ApiError {
             | ApiError::Internal(msg)
             | ApiError::Conflict(msg)
             | ApiError::Gone(msg)
+            | ApiError::PayloadTooLarge(msg)
             | ApiError::ServiceUnavailable(msg) => msg,
         };
         (

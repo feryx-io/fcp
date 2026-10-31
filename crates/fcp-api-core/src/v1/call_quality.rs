@@ -161,6 +161,32 @@ pub(crate) fn store(state: &ApiState) -> Result<&std::sync::Arc<dyn CallQualityS
         .ok_or_else(|| ApiError::ServiceUnavailable("Call quality is not kept here".to_string()))
 }
 
+/// Whether `call` may be one `user` was on: its record, once written,
+/// names them. A call whose record is not written yet is taken on the
+/// app's word — an app reports at hangup, before the record lands.
+pub(crate) async fn may_be_users_call(
+    storage: &fcp_core::storage::DynStorage,
+    user: &fcp_core::User,
+    call: &CallId,
+) -> Result<bool, ApiError> {
+    let Some(cdr) = storage.get_cdr(call).await? else {
+        return Ok(true);
+    };
+    if cdr.tenant_id != user.tenant_id {
+        return Ok(false);
+    }
+    let matcher = legal_hold::expand(
+        storage,
+        &user.tenant_id,
+        &[SubjectIdentifier::User {
+            username: user.username.clone(),
+        }],
+    )
+    .await?
+    .matcher();
+    Ok(matcher.matches(&cdr.from_uri) || matcher.matches(&cdr.to_uri))
+}
+
 fn check(report: &CallQualityReport) -> Result<(), ApiError> {
     let bad = |m: &str| Err(ApiError::BadRequest(m.to_string()));
     let score = |m: f32| (1.0..=4.5).contains(&m);
@@ -233,23 +259,8 @@ pub async fn report_call_quality(
         .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
     let quality = store(&state)?;
 
-    // The call's record, once written, must be one of the user's.
-    if let Some(cdr) = storage.get_cdr(&call_id).await? {
-        let theirs = cdr.tenant_id == user.tenant_id && {
-            let matcher = legal_hold::expand(
-                storage,
-                &user.tenant_id,
-                &[SubjectIdentifier::User {
-                    username: user.username.clone(),
-                }],
-            )
-            .await?
-            .matcher();
-            matcher.matches(&cdr.from_uri) || matcher.matches(&cdr.to_uri)
-        };
-        if !theirs {
-            return Err(ApiError::NotFound("No such call".to_string()));
-        }
+    if !may_be_users_call(storage, &user, &call_id).await? {
+        return Err(ApiError::NotFound("No such call".to_string()));
     }
 
     let loss_pct = if report.packets_expected == 0 {

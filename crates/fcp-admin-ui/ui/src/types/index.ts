@@ -690,6 +690,13 @@ export type Group = S['GroupResponse']
 /** The tenant's provisioning URL (`docs/PROVISIONING.md`). */
 export type ProvisioningKey = S['ProvisioningKeyResponse']
 export type DeviceFetch = S['DeviceFetchResponse']
+
+/** A capture an app uploaded, and an administrator's allow to take them
+ * (docs/CALL_DIAGNOSTICS.md §3). */
+export type CaptureResponse = S['CaptureResponse']
+export type CaptureAllowResponse = S['CaptureAllowResponse']
+export type CaptureAllowRequest = S['CaptureAllowRequest']
+export type TenantDiagnostics = S['TenantDiagnostics']
 /** A phone waiting to be claimed (`docs/PROVISIONING.md` §6). */
 export type PendingDevice = S['PendingDeviceResponse']
 export type ClaimDeviceRequest = S['ClaimDeviceRequest']

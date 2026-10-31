@@ -37,6 +37,7 @@ const CLASSES: Array<{ value: DataClass; label: string }> = [
   { value: 'sip_trace', label: 'SIP traces' },
   { value: 'flow_trace', label: 'Flow traces' },
   { value: 'audit_event', label: 'Audit log' },
+  { value: 'device_capture', label: 'App captures' },
 ]
 
 const classLabel = (c: string) => CLASSES.find((k) => k.value === c)?.label ?? c

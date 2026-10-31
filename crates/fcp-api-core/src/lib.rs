@@ -309,7 +309,8 @@ pub fn create_router_with(
         .with_provisioning_require_https(api_config.provisioning_require_https)
         .with_provisioning_config(api_config.provisioning.clone())
         .with_redirection_config(api_config.redirection.clone())
-        .with_firmware_config(api_config.firmware.clone());
+        .with_firmware_config(api_config.firmware.clone())
+        .with_captures_config(&api_config.captures);
 
     // Conditionally apply bearer token authentication middleware
     if api_config.auth_enabled {

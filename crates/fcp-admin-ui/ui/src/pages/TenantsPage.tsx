@@ -58,6 +58,9 @@ const editSchema = z.object({
   directory_visible: z.boolean().optional(),
   users_may_unlist: z.boolean().optional(),
   users_may_rename_lines: z.boolean().optional(),
+  capture_allowed: z.boolean().optional(),
+  capture_max_mb: z.coerce.number().int().min(1).max(500).optional(),
+  capture_keep_days: z.coerce.number().int().min(1).max(365).optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -248,6 +251,9 @@ export function TenantsPage() {
       directory_visible: editItem.directory?.visible_to_users ?? true,
       users_may_unlist: editItem.directory?.users_may_unlist ?? false,
       users_may_rename_lines: editItem.lines?.users_may_rename ?? false,
+      capture_allowed: editItem.diagnostics?.capture_allowed ?? false,
+      capture_max_mb: editItem.diagnostics?.capture_max_mb ?? 50,
+      capture_keep_days: editItem.diagnostics?.capture_keep_days ?? 30,
     })
   }
 
@@ -282,6 +288,9 @@ export function TenantsPage() {
       directory_visible,
       users_may_unlist,
       users_may_rename_lines,
+      capture_allowed,
+      capture_max_mb,
+      capture_keep_days,
       ...rest
     } = data
     updateMutation.mutate({
@@ -313,6 +322,11 @@ export function TenantsPage() {
           users_may_unlist: users_may_unlist ?? false,
         },
         lines: { users_may_rename: users_may_rename_lines ?? false },
+        diagnostics: {
+          capture_allowed: capture_allowed ?? false,
+          capture_max_mb: capture_max_mb ?? 50,
+          capture_keep_days: capture_keep_days ?? 30,
+        },
         offboarding: {
           grace_days: grace_days ?? 30,
           meetings_owner: meetings_owner?.trim() || null,
@@ -711,6 +725,35 @@ export function TenantsPage() {
                 checked={editForm.watch('users_may_rename_lines') ?? false}
                 onCheckedChange={(v) => editForm.setValue('users_may_rename_lines', v)}
               />
+            </div>
+            <div className="space-y-3 rounded-md border p-3">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5 pr-4">
+                  <Label htmlFor="e-capture_allowed">Apps may capture calls</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Let an administrator allow a person or an app to capture calls for troubleshooting, for up to
+                    30 days at a time (a device&rsquo;s Captures). Captures hold the calls&rsquo; signalling and
+                    audio, and are uploaded here.
+                  </p>
+                </div>
+                <Switch
+                  id="e-capture_allowed"
+                  checked={editForm.watch('capture_allowed') ?? false}
+                  onCheckedChange={(v) => editForm.setValue('capture_allowed', v)}
+                />
+              </div>
+              {editForm.watch('capture_allowed') && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="e-capture_max_mb">Largest capture (MB)</Label>
+                    <Input id="e-capture_max_mb" type="number" min={1} max={500} {...editForm.register('capture_max_mb')} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="e-capture_keep_days">Kept for (days)</Label>
+                    <Input id="e-capture_keep_days" type="number" min={1} max={365} {...editForm.register('capture_keep_days')} />
+                  </div>
+                </div>
+              )}
             </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>

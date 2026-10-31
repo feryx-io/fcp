@@ -570,6 +570,11 @@ pub struct ApiConfig {
     /// large one may be (`docs/PROVISIONING.md` §11); unset, none can be.
     #[serde(default)]
     pub firmware: fcp_core::ApiFirmwareConfig,
+
+    /// `[api.captures]`: where captures uploaded by apps are kept
+    /// (`docs/CALL_DIAGNOSTICS.md` §3); unset, no app may capture.
+    #[serde(default)]
+    pub captures: fcp_core::ApiCapturesConfig,
 }
 
 fn default_bind_address() -> SocketAddr {
@@ -597,6 +602,7 @@ impl Default for ApiConfig {
             provisioning: fcp_core::ApiProvisioningConfig::default(),
             redirection: fcp_core::ApiRedirectionConfig::default(),
             firmware: fcp_core::ApiFirmwareConfig::default(),
+            captures: fcp_core::ApiCapturesConfig::default(),
         }
     }
 }
@@ -850,6 +856,7 @@ pub fn validate_config(config: &AdminConfig) -> Result<()> {
         .validate()
         .map_err(anyhow::Error::msg)?;
     config.api.firmware.validate().map_err(anyhow::Error::msg)?;
+    config.api.captures.validate().map_err(anyhow::Error::msg)?;
     if let Some(cloud) = &config.api.managed_by {
         let cloud = cloud.trim();
         if !(cloud.starts_with("https://") || cloud.starts_with("http://")) {

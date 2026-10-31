@@ -104,6 +104,9 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
         .with_call_quality_store(
             storage.clone() as Arc<dyn fcp_core::call_quality::CallQualityStore>
         )
+        .with_device_capture_store(
+            storage.clone() as Arc<dyn fcp_core::device_capture::DeviceCaptureStore>
+        )
         .with_presence_status_store(
             storage.clone() as Arc<dyn fcp_core::presence_status::PresenceStatusStore>
         )

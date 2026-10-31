@@ -198,6 +198,45 @@ async fn seed_tenant_b(app: &App) -> Seeded {
     .await;
     ids.insert("/devices", device.clone());
 
+    // An allow and a capture of B's device (docs/CALL_DIAGNOSTICS.md §3).
+    {
+        use fcp_core::device_capture::DeviceCaptureStore;
+        use fcp_core::device_capture::{AllowSubject, CaptureAllow, DeviceCapture};
+        let device_id: fcp_core::DeviceId = device.parse().expect("a device id");
+        let allow = CaptureAllow {
+            id: uuid::Uuid::new_v4(),
+            tenant_id: b,
+            subject: AllowSubject::Device {
+                device_id: device_id.clone(),
+            },
+            until: std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
+            reason: Some("bravo-capture-reason".into()),
+            created_by: "seed".into(),
+            created_at: std::time::SystemTime::now(),
+        };
+        app.storage.put_capture_allow(&allow).await.expect("allow");
+        ids.insert("/captures/allows", format!("allow-{}", allow.id.simple()));
+        let id = uuid::Uuid::new_v4();
+        let capture = DeviceCapture {
+            id,
+            tenant_id: b,
+            device_id,
+            user_id: user_id.parse().expect("a user id"),
+            call_id: None,
+            size: 4,
+            sha256: "00".repeat(32),
+            file_key: DeviceCapture::key_for(&b, &id),
+            subject_keys: Vec::new(),
+            uploaded_at: std::time::SystemTime::now(),
+            expires_at: std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
+        };
+        app.storage
+            .put_device_capture(&capture)
+            .await
+            .expect("capture");
+        ids.insert("/captures", format!("cap-{}", id.simple()));
+    }
+
     let trunk = make_in_b(
         app,
         "/api/v1/trunks",

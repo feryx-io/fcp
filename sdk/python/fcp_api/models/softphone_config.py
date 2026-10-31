@@ -13,6 +13,7 @@ from typing import cast
 
 if TYPE_CHECKING:
   from ..models.softphone_account import SoftphoneAccount
+  from ..models.softphone_capture import SoftphoneCapture
   from ..models.softphone_config_feature_codes import SoftphoneConfigFeatureCodes
   from ..models.softphone_line import SoftphoneLine
   from ..models.softphone_media import SoftphoneMedia
@@ -44,6 +45,7 @@ class SoftphoneConfig:
             lines (list[SoftphoneLine]): The app's lines, its own first; `account` is the first, kept for a
                 release.
             may_rename_lines (bool): Whether the user may name their lines (the tenant's choice).
+            capture (SoftphoneCapture): Whether the app may capture (`capture` on `/me/softphone`).
             extension (None | str | Unset):
             api_url (None | str | Unset): Where this admin is, for the app's API calls.
      """
@@ -58,6 +60,7 @@ class SoftphoneConfig:
     may_change_directory_listing: bool
     lines: list[SoftphoneLine]
     may_rename_lines: bool
+    capture: SoftphoneCapture
     extension: None | str | Unset = UNSET
     api_url: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -68,6 +71,7 @@ class SoftphoneConfig:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.softphone_account import SoftphoneAccount # noqa: PLC0415
+        from ..models.softphone_capture import SoftphoneCapture # noqa: PLC0415
         from ..models.softphone_config_feature_codes import SoftphoneConfigFeatureCodes # noqa: PLC0415
         from ..models.softphone_line import SoftphoneLine # noqa: PLC0415
         from ..models.softphone_media import SoftphoneMedia # noqa: PLC0415
@@ -96,6 +100,8 @@ class SoftphoneConfig:
 
         may_rename_lines = self.may_rename_lines
 
+        capture = self.capture.to_dict()
+
         extension: None | str | Unset
         if isinstance(self.extension, Unset):
             extension = UNSET
@@ -122,6 +128,7 @@ class SoftphoneConfig:
             "may_change_directory_listing": may_change_directory_listing,
             "lines": lines,
             "may_rename_lines": may_rename_lines,
+            "capture": capture,
         })
         if extension is not UNSET:
             field_dict["extension"] = extension
@@ -135,6 +142,7 @@ class SoftphoneConfig:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.softphone_account import SoftphoneAccount # noqa: PLC0415
+        from ..models.softphone_capture import SoftphoneCapture # noqa: PLC0415
         from ..models.softphone_config_feature_codes import SoftphoneConfigFeatureCodes # noqa: PLC0415
         from ..models.softphone_line import SoftphoneLine # noqa: PLC0415
         from ..models.softphone_media import SoftphoneMedia # noqa: PLC0415
@@ -176,6 +184,11 @@ class SoftphoneConfig:
 
         may_rename_lines = d.pop("may_rename_lines")
 
+        capture = SoftphoneCapture.from_dict(d.pop("capture"))
+
+
+
+
         def _parse_extension(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -207,6 +220,7 @@ class SoftphoneConfig:
             may_change_directory_listing=may_change_directory_listing,
             lines=lines,
             may_rename_lines=may_rename_lines,
+            capture=capture,
             extension=extension,
             api_url=api_url,
         )
