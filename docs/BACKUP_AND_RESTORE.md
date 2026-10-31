@@ -351,6 +351,17 @@ Changes that need something of a configuration the operator keeps:
   `test_call_mode = 'local'`. A tenant that relied on its carrier's test
   service sets `test_call_mode` to `carrier` on `/api/v1/emergency/config`
   or the Emergency page.
+- **v0.25.496: system prompts have no tenant** (`docs/TENANT_SCOPE.md`
+  §3.2). Migration 133 moves the prompts the call manager and conference
+  server seeded into their default tenant (`is_system`) to the platform:
+  every tenant hears them, and the default tenant's edits to them are
+  every tenant's. Where two tenants held a system row of one name and
+  language, the newer becomes the system prompt and the other stays its
+  tenant's, as an override. While an upgrade runs, a node of an earlier
+  release cannot read a prompt without a tenant: it speaks those prompts
+  with TTS, and an earlier admin answers 500 on its prompt list, until it
+  is upgraded. New system prompt audio goes under `<prompts_dir>/system/`;
+  files already under the default tenant's directory stay where they are.
 
 ### 5.5 Proved
 

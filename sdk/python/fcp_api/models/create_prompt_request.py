@@ -31,6 +31,7 @@ class CreatePromptRequest:
             source_type (None | str | Unset):
             tts_text (None | str | Unset):
             tts_voice (None | str | Unset):
+            system (bool | Unset): A system prompt, for every tenant: a platform administrator's only.
      """
 
     name: str
@@ -40,6 +41,7 @@ class CreatePromptRequest:
     source_type: None | str | Unset = UNSET
     tts_text: None | str | Unset = UNSET
     tts_voice: None | str | Unset = UNSET
+    system: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -85,6 +87,8 @@ class CreatePromptRequest:
         else:
             tts_voice = self.tts_voice
 
+        system = self.system
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -103,6 +107,8 @@ class CreatePromptRequest:
             field_dict["tts_text"] = tts_text
         if tts_voice is not UNSET:
             field_dict["tts_voice"] = tts_voice
+        if system is not UNSET:
+            field_dict["system"] = system
 
         return field_dict
 
@@ -173,6 +179,8 @@ class CreatePromptRequest:
         tts_voice = _parse_tts_voice(d.pop("tts_voice", UNSET))
 
 
+        system = d.pop("system", UNSET)
+
         create_prompt_request = cls(
             name=name,
             description=description,
@@ -181,6 +189,7 @@ class CreatePromptRequest:
             source_type=source_type,
             tts_text=tts_text,
             tts_voice=tts_voice,
+            system=system,
         )
 
 

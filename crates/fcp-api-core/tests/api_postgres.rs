@@ -5186,6 +5186,310 @@ async fn prompts_crud_and_audio_upload() {
     app.finish().await;
 }
 
+/// System prompts are the platform's (docs/TENANT_SCOPE.md §3.2): every
+/// tenant sees and hears them, only a platform administrator changes them, a
+/// tenant overrides one with its own copy, and deleting the copy restores it.
+#[tokio::test]
+async fn system_prompts_are_every_tenants_and_overridden_per_tenant() {
+    use fcp_core::prompt::{effective_prompt_by_id, PromptStore};
+    let app = require_app!();
+    let store = PostgresPromptStore::new(app.storage.pool().clone());
+
+    // The platform's prompt, with audio.
+    let system = app
+        .admin(
+            Method::POST,
+            "/api/v1/prompts",
+            Some(json!({ "name": "vm_goodbye", "category": "system", "source_type": "file", "system": true })),
+        )
+        .await;
+    assert_eq!(system.status, StatusCode::CREATED, "{}", system.text);
+    assert_eq!(system.json["tenant_id"], Value::Null, "{}", system.text);
+    assert_eq!(system.json["is_system"], true);
+    let sys_id = system.json["id"].as_str().unwrap().to_string();
+    let sys_audio = format!("/api/v1/prompts/{sys_id}/audio");
+    let platform_wav = wav_bytes(800);
+    let uploaded = app
+        .send_multipart(
+            ADMIN_TOKEN,
+            &sys_audio,
+            &[("audio", Some(("bye.wav", "audio/wav")), &platform_wav)],
+        )
+        .await;
+    assert_eq!(uploaded.status, StatusCode::OK, "{}", uploaded.text);
+
+    // A tenant administrator sees it and may play it, but not change it.
+    app.create_user_with_role("pr-a", "tenant_admin").await;
+    let jwt_a = app.login("pr-a", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let listed = app
+        .send_as(&jwt_a, Method::GET, "/api/v1/prompts", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    let rows = listed.json.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{}", listed.text);
+    assert_eq!(rows[0]["id"], sys_id.as_str());
+    assert_eq!(rows[0]["overridden_by"], Value::Null);
+    let heard = app.send_as(&jwt_a, Method::GET, &sys_audio, None).await;
+    assert_eq!(heard.status, StatusCode::OK, "{}", heard.text);
+    assert_eq!(heard.bytes, platform_wav);
+    for (method, path, body) in [
+        (
+            Method::PUT,
+            format!("/api/v1/prompts/{sys_id}"),
+            Some(json!({ "description": "mine" })),
+        ),
+        (Method::DELETE, format!("/api/v1/prompts/{sys_id}"), None),
+        (
+            Method::POST,
+            format!("/api/v1/prompts/{sys_id}/synthesize"),
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/v1/prompts".to_string(),
+            Some(json!({ "name": "x", "source_type": "file", "system": true })),
+        ),
+    ] {
+        let refused = app.send_as(&jwt_a, method.clone(), &path, body).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path}: {}",
+            refused.text
+        );
+    }
+    let refused_upload = app
+        .send_multipart(
+            &jwt_a,
+            &sys_audio,
+            &[("audio", Some(("x.wav", "audio/wav")), &wav_bytes(10))],
+        )
+        .await;
+    assert_eq!(
+        refused_upload.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        refused_upload.text
+    );
+
+    // The override: the tenant's copy, with the system prompt's audio.
+    let copied = app
+        .send_as(
+            &jwt_a,
+            Method::POST,
+            &format!("/api/v1/prompts/{sys_id}/override"),
+            None,
+        )
+        .await;
+    assert_eq!(copied.status, StatusCode::CREATED, "{}", copied.text);
+    let over_id = copied.json["id"].as_str().unwrap().to_string();
+    assert_eq!(copied.json["tenant_id"], app.tenant_a.to_string());
+    assert_eq!(copied.json["name"], "vm_goodbye");
+    assert_eq!(copied.json["is_system"], false);
+    assert_eq!(copied.json["overrides"], sys_id.as_str());
+    assert_eq!(copied.json["has_audio"], true, "{}", copied.text);
+    let again = app
+        .send_as(
+            &jwt_a,
+            Method::POST,
+            &format!("/api/v1/prompts/{sys_id}/override"),
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.text);
+    let duplicate = app
+        .send_as(
+            &jwt_a,
+            Method::POST,
+            "/api/v1/prompts",
+            Some(json!({ "name": "vm_goodbye", "source_type": "file" })),
+        )
+        .await;
+    assert_eq!(duplicate.status, StatusCode::CONFLICT, "{}", duplicate.text);
+    let own_wav = wav_bytes(400);
+    let replaced = app
+        .send_multipart(
+            &jwt_a,
+            &format!("/api/v1/prompts/{over_id}/audio"),
+            &[("audio", Some(("mine.wav", "audio/wav")), &own_wav)],
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.text);
+    assert_eq!(
+        app.send_as(&jwt_a, Method::GET, &sys_audio, None)
+            .await
+            .bytes,
+        platform_wav,
+        "the system prompt's audio is untouched"
+    );
+    let listed = app
+        .send_as(&jwt_a, Method::GET, "/api/v1/prompts", None)
+        .await;
+    let rows = listed.json.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{}", listed.text);
+    let sys_row = rows.iter().find(|r| r["id"] == sys_id.as_str()).unwrap();
+    assert_eq!(
+        sys_row["overridden_by"],
+        over_id.as_str(),
+        "{}",
+        listed.text
+    );
+    let scoped = app
+        .send_as(&jwt_a, Method::GET, "/api/v1/prompts?scope=tenant", None)
+        .await;
+    assert_eq!(scoped.json.as_array().unwrap().len(), 1, "{}", scoped.text);
+    let system_only = app
+        .send_as(&jwt_a, Method::GET, "/api/v1/prompts?scope=system", None)
+        .await;
+    assert_eq!(
+        system_only.json[0]["id"],
+        sys_id.as_str(),
+        "{}",
+        system_only.text
+    );
+
+    // Another tenant hears the system prompt and never sees the copy.
+    let b_user = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({ "username": "pr-b", "password": PASSWORD, "role": "tenant_admin" })),
+        )
+        .await;
+    assert_eq!(b_user.status, StatusCode::CREATED, "{}", b_user.text);
+    let jwt_b = app.login("pr-b", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b_list = app
+        .send_as(&jwt_b, Method::GET, "/api/v1/prompts", None)
+        .await;
+    let b_rows = b_list.json.as_array().unwrap();
+    assert_eq!(b_rows.len(), 1, "{}", b_list.text);
+    assert_eq!(b_rows[0]["overridden_by"], Value::Null, "{}", b_list.text);
+    let hidden = app
+        .send_as(
+            &jwt_b,
+            Method::GET,
+            &format!("/api/v1/prompts/{over_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.text);
+    let not_system = app
+        .send_as(
+            &jwt_b,
+            Method::POST,
+            &format!("/api/v1/prompts/{over_id}/override"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        not_system.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        not_system.text
+    );
+
+    // What a call hears: the override for A, the system prompt for B and for
+    // a call without a tenant, nothing of A's for B.
+    let sys_prompt_id = sys_id.parse().unwrap();
+    let over_prompt_id = over_id.parse().unwrap();
+    let a_hears = effective_prompt_by_id(&store, &app.tenant_a, &sys_prompt_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(a_hears.id.to_string(), over_id);
+    let b_hears = effective_prompt_by_id(&store, &app.tenant_b, &sys_prompt_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(b_hears.id.to_string(), sys_id);
+    assert!(
+        effective_prompt_by_id(&store, &app.tenant_b, &over_prompt_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let by_name = |tenant: Option<TenantId>| {
+        let store = store.clone();
+        async move {
+            store
+                .resolve_prompt(tenant.as_ref(), "vm_goodbye", Some("en-US"))
+                .await
+                .unwrap()
+                .unwrap()
+                .id
+                .to_string()
+        }
+    };
+    assert_eq!(by_name(Some(app.tenant_a)).await, over_id);
+    assert_eq!(by_name(Some(app.tenant_b)).await, sys_id);
+    assert_eq!(by_name(None).await, sys_id);
+    // A language without its own prompt falls back to any language.
+    let other_language = store
+        .resolve_prompt(Some(&app.tenant_a), "vm_goodbye", Some("fr-FR"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(other_language.id.to_string(), over_id);
+
+    // Restore: deleting the copy brings back the system prompt.
+    let restored = app
+        .send_as(
+            &jwt_a,
+            Method::DELETE,
+            &format!("/api/v1/prompts/{over_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::NO_CONTENT, "{}", restored.text);
+    assert_eq!(by_name(Some(app.tenant_a)).await, sys_id);
+    let listed = app
+        .send_as(
+            &jwt_a,
+            Method::GET,
+            &format!("/api/v1/prompts/{sys_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(listed.json["overridden_by"], Value::Null, "{}", listed.text);
+
+    // The platform administrator changes the system prompt for everyone.
+    let edited = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/prompts/{sys_id}"),
+            Some(json!({ "description": "Said at the end" })),
+        )
+        .await;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.text);
+    let seen_by_b = app
+        .send_as(
+            &jwt_b,
+            Method::GET,
+            &format!("/api/v1/prompts/{sys_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(seen_by_b.json["description"], "Said at the end");
+    let still_system = app
+        .admin(Method::DELETE, &format!("/api/v1/prompts/{sys_id}"), None)
+        .await;
+    assert_eq!(
+        still_system.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        still_system.text
+    );
+
+    app.finish().await;
+}
+
 // ─── SIP traces ──────────────────────────────────────────────────────────
 
 #[tokio::test]

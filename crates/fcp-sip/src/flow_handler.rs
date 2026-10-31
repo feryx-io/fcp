@@ -418,7 +418,13 @@ impl FlowCallHandler {
     ///
     /// Handles URLs like `/api/v1/prompts/prompt-<uuid>/audio` by extracting the
     /// prompt ID and looking up the audio file path via PromptService.
-    async fn resolve_prompt_url(&self, url: &str) -> Option<String> {
+    /// The prompt is the call's tenant's: its own, or a system prompt
+    /// through the tenant's override (`fcp_core::prompt::effective_prompt_by_id`).
+    async fn resolve_prompt_url(
+        &self,
+        tenant: Option<&fcp_core::TenantId>,
+        url: &str,
+    ) -> Option<String> {
         // Match API prompt URLs: /api/v1/prompts/<prompt-id>/audio
         if let Some(prompt_id_str) = url
             .strip_prefix("/api/v1/prompts/")
@@ -426,7 +432,7 @@ impl FlowCallHandler {
         {
             if let Some(ref ps) = self.prompt_service {
                 if let Ok(prompt_id) = prompt_id_str.parse::<fcp_core::PromptId>() {
-                    match ps.resolve_by_id(&prompt_id).await {
+                    match ps.resolve_by_id(tenant, &prompt_id).await {
                         Ok(Some(path)) => {
                             let path_str = path.to_string_lossy().to_string();
                             info!(
@@ -1548,7 +1554,7 @@ impl FlowCallHandler {
         match (&self.media_manager, session) {
             (Some(mm), Some(session)) => {
                 for part in &parts {
-                    self.say(mm, &session, "", part).await;
+                    self.say(mm, &session, None, "", part).await;
                 }
             }
             _ => warn!(call_id = %call_id, "No media to read the emergency test back on"),
@@ -2363,6 +2369,7 @@ impl FlowCallHandler {
                 .prompt_digits(
                     mm,
                     &media_call_id,
+                    Some(&device.tenant_id),
                     "hoteling_enter_extension",
                     "Enter your extension, then pound.",
                 )
@@ -2371,6 +2378,7 @@ impl FlowCallHandler {
                 .prompt_digits(
                     mm,
                     &media_call_id,
+                    Some(&device.tenant_id),
                     "hoteling_enter_pin",
                     "Enter your pin, then pound.",
                 )
@@ -2386,6 +2394,7 @@ impl FlowCallHandler {
                         self.say(
                             mm,
                             &media_call_id,
+                            Some(&device.tenant_id),
                             "hoteling_logged_in",
                             "You are logged in.",
                         )
@@ -2402,6 +2411,7 @@ impl FlowCallHandler {
                     self.say(
                         mm,
                         &media_call_id,
+                        Some(&device.tenant_id),
                         "hoteling_login_incorrect",
                         "Login incorrect.",
                     )
@@ -2418,12 +2428,13 @@ impl FlowCallHandler {
         &self,
         mm: &Arc<fcp_media::MediaManager>,
         cid: &fcp_core::CallId,
+        tenant: Option<&fcp_core::TenantId>,
         prompt: &str,
         text: &str,
     ) -> String {
         use fcp_media::CollectionResult;
         let collector = mm.create_dtmf_collector(cid, 0, Some('#'));
-        let playback = self.start_prompt(mm, cid, prompt, text).await;
+        let playback = self.start_prompt(mm, cid, tenant, prompt, text).await;
         let result = collector.collect(std::time::Duration::from_secs(10)).await;
         if let Some(playback) = playback {
             let _ = mm.stop_playback(cid, playback).await;
@@ -2441,10 +2452,11 @@ impl FlowCallHandler {
         &self,
         mm: &Arc<fcp_media::MediaManager>,
         cid: &fcp_core::CallId,
+        tenant: Option<&fcp_core::TenantId>,
         prompt: &str,
         text: &str,
     ) {
-        if let Some(playback) = self.start_prompt(mm, cid, prompt, text).await {
+        if let Some(playback) = self.start_prompt(mm, cid, tenant, prompt, text).await {
             let _ = mm.wait_playback_completion(playback).await;
         }
     }
@@ -2453,12 +2465,13 @@ impl FlowCallHandler {
         &self,
         mm: &Arc<fcp_media::MediaManager>,
         cid: &fcp_core::CallId,
+        tenant: Option<&fcp_core::TenantId>,
         prompt: &str,
         text: &str,
     ) -> Option<String> {
         use fcp_media::AudioTarget;
         if let Some(ps) = &self.prompt_service {
-            if let Ok(Some(path)) = ps.resolve(prompt, None).await {
+            if let Ok(Some(path)) = ps.resolve(tenant, prompt, None).await {
                 if let Ok(id) = mm
                     .play_file(cid, path.to_string_lossy().to_string(), AudioTarget::Both)
                     .await
@@ -2557,6 +2570,7 @@ impl FlowCallHandler {
         // Helper: start playback of a named system prompt (non-blocking).
         // Returns the playback_id so the caller can stop or wait on it.
         let prompt_service = self.prompt_service.clone();
+        let prompt_tenant = self.tenant_of(&call_id);
         let start_prompt = |mm: &Arc<fcp_media::MediaManager>,
                             cid: &fcp_core::CallId,
                             prompt_name: &str,
@@ -2568,7 +2582,9 @@ impl FlowCallHandler {
             async move {
                 // 1. Try cached WAV file via PromptService
                 if let Some(ref ps) = ps {
-                    if let Ok(Some(path)) = ps.resolve(&prompt_name, None).await {
+                    if let Ok(Some(path)) =
+                        ps.resolve(prompt_tenant.as_ref(), &prompt_name, None).await
+                    {
                         match mm
                             .play_file(&cid, path.to_string_lossy().to_string(), AudioTarget::Both)
                             .await
@@ -2641,7 +2657,7 @@ impl FlowCallHandler {
                     // System prompt (WAV file first, TTS fallback)
                     let mut pid = None;
                     if let Some(ref ps) = ps {
-                        if let Ok(Some(path)) = ps.resolve(pn, None).await {
+                        if let Ok(Some(path)) = ps.resolve(prompt_tenant.as_ref(), pn, None).await {
                             if let Ok(id) = mm
                                 .play_file(
                                     &cid,
@@ -3535,8 +3551,9 @@ impl FlowCallHandler {
                         // Resolve prompt API URLs to filesystem paths.
                         // The admin UI stores URLs like "/api/v1/prompts/<prompt-id>/audio"
                         // but the media manager needs a local filesystem path.
+                        let tenant = self.prompt_tenant(&call_id, &context_guard.flow);
                         let resolved_path = self
-                            .resolve_prompt_url(&url_value)
+                            .resolve_prompt_url(tenant.as_ref(), &url_value)
                             .await
                             .unwrap_or(url_value.clone());
 
@@ -3895,6 +3912,7 @@ impl FlowCallHandler {
 
                 // Check for prompt
                 let prompt_url = context_guard.get_variable("__gather_prompt_url").ok();
+                let prompt_tenant = self.prompt_tenant(&call_id, &context_guard.flow);
 
                 let media_session_id = context_guard.media_session_id;
                 let flow_id = context_guard.flow.id.clone();
@@ -3977,7 +3995,7 @@ impl FlowCallHandler {
                     (&prompt_url, media_session_id)
                 {
                     let resolved_url = self
-                        .resolve_prompt_url(prompt_url)
+                        .resolve_prompt_url(prompt_tenant.as_ref(), prompt_url)
                         .await
                         .unwrap_or(prompt_url.clone());
                     info!(
@@ -4089,6 +4107,7 @@ impl FlowCallHandler {
                 let this_node = context_guard.current_node.clone();
                 let attempts_key = format!("__gather_attempts.{this_node}");
                 let mut retry_prompt = None;
+                let retry_tenant = self.prompt_tenant(&call_id, &context_guard.flow);
                 let next_node = match heard {
                     Heard::Chose(next) => {
                         context_guard.remove_variable(&attempts_key);
@@ -4143,7 +4162,10 @@ impl FlowCallHandler {
                 if let (Some(url), Some(session_id), Some(media_manager)) =
                     (retry_prompt, media_session_id, self.media_manager.as_ref())
                 {
-                    let url = self.resolve_prompt_url(&url).await.unwrap_or(url);
+                    let url = self
+                        .resolve_prompt_url(retry_tenant.as_ref(), &url)
+                        .await
+                        .unwrap_or(url);
                     match media_manager
                         .play_file(&session_id, url, fcp_media::AudioTarget::ParticipantA)
                         .await
@@ -4511,6 +4533,19 @@ impl FlowCallHandler {
     }
 
     /// The tenant of a call, for the events that name it.
+    /// The tenant whose prompts a call hears: the call's, else its flow's.
+    fn prompt_tenant(
+        &self,
+        call_id: &CallId,
+        flow: &fcp_flow::FlowDefinition,
+    ) -> Option<fcp_core::TenantId> {
+        self.tenant_of(call_id).or_else(|| {
+            flow.tenant_id
+                .as_deref()
+                .and_then(|t| t.parse::<fcp_core::TenantId>().ok())
+        })
+    }
+
     fn tenant_of(&self, call_id: &CallId) -> Option<fcp_core::TenantId> {
         self.call_manager
             .as_ref()

@@ -191,7 +191,7 @@ pub(crate) async fn hold_music_choice(
                 .get_prompt(&prompt_id)
                 .await
                 .map_err(|e| ApiError::Internal(e.to_string()))?
-                .filter(|p| &p.tenant_id == tenant)
+                .filter(|p| p.visible_to(tenant))
                 .ok_or_else(|| ApiError::BadRequest(format!("hold_music: no prompt {id}")))?;
             Some(prompt.id.to_string())
         }

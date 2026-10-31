@@ -13724,6 +13724,15 @@
             }
           },
           {
+            "name": "scope",
+            "in": "query",
+            "description": "`all` (the default: the tenant's prompts and the system prompts),\n`tenant` or `system`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -14041,6 +14050,49 @@
         "responses": {
           "200": {
             "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/prompts/{id}/override": {
+      "post": {
+        "tags": [
+          "prompts"
+        ],
+        "summary": "POST /api/v1/prompts/:id/override — The tenant's own copy of a system prompt",
+        "description": "The copy has the system prompt's name, language, category, words and voice,\nand a copy of its audio, so the tenant's calls hear the same until the copy\nis changed (new words, an upload, a recording). Deleting the copy restores\nthe system prompt.",
+        "operationId": "prompts_override_prompt",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "A system prompt's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "The tenant's override",
             "content": {
               "application/json": {
                 "schema": {
@@ -24135,6 +24187,10 @@
               "string",
               "null"
             ]
+          },
+          "system": {
+            "type": "boolean",
+            "description": "A system prompt, for every tenant: a platform administrator's only."
           }
         }
       },
@@ -34180,7 +34236,6 @@
               "type": "object",
               "required": [
                 "id",
-                "tenant_id",
                 "name",
                 "category",
                 "language",
@@ -34195,7 +34250,11 @@
                   "type": "string"
                 },
                 "tenant_id": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The owning tenant; `null` for a system prompt, the platform's."
                 },
                 "name": {
                   "type": "string"
@@ -34260,6 +34319,20 @@
                 },
                 "has_audio": {
                   "type": "boolean"
+                },
+                "overridden_by": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "On a system prompt: the id of the tenant's override of it, which the\ntenant's calls hear instead."
+                },
+                "overrides": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "On a tenant's prompt: the id of the system prompt it overrides."
                 },
                 "created_at": {
                   "type": "string",
@@ -38407,7 +38480,6 @@
         "type": "object",
         "required": [
           "id",
-          "tenant_id",
           "name",
           "category",
           "language",
@@ -38422,7 +38494,11 @@
             "type": "string"
           },
           "tenant_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The owning tenant; `null` for a system prompt, the platform's."
           },
           "name": {
             "type": "string"
@@ -38487,6 +38563,20 @@
           },
           "has_audio": {
             "type": "boolean"
+          },
+          "overridden_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "On a system prompt: the id of the tenant's override of it, which the\ntenant's calls hear instead."
+          },
+          "overrides": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "On a tenant's prompt: the id of the system prompt it overrides."
           },
           "created_at": {
             "type": "string",

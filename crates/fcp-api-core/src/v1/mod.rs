@@ -897,6 +897,7 @@ pub fn router() -> Router<ApiState> {
                 .layer(DefaultBodyLimit::max(50 * 1024 * 1024)), // 50 MB for audio uploads
         )
         .route("/prompts/:id/synthesize", post(prompts::synthesize_prompt))
+        .route("/prompts/:id/override", post(prompts::override_prompt))
         // Voicemail (admin management)
         .route(
             "/voicemail/mailboxes",

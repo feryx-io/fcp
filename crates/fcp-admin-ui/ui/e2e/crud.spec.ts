@@ -305,6 +305,33 @@ test('a prompt is made, changed and deleted', async ({ page, api }) => {
   await expect.poll(async () => find(api, '/api/v1/prompts', 'name', name)).toBeUndefined()
 })
 
+test('a system prompt is overridden and restored', async ({ page, api }) => {
+  // The platform's prompt (the static token is a platform administrator's).
+  const name = unique('ui-system')
+  const made = await api.post('/api/v1/prompts', {
+    data: { name, source_type: 'tts', tts_text: 'Goodbye.', system: true },
+  })
+  expect(made.status()).toBe(201)
+  const system = await made.json()
+
+  await page.goto('/admin/prompts')
+  await settled(page)
+  // A tenant administrator can only override it.
+  const r = await row(page, name)
+  await r.getByRole('button', { name: 'Actions' }).click()
+  await expect(page.getByRole('menuitem', { name: 'Edit', exact: true })).toHaveCount(0)
+  await page.getByRole('menuitem', { name: 'Override', exact: true }).click()
+  await expect.poll(async () => (await find(api, '/api/v1/prompts', 'overrides', system.id))?.name).toBe(name)
+
+  // The tenant's copy is listed beside it; deleting the copy restores it.
+  const copy = page.getByRole('row').filter({ hasText: name }).filter({ hasText: /Override(?!n)/ })
+  await expect(copy).toHaveCount(1)
+  acceptConfirm(page)
+  await copy.getByRole('button', { name: 'Actions' }).click()
+  await page.getByRole('menuitem', { name: 'Restore system prompt', exact: true }).click()
+  await expect.poll(async () => find(api, '/api/v1/prompts', 'overrides', system.id)).toBeUndefined()
+})
+
 test('a webhook is made, changed and deleted', async ({ page, api }) => {
   const url = `http://127.0.0.1:9/${unique('ui-hook')}`
   await page.goto('/admin/webhooks')

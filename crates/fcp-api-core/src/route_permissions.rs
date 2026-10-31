@@ -518,6 +518,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/prompts/:id/audio", Needs(PromptRead)),
     (POST, "/prompts/:id/audio", Needs(PromptManage)),
     (POST, "/prompts/:id/synthesize", Needs(PromptManage)),
+    (POST, "/prompts/:id/override", Needs(PromptManage)),
     // Voicemail.
     (GET, "/voicemail/mailboxes", Needs(VoicemailRead)),
     (POST, "/voicemail/mailboxes", Needs(VoicemailManage)),

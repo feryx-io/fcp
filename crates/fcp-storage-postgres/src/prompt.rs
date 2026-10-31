@@ -30,7 +30,7 @@ impl PostgresPromptStore {
 
     fn row_to_prompt(&self, row: sqlx::postgres::PgRow) -> anyhow::Result<Prompt> {
         let id_str: String = row.try_get("id")?;
-        let tenant_str: String = row.try_get("tenant_id")?;
+        let tenant_str: Option<String> = row.try_get("tenant_id")?;
         let category_str: String = row.try_get("category")?;
         let source_type_str: String = row.try_get("source_type")?;
         let audio_path_str: Option<String> = row.try_get("audio_path")?;
@@ -42,7 +42,8 @@ impl PostgresPromptStore {
                 .parse()
                 .map_err(|e| anyhow::anyhow!("Invalid prompt id: {}", e))?,
             tenant_id: tenant_str
-                .parse()
+                .map(|t| t.parse())
+                .transpose()
                 .map_err(|e| anyhow::anyhow!("Invalid tenant id: {}", e))?,
             name: row.try_get("name")?,
             description: row.try_get("description")?,
@@ -87,56 +88,58 @@ impl PromptStore for PostgresPromptStore {
         }
     }
 
-    async fn get_prompt_by_name(
+    async fn resolve_prompt(
         &self,
-        tenant_id: &TenantId,
+        tenant: Option<&TenantId>,
         name: &str,
+        language: Option<&str>,
     ) -> anyhow::Result<Option<Prompt>> {
+        // The language asked for first, the tenant's own before the system's,
+        // then any language in a stable order.
         let row = sqlx::query(&format!(
-            "SELECT {} FROM prompts WHERE tenant_id = $1 AND name = $2 ORDER BY language LIMIT 1",
+            "SELECT {} FROM prompts
+             WHERE name = $2 AND (tenant_id IS NULL OR tenant_id = $1)
+             ORDER BY (language = $3) IS TRUE DESC, (tenant_id IS NULL), language
+             LIMIT 1",
             PROMPT_COLUMNS
         ))
-        .bind(tenant_id.to_string())
-        .bind(name)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        match row {
-            Some(row) => Ok(Some(self.row_to_prompt(row)?)),
-            None => Ok(None),
-        }
-    }
-
-    async fn get_prompt_by_name_and_language(
-        &self,
-        tenant_id: &TenantId,
-        name: &str,
-        language: &str,
-    ) -> anyhow::Result<Option<Prompt>> {
-        let row = sqlx::query(&format!(
-            "SELECT {} FROM prompts WHERE tenant_id = $1 AND name = $2 AND language = $3",
-            PROMPT_COLUMNS
-        ))
-        .bind(tenant_id.to_string())
+        .bind(tenant.map(|t| t.to_string()))
         .bind(name)
         .bind(language)
         .fetch_optional(&self.pool)
         .await?;
 
-        match row {
-            Some(row) => Ok(Some(self.row_to_prompt(row)?)),
-            None => Ok(None),
-        }
+        row.map(|row| self.row_to_prompt(row)).transpose()
+    }
+
+    async fn get_prompt_by_name_and_language(
+        &self,
+        owner: Option<&TenantId>,
+        name: &str,
+        language: &str,
+    ) -> anyhow::Result<Option<Prompt>> {
+        let row = sqlx::query(&format!(
+            "SELECT {} FROM prompts
+             WHERE tenant_id IS NOT DISTINCT FROM $1 AND name = $2 AND language = $3",
+            PROMPT_COLUMNS
+        ))
+        .bind(owner.map(|t| t.to_string()))
+        .bind(name)
+        .bind(language)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(|row| self.row_to_prompt(row)).transpose()
     }
 
     async fn list_prompts(
         &self,
-        tenant_id: &TenantId,
+        owner: Option<&TenantId>,
         category: Option<PromptCategory>,
         language: Option<&str>,
     ) -> anyhow::Result<Vec<Prompt>> {
         let mut query = format!(
-            "SELECT {} FROM prompts WHERE tenant_id = $1",
+            "SELECT {} FROM prompts WHERE tenant_id IS NOT DISTINCT FROM $1",
             PROMPT_COLUMNS
         );
         let mut param_idx = 2;
@@ -150,7 +153,7 @@ impl PromptStore for PostgresPromptStore {
         }
         query.push_str(" ORDER BY name, language");
 
-        let mut q = sqlx::query(&query).bind(tenant_id.to_string());
+        let mut q = sqlx::query(&query).bind(owner.map(|t| t.to_string()));
         if let Some(cat) = category {
             q = q.bind(cat.to_string());
         }
@@ -174,12 +177,19 @@ impl PromptStore for PostgresPromptStore {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
 
-        sqlx::query(
+        // A tenant's prompt is unique by (tenant, name, language), a system
+        // prompt by (name, language) among the system prompts.
+        let conflict = if prompt.tenant_id.is_some() {
+            "(tenant_id, name, language)"
+        } else {
+            "(name, language) WHERE tenant_id IS NULL"
+        };
+        sqlx::query(&format!(
             "INSERT INTO prompts (id, tenant_id, name, description, category, language, source_type,
                                   tts_text, tts_voice, audio_path, audio_format, duration_ms,
                                   file_size, is_system, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-             ON CONFLICT (tenant_id, name, language) DO UPDATE SET
+             ON CONFLICT {conflict} DO UPDATE SET
                 description = EXCLUDED.description,
                 category = EXCLUDED.category,
                 source_type = EXCLUDED.source_type,
@@ -190,10 +200,10 @@ impl PromptStore for PostgresPromptStore {
                 duration_ms = EXCLUDED.duration_ms,
                 file_size = EXCLUDED.file_size,
                 is_system = EXCLUDED.is_system,
-                updated_at = EXCLUDED.updated_at",
-        )
+                updated_at = EXCLUDED.updated_at"
+        ))
         .bind(prompt.id.to_string())
-        .bind(prompt.tenant_id.to_string())
+        .bind(prompt.tenant_id.map(|t| t.to_string()))
         .bind(&prompt.name)
         .bind(&prompt.description)
         .bind(prompt.category.to_string())
@@ -205,7 +215,7 @@ impl PromptStore for PostgresPromptStore {
         .bind(&prompt.audio_format)
         .bind(prompt.duration_ms.map(|v| v as i32))
         .bind(prompt.file_size.map(|v| v as i64))
-        .bind(prompt.is_system)
+        .bind(prompt.tenant_id.is_none())
         .bind(created_at)
         .bind(now)
         .execute(&self.pool)

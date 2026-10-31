@@ -270,20 +270,22 @@ impl ConsentPlan {
         if let (Some(id), Some(prompts)) = (policy.recording_consent_prompt_id.as_deref(), prompts)
         {
             match id.parse::<crate::PromptId>() {
-                Ok(prompt_id) => match prompts.get_prompt(&prompt_id).await {
-                    Ok(Some(prompt)) if prompt.tenant_id == *tenant => {
-                        prompt_audio = prompt.audio_path.filter(|p| p.is_file());
-                        if prompt_audio.is_none() {
-                            tracing::warn!(tenant_id = %tenant, prompt = %id, "Recording-consent prompt has no audio file");
+                Ok(prompt_id) => {
+                    match crate::prompt::effective_prompt_by_id(prompts, tenant, &prompt_id).await {
+                        Ok(Some(prompt)) => {
+                            prompt_audio = prompt.audio_path.filter(|p| p.is_file());
+                            if prompt_audio.is_none() {
+                                tracing::warn!(tenant_id = %tenant, prompt = %id, "Recording-consent prompt has no audio file");
+                            }
+                        }
+                        Ok(_) => {
+                            tracing::warn!(tenant_id = %tenant, prompt = %id, "Recording-consent prompt not found")
+                        }
+                        Err(e) => {
+                            tracing::warn!(tenant_id = %tenant, error = %e, "Could not read the recording-consent prompt")
                         }
                     }
-                    Ok(_) => {
-                        tracing::warn!(tenant_id = %tenant, prompt = %id, "Recording-consent prompt not found")
-                    }
-                    Err(e) => {
-                        tracing::warn!(tenant_id = %tenant, error = %e, "Could not read the recording-consent prompt")
-                    }
-                },
+                }
                 Err(e) => {
                     tracing::warn!(tenant_id = %tenant, prompt = %id, error = %e, "Invalid recording-consent prompt id")
                 }

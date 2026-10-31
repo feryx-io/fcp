@@ -335,6 +335,7 @@ use utoipa::{Modify, OpenApi};
         crate::v1::prompts::download_audio,
         crate::v1::prompts::upload_audio,
         crate::v1::prompts::synthesize_prompt,
+        crate::v1::prompts::override_prompt,
         crate::v1::voicemail::list_mailboxes,
         crate::v1::voicemail::create_mailbox,
         crate::v1::voicemail::get_mailbox,

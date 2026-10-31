@@ -274,7 +274,7 @@ pub async fn update_policy(
                     .get_prompt(&id)
                     .await
                     .map_err(|e| ApiError::Internal(e.to_string()))?
-                    .filter(|pr| pr.tenant_id == tenant.0);
+                    .filter(|pr| pr.visible_to(&tenant.0));
                 if found.is_none() {
                     return Err(ApiError::BadRequest(format!("Prompt {p} not found")));
                 }

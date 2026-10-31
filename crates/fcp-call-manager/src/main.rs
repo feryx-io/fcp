@@ -1489,11 +1489,10 @@ async fn run() -> Result<()> {
     let flow_handler = if let Some(prompt_store) = dyn_storage.prompt_store() {
         let prompt_service = Arc::new(fcp_core::PromptService::new(
             Arc::clone(prompt_store),
-            default_tenant_id,
             "en-US",
         ));
 
-        // Seed system prompts at startup
+        // Seed system prompts at startup: the platform's, for every tenant
         let system_prompts = vec![
             ("vm_enter_pin", "PIN entry prompt", "Enter your pin, followed by pound."),
             ("vm_incorrect_pin", "Wrong PIN", "Incorrect pin. Please try again."),
@@ -1510,20 +1509,18 @@ async fn run() -> Result<()> {
             // Only create the prompt record if it doesn't already exist —
             // re-seeding would overwrite the audio_path set by TTS pre-generation.
             if let Ok(Some(_existing)) = prompt_store
-                .get_prompt_by_name_and_language(&default_tenant_id, name, "en-US")
+                .get_prompt_by_name_and_language(None, name, "en-US")
                 .await
             {
                 continue;
             }
-            let mut prompt = fcp_core::Prompt::new_tts(
-                default_tenant_id,
+            let mut prompt = fcp_core::Prompt::system_tts(
                 *name,
                 fcp_core::PromptCategory::System,
                 "en-US",
                 *tts_text,
             );
             prompt.description = Some(description.to_string());
-            prompt.is_system = true;
             if let Err(e) = prompt_store.put_prompt(prompt).await {
                 warn!(name = name, error = %e, "Failed to seed system prompt");
             }
@@ -1538,7 +1535,6 @@ async fn run() -> Result<()> {
             let prompts_dir = PathBuf::from(&config.media.prompts_dir);
             if let Err(e) = pre_generate_prompt_audio(
                 &prompt_service,
-                &default_tenant_id,
                 tts,
                 config.media.tts_voice.as_deref(),
                 &prompts_dir,
@@ -2886,7 +2882,6 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
 /// file path so that `PromptService::resolve()` can serve them without TTS.
 async fn pre_generate_prompt_audio(
     prompt_service: &Arc<fcp_core::PromptService>,
-    tenant_id: &fcp_core::TenantId,
     tts_service: &Arc<fcp_media::TtsService>,
     tts_voice: Option<&str>,
     prompts_dir: &std::path::Path,
@@ -2895,7 +2890,7 @@ async fn pre_generate_prompt_audio(
     // Check which prompts already have audio
     let mut need_generation = Vec::new();
     for (name, _desc, tts_text) in system_prompts {
-        if let Ok(Some(_path)) = prompt_service.resolve(name, Some("en-US")).await {
+        if let Ok(Some(_path)) = prompt_service.resolve(None, name, Some("en-US")).await {
             // Already has a valid audio file
             continue;
         }
@@ -2913,7 +2908,7 @@ async fn pre_generate_prompt_audio(
     );
 
     // Ensure prompts directory exists
-    let tenant_dir = prompts_dir.join(tenant_id.to_string());
+    let tenant_dir = prompts_dir.join("system");
     tokio::fs::create_dir_all(&tenant_dir)
         .await
         .context("Failed to create prompts directory")?;
@@ -2939,7 +2934,7 @@ async fn pre_generate_prompt_audio(
 
                 // Update the prompt record with the audio path
                 if let Err(e) = prompt_service
-                    .cache_tts_audio(name, "en-US", dest_path.clone(), file_size)
+                    .cache_system_audio(name, "en-US", dest_path.clone(), file_size)
                     .await
                 {
                     warn!(name = name, error = %e, "Failed to update prompt record with audio path");

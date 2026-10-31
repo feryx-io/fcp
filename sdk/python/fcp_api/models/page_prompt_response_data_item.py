@@ -26,7 +26,6 @@ class PagePromptResponseDataItem:
     """ 
         Attributes:
             id (str):
-            tenant_id (str):
             name (str):
             category (str):
             language (str):
@@ -35,6 +34,7 @@ class PagePromptResponseDataItem:
             has_audio (bool):
             created_at (datetime.datetime):
             updated_at (datetime.datetime):
+            tenant_id (None | str | Unset): The owning tenant; `null` for a system prompt, the platform's.
             description (None | str | Unset):
             tts_text (None | str | Unset):
             tts_voice (None | str | Unset):
@@ -42,10 +42,12 @@ class PagePromptResponseDataItem:
             audio_format (None | str | Unset):
             duration_ms (int | None | Unset):
             file_size (int | None | Unset):
+            overridden_by (None | str | Unset): On a system prompt: the id of the tenant's override of it, which the
+                tenant's calls hear instead.
+            overrides (None | str | Unset): On a tenant's prompt: the id of the system prompt it overrides.
      """
 
     id: str
-    tenant_id: str
     name: str
     category: str
     language: str
@@ -54,6 +56,7 @@ class PagePromptResponseDataItem:
     has_audio: bool
     created_at: datetime.datetime
     updated_at: datetime.datetime
+    tenant_id: None | str | Unset = UNSET
     description: None | str | Unset = UNSET
     tts_text: None | str | Unset = UNSET
     tts_voice: None | str | Unset = UNSET
@@ -61,6 +64,8 @@ class PagePromptResponseDataItem:
     audio_format: None | str | Unset = UNSET
     duration_ms: int | None | Unset = UNSET
     file_size: int | None | Unset = UNSET
+    overridden_by: None | str | Unset = UNSET
+    overrides: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -69,8 +74,6 @@ class PagePromptResponseDataItem:
 
     def to_dict(self) -> dict[str, Any]:
         id = self.id
-
-        tenant_id = self.tenant_id
 
         name = self.name
 
@@ -87,6 +90,12 @@ class PagePromptResponseDataItem:
         created_at = self.created_at.isoformat()
 
         updated_at = self.updated_at.isoformat()
+
+        tenant_id: None | str | Unset
+        if isinstance(self.tenant_id, Unset):
+            tenant_id = UNSET
+        else:
+            tenant_id = self.tenant_id
 
         description: None | str | Unset
         if isinstance(self.description, Unset):
@@ -130,12 +139,23 @@ class PagePromptResponseDataItem:
         else:
             file_size = self.file_size
 
+        overridden_by: None | str | Unset
+        if isinstance(self.overridden_by, Unset):
+            overridden_by = UNSET
+        else:
+            overridden_by = self.overridden_by
+
+        overrides: None | str | Unset
+        if isinstance(self.overrides, Unset):
+            overrides = UNSET
+        else:
+            overrides = self.overrides
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
             "id": id,
-            "tenant_id": tenant_id,
             "name": name,
             "category": category,
             "language": language,
@@ -145,6 +165,8 @@ class PagePromptResponseDataItem:
             "created_at": created_at,
             "updated_at": updated_at,
         })
+        if tenant_id is not UNSET:
+            field_dict["tenant_id"] = tenant_id
         if description is not UNSET:
             field_dict["description"] = description
         if tts_text is not UNSET:
@@ -159,6 +181,10 @@ class PagePromptResponseDataItem:
             field_dict["duration_ms"] = duration_ms
         if file_size is not UNSET:
             field_dict["file_size"] = file_size
+        if overridden_by is not UNSET:
+            field_dict["overridden_by"] = overridden_by
+        if overrides is not UNSET:
+            field_dict["overrides"] = overrides
 
         return field_dict
 
@@ -168,8 +194,6 @@ class PagePromptResponseDataItem:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
         id = d.pop("id")
-
-        tenant_id = d.pop("tenant_id")
 
         name = d.pop("name")
 
@@ -191,6 +215,16 @@ class PagePromptResponseDataItem:
         updated_at = datetime.datetime.fromisoformat(d.pop("updated_at"))
 
 
+
+
+        def _parse_tenant_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        tenant_id = _parse_tenant_id(d.pop("tenant_id", UNSET))
 
 
         def _parse_description(data: object) -> None | str | Unset:
@@ -263,9 +297,28 @@ class PagePromptResponseDataItem:
         file_size = _parse_file_size(d.pop("file_size", UNSET))
 
 
+        def _parse_overridden_by(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        overridden_by = _parse_overridden_by(d.pop("overridden_by", UNSET))
+
+
+        def _parse_overrides(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        overrides = _parse_overrides(d.pop("overrides", UNSET))
+
+
         page_prompt_response_data_item = cls(
             id=id,
-            tenant_id=tenant_id,
             name=name,
             category=category,
             language=language,
@@ -274,6 +327,7 @@ class PagePromptResponseDataItem:
             has_audio=has_audio,
             created_at=created_at,
             updated_at=updated_at,
+            tenant_id=tenant_id,
             description=description,
             tts_text=tts_text,
             tts_voice=tts_voice,
@@ -281,6 +335,8 @@ class PagePromptResponseDataItem:
             audio_format=audio_format,
             duration_ms=duration_ms,
             file_size=file_size,
+            overridden_by=overridden_by,
+            overrides=overrides,
         )
 
 

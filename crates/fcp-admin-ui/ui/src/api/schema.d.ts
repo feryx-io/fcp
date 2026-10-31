@@ -4412,6 +4412,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/prompts/{id}/override": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/prompts/:id/override — The tenant's own copy of a system prompt
+         * @description The copy has the system prompt's name, language, category, words and voice,
+         *     and a copy of its audio, so the tenant's calls hear the same until the copy
+         *     is changed (new words, an upload, a recording). Deleting the copy restores
+         *     the system prompt.
+         */
+        post: operations["prompts_override_prompt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/voicemail/mailboxes": {
         parameters: {
             query?: never;
@@ -7422,6 +7445,8 @@ export interface components {
             source_type?: string | null;
             tts_text?: string | null;
             tts_voice?: string | null;
+            /** @description A system prompt, for every tenant: a platform administrator's only. */
+            system?: boolean;
         };
         /** @description Create queue config request. */
         CreateQueueConfigRequest: {
@@ -10620,7 +10645,8 @@ export interface components {
         Page_PromptResponse: {
             data: {
                 id: string;
-                tenant_id: string;
+                /** @description The owning tenant; `null` for a system prompt, the platform's. */
+                tenant_id?: string | null;
                 name: string;
                 description?: string | null;
                 category: string;
@@ -10636,6 +10662,13 @@ export interface components {
                 file_size?: number | null;
                 is_system: boolean;
                 has_audio: boolean;
+                /**
+                 * @description On a system prompt: the id of the tenant's override of it, which the
+                 *     tenant's calls hear instead.
+                 */
+                overridden_by?: string | null;
+                /** @description On a tenant's prompt: the id of the system prompt it overrides. */
+                overrides?: string | null;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -11954,7 +11987,8 @@ export interface components {
         };
         PromptResponse: {
             id: string;
-            tenant_id: string;
+            /** @description The owning tenant; `null` for a system prompt, the platform's. */
+            tenant_id?: string | null;
             name: string;
             description?: string | null;
             category: string;
@@ -11970,6 +12004,13 @@ export interface components {
             file_size?: number | null;
             is_system: boolean;
             has_audio: boolean;
+            /**
+             * @description On a system prompt: the id of the tenant's override of it, which the
+             *     tenant's calls hear instead.
+             */
+            overridden_by?: string | null;
+            /** @description On a tenant's prompt: the id of the system prompt it overrides. */
+            overrides?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -24413,6 +24454,11 @@ export interface operations {
             query?: {
                 category?: string;
                 language?: string;
+                /**
+                 * @description `all` (the default: the tenant's prompts and the system prompts),
+                 *     `tenant` or `system`.
+                 */
+                scope?: string;
                 limit?: number;
                 cursor?: string;
             };
@@ -24649,6 +24695,38 @@ export interface operations {
         responses: {
             /** @description OK */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    prompts_override_prompt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A system prompt's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The tenant's override */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };

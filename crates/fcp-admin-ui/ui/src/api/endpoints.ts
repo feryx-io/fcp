@@ -610,6 +610,9 @@ export const prompts = {
   },
   audioUrl: (id: string) => `/api/v1/prompts/${encodeURIComponent(id)}/audio`,
   synthesize: (id: string) => apiClient.post<PromptResponse>(`/prompts/${encodeURIComponent(id)}/synthesize`, {}),
+  // The tenant's own copy of a system prompt (docs/TENANT_SCOPE.md §3.2);
+  // deleting the copy restores the system prompt.
+  override: (id: string) => apiClient.post<PromptResponse>(`/prompts/${encodeURIComponent(id)}/override`, {}),
 }
 
 // Presence (Phase 2)

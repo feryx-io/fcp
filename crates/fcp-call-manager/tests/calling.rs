@@ -2095,6 +2095,81 @@ async fn a_numbers_hold_music_plays_to_its_callers_unless_the_holder_chose_their
     stack.finish().await;
 }
 
+/// A system prompt chosen as hold music plays as the tenant's override of it
+/// once the tenant has one (docs/TENANT_SCOPE.md §3.2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_system_prompt_plays_as_the_tenants_override_once_it_has_one() {
+    use fcp_core::prompt::{Prompt, PromptCategory, PromptStore};
+    use fcp_core::storage::TenantStore;
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let prompts =
+        fcp_storage_postgres::prompt::PostgresPromptStore::new(stack.seed.storage().pool().clone());
+
+    // The platform's hold music, 700 Hz, chosen by the tenant.
+    let path = stack._dir.path().join("platform.wav");
+    tone_wav(&path, 700.0, 4.0);
+    let mut system = Prompt::system_tts("platform-hold", PromptCategory::Moh, "en", "music");
+    system.source_type = fcp_core::prompt::PromptSourceType::File;
+    system.audio_path = Some(path);
+    let system_id = system.id.to_string();
+    prompts
+        .put_prompt(system)
+        .await
+        .expect("seed the system prompt");
+    let storage = stack.seed.storage();
+    let mut tenant = storage
+        .get_tenant(&stack.seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    tenant.calling.hold_music = Some(system_id);
+    storage.put_tenant(tenant).await.unwrap();
+
+    let bob_phone = stack.phone(&bob).await;
+    let alice_phone = stack.phone(&alice).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    if !alice_call.media().heard(700, SOON).await {
+        stack
+            .fail("Alice hears no system hold music", &alice_phone)
+            .await;
+    }
+    alice_call.hangup().await.unwrap();
+
+    // The tenant overrides it with its own, 1100 Hz: that plays instead.
+    let path = stack._dir.path().join("override.wav");
+    tone_wav(&path, 1100.0, 4.0);
+    prompts
+        .put_prompt(Prompt::new_file(
+            stack.seed.tenant_id,
+            "platform-hold",
+            PromptCategory::Moh,
+            "en",
+            path,
+        ))
+        .await
+        .expect("seed the override");
+    let alice_phone = stack.phone(&alice).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    if !alice_call.media().heard(1100, SOON).await {
+        stack
+            .fail("Alice does not hear the tenant's override", &alice_phone)
+            .await;
+    }
+    assert!(
+        !alice_call
+            .media()
+            .heard(700, Duration::from_millis(500))
+            .await,
+        "the system prompt played over the tenant's override"
+    );
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tenants_chosen_hold_music_or_silence_plays_to_every_held_caller() {
     use fcp_core::prompt::{Prompt, PromptCategory, PromptStore};

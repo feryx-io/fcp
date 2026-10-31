@@ -1143,7 +1143,8 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
         items.push(item("flows", &f.id, &f)?);
     }
     if let Some(prompts) = storage.prompt_store() {
-        for p in prompts.list_prompts(tenant, None, None).await? {
+        // The tenant's own: a site's binaries seed the system prompts there.
+        for p in prompts.list_prompts(Some(tenant), None, None).await? {
             items.push(item("prompts", &p.id, &p)?);
         }
     }
@@ -1313,7 +1314,10 @@ async fn object_now(
             _ => None,
         },
         "prompts" => match (storage.prompt_store(), id.parse()) {
-            (Some(prompts), Ok(id)) => same_tenant!(prompts.get_prompt(&id).await?),
+            (Some(prompts), Ok(id)) => match prompts.get_prompt(&id).await? {
+                Some(p) if p.tenant_id == Some(*tenant) => Some(serde_json::to_value(&p)?),
+                _ => None,
+            },
             _ => None,
         },
         "config_templates" => match (storage.config_template_store(), id.parse()) {

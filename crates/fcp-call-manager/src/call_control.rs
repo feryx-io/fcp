@@ -497,7 +497,8 @@ fn party_name(party: fcp_b2bua_core::LegSide) -> &'static str {
     }
 }
 
-/// The audio of the tenant's prompt `id`: another tenant's is not found.
+/// The audio of prompt `id` as the tenant hears it (its own, or a system
+/// prompt through its override): another tenant's is not found.
 async fn prompt_file(
     state: &AppState,
     id: &str,
@@ -509,11 +510,9 @@ async fn prompt_file(
         .storage
         .prompt_store()
         .ok_or_else(|| CallControlError::new(503, "prompts are not available on this node"))?;
-    let prompt = store
-        .get_prompt(&prompt_id)
+    let prompt = fcp_core::prompt::effective_prompt_by_id(store.as_ref(), &tenant, &prompt_id)
         .await
         .map_err(|e| CallControlError::new(500, format!("reading the prompt: {e}")))?
-        .filter(|p| p.tenant_id == tenant)
         .ok_or_else(not_found)?;
     prompt
         .audio_path

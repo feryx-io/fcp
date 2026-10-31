@@ -2925,8 +2925,9 @@ impl ConferenceCallHandler {
             if let Some(prompt_name) = greeting_prompt {
                 if let Some(prompt_store) = self.storage.prompt_store() {
                     let tid = tenant_id;
-                    if let Ok(Some(prompt)) =
-                        prompt_store.get_prompt_by_name(&tid, prompt_name).await
+                    if let Ok(Some(prompt)) = prompt_store
+                        .resolve_prompt(Some(&tid), prompt_name, None)
+                        .await
                     {
                         if let Some(ref path) = prompt.audio_path {
                             greeting_samples = player.load_audio_file(path).map(|s| s.to_vec());
@@ -2962,7 +2963,7 @@ impl ConferenceCallHandler {
                 if let Some(prompt_store) = self.storage.prompt_store() {
                     let tid = tenant_id;
                     if let Ok(Some(prompt)) = prompt_store
-                        .get_prompt_by_name(&tid, "conf_dialout_greeting")
+                        .resolve_prompt(Some(&tid), "conf_dialout_greeting", None)
                         .await
                     {
                         if let Some(ref path) = prompt.audio_path {
@@ -6361,7 +6362,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     let player = forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
                     if pin_prompt_samples.is_none() {
                         if let Ok(Some(prompt)) = prompt_store
-                            .get_prompt_by_name(&tenant_id, "conf_pin_prompt")
+                            .resolve_prompt(Some(&tenant_id), "conf_pin_prompt", None)
                             .await
                         {
                             if let Some(ref path) = prompt.audio_path {
@@ -6374,7 +6375,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     }
                     if invalid_pin_samples.is_none() {
                         if let Ok(Some(prompt)) = prompt_store
-                            .get_prompt_by_name(&tenant_id, "conf_invalid_pin")
+                            .resolve_prompt(Some(&tenant_id), "conf_invalid_pin", None)
                             .await
                         {
                             if let Some(ref path) = prompt.audio_path {
@@ -6709,7 +6710,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let mut announcement_samples: Option<Arc<Vec<i16>>> = None;
             if let Some(prompt_store) = self.storage.prompt_store() {
                 if let Ok(Some(prompt)) = prompt_store
-                    .get_prompt_by_name(&tenant_id, "conf_wait_announcement")
+                    .resolve_prompt(Some(&tenant_id), "conf_wait_announcement", None)
                     .await
                 {
                     if let Some(ref path) = prompt.audio_path {
@@ -6729,7 +6730,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             if music_samples.is_none() {
                 if let Some(prompt_store) = self.storage.prompt_store() {
                     if let Ok(Some(prompt)) = prompt_store
-                        .get_prompt_by_name(&tenant_id, "conf_moh_music")
+                        .resolve_prompt(Some(&tenant_id), "conf_moh_music", None)
                         .await
                     {
                         if let Some(ref path) = prompt.audio_path {
@@ -7243,8 +7244,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             if !welcome_played {
                 if let Some(prompt_store) = self.storage.prompt_store() {
                     let tid = tenant_id;
-                    if let Ok(Some(prompt)) =
-                        prompt_store.get_prompt_by_name(&tid, "conf_welcome").await
+                    if let Ok(Some(prompt)) = prompt_store
+                        .resolve_prompt(Some(&tid), "conf_welcome", None)
+                        .await
                     {
                         if let Some(ref path) = prompt.audio_path {
                             if let Some(pcm) = player.load_audio_file(path) {

@@ -288,6 +288,69 @@ trunks.
       - Against the previous code, 99 of 145 reads differed.
     - The UI suite's trunk test picks the tenant first, then sees the badge and
       the fallback card.
+- **Phase 2** (v0.25.496): system prompts and overrides.
+  - **The model.** `Prompt.tenant_id` is `Option<TenantId>`: `None` is a
+    system prompt (`is_system` kept equal to it by a check constraint).
+    Migration 133 drops `NOT NULL`, moves the seeded `is_system` rows to the
+    platform (the newest per name and language; any other stays its tenant's
+    as an override) and adds a unique index on `(name, language)` among
+    system prompts.
+  - **Seeding.** The call manager (voicemail prompts) and the conference
+    server seed `Prompt::system_tts` once, for every tenant, and fill in
+    their audio under `<prompts_dir>/system/`. The conference server's mute,
+    lock and ending sounds are loaded once at startup for every room, so they
+    are the system prompts' and not overridable; every other conference
+    prompt is resolved per room.
+  - **Lookup by name** (`PromptStore::resolve_prompt`): the call's tenant's
+    prompt in the language, else the system prompt in it, else the tenant's
+    then the system's in any language, else the caller's TTS. Without a
+    tenant, only system prompts. `PromptService` no longer holds a tenant:
+    every call passes its own (the call's, else its flow's), for voicemail,
+    hoteling, flows (Play, Gather and its retry prompts) and conference rooms.
+  - **Lookup by id** (`fcp_core::prompt::effective_prompt_by_id`): the
+    tenant's own prompt as it is, a system prompt through the tenant's
+    override of it, another tenant's prompt not at all. Used by a flow's
+    Play URL, hold music, the recording-consent announcement and live call
+    control's `play`. Choosing a prompt (hold music, consent) accepts a
+    system prompt.
+  - **The API.**
+    - `GET /prompts` lists the tenant's prompts and the system prompts
+      (`scope=all|tenant|system`). A system prompt carries `overridden_by`
+      (the tenant's copy), a tenant's prompt `overrides` (the system prompt
+      it replaces). `tenant_id` is `null` on a system prompt.
+    - Only a platform administrator changes a system prompt (PUT, audio,
+      synthesize) or makes one (`"system": true`); anyone else gets 403 and
+      is told to override it. A system prompt is never deleted.
+    - `POST /prompts/{id}/override` makes the tenant's copy of a system
+      prompt: its name, language, category, words, voice, and a copy of its
+      audio, so nothing changes for callers until the copy does. A second
+      override answers 409. Deleting the copy restores the system prompt.
+    - Creating a prompt whose name and language the owner already has
+      answers 409 (it used to upsert, leaving the new id pointing at nothing).
+  - **Sites.** System prompts are not journaled (the journal skips rows
+    without a tenant) and not in a site's snapshot: a site's own call manager
+    and conference server seed them there. A tenant's overrides sync as its
+    other prompts do.
+  - **The Prompts page.** System prompts are listed with the tenant's,
+    marked System (and Overridden once the tenant has a copy). A tenant
+    administrator has Override on a system prompt and Restore system prompt
+    on its copy; a platform administrator also edits system prompts and may
+    make one.
+  - **Tests:**
+    - `system_prompts_are_every_tenants_and_overridden_per_tenant`
+      (`fcp-api-core/tests/api_postgres.rs`): a platform administrator's
+      system prompt with audio; a tenant administrator sees and plays it and
+      is refused every change; the override copies the audio, a second answers
+      409, an upload to it leaves the system prompt's audio alone; the lists
+      name the relation; tenant B sees the system prompt unoverridden and not
+      A's copy; by id and by name A hears its copy, B and a tenantless call
+      the system prompt; deleting the copy restores it; the platform
+      administrator's edit is seen by B.
+    - `a_system_prompt_plays_as_the_tenants_override_once_it_has_one`
+      (`fcp-call-manager/tests/calling.rs`): a system prompt chosen as the
+      tenant's hold music plays to a held caller, then the tenant's override
+      of it does, and not the system prompt.
+    - The UI suite's `a system prompt is overridden and restored`.
 
 ## 5. Answers
 

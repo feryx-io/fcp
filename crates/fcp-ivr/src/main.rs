@@ -485,7 +485,6 @@ async fn main() -> Result<()> {
     let flow_handler = if let Some(prompt_store) = dyn_storage.prompt_store() {
         let prompt_service = Arc::new(fcp_core::PromptService::new(
             Arc::clone(prompt_store),
-            config.service.default_tenant_id,
             "en-US",
         ));
         info!("PromptService wired to IVR flow engine");
