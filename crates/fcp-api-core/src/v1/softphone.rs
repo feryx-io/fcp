@@ -72,6 +72,8 @@ pub struct SoftphoneLine {
     pub default_label: String,
     pub shared: bool,
     pub appearances: u32,
+    /// A shared line whose active calls the app may join (barge in).
+    pub barge_in: bool,
     /// Whether calls to the line ring the app.
     pub ring: bool,
 }
@@ -220,6 +222,7 @@ pub async fn get_config(
             default_label: l.default_label,
             shared: l.shared,
             appearances: l.appearances,
+            barge_in: l.barge_in,
             ring: l.ring,
         })
         .collect();

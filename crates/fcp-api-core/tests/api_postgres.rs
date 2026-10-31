@@ -16597,6 +16597,52 @@ async fn a_devices_lines_are_checked_shown_and_named() {
         !body.contains("reg.4."),
         "three lines, three accounts:\n{body}"
     );
+
+    // A shared line the device is on: the app is told its appearances and
+    // whether it may barge in.
+    let number = app
+        .admin(
+            Method::POST,
+            "/api/v1/phone-numbers",
+            Some(json!({ "e164": "+15550004444", "tenant_id": app.tenant_a })),
+        )
+        .await;
+    assert_eq!(number.status, StatusCode::CREATED, "{}", number.text);
+    let binding = app
+        .admin(
+            Method::POST,
+            "/api/v1/line-bindings",
+            Some(json!({
+                "phone_number_id": number.json["id"],
+                "owner_user_id": bob,
+                "binding_type": "user",
+                "tenant_id": app.tenant_a,
+                "devices": [{ "device_id": device, "priority": 1, "line_appearance": 2,
+                    "shared_line": true, "enabled": true }],
+                "shared": true,
+                "max_appearances": 2,
+                "barge_in": true,
+            })),
+        )
+        .await;
+    assert_eq!(binding.status, StatusCode::CREATED, "{}", binding.text);
+    let set = app
+        .admin(
+            Method::PATCH,
+            &device_path,
+            Some(json!({ "lines": [{ "kind": "own" }, { "kind": "shared", "value": "15550004444" }] })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let config = app
+        .send_as(&access, Method::GET, "/api/v1/me/softphone", None)
+        .await;
+    let shared = &config.json["lines"][1];
+    assert_eq!(shared["line"], "shared:+15550004444", "{}", config.text);
+    assert_eq!(shared["shared"], true);
+    assert_eq!(shared["appearances"], 2);
+    assert_eq!(shared["barge_in"], true);
+    assert_eq!(config.json["lines"][0]["barge_in"], false);
     app.finish().await;
 }
 

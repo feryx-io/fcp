@@ -31,6 +31,8 @@ pub struct ResolvedLine {
     /// A shared line, with its appearances.
     pub shared: bool,
     pub appearances: u32,
+    /// A shared line whose active calls another of its phones may join.
+    pub barge_in: bool,
     pub ring: bool,
 }
 
@@ -92,7 +94,7 @@ async fn resolve_one(
     device: &Device,
     owner: Option<&User>,
     line: &DeviceLine,
-) -> Result<(String, String, String, bool, u32), String> {
+) -> Result<(String, String, String, bool, u32, bool), String> {
     let tenant = &device.tenant_id;
     let value = line.value.trim();
     match line.kind {
@@ -110,7 +112,7 @@ async fn resolve_one(
                 ),
                 None => device.name.clone(),
             };
-            Ok(("own".to_string(), aor, label, false, 0))
+            Ok(("own".to_string(), aor, label, false, 0, false))
         }
         LineKind::Extension => {
             let owner = owner.ok_or("a device with no owner holds no extension")?;
@@ -128,6 +130,7 @@ async fn resolve_one(
                 fcp_core::device::default_line_label(value, Some(&display(owner))),
                 false,
                 0,
+                false,
             ))
         }
         LineKind::Shared => {
@@ -163,6 +166,7 @@ async fn resolve_one(
                 fcp_core::device::default_line_label(&e164, name.as_deref()),
                 true,
                 u32::from(binding.max_appearances),
+                binding.barge_in,
             ))
         }
         LineKind::OnBehalf => {
@@ -188,6 +192,7 @@ async fn resolve_one(
                 ),
                 false,
                 0,
+                false,
             ))
         }
     }
@@ -202,7 +207,7 @@ pub async fn resolve(
 ) -> Result<Vec<ResolvedLine>, String> {
     let mut out = Vec::with_capacity(lines.len());
     for (i, line) in lines.iter().enumerate() {
-        let (key, aor_user, default_label, shared, appearances) =
+        let (key, aor_user, default_label, shared, appearances, barge_in) =
             resolve_one(storage, device, owner, line)
                 .await
                 .map_err(|why| format!("line {}: {why}", i + 1))?;
@@ -219,6 +224,7 @@ pub async fn resolve(
             aor_user,
             shared,
             appearances,
+            barge_in,
             ring: line.ring,
         });
     }

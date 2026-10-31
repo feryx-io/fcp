@@ -33,6 +33,7 @@ class SoftphoneLine:
             default_label (str):
             shared (bool):
             appearances (int):
+            barge_in (bool): A shared line whose active calls the app may join (barge in).
             ring (bool): Whether calls to the line ring the app.
      """
 
@@ -44,6 +45,7 @@ class SoftphoneLine:
     default_label: str
     shared: bool
     appearances: int
+    barge_in: bool
     ring: bool
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -68,6 +70,8 @@ class SoftphoneLine:
 
         appearances = self.appearances
 
+        barge_in = self.barge_in
+
         ring = self.ring
 
 
@@ -82,6 +86,7 @@ class SoftphoneLine:
             "default_label": default_label,
             "shared": shared,
             "appearances": appearances,
+            "barge_in": barge_in,
             "ring": ring,
         })
 
@@ -108,6 +113,8 @@ class SoftphoneLine:
 
         appearances = d.pop("appearances")
 
+        barge_in = d.pop("barge_in")
+
         ring = d.pop("ring")
 
         softphone_line = cls(
@@ -119,6 +126,7 @@ class SoftphoneLine:
             default_label=default_label,
             shared=shared,
             appearances=appearances,
+            barge_in=barge_in,
             ring=ring,
         )
 

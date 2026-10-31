@@ -39675,6 +39675,7 @@
           "default_label",
           "shared",
           "appearances",
+          "barge_in",
           "ring"
         ],
         "properties": {
@@ -39710,6 +39711,10 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          },
+          "barge_in": {
+            "type": "boolean",
+            "description": "A shared line whose active calls the app may join (barge in)."
           },
           "ring": {
             "type": "boolean",

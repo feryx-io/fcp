@@ -145,6 +145,23 @@ named for a call to each, the executive's line subscribing to her mailbox).
 
 Phase 1 is done; phase 2 is Anvil's.
 
+**Phase 2 (Anvil v0.2.24–v0.2.25, anvil #58 and #59).** Each line registered and
+its message summary subscribed apart, calls placed from a line, incoming calls on
+theirs, the Lines column (a window 880 wide or more) and the picker above the keypad,
+rename where the tenant allows.
+
+**Phase 3 (v0.25.489; Anvil v0.2.26).** `/me/softphone`'s lines say `barge_in`
+(the shared line's binding). Anvil watches each shared line's `call-info`, shows its
+appearances in use under the line, picks up a held one and joins an active one where
+the line allows, by an INVITE from the line naming the appearance in `Call-Info` —
+the protocol `fcp_sip::sca` already answers desk phones with. Seizing before
+dialling (`line-seize`) is left to desk phones: the app dials with the number
+typed and FCP gives the call the lowest free appearance. Tested: api_postgres
+`a_devices_lines_are_checked_shown_and_named` (a shared line's appearances and
+`barge_in`), and Anvil's
+`a_shared_line_shows_its_appearances_and_any_app_picks_up_a_held_call` against FCP.
+All three phases are done.
+
 ## 7. Questions
 
 1. **The user's names are stored on FCP**, so they follow the user to every app.

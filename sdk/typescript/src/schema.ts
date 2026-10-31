@@ -12447,6 +12447,8 @@ export interface components {
             shared: boolean;
             /** Format: int32 */
             appearances: number;
+            /** @description A shared line whose active calls the app may join (barge in). */
+            barge_in: boolean;
             /** @description Whether calls to the line ring the app. */
             ring: boolean;
         };
