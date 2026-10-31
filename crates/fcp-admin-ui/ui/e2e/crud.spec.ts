@@ -1,7 +1,7 @@
 // Each page's main object made, changed and deleted through its form, and
 // checked through the API afterwards (docs/DEEP_TESTING.md D7). As a tenant
 // administrator, who keeps these day to day.
-import { test, expect, admin, tenantAdmin, signIn, settled, type Page } from './fixtures'
+import { test, expect, admin, tenantAdmin, signIn, settled, pickTenant, type Page } from './fixtures'
 
 /** A name no earlier run used. */
 const unique = (prefix: string) => `${prefix}-${Date.now().toString(36)}`
@@ -173,6 +173,11 @@ test('a trunk is made, changed and deleted', async ({ page, api }) => {
   const name = unique('ui-trunk')
   await page.goto('/admin/trunks')
   await settled(page)
+  // A platform administrator picks the tenant the trunk is the tenant's in.
+  await expect(page.getByTestId('pick-tenant')).toBeVisible()
+  await pickTenant(page, api)
+  await expect(page.getByTestId('tenant-badge')).toBeVisible()
+  await expect(page.getByTestId('platform-trunks')).toBeVisible()
   await page.getByRole('button', { name: 'Add Trunk' }).click()
   const dialog = page.getByRole('dialog')
   await dialog.locator('#name').fill(name)

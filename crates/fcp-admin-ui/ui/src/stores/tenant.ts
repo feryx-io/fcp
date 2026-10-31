@@ -1,13 +1,17 @@
 import { create } from 'zustand'
+import { apiClient } from '@/api/client'
 
 interface TenantState {
-  /** Currently selected tenant ID for multi-tenant admin context */
+  /** The tenant a platform administrator works in; `null` for "All tenants". */
   selectedTenantId: string | null
-  /** Set the active tenant context */
+  /** Pick a tenant: every request after this works in it. */
   setSelectedTenantId: (id: string | null) => void
 }
 
 export const useTenantStore = create<TenantState>()((set) => ({
   selectedTenantId: null,
-  setSelectedTenantId: (id) => set({ selectedTenantId: id }),
+  setSelectedTenantId: (id) => {
+    apiClient.setTenant(id)
+    set({ selectedTenantId: id })
+  },
 }))

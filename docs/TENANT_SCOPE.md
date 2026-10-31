@@ -256,6 +256,39 @@ trunks.
 4. **Flows, traces, parking, tokens** (§3.4, §3.5, §3.7).
 5. **Routing rules per location** (§3.6).
 
+## 4a. Done
+
+- **Phase 1** (v0.25.495): the picked tenant.
+  - `TenantContext` lets a platform administrator's header decide the tenant
+    (a super_admin session or the static token; an unknown tenant answers 404).
+    Anyone else's header is ignored, as before.
+  - The all-tenant handlers (CDRs, call quality, SIP and flow traces,
+    registrations, the audit log) need no change: a header now means the tenant
+    sent, not the session's own.
+  - The admin UI's API client sends the picked tenant with every request
+    (`ApiClient.setTenant`, set by the tenant store and cleared at sign-out). The
+    picker resets the query cache when it changes.
+  - `TenantScope` frames Trunks, Routing, Least-cost routes, Flows and the flow
+    builder, Schedules, Parking and Classes of service. It shows "Tenant: X", and
+    with "All tenants" picked asks for a tenant.
+  - Other tenant-owned pages (webhooks, tokens, prompts, …) follow the picker
+    through the header without the frame.
+  - The Trunks page shows whether the tenant's calls may fall back to the
+    platform's trunks, with the switch for a platform administrator. The API still
+    lets a tenant administrator change it (`platform_trunk_fallback` on
+    `PUT /tenants/{id}`), as before.
+  - Parking's "Site" field is "Location".
+  - **Tests:**
+    - The route matrix's third probe,
+      `a_platform_administrator_works_in_the_tenant_picked`: on every read naming
+      tenant B's objects, a platform administrator's session with B's header
+      answers as the static token does, and shows the same B objects.
+      - It also checks that a schedule made with the header is B's, and that an
+        unknown tenant answers 404.
+      - Against the previous code, 99 of 145 reads differed.
+    - The UI suite's trunk test picks the tenant first, then sees the badge and
+      the fallback card.
+
 ## 5. Answers
 
 - **46:** Alice's caller ID is her line binding's: she is bound to +1 425 585 2628, with

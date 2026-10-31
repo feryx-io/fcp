@@ -1,3 +1,4 @@
+import { TenantScope } from '@/components/TenantSelector'
 import { lazy, Suspense } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
@@ -149,19 +150,19 @@ export function App() {
               <Route path="prompts" element={<Suspense fallback={<PageLoader />}><PromptsPage /></Suspense>} />
               <Route path="events" element={<Suspense fallback={<PageLoader />}><EventsPage /></Suspense>} />
               {/* Advanced */}
-              <Route path="trunks" element={<Suspense fallback={<PageLoader />}><TrunksPage /></Suspense>} />
-              <Route path="routing" element={<Suspense fallback={<PageLoader />}><RoutingPage /></Suspense>} />
-              <Route path="schedules" element={<Suspense fallback={<PageLoader />}><SchedulesPage /></Suspense>} />
+              <Route path="trunks" element={<Suspense fallback={<PageLoader />}><TenantScope what="Trunks"><TrunksPage /></TenantScope></Suspense>} />
+              <Route path="routing" element={<Suspense fallback={<PageLoader />}><TenantScope what="Routing rules"><RoutingPage /></TenantScope></Suspense>} />
+              <Route path="schedules" element={<Suspense fallback={<PageLoader />}><TenantScope what="Schedules"><SchedulesPage /></TenantScope></Suspense>} />
               <Route path="groups" element={<Suspense fallback={<PageLoader />}><GroupsPage /></Suspense>} />
               <Route path="templates" element={<Suspense fallback={<PageLoader />}><TemplatesPage /></Suspense>} />
               <Route path="firmware" element={<Suspense fallback={<PageLoader />}><FirmwarePage /></Suspense>} />
               <Route path="branding" element={<Suspense fallback={<PageLoader />}><BrandingPage /></Suspense>} />
-              <Route path="classes-of-service" element={<Suspense fallback={<PageLoader />}><ClassesOfServicePage /></Suspense>} />
+              <Route path="classes-of-service" element={<Suspense fallback={<PageLoader />}><TenantScope what="Classes of service"><ClassesOfServicePage /></TenantScope></Suspense>} />
               <Route path="hoteling" element={<Suspense fallback={<PageLoader />}><HotelingPage /></Suspense>} />
-              <Route path="parking" element={<Suspense fallback={<PageLoader />}><ParkingPage /></Suspense>} />
-              <Route path="lcr" element={<Suspense fallback={<PageLoader />}><LcrRoutesPage /></Suspense>} />
-              <Route path="flows" element={<Suspense fallback={<PageLoader />}><FlowsPage /></Suspense>} />
-              <Route path="flows/:id" element={<Suspense fallback={<PageLoader />}><FlowBuilderPage /></Suspense>} />
+              <Route path="parking" element={<Suspense fallback={<PageLoader />}><TenantScope what="Parking lots"><ParkingPage /></TenantScope></Suspense>} />
+              <Route path="lcr" element={<Suspense fallback={<PageLoader />}><TenantScope what="Least-cost routes"><LcrRoutesPage /></TenantScope></Suspense>} />
+              <Route path="flows" element={<Suspense fallback={<PageLoader />}><TenantScope what="Flows"><FlowsPage /></TenantScope></Suspense>} />
+              <Route path="flows/:id" element={<Suspense fallback={<PageLoader />}><TenantScope what="Flows"><FlowBuilderPage /></TenantScope></Suspense>} />
               <Route path="flow-traces" element={<Suspense fallback={<PageLoader />}><FlowTracesPage /></Suspense>} />
               <Route path="services" element={<Suspense fallback={<PageLoader />}><ServicesPage /></Suspense>} />
               <Route path="services/:id" element={<Suspense fallback={<PageLoader />}><ServicePage /></Suspense>} />

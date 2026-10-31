@@ -206,9 +206,7 @@ async fn seed_tenant_b(app: &App) -> Seeded {
         let allow = CaptureAllow {
             id: uuid::Uuid::new_v4(),
             tenant_id: b,
-            subject: AllowSubject::Device {
-                device_id: device_id.clone(),
-            },
+            subject: AllowSubject::Device { device_id },
             until: std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
             reason: Some("bravo-capture-reason".into()),
             created_by: "seed".into(),
@@ -967,6 +965,129 @@ async fn no_route_reaches_another_tenants_objects() {
         wrong.len(),
         wrong.join("\n")
     );
+    app.finish().await;
+}
+
+/// A platform administrator signed in works in the tenant they pick
+/// (`docs/TENANT_SCOPE.md` §3.1): with tenant B's header, their session
+/// answers every read as the static token does with it — B's lists show
+/// B's objects, B's objects open — and without it, their own tenant. A
+/// tenant administrator's header changes nothing (the probe above).
+#[tokio::test]
+async fn a_platform_administrator_works_in_the_tenant_picked() {
+    let (conference_url, _upstream) = mock_conference_server().await;
+    let Some(app) =
+        App::build_with(DeploymentMode::default(), Some(conference_url), true, None).await
+    else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping PostgreSQL API handler test");
+        return;
+    };
+    let firmware = tempfile::tempdir().unwrap();
+    let app = app.with_firmware(firmware.path());
+    let seeded = seed_tenant_b(&app).await;
+    app.create_user_with_role("platform-admin", "super_admin")
+        .await;
+    let jwt = session(&app, "platform-admin").await;
+    let b = app.tenant_b.to_string();
+    let b_hdr = [("x-fcp-tenant-id", b.as_str())];
+    let shown = |text: &str| -> BTreeSet<String> {
+        seeded
+            .secrets
+            .iter()
+            .filter(|s| text.contains(s.as_str()))
+            .cloned()
+            .collect()
+    };
+
+    let mut wrong: Vec<String> = Vec::new();
+    let mut compared = 0usize;
+    for (m, template, _) in ROUTES {
+        if *m != "GET" || not_cross_tenant(m, template).is_some() || bound_elsewhere(template) {
+            continue;
+        }
+        let Some(path) = concrete(template, |p| seeded.ids.get(p).cloned()) else {
+            continue;
+        };
+        let url = format!("/api/v1{path}");
+        let (Ok(platform), Ok(session)) = (
+            probe(&app, ADMIN_TOKEN, Method::GET, &url, &b_hdr, None).await,
+            probe(&app, &jwt, Method::GET, &url, &b_hdr, None).await,
+        ) else {
+            wrong.push(format!("GET {template}: a probe panicked"));
+            continue;
+        };
+        compared += 1;
+        if platform.status != session.status {
+            wrong.push(format!(
+                "GET {template}: the static token answered {}, the session {}: {}",
+                platform.status,
+                session.status,
+                session.text.chars().take(200).collect::<String>()
+            ));
+        } else if shown(&platform.text) != shown(&session.text) {
+            wrong.push(format!(
+                "GET {template}: the static token shows {:?} of B's, the session {:?}",
+                shown(&platform.text),
+                shown(&session.text)
+            ));
+        }
+    }
+    assert!(compared > 100, "compared only {compared} routes");
+    assert!(
+        wrong.is_empty(),
+        "{} of {compared} reads differ between the static token and a platform \
+         administrator's session in tenant B:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+
+    // Made in the tenant picked; without a pick, in the session's own.
+    let made = app
+        .send(
+            Method::POST,
+            "/api/v1/schedules",
+            &[(AUTH_HEADER, format!("Bearer {jwt}").as_str()), b_hdr[0]],
+            Some(json!({"name": "Picked hours", "timezone": "UTC"})),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    assert_eq!(made.json["tenant_id"], b.as_str(), "{}", made.text);
+    let own = app
+        .send(
+            Method::GET,
+            "/api/v1/schedules",
+            &[(AUTH_HEADER, format!("Bearer {jwt}").as_str())],
+            None,
+        )
+        .await;
+    assert!(!own.text.contains("Picked hours"), "{}", own.text);
+    let unknown = app
+        .send(
+            Method::GET,
+            "/api/v1/schedules",
+            &[
+                (AUTH_HEADER, format!("Bearer {jwt}").as_str()),
+                ("x-fcp-tenant-id", &fcp_core::TenantId::new().to_string()),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.text);
+    // The default tenant, which has no row until something is set on it,
+    // is pickable all the same.
+    let default = app
+        .send(
+            Method::GET,
+            "/api/v1/schedules",
+            &[
+                (AUTH_HEADER, format!("Bearer {jwt}").as_str()),
+                ("x-fcp-tenant-id", &fcp_core::TenantId::nil().to_string()),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(default.status, StatusCode::OK, "{}", default.text);
+
     app.finish().await;
 }
 

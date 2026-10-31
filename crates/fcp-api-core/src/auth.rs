@@ -510,11 +510,13 @@ pub fn effective_permissions(
         .collect()
 }
 
-/// Tenant context extracted from the authenticated session.
+/// The tenant a request works in (`docs/TENANT_SCOPE.md` §3.1).
 ///
-/// SECURITY: Does NOT trust the raw X-Tenant-Id header. In a
-/// single-tenant deployment, always uses the server's default tenant.
-/// Multi-tenant deployments should extract tenant from JWT claims.
+/// A platform administrator (a super_admin session, the static token) works
+/// in the tenant the `x-fcp-tenant-id` header names — the admin UI's picker
+/// — and without one in their own tenant (the default tenant for the
+/// static token). Anyone else works in their own tenant: their header is
+/// ignored, so no one leaves their tenant by naming another.
 pub struct TenantContext(pub fcp_core::TenantId);
 
 #[axum::async_trait]
@@ -526,11 +528,11 @@ impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
         state: &crate::state::ApiState,
     ) -> Result<Self, Self::Rejection> {
         if let Some(identity) = parts.extensions.get::<AuthIdentity>() {
-            if let Some(tenant_id) = identity.tenant_id() {
-                return Ok(TenantContext(*tenant_id));
-            }
-
-            if identity.is_platform_admin() {
+            if !identity.is_platform_admin() {
+                if let Some(tenant_id) = identity.tenant_id() {
+                    return Ok(TenantContext(*tenant_id));
+                }
+            } else {
                 if let Some(raw_tenant_id) = parts
                     .headers
                     .get(PLATFORM_TENANT_HEADER)
@@ -545,7 +547,11 @@ impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
                         ))
                     })?;
 
-                    if let Some(storage) = state.storage.as_ref() {
+                    // The default tenant is a tenant whether or not it has a
+                    // row: requests without a header already work in it.
+                    if let Some(storage) = state.storage.as_ref().filter(|_| {
+                        tenant_id != state.default_tenant_id && tenant_id != TenantId::nil()
+                    }) {
                         match storage.get_tenant(&tenant_id).await {
                             Ok(Some(_)) => {}
                             Ok(None) => {
@@ -564,6 +570,9 @@ impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
                     }
 
                     return Ok(TenantContext(tenant_id));
+                }
+                if let Some(tenant_id) = identity.tenant_id() {
+                    return Ok(TenantContext(*tenant_id));
                 }
             }
         }

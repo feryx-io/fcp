@@ -78,6 +78,19 @@ export async function signIn(page: Page, who: Account) {
   await page.waitForURL((url) => !url.pathname.startsWith('/login'))
 }
 
+/** The default tenant: the static token's, and where the suite's people are. */
+export const DEFAULT_TENANT = 'tenant-00000000-0000-0000-0000-000000000000'
+
+/**
+ * As a platform administrator, work in a tenant: pick it in the top bar
+ * (docs/TENANT_SCOPE.md §3.1). Its name is read through the API.
+ */
+export async function pickTenant(page: Page, api: APIRequestContext, id = DEFAULT_TENANT) {
+  const tenant = await (await api.get(`/api/v1/tenants/${id}`)).json()
+  await page.getByRole('combobox').filter({ hasText: /All Tenants/i }).click()
+  await page.getByRole('option', { name: tenant.name, exact: true }).click()
+}
+
 /** Wait until a page has loaded what it asks for. */
 export async function settled(page: Page) {
   await page.waitForLoadState('networkidle')

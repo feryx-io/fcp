@@ -75,7 +75,9 @@ export function ParkingPage() {
     retry: false,
   })
   const music = useQuery({ queryKey: ['prompts', 'moh'], queryFn: () => prompts.list({ category: 'moh' }) })
-  const sites = useQuery({ queryKey: ['locations'], queryFn: locations.list })
+  // A lot's location is an office's address (Locations), not a site (an
+  // on-premises stack): docs/TENANT_SCOPE.md §1.4.
+  const locationList = useQuery({ queryKey: ['locations'], queryFn: locations.list })
 
   const refreshLots = () => queryClient.invalidateQueries({ queryKey: ['parking-lots'] })
   const refreshCalls = () => queryClient.invalidateQueries({ queryKey: ['parking-calls'] })
@@ -387,15 +389,15 @@ export function ParkingPage() {
                   </select>
                 </div>
                 <div className="space-y-1">
-                  <Label htmlFor="lot-location">Site</Label>
+                  <Label htmlFor="lot-location">Location</Label>
                   <select
                     id="lot-location"
                     className="h-9 w-full rounded-md border bg-background px-2 text-sm"
                     value={req.location_id ?? NONE}
                     onChange={(e) => update({ location_id: e.target.value === NONE ? null : e.target.value })}
                   >
-                    <option value={NONE}>Every site</option>
-                    {(sites.data ?? []).map((l) => (
+                    <option value={NONE}>Every location</option>
+                    {(locationList.data ?? []).map((l) => (
                       <option key={l.id} value={l.id}>{l.name}</option>
                     ))}
                   </select>

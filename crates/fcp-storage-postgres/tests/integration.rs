@@ -1315,7 +1315,7 @@ async fn a_captures_file_is_queued_however_its_row_goes() {
         (AllowSubject::User { user_id: carol.id }, now + day),
         (
             AllowSubject::Device {
-                device_id: device.id.clone(),
+                device_id: device.id,
             },
             now + 3 * day,
         ),
@@ -1345,7 +1345,7 @@ async fn a_captures_file_is_queued_however_its_row_goes() {
         DeviceCapture {
             id,
             tenant_id: a.id,
-            device_id: device.id.clone(),
+            device_id: device.id,
             user_id: carol.id,
             call_id: Some(CallId::new()),
             size: 12,
