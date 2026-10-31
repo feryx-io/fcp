@@ -29,6 +29,7 @@
 
 pub mod api_token;
 mod branding;
+mod call_quality;
 mod cdr_archive;
 mod cdr_volume;
 pub mod compliance;
@@ -2039,6 +2040,19 @@ impl CdrStore for PostgresStorage {
                 break;
             }
         }
+        // A call's quality goes with its record: reported before the cut
+        // and with no record of the call left (a held one stays, and so
+        // does what was said of it).
+        sqlx::query(
+            "DELETE FROM call_quality q
+             WHERE q.tenant_id = $1 AND q.reported_at < $2
+               AND NOT EXISTS (SELECT 1 FROM cdrs c
+                               WHERE c.tenant_id = q.tenant_id AND c.call_id = q.call_id)",
+        )
+        .bind(tenant_id.to_string())
+        .bind(system_time_to_datetime(before))
+        .execute(self.writes())
+        .await?;
         Ok(deleted)
     }
 

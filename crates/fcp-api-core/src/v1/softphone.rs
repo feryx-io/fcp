@@ -108,7 +108,7 @@ pub struct SoftphoneConfig {
 }
 
 /// The app's session and device: what `/me/softphone` answers for.
-async fn app_device(state: &ApiState, me: &Me) -> Result<(User, Device), ApiError> {
+pub(crate) async fn app_device(state: &ApiState, me: &Me) -> Result<(User, Device), ApiError> {
     let not_app = || {
         ApiError::BadRequest(
             "This is the softphone's: sign in through the app (docs/APP_SIGN_IN.md)".to_string(),

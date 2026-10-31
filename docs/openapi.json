@@ -2904,6 +2904,58 @@
         }
       }
     },
+    "/api/v1/me/calls/{call_id}/quality": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/calls/:call_id/quality — the app's final figures for a call\nit was on, sent when the call ends. A second report from the same app\nreplaces its first. 404 when the call's record names other people (one\nnot yet written is taken on the app's word); `call.quality_poor` when\neither score is under 3.1.",
+        "operationId": "self_service_report_call_quality",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "description": "FCP's id for the call (`X-FCP-Call-Id`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallQualityReport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallQualityResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/directory": {
       "get": {
         "tags": [
@@ -9618,6 +9670,47 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CdrResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cdrs/{call_id}/quality": {
+      "get": {
+        "tags": [
+          "cdrs"
+        ],
+        "summary": "GET /cdrs/:call_id/quality — every phone's report of a call, oldest\nfirst, as one page; empty when none reported, 404 for another\ntenant's call.",
+        "operationId": "cdrs_get_call_quality",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CallQualityResponse"
                 }
               }
             }
@@ -20969,6 +21062,270 @@
           }
         }
       },
+      "CallQualityReport": {
+        "type": "object",
+        "description": "A call's final figures, as the app measured them.",
+        "required": [
+          "direction",
+          "codec",
+          "packets_sent",
+          "packets_received",
+          "packets_expected",
+          "packets_lost",
+          "jitter_ms",
+          "mos"
+        ],
+        "properties": {
+          "direction": {
+            "type": "string",
+            "description": "`incoming` or `outgoing`, from the phone's side."
+          },
+          "codec": {
+            "type": "string",
+            "description": "The codec (`pcmu`, `opus`, …)."
+          },
+          "srtp": {
+            "type": "boolean"
+          },
+          "duration_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Talk time, as the phone counted it.",
+            "minimum": 0
+          },
+          "packets_sent": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "packets_received": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "packets_expected": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The far end's packets its sequence numbers say were sent, and those\nthat never arrived.",
+            "minimum": 0
+          },
+          "packets_lost": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "jitter_ms": {
+            "type": "number",
+            "format": "float",
+            "description": "The phone's jitter estimate on what it received, at the end, in ms."
+          },
+          "rtt_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The round trip from RTCP, when it was measured."
+          },
+          "far_loss_pct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "What the far end last reported over RTCP: its loss in its last\ninterval in percent, its jitter in ms, its losses in all."
+          },
+          "far_jitter_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "far_lost": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "mos": {
+            "type": "number",
+            "format": "float",
+            "description": "The estimated score (E-model MOS, 1 to 4.5) of what the user heard,\nand of what the far end heard once it reported."
+          },
+          "far_mos": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "local_rtp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where media flowed between, as the phone saw it (`address:port`)."
+          },
+          "remote_rtp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "CallQualityResponse": {
+        "type": "object",
+        "description": "One phone's report of a call.",
+        "required": [
+          "call_id",
+          "user_id",
+          "direction",
+          "codec",
+          "srtp",
+          "packets_sent",
+          "packets_received",
+          "packets_expected",
+          "packets_lost",
+          "loss_pct",
+          "jitter_ms",
+          "mos",
+          "poor",
+          "reported_at"
+        ],
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The reporting user's name, while they exist."
+          },
+          "device_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "direction": {
+            "type": "string"
+          },
+          "codec": {
+            "type": "string"
+          },
+          "srtp": {
+            "type": "boolean"
+          },
+          "duration_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "packets_sent": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "packets_received": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "packets_expected": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "packets_lost": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "loss_pct": {
+            "type": "number",
+            "format": "float",
+            "description": "`packets_lost` of `packets_expected`, in percent."
+          },
+          "jitter_ms": {
+            "type": "number",
+            "format": "float"
+          },
+          "rtt_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "far_loss_pct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "far_jitter_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "far_lost": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "mos": {
+            "type": "number",
+            "format": "float"
+          },
+          "far_mos": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "poor": {
+            "type": "boolean",
+            "description": "Either score under 3.1."
+          },
+          "local_rtp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remote_rtp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reported_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "CallerIdPolicy": {
         "type": "string",
         "description": "How a user's caller ID leaves on a trunk.",
@@ -27777,6 +28134,31 @@
           }
         }
       },
+      "MyCallQuality": {
+        "type": "object",
+        "description": "How one of the user's calls went, by their phone: on `/me/calls`.",
+        "required": [
+          "mos",
+          "poor"
+        ],
+        "properties": {
+          "mos": {
+            "type": "number",
+            "format": "float"
+          },
+          "far_mos": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "poor": {
+            "type": "boolean",
+            "description": "Either score under 3.1."
+          }
+        }
+      },
       "MyCallResponse": {
         "type": "object",
         "description": "One of the user's calls, from their side.",
@@ -27845,6 +28227,17 @@
             "format": "int64",
             "description": "Talk time, from the answer.",
             "minimum": 0
+          },
+          "quality": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MyCallQuality",
+                "description": "How the call went, when the user's phone reported it\n(`docs/CALL_DIAGNOSTICS.md` §2)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -28930,6 +29323,180 @@
                     "string",
                     "null"
                   ]
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_CallQualityResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One phone's report of a call.",
+              "required": [
+                "call_id",
+                "user_id",
+                "direction",
+                "codec",
+                "srtp",
+                "packets_sent",
+                "packets_received",
+                "packets_expected",
+                "packets_lost",
+                "loss_pct",
+                "jitter_ms",
+                "mos",
+                "poor",
+                "reported_at"
+              ],
+              "properties": {
+                "call_id": {
+                  "type": "string"
+                },
+                "user_id": {
+                  "type": "string"
+                },
+                "username": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The reporting user's name, while they exist."
+                },
+                "device_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "direction": {
+                  "type": "string"
+                },
+                "codec": {
+                  "type": "string"
+                },
+                "srtp": {
+                  "type": "boolean"
+                },
+                "duration_seconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "packets_sent": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "packets_received": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "packets_expected": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "packets_lost": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "loss_pct": {
+                  "type": "number",
+                  "format": "float",
+                  "description": "`packets_lost` of `packets_expected`, in percent."
+                },
+                "jitter_ms": {
+                  "type": "number",
+                  "format": "float"
+                },
+                "rtt_ms": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "float"
+                },
+                "far_loss_pct": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "float"
+                },
+                "far_jitter_ms": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "float"
+                },
+                "far_lost": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "mos": {
+                  "type": "number",
+                  "format": "float"
+                },
+                "far_mos": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "float"
+                },
+                "poor": {
+                  "type": "boolean",
+                  "description": "Either score under 3.1."
+                },
+                "local_rtp": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "remote_rtp": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reported_at": {
+                  "type": "string",
+                  "format": "date-time"
                 }
               }
             }
@@ -31838,6 +32405,17 @@
                   "format": "int64",
                   "description": "Talk time, from the answer.",
                   "minimum": 0
+                },
+                "quality": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/MyCallQuality",
+                      "description": "How the call went, when the user's phone reported it\n(`docs/CALL_DIAGNOSTICS.md` §2)."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               }
             }
@@ -44288,6 +44866,7 @@
               "call.parked",
               "call.unparked",
               "call.park_timed_out",
+              "call.quality_poor",
               "call.held",
               "call.resumed",
               "call.transcript",

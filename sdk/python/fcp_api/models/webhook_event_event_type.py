@@ -19,6 +19,7 @@ class WebhookEventEventType(StrEnum):
     CALL_PARTY_JOINED = "call.party_joined"
     CALL_PARTY_LEFT = "call.party_left"
     CALL_PROGRESS = "call.progress"
+    CALL_QUALITY_POOR = "call.quality_poor"
     CALL_RESUMED = "call.resumed"
     CALL_RINGING = "call.ringing"
     CALL_TRANSCRIPT = "call.transcript"

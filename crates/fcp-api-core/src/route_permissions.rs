@@ -86,6 +86,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/me/calls", Open),
     (POST, "/me/calls/:call_id/recording/start", Open),
     (POST, "/me/calls/:call_id/recording/stop", Open),
+    (POST, "/me/calls/:call_id/quality", Open),
     (GET, "/me/directory", Open),
     (GET, "/me/contacts", Open),
     (POST, "/me/contacts", Open),
@@ -340,6 +341,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/cdrs", Needs(CdrRead)),
     (GET, "/cdrs/export", Needs(CdrRead)),
     (GET, "/cdrs/:call_id", Needs(CdrRead)),
+    (GET, "/cdrs/:call_id/quality", Needs(CdrRead)),
     // Flows.
     (GET, "/flow-traces", Needs(FlowRead)),
     (GET, "/flow-traces/:call_id", Needs(FlowRead)),

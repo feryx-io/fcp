@@ -35,6 +35,8 @@ from .brand_ringtone import BrandRingtone
 from .bundle_response import BundleResponse
 from .call_control_response import CallControlResponse
 from .call_info import CallInfo
+from .call_quality_report import CallQualityReport
+from .call_quality_response import CallQualityResponse
 from .caller_id_policy import CallerIdPolicy
 from .calling_response import CallingResponse
 from .cdr_response import CdrResponse
@@ -198,6 +200,7 @@ from .message_response import MessageResponse
 from .mfa_ticket_request import MfaTicketRequest
 from .mint_join_token_request import MintJoinTokenRequest
 from .missing_file import MissingFile
+from .my_call_quality import MyCallQuality
 from .my_call_response import MyCallResponse
 from .my_executive import MyExecutive
 from .my_greeting_upload import MyGreetingUpload
@@ -229,6 +232,8 @@ from .page_brand_asset_response import PageBrandAssetResponse
 from .page_brand_asset_response_data_item import PageBrandAssetResponseDataItem
 from .page_call_info import PageCallInfo
 from .page_call_info_data_item import PageCallInfoDataItem
+from .page_call_quality_response import PageCallQualityResponse
+from .page_call_quality_response_data_item import PageCallQualityResponseDataItem
 from .page_class_of_service_response import PageClassOfServiceResponse
 from .page_class_of_service_response_data_item import PageClassOfServiceResponseDataItem
 from .page_config_entry_response import PageConfigEntryResponse
@@ -609,6 +614,8 @@ __all__ = (
     "CallerIdPolicy",
     "CallInfo",
     "CallingResponse",
+    "CallQualityReport",
+    "CallQualityResponse",
     "CdrResponse",
     "ChangeExpiredPasswordRequest",
     "ChangePasswordRequest",
@@ -770,6 +777,7 @@ __all__ = (
     "MfaTicketRequest",
     "MintJoinTokenRequest",
     "MissingFile",
+    "MyCallQuality",
     "MyCallResponse",
     "MyExecutive",
     "MyGreetingUpload",
@@ -801,6 +809,8 @@ __all__ = (
     "PageBrandAssetResponseDataItem",
     "PageCallInfo",
     "PageCallInfoDataItem",
+    "PageCallQualityResponse",
+    "PageCallQualityResponseDataItem",
     "PageClassOfServiceResponse",
     "PageClassOfServiceResponseDataItem",
     "PageConfigEntryResponse",

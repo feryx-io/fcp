@@ -169,6 +169,9 @@ export type CallInfo = S['CallInfo']
 // CDRs (matches cdrs.rs CdrResponse)
 export type CdrResponse = S['CdrResponse']
 
+/** One phone's report of a call's quality (docs/CALL_DIAGNOSTICS.md §2). */
+export type CallQualityResponse = S['CallQualityResponse']
+
 /** A page of CDRs: the list envelope; the total may be an estimate. */
 export type ListCdrsResponse = Page<CdrResponse> & { total: number; total_exact: boolean }
 

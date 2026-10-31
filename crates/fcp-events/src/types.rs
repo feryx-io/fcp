@@ -382,6 +382,31 @@ pub enum CallEvent {
         timestamp: SystemTime,
     },
 
+    /// A phone reported a call it was on as poor (`docs/CALL_DIAGNOSTICS.md`
+    /// §2): its estimated score (E-model MOS, 1 to 4.5) under 3.1 — what
+    /// the user heard (`mos`) or what the far end did (`far_mos`).
+    QualityPoor {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
+        call_id: CallId,
+        /// The user whose phone reported it, by id and name.
+        user_id: String,
+        username: String,
+        /// The phone (its device), when the report came from an app.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_id: Option<String>,
+        mos: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        far_mos: Option<f32>,
+        /// The far end's packets lost over the call, in percent.
+        loss_pct: f32,
+        jitter_ms: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rtt_ms: Option<f32>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// A leg put on hold by its far party (`docs/ENTERPRISE_CALLING.md`
     /// §3.2): `held_leg` is `a` or `b`.
     Held {
@@ -1946,6 +1971,7 @@ impl PlatformEvent {
         "call.parked",
         "call.unparked",
         "call.park_timed_out",
+        "call.quality_poor",
         "call.held",
         "call.resumed",
         "call.transcript",
@@ -2094,6 +2120,7 @@ impl PlatformEvent {
                 CallEvent::Parked { .. } => "call.parked",
                 CallEvent::Unparked { .. } => "call.unparked",
                 CallEvent::ParkTimedOut { .. } => "call.park_timed_out",
+                CallEvent::QualityPoor { .. } => "call.quality_poor",
                 CallEvent::Held { .. } => "call.held",
                 CallEvent::Resumed { .. } => "call.resumed",
                 CallEvent::Transcript { .. } => "call.transcript",
@@ -2284,6 +2311,7 @@ impl PlatformEvent {
                 | CallEvent::Parked { tenant_id, .. }
                 | CallEvent::Unparked { tenant_id, .. }
                 | CallEvent::ParkTimedOut { tenant_id, .. }
+                | CallEvent::QualityPoor { tenant_id, .. }
                 | CallEvent::Held { tenant_id, .. }
                 | CallEvent::Resumed { tenant_id, .. }
                 | CallEvent::PartyJoined { tenant_id, .. }
@@ -2548,6 +2576,7 @@ impl CallEvent {
             | CallEvent::Parked { call_id, .. }
             | CallEvent::Unparked { call_id, .. }
             | CallEvent::ParkTimedOut { call_id, .. }
+            | CallEvent::QualityPoor { call_id, .. }
             | CallEvent::Held { call_id, .. }
             | CallEvent::Resumed { call_id, .. }
             | CallEvent::Transcript { call_id, .. }
@@ -2568,6 +2597,7 @@ impl CallEvent {
             | CallEvent::Parked { timestamp, .. }
             | CallEvent::Unparked { timestamp, .. }
             | CallEvent::ParkTimedOut { timestamp, .. }
+            | CallEvent::QualityPoor { timestamp, .. }
             | CallEvent::Held { timestamp, .. }
             | CallEvent::Resumed { timestamp, .. }
             | CallEvent::Transcript { timestamp, .. }

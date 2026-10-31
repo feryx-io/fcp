@@ -6,6 +6,7 @@ pub mod auth_session;
 pub mod billing;
 pub mod branding;
 pub mod call_control;
+pub mod call_quality;
 pub mod calling;
 pub mod cdrs;
 pub mod classes_of_service;
@@ -234,6 +235,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/me/calls/:call_id/recording/stop",
             post(me_data::stop_my_recording),
+        )
+        .route(
+            "/me/calls/:call_id/quality",
+            post(call_quality::report_call_quality),
         )
         .route("/me/directory", get(me_data::list_directory))
         .route(
@@ -579,6 +584,10 @@ pub fn router() -> Router<ApiState> {
         .route("/cdrs", get(cdrs::list_cdrs))
         .route("/cdrs/export", get(cdrs::export_cdrs))
         .route("/cdrs/:call_id", get(cdrs::get_cdr))
+        .route(
+            "/cdrs/:call_id/quality",
+            get(call_quality::get_call_quality),
+        )
         // Flow execution traces
         .route("/flow-traces", get(flow_traces::list_flow_traces))
         .route(

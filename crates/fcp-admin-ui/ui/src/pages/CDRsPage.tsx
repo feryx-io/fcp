@@ -17,7 +17,7 @@ import {
 import { useNavigate } from 'react-router-dom'
 import { cdrs } from '@/api/endpoints'
 import { formatDuration } from '@/lib/utils'
-import type { CdrResponse, CdrQueryParams } from '@/types'
+import type { CallQualityResponse, CdrResponse, CdrQueryParams } from '@/types'
 
 const dispositionBadge = (d: string) => {
   switch (d) {
@@ -319,6 +319,7 @@ export function CDRsPage() {
               <Field label="Codec B-Leg" value={selectedCdr.codec_b_leg} />
               <Field label="Recording" value={selectedCdr.recording_url} />
               <Field label="Cost" value={selectedCdr.cost != null ? `${selectedCdr.cost} ${selectedCdr.currency ?? ''}` : null} />
+              <CallQuality callId={selectedCdr.call_id} />
               <div className="col-span-2 pt-2 border-t">
                 <Button
                   variant="outline"
@@ -332,6 +333,57 @@ export function CDRsPage() {
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  )
+}
+
+/** What the phones on the call reported of it (docs/CALL_DIAGNOSTICS.md
+ * §2): one block per phone, the lower score first. */
+function CallQuality({ callId }: { callId: string }) {
+  const { data } = useQuery({
+    queryKey: ['cdr-quality', callId],
+    queryFn: () => cdrs.quality(callId),
+  })
+  const reports = data?.data ?? []
+  if (reports.length === 0) return null
+  return (
+    <div className="col-span-2 pt-2 border-t space-y-3">
+      <p className="font-medium">Call quality, as the phones measured it</p>
+      {reports.map((q) => (
+        <QualityReport key={`${q.user_id}-${q.device_id ?? ''}`} q={q} />
+      ))}
+    </div>
+  )
+}
+
+const score = (mos: number | null | undefined) => (mos == null ? null : mos.toFixed(1))
+const ms = (v: number | null | undefined) => (v == null ? null : `${Math.round(v)} ms`)
+const pct = (v: number | null | undefined) => (v == null ? null : `${v.toFixed(1)}%`)
+
+function QualityReport({ q }: { q: CallQualityResponse }) {
+  const worst = Math.min(q.mos, q.far_mos ?? q.mos)
+  return (
+    <div className="grid grid-cols-2 gap-4" data-testid="call-quality">
+      <Field
+        label="Reported by"
+        value={`${q.username ?? q.user_id}${q.device_id ? ` (${q.device_id})` : ''}, ${q.direction}`}
+      />
+      <Field
+        label="Score (MOS)"
+        value={`${score(worst)} ${q.poor ? 'poor' : worst >= 4 ? 'good' : 'fair'}`}
+        badge={q.poor ? 'destructive' : worst >= 4 ? 'success' : 'warning'}
+      />
+      <Field label="Heard here / at the far end" value={`${score(q.mos)} / ${score(q.far_mos) ?? '-'}`} />
+      <Field label="Codec" value={`${q.codec.toUpperCase()}${q.srtp ? ', SRTP' : ''}`} />
+      <Field label="Loss" value={`${pct(q.loss_pct)} (${q.packets_lost} of ${q.packets_expected})`} />
+      <Field label="Jitter" value={ms(q.jitter_ms)} />
+      <Field label="Round trip" value={ms(q.rtt_ms)} />
+      <Field
+        label="Far end reported"
+        value={q.far_loss_pct == null ? null : `${pct(q.far_loss_pct)} lost, ${ms(q.far_jitter_ms) ?? '-'} jitter`}
+      />
+      <Field label="Packets sent / received" value={`${q.packets_sent} / ${q.packets_received}`} />
+      <Field label="Media" value={q.remote_rtp ? `${q.local_rtp ?? '?'} ↔ ${q.remote_rtp}` : null} mono />
     </div>
   )
 }

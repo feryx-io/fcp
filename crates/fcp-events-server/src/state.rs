@@ -230,6 +230,7 @@ impl CallStateStore {
             CallEvent::Parked { .. }
             | CallEvent::Unparked { .. }
             | CallEvent::ParkTimedOut { .. }
+            | CallEvent::QualityPoor { .. }
             | CallEvent::Held { .. }
             | CallEvent::Resumed { .. }
             | CallEvent::Transcript { .. }

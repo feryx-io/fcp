@@ -1139,6 +1139,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/calls/{call_id}/quality": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/calls/:call_id/quality — the app's final figures for a call
+         *     it was on, sent when the call ends. A second report from the same app
+         *     replaces its first. 404 when the call's record names other people (one
+         *     not yet written is taken on the app's word); `call.quality_poor` when
+         *     either score is under 3.1.
+         */
+        post: operations["self_service_report_call_quality"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/directory": {
         parameters: {
             query?: never;
@@ -3281,6 +3304,27 @@ export interface paths {
          * @description GET /api/v1/cdrs/:call_id
          */
         get: operations["cdrs_get_cdr"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cdrs/{call_id}/quality": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /cdrs/:call_id/quality — every phone's report of a call, oldest
+         *     first, as one page; empty when none reported, 404 for another
+         *     tenant's call.
+         */
+        get: operations["cdrs_get_call_quality"];
         put?: never;
         post?: never;
         delete?: never;
@@ -6381,6 +6425,108 @@ export interface components {
             media_anchored: boolean;
             failure_reason?: string | null;
         };
+        /** @description A call's final figures, as the app measured them. */
+        CallQualityReport: {
+            /** @description `incoming` or `outgoing`, from the phone's side. */
+            direction: string;
+            /** @description The codec (`pcmu`, `opus`, …). */
+            codec: string;
+            srtp?: boolean;
+            /**
+             * Format: int32
+             * @description Talk time, as the phone counted it.
+             */
+            duration_seconds?: number | null;
+            /** Format: int64 */
+            packets_sent: number;
+            /** Format: int64 */
+            packets_received: number;
+            /**
+             * Format: int64
+             * @description The far end's packets its sequence numbers say were sent, and those
+             *     that never arrived.
+             */
+            packets_expected: number;
+            /** Format: int64 */
+            packets_lost: number;
+            /**
+             * Format: float
+             * @description The phone's jitter estimate on what it received, at the end, in ms.
+             */
+            jitter_ms: number;
+            /**
+             * Format: float
+             * @description The round trip from RTCP, when it was measured.
+             */
+            rtt_ms?: number | null;
+            /**
+             * Format: float
+             * @description What the far end last reported over RTCP: its loss in its last
+             *     interval in percent, its jitter in ms, its losses in all.
+             */
+            far_loss_pct?: number | null;
+            /** Format: float */
+            far_jitter_ms?: number | null;
+            /** Format: int64 */
+            far_lost?: number | null;
+            /**
+             * Format: float
+             * @description The estimated score (E-model MOS, 1 to 4.5) of what the user heard,
+             *     and of what the far end heard once it reported.
+             */
+            mos: number;
+            /** Format: float */
+            far_mos?: number | null;
+            /** @description Where media flowed between, as the phone saw it (`address:port`). */
+            local_rtp?: string | null;
+            remote_rtp?: string | null;
+        };
+        /** @description One phone's report of a call. */
+        CallQualityResponse: {
+            call_id: string;
+            user_id: string;
+            /** @description The reporting user's name, while they exist. */
+            username?: string | null;
+            device_id?: string | null;
+            direction: string;
+            codec: string;
+            srtp: boolean;
+            /** Format: int32 */
+            duration_seconds?: number | null;
+            /** Format: int64 */
+            packets_sent: number;
+            /** Format: int64 */
+            packets_received: number;
+            /** Format: int64 */
+            packets_expected: number;
+            /** Format: int64 */
+            packets_lost: number;
+            /**
+             * Format: float
+             * @description `packets_lost` of `packets_expected`, in percent.
+             */
+            loss_pct: number;
+            /** Format: float */
+            jitter_ms: number;
+            /** Format: float */
+            rtt_ms?: number | null;
+            /** Format: float */
+            far_loss_pct?: number | null;
+            /** Format: float */
+            far_jitter_ms?: number | null;
+            /** Format: int64 */
+            far_lost?: number | null;
+            /** Format: float */
+            mos: number;
+            /** Format: float */
+            far_mos?: number | null;
+            /** @description Either score under 3.1. */
+            poor: boolean;
+            local_rtp?: string | null;
+            remote_rtp?: string | null;
+            /** Format: date-time */
+            reported_at: string;
+        };
         /**
          * @description How a user's caller ID leaves on a trunk.
          * @enum {string}
@@ -8536,6 +8682,15 @@ export interface components {
             path: string;
             reason: string;
         };
+        /** @description How one of the user's calls went, by their phone: on `/me/calls`. */
+        MyCallQuality: {
+            /** Format: float */
+            mos: number;
+            /** Format: float */
+            far_mos?: number | null;
+            /** @description Either score under 3.1. */
+            poor: boolean;
+        };
         /** @description One of the user's calls, from their side. */
         MyCallResponse: {
             /** @description The record's id, as `/cdrs` names it. */
@@ -8561,6 +8716,7 @@ export interface components {
              * @description Talk time, from the answer.
              */
             duration_seconds?: number | null;
+            quality?: components["schemas"]["MyCallQuality"] | null;
         };
         /** @description An executive the user assists (`docs/ENTERPRISE_CALLING.md` §3.10). */
         MyExecutive: {
@@ -8937,6 +9093,61 @@ export interface components {
                 duration_seconds?: number | null;
                 media_anchored: boolean;
                 failure_reason?: string | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_CallQualityResponse: {
+            data: {
+                call_id: string;
+                user_id: string;
+                /** @description The reporting user's name, while they exist. */
+                username?: string | null;
+                device_id?: string | null;
+                direction: string;
+                codec: string;
+                srtp: boolean;
+                /** Format: int32 */
+                duration_seconds?: number | null;
+                /** Format: int64 */
+                packets_sent: number;
+                /** Format: int64 */
+                packets_received: number;
+                /** Format: int64 */
+                packets_expected: number;
+                /** Format: int64 */
+                packets_lost: number;
+                /**
+                 * Format: float
+                 * @description `packets_lost` of `packets_expected`, in percent.
+                 */
+                loss_pct: number;
+                /** Format: float */
+                jitter_ms: number;
+                /** Format: float */
+                rtt_ms?: number | null;
+                /** Format: float */
+                far_loss_pct?: number | null;
+                /** Format: float */
+                far_jitter_ms?: number | null;
+                /** Format: int64 */
+                far_lost?: number | null;
+                /** Format: float */
+                mos: number;
+                /** Format: float */
+                far_mos?: number | null;
+                /** @description Either score under 3.1. */
+                poor: boolean;
+                local_rtp?: string | null;
+                remote_rtp?: string | null;
+                /** Format: date-time */
+                reported_at: string;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -9841,6 +10052,7 @@ export interface components {
                  * @description Talk time, from the answer.
                  */
                 duration_seconds?: number | null;
+                quality?: components["schemas"]["MyCallQuality"] | null;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -13847,7 +14059,7 @@ export interface components {
              * @description A name from `/api/v1/webhooks/event-types`, or `webhook.test`
              * @enum {string}
              */
-            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
+            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.quality_poor" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
             /**
              * Format: date-time
              * @description When the event happened, RFC 3339.
@@ -16271,6 +16483,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["media.RecordingResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_report_call_quality: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description FCP's id for the call (`X-FCP-Call-Id`) */
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CallQualityReport"];
+            };
+        };
+        responses: {
+            /** @description Kept */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallQualityResponse"];
                 };
             };
             /** @description An error */
@@ -21073,6 +21321,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CdrResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    cdrs_get_call_quality: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_CallQualityResponse"];
                 };
             };
             /** @description An error */

@@ -1211,6 +1211,87 @@ async fn retention_drops_a_month_only_once_its_rows_are_gone_and_locks_keep_to_o
     );
 }
 
+/// A call's quality as a phone reported it (docs/CALL_DIAGNOSTICS.md §2):
+/// one report per phone, the second replacing the first, and gone at
+/// retention with the call's record, not before it.
+#[tokio::test]
+async fn a_calls_quality_is_one_report_per_phone_and_goes_with_its_record() {
+    use fcp_core::call_quality::{CallQuality, CallQualityStore};
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+    let carol = user(a.id, "carol");
+    s.put_user(carol.clone()).await.unwrap();
+
+    let old = SystemTime::now() - Duration::from_secs(40 * 86_400);
+    let report = |call: CallId, device: &str, mos: f32| CallQuality {
+        tenant_id: a.id,
+        call_id: call,
+        user_id: carol.id,
+        device_id: Some(device.to_string()),
+        direction: "outgoing".into(),
+        codec: "pcmu".into(),
+        srtp: true,
+        duration_seconds: Some(30),
+        packets_sent: 1500,
+        packets_received: 1490,
+        packets_expected: 1500,
+        packets_lost: 15,
+        loss_pct: 1.0,
+        jitter_ms: 4.5,
+        rtt_ms: Some(42.0),
+        far_loss_pct: None,
+        far_jitter_ms: None,
+        far_lost: None,
+        mos,
+        far_mos: None,
+        local_rtp: None,
+        remote_rtp: Some("203.0.113.5:30000".into()),
+        reported_at: old,
+    };
+    // A call whose record is kept, and one whose record has gone.
+    let mut kept = cdr(a.id, "sip:bob@a.example.com", Some(1_000), None);
+    kept.start_time = SystemTime::now();
+    let kept_call = kept.call_id;
+    s.insert_cdr(kept).await.unwrap();
+    let gone_call = CallId::new();
+
+    s.put_call_quality(&report(kept_call, "phone", 4.3))
+        .await
+        .unwrap();
+    s.put_call_quality(&report(kept_call, "phone", 2.9))
+        .await
+        .unwrap();
+    s.put_call_quality(&report(kept_call, "laptop", 4.1))
+        .await
+        .unwrap();
+    s.put_call_quality(&report(gone_call, "phone", 4.4))
+        .await
+        .unwrap();
+    let reports = s.call_quality(&a.id, &kept_call).await.unwrap();
+    assert_eq!(reports.len(), 2, "one per phone: {reports:?}");
+    let phone = reports
+        .iter()
+        .find(|r| r.device_id.as_deref() == Some("phone"))
+        .unwrap();
+    assert_eq!(phone.mos, 2.9, "the second replaced the first");
+    assert!(phone.is_poor());
+    assert_eq!(
+        s.call_qualities_of_user(&carol.id, &[kept_call, gone_call])
+            .await
+            .unwrap()
+            .len(),
+        3
+    );
+
+    s.delete_cdrs_before(&a.id, SystemTime::now() - Duration::from_secs(86_400))
+        .await
+        .unwrap();
+    assert_eq!(s.call_quality(&a.id, &kept_call).await.unwrap().len(), 2);
+    assert!(s.call_quality(&a.id, &gone_call).await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn the_archive_walks_days_notes_late_records_and_holds_each_tenants_frontier() {
     use chrono::{Duration as Days, NaiveDate, Utc};

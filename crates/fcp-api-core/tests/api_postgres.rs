@@ -264,6 +264,9 @@ impl App {
                     .with_line_label_store(
                         Arc::clone(&storage) as Arc<dyn fcp_core::line_label::LineLabelStore>
                     )
+                    .with_call_quality_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::call_quality::CallQualityStore>
+                    )
                     .with_presence_status_store(Arc::clone(&storage)
                         as Arc<dyn fcp_core::presence_status::PresenceStatusStore>)
                     .with_provisioning_store(
@@ -16643,6 +16646,230 @@ async fn a_devices_lines_are_checked_shown_and_named() {
     assert_eq!(shared["appearances"], 2);
     assert_eq!(shared["barge_in"], true);
     assert_eq!(config.json["lines"][0]["barge_in"], false);
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// A call's quality as the app measured it (docs/CALL_DIAGNOSTICS.md §2)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_apps_call_quality_is_kept_shown_and_a_poor_call_announced() {
+    let app = require_app!();
+    let domains = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"sip_domains": ["calls.test"]})),
+        )
+        .await;
+    assert_eq!(domains.status, StatusCode::OK, "{}", domains.text);
+    app.create_user_with_role("carol", "end_user").await;
+    let web = app.login("carol", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let signed_in = app
+        .send_as(
+            &web,
+            Method::POST,
+            "/api/v1/auth/app/sessions",
+            Some(json!({ "client_name": "Carol's phone", "install_id": "carol-phone" })),
+        )
+        .await;
+    assert_eq!(signed_in.status, StatusCode::CREATED, "{}", signed_in.text);
+    let access = signed_in.json["access_token"].as_str().unwrap().to_string();
+    let device = signed_in.json["device"]["id"].as_str().unwrap().to_string();
+
+    // Carol's call, and Dan's with Erin.
+    let now = SystemTime::now();
+    let mut hers = cdr_record(
+        app.tenant_a,
+        Some(30_000),
+        None,
+        now - Duration::from_secs(120),
+    );
+    hers.from_uri = "sip:carol@calls.test".into();
+    hers.to_uri = "sip:+15550001@calls.test".into();
+    let call = hers.call_id.to_string();
+    app.storage.insert_cdr(hers).await.unwrap();
+    let mut theirs = cdr_record(app.tenant_a, Some(30_000), None, now);
+    theirs.from_uri = "sip:dan@calls.test".into();
+    theirs.to_uri = "sip:erin@calls.test".into();
+    let not_hers = theirs.call_id.to_string();
+    app.storage.insert_cdr(theirs).await.unwrap();
+
+    let report = |mos: f64, far: Option<f64>| {
+        json!({
+            "direction": "outgoing",
+            "codec": "PCMU",
+            "srtp": true,
+            "duration_seconds": 30,
+            "packets_sent": 1500,
+            "packets_received": 1490,
+            "packets_expected": 1500,
+            "packets_lost": 15,
+            "jitter_ms": 4.5,
+            "rtt_ms": 42.0,
+            "far_loss_pct": 0.5,
+            "far_jitter_ms": 2.0,
+            "far_lost": 7,
+            "mos": mos,
+            "far_mos": far,
+            "local_rtp": "192.168.1.20:40000",
+            "remote_rtp": "203.0.113.5:30000",
+        })
+    };
+    let path = |id: &str| format!("/api/v1/me/calls/{id}/quality");
+
+    // Only the app reports; only for the user's own calls; only sense.
+    let web_report = app
+        .send_as(&web, Method::POST, &path(&call), Some(report(4.3, None)))
+        .await;
+    assert_eq!(
+        web_report.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        web_report.text
+    );
+    let other = app
+        .send_as(
+            &access,
+            Method::POST,
+            &path(&not_hers),
+            Some(report(4.3, None)),
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND, "{}", other.text);
+    for (field, value) in [
+        ("mos", json!(5.0)),
+        ("direction", json!("sideways")),
+        ("packets_lost", json!(2000)),
+        ("jitter_ms", json!(-1.0)),
+        ("far_loss_pct", json!(140.0)),
+    ] {
+        let mut bad = report(4.3, None);
+        bad[field] = value;
+        let res = app
+            .send_as(&access, Method::POST, &path(&call), Some(bad))
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{field}: {}", res.text);
+    }
+
+    // A good call is kept, quietly.
+    let mut events = fcp_events::EventSubscriber::subscribe(
+        app.event_bus.as_ref(),
+        fcp_events::EventFilter::new(),
+    )
+    .await
+    .expect("subscribe");
+    let kept = app
+        .send_as(
+            &access,
+            Method::POST,
+            &path(&call),
+            Some(report(4.3, Some(4.2))),
+        )
+        .await;
+    assert_eq!(kept.status, StatusCode::CREATED, "{}", kept.text);
+    assert_eq!(kept.json["device_id"], device.as_str());
+    assert_eq!(kept.json["codec"], "pcmu");
+    assert_eq!(kept.json["loss_pct"], 1.0);
+    assert_eq!(kept.json["poor"], false);
+
+    // Its record shows it; her recents carry the score.
+    let read = app
+        .admin(Method::GET, &format!("/api/v1/cdrs/{call}/quality"), None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    let reports = read.json.as_array().expect("a list").clone();
+    assert_eq!(reports.len(), 1, "{}", read.text);
+    assert_eq!(reports[0]["username"], "carol");
+    assert_eq!(reports[0]["remote_rtp"], "203.0.113.5:30000");
+    let recents = app
+        .send_as(&web, Method::GET, "/api/v1/me/calls", None)
+        .await;
+    assert_eq!(recents.status, StatusCode::OK, "{}", recents.text);
+    let mine = recents
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["call_id"] == call.as_str())
+        .expect("her call")
+        .clone();
+    assert_eq!(mine["quality"]["poor"], false, "{mine}");
+    assert!((mine["quality"]["far_mos"].as_f64().unwrap() - 4.2).abs() < 0.01);
+
+    // Reported again, poor this time: it replaces the first and is
+    // announced. A call whose record is not yet written is taken too.
+    let poor = app
+        .send_as(
+            &access,
+            Method::POST,
+            &path(&call),
+            Some(report(4.1, Some(2.6))),
+        )
+        .await;
+    assert_eq!(poor.status, StatusCode::CREATED, "{}", poor.text);
+    assert_eq!(poor.json["poor"], true);
+    let announced = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match events.next().await {
+                Some(PlatformEvent::Call(fcp_events::CallEvent::QualityPoor {
+                    call_id,
+                    username,
+                    device_id,
+                    far_mos,
+                    ..
+                })) => return (call_id.to_string(), username, device_id, far_mos),
+                Some(_) => continue,
+                None => panic!("the bus closed"),
+            }
+        }
+    })
+    .await
+    .expect("call.quality_poor");
+    assert_eq!(
+        announced,
+        (
+            call.clone(),
+            "carol".to_string(),
+            Some(device.clone()),
+            Some(2.6)
+        )
+    );
+    let read = app
+        .admin(Method::GET, &format!("/api/v1/cdrs/{call}/quality"), None)
+        .await;
+    assert_eq!(read.json.as_array().unwrap().len(), 1, "{}", read.text);
+    assert_eq!(read.json[0]["poor"], true);
+
+    let unwritten = CallId::new().to_string();
+    let early = app
+        .send_as(
+            &access,
+            Method::POST,
+            &path(&unwritten),
+            Some(report(4.4, None)),
+        )
+        .await;
+    assert_eq!(early.status, StatusCode::CREATED, "{}", early.text);
+    // Another tenant's administrator sees none of it.
+    let elsewhere = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/cdrs/{call}/quality"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        elsewhere.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        elsewhere.text
+    );
     app.finish().await;
 }
 

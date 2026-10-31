@@ -59,6 +59,9 @@ pub struct MyCallResponse {
     pub end_time: Option<u64>,
     /// Talk time, from the answer.
     pub duration_seconds: Option<u64>,
+    /// How the call went, when the user's phone reported it
+    /// (`docs/CALL_DIAGNOSTICS.md` §2).
+    pub quality: Option<crate::v1::call_quality::MyCallQuality>,
 }
 
 fn my_call(cdr: CallDetailRecord, outgoing: bool) -> MyCallResponse {
@@ -83,6 +86,7 @@ fn my_call(cdr: CallDetailRecord, outgoing: bool) -> MyCallResponse {
         answer_time: cdr.answer_time.map(epoch),
         end_time: cdr.end_time.map(epoch),
         duration_seconds: cdr.call_duration_ms.map(|ms| ms / 1000),
+        quality: None,
     }
 }
 
@@ -185,6 +189,24 @@ pub async fn list_my_calls(
     let next = more
         .then(|| calls.last().map(|(_, c)| c.encode()))
         .flatten();
+    // What the user's phones said of these calls: the lowest score each.
+    if let Some(quality) = storage.call_quality_store() {
+        let ids: Vec<fcp_core::CallId> = calls
+            .iter()
+            .filter_map(|(c, _)| c.call_id.parse().ok())
+            .collect();
+        for q in quality.call_qualities_of_user(&user.id, &ids).await? {
+            let id = q.call_id.to_string();
+            for (call, _) in calls.iter_mut().filter(|(c, _)| c.call_id == id) {
+                let worse = call.quality.as_ref().is_none_or(|had| {
+                    q.worst_mos() < had.far_mos.map_or(had.mos, |f| f.min(had.mos))
+                });
+                if worse {
+                    call.quality = Some((&q).into());
+                }
+            }
+        }
+    }
     Ok(Json(crate::page::Page::new(
         calls.into_iter().map(|(c, _)| c).collect(),
         next,

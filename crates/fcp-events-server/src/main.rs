@@ -1614,6 +1614,7 @@ fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
         CallEvent::Parked { .. }
         | CallEvent::Unparked { .. }
         | CallEvent::ParkTimedOut { .. }
+        | CallEvent::QualityPoor { .. }
         | CallEvent::Held { .. }
         | CallEvent::Resumed { .. }
         | CallEvent::Transcript { .. }

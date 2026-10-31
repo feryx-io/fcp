@@ -94,6 +94,45 @@ audited). The user is told captures are uploaded before they turn it on.
 5. **Anvil: captures.** The pcapng writer (SIP before TLS, RTP/RTCP as on the wire,
    SRTP keys), the setting, local limits and expiry, the upload.
 
+## 4a. Done
+
+- **Phase 1** (Anvil v0.2.27, anvil #61): RTCP in anvil-core. No forge-media change was
+  needed: forge-rtp already had the sender and receiver statistics, the round-trip
+  tracker and SRTCP, and FCP's media relay already passes each phone's RTCP to the
+  other leg on the port above RTP, so the far end's reports and the round trip are
+  measured end to end. A call binds RTP on an even port and RTCP on the next; reports
+  go a second after media starts and every five seconds after; `Anvil::call_stats`.
+- **Phase 2** (Anvil v0.2.28, anvil #62): the panel. `anvil-core`'s `quality.rs` is
+  the G.107 E-model, narrowband, with G.113's figures for codecs played **without
+  concealment** — Anvil has no jitter buffer and no loss concealment, so jitter is
+  counted as delay a buffer would have added and loss is not softened. Stats every
+  second, loss over the last five seconds, a score for what the user hears and, once
+  the far end reports, for what it hears. The call screen shows the lower score; the
+  Call stats panel shows everything §2 lists except the jitter buffer's depth (there is
+  no buffer to measure).
+- **Phase 3** (v0.25.490): a call's quality kept.
+  - `call_quality` (migration 131): one row per phone on a call — tenant, call, user,
+    device — a second report from the same phone replacing its first.
+  - `POST /api/v1/me/calls/{call_id}/quality` from the app's session only (the
+    device is the session's). It refuses figures that make no sense (a score outside
+    1 to 4.5, more lost than expected, a negative jitter). When the call's record is
+    written and names other people, it answers 404. A call whose record is not yet
+    written is taken on the app's word: the app reports at hangup, usually before the
+    record lands.
+  - FCP works out the loss itself from the packets lost and expected.
+  - `call.quality_poor` when either score is under 3.1 (`fcp_core::call_quality::POOR_MOS`),
+    naming the call, the user, the device, both scores, loss, jitter and the round trip.
+  - `GET /api/v1/cdrs/{call_id}/quality` under `cdr_read` (every phone's report, one
+    page); the admin UI's call record shows each report. `/me/calls` carries each
+    call's `quality` (`mos`, `far_mos`, `poor`; the worst of the user's phones).
+  - Retention: a report goes in the CDR sweep once it is older than the cut **and**
+    no record of the call is left, so a held record keeps its report.
+  - A user purged takes their reports with them (the row's user is a foreign key).
+  - **Not yet:** a site's reports stay at the site; they are not shipped up its link
+    like its CDRs. Subject export and erasure do not list the reports as their own
+    class: the reports hold no addresses but the phone's own media address.
+  - Anvil sends the report when a call ends: anvil #63.
+
 ## 5. Questions
 
 1. **RTCP in Anvil** (needed for the far end's loss and round-trip time), phase 1.

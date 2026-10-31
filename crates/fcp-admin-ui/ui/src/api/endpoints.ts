@@ -58,6 +58,7 @@ import type {
   ChangeExpiredPasswordRequest,
   CallInfo,
   CdrResponse,
+  CallQualityResponse,
   ListCdrsResponse,
   CdrQueryParams,
   QueueResponse,
@@ -438,6 +439,9 @@ export const cdrs = {
     return apiClient.get<ListCdrsResponse>(`/cdrs${query ? `?${query}` : ''}`)
   },
   get: (callId: string) => apiClient.get<CdrResponse>(`/cdrs/${encodeURIComponent(callId)}`),
+  /** Every phone's report of the call's quality. */
+  quality: (callId: string) =>
+    apiClient.get<Page<CallQualityResponse>>(`/cdrs/${encodeURIComponent(callId)}/quality`),
 }
 
 // SIP Trace (for ladder diagram debugging)

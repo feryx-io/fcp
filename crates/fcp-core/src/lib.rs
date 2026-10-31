@@ -6,6 +6,7 @@
 pub mod billing;
 pub mod branding;
 pub mod cached_storage;
+pub mod call_quality;
 pub mod calling;
 pub mod cdr_archive;
 pub mod class_of_service;

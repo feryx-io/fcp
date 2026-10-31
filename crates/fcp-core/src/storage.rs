@@ -3688,6 +3688,7 @@ pub struct DynStorage {
     presence_status_store: Option<Arc<dyn crate::presence_status::PresenceStatusStore>>,
     parking_lot_store: Option<Arc<dyn crate::parking::ParkingLotStore>>,
     line_label_store: Option<Arc<dyn crate::line_label::LineLabelStore>>,
+    call_quality_store: Option<Arc<dyn crate::call_quality::CallQualityStore>>,
     provisioning_store: Option<Arc<dyn crate::provisioning::ProvisioningStore>>,
 }
 
@@ -3775,6 +3776,7 @@ impl DynStorage {
             presence_status_store: None,
             parking_lot_store: None,
             line_label_store: None,
+            call_quality_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -3866,6 +3868,7 @@ impl DynStorage {
             presence_status_store: None,
             parking_lot_store: None,
             line_label_store: None,
+            call_quality_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -4179,6 +4182,21 @@ impl DynStorage {
     ) -> Self {
         self.line_label_store = Some(store);
         self
+    }
+
+    /// Attach the store of calls' quality as phones reported it.
+    pub fn with_call_quality_store(
+        mut self,
+        store: Arc<dyn crate::call_quality::CallQualityStore>,
+    ) -> Self {
+        self.call_quality_store = Some(store);
+        self
+    }
+
+    /// Calls' quality as phones reported it (`docs/CALL_DIAGNOSTICS.md`),
+    /// when attached.
+    pub fn call_quality_store(&self) -> Option<&Arc<dyn crate::call_quality::CallQualityStore>> {
+        self.call_quality_store.as_ref()
     }
 
     /// Users' names for their lines (`docs/DEVICE_LINES.md`), when attached.
