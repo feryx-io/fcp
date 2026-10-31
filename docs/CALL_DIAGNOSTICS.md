@@ -62,9 +62,12 @@ turn it off. A capture in progress shows on the call screen.
 - every SIP message the app sent and received, **as it was before TLS encryption and
   after decryption**, written as UDP/TCP frames between the real addresses, so
   Wireshark reads them as SIP;
-- the call's RTP and RTCP as sent and received on the wire (SRTP encrypted), with the
-  SRTP keys of the call written into the file's decryption secrets block, so
-  Wireshark plays the audio;
+- the call's RTP and RTCP as they are outside SRTP: sent before it is applied,
+  received after it is removed. *As built (phase 5):* pcapng has no secrets block
+  for SRTP and Wireshark does not decrypt it, so the design's "keys in a decryption
+  secrets block" could not play the audio. The headers, sequence numbers and timing
+  are the wire's; the keys are in the captured SDP; a packet that fails SRTP is
+  written as it arrived;
 - the app's version, the device, the account and the call's id in the file's
   comments.
 
@@ -180,6 +183,28 @@ download audited). The user is told captures are uploaded before they turn it on
       through the purge.
     - Captures are not in the trigger-written deletion log.
     - A capture file restored without its row is neither served nor removed.
+- **Phase 5** (Anvil v0.2.30, anvil #64): the app captures.
+  - **When:** while FCP allows it, the user turns on **Capture calls** in
+    Settings, for the next call or every call. A captured call shows
+    "Capturing".
+  - **The file:** pcapng, one raw-IP interface, each packet an IP/UDP frame
+    between the real addresses.
+    - SIP is taken before TLS (the dispatcher) and after it (the packet pump),
+      written as UDP on the real ports with the transport in a comment.
+    - A capture starts with the last ten seconds of SIP, so the INVITE that
+      made the call is in it.
+    - RTP, RTCP and DTMF are written outside SRTP (above).
+  - **In Wireshark:** the media is read as SRTP because the SDP says RTP/SAVP.
+    Turn off SDP's "Establish Media Conversation" and turn on RTP's heuristic;
+    the file's header says so. tshark 4.4 then reads a captured call as its SIP
+    and two RTP streams.
+  - **Kept:** at most `max_mb` each, 200 MB and a week in all, beside the app's
+    settings; the user can delete them.
+  - **Upload:** at hangup to `POST /me/devices/{id}/captures?call_id=`, retried
+    while the app runs. 400, 403, 404 and 413 are final.
+  - **Not yet:** SIP on a new TCP connection that siphon-rs's transaction manager
+    opens itself is missed (siphon-rs #158; the apps use TLS or UDP).
+  - **Status:** all five phases are done.
 
 ## 5. Questions
 
