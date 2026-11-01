@@ -1514,14 +1514,15 @@ async fn pause_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    if qm
-        .get_agent(&service_agent(&state, &id))
-        .is_none()
-    {
+    if qm.get_agent(&service_agent(&state, &id)).is_none() {
         return agent_not_found(&id);
     }
     match qm
-        .pause_agent(&service_agent(&state, &id), body.duration_secs, body.reason.clone())
+        .pause_agent(
+            &service_agent(&state, &id),
+            body.duration_secs,
+            body.reason.clone(),
+        )
         .await
     {
         Ok(()) => Json(serde_json::json!({
@@ -1541,10 +1542,7 @@ async fn unpause_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    if qm
-        .get_agent(&service_agent(&state, &id))
-        .is_none()
-    {
+    if qm.get_agent(&service_agent(&state, &id)).is_none() {
         return agent_not_found(&id);
     }
     match qm.unpause_agent(&service_agent(&state, &id)).await {
@@ -1567,10 +1565,7 @@ async fn kick_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    if qm
-        .get_agent(&service_agent(&state, &id))
-        .is_none()
-    {
+    if qm.get_agent(&service_agent(&state, &id)).is_none() {
         return agent_not_found(&id);
     }
     let reason = body.reason.as_deref().unwrap_or("admin_kick");
@@ -1652,10 +1647,7 @@ async fn logout_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    if qm
-        .get_agent(&service_agent(&state, &id))
-        .is_none()
-    {
+    if qm.get_agent(&service_agent(&state, &id)).is_none() {
         return agent_not_found(&id);
     }
     match qm.agent_logout(&service_agent(&state, &id)).await {
@@ -1672,10 +1664,7 @@ async fn extend_wrapup_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    if qm
-        .get_agent(&service_agent(&state, &id))
-        .is_none()
-    {
+    if qm.get_agent(&service_agent(&state, &id)).is_none() {
         return agent_not_found(&id);
     }
     match qm.extend_wrap_up(&service_agent(&state, &id)).await {
@@ -2046,7 +2035,8 @@ async fn queue_history_handler(
         return queue_not_found(&name);
     }
     let limit = query.limit.unwrap_or(500).min(1440);
-    let snapshots = qm.query_stats_history(&service_queue(&state, &name), query.from, query.to, limit);
+    let snapshots =
+        qm.query_stats_history(&service_queue(&state, &name), query.from, query.to, limit);
     Json(serde_json::json!({
         "queue": name,
         "snapshots": snapshots,

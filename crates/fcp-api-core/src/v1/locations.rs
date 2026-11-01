@@ -8,8 +8,8 @@ use axum::{
     Json,
 };
 use fcp_core::storage::{
-    CredentialStore, DeviceStore, ExtensionStore, PhoneNumberStore, RoutingRuleStore, SiteLocationStore,
-    UserFilter,
+    CredentialStore, DeviceStore, ExtensionStore, PhoneNumberStore, RoutingRuleStore,
+    SiteLocationStore, UserFilter,
 };
 use fcp_core::{LocationId, SiteLocation, TenantId};
 use fcp_events::{PlatformEvent, SystemEvent};

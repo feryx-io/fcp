@@ -3233,7 +3233,12 @@ async fn queue_configs_crud_and_runtime_absent() {
             Some(json!({"name": "billing-2", "max_wait_time_secs": 60})),
         )
         .await;
-    assert_eq!(kept.status, StatusCode::OK, "its own name is no clash: {}", kept.text);
+    assert_eq!(
+        kept.status,
+        StatusCode::OK,
+        "its own name is no clash: {}",
+        kept.text
+    );
     app.admin(
         Method::DELETE,
         &format!("/api/v1/queue-configs/{other_id}"),

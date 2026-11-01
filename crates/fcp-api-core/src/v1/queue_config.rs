@@ -37,10 +37,7 @@ async fn ensure_queue_unique_in_tenant(
         .list_queue_configs(tenant_id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list queue configs: {}", e)))?;
-    for other in configs
-        .iter()
-        .filter(|other| exclude_id != Some(&other.id))
-    {
+    for other in configs.iter().filter(|other| exclude_id != Some(&other.id)) {
         if other.name == name {
             return Err(ApiError::Conflict(format!(
                 "A queue named '{}' already exists",

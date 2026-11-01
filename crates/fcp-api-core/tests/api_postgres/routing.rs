@@ -501,7 +501,12 @@ async fn a_routing_rule_is_for_one_of_the_tenants_locations() {
             Some(json!({ "name": "everywhere", "action": "allow" })),
         )
         .await;
-    assert_eq!(everywhere.status, StatusCode::CREATED, "{}", everywhere.text);
+    assert_eq!(
+        everywhere.status,
+        StatusCode::CREATED,
+        "{}",
+        everywhere.text
+    );
     assert!(everywhere.json["location_id"].is_null());
 
     let names = |res: &Response| -> Vec<String> {
@@ -532,7 +537,11 @@ async fn a_routing_rule_is_for_one_of_the_tenants_locations() {
         .admin(Method::DELETE, &format!("/api/v1/locations/{branch}"), None)
         .await;
     assert_eq!(in_use.status, StatusCode::CONFLICT, "{}", in_use.text);
-    assert!(in_use.text.contains("routing rule branch only"), "{}", in_use.text);
+    assert!(
+        in_use.text.contains("routing rule branch only"),
+        "{}",
+        in_use.text
+    );
 
     // Cleared, it is the tenant's again, and the location may go.
     let path = format!("/api/v1/routing/rules/{id}");

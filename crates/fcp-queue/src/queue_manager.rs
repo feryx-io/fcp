@@ -21,8 +21,8 @@ use crate::distribution::{self, DistributionPlan};
 use crate::events;
 
 use crate::types::{
-    Agent, AgentKey, AgentState, AgentStats, CampaignCallOutcome, CampaignNumber, CampaignStats, Queue,
-    QueueKey, QueueStats, QueuedCall,
+    Agent, AgentKey, AgentState, AgentStats, CampaignCallOutcome, CampaignNumber, CampaignStats,
+    Queue, QueueKey, QueueStats, QueuedCall,
 };
 
 /// Runtime queue definition with explicit tenant ownership.
@@ -488,7 +488,10 @@ impl QueueManager {
         let tenant_id = agent_id.tenant_id;
         // Validate that all requested queues exist
         for q in queues {
-            if !self.queues.contains_key(&QueueKey::new(tenant_id, q.clone())) {
+            if !self
+                .queues
+                .contains_key(&QueueKey::new(tenant_id, q.clone()))
+            {
                 bail!("Queue '{}' does not exist", q);
             }
         }
@@ -651,8 +654,7 @@ impl QueueManager {
 
                 // Create new cancellation token and spawn timer
                 let token = CancellationToken::new();
-                self.wrap_up_cancels
-                    .insert(agent_id.clone(), token.clone());
+                self.wrap_up_cancels.insert(agent_id.clone(), token.clone());
                 self.spawn_wrap_up_timer(agent_id, wrap_up_secs, token);
             } else {
                 drop(agent);
@@ -758,8 +760,7 @@ impl QueueManager {
 
         // Create new cancellation token and spawn a new timer
         let token = CancellationToken::new();
-        self.wrap_up_cancels
-            .insert(agent_id.clone(), token.clone());
+        self.wrap_up_cancels.insert(agent_id.clone(), token.clone());
         self.spawn_wrap_up_timer(agent_id, extension_secs, token);
 
         info!(
@@ -834,8 +835,7 @@ impl QueueManager {
 
     /// Start the campaign for a queue.
     pub fn set_campaign_running(&self, queue_name: &QueueKey, running: bool) {
-        self.campaign_running
-            .insert(queue_name.clone(), running);
+        self.campaign_running.insert(queue_name.clone(), running);
         if let Some(mut stats) = self.campaign_stats.get_mut(queue_name) {
             stats.running = running;
         }
@@ -1684,9 +1684,7 @@ impl QueueManager {
 
         for entry in self.agents.iter() {
             let agent = entry.value();
-            if agent.is_in(queue_name)
-                && agent.state != AgentState::LoggedOut
-            {
+            if agent.is_in(queue_name) && agent.state != AgentState::LoggedOut {
                 agents_total += 1;
                 match agent.state {
                     AgentState::Available => agents_available += 1,
@@ -2387,11 +2385,7 @@ mod tests {
     async fn test_agent_login_invalid_queue() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
         let result = manager
-            .agent_login(&a("100"),
-                "100",
-                &["nonexistent".to_string()],
-                Vec::new(),
-            )
+            .agent_login(&a("100"), "100", &["nonexistent".to_string()], Vec::new())
             .await;
         assert!(result.is_err());
     }

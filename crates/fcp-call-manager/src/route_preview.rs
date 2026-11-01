@@ -188,7 +188,12 @@ pub async fn route_preview_handler(
         })
         .unwrap_or_default();
     let source_ip = query.source_ip.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-    let location = match query.location.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+    let location = match query
+        .location
+        .as_deref()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+    {
         Some(location) => match fcp_core::LocationId::from_str(location) {
             Ok(location) => Some(location),
             Err(_) => {

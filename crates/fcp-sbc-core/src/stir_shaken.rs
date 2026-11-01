@@ -670,8 +670,8 @@ impl fcp_sip::trunk_egress::TrunkCallSigner for StirSigner {
 
 #[cfg(test)]
 mod tests {
-    use p256::elliptic_curve::Generate;
     use super::*;
+    use p256::elliptic_curve::Generate;
 
     // --- Config defaults and validation ---
 

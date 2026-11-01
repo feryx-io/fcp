@@ -461,7 +461,11 @@ impl QueueCallHandler {
     /// Looks up the queue's `moh_class` in the MOH cache, falling back to
     /// `"default"` for a queue with none (or an empty one, as the API
     /// stores it) or a class with no audio.
-    fn resolve_moh_frames(&self, queue_name: &QueueKey, codec_name: &str) -> Option<Arc<Vec<Vec<u8>>>> {
+    fn resolve_moh_frames(
+        &self,
+        queue_name: &QueueKey,
+        codec_name: &str,
+    ) -> Option<Arc<Vec<Vec<u8>>>> {
         let cache = self.moh_cache.as_ref()?;
         let moh_class = self
             .queue_manager
@@ -1108,8 +1112,12 @@ impl QueueCallHandler {
                     let active = sessions.iter().any(|e| e.value().is_in(&queue_name));
                     if !active {
                         let events = queue_manager.events_ref();
-                        fcp_queue::events::queue_drained(&events, &queue_name.name, &queue_tenant_id)
-                            .await;
+                        fcp_queue::events::queue_drained(
+                            &events,
+                            &queue_name.name,
+                            &queue_tenant_id,
+                        )
+                        .await;
                     }
                 }
             }
@@ -1531,7 +1539,10 @@ impl QueueCallHandler {
                 session.enqueued_at,
                 session.agent_answered_at,
                 session.state,
-                session.ringing_agent.as_ref().map(|agent| agent.id.as_str()),
+                session
+                    .ringing_agent
+                    .as_ref()
+                    .map(|agent| agent.id.as_str()),
                 session.recording_path.as_deref(),
                 session.recording_consent,
                 &self.node_id,

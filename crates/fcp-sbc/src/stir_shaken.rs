@@ -147,8 +147,8 @@ impl StirVerifier {
         let signing_input = format!("{}.{}", parsed.raw_header, parsed.raw_payload);
 
         let sig_bytes = stir_shaken::base64url_decode(&parsed.raw_signature)?;
-        let signature = Signature::from_slice(&sig_bytes)
-            .map_err(|_| StirError::SignatureInvalid)?;
+        let signature =
+            Signature::from_slice(&sig_bytes).map_err(|_| StirError::SignatureInvalid)?;
 
         verifying_key
             .verify(signing_input.as_bytes(), &signature)
@@ -426,11 +426,11 @@ impl StirMetrics {
 
 #[cfg(test)]
 mod tests {
-    use p256::elliptic_curve::Generate;
     use super::*;
     use fcp_sbc_core::stir_shaken::{
         PassportHeader, PassportOrig, PassportPayload, PassportTnField,
     };
+    use p256::elliptic_curve::Generate;
 
     /// Helper: build a valid ParsedIdentity with configurable TNs and iat.
     fn make_parsed_identity(orig_tn: &str, dest_tn: &str, iat: u64) -> ParsedIdentity {

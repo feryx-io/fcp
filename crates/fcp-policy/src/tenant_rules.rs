@@ -651,13 +651,15 @@ mod tests {
             ..call("sip:1001@pbx", "sip:+19005550100@pbx")
         };
         assert_eq!(
-            set.evaluate_at(&tenant, &premium, wednesday_afternoon()).rule(),
+            set.evaluate_at(&tenant, &premium, wednesday_afternoon())
+                .rule(),
             Some("branch-premium")
         );
         // Elsewhere, and nowhere known: the tenant's.
         for location in [Some(LocationId::new()), None] {
             assert_eq!(
-                set.evaluate_at(&tenant, &at(location), wednesday_afternoon()).rule(),
+                set.evaluate_at(&tenant, &at(location), wednesday_afternoon())
+                    .rule(),
                 Some("tenant-wide"),
                 "{location:?}"
             );

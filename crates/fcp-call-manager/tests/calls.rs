@@ -1672,7 +1672,10 @@ agents = ["1002"]
         .is_none()
     {
         stack
-            .fail("the agent's phone rang on after the caller left", &bob_phone)
+            .fail(
+                "the agent's phone rang on after the caller left",
+                &bob_phone,
+            )
             .await;
     }
     assert!(ringing.ended(SOON).await);
@@ -1704,7 +1707,10 @@ enabled = true
     let globex = stack.seed.tenant("globex", "globex.e2e.local").await;
     let ann = stack.seed.user("ann", "ann-pw", "1001").await;
     let carl = stack.seed.user("carl", "carl-pw", "1003").await;
-    let ben = stack.seed.user_in(globex, "ben-globex", "ben-pw", "1001").await;
+    let ben = stack
+        .seed
+        .user_in(globex, "ben-globex", "ben-pw", "1001")
+        .await;
     let cara = stack
         .seed
         .user_in(globex, "cara-globex", "cara-pw", "1003")
@@ -1771,7 +1777,10 @@ enabled = true
             .await;
     };
     assert!(
-        ann_phone.incoming(Duration::from_millis(500)).await.is_none(),
+        ann_phone
+            .incoming(Duration::from_millis(500))
+            .await
+            .is_none(),
         "acme's agent was rung for globex's caller"
     );
     let ben_call = incoming.answer().await.unwrap();
@@ -1789,14 +1798,20 @@ enabled = true
             .await;
     };
     assert!(
-        ben_phone.incoming(Duration::from_millis(500)).await.is_none(),
+        ben_phone
+            .incoming(Duration::from_millis(500))
+            .await
+            .is_none(),
         "globex's agent was rung for acme's caller"
     );
     let ann_call = incoming.answer().await.unwrap();
     assert_eq!(carl_call.hangup().await.unwrap(), 200);
     if !ann_call.ended(SOON).await {
         stack
-            .fail("acme's agent was left on after the caller hung up", &ann_phone)
+            .fail(
+                "acme's agent was left on after the caller hung up",
+                &ann_phone,
+            )
             .await;
     }
     stack.finish().await;

@@ -360,7 +360,10 @@ mod tests {
                 &shown(state, Some("Focus"), None, false),
             )
         };
-        assert!(!people.unavailable(&tenant, "2001"), "nobody heard of is available");
+        assert!(
+            !people.unavailable(&tenant, "2001"),
+            "nobody heard of is available"
+        );
         for (state, unavailable) in [
             (Shown::Busy, false),
             (Shown::Away, false),
@@ -371,8 +374,16 @@ mod tests {
             (Shown::OnCall, true),
         ] {
             say(state);
-            assert_eq!(people.unavailable(&tenant, "2001"), unavailable, "{state:?}");
-            assert_eq!(people.unavailable(&tenant, "Dana"), unavailable, "by name too");
+            assert_eq!(
+                people.unavailable(&tenant, "2001"),
+                unavailable,
+                "{state:?}"
+            );
+            assert_eq!(
+                people.unavailable(&tenant, "Dana"),
+                unavailable,
+                "by name too"
+            );
             assert!(
                 !people.unavailable(&TenantId::new(), "2001"),
                 "2001 in another tenant is someone else"
