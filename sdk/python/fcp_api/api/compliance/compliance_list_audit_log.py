@@ -21,6 +21,7 @@ def _get_kwargs(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    tenant: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -38,6 +39,8 @@ def _get_kwargs(
     params["since"] = since
 
     params["until"] = until
+
+    params["tenant"] = tenant
 
     params["limit"] = limit
 
@@ -90,18 +93,22 @@ def sync_detailed(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    tenant: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
 ) -> Response[ErrorResponse | PageAuditEventResponse]:
-    """ Tenant admins see their tenant; the platform token sees every tenant
-    unless it selected one with the override header.
+    """ A row belongs to the tenant acted on (docs/TENANT_SCOPE.md §3.3).
+    Tenant admins see their tenant's rows, platform administrators' actions
+    on it included; a platform administrator sees every row, one tenant's
+    (`tenant` or the picked tenant) or the platform's own.
 
     Args:
         actor (str | Unset):
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        tenant (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -119,6 +126,7 @@ def sync_detailed(
 action=action,
 since=since,
 until=until,
+tenant=tenant,
 limit=limit,
 cursor=cursor,
 
@@ -137,18 +145,22 @@ def sync(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    tenant: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
 ) -> ErrorResponse | PageAuditEventResponse | None:
-    """ Tenant admins see their tenant; the platform token sees every tenant
-    unless it selected one with the override header.
+    """ A row belongs to the tenant acted on (docs/TENANT_SCOPE.md §3.3).
+    Tenant admins see their tenant's rows, platform administrators' actions
+    on it included; a platform administrator sees every row, one tenant's
+    (`tenant` or the picked tenant) or the platform's own.
 
     Args:
         actor (str | Unset):
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        tenant (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -167,6 +179,7 @@ actor=actor,
 action=action,
 since=since,
 until=until,
+tenant=tenant,
 limit=limit,
 cursor=cursor,
 
@@ -179,18 +192,22 @@ async def asyncio_detailed(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    tenant: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
 ) -> Response[ErrorResponse | PageAuditEventResponse]:
-    """ Tenant admins see their tenant; the platform token sees every tenant
-    unless it selected one with the override header.
+    """ A row belongs to the tenant acted on (docs/TENANT_SCOPE.md §3.3).
+    Tenant admins see their tenant's rows, platform administrators' actions
+    on it included; a platform administrator sees every row, one tenant's
+    (`tenant` or the picked tenant) or the platform's own.
 
     Args:
         actor (str | Unset):
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        tenant (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -208,6 +225,7 @@ async def asyncio_detailed(
 action=action,
 since=since,
 until=until,
+tenant=tenant,
 limit=limit,
 cursor=cursor,
 
@@ -226,18 +244,22 @@ async def asyncio(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    tenant: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
 ) -> ErrorResponse | PageAuditEventResponse | None:
-    """ Tenant admins see their tenant; the platform token sees every tenant
-    unless it selected one with the override header.
+    """ A row belongs to the tenant acted on (docs/TENANT_SCOPE.md §3.3).
+    Tenant admins see their tenant's rows, platform administrators' actions
+    on it included; a platform administrator sees every row, one tenant's
+    (`tenant` or the picked tenant) or the platform's own.
 
     Args:
         actor (str | Unset):
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        tenant (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -256,6 +278,7 @@ actor=actor,
 action=action,
 since=since,
 until=until,
+tenant=tenant,
 limit=limit,
 cursor=cursor,
 

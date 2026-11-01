@@ -2621,7 +2621,7 @@ async fn every_list_pages_by_cursor() {
     assert_eq!(
         lines.next(),
         Some(
-            "id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail"
+            "id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail,actor_tenant_id"
         )
     );
     let exported: Vec<i64> = lines
@@ -6973,6 +6973,234 @@ async fn wait_for_audit(app: &App, path: &str, pred: impl Fn(&Value) -> bool) ->
     panic!("audit entry never appeared at {path}");
 }
 
+/// An audit row belongs to the tenant acted on (docs/TENANT_SCOPE.md §3.3):
+/// a platform administrator's action on a tenant is that tenant's, shown to
+/// its administrators as "platform administrator"; the platform's own
+/// actions have no tenant; a platform administrator reads all, one tenant's
+/// or the platform's.
+#[tokio::test]
+async fn an_audit_row_belongs_to_the_tenant_acted_on() {
+    let app = require_app!();
+    let list = |path: String| {
+        let app = &app;
+        async move { app.admin(Method::GET, &path, None).await }
+    };
+
+    // The static token, working in tenant B through the picker.
+    let made = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({ "username": "b-ops", "password": PASSWORD, "role": "tenant_admin" })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let in_b = wait_for_audit(&app, "/api/v1/audit-log?action=POST%20/api/v1/users", |e| {
+        e["status"] == 201 && e["tenant_id"] == app.tenant_b.to_string()
+    })
+    .await;
+    assert_eq!(in_b["actor"], "static_token", "{in_b}");
+    assert_eq!(in_b["actor_tenant_id"], Value::Null, "{in_b}");
+
+    // A super administrator of tenant A, in tenant B: B's row, A's actor.
+    app.create_user_with_role("root", "super_admin").await;
+    let root = app.login("root", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let picked = app
+        .send(
+            Method::POST,
+            "/api/v1/schedules",
+            &[
+                (AUTH_HEADER, format!("Bearer {root}").as_str()),
+                ("x-fcp-tenant-id", app.tenant_b.to_string().as_str()),
+            ],
+            Some(json!({ "name": "root-hours", "timezone": "UTC" })),
+        )
+        .await;
+    assert_eq!(picked.status, StatusCode::CREATED, "{}", picked.text);
+    let by_root = wait_for_audit(&app, "/api/v1/audit-log?actor=root", |e| {
+        e["action"] == "POST /api/v1/schedules"
+    })
+    .await;
+    assert_eq!(by_root["tenant_id"], app.tenant_b.to_string(), "{by_root}");
+    assert_eq!(
+        by_root["actor_tenant_id"],
+        app.tenant_a.to_string(),
+        "{by_root}"
+    );
+
+    // A tenant route is that tenant's, whatever is picked; a new tenant's
+    // creation is the new tenant's.
+    let renamed = app
+        .admin_in(
+            app.tenant_a,
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_b),
+            Some(json!({ "display_name": "Bee" })),
+        )
+        .await;
+    assert!(renamed.status.is_success(), "{}", renamed.text);
+    wait_for_audit(
+        &app,
+        "/api/v1/audit-log?action=PUT%20/api/v1/tenants/:id",
+        |e| e["tenant_id"] == app.tenant_b.to_string(),
+    )
+    .await;
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/tenants",
+            Some(json!({ "name": "audited-co" })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let new_tenant = created.json["id"].as_str().unwrap().to_string();
+    wait_for_audit(
+        &app,
+        "/api/v1/audit-log?action=POST%20/api/v1/tenants",
+        |e| e["tenant_id"] == new_tenant.as_str(),
+    )
+    .await;
+
+    // The platform's own action (a firmware image, refused or not) has no
+    // tenant, though a tenant was picked.
+    let _ = app
+        .send_raw(
+            ADMIN_TOKEN,
+            Method::POST,
+            "/api/v1/firmware?vendor=yealink&version=1",
+            "application/octet-stream",
+            b"not firmware".to_vec(),
+        )
+        .await;
+    let firmware = wait_for_audit(&app, "/api/v1/audit-log?tenant=platform", |e| {
+        e["action"] == "POST /api/v1/firmware"
+    })
+    .await;
+    assert_eq!(firmware["tenant_id"], Value::Null, "{firmware}");
+
+    // A platform administrator's views.
+    let platform = list("/api/v1/audit-log?tenant=platform&limit=200".into()).await;
+    assert!(
+        platform
+            .json
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["tenant_id"].is_null()),
+        "{}",
+        platform.text
+    );
+    let only_b = list(format!(
+        "/api/v1/audit-log?tenant={}&limit=200",
+        app.tenant_b
+    ))
+    .await;
+    let rows = only_b.json.as_array().unwrap();
+    assert!(rows.len() >= 3, "{}", only_b.text);
+    assert!(
+        rows.iter()
+            .all(|e| e["tenant_id"] == app.tenant_b.to_string()),
+        "{}",
+        only_b.text
+    );
+    let all = list("/api/v1/audit-log?tenant=all&limit=200".into()).await;
+    let tenants: std::collections::HashSet<String> = all
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["tenant_id"].to_string())
+        .collect();
+    assert!(
+        tenants.len() >= 3,
+        "every tenant's rows and the platform's: {tenants:?}"
+    );
+    let picked_a = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            "/api/v1/audit-log?limit=200",
+            None,
+        )
+        .await;
+    assert!(
+        picked_a
+            .json
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["tenant_id"] == app.tenant_a.to_string()),
+        "{}",
+        picked_a.text
+    );
+    let bad = list("/api/v1/audit-log?tenant=nobody".into()).await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+
+    // B's administrator sees what the platform did to B, not who did it,
+    // and nothing else, whatever they ask for.
+    let jwt_b = app.login("b-ops", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for query in ["", "&tenant=platform", "&tenant=all"] {
+        let seen = app
+            .send_as(
+                &jwt_b,
+                Method::GET,
+                &format!("/api/v1/audit-log?limit=200{query}"),
+                None,
+            )
+            .await;
+        assert_eq!(seen.status, StatusCode::OK, "{}", seen.text);
+        let rows = seen.json.as_array().unwrap();
+        assert!(
+            rows.iter()
+                .all(|e| e["tenant_id"] == app.tenant_b.to_string()),
+            "{query}: {}",
+            seen.text
+        );
+        for action in [
+            "POST /api/v1/users",
+            "POST /api/v1/schedules",
+            "PUT /api/v1/tenants/:id",
+        ] {
+            let row = rows
+                .iter()
+                .find(|e| e["action"] == action)
+                .unwrap_or_else(|| panic!("{action} missing for B: {}", seen.text));
+            assert_eq!(row["actor"], "platform administrator", "{row}");
+            assert_eq!(row["actor_kind"], "platform", "{row}");
+            assert_eq!(row["actor_tenant_id"], Value::Null, "{row}");
+            assert_eq!(row["source_ip"], Value::Null, "{row}");
+        }
+    }
+    // B's administrator's own actions keep their name.
+    let own = app
+        .send_as(
+            &jwt_b,
+            Method::POST,
+            "/api/v1/schedules",
+            Some(json!({ "name": "b-hours", "timezone": "UTC" })),
+        )
+        .await;
+    assert_eq!(own.status, StatusCode::CREATED, "{}", own.text);
+    let mine = wait_for_audit(&app, "/api/v1/audit-log?actor=b-ops", |e| {
+        e["action"] == "POST /api/v1/schedules"
+    })
+    .await;
+    assert_eq!(mine["tenant_id"], app.tenant_b.to_string());
+    let seen = app
+        .send_as(&jwt_b, Method::GET, "/api/v1/audit-log?actor=b-ops", None)
+        .await;
+    assert_eq!(seen.json[0]["actor"], "b-ops", "{}", seen.text);
+
+    app.finish().await;
+}
+
 #[tokio::test]
 async fn compliance_policy_audit_log_export_and_retention() {
     use fcp_core::compliance::{AuditEvent, ComplianceStore};
@@ -7457,6 +7685,7 @@ async fn compliance_policy_audit_log_export_and_retention() {
         .record_audit_event(&AuditEvent {
             id: 0,
             tenant_id: Some(app.tenant_a),
+            actor_tenant_id: None,
             actor: "static_token".into(),
             actor_kind: "static_token".into(),
             method: "DELETE".into(),

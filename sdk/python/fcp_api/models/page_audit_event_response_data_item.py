@@ -26,14 +26,17 @@ class PageAuditEventResponseDataItem:
     """ 
         Attributes:
             id (int):
-            actor (str):
+            actor (str): Who acted. A tenant's readers see an actor from outside it (a
+                platform administrator) as `platform administrator`.
             actor_kind (str):
             method (str):
             path (str):
             status (int):
             action (str):
             occurred_at (datetime.datetime):
-            tenant_id (None | str | Unset):
+            tenant_id (None | str | Unset): The tenant acted on; `null` for the platform's own actions.
+            actor_tenant_id (None | str | Unset): The actor's own tenant, `null` for the static token. Shown only to a
+                platform administrator.
             detail (Any | Unset):
             source_ip (None | str | Unset):
      """
@@ -47,6 +50,7 @@ class PageAuditEventResponseDataItem:
     action: str
     occurred_at: datetime.datetime
     tenant_id: None | str | Unset = UNSET
+    actor_tenant_id: None | str | Unset = UNSET
     detail: Any | Unset = UNSET
     source_ip: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -78,6 +82,12 @@ class PageAuditEventResponseDataItem:
         else:
             tenant_id = self.tenant_id
 
+        actor_tenant_id: None | str | Unset
+        if isinstance(self.actor_tenant_id, Unset):
+            actor_tenant_id = UNSET
+        else:
+            actor_tenant_id = self.actor_tenant_id
+
         detail = self.detail
 
         source_ip: None | str | Unset
@@ -101,6 +111,8 @@ class PageAuditEventResponseDataItem:
         })
         if tenant_id is not UNSET:
             field_dict["tenant_id"] = tenant_id
+        if actor_tenant_id is not UNSET:
+            field_dict["actor_tenant_id"] = actor_tenant_id
         if detail is not UNSET:
             field_dict["detail"] = detail
         if source_ip is not UNSET:
@@ -142,6 +154,16 @@ class PageAuditEventResponseDataItem:
         tenant_id = _parse_tenant_id(d.pop("tenant_id", UNSET))
 
 
+        def _parse_actor_tenant_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        actor_tenant_id = _parse_actor_tenant_id(d.pop("actor_tenant_id", UNSET))
+
+
         detail = d.pop("detail", UNSET)
 
         def _parse_source_ip(data: object) -> None | str | Unset:
@@ -164,6 +186,7 @@ class PageAuditEventResponseDataItem:
             action=action,
             occurred_at=occurred_at,
             tenant_id=tenant_id,
+            actor_tenant_id=actor_tenant_id,
             detail=detail,
             source_ip=source_ip,
         )

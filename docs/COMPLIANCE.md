@@ -427,7 +427,8 @@ a `GET`/`HEAD`/`OPTIONS`, plus every CDR export, as an audit event:
 | Field | Meaning |
 |---|---|
 | `actor`, `actor_kind` | The username of a JWT session, an API token's id (`token-…`), `static_token`, or `anonymous` (pre-auth routes such as login) |
-| `tenant_id` | The tenant the request acted on: the caller's own, the `x-fcp-tenant-id` override, or the default tenant for the platform token |
+| `tenant_id` | The tenant the request acted on (since v0.25.497, `docs/TENANT_SCOPE.md` §3.3): the tenant a `/tenants/:id` route names, a new tenant for its creation, `null` for the platform's own actions (`/system/…`, `/cluster/…`, firmware images, anything behind a platform-only router), else the tenant the request worked in — a platform administrator's picked tenant (`x-fcp-tenant-id`) or own, anyone else's own. Rows written earlier are filed under the actor's tenant |
+| `actor_tenant_id` | The actor's own tenant (`null` for the static token and for rows written before v0.25.497): differs from `tenant_id` when a platform administrator acts on another tenant |
 | `action` | Method plus route template, e.g. `PUT /api/v1/users/:username` — stable across ids, use it to filter |
 | `path`, `method`, `status` | The concrete request and how it ended (a 401 on `/auth/login` is a failed login) |
 | `source_ip` | From `X-Forwarded-For` / `X-Real-IP` when a proxy sets them |
@@ -436,15 +437,26 @@ a `GET`/`HEAD`/`OPTIONS`, plus every CDR export, as an audit event:
 Writes are asynchronous and best-effort; the response is never delayed or
 failed by the audit log.
 
-`GET /api/v1/audit-log?actor=&action=&since=&until=&limit=` lists events,
-newest first (`since` and `until` in Unix seconds, `until` exclusive). Tenant
-admins see their tenant; the platform token sees everything unless it
-selected a tenant with the override header. The older `GET /config/audit`
-(configuration-store change history) is unchanged.
+`GET /api/v1/audit-log?actor=&action=&since=&until=&tenant=&limit=` lists
+events, newest first (`since` and `until` in Unix seconds, `until`
+exclusive). A tenant's administrator sees every row of their tenant,
+including what a platform administrator did to it: such an actor (the
+static token, or anyone from another tenant) is shown as `platform
+administrator` (`actor_kind` `platform`) without their tenant or address,
+and `tenant` is ignored. A platform administrator sees everything as it is:
+`tenant=all`, `tenant=platform` (only the platform's own rows) or a tenant's
+id; without `tenant`, the tenant picked with `x-fcp-tenant-id`, else all. The
+Audit Log page shows them a Tenant column and a Rows filter. The older
+`GET /config/audit` (configuration-store change history) is unchanged.
+
+Retention runs per tenant, so the platform's own rows (no tenant) are not
+deleted by any tenant's `audit_retention_days`. A subject export or erasure
+in a tenant takes the tenant's own people's rows, not a platform
+administrator's actions on it.
 
 `GET /api/v1/audit-log/export` takes the same filters and returns every
 event they match, newest first, streamed as it is read: `text/csv` with a
-header line (`id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail`,
+header line (`id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail,actor_tenant_id`,
 `occurred_at` in RFC 3339, `detail` as JSON), or JSON Lines with
 `format=jsonl`, one listing entry per line. It needs `audit_view`, as the
 listing does, and is itself audited. The Audit Log page's **CSV** and

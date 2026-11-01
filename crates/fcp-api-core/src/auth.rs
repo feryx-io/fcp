@@ -419,7 +419,19 @@ pub async fn require_platform_admin(
             ));
         }
     }
-    Ok(next.run(req).await)
+    // What a platform-only router does is the platform's: its audit rows
+    // have no tenant (docs/TENANT_SCOPE.md §3.3).
+    let mut response = next.run(req).await;
+    if response
+        .extensions()
+        .get::<crate::audit::AuditScope>()
+        .is_none()
+    {
+        response
+            .extensions_mut()
+            .insert(crate::audit::AuditScope::Platform);
+    }
+    Ok(response)
 }
 
 /// Validate an `fcp_...` API token against the database.

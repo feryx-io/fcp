@@ -362,6 +362,15 @@ Changes that need something of a configuration the operator keeps:
   with TTS, and an earlier admin answers 500 on its prompt list, until it
   is upgraded. New system prompt audio goes under `<prompts_dir>/system/`;
   files already under the default tenant's directory stay where they are.
+- **v0.25.497: an audit row belongs to the tenant acted on**
+  (`docs/TENANT_SCOPE.md` §3.3, `docs/COMPLIANCE.md`). From this release
+  a platform administrator's action on a tenant is that tenant's row, and
+  the platform's own actions have no tenant. Rows written before it stay
+  under the actor's tenant: a platform administrator's earlier actions on
+  other tenants are in the platform administrator's own tenant (the
+  default tenant for the static token), and those tenants' administrators
+  do not see them. Migration 134 adds `actor_tenant_id`, empty on the
+  earlier rows.
 
 ### 5.5 Proved
 

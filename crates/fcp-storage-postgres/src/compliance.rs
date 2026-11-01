@@ -58,6 +58,10 @@ impl PostgresComplianceStore {
         Ok(AuditEvent {
             id: row.try_get("id")?,
             tenant_id: tenant.map(|t| TenantId::from_str(&t)).transpose()?,
+            actor_tenant_id: row
+                .try_get::<Option<String>, _>("actor_tenant_id")?
+                .map(|t| TenantId::from_str(&t))
+                .transpose()?,
             actor: row.try_get("actor")?,
             actor_kind: row.try_get("actor_kind")?,
             method: row.try_get("method")?,
@@ -178,8 +182,8 @@ impl ComplianceStore for PostgresComplianceStore {
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO admin_audit_log
                 (tenant_id, actor, actor_kind, method, path, status, action, detail,
-                 source_ip, occurred_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 source_ip, occurred_at, actor_tenant_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              RETURNING id",
         )
         .bind(event.tenant_id.map(|t| t.to_string()))
@@ -192,6 +196,7 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(&event.detail)
         .bind(&event.source_ip)
         .bind(to_datetime(event.occurred_at))
+        .bind(event.actor_tenant_id.map(|t| t.to_string()))
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
@@ -200,7 +205,7 @@ impl ComplianceStore for PostgresComplianceStore {
     async fn list_audit_events(&self, query: &AuditQuery) -> anyhow::Result<Vec<AuditEvent>> {
         let mut sql = String::from(
             "SELECT id, tenant_id, actor, actor_kind, method, path, status, action, detail,
-                    source_ip, occurred_at
+                    source_ip, occurred_at, actor_tenant_id
              FROM admin_audit_log WHERE 1 = 1",
         );
         let mut n = 0;
@@ -210,6 +215,8 @@ impl ComplianceStore for PostgresComplianceStore {
         };
         if query.tenant_id.is_some() {
             sql.push_str(&format!(" AND tenant_id = ${}", next()));
+        } else if query.platform_only {
+            sql.push_str(" AND tenant_id IS NULL");
         }
         if query.actor.is_some() {
             sql.push_str(&format!(" AND actor = ${}", next()));

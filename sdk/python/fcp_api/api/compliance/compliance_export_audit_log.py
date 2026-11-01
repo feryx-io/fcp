@@ -20,6 +20,7 @@ def _get_kwargs(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    tenant: str | Unset = UNSET,
     format_: str | Unset = UNSET,
 
 ) -> dict[str, Any]:
@@ -36,6 +37,8 @@ def _get_kwargs(
     params["since"] = since
 
     params["until"] = until
+
+    params["tenant"] = tenant
 
     params["format"] = format_
 
@@ -83,6 +86,7 @@ def sync_detailed(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    tenant: str | Unset = UNSET,
     format_: str | Unset = UNSET,
 
 ) -> Response[ErrorResponse | str]:
@@ -95,6 +99,7 @@ def sync_detailed(
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        tenant (str | Unset):
         format_ (str | Unset):
 
     Raises:
@@ -111,6 +116,7 @@ def sync_detailed(
 action=action,
 since=since,
 until=until,
+tenant=tenant,
 format_=format_,
 
     )
@@ -128,6 +134,7 @@ def sync(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    tenant: str | Unset = UNSET,
     format_: str | Unset = UNSET,
 
 ) -> ErrorResponse | str | None:
@@ -140,6 +147,7 @@ def sync(
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        tenant (str | Unset):
         format_ (str | Unset):
 
     Raises:
@@ -157,6 +165,7 @@ actor=actor,
 action=action,
 since=since,
 until=until,
+tenant=tenant,
 format_=format_,
 
     ).parsed
@@ -168,6 +177,7 @@ async def asyncio_detailed(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    tenant: str | Unset = UNSET,
     format_: str | Unset = UNSET,
 
 ) -> Response[ErrorResponse | str]:
@@ -180,6 +190,7 @@ async def asyncio_detailed(
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        tenant (str | Unset):
         format_ (str | Unset):
 
     Raises:
@@ -196,6 +207,7 @@ async def asyncio_detailed(
 action=action,
 since=since,
 until=until,
+tenant=tenant,
 format_=format_,
 
     )
@@ -213,6 +225,7 @@ async def asyncio(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    tenant: str | Unset = UNSET,
     format_: str | Unset = UNSET,
 
 ) -> ErrorResponse | str | None:
@@ -225,6 +238,7 @@ async def asyncio(
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        tenant (str | Unset):
         format_ (str | Unset):
 
     Raises:
@@ -242,6 +256,7 @@ actor=actor,
 action=action,
 since=since,
 until=until,
+tenant=tenant,
 format_=format_,
 
     )).parsed

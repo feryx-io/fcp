@@ -592,7 +592,12 @@ pub async fn create_tenant(
     storage.put_tenant(tenant.clone()).await?;
 
     let response: TenantResponse = tenant.into();
-    Ok((StatusCode::CREATED, Json(response)))
+    // The row is the new tenant's: its administrators see it was made.
+    Ok((
+        StatusCode::CREATED,
+        Extension(crate::audit::AuditScope::Tenant(id)),
+        Json(response),
+    ))
 }
 
 /// Update an existing tenant

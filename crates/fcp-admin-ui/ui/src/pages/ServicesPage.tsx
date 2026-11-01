@@ -2,7 +2,7 @@
 // what it is, where, which release, how it is, what it carries; a service
 // that stopped stays here, down since then, until it returns or is
 // forgotten. Platform administrators only.
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -306,16 +306,20 @@ export function ServicePage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
+  // Once forgotten it is gone: asking for it again would be a 404. The
+  // query is switched off rather than removed, since a removed query with
+  // this page still watching it is fetched again at once.
+  const [gone, setGone] = useState(false)
   const { data: s, error, isLoading } = useQuery({
     queryKey: ['services', 'one', id, siteId],
     queryFn: () => services.get(id, siteId),
     refetchInterval: 5_000,
+    enabled: !gone,
   })
   const forget = useMutation({
     mutationFn: () => services.forget(id, siteId),
     onSuccess: () => {
-      // Gone: asking for it again would be a 404.
-      queryClient.removeQueries({ queryKey: ['services', 'one', id, siteId] })
+      setGone(true)
       void queryClient.invalidateQueries({ queryKey: ['services', 'list'] })
       void queryClient.invalidateQueries({ queryKey: ['services', 'summary'] })
       navigate('/admin/services')

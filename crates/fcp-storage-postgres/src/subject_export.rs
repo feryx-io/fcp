@@ -193,7 +193,8 @@ fn class_query(class: ExportClass) -> String {
             "SELECT id::text AS id, 'ids' AS link, to_jsonb(a) AS data, occurred_at AS at,
                     NULL::text AS call_id, NULL::text AS file, ARRAY[actor] AS ids,
                     false AS others
-             FROM admin_audit_log a WHERE tenant_id = $1 AND fcp_subject_keys(actor) && $4"
+             FROM admin_audit_log a WHERE tenant_id = $1 AND fcp_subject_keys(actor) && $4
+               AND (actor_tenant_id IS NULL OR actor_tenant_id = $1)"
         }
         ExportClass::ConfigChanges => {
             "SELECT id::text AS id, 'ids' AS link, to_jsonb(c) AS data, changed_at AS at,

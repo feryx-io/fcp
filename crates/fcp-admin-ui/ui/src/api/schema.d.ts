@@ -3035,8 +3035,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Tenant admins see their tenant; the platform token sees every tenant
-         *     unless it selected one with the override header.
+         * A row belongs to the tenant acted on (docs/TENANT_SCOPE.md §3.3).
+         *     Tenant admins see their tenant's rows, platform administrators' actions
+         *     on it included; a platform administrator sees every row, one tenant's
+         *     (`tenant` or the picked tenant) or the platform's own.
          */
         get: operations["compliance_list_audit_log"];
         put?: never;
@@ -6371,7 +6373,17 @@ export interface components {
         AuditEventResponse: {
             /** Format: int64 */
             id: number;
+            /** @description The tenant acted on; `null` for the platform's own actions. */
             tenant_id?: string | null;
+            /**
+             * @description The actor's own tenant, `null` for the static token. Shown only to a
+             *     platform administrator.
+             */
+            actor_tenant_id?: string | null;
+            /**
+             * @description Who acted. A tenant's readers see an actor from outside it (a
+             *     platform administrator) as `platform administrator`.
+             */
             actor: string;
             actor_kind: string;
             method: string;
@@ -9221,7 +9233,17 @@ export interface components {
             data: {
                 /** Format: int64 */
                 id: number;
+                /** @description The tenant acted on; `null` for the platform's own actions. */
                 tenant_id?: string | null;
+                /**
+                 * @description The actor's own tenant, `null` for the static token. Shown only to a
+                 *     platform administrator.
+                 */
+                actor_tenant_id?: string | null;
+                /**
+                 * @description Who acted. A tenant's readers see an actor from outside it (a
+                 *     platform administrator) as `platform administrator`.
+                 */
                 actor: string;
                 actor_kind: string;
                 method: string;
@@ -21071,6 +21093,13 @@ export interface operations {
                 since?: number;
                 /** @description Unix seconds: only events before it. */
                 until?: number;
+                /**
+                 * @description A platform administrator's choice of rows: `all`, `platform` (the
+                 *     platform's own actions, without a tenant) or a tenant's id. Without
+                 *     it, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else
+                 *     reads their own tenant's rows whatever this says.
+                 */
+                tenant?: string;
                 limit?: number;
                 cursor?: string;
             };
@@ -21110,6 +21139,13 @@ export interface operations {
                 since?: number;
                 /** @description Unix seconds: only events before it. */
                 until?: number;
+                /**
+                 * @description A platform administrator's choice of rows: `all`, `platform` (the
+                 *     platform's own actions, without a tenant) or a tenant's id. Without
+                 *     it, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else
+                 *     reads their own tenant's rows whatever this says.
+                 */
+                tenant?: string;
                 /** @description `csv` (the default) or `jsonl`. */
                 format?: string;
             };

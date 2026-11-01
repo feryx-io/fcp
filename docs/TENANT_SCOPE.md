@@ -351,6 +351,56 @@ trunks.
       tenant's hold music plays to a held caller, then the tenant's override
       of it does, and not the system prompt.
     - The UI suite's `a system prompt is overridden and restored`.
+- **Phase 3** (v0.25.497): the audit log by the tenant acted on.
+  - **Filing** (`fcp_api_core::audit::acted_on`): what the response says
+    (`AuditScope`: a new tenant's creation is the new tenant's; everything
+    behind `require_platform_admin` — the cluster and services routers — is
+    the platform's), else none for a platform route (`/system/…`,
+    `/cluster/…`, firmware images; a tenant's firmware targets are its own),
+    else the tenant a `/tenants/:id…` route names, else the tenant the
+    request worked in: a platform administrator's picked tenant or their own,
+    anyone else's own.
+  - **`actor_tenant_id`** (migration 134) keeps the actor's own tenant,
+    `null` for the static token.
+  - **Reading.**
+    - A tenant administrator sees all of their tenant's rows, a platform
+      administrator's actions on it included. An actor from outside the
+      tenant (the static token, or anyone of another tenant) is shown as
+      `platform administrator`, `actor_kind` `platform`, without their tenant
+      or address. A `tenant` filter from them is ignored.
+    - A platform administrator reads every row as it is, with `tenant=all`,
+      `tenant=platform` or a tenant's id; without it, the picked tenant, else
+      all. The listing and the export answer the same, the export with
+      `actor_tenant_id` as its last CSV column.
+  - **Compliance.** A subject export (and the erasure built on it) takes a
+    tenant's audit rows of its own people only (`actor_tenant_id` null or
+    the tenant), not a platform administrator's actions on it. Retention
+    runs per tenant, so platform rows are not deleted by any tenant's
+    window.
+  - **Rows already written** keep their tenant (the actor's) and have no
+    actor tenant (`BACKUP_AND_RESTORE.md` §5.4.1).
+  - **The Audit Log page.** A platform administrator sees a Tenant column
+    (by name, `Platform` for none), "from <tenant>" under an actor acting
+    outside their own tenant, and a Rows filter (as picked, every tenant and
+    the platform, the platform only).
+  - **Tests:**
+    - `an_audit_row_belongs_to_the_tenant_acted_on`
+      (`fcp-api-core/tests/api_postgres.rs`): the static token in tenant B,
+      a super administrator of A working in B (B's row, A's actor tenant),
+      `PUT /tenants/B` with A picked (B's), a tenant's creation (the new
+      tenant's), a firmware upload with a tenant picked (the platform's);
+      the platform administrator's `platform`, one-tenant, `all` and picked
+      views, and a bad `tenant`; B's administrator seeing the platform's
+      three actions on B as `platform administrator` whatever they ask for,
+      and their own under their name. Against the previous code the super
+      administrator's, the tenant route's and the firmware rows were filed
+      elsewhere.
+    - `audit::tests::a_row_is_filed_under_the_tenant_acted_on`, the rule
+      itself.
+    - The UI suite's `e2e/audit.spec.ts`: the platform administrator's
+      Tenant column and "The platform only"; a tenant administrator's view
+      without either, a static-token action shown as `platform
+      administrator`.
 
 ## 5. Answers
 

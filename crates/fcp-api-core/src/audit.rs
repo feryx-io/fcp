@@ -94,6 +94,76 @@ pub struct SignInSubject {
     pub tenant_id: Option<TenantId>,
 }
 
+/// The tenant a request acted on, put on its response by a handler that
+/// knows better than the route (a tenant just made), or by a platform-only
+/// router (`require_platform_admin`): the audit row is filed under it
+/// (docs/TENANT_SCOPE.md §3.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditScope {
+    Tenant(TenantId),
+    /// A platform-level action: the row has no tenant.
+    Platform,
+}
+
+/// Routes whose actions are the platform's, not any tenant's: the system's
+/// encryption and services, the cluster, and firmware images (a tenant's
+/// firmware targets are its own).
+fn platform_route(template: &str) -> bool {
+    let route = template.strip_prefix("/api/v1").unwrap_or(template);
+    route.starts_with("/system/")
+        || route.starts_with("/cluster/")
+        || route == "/firmware"
+        || (route.starts_with("/firmware/") && !route.starts_with("/firmware/targets"))
+}
+
+/// The tenant a `/tenants/:id…` route names.
+fn tenant_route(template: &str, path: &str) -> Option<TenantId> {
+    let route = template.strip_prefix("/api/v1").unwrap_or(template);
+    route.strip_prefix("/tenants/:id")?;
+    let names = template.trim_end_matches('/').split('/');
+    let values = path.trim_end_matches('/').split('/');
+    // Matched from the end, as `route_detail` does.
+    let names: Vec<_> = names.collect();
+    let values: Vec<_> = values.collect();
+    let at = names.iter().position(|n| *n == ":id")?;
+    let from_end = names.len() - at;
+    let value = values.get(values.len().checked_sub(from_end)?)?;
+    percent_decode(value).parse().ok()
+}
+
+/// The tenant an audit row is filed under: what the response says, else a
+/// platform route's none, else the tenant a `/tenants/:id` route names,
+/// else the tenant the request worked in — a platform administrator's
+/// picked tenant (`x-fcp-tenant-id`) or their own, anyone else's own.
+fn acted_on(
+    scope: Option<AuditScope>,
+    template: &str,
+    path: &str,
+    identity: Option<&AuthIdentity>,
+    header_tenant: Option<TenantId>,
+    sign_in_tenant: Option<TenantId>,
+    default_tenant: TenantId,
+) -> Option<TenantId> {
+    match scope {
+        Some(AuditScope::Tenant(t)) => return Some(t),
+        Some(AuditScope::Platform) => return None,
+        None => {}
+    }
+    let platform = identity.is_some_and(AuthIdentity::is_platform_admin);
+    if platform && platform_route(template) {
+        return None;
+    }
+    if let Some(t) = tenant_route(template, path) {
+        return Some(t);
+    }
+    let own = identity.and_then(|i| i.tenant_id().copied());
+    if platform {
+        return header_tenant.or(own).or(Some(default_tenant));
+    }
+    own.or(sign_in_tenant)
+        .or_else(|| identity.map(|_| default_tenant))
+}
+
 /// Middleware: record the request after it completes.
 pub async fn audit_requests(State(state): State<ApiState>, req: Request, next: Next) -> Response {
     let method = req.method().clone();
@@ -154,17 +224,27 @@ pub async fn audit_requests(State(state): State<ApiState>, req: Request, next: N
         (None, Some(_)) => "sign_in",
         (None, None) => "anonymous",
     };
-    let tenant_id = identity
+    let tenant_id = acted_on(
+        response.extensions().get::<AuditScope>().copied(),
+        &template,
+        &path,
+        identity.as_ref(),
+        header_tenant,
+        sign_in.as_ref().and_then(|s| s.tenant_id),
+        state.default_tenant_id,
+    );
+    // Where the actor came from: their own tenant (none for the static
+    // token), or the tenant a sign-in named.
+    let actor_tenant_id = identity
         .as_ref()
         .and_then(|i| i.tenant_id().copied())
-        .or_else(|| sign_in.as_ref().and_then(|s| s.tenant_id))
-        .or(header_tenant)
-        .or_else(|| identity.as_ref().map(|_| state.default_tenant_id));
+        .or_else(|| sign_in.as_ref().and_then(|s| s.tenant_id));
 
     let detail = route_detail(&method, &template, &path);
     let event = AuditEvent {
         id: 0,
         tenant_id,
+        actor_tenant_id,
         actor,
         actor_kind: actor_kind.to_string(),
         method: method.to_string(),
@@ -186,6 +266,110 @@ pub async fn audit_requests(State(state): State<ApiState>, req: Request, next: N
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_row_is_filed_under_the_tenant_acted_on() {
+        let home: TenantId = "tenant-00000000-0000-0000-0000-00000000000a"
+            .parse()
+            .unwrap();
+        let other: TenantId = "tenant-00000000-0000-0000-0000-00000000000b"
+            .parse()
+            .unwrap();
+        let default = TenantId::nil();
+        let platform = AuthIdentity::StaticToken;
+        let tenant_admin = AuthIdentity::Session {
+            username: "ops".into(),
+            role: "tenant_admin".into(),
+            tenant_id: Some(home),
+            group_roles: Vec::new(),
+            user_id: None,
+            session_id: None,
+        };
+        let on = |scope, template: &str, path: &str, who: &AuthIdentity, header| {
+            acted_on(scope, template, path, Some(who), header, None, default)
+        };
+        // A platform administrator's picked tenant, else their own.
+        assert_eq!(
+            on(
+                None,
+                "/api/v1/users",
+                "/api/v1/users",
+                &platform,
+                Some(other)
+            ),
+            Some(other)
+        );
+        assert_eq!(
+            on(None, "/api/v1/users", "/api/v1/users", &platform, None),
+            Some(default)
+        );
+        // The tenant a tenant route names, whatever is picked.
+        let path = format!("/api/v1/tenants/{other}");
+        assert_eq!(
+            on(None, "/api/v1/tenants/:id", &path, &platform, Some(home)),
+            Some(other)
+        );
+        let path = format!("/api/v1/tenants/{other}/deletion");
+        assert_eq!(
+            on(None, "/api/v1/tenants/:id/deletion", &path, &platform, None),
+            Some(other)
+        );
+        // The platform's own actions have no tenant.
+        for route in [
+            "/api/v1/system/encryption/rotate",
+            "/api/v1/cluster/nodes",
+            "/api/v1/firmware",
+            "/api/v1/firmware/:id",
+        ] {
+            assert_eq!(
+                on(None, route, route, &platform, Some(other)),
+                None,
+                "{route}"
+            );
+        }
+        assert_eq!(
+            on(
+                None,
+                "/api/v1/firmware/targets",
+                "/api/v1/firmware/targets",
+                &platform,
+                Some(other)
+            ),
+            Some(other)
+        );
+        // What the response says wins.
+        assert_eq!(
+            on(
+                Some(AuditScope::Tenant(other)),
+                "/api/v1/tenants",
+                "/api/v1/tenants",
+                &platform,
+                None
+            ),
+            Some(other)
+        );
+        assert_eq!(
+            on(
+                Some(AuditScope::Platform),
+                "/api/v1/x",
+                "/api/v1/x",
+                &platform,
+                Some(other)
+            ),
+            None
+        );
+        // Anyone else is in their own tenant: a header changes nothing.
+        assert_eq!(
+            on(
+                None,
+                "/api/v1/users",
+                "/api/v1/users",
+                &tenant_admin,
+                Some(other)
+            ),
+            Some(home)
+        );
+    }
 
     #[test]
     fn only_mutations_and_exports_are_audited() {

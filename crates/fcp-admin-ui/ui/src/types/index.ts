@@ -496,6 +496,9 @@ export interface AuditQueryParams {
   since?: number
   /** Unix seconds: only events before it. */
   until?: number
+  /** A platform administrator's rows: `all`, `platform` or a tenant id;
+   *  unset follows the tenant picked in the top bar. */
+  tenant?: string
   limit?: number
 }
 

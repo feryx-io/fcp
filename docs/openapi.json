@@ -8592,7 +8592,7 @@
         "tags": [
           "compliance"
         ],
-        "summary": "Tenant admins see their tenant; the platform token sees every tenant\nunless it selected one with the override header.",
+        "summary": "A row belongs to the tenant acted on (docs/TENANT_SCOPE.md §3.3).\nTenant admins see their tenant's rows, platform administrators' actions\non it included; a platform administrator sees every row, one tenant's\n(`tenant` or the picked tenant) or the platform's own.",
         "operationId": "compliance_list_audit_log",
         "parameters": [
           {
@@ -8632,6 +8632,15 @@
               "type": "integer",
               "format": "int64",
               "minimum": 0
+            }
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "description": "A platform administrator's choice of rows: `all`, `platform` (the\nplatform's own actions, without a tenant) or a tenant's id. Without\nit, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else\nreads their own tenant's rows whatever this says.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -8721,6 +8730,15 @@
               "type": "integer",
               "format": "int64",
               "minimum": 0
+            }
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "description": "A platform administrator's choice of rows: `all`, `platform` (the\nplatform's own actions, without a tenant) or a tenant's id. Without\nit, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else\nreads their own tenant's rows whatever this says.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -20787,10 +20805,19 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The tenant acted on; `null` for the platform's own actions."
+          },
+          "actor_tenant_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The actor's own tenant, `null` for the static token. Shown only to a\nplatform administrator."
           },
           "actor": {
-            "type": "string"
+            "type": "string",
+            "description": "Who acted. A tenant's readers see an actor from outside it (a\nplatform administrator) as `platform administrator`."
           },
           "actor_kind": {
             "type": "string"
@@ -29641,10 +29668,19 @@
                   "type": [
                     "string",
                     "null"
-                  ]
+                  ],
+                  "description": "The tenant acted on; `null` for the platform's own actions."
+                },
+                "actor_tenant_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The actor's own tenant, `null` for the static token. Shown only to a\nplatform administrator."
                 },
                 "actor": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Who acted. A tenant's readers see an actor from outside it (a\nplatform administrator) as `platform administrator`."
                 },
                 "actor_kind": {
                   "type": "string"

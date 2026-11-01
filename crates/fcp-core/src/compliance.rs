@@ -545,6 +545,11 @@ pub struct AuditEvent {
     pub id: i64,
     /// Tenant the request acted on (`None` for platform-wide requests).
     pub tenant_id: Option<TenantId>,
+    /// The actor's own tenant (`None` for the static token, and for rows
+    /// written before v0.25.497): differs from `tenant_id` when a platform
+    /// administrator acts on another tenant.
+    #[serde(default)]
+    pub actor_tenant_id: Option<TenantId>,
     /// Who: a username, an API token id, `static_token`, or `anonymous`.
     pub actor: String,
     /// `session`, `api_token`, `static_token`, or `anonymous`.
@@ -567,6 +572,8 @@ pub struct AuditEvent {
 pub struct AuditQuery {
     /// `None` lists every tenant (platform admins only).
     pub tenant_id: Option<TenantId>,
+    /// Only the platform's own rows (no tenant); `tenant_id` is then unset.
+    pub platform_only: bool,
     pub actor: Option<String>,
     /// Match on the route template prefix (`POST /api/v1/users`).
     pub action_prefix: Option<String>,
