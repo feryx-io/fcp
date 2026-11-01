@@ -883,10 +883,14 @@ async fn the_node_carries_out_a_blind_transfer() {
 
     // Alice, on her own call still, hears Carol.
     carol_call.media().play_tone(660.0, 3000);
-    assert!(
-        alice_call.media().heard(660, SOON).await,
-        "Alice does not hear Carol"
-    );
+    if !alice_call.media().heard(660, SOON).await {
+        let why = format!(
+            "Alice does not hear Carol ({} packets, {} frames of the tone)",
+            alice_call.media().packets_received(),
+            alice_call.media().tone_frames(660),
+        );
+        stack.fail(&why, &alice).await;
+    }
     alice_call.hangup().await.unwrap();
     assert!(
         carol_call.ended(SOON).await,
@@ -1836,10 +1840,14 @@ async fn an_invite_with_replaces_takes_over_a_call() {
     }
     assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
     carol_call.media().play_tone(660.0, 3000);
-    assert!(
-        alice_call.media().heard(660, SOON).await,
-        "Alice does not hear Carol"
-    );
+    if !alice_call.media().heard(660, SOON).await {
+        let why = format!(
+            "Alice does not hear Carol ({} packets, {} frames of the tone)",
+            alice_call.media().packets_received(),
+            alice_call.media().tone_frames(660),
+        );
+        stack.fail(&why, &alice).await;
+    }
 
     // A dialog nobody holds is refused.
     let stranger = carol_phone
