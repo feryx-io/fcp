@@ -429,9 +429,8 @@ trunks.
   - **Numbers.** Binding a number makes an `unassigned` one `assigned`;
     removing its last binding makes an `assigned` one `unassigned`; other
     states are left alone. Migration 135 marks the numbers already bound.
-  - **Queue names** are still checked across tenants: the queue manager keys
-    every queue, agent and statistic by name alone (116 call sites, 82 of its
-    functions), so per-tenant names are phase 4b.
+  - **Queue names** were still checked across tenants then; per-tenant names
+    are phase 4b.
   - **Tests:**
     - `flows_traces_tokens_and_numbers_keep_to_their_tenant`
       (`fcp-api-core/tests/api_postgres.rs`): three flows without a tenant —
@@ -447,6 +446,65 @@ trunks.
       (`fcp-call-manager/tests/calling.rs`): two lots, the branch's and one
       without a location; Bob, whose extension is at the branch, parks in the
       branch's lot, Carol in the other.
+- **Phase 4b** (v0.25.499): queues by tenant.
+  - **The key.** The queue manager keys a queue by `QueueKey` (its tenant and
+    its name) and an agent by `AgentKey` (its tenant and its id), in every map
+    it keeps: queues, agents, counters, history, campaigns, wrap-up timers.
+    `DistributionPlan.agent_id` is an `AgentKey`. An agent logs in only to
+    its own tenant's queues; a call moves only to a queue of its own tenant.
+    The `_for_tenant` lookups went; the key holds the tenant.
+  - **Names per tenant.** The API refuses a second queue of one name or one
+    extension in a tenant (409) and looks at no other tenant. The call
+    manager loads every tenant's queues; a second `sales` used to stop it
+    loading any queue from the database. Two queues at one extension in a
+    tenant now never reach it.
+  - **What looked across tenants and no longer does:**
+    - the queue rang an agent, a supervisor, an overflow target, a callback
+      and a campaign number back through the node at the node's own address,
+      which made the leg the node's default tenant's. Each now names its
+      tenant (`SipUserAgentClient::invite_for_tenant`, the header
+      `X-FCP-Own-Leg-Tenant`, believed only beside the own-leg token and
+      stripped at ingress otherwise);
+    - the queue handler worked out a call's tenant again from its domain; it
+      takes the call's (`QueueHandler::can_handle(request, tenant)`), so a
+      registered caller who dials the node's address reaches its tenant's
+      queue;
+    - `*50` looked for the extension in every tenant's queues; `*51` logged
+      out by extension alone (it now resolves the caller's tenant);
+    - do not disturb and on a call were read in any tenant, for queues and
+      hunt groups alike; they are read in the call's tenant;
+    - stats snapshots, the SLA warning and their history were published as
+      the node's default tenant's; each tenant's are its own;
+    - agents were restored after a restart for the default tenant only;
+    - a queue's position announcement fell back to some TOML queue's.
+  - **The node's own `/queues` and `/agents` routes** act in its default
+    tenant, as before; `/callbacks` lists every tenant's, each with its
+    `tenant_id`, and `/queues/reload` names each new queue's tenant.
+  - **Found on the way:** a caller hanging up while the queue rang an agent
+    sent no CANCEL. `remove_session` aborted the ring task as it signalled
+    it, so the phone rang on until the B2BUA's ring timeout, and an agent
+    who answered in that time was on a call with nobody. The ring task now
+    cancels, and hangs up a leg whose 200 crossed the CANCEL (`cancel_ring`,
+    as the B2BUA does for a fork's losers), on a caller leaving and on every
+    ring timeout.
+  - **Tests:**
+    - `two_tenants_queues_and_agents_of_the_same_name_are_their_own`
+      (`fcp-queue`): two `sales` at 6000 and two agents 100; each tenant's
+      call offered to its own agent, no move across, a logout leaving the
+      other, a login to another tenant's queue refused.
+    - `queue_configs_crud_and_runtime_absent` (`api_postgres.rs`): B's
+      `billing` at 7100 beside A's, A's second `billing` and second 7100
+      refused 409, a rename onto a taken name refused.
+    - `two_tenants_queues_of_one_name_ring_their_own_agents`
+      (`fcp-call-manager/tests/calls.rs`): two tenants' `sales` at 7000, each
+      with its agent at 1001; each caller rings its own agent and not the
+      other's. Against the previous code the reload refused both queues.
+    - `a_caller_leaving_the_queue_stops_the_agents_ring` (`calls.rs`): the
+      agent's phone is cancelled within 1.5 s of the caller's hangup; with
+      the abort back it rang until the 3 s ring timeout.
+    - `only_an_own_leg_names_its_tenant` (`fcp-sip` claims) and
+      `only_do_not_disturb_and_a_call_make_a_member_unavailable` (now in
+      the tenant asking).
 
 ## 5. Answers
 

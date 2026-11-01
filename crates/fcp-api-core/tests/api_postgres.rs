@@ -3187,6 +3187,60 @@ async fn queue_configs_crud_and_runtime_absent() {
         .await;
     assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
 
+    // A queue is its name within its tenant (docs/TENANT_SCOPE.md §4b):
+    // B has a `billing` at 7100 too, and is told nothing of A's. A second
+    // `billing`, or a second queue at 7100, in one tenant is refused.
+    let theirs = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            "/api/v1/queue-configs",
+            Some(json!({"name": "billing", "extension": "7100"})),
+        )
+        .await;
+    assert_eq!(theirs.status, StatusCode::CREATED, "{}", theirs.text);
+    for clash in [
+        json!({"name": "billing", "extension": "7101"}),
+        json!({"name": "billing-2", "extension": "7100"}),
+    ] {
+        let refused = app
+            .admin(Method::POST, "/api/v1/queue-configs", Some(clash))
+            .await;
+        assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+        assert!(!refused.text.contains(&app.tenant_b.to_string()));
+    }
+    let other = app
+        .admin(
+            Method::POST,
+            "/api/v1/queue-configs",
+            Some(json!({"name": "billing-2", "extension": "7101"})),
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::CREATED, "{}", other.text);
+    let other_id = other.json["id"].as_str().unwrap().to_string();
+    let renamed = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/queue-configs/{other_id}"),
+            Some(json!({"name": "billing"})),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::CONFLICT, "{}", renamed.text);
+    let kept = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/queue-configs/{other_id}"),
+            Some(json!({"name": "billing-2", "max_wait_time_secs": 60})),
+        )
+        .await;
+    assert_eq!(kept.status, StatusCode::OK, "its own name is no clash: {}", kept.text);
+    app.admin(
+        Method::DELETE,
+        &format!("/api/v1/queue-configs/{other_id}"),
+        None,
+    )
+    .await;
+
     // Stored configs are not runtime queues until synced: the listing comes
     // from the live QueueManager, and runtime-only endpoints answer 404 (not
     // 500) for a config it has not loaded.

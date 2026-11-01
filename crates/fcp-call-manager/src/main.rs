@@ -1174,17 +1174,21 @@ async fn run() -> Result<()> {
 
         let qm = Arc::new(qm);
 
-        // Restore agent state from storage
-        match qm
-            .restore_agents(queue_store.as_ref(), &default_tenant_id)
-            .await
-        {
-            Ok(count) if count > 0 => {
-                info!(restored = count, "Restored agent state from storage");
-            }
-            Ok(_) => {}
-            Err(e) => {
-                warn!(error = %e, "Failed to restore agent state from storage");
+        // Restore agent state from storage, each tenant with queues here
+        let tenants = qm
+            .list_queues()
+            .into_iter()
+            .map(|queue| queue.tenant_id)
+            .collect::<std::collections::HashSet<_>>();
+        for tenant_id in tenants {
+            match qm.restore_agents(queue_store.as_ref(), &tenant_id).await {
+                Ok(count) if count > 0 => {
+                    info!(restored = count, tenant_id = %tenant_id, "Restored agent state from storage");
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(error = %e, tenant_id = %tenant_id, "Failed to restore agent state from storage");
+                }
             }
         }
 

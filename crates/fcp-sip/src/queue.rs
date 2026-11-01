@@ -14,8 +14,10 @@ use std::net::SocketAddr;
 #[async_trait::async_trait]
 pub trait QueueHandler: Send + Sync {
     /// Returns `true` if this request should be handled as a queue call
-    /// (i.e., the Request-URI user part matches a configured queue extension).
-    async fn can_handle(&self, request: &sip_core::Request) -> bool;
+    /// (i.e., the Request-URI user part matches a queue extension of the
+    /// call's tenant, which the B2BUA has already decided).
+    async fn can_handle(&self, request: &sip_core::Request, tenant_id: &fcp_core::TenantId)
+        -> bool;
 
     /// Handle an INVITE for a queue extension.
     ///
@@ -61,8 +63,8 @@ pub trait QueueHandler: Send + Sync {
     /// include this extension in their agents list.
     async fn agent_login(&self, extension: &str, tenant_id: &fcp_core::TenantId) -> Result<()>;
 
-    /// Log an agent out of all queues via feature code.
-    async fn agent_logout(&self, extension: &str) -> Result<()>;
+    /// Log an agent out of all of its tenant's queues via feature code.
+    async fn agent_logout(&self, extension: &str, tenant_id: &fcp_core::TenantId) -> Result<()>;
 
     /// The extension a tenant's queue answers at, the queue named by its
     /// name or its extension; `None` when this node has no such queue. A

@@ -1629,6 +1629,179 @@ enabled = true
     stack.finish().await;
 }
 
+/// A caller who hangs up while the queue rings its agent stops the ring:
+/// the agent's phone is cancelled at once. The queue used to abort its ring
+/// task as it signalled it, so no CANCEL was sent — the phone rang on until
+/// the B2BUA's own ring timeout (3 s here), and one picked up in the
+/// meantime was answered onto nobody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_leaving_the_queue_stops_the_agents_ring() {
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+
+[queue.queues.support]
+name = "support"
+extension = "7000"
+agents = ["1002"]
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let (_alice, alice_phone, _bob, bob_phone) = two_phones(&stack).await;
+    let (code, login) = stack.post("/agents/1002/login", "{}").await;
+    assert_eq!(code, 200, "{login}");
+
+    let call = alice_phone.call("7000").await.unwrap();
+    call.answered(SOON).await.unwrap();
+    let Some(ringing) = bob_phone.incoming(Duration::from_secs(10)).await else {
+        stack.fail("the agent was not rung", &alice_phone).await;
+    };
+    let ringing = ringing.leave_ringing();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    if bob_phone
+        .expect(Duration::from_millis(1500), |e| {
+            matches!(e, PhoneEvent::Cancelled { .. })
+        })
+        .await
+        .is_none()
+    {
+        stack
+            .fail("the agent's phone rang on after the caller left", &bob_phone)
+            .await;
+    }
+    assert!(ringing.ended(SOON).await);
+    stack.finish().await;
+}
+
+/// Two tenants each have a queue called `sales` at 7000 with their own
+/// agent at 1001 (docs/TENANT_SCOPE.md §4b). Each caller's call waits in
+/// its own tenant's queue and rings its own tenant's agent. Before, the
+/// second `sales` stopped the node loading any queue from the database, and
+/// a queue rang its agent's extension in the node's default tenant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_tenants_queues_of_one_name_ring_their_own_agents() {
+    use fcp_core::storage::QueueStore;
+    use fcp_core::QueueConfigStore;
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let acme = stack.seed.tenant_id;
+    let globex = stack.seed.tenant("globex", "globex.e2e.local").await;
+    let ann = stack.seed.user("ann", "ann-pw", "1001").await;
+    let carl = stack.seed.user("carl", "carl-pw", "1003").await;
+    let ben = stack.seed.user_in(globex, "ben-globex", "ben-pw", "1001").await;
+    let cara = stack
+        .seed
+        .user_in(globex, "cara-globex", "cara-pw", "1003")
+        .await;
+    let storage = stack.seed.storage();
+    for tenant in [acme, globex] {
+        let mut sales = fcp_core::QueueConfigRecord::new("sales".into(), "7000".into(), tenant);
+        sales.agents = vec!["1001".into()];
+        storage.put_queue_config(sales).await.unwrap();
+    }
+    let (code, reloaded) = stack.post("/queues/reload", "").await;
+    assert_eq!(code, 200, "{reloaded}");
+    assert_eq!(reloaded["status"], "reloaded", "{reloaded}");
+
+    let globex_phone = |user: &SeededUser| {
+        let user = user.clone();
+        let sip = stack.sip;
+        async move {
+            Phone::new(&user.username, &user.password, "globex.e2e.local", sip)
+                .await
+                .unwrap()
+        }
+    };
+    let ann_phone = stack.phone(&ann).await;
+    let carl_phone = stack.phone(&carl).await;
+    let ben_phone = globex_phone(&ben).await;
+    let cara_phone = globex_phone(&cara).await;
+    for phone in [&ann_phone, &carl_phone, &ben_phone, &cara_phone] {
+        assert_eq!(phone.register().await.unwrap(), 200);
+    }
+
+    // Each agent logs in to its own tenant's `sales`.
+    let _ann_login = ann_phone.call("*50").await.unwrap();
+    let _ben_login = ben_phone.call("*50").await.unwrap();
+    let deadline = tokio::time::Instant::now() + SOON;
+    loop {
+        let acme_agents = logged_in_agents(&stack).await;
+        let globex_agents = storage.load_agents(&globex).await.unwrap();
+        if acme_agents.iter().any(|a| a == "ann")
+            && globex_agents
+                .iter()
+                .any(|a| a.id == "ben-globex" && a.queues == ["sales"])
+        {
+            assert!(!acme_agents.iter().any(|a| a == "ben-globex"));
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the agents never logged in: {acme_agents:?} {globex_agents:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // Cara (globex) calls 7000: Ben is rung, Ann is not.
+    let cara_call = cara_phone.call("7000").await.unwrap();
+    if let Err(e) = cara_call.answered(SOON).await {
+        stack
+            .fail(&format!("globex's queue did not answer: {e}"), &cara_phone)
+            .await;
+    }
+    let Some(incoming) = ben_phone.incoming(Duration::from_secs(10)).await else {
+        stack
+            .fail("globex's agent was not rung by globex's queue", &cara_phone)
+            .await;
+    };
+    assert!(
+        ann_phone.incoming(Duration::from_millis(500)).await.is_none(),
+        "acme's agent was rung for globex's caller"
+    );
+    let ben_call = incoming.answer().await.unwrap();
+    cara_call.media().play_tone(440.0, 1000);
+    assert!(ben_call.media().heard(440, SOON).await);
+    assert_eq!(cara_call.hangup().await.unwrap(), 200);
+    assert!(ben_call.ended(SOON).await);
+
+    // Carl (acme) calls 7000: Ann is rung, Ben is not.
+    let carl_call = carl_phone.call("7000").await.unwrap();
+    carl_call.answered(SOON).await.unwrap();
+    let Some(incoming) = ann_phone.incoming(Duration::from_secs(10)).await else {
+        stack
+            .fail("acme's agent was not rung by acme's queue", &carl_phone)
+            .await;
+    };
+    assert!(
+        ben_phone.incoming(Duration::from_millis(500)).await.is_none(),
+        "globex's agent was rung for acme's caller"
+    );
+    let ann_call = incoming.answer().await.unwrap();
+    assert_eq!(carl_call.hangup().await.unwrap(), 200);
+    if !ann_call.ended(SOON).await {
+        stack
+            .fail("acme's agent was left on after the caller hung up", &ann_phone)
+            .await;
+    }
+    stack.finish().await;
+}
+
 // ── Recording consent (docs/COMPLIANCE_FOLLOWUPS.md §8, §10) ───────────
 
 /// The prompt's tone: neither phone plays it, so hearing it is hearing the

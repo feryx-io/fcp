@@ -55,16 +55,11 @@ impl PeopleShown {
     }
 
     /// Whether the member with this extension (or SIP name) is in do not
-    /// disturb or on a call, in any tenant: queues and hunt groups ask
-    /// without one. Someone not heard of is available.
-    pub fn unavailable(&self, extension: &str) -> bool {
-        self.0
-            .get(&extension.to_lowercase())
-            .is_some_and(|by_tenant| {
-                by_tenant
-                    .values()
-                    .any(|p| matches!(p.state, Shown::Dnd | Shown::OnCall))
-            })
+    /// disturb or on a call, in the tenant asking: extension 2001 in
+    /// another tenant is someone else. Someone not heard of is available.
+    pub fn unavailable(&self, tenant: &TenantId, extension: &str) -> bool {
+        self.get(tenant, extension)
+            .is_some_and(|p| matches!(p.state, Shown::Dnd | Shown::OnCall))
     }
 }
 
@@ -291,8 +286,8 @@ impl PeopleOnPhones {
 
     /// Whether the member with this extension (or SIP name) is in do not
     /// disturb or on a call ([`PeopleShown::unavailable`]).
-    pub fn unavailable(&self, extension: &str) -> bool {
-        self.shown.unavailable(extension)
+    pub fn unavailable(&self, tenant: &TenantId, extension: &str) -> bool {
+        self.shown.unavailable(tenant, extension)
     }
 }
 
@@ -365,7 +360,7 @@ mod tests {
                 &shown(state, Some("Focus"), None, false),
             )
         };
-        assert!(!people.unavailable("2001"), "nobody heard of is available");
+        assert!(!people.unavailable(&tenant, "2001"), "nobody heard of is available");
         for (state, unavailable) in [
             (Shown::Busy, false),
             (Shown::Away, false),
@@ -376,8 +371,12 @@ mod tests {
             (Shown::OnCall, true),
         ] {
             say(state);
-            assert_eq!(people.unavailable("2001"), unavailable, "{state:?}");
-            assert_eq!(people.unavailable("Dana"), unavailable, "by name too");
+            assert_eq!(people.unavailable(&tenant, "2001"), unavailable, "{state:?}");
+            assert_eq!(people.unavailable(&tenant, "Dana"), unavailable, "by name too");
+            assert!(
+                !people.unavailable(&TenantId::new(), "2001"),
+                "2001 in another tenant is someone else"
+            );
         }
         assert_eq!(people.get(&tenant, "DANA").unwrap().state, Shown::OnCall);
         assert!(people.get(&TenantId::new(), "dana").is_none());

@@ -12,9 +12,56 @@ use crate::config::QueueConfig;
 /// Implement this to let the queue distribution engine skip agents
 /// who have set themselves as unavailable via presence (DND, Busy, etc.).
 pub trait PresenceChecker: Send + Sync {
-    /// Returns true if the agent (identified by extension/AOR) should be
-    /// skipped for call distribution due to their presence state.
-    fn is_dnd(&self, agent_extension: &str) -> bool;
+    /// Returns true if the tenant's agent (identified by extension/AOR)
+    /// should be skipped for call distribution due to their presence state.
+    fn is_dnd(&self, tenant_id: &TenantId, agent_extension: &str) -> bool;
+}
+
+/// A queue as the node knows it: its name within its tenant. Two tenants may
+/// each have a queue called `sales` (docs/TENANT_SCOPE.md §4b).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct QueueKey {
+    pub tenant_id: TenantId,
+    pub name: String,
+}
+
+impl QueueKey {
+    pub fn new(tenant_id: TenantId, name: impl Into<String>) -> Self {
+        Self {
+            tenant_id,
+            name: name.into(),
+        }
+    }
+}
+
+/// Shown as the name alone: it is what a tenant calls its queue.
+impl std::fmt::Display for QueueKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
+/// An agent as the node knows it: its id (usually the extension) within its
+/// tenant, so extension 1001 in two tenants is two agents.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AgentKey {
+    pub tenant_id: TenantId,
+    pub id: String,
+}
+
+impl AgentKey {
+    pub fn new(tenant_id: TenantId, id: impl Into<String>) -> Self {
+        Self {
+            tenant_id,
+            id: id.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for AgentKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.id)
+    }
 }
 
 /// Agent availability state.
@@ -129,6 +176,21 @@ impl Agent {
             _ => false,
         }
     }
+
+    pub fn key(&self) -> AgentKey {
+        AgentKey::new(self.tenant_id, self.id.clone())
+    }
+
+    /// The agent's queues: always its own tenant's.
+    pub fn queue_keys(&self) -> impl Iterator<Item = QueueKey> + '_ {
+        self.queues
+            .iter()
+            .map(|name| QueueKey::new(self.tenant_id, name.clone()))
+    }
+
+    pub fn is_in(&self, queue: &QueueKey) -> bool {
+        self.tenant_id == queue.tenant_id && self.queues.contains(&queue.name)
+    }
 }
 
 /// A call waiting in the queue.
@@ -166,9 +228,16 @@ pub struct QueuedCall {
     pub last_callback_attempt: Option<Instant>,
 }
 
+impl QueuedCall {
+    pub fn queue_key(&self) -> QueueKey {
+        QueueKey::new(self.tenant_id, self.queue_name.clone())
+    }
+}
+
 /// Information about a pending callback for the REST API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallbackInfo {
+    pub tenant_id: TenantId,
     pub call_id: String,
     pub queue_name: String,
     pub callback_uri: String,
@@ -194,6 +263,10 @@ pub struct Queue {
 }
 
 impl Queue {
+    pub fn key(&self) -> QueueKey {
+        QueueKey::new(self.tenant_id, self.name.clone())
+    }
+
     /// Create a new empty queue from configuration.
     pub fn new(name: String, tenant_id: TenantId, config: QueueConfig) -> Self {
         Self {

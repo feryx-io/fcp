@@ -47,6 +47,8 @@ use tracing::debug;
 ///   ([`crate::own_leg`]); kept only when it carries this process's token.
 /// - `X-FCP-Flow-Dial` turns a user's voicemail into a refusal; kept only
 ///   on a leg that carries that token.
+/// - `X-FCP-Own-Leg-Tenant` makes the call another tenant's; kept only on
+///   a leg that carries that token.
 pub const CLAIMED_HEADERS: &[&str] = &[
     fcp_core::CALL_ID_HEADER,
     crate::handler::TRANSFERRED_FROM_HEADER,
@@ -59,6 +61,7 @@ pub const CLAIMED_HEADERS: &[&str] = &[
     "X-FCP-Intercom-Mode",
     crate::own_leg::OWN_LEG_HEADER,
     crate::handler::FLOW_DIAL_HEADER,
+    crate::own_leg::OWN_LEG_TENANT_HEADER,
 ];
 
 /// Whether this node believes what a peer says about a request.
@@ -165,6 +168,7 @@ impl<'a> Claims<'a> {
         }
         if name.eq_ignore_ascii_case(crate::own_leg::OWN_LEG_HEADER)
             || name.eq_ignore_ascii_case(crate::handler::FLOW_DIAL_HEADER)
+            || name.eq_ignore_ascii_case(crate::own_leg::OWN_LEG_TENANT_HEADER)
         {
             return crate::own_leg::proves(request);
         }
@@ -215,6 +219,24 @@ mod tests {
         let stripped = claims.strip(&forged).expect("stripped");
         assert!(!has(&stripped, "X-FCP-Own-Leg"));
         assert!(!crate::own_leg::proves(&forged));
+    }
+
+    /// A queue's leg to this node names the tenant it rings for; a phone
+    /// that names one is not believed (docs/TENANT_SCOPE.md §4b).
+    #[test]
+    fn only_an_own_leg_names_its_tenant() {
+        let claims = Claims::from(PeerTrust::Untrusted);
+        let tenant = fcp_core::TenantId::new();
+        let own = request(&[
+            &format!("X-FCP-Own-Leg: {}", crate::own_leg::token()),
+            &format!("X-FCP-Own-Leg-Tenant: {tenant}"),
+        ]);
+        assert!(claims.strip(&own).is_none());
+        assert_eq!(crate::own_leg::tenant(&own), Some(tenant));
+        let forged = request(&[&format!("X-FCP-Own-Leg-Tenant: {tenant}")]);
+        let stripped = claims.strip(&forged).expect("stripped");
+        assert!(!has(&stripped, "X-FCP-Own-Leg-Tenant"));
+        assert_eq!(crate::own_leg::tenant(&forged), None);
     }
 
     /// A request carrying `headers`, each a `Name: value` line.

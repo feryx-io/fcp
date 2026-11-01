@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_queue::{Agent, AgentState};
+use fcp_queue::{Agent, AgentKey, AgentState, QueueKey};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -21,41 +21,41 @@ macro_rules! require_queue_manager {
     };
 }
 
+/// The tenant's queue by its name: another tenant's queue of the same name is
+/// not this one.
 fn ensure_queue_access(
     qm: &fcp_queue::QueueManager,
     queue_name: &str,
     tenant_id: &fcp_core::TenantId,
-) -> Result<(), ApiError> {
-    if qm
-        .get_queue_config_for_tenant(queue_name, tenant_id)
-        .is_none()
-    {
+) -> Result<QueueKey, ApiError> {
+    let key = QueueKey::new(*tenant_id, queue_name);
+    if qm.get_queue_config(&key).is_none() {
         return Err(ApiError::NotFound(format!(
             "Queue '{}' not found",
             queue_name
         )));
     }
-    Ok(())
+    Ok(key)
 }
 
 fn ensure_agent_access(
     qm: &fcp_queue::QueueManager,
-    queue_name: &str,
+    queue: &QueueKey,
     agent_id: &str,
-    tenant_id: &fcp_core::TenantId,
-) -> Result<Agent, ApiError> {
+) -> Result<AgentKey, ApiError> {
+    let key = AgentKey::new(queue.tenant_id, agent_id);
     let agent = qm
-        .get_agent_for_tenant(agent_id, tenant_id)
+        .get_agent(&key)
         .ok_or_else(|| ApiError::NotFound(format!("Agent '{}' not found", agent_id)))?;
 
-    if !agent.queues.iter().any(|queue| queue == queue_name) {
+    if !agent.is_in(queue) {
         return Err(ApiError::NotFound(format!(
             "Agent '{}' is not assigned to queue '{}'",
-            agent_id, queue_name
+            agent_id, queue
         )));
     }
 
-    Ok(agent)
+    Ok(key)
 }
 
 fn queue_response(
@@ -174,11 +174,12 @@ pub async fn list_queues(
         let mut responses = Vec::with_capacity(queue_names.len());
 
         for name in &queue_names {
-            if let Some(config) = qm.get_queue_config_for_tenant(name, &tenant.0) {
+            let key = QueueKey::new(tenant.0, name.clone());
+            if let Some(config) = qm.get_queue_config(&key) {
                 responses.push(queue_response(
                     name.clone(),
                     config,
-                    qm.get_queue_waiting_count_for_tenant(name, &tenant.0),
+                    qm.get_queue_waiting_count(&key),
                 ));
             }
         }
@@ -245,14 +246,15 @@ pub async fn get_queue(
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
+    let key = QueueKey::new(tenant.0, name.clone());
     let config = qm
-        .get_queue_config_for_tenant(&name, &tenant.0)
+        .get_queue_config(&key)
         .ok_or_else(|| ApiError::NotFound(format!("Queue '{}' not found", name)))?;
 
     Ok(Json(queue_response(
         name.clone(),
         config,
-        qm.get_queue_waiting_count_for_tenant(&name, &tenant.0),
+        qm.get_queue_waiting_count(&key),
     )))
 }
 
@@ -276,7 +278,7 @@ pub async fn get_queue_stats(
     let qm = require_queue_manager!(state);
 
     let stats = qm
-        .queue_stats_for_tenant(&name, &tenant.0)
+        .queue_stats(&QueueKey::new(tenant.0, name.clone()))
         .ok_or_else(|| ApiError::NotFound(format!("Queue '{}' not found", name)))?;
 
     Ok(Json(QueueStatsResponse {
@@ -357,9 +359,9 @@ pub async fn list_queue_agents(
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    ensure_queue_access(qm, &name, &tenant.0)?;
+    let queue = ensure_queue_access(qm, &name, &tenant.0)?;
 
-    let agents = qm.list_agents_for_queue_and_tenant(&name, &tenant.0);
+    let agents = qm.list_agents_for_queue(&queue);
     let responses: Vec<AgentResponse> = agents.into_iter().map(agent_response).collect();
 
     Ok(Json(crate::page::paginate(
@@ -393,11 +395,11 @@ pub async fn agent_login(
 
     ensure_queue_access(qm, &name, &tenant.0)?;
 
+    let agent_key = AgentKey::new(tenant.0, req.agent_id.clone());
     qm.agent_login(
-        &req.agent_id,
+        &agent_key,
         &req.extension,
         std::slice::from_ref(&name),
-        tenant.0,
         req.skills.clone(),
     )
     .await
@@ -412,7 +414,7 @@ pub async fn agent_login(
 
     // Return the agent state
     let agent = qm
-        .get_agent_for_tenant(&req.agent_id, &tenant.0)
+        .get_agent(&agent_key)
         .ok_or_else(|| ApiError::Internal("Agent not found after login".to_string()))?;
 
     Ok((StatusCode::CREATED, Json(agent_response(agent))))
@@ -437,10 +439,10 @@ pub async fn agent_logout(
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    ensure_queue_access(qm, &name, &tenant.0)?;
-    let _ = ensure_agent_access(qm, &name, &id, &tenant.0)?;
+    let queue = ensure_queue_access(qm, &name, &tenant.0)?;
+    let agent_key = ensure_agent_access(qm, &queue, &id)?;
 
-    qm.agent_logout(&id)
+    qm.agent_logout(&agent_key)
         .await
         .map_err(|e| ApiError::NotFound(e.to_string()))?;
 
@@ -468,17 +470,17 @@ pub async fn pause_agent(
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    ensure_queue_access(qm, &name, &tenant.0)?;
-    let _ = ensure_agent_access(qm, &name, &id, &tenant.0)?;
+    let queue = ensure_queue_access(qm, &name, &tenant.0)?;
+    let agent_key = ensure_agent_access(qm, &queue, &id)?;
 
-    qm.set_agent_state(&id, AgentState::Paused)
+    qm.set_agent_state(&agent_key, AgentState::Paused)
         .await
         .map_err(|e| ApiError::NotFound(e.to_string()))?;
 
     info!(agent_id = %id, queue = %name, "Agent paused via API");
 
     let agent = qm
-        .get_agent_for_tenant(&id, &tenant.0)
+        .get_agent(&agent_key)
         .ok_or_else(|| ApiError::NotFound(format!("Agent '{}' not found", id)))?;
 
     Ok(Json(agent_response(agent)))
@@ -503,17 +505,17 @@ pub async fn resume_agent(
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    ensure_queue_access(qm, &name, &tenant.0)?;
-    let _ = ensure_agent_access(qm, &name, &id, &tenant.0)?;
+    let queue = ensure_queue_access(qm, &name, &tenant.0)?;
+    let agent_key = ensure_agent_access(qm, &queue, &id)?;
 
-    qm.set_agent_state(&id, AgentState::Available)
+    qm.set_agent_state(&agent_key, AgentState::Available)
         .await
         .map_err(|e| ApiError::NotFound(e.to_string()))?;
 
     info!(agent_id = %id, queue = %name, "Agent resumed via API");
 
     let agent = qm
-        .get_agent_for_tenant(&id, &tenant.0)
+        .get_agent(&agent_key)
         .ok_or_else(|| ApiError::NotFound(format!("Agent '{}' not found", id)))?;
 
     Ok(Json(agent_response(agent)))
@@ -540,8 +542,8 @@ pub async fn update_agent_state(
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    ensure_queue_access(qm, &name, &tenant.0)?;
-    let _ = ensure_agent_access(qm, &name, &id, &tenant.0)?;
+    let queue = ensure_queue_access(qm, &name, &tenant.0)?;
+    let agent_key = ensure_agent_access(qm, &queue, &id)?;
 
     let new_state = match req.state.as_str() {
         "available" => AgentState::Available,
@@ -554,14 +556,14 @@ pub async fn update_agent_state(
         }
     };
 
-    qm.set_agent_state(&id, new_state)
+    qm.set_agent_state(&agent_key, new_state)
         .await
         .map_err(|e| ApiError::NotFound(e.to_string()))?;
 
     info!(agent_id = %id, queue = %name, new_state = %req.state, "Agent state updated via API");
 
     let agent = qm
-        .get_agent_for_tenant(&id, &tenant.0)
+        .get_agent(&agent_key)
         .ok_or_else(|| ApiError::NotFound(format!("Agent '{}' not found", id)))?;
 
     Ok(Json(agent_response(agent)))

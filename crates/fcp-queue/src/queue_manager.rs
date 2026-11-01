@@ -21,8 +21,8 @@ use crate::distribution::{self, DistributionPlan};
 use crate::events;
 
 use crate::types::{
-    Agent, AgentState, AgentStats, CampaignCallOutcome, CampaignNumber, CampaignStats, Queue,
-    QueueStats, QueuedCall,
+    Agent, AgentKey, AgentState, AgentStats, CampaignCallOutcome, CampaignNumber, CampaignStats, Queue,
+    QueueKey, QueueStats, QueuedCall,
 };
 
 /// Runtime queue definition with explicit tenant ownership.
@@ -33,42 +33,48 @@ pub struct TenantQueueDefinition {
     pub config: QueueConfig,
 }
 
+impl TenantQueueDefinition {
+    pub fn key(&self) -> QueueKey {
+        QueueKey::new(self.tenant_id, self.name.clone())
+    }
+}
+
 /// Central manager for all queues, agents, and call distribution.
 ///
 /// Thread-safe via `DashMap` — can be shared across tokio tasks.
 #[derive(Clone)]
 pub struct QueueManager {
     /// Queue name → Queue runtime state.
-    queues: Arc<DashMap<String, Queue>>,
+    queues: Arc<DashMap<QueueKey, Queue>>,
     /// Agent ID → Agent runtime state.
-    agents: Arc<DashMap<String, Agent>>,
+    agents: Arc<DashMap<AgentKey, Agent>>,
     /// Optional event publisher for queue events.
     events: Option<Arc<dyn EventPublisher>>,
     /// Round-robin counters per queue.
-    round_robin_counters: Arc<DashMap<String, AtomicUsize>>,
+    round_robin_counters: Arc<DashMap<QueueKey, AtomicUsize>>,
     /// System configuration.
     config: Arc<parking_lot::RwLock<QueueSystemConfig>>,
     /// Extension → queue name mapping for fast INVITE dispatch.
-    extension_map: Arc<DashMap<(TenantId, String), String>>,
+    extension_map: Arc<DashMap<(TenantId, String), QueueKey>>,
     /// Per-queue counters for daily stats.
-    calls_handled_today: Arc<DashMap<String, u64>>,
-    calls_abandoned_today: Arc<DashMap<String, u64>>,
-    calls_within_sl: Arc<DashMap<String, u64>>,
-    calls_offered_today: Arc<DashMap<String, u64>>,
+    calls_handled_today: Arc<DashMap<QueueKey, u64>>,
+    calls_abandoned_today: Arc<DashMap<QueueKey, u64>>,
+    calls_within_sl: Arc<DashMap<QueueKey, u64>>,
+    calls_offered_today: Arc<DashMap<QueueKey, u64>>,
     /// Optional persistent store for agent state.
     queue_store: Option<Arc<dyn QueueStore>>,
     /// In-memory ring buffer of stats snapshots per queue (max 1440 = 24h at 1-min intervals).
-    stats_history: Arc<DashMap<String, VecDeque<StoredQueueSnapshot>>>,
+    stats_history: Arc<DashMap<QueueKey, VecDeque<StoredQueueSnapshot>>>,
     /// Cancellation tokens for active wrap-up timers, keyed by agent ID.
-    wrap_up_cancels: Arc<DashMap<String, CancellationToken>>,
+    wrap_up_cancels: Arc<DashMap<AgentKey, CancellationToken>>,
     /// Campaign dial lists per queue (queue_name → remaining numbers).
-    campaign_numbers: Arc<DashMap<String, VecDeque<CampaignNumber>>>,
+    campaign_numbers: Arc<DashMap<QueueKey, VecDeque<CampaignNumber>>>,
     /// Active campaign dials per queue (queue_name → set of destinations currently ringing).
-    campaign_active_dials: Arc<DashMap<String, HashSet<String>>>,
+    campaign_active_dials: Arc<DashMap<QueueKey, HashSet<String>>>,
     /// Campaign statistics per queue.
-    campaign_stats: Arc<DashMap<String, CampaignStats>>,
+    campaign_stats: Arc<DashMap<QueueKey, CampaignStats>>,
     /// Whether each campaign is running (queue_name → running).
-    campaign_running: Arc<DashMap<String, bool>>,
+    campaign_running: Arc<DashMap<QueueKey, bool>>,
     /// Optional presence checker for DND/busy filtering during agent selection.
     presence_checker: Arc<parking_lot::RwLock<Option<Arc<dyn crate::types::PresenceChecker>>>>,
 }
@@ -89,15 +95,16 @@ impl QueueManager {
         let calls_offered_today = Arc::new(DashMap::new());
 
         // Initialize queues from config
-        for (key, queue_config) in &config.queues {
-            let queue = Queue::new(key.clone(), tenant_id, queue_config.clone());
+        for (name, queue_config) in &config.queues {
+            let key = QueueKey::new(tenant_id, name.clone());
+            let queue = Queue::new(name.clone(), tenant_id, queue_config.clone());
             extension_map.insert((tenant_id, queue_config.extension.clone()), key.clone());
             round_robin_counters.insert(key.clone(), AtomicUsize::new(0));
             calls_handled_today.insert(key.clone(), 0);
             calls_abandoned_today.insert(key.clone(), 0);
             calls_within_sl.insert(key.clone(), 0);
             calls_offered_today.insert(key.clone(), 0);
-            queues.insert(key.clone(), queue);
+            queues.insert(key, queue);
         }
 
         Self {
@@ -134,31 +141,12 @@ impl QueueManager {
         self.queue_store = Some(store);
     }
 
-    /// Check if a dialed extension maps to a configured queue.
-    /// Returns the queue name if the extension is globally unambiguous.
-    ///
-    /// When multiple tenants use the same extension, callers must use
-    /// [`get_queue_for_extension_in_tenant`] to disambiguate.
-    pub fn get_queue_for_extension(&self, extension: &str) -> Option<String> {
-        let matches = self
-            .extension_map
-            .iter()
-            .filter(|entry| entry.key().1 == extension)
-            .map(|entry| entry.value().clone())
-            .collect::<HashSet<_>>();
-        if matches.len() == 1 {
-            matches.into_iter().next()
-        } else {
-            None
-        }
-    }
-
     /// Check if a dialed extension maps to a queue inside the given tenant.
     pub fn get_queue_for_extension_in_tenant(
         &self,
         tenant_id: &TenantId,
         extension: &str,
-    ) -> Option<String> {
+    ) -> Option<QueueKey> {
         self.extension_map
             .get(&(*tenant_id, extension.to_string()))
             .map(|queue_name| queue_name.clone())
@@ -175,7 +163,7 @@ impl QueueManager {
     }
 
     /// Escalate call priorities for a queue based on wait time.
-    pub fn escalate_priorities(&self, queue_name: &str) {
+    pub fn escalate_priorities(&self, queue_name: &QueueKey) {
         if let Some(mut queue) = self.queues.get_mut(queue_name) {
             let interval = queue.config.priority_escalation_secs;
             queue.escalate_priorities(interval);
@@ -185,7 +173,7 @@ impl QueueManager {
     /// Check if a queue is currently open based on its schedule.
     /// Returns true if no schedule is configured (always open) or if the
     /// current time falls within one of the schedule entries.
-    pub fn is_queue_open(&self, queue_name: &str) -> bool {
+    pub fn is_queue_open(&self, queue_name: &QueueKey) -> bool {
         let queue = match self.queues.get(queue_name) {
             Some(q) => q,
             None => return false,
@@ -224,8 +212,8 @@ impl QueueManager {
     pub async fn transfer_to_queue(
         &self,
         call_id: &str,
-        from_queue: &str,
-        to_queue: &str,
+        from_queue: &QueueKey,
+        to_queue: &QueueKey,
     ) -> Result<usize> {
         // Remove from source queue
         let mut call = {
@@ -240,7 +228,10 @@ impl QueueManager {
 
         // Reset for new queue
         call.attempts = 0;
-        call.queue_name = to_queue.to_string();
+        if to_queue.tenant_id != call.tenant_id {
+            bail!("Target queue '{}' not found", to_queue);
+        }
+        call.queue_name = to_queue.name.clone();
 
         let tenant_id = call.tenant_id;
 
@@ -271,13 +262,20 @@ impl QueueManager {
             "Call transferred between queues"
         );
 
-        events::caller_transferred(&self.events, from_queue, to_queue, call_id, &tenant_id).await;
+        events::caller_transferred(
+            &self.events,
+            &from_queue.name,
+            &to_queue.name,
+            call_id,
+            &tenant_id,
+        )
+        .await;
 
         Ok(position)
     }
 
     /// Get the closed destination for a queue (closed_destination or overflow_destination).
-    pub fn get_closed_destination(&self, queue_name: &str) -> Option<String> {
+    pub fn get_closed_destination(&self, queue_name: &QueueKey) -> Option<String> {
         self.queues.get(queue_name).and_then(|q| {
             q.config
                 .closed_destination
@@ -289,7 +287,7 @@ impl QueueManager {
     // ---- Drain Operations ----
 
     /// Start draining a queue — reject new calls, let existing ones finish.
-    pub async fn drain_queue(&self, queue_name: &str) -> Result<()> {
+    pub async fn drain_queue(&self, queue_name: &QueueKey) -> Result<()> {
         let tenant_id = {
             let mut queue = self
                 .queues
@@ -298,13 +296,13 @@ impl QueueManager {
             queue.draining = true;
             queue.tenant_id
         };
-        events::queue_draining(&self.events, queue_name, &tenant_id).await;
+        events::queue_draining(&self.events, &queue_name.name, &tenant_id).await;
         info!(queue = %queue_name, "Queue draining started");
         Ok(())
     }
 
     /// Stop draining — resume accepting calls.
-    pub async fn undrain_queue(&self, queue_name: &str) -> Result<()> {
+    pub async fn undrain_queue(&self, queue_name: &QueueKey) -> Result<()> {
         let mut queue = self
             .queues
             .get_mut(queue_name)
@@ -316,7 +314,7 @@ impl QueueManager {
     }
 
     /// Check if a queue is draining.
-    pub fn is_queue_draining(&self, queue_name: &str) -> bool {
+    pub fn is_queue_draining(&self, queue_name: &QueueKey) -> bool {
         self.queues
             .get(queue_name)
             .map(|q| q.draining)
@@ -332,7 +330,7 @@ impl QueueManager {
         &self,
         new_config: QueueSystemConfig,
         default_tenant_id: TenantId,
-    ) -> Vec<String> {
+    ) -> Vec<QueueKey> {
         let definitions = new_config
             .queues
             .iter()
@@ -359,17 +357,18 @@ impl QueueManager {
     pub fn sync_queue_definitions(
         &self,
         definitions: Vec<TenantQueueDefinition>,
-        mut system_config: QueueSystemConfig,
-    ) -> Result<Vec<String>> {
+        system_config: QueueSystemConfig,
+    ) -> Result<Vec<QueueKey>> {
         let mut new_queues = Vec::new();
-        let mut desired_names = HashSet::new();
+        let mut desired = HashSet::new();
         let mut seen_extensions = HashSet::new();
 
         for definition in &definitions {
-            if !desired_names.insert(definition.name.clone()) {
+            if !desired.insert(definition.key()) {
                 bail!(
-                    "Duplicate queue name '{}' in runtime configuration",
-                    definition.name
+                    "Duplicate queue name '{}' for tenant '{}' in runtime configuration",
+                    definition.name,
+                    definition.tenant_id
                 );
             }
 
@@ -384,27 +383,22 @@ impl QueueManager {
         }
 
         for definition in &definitions {
-            if self.queues.contains_key(&definition.name) {
-                if let Some(mut queue) = self.queues.get_mut(&definition.name) {
-                    let old_extension = queue.config.extension.clone();
-                    let old_tenant_id = queue.tenant_id;
-                    if old_extension != definition.config.extension
-                        || old_tenant_id != definition.tenant_id
-                    {
-                        self.extension_map
-                            .remove(&(old_tenant_id, old_extension.clone()));
-                        self.extension_map.insert(
-                            (definition.tenant_id, definition.config.extension.clone()),
-                            definition.name.clone(),
-                        );
-                    }
-                    queue.tenant_id = definition.tenant_id;
-                    queue.config = definition.config.clone();
-                    queue.draining = false;
+            let key = definition.key();
+            if let Some(mut queue) = self.queues.get_mut(&key) {
+                let old_extension = queue.config.extension.clone();
+                if old_extension != definition.config.extension {
+                    self.extension_map
+                        .remove(&(key.tenant_id, old_extension.clone()));
+                    self.extension_map.insert(
+                        (key.tenant_id, definition.config.extension.clone()),
+                        key.clone(),
+                    );
                 }
+                queue.config = definition.config.clone();
+                queue.draining = false;
             } else {
                 self.queues.insert(
-                    definition.name.clone(),
+                    key.clone(),
                     Queue::new(
                         definition.name.clone(),
                         definition.tenant_id,
@@ -412,52 +406,37 @@ impl QueueManager {
                     ),
                 );
                 self.extension_map.insert(
-                    (definition.tenant_id, definition.config.extension.clone()),
-                    definition.name.clone(),
+                    (key.tenant_id, definition.config.extension.clone()),
+                    key.clone(),
                 );
-                self.calls_handled_today.insert(definition.name.clone(), 0);
-                self.calls_abandoned_today
-                    .insert(definition.name.clone(), 0);
-                self.calls_within_sl.insert(definition.name.clone(), 0);
-                self.calls_offered_today.insert(definition.name.clone(), 0);
+                self.calls_handled_today.insert(key.clone(), 0);
+                self.calls_abandoned_today.insert(key.clone(), 0);
+                self.calls_within_sl.insert(key.clone(), 0);
+                self.calls_offered_today.insert(key.clone(), 0);
                 self.round_robin_counters
-                    .insert(definition.name.clone(), AtomicUsize::new(0));
-                new_queues.push(definition.name.clone());
+                    .insert(key.clone(), AtomicUsize::new(0));
+                new_queues.push(key);
             }
-
-            system_config
-                .queues
-                .insert(definition.name.clone(), definition.config.clone());
         }
 
-        let existing_names = self
+        let existing = self
             .queues
             .iter()
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>();
-        for queue_name in existing_names {
-            if desired_names.contains(&queue_name) {
+        for key in existing {
+            if desired.contains(&key) {
                 continue;
             }
 
-            if let Some(queue) = self.queues.get(&queue_name) {
+            if let Some(queue) = self.queues.get(&key) {
                 self.extension_map
                     .remove(&(queue.tenant_id, queue.config.extension.clone()));
 
                 if queue.waiting_calls.is_empty() {
                     drop(queue);
-                    self.queues.remove(&queue_name);
-                    self.round_robin_counters.remove(&queue_name);
-                    self.calls_handled_today.remove(&queue_name);
-                    self.calls_abandoned_today.remove(&queue_name);
-                    self.calls_within_sl.remove(&queue_name);
-                    self.calls_offered_today.remove(&queue_name);
-                    self.stats_history.remove(&queue_name);
-                    self.campaign_numbers.remove(&queue_name);
-                    self.campaign_active_dials.remove(&queue_name);
-                    self.campaign_stats.remove(&queue_name);
-                    self.campaign_running.remove(&queue_name);
-                } else if let Some(mut queue) = self.queues.get_mut(&queue_name) {
+                    self.forget_queue(&key);
+                } else if let Some(mut queue) = self.queues.get_mut(&key) {
                     queue.draining = true;
                 }
             }
@@ -481,25 +460,40 @@ impl QueueManager {
         Ok(new_queues)
     }
 
+    /// Drop a queue and everything kept for it.
+    fn forget_queue(&self, key: &QueueKey) {
+        self.queues.remove(key);
+        self.round_robin_counters.remove(key);
+        self.calls_handled_today.remove(key);
+        self.calls_abandoned_today.remove(key);
+        self.calls_within_sl.remove(key);
+        self.calls_offered_today.remove(key);
+        self.stats_history.remove(key);
+        self.campaign_numbers.remove(key);
+        self.campaign_active_dials.remove(key);
+        self.campaign_stats.remove(key);
+        self.campaign_running.remove(key);
+    }
+
     // ---- Agent Operations ----
 
-    /// Log an agent into one or more queues.
+    /// Log an agent into one or more of its tenant's queues, named.
     pub async fn agent_login(
         &self,
-        agent_id: &str,
+        agent_id: &AgentKey,
         extension: &str,
         queues: &[String],
-        tenant_id: TenantId,
         skills: Vec<String>,
     ) -> Result<()> {
+        let tenant_id = agent_id.tenant_id;
         // Validate that all requested queues exist
         for q in queues {
-            if !self.queues.contains_key(q) {
+            if !self.queues.contains_key(&QueueKey::new(tenant_id, q.clone())) {
                 bail!("Queue '{}' does not exist", q);
             }
         }
 
-        let mut agent = Agent::new(agent_id.to_string(), extension.to_string(), tenant_id);
+        let mut agent = Agent::new(agent_id.id.clone(), extension.to_string(), tenant_id);
         agent.queues = queues.to_vec();
         agent.skills = skills;
         agent.state = AgentState::Available;
@@ -509,19 +503,19 @@ impl QueueManager {
 
         // Populate per-queue priority overrides from queue configs
         for q_name in queues {
-            if let Some(queue) = self.queues.get(q_name) {
-                if let Some(&prio) = queue.config.agent_priorities.get(agent_id) {
+            if let Some(queue) = self.queues.get(&QueueKey::new(tenant_id, q_name.clone())) {
+                if let Some(&prio) = queue.config.agent_priorities.get(&agent_id.id) {
                     agent.queue_priorities.insert(q_name.clone(), prio);
                 }
             }
         }
 
-        self.agents.insert(agent_id.to_string(), agent);
+        self.agents.insert(agent_id.clone(), agent);
 
         info!(agent_id = %agent_id, queues = ?queues, "Agent logged in");
 
         for q in queues {
-            events::agent_logged_in(&self.events, q, agent_id, &tenant_id).await;
+            events::agent_logged_in(&self.events, q, &agent_id.id, &tenant_id).await;
         }
 
         self.persist_agent_change(&tenant_id);
@@ -530,7 +524,7 @@ impl QueueManager {
     }
 
     /// Log an agent out of all queues.
-    pub async fn agent_logout(&self, agent_id: &str) -> Result<()> {
+    pub async fn agent_logout(&self, agent_id: &AgentKey) -> Result<()> {
         let mut agent = self
             .agents
             .get_mut(agent_id)
@@ -546,11 +540,11 @@ impl QueueManager {
         info!(agent_id = %agent_id, "Agent logged out");
 
         for q in &agent_queues {
-            events::agent_logged_out(&self.events, q, agent_id, &tenant_id).await;
+            events::agent_logged_out(&self.events, q, &agent_id.id, &tenant_id).await;
         }
         events::agent_state_changed(
             &self.events,
-            agent_id,
+            &agent_id.id,
             &old_state,
             "logged_out",
             None,
@@ -564,7 +558,7 @@ impl QueueManager {
     }
 
     /// Set an agent's state (e.g., Available, Away).
-    pub async fn set_agent_state(&self, agent_id: &str, state: AgentState) -> Result<()> {
+    pub async fn set_agent_state(&self, agent_id: &AgentKey, state: AgentState) -> Result<()> {
         let mut agent = self
             .agents
             .get_mut(agent_id)
@@ -586,7 +580,7 @@ impl QueueManager {
 
         events::agent_state_changed(
             &self.events,
-            agent_id,
+            &agent_id.id,
             &old_state,
             &new_state,
             None,
@@ -631,7 +625,7 @@ impl QueueManager {
     /// Mark an agent's call as completed. Transitions OnCall → WrapUp and
     /// schedules automatic transition to Available after the wrap-up timeout.
     /// If the agent still has other active calls, stays OnCall.
-    pub fn agent_call_completed(&self, agent_id: &str) {
+    pub fn agent_call_completed(&self, agent_id: &AgentKey) {
         let wrap_up_secs = self.config.read().wrap_up_time_secs;
 
         if let Some(mut agent) = self.agents.get_mut(agent_id) {
@@ -658,7 +652,7 @@ impl QueueManager {
                 // Create new cancellation token and spawn timer
                 let token = CancellationToken::new();
                 self.wrap_up_cancels
-                    .insert(agent_id.to_string(), token.clone());
+                    .insert(agent_id.clone(), token.clone());
                 self.spawn_wrap_up_timer(agent_id, wrap_up_secs, token);
             } else {
                 drop(agent);
@@ -671,11 +665,11 @@ impl QueueManager {
 
     /// Spawn a wrap-up timer task that transitions the agent to Available
     /// after the given duration, unless cancelled via the token.
-    fn spawn_wrap_up_timer(&self, agent_id: &str, secs: u32, token: CancellationToken) {
+    fn spawn_wrap_up_timer(&self, agent_id: &AgentKey, secs: u32, token: CancellationToken) {
         let agents = Arc::clone(&self.agents);
         let events = self.events.clone();
         let wrap_up_cancels = Arc::clone(&self.wrap_up_cancels);
-        let agent_id = agent_id.to_string();
+        let agent_id = agent_id.clone();
 
         tokio::spawn(async move {
             tokio::select! {
@@ -689,7 +683,7 @@ impl QueueManager {
                             drop(agent);
                             debug!(agent_id = %agent_id, "Wrap-up complete, agent now available");
                             events::agent_state_changed(
-                                &events, &agent_id, "wrap_up", "available", None, &tenant_id,
+                                &events, &agent_id.id, "wrap_up", "available", None, &tenant_id,
                             ).await;
                         }
                     }
@@ -706,12 +700,12 @@ impl QueueManager {
     ///
     /// Split into sync + async to keep parking_lot guards out of the async
     /// state machine (parking_lot guards are `!Send`).
-    pub async fn extend_wrap_up(&self, agent_id: &str) -> Result<u32> {
+    pub async fn extend_wrap_up(&self, agent_id: &AgentKey) -> Result<u32> {
         let (extensions_used, tenant_id) = self.extend_wrap_up_sync(agent_id)?;
 
         events::agent_state_changed(
             &self.events,
-            agent_id,
+            &agent_id.id,
             "wrap_up",
             "wrap_up",
             Some("wrap_up_extended"),
@@ -724,7 +718,7 @@ impl QueueManager {
 
     /// Synchronous portion of extend_wrap_up — validates, cancels old timer,
     /// spawns new timer, returns (extensions_used, tenant_id).
-    fn extend_wrap_up_sync(&self, agent_id: &str) -> Result<(u32, TenantId)> {
+    fn extend_wrap_up_sync(&self, agent_id: &AgentKey) -> Result<(u32, TenantId)> {
         let config = self.config.read();
         let extension_secs = config.wrap_up_extension_secs;
         let max_extensions = config.max_wrap_up_extensions;
@@ -765,7 +759,7 @@ impl QueueManager {
         // Create new cancellation token and spawn a new timer
         let token = CancellationToken::new();
         self.wrap_up_cancels
-            .insert(agent_id.to_string(), token.clone());
+            .insert(agent_id.clone(), token.clone());
         self.spawn_wrap_up_timer(agent_id, extension_secs, token);
 
         info!(
@@ -782,14 +776,14 @@ impl QueueManager {
     // ---- Campaign / Predictive Dialer ----
 
     /// Load a list of numbers into the campaign dial queue.
-    pub fn load_campaign_numbers(&self, queue_name: &str, numbers: Vec<CampaignNumber>) {
+    pub fn load_campaign_numbers(&self, queue_name: &QueueKey, numbers: Vec<CampaignNumber>) {
         let count = numbers.len();
         self.campaign_numbers
-            .insert(queue_name.to_string(), VecDeque::from(numbers));
+            .insert(queue_name.clone(), VecDeque::from(numbers));
         // Initialize or reset stats
         let mut stats = self
             .campaign_stats
-            .entry(queue_name.to_string())
+            .entry(queue_name.clone())
             .or_insert_with(CampaignStats::default);
         stats.numbers_remaining = count;
         stats.active_dials = 0;
@@ -802,7 +796,7 @@ impl QueueManager {
     }
 
     /// Pop the next number to dial from the campaign queue.
-    pub fn next_campaign_number(&self, queue_name: &str) -> Option<CampaignNumber> {
+    pub fn next_campaign_number(&self, queue_name: &QueueKey) -> Option<CampaignNumber> {
         let mut entry = self.campaign_numbers.get_mut(queue_name)?;
         let number = entry.pop_front()?;
         // Update remaining count in stats
@@ -815,7 +809,7 @@ impl QueueManager {
     /// Record the outcome of a campaign call.
     pub fn campaign_call_result(
         &self,
-        queue_name: &str,
+        queue_name: &QueueKey,
         destination: &str,
         outcome: CampaignCallOutcome,
     ) {
@@ -839,9 +833,9 @@ impl QueueManager {
     }
 
     /// Start the campaign for a queue.
-    pub fn set_campaign_running(&self, queue_name: &str, running: bool) {
+    pub fn set_campaign_running(&self, queue_name: &QueueKey, running: bool) {
         self.campaign_running
-            .insert(queue_name.to_string(), running);
+            .insert(queue_name.clone(), running);
         if let Some(mut stats) = self.campaign_stats.get_mut(queue_name) {
             stats.running = running;
         }
@@ -853,7 +847,7 @@ impl QueueManager {
     }
 
     /// Check if a campaign is currently running for a queue.
-    pub fn is_campaign_running(&self, queue_name: &str) -> bool {
+    pub fn is_campaign_running(&self, queue_name: &QueueKey) -> bool {
         self.campaign_running
             .get(queue_name)
             .map(|v| *v)
@@ -861,23 +855,23 @@ impl QueueManager {
     }
 
     /// Get campaign statistics for a queue.
-    pub fn campaign_stats(&self, queue_name: &str) -> Option<CampaignStats> {
+    pub fn campaign_stats(&self, queue_name: &QueueKey) -> Option<CampaignStats> {
         self.campaign_stats.get(queue_name).map(|s| s.clone())
     }
 
     /// Count available agents for a given queue.
-    pub fn count_available_agents(&self, queue_name: &str) -> usize {
+    pub fn count_available_agents(&self, queue_name: &QueueKey) -> usize {
         self.agents
             .iter()
             .filter(|entry| {
                 let agent = entry.value();
-                agent.queues.contains(&queue_name.to_string()) && agent.is_available()
+                agent.is_in(queue_name) && agent.is_available()
             })
             .count()
     }
 
     /// Get the number of active campaign dials for a queue.
-    pub fn campaign_active_dial_count(&self, queue_name: &str) -> usize {
+    pub fn campaign_active_dial_count(&self, queue_name: &QueueKey) -> usize {
         self.campaign_active_dials
             .get(queue_name)
             .map(|s| s.len())
@@ -885,10 +879,10 @@ impl QueueManager {
     }
 
     /// Register a destination as an active campaign dial.
-    pub fn add_campaign_active_dial(&self, queue_name: &str, destination: &str) {
+    pub fn add_campaign_active_dial(&self, queue_name: &QueueKey, destination: &str) {
         let mut entry = self
             .campaign_active_dials
-            .entry(queue_name.to_string())
+            .entry(queue_name.clone())
             .or_insert_with(HashSet::new);
         entry.insert(destination.to_string());
         if let Some(mut stats) = self.campaign_stats.get_mut(queue_name) {
@@ -900,7 +894,7 @@ impl QueueManager {
 
     /// Add a call to a queue. Returns the caller's position (1-based).
     pub async fn enqueue_call(&self, call: QueuedCall) -> Result<usize> {
-        let queue_name = call.queue_name.clone();
+        let queue_name = call.queue_key();
         let call_id = call.call_id.clone();
         let caller_uri = call.caller_uri.clone();
         let tenant_id = call.tenant_id;
@@ -951,7 +945,7 @@ impl QueueManager {
 
         events::caller_enqueued(
             &self.events,
-            &queue_name,
+            &queue_name.name,
             &call_id,
             &caller_uri,
             position,
@@ -980,7 +974,7 @@ impl QueueManager {
         for mut queue in self.queues.iter_mut() {
             if let Some(call) = queue.remove_call(call_id) {
                 let wait_time = call.enqueued_at.elapsed().as_secs();
-                let queue_name = queue.name.clone();
+                let queue_name = queue.key().clone();
                 drop(queue);
 
                 info!(
@@ -996,7 +990,7 @@ impl QueueManager {
 
                 events::caller_abandoned(
                     &self.events,
-                    &queue_name,
+                    &queue_name.name,
                     call_id,
                     wait_time,
                     call.position,
@@ -1013,7 +1007,7 @@ impl QueueManager {
 
     /// Check if any higher-priority queue (lower priority number) has waiting calls
     /// that this agent could serve. If so, defer — let that queue's loop claim them.
-    pub fn should_defer_agent(&self, agent_id: &str, queue_name: &str) -> bool {
+    pub fn should_defer_agent(&self, agent_id: &AgentKey, queue_name: &QueueKey) -> bool {
         let this_queue_priority = self
             .queues
             .get(queue_name)
@@ -1025,11 +1019,11 @@ impl QueueManager {
             None => return false,
         };
 
-        for other_queue_name in &agent.queues {
-            if other_queue_name == queue_name {
+        for other_queue_name in agent.queue_keys() {
+            if other_queue_name == *queue_name {
                 continue;
             }
-            if let Some(other_queue) = self.queues.get(other_queue_name) {
+            if let Some(other_queue) = self.queues.get(&other_queue_name) {
                 // Skip queues that are lower or equal priority (higher or equal number)
                 if other_queue.config.priority >= this_queue_priority {
                     continue;
@@ -1045,7 +1039,7 @@ impl QueueManager {
 
     /// Select the next agent for a call in the given queue.
     /// Returns None if no agents are available for that queue.
-    pub fn select_agent(&self, queue_name: &str) -> Option<DistributionPlan> {
+    pub fn select_agent(&self, queue_name: &QueueKey) -> Option<DistributionPlan> {
         let queue = self.queues.get(queue_name)?;
         let strategy = queue.config.strategy;
         let required_skills = queue.config.required_skills.clone();
@@ -1056,18 +1050,18 @@ impl QueueManager {
         let mut available_agents: Vec<Agent> = Vec::new();
         for entry in self.agents.iter() {
             let agent = entry.value();
-            if agent.is_available() && agent.queues.contains(&queue_name.to_string()) {
+            if agent.is_available() && agent.is_in(queue_name) {
                 available_agents.push(agent.clone());
             }
         }
 
         // Filter out agents that should be deferred to higher-priority queues
-        available_agents.retain(|agent| !self.should_defer_agent(&agent.id, queue_name));
+        available_agents.retain(|agent| !self.should_defer_agent(&agent.key(), queue_name));
 
         // Filter out agents in DND/Busy via presence checker
         if let Some(ref checker) = *self.presence_checker.read() {
             let before = available_agents.len();
-            available_agents.retain(|agent| !checker.is_dnd(&agent.extension));
+            available_agents.retain(|agent| !checker.is_dnd(&agent.tenant_id, &agent.extension));
             let filtered = before - available_agents.len();
             if filtered > 0 {
                 debug!(
@@ -1083,12 +1077,12 @@ impl QueueManager {
         available_agents.sort_by(|a, b| {
             let a_prio = a
                 .queue_priorities
-                .get(queue_name)
+                .get(&queue_name.name)
                 .copied()
                 .unwrap_or(a.priority);
             let b_prio = b
                 .queue_priorities
-                .get(queue_name)
+                .get(&queue_name.name)
                 .copied()
                 .unwrap_or(b.priority);
             a_prio.cmp(&b_prio).then(a.id.cmp(&b.id))
@@ -1121,7 +1115,7 @@ impl QueueManager {
 
     /// Mark an agent as ringing (transitional state — still considered "available"
     /// for tracking but won't be selected again until this attempt resolves).
-    pub async fn mark_agent_ringing(&self, agent_id: &str, _call_id: &str) {
+    pub async fn mark_agent_ringing(&self, agent_id: &AgentKey, _call_id: &str) {
         if let Some(mut agent) = self.agents.get_mut(agent_id) {
             agent.current_calls += 1;
             if agent.state != AgentState::OnCall {
@@ -1132,7 +1126,7 @@ impl QueueManager {
     }
 
     /// Agent answered a queued call.
-    pub async fn agent_answered(&self, agent_id: &str, call_id: &str) {
+    pub async fn agent_answered(&self, agent_id: &AgentKey, call_id: &str) {
         if let Some(mut agent) = self.agents.get_mut(agent_id) {
             agent.state = AgentState::OnCall;
             agent.state_changed_at = Instant::now();
@@ -1143,7 +1137,7 @@ impl QueueManager {
             // Find and remove the call from its queue
             if let Some(call) = self.dequeue_call(call_id) {
                 let wait_time = call.enqueued_at.elapsed().as_secs();
-                let queue_name = call.queue_name.clone();
+                let queue_name = call.queue_key();
 
                 // Update stats
                 if let Some(mut count) = self.calls_handled_today.get_mut(&queue_name) {
@@ -1167,9 +1161,9 @@ impl QueueManager {
 
                 events::caller_dequeued(
                     &self.events,
-                    &queue_name,
+                    &queue_name.name,
                     call_id,
-                    agent_id,
+                    &agent_id.id,
                     wait_time,
                     &tenant_id,
                 )
@@ -1180,7 +1174,7 @@ impl QueueManager {
 
     /// Agent's ring was cancelled because the caller hung up.
     /// Marks agent available again (if no other calls) and removes the call from the queue.
-    pub async fn agent_no_answer_for_cancel(&self, agent_id: &str, call_id: &str) {
+    pub async fn agent_no_answer_for_cancel(&self, agent_id: &AgentKey, call_id: &str) {
         if let Some(mut agent) = self.agents.get_mut(agent_id) {
             agent.current_calls = agent.current_calls.saturating_sub(1);
             if agent.current_calls == 0 {
@@ -1193,7 +1187,7 @@ impl QueueManager {
     }
 
     /// Agent didn't answer — return call to queue or overflow.
-    pub async fn agent_no_answer(&self, agent_id: &str, call_id: &str) {
+    pub async fn agent_no_answer(&self, agent_id: &AgentKey, call_id: &str) {
         let max_no_answer = self.config.read().max_no_answer;
 
         // Update agent state: decrement call count, increment no-answer counter
@@ -1214,7 +1208,7 @@ impl QueueManager {
                 );
                 events::agent_state_changed(
                     &self.events,
-                    agent_id,
+                    &agent_id.id,
                     &old_state,
                     "away",
                     Some("auto_away_no_answer"),
@@ -1240,7 +1234,7 @@ impl QueueManager {
                 .find(|c| c.call_id == call_id)
             {
                 call.attempts += 1;
-                let queue_name = queue.name.clone();
+                let queue_name = queue.key().clone();
                 let retry = queue.config.retry_on_no_answer;
                 drop(queue);
 
@@ -1266,7 +1260,7 @@ impl QueueManager {
 
                             events::caller_overflowed(
                                 &self.events,
-                                &queue_name,
+                                &queue_name.name,
                                 call_id,
                                 &dest,
                                 "no_answer_no_retry",
@@ -1286,7 +1280,7 @@ impl QueueManager {
     /// Pause an agent with optional auto-resume duration and reason.
     pub async fn pause_agent(
         &self,
-        agent_id: &str,
+        agent_id: &AgentKey,
         duration_secs: Option<u32>,
         reason: Option<String>,
     ) -> Result<()> {
@@ -1322,7 +1316,7 @@ impl QueueManager {
 
         events::agent_state_changed(
             &self.events,
-            agent_id,
+            &agent_id.id,
             &old_state,
             "paused",
             reason.as_deref(),
@@ -1335,7 +1329,7 @@ impl QueueManager {
         if let Some(secs) = effective_duration {
             let agents = Arc::clone(&self.agents);
             let events = self.events.clone();
-            let agent_id_owned = agent_id.to_string();
+            let agent_id_owned = agent_id.clone();
             let tid = tenant_id;
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(secs as u64)).await;
@@ -1349,7 +1343,7 @@ impl QueueManager {
                         debug!(agent_id = %agent_id_owned, "Pause auto-resumed, agent now available");
                         events::agent_state_changed(
                             &events,
-                            &agent_id_owned,
+                            &agent_id_owned.id,
                             "paused",
                             "available",
                             None,
@@ -1365,7 +1359,7 @@ impl QueueManager {
     }
 
     /// Unpause an agent, returning them to Available.
-    pub async fn unpause_agent(&self, agent_id: &str) -> Result<()> {
+    pub async fn unpause_agent(&self, agent_id: &AgentKey) -> Result<()> {
         let mut agent = self
             .agents
             .get_mut(agent_id)
@@ -1391,7 +1385,7 @@ impl QueueManager {
 
         events::agent_state_changed(
             &self.events,
-            agent_id,
+            &agent_id.id,
             "paused",
             "available",
             None,
@@ -1404,7 +1398,7 @@ impl QueueManager {
     }
 
     /// Force-logout (kick) an agent from the queue system.
-    pub async fn kick_agent(&self, agent_id: &str, reason: &str) -> Result<()> {
+    pub async fn kick_agent(&self, agent_id: &AgentKey, reason: &str) -> Result<()> {
         let mut agent = self
             .agents
             .get_mut(agent_id)
@@ -1419,13 +1413,13 @@ impl QueueManager {
 
         info!(agent_id = %agent_id, reason = %reason, "Agent kicked");
 
-        events::agent_kicked(&self.events, agent_id, reason, &tenant_id).await;
+        events::agent_kicked(&self.events, &agent_id.id, reason, &tenant_id).await;
         for q in &agent_queues {
-            events::agent_logged_out(&self.events, q, agent_id, &tenant_id).await;
+            events::agent_logged_out(&self.events, q, &agent_id.id, &tenant_id).await;
         }
         events::agent_state_changed(
             &self.events,
-            agent_id,
+            &agent_id.id,
             &old_state,
             "logged_out",
             Some(reason),
@@ -1441,7 +1435,7 @@ impl QueueManager {
     // ---- Agent Statistics ----
 
     /// Get per-agent statistics.
-    pub fn agent_stats(&self, agent_id: &str) -> Option<AgentStats> {
+    pub fn agent_stats(&self, agent_id: &AgentKey) -> Option<AgentStats> {
         let agent = self.agents.get(agent_id)?;
         let logged_in_duration = agent
             .logged_in_at
@@ -1492,15 +1486,11 @@ impl QueueManager {
     // ---- Dynamic Queue Provisioning ----
 
     /// Create a new queue at runtime.
-    pub fn create_queue(
-        &self,
-        key: String,
-        queue_config: QueueConfig,
-        tenant_id: TenantId,
-    ) -> Result<()> {
+    pub fn create_queue(&self, key: QueueKey, queue_config: QueueConfig) -> Result<()> {
         if self.queues.contains_key(&key) {
             bail!("Queue '{}' already exists", key);
         }
+        let tenant_id = key.tenant_id;
         if self
             .extension_map
             .contains_key(&(tenant_id, queue_config.extension.clone()))
@@ -1511,11 +1501,9 @@ impl QueueManager {
                 tenant_id
             );
         }
-        let queue = Queue::new(key.clone(), tenant_id, queue_config.clone());
-        self.extension_map.insert(
-            (queue.tenant_id, queue_config.extension.clone()),
-            key.clone(),
-        );
+        let queue = Queue::new(key.name.clone(), tenant_id, queue_config.clone());
+        self.extension_map
+            .insert((tenant_id, queue_config.extension.clone()), key.clone());
         self.round_robin_counters
             .insert(key.clone(), AtomicUsize::new(0));
         self.calls_handled_today.insert(key.clone(), 0);
@@ -1524,16 +1512,13 @@ impl QueueManager {
         self.calls_offered_today.insert(key.clone(), 0);
         self.queues.insert(key.clone(), queue);
 
-        // Update the system config
-        self.config.write().queues.insert(key.clone(), queue_config);
-
-        info!(queue = %key, "Queue created dynamically");
+        info!(queue = %key, tenant_id = %tenant_id, "Queue created dynamically");
         Ok(())
     }
 
     /// Update an existing queue's configuration at runtime.
     /// Preserves waiting calls and agent memberships.
-    pub fn update_queue(&self, key: &str, queue_config: QueueConfig) -> Result<()> {
+    pub fn update_queue(&self, key: &QueueKey, queue_config: QueueConfig) -> Result<()> {
         let mut queue = self
             .queues
             .get_mut(key)
@@ -1541,14 +1526,14 @@ impl QueueManager {
 
         // Update extension mapping if it changed
         let old_extension = queue.config.extension.clone();
-        let tenant_id = queue.tenant_id;
+        let tenant_id = key.tenant_id;
         if old_extension != queue_config.extension {
             if let Some(existing_queue) = self
                 .extension_map
                 .get(&(tenant_id, queue_config.extension.clone()))
                 .map(|entry| entry.clone())
             {
-                if existing_queue != key {
+                if existing_queue != *key {
                     bail!(
                         "Queue extension '{}' already exists in tenant '{}'",
                         queue_config.extension,
@@ -1558,24 +1543,18 @@ impl QueueManager {
             }
             self.extension_map.remove(&(tenant_id, old_extension));
             self.extension_map
-                .insert((tenant_id, queue_config.extension.clone()), key.to_string());
+                .insert((tenant_id, queue_config.extension.clone()), key.clone());
         }
 
-        queue.config = queue_config.clone();
+        queue.config = queue_config;
         drop(queue);
 
-        // Update system config
-        self.config
-            .write()
-            .queues
-            .insert(key.to_string(), queue_config);
-
-        info!(queue = %key, "Queue configuration updated");
+        info!(queue = %key, tenant_id = %tenant_id, "Queue configuration updated");
         Ok(())
     }
 
     /// Delete a queue at runtime. Fails if there are waiting calls.
-    pub fn delete_queue(&self, key: &str) -> Result<()> {
+    pub fn delete_queue(&self, key: &QueueKey) -> Result<()> {
         let queue = self
             .queues
             .get(key)
@@ -1590,69 +1569,55 @@ impl QueueManager {
         }
 
         let extension = queue.config.extension.clone();
-        let tenant_id = queue.tenant_id;
         drop(queue);
 
-        self.queues.remove(key);
-        self.extension_map.remove(&(tenant_id, extension));
-        self.round_robin_counters.remove(key);
-        self.calls_handled_today.remove(key);
-        self.calls_abandoned_today.remove(key);
-        self.calls_within_sl.remove(key);
-        self.calls_offered_today.remove(key);
+        self.forget_queue(key);
+        self.extension_map.remove(&(key.tenant_id, extension));
 
         // Remove agents' membership in this queue
         for mut agent in self.agents.iter_mut() {
-            agent.queues.retain(|q| q != key);
+            if agent.tenant_id == key.tenant_id {
+                agent.queues.retain(|q| *q != key.name);
+            }
         }
 
-        // Update system config
-        self.config.write().queues.remove(key);
-
-        info!(queue = %key, "Queue deleted");
+        info!(queue = %key, tenant_id = %key.tenant_id, "Queue deleted");
         Ok(())
     }
 
-    /// List all configured queue names.
-    pub fn list_queue_names(&self) -> Vec<String> {
+    /// List every queue on the node, each tenant's.
+    pub fn list_queues(&self) -> Vec<QueueKey> {
         self.queues
             .iter()
             .map(|entry| entry.key().clone())
             .collect()
     }
 
-    /// List queue names visible to a tenant.
+    /// List the names of a tenant's queues.
     pub fn list_queue_names_for_tenant(&self, tenant_id: &TenantId) -> Vec<String> {
         self.queues
             .iter()
-            .filter(|entry| entry.value().tenant_id == *tenant_id)
-            .map(|entry| entry.key().clone())
+            .filter(|entry| entry.key().tenant_id == *tenant_id)
+            .map(|entry| entry.key().name.clone())
+            .collect()
+    }
+
+    /// A tenant's queues with their configuration.
+    pub fn queue_configs_for_tenant(&self, tenant_id: &TenantId) -> Vec<(String, QueueConfig)> {
+        self.queues
+            .iter()
+            .filter(|entry| entry.key().tenant_id == *tenant_id)
+            .map(|entry| (entry.key().name.clone(), entry.value().config.clone()))
             .collect()
     }
 
     /// Get the configuration for a specific queue.
-    pub fn get_queue_config(&self, name: &str) -> Option<QueueConfig> {
-        self.queues.get(name).map(|q| q.config.clone())
-    }
-
-    /// Get the configuration for a tenant-scoped queue.
-    pub fn get_queue_config_for_tenant(
-        &self,
-        name: &str,
-        tenant_id: &TenantId,
-    ) -> Option<QueueConfig> {
-        self.queues
-            .get(name)
-            .filter(|queue| queue.tenant_id == *tenant_id)
-            .map(|queue| queue.config.clone())
-    }
-
-    pub fn get_queue_tenant(&self, name: &str) -> Option<TenantId> {
-        self.queues.get(name).map(|queue| queue.tenant_id)
+    pub fn get_queue_config(&self, queue_name: &QueueKey) -> Option<QueueConfig> {
+        self.queues.get(queue_name).map(|q| q.config.clone())
     }
 
     /// Get the merged overflow destinations for a queue (legacy single + list).
-    pub fn get_overflow_destinations(&self, queue_name: &str) -> Vec<String> {
+    pub fn get_overflow_destinations(&self, queue_name: &QueueKey) -> Vec<String> {
         self.queues
             .get(queue_name)
             .map(|q| q.config.effective_overflow_destinations())
@@ -1660,65 +1625,29 @@ impl QueueManager {
     }
 
     /// List all agents that are members of a specific queue.
-    pub fn list_agents_for_queue(&self, queue_name: &str) -> Vec<Agent> {
+    pub fn list_agents_for_queue(&self, queue_name: &QueueKey) -> Vec<Agent> {
         self.agents
             .iter()
-            .filter(|entry| entry.value().queues.contains(&queue_name.to_string()))
+            .filter(|entry| entry.value().is_in(queue_name))
             .map(|entry| entry.value().clone())
             .collect()
     }
 
-    /// List agents for a queue that belongs to a specific tenant.
-    pub fn list_agents_for_queue_and_tenant(
-        &self,
-        queue_name: &str,
-        tenant_id: &TenantId,
-    ) -> Vec<Agent> {
-        self.agents
-            .iter()
-            .filter(|entry| {
-                let agent = entry.value();
-                agent.tenant_id == *tenant_id && agent.queues.contains(&queue_name.to_string())
-            })
-            .map(|entry| entry.value().clone())
-            .collect()
-    }
-
-    /// Get a specific agent by ID.
-    pub fn get_agent(&self, agent_id: &str) -> Option<Agent> {
+    /// Get a specific agent.
+    pub fn get_agent(&self, agent_id: &AgentKey) -> Option<Agent> {
         self.agents.get(agent_id).map(|a| a.clone())
     }
 
-    /// Get a specific agent by ID scoped to a tenant.
-    pub fn get_agent_for_tenant(&self, agent_id: &str, tenant_id: &TenantId) -> Option<Agent> {
-        self.agents
-            .get(agent_id)
-            .filter(|agent| agent.tenant_id == *tenant_id)
-            .map(|agent| agent.clone())
-    }
-
     /// Get the number of callers waiting in a specific queue.
-    pub fn get_queue_waiting_count(&self, queue_name: &str) -> usize {
+    pub fn get_queue_waiting_count(&self, queue_name: &QueueKey) -> usize {
         self.queues
             .get(queue_name)
             .map(|q| q.waiting_calls.len())
             .unwrap_or(0)
     }
 
-    /// Get the number of callers waiting in a tenant-scoped queue.
-    pub fn get_queue_waiting_count_for_tenant(
-        &self,
-        queue_name: &str,
-        tenant_id: &TenantId,
-    ) -> usize {
-        self.queues
-            .get(queue_name)
-            .filter(|queue| queue.tenant_id == *tenant_id)
-            .map(|queue| queue.waiting_calls.len())
-            .unwrap_or(0)
-    }
-
-    /// Get the system config (for looking up which queues an agent belongs to).
+    /// Get the system config: the node's settings and its TOML queues (the
+    /// default tenant's), not the queues from the database.
     pub fn get_system_config(&self) -> QueueSystemConfig {
         self.config.read().clone()
     }
@@ -1726,7 +1655,7 @@ impl QueueManager {
     // ---- Statistics ----
 
     /// Get real-time statistics for a single queue.
-    pub fn queue_stats(&self, queue_name: &str) -> Option<QueueStats> {
+    pub fn queue_stats(&self, queue_name: &QueueKey) -> Option<QueueStats> {
         let queue = self.queues.get(queue_name)?;
         let now = Instant::now();
 
@@ -1755,7 +1684,7 @@ impl QueueManager {
 
         for entry in self.agents.iter() {
             let agent = entry.value();
-            if agent.queues.contains(&queue_name.to_string())
+            if agent.is_in(queue_name)
                 && agent.state != AgentState::LoggedOut
             {
                 agents_total += 1;
@@ -1797,7 +1726,7 @@ impl QueueManager {
         drop(queue);
 
         Some(QueueStats {
-            queue_name: queue_name.to_string(),
+            queue_name: queue_name.name.clone(),
             calls_waiting,
             agents_available,
             agents_on_call,
@@ -1808,18 +1737,6 @@ impl QueueManager {
             calls_abandoned_today: abandoned,
             service_level_pct,
         })
-    }
-
-    /// Get real-time statistics for a queue scoped to a tenant.
-    pub fn queue_stats_for_tenant(
-        &self,
-        queue_name: &str,
-        tenant_id: &TenantId,
-    ) -> Option<QueueStats> {
-        self.queues
-            .get(queue_name)
-            .filter(|queue| queue.tenant_id == *tenant_id)?;
-        self.queue_stats(queue_name)
     }
 
     /// Get statistics for all configured queues.
@@ -1848,7 +1765,7 @@ impl QueueManager {
             let mut found = None;
             for queue in self.queues.iter() {
                 if let Some(call) = queue.waiting_calls.iter().find(|c| c.call_id == call_id) {
-                    found = Some((queue.name.clone(), call.position));
+                    found = Some((queue.key().clone(), call.position));
                     break;
                 }
             }
@@ -1862,7 +1779,7 @@ impl QueueManager {
 
         for entry in self.agents.iter() {
             let agent = entry.value();
-            if agent.queues.contains(&queue_name) && agent.state != AgentState::LoggedOut {
+            if agent.is_in(&queue_name) && agent.state != AgentState::LoggedOut {
                 if agent.state == AgentState::Available {
                     agents_available += 1;
                 }
@@ -1897,14 +1814,23 @@ impl QueueManager {
         None
     }
 
-    /// Check SLA thresholds for all queues and emit warnings for any below threshold.
+    /// Check SLA thresholds for a tenant's queues and emit warnings for any below threshold.
     pub async fn check_sla_warnings(&self, tenant_id: &TenantId) {
-        for queue in self.queues.iter() {
+        let queues = self
+            .queues
+            .iter()
+            .filter(|queue| queue.tenant_id == *tenant_id)
+            .map(|queue| queue.key().clone())
+            .collect::<Vec<_>>();
+        for key in queues {
+            let Some(queue) = self.queues.get(&key) else {
+                continue;
+            };
             let threshold = queue.config.sla_warning_threshold_pct;
             if threshold <= 0.0 {
                 continue;
             }
-            let queue_name = queue.name.clone();
+            let queue_name = queue.key().clone();
             drop(queue);
 
             let offered = self
@@ -1932,7 +1858,7 @@ impl QueueManager {
                 );
                 events::service_level_warning(
                     &self.events,
-                    &queue_name,
+                    &queue_name.name,
                     current_pct,
                     threshold,
                     offered,
@@ -1969,7 +1895,7 @@ impl QueueManager {
             // Save to in-memory ring buffer (max 1440 entries = 24h at 1-min intervals)
             let mut buffer = self
                 .stats_history
-                .entry(s.queue_name.clone())
+                .entry(QueueKey::new(*tenant_id, s.queue_name.clone()))
                 .or_insert_with(VecDeque::new);
             if buffer.len() >= 1440 {
                 buffer.pop_front();
@@ -1994,7 +1920,7 @@ impl QueueManager {
     /// Returns snapshots filtered by time range, ordered by timestamp ascending.
     pub fn query_stats_history(
         &self,
-        queue_name: &str,
+        queue_name: &QueueKey,
         from_epoch: Option<u64>,
         to_epoch: Option<u64>,
         limit: usize,
@@ -2023,12 +1949,22 @@ impl QueueManager {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             loop {
                 interval.tick().await;
-                let stats = this.all_queue_stats();
-                if !stats.is_empty() {
-                    events::stats_snapshot(&this.events, stats.clone(), &tenant_id).await;
-                    this.record_stats_snapshots(&stats, &tenant_id).await;
+                // Each tenant's queues as that tenant's, the TOML's tenant
+                // even with none.
+                let mut tenants = this
+                    .queues
+                    .iter()
+                    .map(|queue| queue.tenant_id)
+                    .collect::<HashSet<_>>();
+                tenants.insert(tenant_id);
+                for tenant in tenants {
+                    let stats = this.all_queue_stats_for_tenant(&tenant);
+                    if !stats.is_empty() {
+                        events::stats_snapshot(&this.events, stats.clone(), &tenant).await;
+                        this.record_stats_snapshots(&stats, &tenant).await;
+                    }
+                    this.check_sla_warnings(&tenant).await;
                 }
-                this.check_sla_warnings(&tenant_id).await;
             }
         })
     }
@@ -2094,7 +2030,7 @@ impl QueueManager {
 
     /// Get all callback calls in a specific queue.
     /// Returns a list of (call_id, callback_uri) pairs.
-    pub fn get_callback_calls(&self, queue_name: &str) -> Vec<(String, String)> {
+    pub fn get_callback_calls(&self, queue_name: &QueueKey) -> Vec<(String, String)> {
         if let Some(queue) = self.queues.get(queue_name) {
             queue
                 .waiting_calls
@@ -2115,7 +2051,7 @@ impl QueueManager {
     /// Filters by: is_callback, has callback_uri, and last_callback_attempt
     /// is either None or older than the queue's callback_retry_delay_secs.
     /// Returns (call_id, callback_uri) pairs.
-    pub fn get_ready_callbacks(&self, queue_name: &str) -> Vec<(String, String)> {
+    pub fn get_ready_callbacks(&self, queue_name: &QueueKey) -> Vec<(String, String)> {
         if let Some(queue) = self.queues.get(queue_name) {
             let delay = Duration::from_secs(queue.config.callback_retry_delay_secs as u64);
             queue
@@ -2181,6 +2117,7 @@ impl QueueManager {
                 if call.is_callback {
                     if let Some(ref uri) = call.callback_uri {
                         result.push(crate::types::CallbackInfo {
+                            tenant_id: call.tenant_id,
                             call_id: call.call_id.clone(),
                             queue_name: queue.name.clone(),
                             callback_uri: uri.clone(),
@@ -2200,7 +2137,7 @@ impl QueueManager {
 
     /// Remove callbacks that have exceeded callback_max_attempts.
     /// Returns removed calls for event publishing.
-    pub fn remove_expired_callbacks(&self, queue_name: &str) -> Vec<QueuedCall> {
+    pub fn remove_expired_callbacks(&self, queue_name: &QueueKey) -> Vec<QueuedCall> {
         let mut expired = Vec::new();
         if let Some(mut queue) = self.queues.get_mut(queue_name) {
             let max_attempts = queue.config.callback_max_attempts;
@@ -2235,7 +2172,7 @@ impl QueueManager {
     /// Handle callback recipient failure (no-answer/reject/timeout).
     /// Unlike agent_no_answer(), this does NOT penalize the agent's no-answer counter.
     /// Instead, it makes the agent available again and increments callback attempts.
-    pub async fn agent_callback_recipient_failed(&self, agent_id: &str, call_id: &str) {
+    pub async fn agent_callback_recipient_failed(&self, agent_id: &AgentKey, call_id: &str) {
         // Make agent available without penalizing
         if let Some(mut agent) = self.agents.get_mut(agent_id) {
             agent.current_calls = agent.current_calls.saturating_sub(1);
@@ -2264,7 +2201,10 @@ impl QueueManager {
             let valid_queues: Vec<String> = sa
                 .queues
                 .iter()
-                .filter(|q| self.queues.contains_key(*q))
+                .filter(|q| {
+                    self.queues
+                        .contains_key(&QueueKey::new(*tenant_id, (*q).clone()))
+                })
                 .cloned()
                 .collect();
 
@@ -2294,7 +2234,7 @@ impl QueueManager {
             agent.max_concurrent_calls = sa.max_concurrent_calls;
 
             info!(agent_id = %sa.id, "Restored agent from storage");
-            self.agents.insert(sa.id, agent);
+            self.agents.insert(agent.key(), agent);
         }
 
         Ok(count)
@@ -2308,7 +2248,15 @@ mod tests {
     use std::collections::HashMap;
 
     fn test_tenant() -> TenantId {
-        TenantId::new()
+        TenantId::from_uuid(uuid::Uuid::from_u128(1))
+    }
+
+    fn q(name: &str) -> QueueKey {
+        QueueKey::new(test_tenant(), name)
+    }
+
+    fn a(id: &str) -> AgentKey {
+        AgentKey::new(test_tenant(), id)
     }
 
     fn test_config() -> QueueSystemConfig {
@@ -2400,31 +2348,37 @@ mod tests {
         let manager = QueueManager::new(test_config(), None, test_tenant());
         assert!(manager.is_enabled());
         assert_eq!(
-            manager.get_queue_for_extension("6000"),
-            Some("sales".to_string())
+            manager.get_queue_for_extension_in_tenant(&test_tenant(), "6000"),
+            Some(q("sales"))
         );
-        assert_eq!(manager.get_queue_for_extension("9999"), None);
+        assert_eq!(
+            manager.get_queue_for_extension_in_tenant(&test_tenant(), "9999"),
+            None
+        );
+        assert_eq!(
+            manager.get_queue_for_extension_in_tenant(&TenantId::new(), "6000"),
+            None
+        );
     }
 
     #[tokio::test]
     async fn test_agent_login_logout() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
-        let tenant = test_tenant();
 
         // Login
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
+            .agent_login(&a("100"), "100", &["sales".to_string()], Vec::new())
             .await
             .unwrap();
 
         // Verify agent is available
-        let stats = manager.queue_stats("sales").unwrap();
+        let stats = manager.queue_stats(&q("sales")).unwrap();
         assert_eq!(stats.agents_available, 1);
         assert_eq!(stats.agents_total, 1);
 
         // Logout
-        manager.agent_logout("100").await.unwrap();
-        let stats = manager.queue_stats("sales").unwrap();
+        manager.agent_logout(&a("100")).await.unwrap();
+        let stats = manager.queue_stats(&q("sales")).unwrap();
         assert_eq!(stats.agents_available, 0);
         assert_eq!(stats.agents_total, 0);
     }
@@ -2433,11 +2387,9 @@ mod tests {
     async fn test_agent_login_invalid_queue() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
         let result = manager
-            .agent_login(
-                "100",
+            .agent_login(&a("100"),
                 "100",
                 &["nonexistent".to_string()],
-                test_tenant(),
                 Vec::new(),
             )
             .await;
@@ -2452,14 +2404,14 @@ mod tests {
         let pos = manager.enqueue_call(call).await.unwrap();
         assert_eq!(pos, 1);
 
-        let stats = manager.queue_stats("sales").unwrap();
+        let stats = manager.queue_stats(&q("sales")).unwrap();
         assert_eq!(stats.calls_waiting, 1);
 
         let dequeued = manager.dequeue_call("call-1");
         assert!(dequeued.is_some());
         assert_eq!(dequeued.unwrap().call_id, "call-1");
 
-        let stats = manager.queue_stats("sales").unwrap();
+        let stats = manager.queue_stats(&q("sales")).unwrap();
         assert_eq!(stats.calls_waiting, 0);
     }
 
@@ -2482,32 +2434,31 @@ mod tests {
     #[tokio::test]
     async fn test_select_agent_round_robin() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
-        let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
+            .agent_login(&a("100"), "100", &["sales".to_string()], Vec::new())
             .await
             .unwrap();
         manager
-            .agent_login("101", "101", &["sales".to_string()], tenant, Vec::new())
+            .agent_login(&a("101"), "101", &["sales".to_string()], Vec::new())
             .await
             .unwrap();
 
-        let plan1 = manager.select_agent("sales").unwrap();
-        assert_eq!(plan1.agent_id, "100");
+        let plan1 = manager.select_agent(&q("sales")).unwrap();
+        assert_eq!(plan1.agent_id.id, "100");
 
-        let plan2 = manager.select_agent("sales").unwrap();
-        assert_eq!(plan2.agent_id, "101");
+        let plan2 = manager.select_agent(&q("sales")).unwrap();
+        assert_eq!(plan2.agent_id.id, "101");
 
-        let plan3 = manager.select_agent("sales").unwrap();
-        assert_eq!(plan3.agent_id, "100");
+        let plan3 = manager.select_agent(&q("sales")).unwrap();
+        assert_eq!(plan3.agent_id.id, "100");
     }
 
     #[tokio::test]
     async fn test_select_agent_none_available() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
         // No agents logged in
-        let plan = manager.select_agent("sales");
+        let plan = manager.select_agent(&q("sales"));
         assert!(plan.is_none());
     }
 
@@ -2520,7 +2471,7 @@ mod tests {
 
         manager.caller_abandoned("call-1").await;
 
-        let stats = manager.queue_stats("sales").unwrap();
+        let stats = manager.queue_stats(&q("sales")).unwrap();
         assert_eq!(stats.calls_waiting, 0);
         assert_eq!(stats.calls_abandoned_today, 1);
     }
@@ -2528,19 +2479,18 @@ mod tests {
     #[tokio::test]
     async fn test_agent_answered_updates_stats() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
-        let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
+            .agent_login(&a("100"), "100", &["sales".to_string()], Vec::new())
             .await
             .unwrap();
 
         let call = test_queued_call("call-1", "sales");
         manager.enqueue_call(call).await.unwrap();
 
-        manager.agent_answered("100", "call-1").await;
+        manager.agent_answered(&a("100"), "call-1").await;
 
-        let stats = manager.queue_stats("sales").unwrap();
+        let stats = manager.queue_stats(&q("sales")).unwrap();
         assert_eq!(stats.calls_waiting, 0);
         assert_eq!(stats.calls_handled_today, 1);
         assert_eq!(stats.agents_on_call, 1);
@@ -2557,24 +2507,23 @@ mod tests {
     #[tokio::test]
     async fn test_set_agent_state() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
-        let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
+            .agent_login(&a("100"), "100", &["sales".to_string()], Vec::new())
             .await
             .unwrap();
 
         manager
-            .set_agent_state("100", AgentState::Away)
+            .set_agent_state(&a("100"), AgentState::Away)
             .await
             .unwrap();
 
-        let stats = manager.queue_stats("sales").unwrap();
+        let stats = manager.queue_stats(&q("sales")).unwrap();
         assert_eq!(stats.agents_available, 0);
         assert_eq!(stats.agents_total, 1);
 
         // Agent marked away should not be selected
-        let plan = manager.select_agent("sales");
+        let plan = manager.select_agent(&q("sales"));
         assert!(plan.is_none());
     }
 
@@ -2650,32 +2599,32 @@ mod tests {
                 metadata: None,
             },
         ];
-        manager.load_campaign_numbers("sales", numbers);
+        manager.load_campaign_numbers(&q("sales"), numbers);
 
         // Verify stats initialized
-        let stats = manager.campaign_stats("sales").unwrap();
+        let stats = manager.campaign_stats(&q("sales")).unwrap();
         assert_eq!(stats.numbers_remaining, 3);
         assert!(!stats.running);
 
         // Start campaign
-        manager.set_campaign_running("sales", true);
-        assert!(manager.is_campaign_running("sales"));
+        manager.set_campaign_running(&q("sales"), true);
+        assert!(manager.is_campaign_running(&q("sales")));
 
         // Pop a number
-        let n = manager.next_campaign_number("sales").unwrap();
+        let n = manager.next_campaign_number(&q("sales")).unwrap();
         assert_eq!(n.destination, "15551001");
-        let stats = manager.campaign_stats("sales").unwrap();
+        let stats = manager.campaign_stats(&q("sales")).unwrap();
         assert_eq!(stats.numbers_remaining, 2);
 
         // Record result
-        manager.add_campaign_active_dial("sales", &n.destination);
-        manager.campaign_call_result("sales", &n.destination, CampaignCallOutcome::Answered);
-        let stats = manager.campaign_stats("sales").unwrap();
+        manager.add_campaign_active_dial(&q("sales"), &n.destination);
+        manager.campaign_call_result(&q("sales"), &n.destination, CampaignCallOutcome::Answered);
+        let stats = manager.campaign_stats(&q("sales")).unwrap();
         assert_eq!(stats.calls_answered, 1);
 
         // Stop campaign
-        manager.set_campaign_running("sales", false);
-        assert!(!manager.is_campaign_running("sales"));
+        manager.set_campaign_running(&q("sales"), false);
+        assert!(!manager.is_campaign_running(&q("sales")));
     }
 
     #[test]
@@ -2709,13 +2658,13 @@ mod tests {
                 metadata: None,
             },
         ];
-        manager.load_campaign_numbers("sales", numbers);
-        manager.set_campaign_running("sales", true);
+        manager.load_campaign_numbers(&q("sales"), numbers);
+        manager.set_campaign_running(&q("sales"), true);
 
         // Pop all and record various outcomes
         for i in 1..=5 {
-            let n = manager.next_campaign_number("sales").unwrap();
-            manager.add_campaign_active_dial("sales", &n.destination);
+            let n = manager.next_campaign_number(&q("sales")).unwrap();
+            manager.add_campaign_active_dial(&q("sales"), &n.destination);
             let outcome = match i {
                 1 => CampaignCallOutcome::Answered,
                 2 => CampaignCallOutcome::NoAnswer,
@@ -2724,10 +2673,10 @@ mod tests {
                 5 => CampaignCallOutcome::Abandoned,
                 _ => unreachable!(),
             };
-            manager.campaign_call_result("sales", &n.destination, outcome);
+            manager.campaign_call_result(&q("sales"), &n.destination, outcome);
         }
 
-        let stats = manager.campaign_stats("sales").unwrap();
+        let stats = manager.campaign_stats(&q("sales")).unwrap();
         assert_eq!(stats.calls_answered, 1);
         assert_eq!(stats.calls_no_answer, 1);
         assert_eq!(stats.calls_busy, 1);
@@ -2752,12 +2701,12 @@ mod tests {
                 metadata: None,
             },
         ];
-        manager.load_campaign_numbers("sales", numbers);
+        manager.load_campaign_numbers(&q("sales"), numbers);
 
-        assert!(manager.next_campaign_number("sales").is_some());
-        assert!(manager.next_campaign_number("sales").is_some());
+        assert!(manager.next_campaign_number(&q("sales")).is_some());
+        assert!(manager.next_campaign_number(&q("sales")).is_some());
         // Third call should return None
-        assert!(manager.next_campaign_number("sales").is_none());
+        assert!(manager.next_campaign_number(&q("sales")).is_none());
     }
 
     #[test]
@@ -2769,12 +2718,12 @@ mod tests {
             caller_id: None,
             metadata: None,
         }];
-        manager.load_campaign_numbers("sales", numbers);
+        manager.load_campaign_numbers(&q("sales"), numbers);
 
         // Campaign is not started — is_campaign_running should be false
-        assert!(!manager.is_campaign_running("sales"));
+        assert!(!manager.is_campaign_running(&q("sales")));
         // Numbers can still be popped (the distribution loop checks is_campaign_running)
-        assert!(manager.next_campaign_number("sales").is_some());
+        assert!(manager.next_campaign_number(&q("sales")).is_some());
     }
 
     // ---- Transfer tests ----
@@ -2787,7 +2736,7 @@ mod tests {
         manager.enqueue_call(call).await.unwrap();
 
         let result = manager
-            .transfer_to_queue("call-t1", "sales", "nonexistent")
+            .transfer_to_queue("call-t1", &q("sales"), &q("nonexistent"))
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -2798,7 +2747,7 @@ mod tests {
         let manager = QueueManager::new(test_config_two_queues(), None, test_tenant());
 
         let result = manager
-            .transfer_to_queue("no-such-call", "sales", "support")
+            .transfer_to_queue("no-such-call", &q("sales"), &q("support"))
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -2820,7 +2769,7 @@ mod tests {
 
         // Transfer should fail because support is full
         let result = manager
-            .transfer_to_queue("call-xfer", "sales", "support")
+            .transfer_to_queue("call-xfer", &q("sales"), &q("support"))
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("full"));
@@ -2831,25 +2780,24 @@ mod tests {
     #[tokio::test]
     async fn test_agent_call_completed_transitions_to_wrap_up() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
-        let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
+            .agent_login(&a("100"), "100", &["sales".to_string()], Vec::new())
             .await
             .unwrap();
 
         // mark_agent_ringing increments current_calls and sets OnCall
-        manager.mark_agent_ringing("100", "call-1").await;
+        manager.mark_agent_ringing(&a("100"), "call-1").await;
         {
-            let agent = manager.agents.get("100").unwrap();
+            let agent = manager.agents.get(&a("100")).unwrap();
             assert_eq!(agent.state, AgentState::OnCall);
             assert_eq!(agent.current_calls, 1);
         }
 
         // Complete the call → WrapUp (current_calls drops to 0)
-        manager.agent_call_completed("100");
+        manager.agent_call_completed(&a("100"));
         {
-            let agent = manager.agents.get("100").unwrap();
+            let agent = manager.agents.get(&a("100")).unwrap();
             assert_eq!(agent.state, AgentState::WrapUp);
             assert_eq!(agent.current_calls, 0);
         }
@@ -2858,32 +2806,31 @@ mod tests {
     #[tokio::test]
     async fn test_agent_call_completed_stays_on_call_multi() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
-        let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
+            .agent_login(&a("100"), "100", &["sales".to_string()], Vec::new())
             .await
             .unwrap();
 
         // Set up agent for multi-call
         {
-            let mut agent = manager.agents.get_mut("100").unwrap();
+            let mut agent = manager.agents.get_mut(&a("100")).unwrap();
             agent.max_concurrent_calls = 3;
         }
 
         // Simulate 2 concurrent calls via mark_agent_ringing (which increments current_calls)
-        manager.mark_agent_ringing("100", "call-1").await;
-        manager.mark_agent_ringing("100", "call-2").await;
+        manager.mark_agent_ringing(&a("100"), "call-1").await;
+        manager.mark_agent_ringing(&a("100"), "call-2").await;
         {
-            let agent = manager.agents.get("100").unwrap();
+            let agent = manager.agents.get(&a("100")).unwrap();
             assert_eq!(agent.current_calls, 2);
             assert_eq!(agent.state, AgentState::OnCall);
         }
 
         // Complete 1 call — should stay OnCall since 1 call remains
-        manager.agent_call_completed("100");
+        manager.agent_call_completed(&a("100"));
         {
-            let agent = manager.agents.get("100").unwrap();
+            let agent = manager.agents.get(&a("100")).unwrap();
             assert_eq!(agent.current_calls, 1);
             assert_eq!(agent.state, AgentState::OnCall);
         }
@@ -2892,17 +2839,16 @@ mod tests {
     #[tokio::test]
     async fn test_agent_call_completed_increments_calls_handled() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
-        let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
+            .agent_login(&a("100"), "100", &["sales".to_string()], Vec::new())
             .await
             .unwrap();
 
-        manager.agent_answered("100", "call-1").await;
-        manager.agent_call_completed("100");
+        manager.agent_answered(&a("100"), "call-1").await;
+        manager.agent_call_completed(&a("100"));
 
-        let agent = manager.agents.get("100").unwrap();
+        let agent = manager.agents.get(&a("100")).unwrap();
         assert_eq!(agent.calls_handled, 1);
         assert!(agent.last_call_ended.is_some());
     }
@@ -2910,29 +2856,27 @@ mod tests {
     #[tokio::test]
     async fn test_agent_no_answer_increments_counter() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
-        let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
+            .agent_login(&a("100"), "100", &["sales".to_string()], Vec::new())
             .await
             .unwrap();
 
         let call = test_queued_call("call-1", "sales");
         manager.enqueue_call(call).await.unwrap();
 
-        manager.agent_no_answer("100", "call-1").await;
+        manager.agent_no_answer(&a("100"), "call-1").await;
 
-        let agent = manager.agents.get("100").unwrap();
+        let agent = manager.agents.get(&a("100")).unwrap();
         assert_eq!(agent.consecutive_no_answers, 1);
     }
 
     #[tokio::test]
     async fn test_agent_no_answer_auto_away_at_max() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
-        let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
+            .agent_login(&a("100"), "100", &["sales".to_string()], Vec::new())
             .await
             .unwrap();
 
@@ -2941,10 +2885,10 @@ mod tests {
             let call_id = format!("call-{}", i);
             let call = test_queued_call(&call_id, "sales");
             manager.enqueue_call(call).await.unwrap();
-            manager.agent_no_answer("100", &call_id).await;
+            manager.agent_no_answer(&a("100"), &call_id).await;
         }
 
-        let agent = manager.agents.get("100").unwrap();
+        let agent = manager.agents.get(&a("100")).unwrap();
         assert_eq!(agent.state, AgentState::Away);
         assert_eq!(agent.pause_reason.as_deref(), Some("auto_away_no_answer"));
     }
@@ -2954,7 +2898,7 @@ mod tests {
     #[tokio::test]
     async fn test_enqueue_draining_queue_rejected() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
-        manager.drain_queue("sales").await.unwrap();
+        manager.drain_queue(&q("sales")).await.unwrap();
 
         let call = test_queued_call("call-1", "sales");
         let result = manager.enqueue_call(call).await;
@@ -2984,10 +2928,9 @@ mod tests {
     #[tokio::test]
     async fn test_estimate_wait_no_history_returns_none() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
-        let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
+            .agent_login(&a("100"), "100", &["sales".to_string()], Vec::new())
             .await
             .unwrap();
 
@@ -3004,13 +2947,13 @@ mod tests {
     async fn test_drain_undrain_queue() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
 
-        assert!(!manager.is_queue_draining("sales"));
+        assert!(!manager.is_queue_draining(&q("sales")));
 
-        manager.drain_queue("sales").await.unwrap();
-        assert!(manager.is_queue_draining("sales"));
+        manager.drain_queue(&q("sales")).await.unwrap();
+        assert!(manager.is_queue_draining(&q("sales")));
 
-        manager.undrain_queue("sales").await.unwrap();
-        assert!(!manager.is_queue_draining("sales"));
+        manager.undrain_queue(&q("sales")).await.unwrap();
+        assert!(!manager.is_queue_draining(&q("sales")));
     }
 
     #[tokio::test]
@@ -3019,11 +2962,11 @@ mod tests {
 
         let call = test_queued_call("call-abandon", "sales");
         manager.enqueue_call(call).await.unwrap();
-        assert_eq!(manager.queue_stats("sales").unwrap().calls_waiting, 1);
+        assert_eq!(manager.queue_stats(&q("sales")).unwrap().calls_waiting, 1);
 
         manager.caller_abandoned("call-abandon").await;
 
-        let stats = manager.queue_stats("sales").unwrap();
+        let stats = manager.queue_stats(&q("sales")).unwrap();
         assert_eq!(stats.calls_waiting, 0);
         assert_eq!(stats.calls_abandoned_today, 1);
     }
@@ -3032,7 +2975,99 @@ mod tests {
     fn test_queue_stats_service_level_no_offered() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
         // 0 offered → 100% service level
-        let stats = manager.queue_stats("sales").unwrap();
+        let stats = manager.queue_stats(&q("sales")).unwrap();
         assert_eq!(stats.service_level_pct, 100.0);
+    }
+
+    /// Two tenants each with a queue called `sales` at 6000 and an agent
+    /// 100 (docs/TENANT_SCOPE.md §4b): neither sees, rings or logs out the
+    /// other's.
+    #[tokio::test]
+    async fn two_tenants_queues_and_agents_of_the_same_name_are_their_own() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+        let other = TenantId::from_uuid(uuid::Uuid::from_u128(2));
+        let sales = test_config().queues["sales"].clone();
+        let new = manager
+            .sync_queue_definitions(
+                vec![
+                    TenantQueueDefinition {
+                        name: "sales".into(),
+                        tenant_id: test_tenant(),
+                        config: sales.clone(),
+                    },
+                    TenantQueueDefinition {
+                        name: "sales".into(),
+                        tenant_id: other,
+                        config: sales.clone(),
+                    },
+                ],
+                test_config(),
+            )
+            .unwrap();
+        assert_eq!(new, vec![QueueKey::new(other, "sales")]);
+        let theirs = QueueKey::new(other, "sales");
+        let their_agent = AgentKey::new(other, "100");
+        assert_eq!(
+            manager.get_queue_for_extension_in_tenant(&other, "6000"),
+            Some(theirs.clone())
+        );
+
+        manager
+            .agent_login(&a("100"), "100", &["sales".to_string()], Vec::new())
+            .await
+            .unwrap();
+        manager
+            .agent_login(&their_agent, "100", &["sales".to_string()], Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(manager.queue_stats(&q("sales")).unwrap().agents_total, 1);
+        assert_eq!(manager.queue_stats(&theirs).unwrap().agents_total, 1);
+        assert_eq!(manager.all_agent_stats_for_tenant(&other).len(), 1);
+
+        // A call in their queue is offered to their agent only.
+        let mut call = test_queued_call("call-theirs", "sales");
+        call.tenant_id = other;
+        manager.enqueue_call(call).await.unwrap();
+        assert_eq!(manager.queue_stats(&q("sales")).unwrap().calls_waiting, 0);
+        assert_eq!(manager.get_queue_waiting_count(&theirs), 1);
+        let plan = manager.select_agent(&theirs).unwrap();
+        assert_eq!(plan.agent_id, their_agent);
+
+        // Not moved into our queue of the same name.
+        assert!(manager
+            .transfer_to_queue("call-theirs", &theirs, &q("sales"))
+            .await
+            .is_err());
+
+        // Logging ours out leaves theirs.
+        manager.agent_logout(&a("100")).await.unwrap();
+        assert_eq!(manager.queue_stats(&q("sales")).unwrap().agents_total, 0);
+        assert_eq!(manager.queue_stats(&theirs).unwrap().agents_total, 1);
+
+        // A tenant's agent logs in only to its own tenant's queues.
+        assert!(manager
+            .agent_login(
+                &AgentKey::new(TenantId::new(), "100"),
+                "100",
+                &["sales".to_string()],
+                Vec::new(),
+            )
+            .await
+            .is_err());
+
+        // Removing theirs (once empty) leaves ours.
+        manager.dequeue_call("call-theirs");
+        manager
+            .sync_queue_definitions(
+                vec![TenantQueueDefinition {
+                    name: "sales".into(),
+                    tenant_id: test_tenant(),
+                    config: sales,
+                }],
+                test_config(),
+            )
+            .unwrap();
+        assert!(manager.get_queue_config(&theirs).is_none());
+        assert!(manager.get_queue_config(&q("sales")).is_some());
     }
 }

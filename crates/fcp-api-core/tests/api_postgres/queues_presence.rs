@@ -139,8 +139,8 @@ async fn a_queue_config_is_changed_and_checked() {
         read_back.text
     );
 
-    // A name another tenant's queue has is refused: the runtime's names
-    // are global.
+    // A name another tenant's queue has is this tenant's to take: a queue
+    // is its name within its tenant (docs/TENANT_SCOPE.md §4b).
     let theirs = app
         .admin_in(
             app.tenant_b,
@@ -150,10 +150,11 @@ async fn a_queue_config_is_changed_and_checked() {
         )
         .await;
     assert_eq!(theirs.status, StatusCode::CREATED, "{}", theirs.text);
-    let clash = app
+    let same_name = app
         .admin(Method::PATCH, &path, Some(json!({ "name": "billing" })))
         .await;
-    assert_eq!(clash.status, StatusCode::BAD_REQUEST, "{}", clash.text);
+    assert_eq!(same_name.status, StatusCode::OK, "{}", same_name.text);
+    assert_eq!(same_name.json["name"], "billing");
 
     let from_b = app
         .admin_in(

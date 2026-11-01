@@ -22,8 +22,8 @@ impl PresenceCheckerAdapter {
 }
 
 impl fcp_queue::PresenceChecker for PresenceCheckerAdapter {
-    fn is_dnd(&self, agent_extension: &str) -> bool {
-        let unavailable = self.people.unavailable(agent_extension);
+    fn is_dnd(&self, tenant_id: &fcp_core::TenantId, agent_extension: &str) -> bool {
+        let unavailable = self.people.unavailable(tenant_id, agent_extension);
         if unavailable {
             debug!(
                 agent = %agent_extension,

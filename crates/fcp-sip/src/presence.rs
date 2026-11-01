@@ -80,7 +80,7 @@ pub trait PresenceHandler: Send + Sync {
     /// call (`docs/PRESENCE.md` §2).
     ///
     /// Used by hunt group routing to skip busy members when `skip_busy` is enabled.
-    fn is_busy(&self, _extension: &str) -> bool {
+    fn is_busy(&self, _tenant_id: &TenantId, _extension: &str) -> bool {
         false
     }
 }
@@ -1587,12 +1587,12 @@ impl PresenceHandler for SipPresenceHandler {
         Ok(())
     }
 
-    fn is_busy(&self, extension: &str) -> bool {
+    fn is_busy(&self, tenant_id: &TenantId, extension: &str) -> bool {
         // In do not disturb or on a call, by the person's presence; a
         // chosen Busy or Away is not skipped (`docs/PRESENCE.md` §2).
         self.people
             .as_ref()
-            .is_some_and(|people| people.unavailable(extension))
+            .is_some_and(|people| people.unavailable(tenant_id, extension))
     }
 }
 

@@ -3,15 +3,15 @@
 use std::collections::HashMap;
 
 use crate::config::DistributionStrategy;
-use crate::types::Agent;
+use crate::types::{Agent, AgentKey};
 
 /// A plan describing which agent to ring for a queued call.
 #[derive(Debug, Clone)]
 pub struct DistributionPlan {
     /// The selected agent's SIP extension.
     pub agent_extension: String,
-    /// The selected agent's ID.
-    pub agent_id: String,
+    /// The selected agent.
+    pub agent_id: AgentKey,
     /// Ring timeout in seconds for this attempt.
     pub ring_timeout_secs: u32,
 }
@@ -138,7 +138,7 @@ pub fn select_agent_weighted(
     Some((
         DistributionPlan {
             agent_extension: agent.extension.clone(),
-            agent_id: agent.id.clone(),
+            agent_id: agent.key(),
             ring_timeout_secs,
         },
         new_rr_index,
@@ -182,23 +182,23 @@ mod tests {
 
         let (plan, idx) =
             select_agent(DistributionStrategy::RoundRobin, &refs, 0, 20, &[]).unwrap();
-        assert_eq!(plan.agent_id, "100");
+        assert_eq!(plan.agent_id.id, "100");
         assert_eq!(idx, 1);
 
         let (plan, idx) =
             select_agent(DistributionStrategy::RoundRobin, &refs, idx, 20, &[]).unwrap();
-        assert_eq!(plan.agent_id, "101");
+        assert_eq!(plan.agent_id.id, "101");
         assert_eq!(idx, 2);
 
         let (plan, idx) =
             select_agent(DistributionStrategy::RoundRobin, &refs, idx, 20, &[]).unwrap();
-        assert_eq!(plan.agent_id, "102");
+        assert_eq!(plan.agent_id.id, "102");
         assert_eq!(idx, 3);
 
         // Wraps around
         let (plan, _) =
             select_agent(DistributionStrategy::RoundRobin, &refs, idx, 20, &[]).unwrap();
-        assert_eq!(plan.agent_id, "100");
+        assert_eq!(plan.agent_id.id, "100");
     }
 
     #[test]
@@ -211,7 +211,7 @@ mod tests {
         let refs: Vec<&Agent> = agents.iter().collect();
 
         let (plan, _) = select_agent(DistributionStrategy::FewestCalls, &refs, 0, 20, &[]).unwrap();
-        assert_eq!(plan.agent_id, "101");
+        assert_eq!(plan.agent_id.id, "101");
     }
 
     #[test]
@@ -224,7 +224,7 @@ mod tests {
         let refs: Vec<&Agent> = agents.iter().collect();
 
         let (plan, _) = select_agent(DistributionStrategy::LongestIdle, &refs, 0, 20, &[]).unwrap();
-        assert_eq!(plan.agent_id, "101");
+        assert_eq!(plan.agent_id.id, "101");
     }
 
     #[test]
@@ -236,7 +236,7 @@ mod tests {
         let refs: Vec<&Agent> = agents.iter().collect();
 
         let (plan, _) = select_agent(DistributionStrategy::LongestIdle, &refs, 0, 20, &[]).unwrap();
-        assert_eq!(plan.agent_id, "101");
+        assert_eq!(plan.agent_id.id, "101");
     }
 
     #[test]
@@ -250,7 +250,7 @@ mod tests {
 
         // Always picks the first available
         let (plan, _) = select_agent(DistributionStrategy::Linear, &refs, 0, 20, &[]).unwrap();
-        assert_eq!(plan.agent_id, "100");
+        assert_eq!(plan.agent_id.id, "100");
     }
 
     #[test]
@@ -297,7 +297,7 @@ mod tests {
         let required = vec!["english".to_string(), "spanish".to_string()];
         let (plan, _) =
             select_agent(DistributionStrategy::SkillsBased, &refs, 0, 20, &required).unwrap();
-        assert_eq!(plan.agent_id, "101");
+        assert_eq!(plan.agent_id.id, "101");
     }
 
     #[test]
@@ -324,7 +324,7 @@ mod tests {
         // No required skills — all agents are eligible
         let (plan, _) = select_agent(DistributionStrategy::SkillsBased, &refs, 0, 20, &[]).unwrap();
         // Should pick one (both eligible, longest idle tiebreaker — both never took a call, so either works)
-        assert!(!plan.agent_id.is_empty());
+        assert!(!plan.agent_id.id.is_empty());
     }
 
     #[test]
@@ -344,7 +344,7 @@ mod tests {
             let (plan, new_rr) =
                 select_agent_weighted(DistributionStrategy::Weighted, &refs, rr, 20, &[], &weights)
                     .unwrap();
-            *counts.entry(plan.agent_id).or_insert(0u32) += 1;
+            *counts.entry(plan.agent_id.id).or_insert(0u32) += 1;
             rr = new_rr;
         }
         // Over 8 calls (2 full cycles): agent 100 should get 6, agent 101 should get 2
@@ -365,7 +365,7 @@ mod tests {
             let (plan, new_rr) =
                 select_agent_weighted(DistributionStrategy::Weighted, &refs, rr, 20, &[], &weights)
                     .unwrap();
-            ids.push(plan.agent_id);
+            ids.push(plan.agent_id.id);
             rr = new_rr;
         }
         assert_eq!(ids, vec!["100", "101", "100", "101"]);

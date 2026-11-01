@@ -4160,7 +4160,7 @@ impl SipMessageHandler {
 
         // Check if a queue handler wants this call (before flow routing)
         if let Some(queue_handler) = &self.queue_handler {
-            if queue_handler.can_handle(request).await {
+            if queue_handler.can_handle(request, &tenant_id).await {
                 // The queue's hours, decided here where a closed caller can
                 // be sent on (`docs/ENTERPRISE_CALLING.md` §3.5).
                 if let Some((state, target)) = self.queue_schedule_divert(request, &call_id).await {
@@ -15562,7 +15562,33 @@ impl SipMessageHandler {
             .and_then(|from| Self::extract_did_from_uri(from.as_str()))
             .unwrap_or_default();
 
-        match queue_handler.agent_logout(&caller_ext).await {
+        let tenant_id = match self.resolve_runtime_tenant(request, call_id).await {
+            Ok(tenant_id) => tenant_id,
+            Err(e) => {
+                warn!(call_id = %call_id, extension = %caller_ext, error = %e, "Agent logout failed: tenant resolution failed");
+                let status = if e.to_string().contains("unknown tenant domain")
+                    || e.to_string().contains("tenant context required")
+                {
+                    403
+                } else {
+                    503
+                };
+                let reason = if status == 403 {
+                    "Tenant context required"
+                } else {
+                    "Tenant lookup unavailable"
+                };
+                let response = self.create_simple_response(request, status, reason);
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(
+                    call_id,
+                    Some("Agent logout tenant resolution failed".to_string()),
+                );
+                return Ok(());
+            }
+        };
+
+        match queue_handler.agent_logout(&caller_ext, &tenant_id).await {
             Ok(()) => {
                 info!(call_id = %call_id, extension = %caller_ext, "Agent logged out via feature code");
                 return self
@@ -16195,10 +16221,11 @@ impl SipMessageHandler {
 
             // Filter out busy/DND members if skip_busy is enabled
             if plan.skip_busy {
-                if let Some(ref presence) = self.presence_handler {
+                let tenant_id = self.call_manager.get_call(&call_id).map(|c| c.tenant_id);
+                if let (Some(presence), Some(tenant_id)) = (&self.presence_handler, tenant_id) {
                     let before = contacts.len();
                     contacts.retain(|(member, _)| {
-                        let busy = presence.is_busy(member);
+                        let busy = presence.is_busy(&tenant_id, member);
                         if busy {
                             debug!(
                                 call_id = %call_id,
@@ -18343,6 +18370,10 @@ impl SipMessageHandler {
                 || self.uas.local_uri.host() == peer.ip().to_string());
         if !from_here {
             return None;
+        }
+        if let Some(tenant) = crate::own_leg::tenant(request) {
+            debug!(source = %peer, tenant_id = %tenant, "INVITE is a leg this node placed for a tenant");
+            return Some(tenant);
         }
         let continued = [TRANSFERRED_FROM_HEADER, FORWARDED_FOR_HEADER]
             .into_iter()
