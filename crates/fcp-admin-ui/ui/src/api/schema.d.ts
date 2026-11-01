@@ -4921,7 +4921,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * `GET /v1/routing/preview?to=…[&from=…][&source_ip=…]`: what a live call
+         * `GET /v1/routing/preview?to=…[&from=…][&source_ip=…][&location_id=…]`: what a live call
          *     manager would do with this tenant's call — the policy and rule that
          *     decide it and the trunks it would try, in order, each with its price
          *     (`docs/TENANT_TRUNKS.md` §12, phase 6d).
@@ -7557,6 +7557,11 @@ export interface components {
             /** Format: int32 */
             priority?: number;
             enabled?: boolean;
+            /**
+             * @description One of the tenant's locations: the rule is for its callers alone,
+             *     and tried before the tenant-wide rules.
+             */
+            location_id?: string | null;
             destination_pattern?: string | null;
             source_pattern?: string | null;
             source_ip_ranges?: string[];
@@ -11040,6 +11045,8 @@ export interface components {
                 /** Format: int32 */
                 priority: number;
                 enabled: boolean;
+                /** @description The location whose callers the rule is for; `null` for every call. */
+                location_id?: string | null;
                 destination_pattern?: string | null;
                 source_pattern?: string | null;
                 source_ip_ranges: string[];
@@ -12613,6 +12620,8 @@ export interface components {
             /** Format: int32 */
             priority: number;
             enabled: boolean;
+            /** @description The location whose callers the rule is for; `null` for every call. */
+            location_id?: string | null;
             destination_pattern?: string | null;
             source_pattern?: string | null;
             source_ip_ranges: string[];
@@ -14086,6 +14095,8 @@ export interface components {
             /** Format: int32 */
             priority?: number | null;
             enabled?: boolean | null;
+            /** @description A location, or `""` for every call of the tenant's. */
+            location_id?: string | null;
             destination_pattern?: string | null;
             source_pattern?: string | null;
             source_ip_ranges?: string[] | null;
@@ -26104,6 +26115,11 @@ export interface operations {
                 to: string;
                 from?: string;
                 source_ip?: string;
+                /**
+                 * @description The caller's location, for a location's rules
+                 *     (docs/TENANT_SCOPE.md §3.6).
+                 */
+                location_id?: string;
             };
             header?: never;
             path?: never;
@@ -28081,6 +28097,8 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string;
+                /** @description A location id, or `none` for the rules without one. */
+                location_id?: string;
             };
             header?: never;
             path?: never;

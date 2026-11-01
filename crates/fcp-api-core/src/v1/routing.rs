@@ -7,6 +7,10 @@
 //! `trunk_update`, since it names a carrier. A rule is checked here the way
 //! a node compiles it, and every change is announced so nodes re-read the
 //! rules at once.
+//!
+//! A rule may be for one of the tenant's locations (`docs/TENANT_SCOPE.md`
+//! §3.6): `location_id` on the rule, and `?location_id=` (an id, or `none`
+//! for the tenant-wide rules) on the list.
 
 use crate::auth::AuthIdentity;
 use crate::error::ApiError;
@@ -18,8 +22,8 @@ use axum::{
     Extension, Json,
 };
 use fcp_core::permissions::Permission;
-use fcp_core::storage::{RoutingRuleStore, TrunkStore};
-use fcp_core::{RoutingAction, RoutingRule, RoutingRuleId, TenantId, TrunkTarget};
+use fcp_core::storage::{RoutingRuleStore, SiteLocationStore, TrunkStore};
+use fcp_core::{LocationId, RoutingAction, RoutingRule, RoutingRuleId, TenantId, TrunkTarget};
 use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
@@ -41,6 +45,8 @@ pub struct RoutingRuleResponse {
     pub description: Option<String>,
     pub priority: i32,
     pub enabled: bool,
+    /// The location whose callers the rule is for; `null` for every call.
+    pub location_id: Option<String>,
     pub destination_pattern: Option<String>,
     pub source_pattern: Option<String>,
     pub source_ip_ranges: Vec<String>,
@@ -69,6 +75,7 @@ impl From<RoutingRule> for RoutingRuleResponse {
             description: r.description,
             priority: r.priority,
             enabled: r.enabled,
+            location_id: r.location_id.map(|id| id.to_string()),
             destination_pattern: r.destination_pattern,
             source_pattern: r.source_pattern,
             source_ip_ranges: r.source_ip_ranges,
@@ -94,6 +101,9 @@ pub struct CreateRoutingRuleRequest {
     pub priority: i32,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// One of the tenant's locations: the rule is for its callers alone,
+    /// and tried before the tenant-wide rules.
+    pub location_id: Option<String>,
     pub destination_pattern: Option<String>,
     pub source_pattern: Option<String>,
     #[serde(default)]
@@ -130,6 +140,8 @@ pub struct UpdateRoutingRuleRequest {
     pub description: Option<String>,
     pub priority: Option<i32>,
     pub enabled: Option<bool>,
+    /// A location, or `""` for every call of the tenant's.
+    pub location_id: Option<String>,
     pub destination_pattern: Option<String>,
     pub source_pattern: Option<String>,
     pub source_ip_ranges: Option<Vec<String>>,
@@ -148,7 +160,7 @@ pub struct UpdateRoutingRuleRequest {
     path = "/api/v1/routing/rules",
     tag = "routing",
     operation_id = "routing_list_routing_rules",
-    params(crate::page::PageQuery),
+    params(crate::page::PageQuery, RoutingRuleFilter),
     responses(
         (status = 200, description = "OK", body = crate::page::Page<RoutingRuleResponse>),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
@@ -159,6 +171,7 @@ pub async fn list_routing_rules(
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+    axum::extract::Query(filter): axum::extract::Query<RoutingRuleFilter>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(
         &identity,
@@ -166,12 +179,20 @@ pub async fn list_routing_rules(
         state.deployment_mode,
     )?;
     let storage = require_storage!(state);
+    let wanted = match filter.location_id.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some("none") => Some(None),
+        Some(id) => Some(Some(parse_location(id)?)),
+    };
     let rules = storage
         .list_routing_rules(&tenant.0)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list routing rules: {}", e)))?;
-    let response: Vec<RoutingRuleResponse> =
-        rules.into_iter().map(RoutingRuleResponse::from).collect();
+    let response: Vec<RoutingRuleResponse> = rules
+        .into_iter()
+        .filter(|r| wanted.is_none_or(|location| r.location_id == location))
+        .map(RoutingRuleResponse::from)
+        .collect();
     Ok(Json(crate::page::paginate(
         response,
         &page,
@@ -259,6 +280,10 @@ pub async fn create_routing_rule(
     rule.description = req.description;
     rule.priority = req.priority;
     rule.enabled = req.enabled;
+    rule.location_id = match req.location_id.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(id) => Some(parse_location(id)?),
+    };
     rule.destination_pattern = req.destination_pattern;
     rule.source_pattern = req.source_pattern;
     rule.source_ip_ranges = req.source_ip_ranges;
@@ -331,6 +356,12 @@ pub async fn update_routing_rule(
     }
     if let Some(en) = req.enabled {
         rule.enabled = en;
+    }
+    if let Some(location) = req.location_id {
+        rule.location_id = match location.trim() {
+            "" => None,
+            id => Some(parse_location(id)?),
+        };
     }
     if let Some(pat) = req.destination_pattern {
         if !pat.is_empty() {
@@ -435,6 +466,19 @@ pub async fn delete_routing_rule(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Which rules a list shows: a location's, or with `none` the tenant-wide.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct RoutingRuleFilter {
+    /// A location id, or `none` for the rules without one.
+    pub location_id: Option<String>,
+}
+
+fn parse_location(id: &str) -> Result<LocationId, ApiError> {
+    id.parse::<LocationId>()
+        .map_err(|_| ApiError::BadRequest(format!("location_id '{id}' is not a location id")))
+}
+
 fn ensure_rule_visible_to_tenant(
     rule: &RoutingRule,
     tenant: &crate::auth::TenantContext,
@@ -452,9 +496,21 @@ fn ensure_rule_visible_to_tenant(
 /// (a trunk group is how a rule reaches those).
 async fn check_rule<S>(storage: &S, rule: &RoutingRule) -> Result<(), ApiError>
 where
-    S: TrunkStore + ?Sized,
+    S: TrunkStore + SiteLocationStore + ?Sized,
 {
     fcp_policy::tenant_rules::validate(rule).map_err(ApiError::BadRequest)?;
+    if let Some(id) = &rule.location_id {
+        let ours = storage
+            .get_location(id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to read location: {}", e)))?
+            .is_some_and(|location| location.tenant_id == rule.tenant_id);
+        if !ours {
+            return Err(ApiError::BadRequest(format!(
+                "location_id '{id}' is not one of this tenant's locations"
+            )));
+        }
+    }
     if let Some(TrunkTarget::Trunk(id)) = rule.trunk_target() {
         let owned = storage
             .get_trunk(&id)
@@ -500,7 +556,7 @@ fn names_a_carrier<'a>(
     Ok(())
 }
 
-/// `GET /v1/routing/preview?to=…[&from=…][&source_ip=…]`: what a live call
+/// `GET /v1/routing/preview?to=…[&from=…][&source_ip=…][&location_id=…]`: what a live call
 /// manager would do with this tenant's call — the policy and rule that
 /// decide it and the trunks it would try, in order, each with its price
 /// (`docs/TENANT_TRUNKS.md` §12, phase 6d).

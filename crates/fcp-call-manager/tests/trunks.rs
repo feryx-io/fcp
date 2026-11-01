@@ -1739,6 +1739,88 @@ async fn a_call_whose_named_trunk_cannot_take_it_is_refused_not_rerouted() {
     stack.finish().await;
 }
 
+/// A location's rules decide its callers' calls before the tenant's
+/// (docs/TENANT_SCOPE.md §3.6): Alice, whose extension is at the branch,
+/// goes out on the branch's carrier though a tenant-wide rule with a
+/// lower priority number matches her call too; Bob, elsewhere, is decided
+/// by the tenant's rule and the ordinary choice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_locations_rule_sends_its_callers_out_on_its_own_carrier() {
+    use fcp_core::storage::ExtensionStore;
+    let everyday = Carrier::new("everyday-carrier").await;
+    let local = Carrier::new("branch-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+
+    let acme = stack.seed.tenant_id;
+    let branch = fcp_core::LocationId::new();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let storage = stack.seed.storage();
+    let mut ext = storage
+        .get_extension_by_number(&acme, &alice.extension)
+        .await
+        .unwrap()
+        .expect("Alice's extension");
+    ext.location_id = Some(branch);
+    storage.put_extension(ext).await.unwrap();
+    stack
+        .seed
+        .trunk_with(acme, "everyday-carrier", everyday.port(), |t| {
+            t.priority = 1;
+        })
+        .await;
+    stack
+        .seed
+        .trunk_with(acme, "branch-carrier", local.port(), |t| {
+            t.priority = 90;
+            t.trunk_group = Some("branch".into());
+        })
+        .await;
+    stack
+        .seed
+        .routing_rule(acme, "everyone", |r| {
+            r.priority = 1;
+            r.action = fcp_core::RoutingAction::Allow;
+        })
+        .await;
+    stack
+        .seed
+        .routing_rule(acme, "the branch", |r| {
+            r.priority = 50;
+            r.location_id = Some(branch);
+            r.action = fcp_core::RoutingAction::RouteToTrunk;
+            r.target_trunk_group = Some("branch".into());
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    for (who, carrier, other, name) in [
+        (&alice, &local, &everyday, "the branch's carrier"),
+        (&bob, &everyday, &local, "the everyday carrier"),
+    ] {
+        let phone = stack.phone(who).await;
+        let call = phone.call("+15125550100").await.unwrap();
+        let Some(incoming) = carrier.phone.incoming(SOON).await else {
+            let why = format!(
+                "{name} never rang for {}; the call is {:?}",
+                who.username,
+                call.phase()
+            );
+            stack.fail(&why).await;
+        };
+        let leg = incoming.answer().await.unwrap();
+        call.answered(SOON).await.unwrap();
+        assert!(
+            other.phone.incoming(NEVER).await.is_none(),
+            "{}'s call was offered elsewhere too",
+            who.username
+        );
+        assert_eq!(call.hangup().await.unwrap(), 200);
+        assert!(leg.ended(SOON).await);
+    }
+    stack.finish().await;
+}
+
 /// A tenant's deny rule refuses the calls it matches — and no rule refuses
 /// an emergency call, however broadly it is written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

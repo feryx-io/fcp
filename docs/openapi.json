@@ -15928,7 +15928,7 @@
         "tags": [
           "routing"
         ],
-        "summary": "`GET /v1/routing/preview?to=…[&from=…][&source_ip=…]`: what a live call\nmanager would do with this tenant's call — the policy and rule that\ndecide it and the trunks it would try, in order, each with its price\n(`docs/TENANT_TRUNKS.md` §12, phase 6d).",
+        "summary": "`GET /v1/routing/preview?to=…[&from=…][&source_ip=…][&location_id=…]`: what a live call\nmanager would do with this tenant's call — the policy and rule that\ndecide it and the trunks it would try, in order, each with its price\n(`docs/TENANT_TRUNKS.md` §12, phase 6d).",
         "operationId": "routing_preview_routing",
         "parameters": [
           {
@@ -15950,6 +15950,15 @@
           {
             "name": "source_ip",
             "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "query",
+            "description": "The caller's location, for a location's rules\n(docs/TENANT_SCOPE.md §3.6).",
             "required": false,
             "schema": {
               "type": "string"
@@ -18547,6 +18556,15 @@
           {
             "name": "cursor",
             "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "query",
+            "description": "A location id, or `none` for the rules without one.",
             "required": false,
             "schema": {
               "type": "string"
@@ -24528,6 +24546,13 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "location_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One of the tenant's locations: the rule is for its callers alone,\nand tried before the tenant-wide rules."
           },
           "destination_pattern": {
             "type": [
@@ -35464,6 +35489,13 @@
                 "enabled": {
                   "type": "boolean"
                 },
+                "location_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The location whose callers the rule is for; `null` for every call."
+                },
                 "destination_pattern": {
                   "type": [
                     "string",
@@ -40158,6 +40190,13 @@
           "enabled": {
             "type": "boolean"
           },
+          "location_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The location whose callers the rule is for; `null` for every call."
+          },
           "destination_pattern": {
             "type": [
               "string",
@@ -44460,6 +44499,13 @@
               "boolean",
               "null"
             ]
+          },
+          "location_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A location, or `\"\"` for every call of the tenant's."
           },
           "destination_pattern": {
             "type": [

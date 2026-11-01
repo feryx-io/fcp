@@ -78,6 +78,9 @@ impl RoutePreviewer for CallManagerPreviewer {
         if let Some(ip) = query.source_ip {
             params.push(("source_ip", ip.to_string()));
         }
+        if let Some(location) = query.location_id {
+            params.push(("location", location.to_string()));
+        }
         let mut request = self
             .http
             .get(format!("{base}/routes/preview"))

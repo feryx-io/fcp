@@ -5775,6 +5775,13 @@ fn row_to_routing_rule(row: sqlx::postgres::PgRow) -> Result<RoutingRule> {
         description: row.try_get("description")?,
         priority: row.try_get("priority")?,
         enabled: row.try_get("enabled")?,
+        location_id: row
+            .try_get::<Option<String>, _>("location_id")?
+            .map(|id| {
+                id.parse::<LocationId>()
+                    .map_err(|e| anyhow::anyhow!("location_id '{id}': {e}"))
+            })
+            .transpose()?,
         destination_pattern: row.try_get("destination_pattern")?,
         source_pattern: row.try_get("source_pattern")?,
         source_ip_ranges: row
@@ -5853,8 +5860,8 @@ impl RoutingRuleStore for PostgresStorage {
                     destination_pattern, source_pattern, source_ip_ranges,
                     time_window_days, time_window_start, time_window_end, time_window_timezone,
                     action, target_trunk_id, target_trunk_group, reason,
-                    created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                    created_at, updated_at, location_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name, description = EXCLUDED.description,
                 priority = EXCLUDED.priority, enabled = EXCLUDED.enabled,
@@ -5869,7 +5876,8 @@ impl RoutingRuleStore for PostgresStorage {
                 target_trunk_id = EXCLUDED.target_trunk_id,
                 target_trunk_group = EXCLUDED.target_trunk_group,
                 reason = EXCLUDED.reason,
-                updated_at = EXCLUDED.updated_at",
+                updated_at = EXCLUDED.updated_at,
+                location_id = EXCLUDED.location_id",
         )
         .bind(rule.id.to_string())
         .bind(rule.tenant_id.to_string())
@@ -5890,6 +5898,7 @@ impl RoutingRuleStore for PostgresStorage {
         .bind(&rule.reason)
         .bind(system_time_to_datetime(rule.created_at))
         .bind(system_time_to_datetime(rule.updated_at))
+        .bind(rule.location_id.map(|id| id.to_string()))
         .execute(self.writes())
         .await?;
         Ok(())

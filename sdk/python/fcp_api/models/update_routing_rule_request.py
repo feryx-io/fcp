@@ -28,6 +28,7 @@ class UpdateRoutingRuleRequest:
             description (None | str | Unset):
             priority (int | None | Unset):
             enabled (bool | None | Unset):
+            location_id (None | str | Unset): A location, or `""` for every call of the tenant's.
             destination_pattern (None | str | Unset):
             source_pattern (None | str | Unset):
             source_ip_ranges (list[str] | None | Unset):
@@ -45,6 +46,7 @@ class UpdateRoutingRuleRequest:
     description: None | str | Unset = UNSET
     priority: int | None | Unset = UNSET
     enabled: bool | None | Unset = UNSET
+    location_id: None | str | Unset = UNSET
     destination_pattern: None | str | Unset = UNSET
     source_pattern: None | str | Unset = UNSET
     source_ip_ranges: list[str] | None | Unset = UNSET
@@ -86,6 +88,12 @@ class UpdateRoutingRuleRequest:
             enabled = UNSET
         else:
             enabled = self.enabled
+
+        location_id: None | str | Unset
+        if isinstance(self.location_id, Unset):
+            location_id = UNSET
+        else:
+            location_id = self.location_id
 
         destination_pattern: None | str | Unset
         if isinstance(self.destination_pattern, Unset):
@@ -174,6 +182,8 @@ class UpdateRoutingRuleRequest:
             field_dict["priority"] = priority
         if enabled is not UNSET:
             field_dict["enabled"] = enabled
+        if location_id is not UNSET:
+            field_dict["location_id"] = location_id
         if destination_pattern is not UNSET:
             field_dict["destination_pattern"] = destination_pattern
         if source_pattern is not UNSET:
@@ -242,6 +252,16 @@ class UpdateRoutingRuleRequest:
             return cast(bool | None | Unset, data)
 
         enabled = _parse_enabled(d.pop("enabled", UNSET))
+
+
+        def _parse_location_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        location_id = _parse_location_id(d.pop("location_id", UNSET))
 
 
         def _parse_destination_pattern(data: object) -> None | str | Unset:
@@ -375,6 +395,7 @@ class UpdateRoutingRuleRequest:
             description=description,
             priority=priority,
             enabled=enabled,
+            location_id=location_id,
             destination_pattern=destination_pattern,
             source_pattern=source_pattern,
             source_ip_ranges=source_ip_ranges,

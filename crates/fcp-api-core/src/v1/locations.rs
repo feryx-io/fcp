@@ -8,7 +8,8 @@ use axum::{
     Json,
 };
 use fcp_core::storage::{
-    CredentialStore, DeviceStore, ExtensionStore, PhoneNumberStore, SiteLocationStore, UserFilter,
+    CredentialStore, DeviceStore, ExtensionStore, PhoneNumberStore, RoutingRuleStore, SiteLocationStore,
+    UserFilter,
 };
 use fcp_core::{LocationId, SiteLocation, TenantId};
 use fcp_events::{PlatformEvent, SystemEvent};
@@ -540,6 +541,16 @@ async fn location_in_use(
         .find(|n| n.location_id == id)
     {
         return Ok(Some(format!("number {}", n.e164)));
+    }
+    // A rule for the location's callers would, with the location gone,
+    // match nobody; refused so its author decides (docs/TENANT_SCOPE.md §3.6).
+    if let Some(r) = storage
+        .list_routing_rules(tenant)
+        .await?
+        .into_iter()
+        .find(|r| r.location_id == id)
+    {
+        return Ok(Some(format!("routing rule {}", r.name)));
     }
     if let Some(emergency) = storage.emergency_store() {
         if let Some(n) = emergency

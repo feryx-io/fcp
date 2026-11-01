@@ -659,9 +659,10 @@ export const trunkStatus = {
 // Routing / Policy Rules
 export const routing = {
   /** What a live call manager would do with this tenant's call to `to`. */
-  preview: (to: string, from?: string) => {
+  preview: (to: string, from?: string, locationId?: string) => {
     const params = new URLSearchParams({ to })
     if (from) params.set('from', from)
+    if (locationId) params.set('location_id', locationId)
     return apiClient.get<RoutePreview>(`/routing/preview?${params.toString()}`)
   },
   list: () => apiClient.getAll<RoutingRule>('/routing/rules'),

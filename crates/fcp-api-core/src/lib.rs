@@ -177,6 +177,12 @@ pub struct RoutePreviewQuery {
     #[schema(value_type = Option<String>)]
     #[param(value_type = Option<String>)]
     pub source_ip: Option<std::net::IpAddr>,
+    /// The caller's location, for a location's rules
+    /// (docs/TENANT_SCOPE.md §3.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    #[param(value_type = Option<String>)]
+    pub location_id: Option<fcp_core::LocationId>,
 }
 pub mod v1;
 pub mod validation;

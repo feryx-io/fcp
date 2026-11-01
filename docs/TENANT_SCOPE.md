@@ -225,7 +225,9 @@ trunks.
   1. the node's rules file;
   2. the call's location's rules;
   3. the tenant's rules without a location.
-- A location's rule wins over a tenant-wide one at the same priority.
+- A location's rule wins over a tenant-wide one at the same priority. (As built, a
+  location's rules come before the tenant's whatever their priority, as question 5
+  agreed; priority orders each group.)
 - The Routing page shows a rule's location and filters by it. The route preview takes
   a location.
 
@@ -505,6 +507,46 @@ trunks.
     - `only_an_own_leg_names_its_tenant` (`fcp-sip` claims) and
       `only_do_not_disturb_and_a_call_make_a_member_unavailable` (now in
       the tenant asking).
+- **Phase 5** (v0.25.500): routing rules per location.
+  - **The rule.** `routing_rules.location_id` (migration 136, nullable,
+    journaled to sites as the rest of the row); `RoutingRule.location_id`.
+  - **The order.** A call from a location meets that location's rules,
+    in priority order, then the tenant's rules without one
+    (`TenantRuleSet`); a location's rule never decides a call from
+    elsewhere or from no known location. Question 5's answer, so a
+    location's rule comes first whatever its priority, not only at a tie.
+  - **The call's location.** The caller's device's (by credentials, MAC or
+    their only device), else their extension's, else the location of a
+    number one of their lines has (`caller_location` in
+    `fcp-sip/src/handler.rs`; parking keeps device then extension). Looked
+    up only for a tenant with a location's rules
+    (`TenantRuleSet::has_location_rules`). A user's own `location_id` is
+    not read: the design names the device, the extension and the number.
+  - **The API.** A rule's `location_id` must be one of the tenant's
+    locations (400 otherwise); `""` clears it on an update. The list takes
+    `?location_id=<id>` or `none` (the tenant-wide rules). A location named
+    by a rule cannot be deleted (409, "routing rule …"): with it gone the
+    rule would match no one. The route preview takes `location_id`, sent
+    to the node as `location`.
+  - **The Routing page.** A Location column ("Every caller" for none), "For
+    callers at" on the rule, a "Rules for" filter, "Caller at" in Test
+    routing, and the explanation of the order.
+  - **Tests:**
+    - `a_locations_rules_come_first_and_only_for_its_callers`
+      (`fcp-policy`): the branch's rule over a tenant-wide one with a lower
+      priority number; its own priority order; elsewhere and nowhere, the
+      tenant's.
+    - `a_routing_rule_is_for_one_of_the_tenants_locations`
+      (`fcp-api-core/tests/api_postgres/routing.rs`): another tenant's and
+      a malformed location refused, the filter by id and `none`, the
+      location's delete refused, cleared, then deleted.
+    - `a_locations_rule_sends_its_callers_out_on_its_own_carrier`
+      (`fcp-call-manager/tests/trunks.rs`): Alice, whose extension is at
+      the branch, leaves on the branch's carrier though a tenant-wide
+      `allow` at priority 1 matches her call; Bob, elsewhere, on the
+      everyday carrier.
+    - The UI suite's `e2e/routing.spec.ts`: a rule made for a location,
+      its badge, "Every caller" on another, the filter both ways.
 
 ## 5. Answers
 

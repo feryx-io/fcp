@@ -1,7 +1,7 @@
 //! What this node would do with a call, without placing it
 //! (`docs/TENANT_TRUNKS.md` §12, phase 6d).
 //!
-//! `GET /routes/preview?tenant=…&to=…[&from=…][&source_ip=…]` runs the same
+//! `GET /routes/preview?tenant=…&to=…[&from=…][&source_ip=…][&location=…]` runs the same
 //! decisions an INVITE meets, in the same order, against what this node
 //! holds right now: emergency detection, the node's YAML policy, the
 //! tenant's own rules, then the trunks — the rule's target, else the
@@ -35,6 +35,9 @@ pub struct PreviewQuery {
     pub from: Option<String>,
     /// Where the call comes from, for rules with source ranges.
     pub source_ip: Option<IpAddr>,
+    /// Where the caller is, for a location's rules (docs/TENANT_SCOPE.md
+    /// §3.6); a call has no device here to say.
+    pub location: Option<String>,
 }
 
 /// One trunk the call would be offered, in the order they are tried.
@@ -185,6 +188,19 @@ pub async fn route_preview_handler(
         })
         .unwrap_or_default();
     let source_ip = query.source_ip.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    let location = match query.location.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+        Some(location) => match fcp_core::LocationId::from_str(location) {
+            Ok(location) => Some(location),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "location is not a location id"})),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
     let direction = TrunkDirection::Upstream;
 
     let mut preview = Preview {
@@ -256,6 +272,7 @@ pub async fn route_preview_handler(
             caller: &caller,
             destination: &destination,
             source_ip,
+            location,
         };
         preview.rule = match rules.evaluate(&tenant, &facts) {
             fcp_policy::RuleOutcome::NoMatch => Decision::of("no_match"),

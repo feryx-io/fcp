@@ -2126,7 +2126,7 @@ impl SipMessageHandler {
     /// reason a `deny` rule refused it. Kept synchronous and out of
     /// `handle_invite`, whose future is deep enough already: nothing here
     /// lives across an await.
-    fn tenant_rule_decision(
+    async fn tenant_rule_decision(
         &self,
         tenant_id: &fcp_core::TenantId,
         request: &sip_core::Request,
@@ -2150,10 +2150,23 @@ impl SipMessageHandler {
             })
             .unwrap_or_default();
         let destination = request.uri().as_str().to_string();
+        // Looked up only for a tenant with a location's rules: most have none.
+        let location = if rules.has_location_rules(tenant_id) {
+            let caller_name = extract_from_uri(request)
+                .ok()
+                .and_then(|u| u.user().map(str::to_string));
+            match caller_name {
+                Some(name) => self.caller_location(tenant_id, request, &name).await,
+                None => None,
+            }
+        } else {
+            None
+        };
         let facts = fcp_policy::CallFacts {
             caller: &caller,
             destination: &destination,
             source_ip: peer.ip(),
+            location,
         };
         match rules.evaluate(tenant_id, &facts) {
             fcp_policy::RuleOutcome::Deny { rule, reason } => {
@@ -3687,7 +3700,7 @@ impl SipMessageHandler {
         // 6b): a deny refuses the call, a route_to_trunk confines it to the
         // trunk or group it names. Never an emergency call's.
         let trunk_target = match emergency {
-            None => match self.tenant_rule_decision(&tenant_id, request, peer) {
+            None => match self.tenant_rule_decision(&tenant_id, request, peer).await {
                 Ok(target) => target,
                 Err(reason) => {
                     let response = self.create_simple_response(request, 403, &reason);
@@ -14194,6 +14207,18 @@ impl SipMessageHandler {
         request: &Request,
         parker: &str,
     ) -> Option<String> {
+        self.device_or_extension_location(tenant_id, request, parker)
+            .await
+            .map(|location| location.to_string())
+    }
+
+    /// [`Self::parker_location`]'s rule, for any caller.
+    async fn device_or_extension_location(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        request: &Request,
+        caller: &str,
+    ) -> Option<fcp_core::LocationId> {
         let storage = self.storage.as_ref()?;
         let auth_username = request
             .headers()
@@ -14208,7 +14233,7 @@ impl SipMessageHandler {
         if let Some(device) = crate::device_sync::device_for_registration(
             storage,
             tenant_id,
-            parker,
+            caller,
             auth_username.as_deref(),
             user_agent.as_deref(),
             None,
@@ -14216,13 +14241,13 @@ impl SipMessageHandler {
         .await
         {
             if let Some(location) = device.location_id {
-                return Some(location.to_string());
+                return Some(location);
             }
         }
-        // The parker is named by a number or by their SIP name.
-        let number = match storage.get_user_by_sip_name(parker, tenant_id).await {
-            Ok(Some(user)) => user.extension.unwrap_or_else(|| parker.to_string()),
-            _ => parker.to_string(),
+        // The caller is named by a number or by their SIP name.
+        let number = match storage.get_user_by_sip_name(caller, tenant_id).await {
+            Ok(Some(user)) => user.extension.unwrap_or_else(|| caller.to_string()),
+            _ => caller.to_string(),
         };
         storage
             .get_extension_by_number(tenant_id, &number)
@@ -14230,7 +14255,43 @@ impl SipMessageHandler {
             .ok()
             .flatten()
             .and_then(|ext| ext.location_id)
-            .map(|location| location.to_string())
+    }
+
+    /// Where a caller is, for the routing rules of a location
+    /// (`docs/TENANT_SCOPE.md` §3.6): their device's location, else their
+    /// extension's, else the location of a number one of their lines has.
+    async fn caller_location(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        request: &Request,
+        caller: &str,
+    ) -> Option<fcp_core::LocationId> {
+        if let Some(location) = self
+            .device_or_extension_location(tenant_id, request, caller)
+            .await
+        {
+            return Some(location);
+        }
+        let storage = self.storage.as_ref()?;
+        let user = storage
+            .get_user_by_sip_name(caller, tenant_id)
+            .await
+            .ok()
+            .flatten()?;
+        for binding in storage
+            .list_line_bindings_by_user(&user.id)
+            .await
+            .ok()?
+            .into_iter()
+            .filter(|b| b.tenant_id == *tenant_id)
+        {
+            if let Ok(Some(number)) = storage.get_phone_number(&binding.phone_number_id).await {
+                if let Some(location) = number.location_id {
+                    return Some(location);
+                }
+            }
+        }
+        None
     }
 
     /// Take the lot's first free slot for `call`: claimed cluster-wide
