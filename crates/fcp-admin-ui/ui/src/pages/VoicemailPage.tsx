@@ -382,7 +382,7 @@ export function VoicemailPage() {
   ]
 
   // --- Create form ---
-  const createForm = useForm<CreateForm>({ resolver: zodResolver(createSchema), defaultValues: { max_message_duration: 300, max_messages: 100 } })
+  const createForm = useForm<z.input<typeof createSchema>, unknown, CreateForm>({ resolver: zodResolver(createSchema), defaultValues: { max_message_duration: 300, max_messages: 100 } })
 
   const onCreateSubmit = (data: CreateForm) => {
     const tenantId = userList.find(u => u.id === data.user_id)?.tenant_id || ''
@@ -398,7 +398,7 @@ export function VoicemailPage() {
   }
 
   // --- Edit form ---
-  const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) })
+  const editForm = useForm<z.input<typeof editSchema>, unknown, EditForm>({ resolver: zodResolver(editSchema) })
 
   const [lastEditId, setLastEditId] = useState<string | null>(null)
   if (editItem && editItem.id !== lastEditId) {
@@ -586,7 +586,7 @@ export function VoicemailPage() {
               <Label className="text-xs text-muted-foreground uppercase tracking-wider">Message Retention</Label>
               <select
                 className="w-full border rounded px-3 py-2 text-sm bg-background"
-                value={editForm.watch('retention_days') ?? ''}
+                value={String(editForm.watch('retention_days') ?? '')}
                 onChange={e => {
                   const v = e.target.value
                   editForm.setValue('retention_days', v === '' ? null : Number(v))

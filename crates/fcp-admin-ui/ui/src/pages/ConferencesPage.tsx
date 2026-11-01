@@ -461,7 +461,7 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
   promptList: PromptResponse[]
   userList: User[]
 }) {
-  const { register, handleSubmit, formState: { errors }, reset, setValue, watch } = useForm<CreateForm>({
+  const { register, handleSubmit, formState: { errors }, reset, setValue, watch } = useForm<z.input<typeof createSchema>, unknown, CreateForm>({
     resolver: zodResolver(createSchema),
     defaultValues: {
       enabled: true, require_guest_pin: false, wait_for_moderator: false, auto_record: false, default_locked: false, permanent: false, max_participants: 0,
@@ -731,7 +731,7 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
   promptList: PromptResponse[]
   userList: User[]
 }) {
-  const { register, handleSubmit, formState: { errors }, reset, setValue, watch } = useForm<EditForm>({
+  const { register, handleSubmit, formState: { errors }, reset, setValue, watch } = useForm<z.input<typeof editSchema>, unknown, EditForm>({
     resolver: zodResolver(editSchema),
   })
 

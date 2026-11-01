@@ -217,8 +217,8 @@ export function TenantsPage() {
     },
   ]
 
-  const createForm = useForm<CreateForm>({ resolver: zodResolver(createSchema) })
-  const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) })
+  const createForm = useForm<z.input<typeof createSchema>, unknown, CreateForm>({ resolver: zodResolver(createSchema) })
+  const editForm = useForm<z.input<typeof editSchema>, unknown, EditForm>({ resolver: zodResolver(editSchema) })
 
   const [lastEditId, setLastEditId] = useState<string | null>(null)
   if (editItem && editItem.id !== lastEditId) {
