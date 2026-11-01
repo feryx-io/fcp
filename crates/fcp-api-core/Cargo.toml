@@ -48,7 +48,7 @@ sha2 = { version = "0.10", features = ["oid"] }
 crc32fast = "1"
 # ID tokens verified (docs/IDENTITY_AND_DEVICES.md phase 3): RS256 and ES256.
 rsa = "0.9"
-p256 = { version = "0.13", features = ["ecdsa"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
 url = "2"
 # SAML sign-in (docs/IDENTITY_AND_DEVICES.md phase 4), behind the `saml`
 # feature: it verifies XML signatures through the xmlsec C library.

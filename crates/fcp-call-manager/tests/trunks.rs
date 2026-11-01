@@ -26,8 +26,9 @@ const REGISTERED: Duration = Duration::from_secs(20);
 
 /// A fresh P-256 key, PEM-encoded, for the node to sign test calls with.
 fn signing_key_pem() -> String {
+    use p256::elliptic_curve::Generate;
     use p256::pkcs8::EncodePrivateKey;
-    let key = p256::SecretKey::random(&mut rand::thread_rng());
+    let key = p256::SecretKey::generate();
     key.to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
         .expect("PEM")
         .to_string()

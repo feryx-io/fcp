@@ -1267,15 +1267,24 @@ impl Call {
         self.state.phase.borrow().clone()
     }
 
-    /// Wait for the call to be answered; the failure code otherwise.
+    /// Wait for the call to be answered; the failure code otherwise. A
+    /// call answered and hung up at once is answered: its phase is already
+    /// `Ended` when this looks, and only its 2xx says it was answered.
     pub async fn answered(&self, within: Duration) -> Result<()> {
         let mut rx = self.state.phase.subscribe();
         let deadline = tokio::time::Instant::now() + within;
         loop {
-            match rx.borrow().clone() {
+            let phase = rx.borrow().clone();
+            match phase {
                 CallPhase::Answered => return Ok(()),
                 CallPhase::Failed(code) => return Err(anyhow!("call failed with {code}")),
-                CallPhase::Ended => return Err(anyhow!("call ended before answer")),
+                CallPhase::Ended => {
+                    return if self.was_answered().await {
+                        Ok(())
+                    } else {
+                        Err(anyhow!("call ended before answer"))
+                    };
+                }
                 _ => {}
             }
             tokio::time::timeout_at(deadline, rx.changed())
@@ -1283,6 +1292,30 @@ impl Call {
                 .map_err(|_| anyhow!("not answered within {within:?}"))?
                 .map_err(|_| anyhow!("call state gone"))?;
         }
+    }
+
+    /// Whether this phone's INVITE drew a 2xx. Its BYE can be handled a
+    /// moment before the task waiting on the INVITE records the 2xx, so a
+    /// call that has ended is given a moment for it.
+    async fn was_answered(&self) -> bool {
+        let answered = || {
+            self.state
+                .timings
+                .lock()
+                .unwrap()
+                .final_response
+                .is_some_and(|(code, _)| (200..300).contains(&code))
+        };
+        for _ in 0..10 {
+            if answered() {
+                return true;
+            }
+            if self.state.timings.lock().unwrap().final_response.is_some() {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        answered()
     }
 
     /// Wait for the far end to hang up.

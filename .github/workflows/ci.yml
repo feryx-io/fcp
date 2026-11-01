@@ -54,6 +54,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # The runners' CMake is 4.x since ubuntu-latest became 26.04 (2026-11):
+  # it refuses a project declaring compatibility below 3.5, which the
+  # bundled opus (audiopus_sys) and SVT-AV1's cpuinfo both do. CMake reads
+  # this variable to configure them anyway.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
   CARGO_TERM_COLOR: always
   # Debug info is never inspected in CI and roughly triples the size of the
   # target directory; the hosted runners run out of disk without this.

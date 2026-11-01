@@ -23,7 +23,7 @@ sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
 sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
 
 # STIR/SHAKEN (PASSporT signing/verification)
-p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+p256 = { version = "0.14", features = ["ecdsa", "pem"] }
 base64 = "0.22"
 uuid = { workspace = true }
 anyhow = { workspace = true }
