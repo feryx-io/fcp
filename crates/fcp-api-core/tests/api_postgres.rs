@@ -5490,6 +5490,254 @@ async fn system_prompts_are_every_tenants_and_overridden_per_tenant() {
     app.finish().await;
 }
 
+/// Tenant scope phase 4 (docs/TENANT_SCOPE.md §3.4, §3.7): flows without a
+/// tenant adopted or assigned, flow traces paged by tenant in SQL, tokens
+/// without a maker held to a tenant administrator, a number's state
+/// following its bindings.
+#[tokio::test]
+async fn flows_traces_tokens_and_numbers_keep_to_their_tenant() {
+    use fcp_flow::FlowStore;
+    let app = require_app!();
+    let a = app.tenant_a.to_string();
+    let b = app.tenant_b.to_string();
+
+    // ── Flows without a tenant ──
+    let orphan = |id: &str| {
+        let mut flow: fcp_flow::FlowDefinition = serde_json::from_value(json!({
+            "id": id, "name": id, "version": 1, "initial_node": "end",
+            "nodes": { "end": { "type": "hangup" } }
+        }))
+        .unwrap();
+        flow.tenant_id = None;
+        flow
+    };
+    for id in ["orphan-a", "orphan-x", "orphan-none"] {
+        app.storage.insert_flow(orphan(id)).await.unwrap();
+    }
+    let trace = |flow: &str, tenant: &str| FlowTraceEntry {
+        id: 0,
+        call_id: CallId::new().to_string(),
+        tenant_id: Some(tenant.to_string()),
+        flow_id: flow.to_string(),
+        flow_name: None,
+        node_id: None,
+        event_type: FlowTraceEventType::Started,
+        timestamp: SystemTime::now(),
+        detail: None,
+        flow_version: Some(1),
+        elapsed_ms: None,
+    };
+    // orphan-a ran for tenant A alone; orphan-x for both.
+    for (flow, tenant) in [("orphan-a", &a), ("orphan-x", &a), ("orphan-x", &b)] {
+        app.traces
+            .insert_flow_trace(&trace(flow, tenant))
+            .await
+            .unwrap();
+    }
+    let left = app
+        .admin(Method::GET, "/api/v1/flows/untenanted", None)
+        .await;
+    assert_eq!(left.status, StatusCode::OK, "{}", left.text);
+    let ids: Vec<&str> = left
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["orphan-none", "orphan-x"], "{}", left.text);
+    let adopted = app.admin(Method::GET, "/api/v1/flows/orphan-a", None).await;
+    assert_eq!(
+        adopted.status,
+        StatusCode::OK,
+        "A sees the flow it ran: {}",
+        adopted.text
+    );
+    assert_eq!(adopted.json["tenant_id"], a.as_str());
+    let versions = app
+        .admin(Method::GET, "/api/v1/flows/orphan-a/versions", None)
+        .await;
+    assert_eq!(
+        versions.status,
+        StatusCode::OK,
+        "its versions came along: {}",
+        versions.text
+    );
+
+    let assigned = app
+        .admin(
+            Method::POST,
+            "/api/v1/flows/orphan-x/assign",
+            Some(json!({ "tenant_id": b })),
+        )
+        .await;
+    assert_eq!(assigned.status, StatusCode::OK, "{}", assigned.text);
+    assert_eq!(assigned.json["tenant_id"], b.as_str());
+    let again = app
+        .admin(
+            Method::POST,
+            "/api/v1/flows/orphan-x/assign",
+            Some(json!({ "tenant_id": a })),
+        )
+        .await;
+    assert_eq!(
+        again.status,
+        StatusCode::CONFLICT,
+        "a tenant's flow is never moved: {}",
+        again.text
+    );
+    let nowhere = app
+        .admin(
+            Method::POST,
+            "/api/v1/flows/orphan-none/assign",
+            Some(json!({ "tenant_id": TenantId::new().to_string() })),
+        )
+        .await;
+    assert_eq!(nowhere.status, StatusCode::NOT_FOUND, "{}", nowhere.text);
+    app.create_user_with_role("flows-a", "tenant_admin").await;
+    let jwt_a = app.login("flows-a", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (method, path, body) in [
+        (Method::GET, "/api/v1/flows/untenanted", None),
+        (
+            Method::POST,
+            "/api/v1/flows/orphan-none/assign",
+            Some(json!({ "tenant_id": a })),
+        ),
+    ] {
+        let refused = app.send_as(&jwt_a, method.clone(), path, body).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path}: {}",
+            refused.text
+        );
+    }
+
+    // ── Flow traces by tenant, in SQL ──
+    for _ in 0..5 {
+        app.traces
+            .insert_flow_trace(&trace("paged", &a))
+            .await
+            .unwrap();
+    }
+    for _ in 0..7 {
+        app.traces
+            .insert_flow_trace(&trace("paged", &b))
+            .await
+            .unwrap();
+    }
+    let mut seen = 0;
+    let mut path = "/api/v1/flow-traces?flow_id=paged&limit=2".to_string();
+    loop {
+        let res = app.send_as(&jwt_a, Method::GET, &path, None).await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+        let rows = res.json.as_array().unwrap();
+        assert!(
+            rows.iter().all(|r| r["call_id"].is_string()),
+            "{}",
+            res.text
+        );
+        assert_eq!(res.body["total"], 5, "the tenant's total: {}", res.text);
+        seen += rows.len();
+        match res.body["next_cursor"].as_str() {
+            Some(c) => {
+                assert_eq!(rows.len(), 2, "a page before the last is full");
+                path = format!("/api/v1/flow-traces?flow_id=paged&limit=2&cursor={c}");
+            }
+            None => break,
+        }
+    }
+    assert_eq!(seen, 5, "tenant A's five and none of B's");
+
+    // ── A token without a maker reaches what a tenant administrator may ──
+    // A legacy token: made before makers and permissions were recorded,
+    // carrying `admin`. The API no longer makes one, so it is written here.
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/api-tokens",
+            Some(json!({ "name": "unmade", "permissions": ["user_read"] })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let secret = made.json["secret"].as_str().unwrap().to_string();
+    sqlx::query("UPDATE api_tokens SET permissions = '[\"admin\"]', user_id = '' WHERE id = $1")
+        .bind(made.json["token"]["id"].as_str().unwrap())
+        .execute(app.storage.pool())
+        .await
+        .unwrap();
+    let listed = app.admin(Method::GET, "/api/v1/api-tokens", None).await;
+    let row = listed
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "unmade")
+        .cloned()
+        .unwrap();
+    assert_eq!(row["legacy_full_access"], true, "{row}");
+    let read = app
+        .send_as(&secret, Method::GET, "/api/v1/users", None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    // System configuration, which only the permission guards: a legacy
+    // token reached it before.
+    let system = app
+        .send_as(&secret, Method::GET, "/api/v1/config", None)
+        .await;
+    assert_eq!(system.status, StatusCode::FORBIDDEN, "{}", system.text);
+    let platform = app.admin(Method::GET, "/api/v1/config", None).await;
+    assert_eq!(platform.status, StatusCode::OK, "{}", platform.text);
+
+    // ── A number's state follows its bindings ──
+    let number = app
+        .admin(
+            Method::POST,
+            "/api/v1/phone-numbers",
+            Some(json!({ "e164": "+15125550466" })),
+        )
+        .await;
+    assert_eq!(number.status, StatusCode::CREATED, "{}", number.text);
+    let number_id = number.json["id"].as_str().unwrap().to_string();
+    assert_eq!(number.json["state"], "unassigned", "{}", number.text);
+    let owner = app.create_user("bound-owner", None).await;
+    let bound = app
+        .admin(
+            Method::POST,
+            "/api/v1/line-bindings",
+            Some(json!({ "phone_number_id": number_id, "owner_user_id": owner, "binding_type": "user" })),
+        )
+        .await;
+    assert_eq!(bound.status, StatusCode::CREATED, "{}", bound.text);
+    let state = |id: String| {
+        let app = &app;
+        async move {
+            app.admin(Method::GET, &format!("/api/v1/phone-numbers/{id}"), None)
+                .await
+                .json["state"]
+                .clone()
+        }
+    };
+    assert_eq!(state(number_id.clone()).await, "assigned");
+    let unbound = app
+        .admin(
+            Method::DELETE,
+            &format!(
+                "/api/v1/line-bindings/{}",
+                bound.json["id"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(unbound.status, StatusCode::NO_CONTENT, "{}", unbound.text);
+    assert_eq!(state(number_id).await, "unassigned");
+
+    app.finish().await;
+}
+
 // ─── SIP traces ──────────────────────────────────────────────────────────
 
 #[tokio::test]

@@ -3608,6 +3608,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/flows/untenanted": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/flows/untenanted — Flows with no tenant, for a platform
+         *     administrator to assign (docs/TENANT_SCOPE.md §3.4)
+         * @description Each one named by a single tenant's line bindings, mailboxes or traces
+         *     is first given to that tenant; what is left is listed.
+         */
+        get: operations["flows_list_untenanted_flows"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/flows/{id}/assign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/flows/:id/assign — Give a flow without a tenant to one
+         * @description Only a flow without a tenant: a tenant's flow is never moved (409).
+         */
+        post: operations["flows_assign_flow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/phone-numbers": {
         parameters: {
             query?: never;
@@ -6260,7 +6302,9 @@ export interface components {
             permissions: string[];
             /**
              * @description A token made before permissions were checked, carrying `admin` or
-             *     `*`: it reaches everything in its tenant. Review and replace it.
+             *     `*`. Since v0.25.498 it reaches what a tenant administrator may (or
+             *     its maker, when it has one), never system configuration: make a new
+             *     one with the permissions it needs.
              */
             legacy_full_access: boolean;
             expires_at?: string | null;
@@ -6348,6 +6392,10 @@ export interface components {
             redirect_url: string;
             /** @description The app that asked. */
             client_id: string;
+        };
+        AssignFlowRequest: {
+            /** @description The tenant the flow becomes. */
+            tenant_id: string;
         };
         AssistantView: {
             user_id: string;
@@ -9181,7 +9229,9 @@ export interface components {
                 permissions: string[];
                 /**
                  * @description A token made before permissions were checked, carrying `admin` or
-                 *     `*`: it reaches everything in its tenant. Review and replace it.
+                 *     `*`. Since v0.25.498 it reaches what a tenant administrator may (or
+                 *     its maker, when it has one), never system configuration: make a new
+                 *     one with the permissions it needs.
                  */
                 legacy_full_access: boolean;
                 expires_at?: string | null;
@@ -22304,6 +22354,73 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlowResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    flows_list_untenanted_flows: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_FlowResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    flows_assign_flow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssignFlowRequest"];
+            };
+        };
         responses: {
             /** @description OK */
             200: {

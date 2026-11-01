@@ -67,7 +67,9 @@ today. Its first save in the API makes it an ordinary lot.
 ## 3. Calls
 
 - **Park, next free:** `*70` (during a call or as a transfer target) or the lot's
-  `park_number`. The lot is the phone's location's, else the tenant's first. The
+  `park_number`. The lot is the parker's location's (since v0.25.498: the
+  device the request came from, else the parker's extension), else the tenant's
+  lot without a location, else its first. The
   parker hears the slot read out and is hung up on, as today; the 200 OK carries
   `X-FCP-Parked: <slot>`.
 - **Park, directed:** a transfer to a slot number parks in that slot when it is free,

@@ -138,7 +138,22 @@ pub async fn list_flow_traces(
     let limit = page.limit()?;
     let offset = page.offset()?;
 
+    // Platform admins see every tenant unless they selected one with the
+    // override header (then `tenant` already carries it). Anyone else's are
+    // their tenant's, chosen in SQL so a page is full and counted
+    // (docs/TENANT_SCOPE.md §3.4).
+    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+        && !headers.contains_key(PLATFORM_TENANT_HEADER);
+    if !allow_all_tenants && offset == 0 {
+        // Traces written without a tenant (a node that did not know the
+        // call's) take their call's record's before a first page.
+        if let Err(e) = trace_store.adopt_untenanted_traces().await {
+            warn!(error = %e, "Could not give traces their tenant");
+        }
+    }
+
     let mut query = FlowTraceQuery {
+        tenant_id: (!allow_all_tenants).then(|| tenant.0.to_string()),
         call_id: params.call_id,
         flow_id: params.flow_id,
         event_type: None,
@@ -193,28 +208,12 @@ pub async fn list_flow_traces(
         ApiError::Internal("Failed to query flow traces".to_string())
     })?;
 
-    // Platform admins see every tenant unless they selected one with the
-    // override header (then `tenant` already carries it).
-    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
-        && !headers.contains_key(PLATFORM_TENANT_HEADER);
-    let mut scoped_entries = Vec::new();
-    for entry in entries {
-        if allow_all_tenants || call_is_visible_to_tenant(&state, &tenant, &entry.call_id).await? {
-            scoped_entries.push(entry);
-        }
-    }
-
-    let traces: Vec<FlowTraceResponse> = scoped_entries
-        .into_iter()
-        .map(FlowTraceResponse::from)
-        .collect();
-    // The store pages before the tenant filter, so the next page is
-    // wherever the store's page ended, whatever this one kept.
+    let traces: Vec<FlowTraceResponse> = entries.into_iter().map(FlowTraceResponse::from).collect();
     let more = offset + limit < total;
     let page = crate::page::Page::new(
         traces,
         more.then(|| format!("o:{}", offset + limit)),
-        allow_all_tenants.then_some(total as u64),
+        Some(total as u64),
     );
     Ok(Json(page))
 }

@@ -65,8 +65,10 @@ used, its permissions are checked against what the maker holds now:
 - If the maker is disabled, suspended or deleted, the token is refused.
 - A maker locked out by failed passwords keeps their tokens: a lockout is
   about the password.
-- A token made with the static token has no maker, and keeps what it was
-  given.
+- A token made with the static token, or before makers were recorded, has
+  no maker. Since v0.25.498 it is held to a tenant administrator's reach,
+  as a made token is to its maker's (`docs/TENANT_SCOPE.md` §3.7): never
+  system configuration or another tenant's lifecycle, whatever it carries.
 
 ### Revoking and rotating
 
@@ -186,11 +188,12 @@ and a token they make may carry what any of those roles' tokens may.
 - **Existing tokens.**
   - Tokens made before this release have no maker, and keep what they
     were given.
-  - A token carrying `admin` or `*` still reaches everything in its
-    tenant. The tokens page marks it **Full access (legacy)**, and the API
-    marks it `legacy_full_access: true`. Any user with an admin role could
-    have made one, including a `read_only` user. Review each and replace
-    it with a scoped token.
+  - A token carrying `admin` or `*` reaches what a tenant administrator
+    may in its tenant (since v0.25.498; before, everything, system
+    configuration included). The tokens page marks it **Legacy: make a new
+    one**, and the API marks it `legacy_full_access: true`. Any user with an
+    admin role could have made one, including a `read_only` user. Review
+    each and replace it with a scoped token.
   - New tokens never carry `admin`: at creation it becomes the list of
     what the maker may grant.
 - **Revoking now keeps the token.** It shows as revoked in the list.

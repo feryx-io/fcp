@@ -401,6 +401,52 @@ trunks.
       Tenant column and "The platform only"; a tenant administrator's view
       without either, a static-token action shown as `platform
       administrator`.
+- **Phase 4a** (v0.25.498): flows, traces, parking, tokens, numbers.
+  - **Flows.** `FlowHandler::start_flow` refuses another tenant's flow
+    (`flow_belongs_to`: a flow's tenant compared as an id; a flow without a
+    tenant is anyone's). Call control's redirect already checked.
+    `GET /flows/untenanted` (a platform administrator's, `system_config` in the
+    route table) first gives each flow
+    without a tenant the tenant of what names it — line bindings, mailboxes,
+    its own traces — when they all name one (`FlowStore::adopt_untenanted_flows`,
+    its versions with it), then lists the rest; `POST /flows/{id}/assign`
+    gives one to a tenant (409 for a flow with one; filed under that tenant in
+    the audit log). The Flows page shows a platform administrator those left,
+    each with "Give to this tenant".
+  - **Flow traces.** Listed by `tenant_id` in SQL with a total, so a tenant's
+    page is full and counted; traces written without a tenant take their
+    call's record's before a tenant's first page. Paging stays by offset
+    (`o:<n>`), as before, not keyset.
+  - **Parking.** `*70` and a transfer to the park code park in the lot of the
+    parker's location (`parker_location`: the device the request came from by
+    its credentials, MAC or the parker's only device, else the parker's
+    extension, the parker named by number or SIP name), else the tenant's lot
+    without a location, else its first. Location ids compare as ids (`loc-` or
+    bare).
+  - **Tokens.** A token without a maker is held to a tenant administrator's
+    reach (`effective_permissions`), a legacy `admin` or `*` token included.
+    The tokens page says "Legacy: make a new one".
+  - **Numbers.** Binding a number makes an `unassigned` one `assigned`;
+    removing its last binding makes an `assigned` one `unassigned`; other
+    states are left alone. Migration 135 marks the numbers already bound.
+  - **Queue names** are still checked across tenants: the queue manager keys
+    every queue, agent and statistic by name alone (116 call sites, 82 of its
+    functions), so per-tenant names are phase 4b.
+  - **Tests:**
+    - `flows_traces_tokens_and_numbers_keep_to_their_tenant`
+      (`fcp-api-core/tests/api_postgres.rs`): three flows without a tenant —
+      one run by A alone (adopted, its versions readable), one by A and B
+      (left, then assigned to B, then refused a move), one by none (left, a
+      tenant that does not exist refused); a tenant administrator refused
+      both routes; A's administrator paging A's five of twelve traces two at
+      a time, every page full and the total 5; a legacy `admin` token reading
+      users but refused `GET /config` (it reached it before); a number
+      `unassigned`, `assigned` once bound, `unassigned` once unbound. Against
+      the previous code the token and the trace total fail.
+    - `a_call_parks_in_the_lot_of_the_parkers_location`
+      (`fcp-call-manager/tests/calling.rs`): two lots, the branch's and one
+      without a location; Bob, whose extension is at the branch, parks in the
+      branch's lot, Carol in the other.
 
 ## 5. Answers
 

@@ -10656,6 +10656,109 @@
         }
       }
     },
+    "/api/v1/flows/untenanted": {
+      "get": {
+        "tags": [
+          "flows"
+        ],
+        "summary": "GET /api/v1/flows/untenanted — Flows with no tenant, for a platform\nadministrator to assign (docs/TENANT_SCOPE.md §3.4)",
+        "description": "Each one named by a single tenant's line bindings, mailboxes or traces\nis first given to that tenant; what is left is listed.",
+        "operationId": "flows_list_untenanted_flows",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_FlowResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flows/{id}/assign": {
+      "post": {
+        "tags": [
+          "flows"
+        ],
+        "summary": "POST /api/v1/flows/:id/assign — Give a flow without a tenant to one",
+        "description": "Only a flow without a tenant: a tenant's flow is never moved (409).",
+        "operationId": "flows_assign_flow",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignFlowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlowResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/phone-numbers": {
       "get": {
         "tags": [
@@ -20442,7 +20545,7 @@
           },
           "legacy_full_access": {
             "type": "boolean",
-            "description": "A token made before permissions were checked, carrying `admin` or\n`*`: it reaches everything in its tenant. Review and replace it."
+            "description": "A token made before permissions were checked, carrying `admin` or\n`*`. Since v0.25.498 it reaches what a tenant administrator may (or\nits maker, when it has one), never system configuration: make a new\none with the permissions it needs."
           },
           "expires_at": {
             "type": [
@@ -20709,6 +20812,18 @@
           "client_id": {
             "type": "string",
             "description": "The app that asked."
+          }
+        }
+      },
+      "AssignFlowRequest": {
+        "type": "object",
+        "required": [
+          "tenant_id"
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "description": "The tenant the flow becomes."
           }
         }
       },
@@ -29490,7 +29605,7 @@
                 },
                 "legacy_full_access": {
                   "type": "boolean",
-                  "description": "A token made before permissions were checked, carrying `admin` or\n`*`: it reaches everything in its tenant. Review and replace it."
+                  "description": "A token made before permissions were checked, carrying `admin` or\n`*`. Since v0.25.498 it reaches what a tenant administrator may (or\nits maker, when it has one), never system configuration: make a new\none with the permissions it needs."
                 },
                 "expires_at": {
                   "type": [

@@ -11,6 +11,7 @@ from .app_token_request import AppTokenRequest
 from .app_token_response import AppTokenResponse
 from .approve_request import ApproveRequest
 from .approve_response import ApproveResponse
+from .assign_flow_request import AssignFlowRequest
 from .assistant_view import AssistantView
 from .audit_entry_response import AuditEntryResponse
 from .audit_entry_response_new_value import AuditEntryResponseNewValue
@@ -597,6 +598,7 @@ __all__ = (
     "ApproveResponse",
     "AppTokenRequest",
     "AppTokenResponse",
+    "AssignFlowRequest",
     "AssistantView",
     "AuditEntryResponse",
     "AuditEntryResponseNewValue",

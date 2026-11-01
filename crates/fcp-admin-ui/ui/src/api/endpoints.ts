@@ -701,6 +701,11 @@ export const flows = {
     apiClient.put<FlowResponse>(`/flows/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/flows/${encodeURIComponent(id)}`),
   versions: (id: string) => apiClient.getAll<FlowResponse>(`/flows/${encodeURIComponent(id)}/versions`),
+  // Flows from before tenancy that nothing tied to one tenant, for a
+  // platform administrator to assign (docs/TENANT_SCOPE.md §3.4).
+  untenanted: () => apiClient.getAll<FlowResponse>('/flows/untenanted'),
+  assign: (id: string, tenantId: string) =>
+    apiClient.post<FlowResponse>(`/flows/${encodeURIComponent(id)}/assign`, { tenant_id: tenantId }),
 }
 
 // Sites: a tenant's own stack on its network, enrolled to this cloud

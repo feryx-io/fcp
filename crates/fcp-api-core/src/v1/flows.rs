@@ -468,3 +468,142 @@ pub async fn get_flow_version(
         .and_then(|flow| ensure_flow_in_tenant(flow, &tenant.0.to_string(), &id))?;
     Ok(Json(FlowResponse::from(flow)))
 }
+
+/// A platform administrator's, or anyone's with authentication off.
+fn require_platform(
+    identity: &Option<axum::Extension<crate::auth::AuthIdentity>>,
+) -> Result<(), ApiError> {
+    match identity {
+        Some(axum::Extension(id)) if !id.is_platform_admin() => Err(ApiError::Forbidden(
+            "Flows without a tenant are the platform administrator's to assign".to_string(),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// GET /api/v1/flows/untenanted — Flows with no tenant, for a platform
+/// administrator to assign (docs/TENANT_SCOPE.md §3.4)
+///
+/// Each one named by a single tenant's line bindings, mailboxes or traces
+/// is first given to that tenant; what is left is listed.
+#[utoipa::path(
+    get,
+    path = "/api/v1/flows/untenanted",
+    tag = "flows",
+    operation_id = "flows_list_untenanted_flows",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<FlowResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn list_untenanted_flows(
+    State(state): State<ApiState>,
+    identity: Option<axum::Extension<crate::auth::AuthIdentity>>,
+    Query(page): Query<crate::page::PageQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_platform(&identity)?;
+    let store = get_flow_store(&state)?;
+    let adopted = store
+        .adopt_untenanted_flows()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to adopt flows: {e}")))?;
+    if adopted > 0 {
+        info!(
+            adopted,
+            "Gave flows without a tenant the tenant that names them"
+        );
+    }
+    let flows: Vec<FlowResponse> = store
+        .list_flows(None)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to list flows: {e}")))?
+        .into_iter()
+        .filter(|f| f.tenant_id.is_none())
+        .map(FlowResponse::from)
+        .collect();
+    Ok(Json(crate::page::paginate(
+        flows,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.id.clone(),
+    )?))
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct AssignFlowRequest {
+    /// The tenant the flow becomes.
+    pub tenant_id: String,
+}
+
+/// POST /api/v1/flows/:id/assign — Give a flow without a tenant to one
+///
+/// Only a flow without a tenant: a tenant's flow is never moved (409).
+#[utoipa::path(
+    post,
+    path = "/api/v1/flows/{id}/assign",
+    tag = "flows",
+    operation_id = "flows_assign_flow",
+    params(("id" = String, Path)),
+    request_body = AssignFlowRequest,
+    responses(
+        (status = 200, description = "OK", body = FlowResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn assign_flow(
+    State(state): State<ApiState>,
+    identity: Option<axum::Extension<crate::auth::AuthIdentity>>,
+    Path(id): Path<String>,
+    Json(req): Json<AssignFlowRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_platform(&identity)?;
+    let tenant_id: fcp_core::TenantId = req
+        .tenant_id
+        .parse()
+        .map_err(|e| ApiError::BadRequest(format!("Invalid tenant_id: {e}")))?;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
+    if tenant_id != state.default_tenant_id
+        && fcp_core::storage::TenantStore::get_tenant(storage.as_ref(), &tenant_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .is_none()
+    {
+        return Err(ApiError::NotFound(format!(
+            "Tenant '{tenant_id}' not found"
+        )));
+    }
+    let store = get_flow_store(&state)?;
+    let flow = store
+        .get_flow(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Flow not found: {id}")))?;
+    if flow.tenant_id.is_some() {
+        return Err(ApiError::Conflict(format!(
+            "Flow {id} already has a tenant"
+        )));
+    }
+    if !store
+        .assign_flow_tenant(&id, &tenant_id.to_string())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+    {
+        return Err(ApiError::Conflict(format!(
+            "Flow {id} already has a tenant"
+        )));
+    }
+    let flow = store
+        .get_flow(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Flow not found: {id}")))?;
+    info!(flow_id = %id, tenant_id = %tenant_id, "Assigned a flow without a tenant");
+    Ok((
+        axum::Extension(crate::audit::AuditScope::Tenant(tenant_id)),
+        Json(FlowResponse::from(flow)),
+    ))
+}

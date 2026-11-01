@@ -179,9 +179,27 @@ pub fn is_number(s: &str) -> bool {
 pub fn lot_for<'a>(lots: &'a [ParkingLot], location: Option<&str>) -> Option<&'a ParkingLot> {
     let enabled = || lots.iter().filter(|l| l.enabled);
     location
-        .and_then(|loc| enabled().find(|l| l.location_id.as_deref() == Some(loc)))
+        .and_then(|loc| {
+            enabled().find(|l| {
+                l.location_id
+                    .as_deref()
+                    .is_some_and(|l| same_location(l, loc))
+            })
+        })
         .or_else(|| enabled().find(|l| l.location_id.is_none()))
         .or_else(|| enabled().next())
+}
+
+/// Whether two location ids name one location: `loc-<uuid>` and the bare
+/// uuid are the same, as `LocationId` reads them.
+fn same_location(a: &str, b: &str) -> bool {
+    match (
+        a.parse::<crate::LocationId>(),
+        b.parse::<crate::LocationId>(),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 /// Where a tenant's parking lots are kept.

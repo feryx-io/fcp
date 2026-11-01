@@ -616,6 +616,8 @@ pub fn router() -> Router<ApiState> {
         )
         // Flows
         .route("/flows", get(flows::list_flows).post(flows::create_flow))
+        .route("/flows/untenanted", get(flows::list_untenanted_flows))
+        .route("/flows/:id/assign", post(flows::assign_flow))
         .route(
             "/flows/:id",
             get(flows::get_flow)

@@ -353,6 +353,9 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (PUT, "/flows/:id", Needs(FlowManage)),
     (DELETE, "/flows/:id", Needs(FlowManage)),
     (GET, "/flows/:id/versions", Needs(FlowRead)),
+    // The platform's: flows no tenant owns (docs/TENANT_SCOPE.md §3.4).
+    (GET, "/flows/untenanted", Needs(SystemConfig)),
+    (POST, "/flows/:id/assign", Needs(SystemConfig)),
     (GET, "/flows/:id/versions/:version", Needs(FlowRead)),
     // Numbers, lines and extensions.
     (GET, "/phone-numbers", Needs(PhoneNumberRead)),

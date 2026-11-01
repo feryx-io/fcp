@@ -13845,8 +13845,18 @@ impl SipMessageHandler {
                             .unwrap_or_default(),
                     };
                     let parker = user_of_uri(&parker).unwrap_or_default();
+                    let location = self
+                        .parker_location(&call.tenant_id, request, &parker)
+                        .await;
                     return match self
-                        .park_party(pbx, call, referrer, &parker, only.as_deref())
+                        .park_party(
+                            pbx,
+                            call,
+                            referrer,
+                            &parker,
+                            only.as_deref(),
+                            location.as_deref(),
+                        )
                         .await
                     {
                         Ok(slot) => {
@@ -13988,6 +13998,7 @@ impl SipMessageHandler {
         parker: fcp_b2bua_core::LegSide,
         parker_ext: &str,
         only: Option<&str>,
+        location: Option<&str>,
     ) -> Result<String> {
         let lot = match only {
             Some(slot) => self
@@ -13997,7 +14008,7 @@ impl SipMessageHandler {
                 .find(|l| l.enabled && l.contains(slot))
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("{slot} is in none of the tenant's lots"))?,
-            None => self.parking_lot_for(pbx, &call.tenant_id).await,
+            None => self.parking_lot_for(pbx, &call.tenant_id, location).await,
         };
         let orbit = self.claim_slot(pbx, &lot, call, parker_ext, only).await?;
         let lot_music = lot.music.clone();
@@ -14164,11 +14175,62 @@ impl SipMessageHandler {
         &self,
         pbx: &fcp_pbx::PbxHandler,
         tenant_id: &fcp_core::TenantId,
+        location: Option<&str>,
     ) -> fcp_core::parking::ParkingLot {
         let lots = self.parking_lots_of(tenant_id).await;
-        fcp_core::parking::lot_for(&lots, None)
+        fcp_core::parking::lot_for(&lots, location)
             .cloned()
             .unwrap_or_else(|| pbx.parking_manager().node_lot(*tenant_id))
+    }
+
+    /// Where the parker is, for the lot they park in (`docs/PARKING.md`,
+    /// `docs/TENANT_SCOPE.md` §3.5): the location of the device the request
+    /// came from (by its credentials, its User-Agent's MAC, or the parker's
+    /// only device), else of the parker's extension (the parker named by
+    /// their number, or by their SIP name and so their user's extension).
+    async fn parker_location(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        request: &Request,
+        parker: &str,
+    ) -> Option<String> {
+        let storage = self.storage.as_ref()?;
+        let auth_username = request
+            .headers()
+            .get_smol("Authorization")
+            .or_else(|| request.headers().get_smol("Proxy-Authorization"))
+            .and_then(sip_parse::parse_authorization_header)
+            .and_then(|auth| auth.param("username").map(|u| u.to_string()));
+        let user_agent = request
+            .headers()
+            .get_smol("User-Agent")
+            .map(|v| v.to_string());
+        if let Some(device) = crate::device_sync::device_for_registration(
+            storage,
+            tenant_id,
+            parker,
+            auth_username.as_deref(),
+            user_agent.as_deref(),
+            None,
+        )
+        .await
+        {
+            if let Some(location) = device.location_id {
+                return Some(location.to_string());
+            }
+        }
+        // The parker is named by a number or by their SIP name.
+        let number = match storage.get_user_by_sip_name(parker, tenant_id).await {
+            Ok(Some(user)) => user.extension.unwrap_or_else(|| parker.to_string()),
+            _ => parker.to_string(),
+        };
+        storage
+            .get_extension_by_number(tenant_id, &number)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|ext| ext.location_id)
+            .map(|location| location.to_string())
     }
 
     /// Take the lot's first free slot for `call`: claimed cluster-wide
@@ -14864,8 +14926,18 @@ impl SipMessageHandler {
                 .as_ref()
                 .and_then(|b| b.flow_token.clone()),
         };
+        let location = self
+            .parker_location(&active_call.tenant_id, request, &caller_ext)
+            .await;
         let orbit = match self
-            .park_party(pbx, &active_call, parker_side, &caller_ext, None)
+            .park_party(
+                pbx,
+                &active_call,
+                parker_side,
+                &caller_ext,
+                None,
+                location.as_deref(),
+            )
             .await
         {
             Ok(orbit) => orbit,

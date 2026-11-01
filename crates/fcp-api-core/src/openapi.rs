@@ -260,6 +260,8 @@ use utoipa::{Modify, OpenApi};
         crate::v1::flows::delete_flow,
         crate::v1::flows::list_flow_versions,
         crate::v1::flows::get_flow_version,
+        crate::v1::flows::list_untenanted_flows,
+        crate::v1::flows::assign_flow,
         crate::v1::phone_numbers::list_phone_numbers,
         crate::v1::phone_numbers::create_phone_number,
         crate::v1::phone_numbers::search_available_numbers,

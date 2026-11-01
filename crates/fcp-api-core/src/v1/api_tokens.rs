@@ -57,7 +57,9 @@ pub struct ApiTokenResponse {
     pub tenant_id: String,
     pub permissions: Vec<String>,
     /// A token made before permissions were checked, carrying `admin` or
-    /// `*`: it reaches everything in its tenant. Review and replace it.
+    /// `*`. Since v0.25.498 it reaches what a tenant administrator may (or
+    /// its maker, when it has one), never system configuration: make a new
+    /// one with the permissions it needs.
     pub legacy_full_access: bool,
     pub expires_at: Option<String>,
     pub created_at: String,

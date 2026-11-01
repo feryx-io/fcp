@@ -1489,6 +1489,51 @@ async fn a_tenants_own_lot_numbers_the_slots() {
     stack.finish().await;
 }
 
+/// `*70` parks in the lot of the parker's location (`docs/PARKING.md`,
+/// `docs/TENANT_SCOPE.md` §3.5): Bob's extension is at the branch, so he
+/// parks in the branch's lot, not the tenant's lot without a location;
+/// Carol, with no location, parks in that one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_parks_in_the_lot_of_the_parkers_location() {
+    use fcp_core::storage::ExtensionStore;
+    let stack = stack_or_skip!();
+    let branch = fcp_core::LocationId::new();
+    parking_lot(&stack, "4320", "4321", |_| {}).await;
+    parking_lot(&stack, "4330", "4331", |lot| {
+        lot.name = "Branch".to_string();
+        lot.location_id = Some(branch.to_string());
+    })
+    .await;
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let storage = stack.seed.storage();
+    let mut ext = storage
+        .get_extension_by_number(&stack.seed.tenant_id, &bob.extension)
+        .await
+        .unwrap()
+        .expect("Bob's extension");
+    ext.location_id = Some(branch);
+    storage.put_extension(ext).await.unwrap();
+
+    for (who, phone, slot) in [(&bob, &bob_phone, "4330"), (&carol, &carol_phone, "4320")] {
+        let (_alice_call, call) = answered(&stack, &alice, who, phone).await;
+        assert_eq!(call.hold().await.unwrap(), 200);
+        let park = phone.call("*70").await.unwrap();
+        if let Err(e) = park.answered(SOON).await {
+            stack
+                .fail(&format!("*70 was not answered: {e}"), phone)
+                .await;
+        }
+        assert_eq!(
+            park.answer_header("X-FCP-Parked").as_deref(),
+            Some(slot),
+            "{} parked in the wrong lot",
+            who.username
+        );
+        assert!(park.ended(RING_OUT).await, "the *70 call was never ended");
+    }
+    stack.finish().await;
+}
+
 /// A lot of the tenant's own, written as the API would.
 async fn parking_lot(
     stack: &Stack,

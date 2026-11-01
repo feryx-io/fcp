@@ -371,6 +371,17 @@ Changes that need something of a configuration the operator keeps:
   default tenant for the static token), and those tenants' administrators
   do not see them. Migration 134 adds `actor_tenant_id`, empty on the
   earlier rows.
+- **v0.25.498: tokens without a maker are held to a tenant administrator**
+  (`docs/API_TOKENS.md`, `docs/TENANT_SCOPE.md` §3.7). A token made with
+  the static token or before makers were recorded — a legacy `admin` or
+  `*` token among them — no longer reaches system configuration (`/config`,
+  encryption, firmware images) or tenant creation. An integration that used
+  one for those uses the static token instead; for anything else, replace
+  the token with one made by a person and scoped to what it needs. The same
+  release refuses a call another tenant's flow (a flow without a tenant is
+  still anyone's until assigned on the Flows page), parks `*70` in the lot
+  of the parker's location, and marks bound numbers `assigned`
+  (migration 135).
 
 ### 5.5 Proved
 

@@ -87,6 +87,10 @@ impl FlowTraceStore for PostgresFlowTraceStore {
         let mut conditions = Vec::new();
         let mut param_idx = 1u32;
 
+        if query.tenant_id.is_some() {
+            conditions.push(format!("tenant_id = ${}", param_idx));
+            param_idx += 1;
+        }
         if query.call_id.is_some() {
             conditions.push(format!("call_id = ${}", param_idx));
             param_idx += 1;
@@ -123,7 +127,7 @@ impl FlowTraceStore for PostgresFlowTraceStore {
         );
         let data_sql = format!(
             "SELECT id, call_id, flow_id, flow_name, node_id, event_type,
-                    timestamp, detail, flow_version, elapsed_ms
+                    timestamp, detail, flow_version, elapsed_ms, tenant_id
              FROM flow_execution_traces {}
              ORDER BY timestamp DESC, id DESC
              LIMIT ${} OFFSET ${}",
@@ -137,6 +141,10 @@ impl FlowTraceStore for PostgresFlowTraceStore {
         let mut data_q = sqlx::query(&data_sql);
 
         // Bind parameters in the same order for both queries
+        if let Some(ref tenant_id) = query.tenant_id {
+            count_q = count_q.bind(tenant_id);
+            data_q = data_q.bind(tenant_id);
+        }
         if let Some(ref call_id) = query.call_id {
             count_q = count_q.bind(call_id);
             data_q = data_q.bind(call_id);

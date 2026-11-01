@@ -521,6 +521,18 @@ impl FlowCallHandler {
         if !flow.enabled {
             return Err(anyhow::anyhow!("Flow is disabled: {}", flow_id));
         }
+        // A call runs its own tenant's flows; a flow without a tenant (from
+        // before tenancy) anyone's (docs/TENANT_SCOPE.md §3.4).
+        if !flow_belongs_to(&flow, &call.tenant_id) {
+            warn!(
+                call_id = %call.id,
+                flow_id = %flow_id,
+                flow_tenant = ?flow.tenant_id,
+                call_tenant = %call.tenant_id,
+                "Refused another tenant's flow"
+            );
+            return Err(anyhow::anyhow!("Flow not found: {}", flow_id));
+        }
 
         let flow = Arc::new(flow);
 
@@ -5108,6 +5120,18 @@ mod own_via_tests {
     }
 }
 
+/// Whether a call of `tenant` may run `flow`: its tenant's, or one without a
+/// tenant. A flow's tenant is stored as text (`tenant-<uuid>` or the bare
+/// uuid), so it is compared as an id.
+pub fn flow_belongs_to(flow: &fcp_flow::FlowDefinition, tenant: &fcp_core::TenantId) -> bool {
+    match flow.tenant_id.as_deref() {
+        None => true,
+        Some(owner) => owner
+            .parse::<fcp_core::TenantId>()
+            .is_ok_and(|t| t == *tenant),
+    }
+}
+
 #[cfg(test)]
 mod transport_of_tests {
     use super::transport_of;
@@ -5155,4 +5179,33 @@ async fn hoteling_guest(
     .await
     .unwrap_or(false);
     matches.then_some(user)
+}
+
+#[cfg(test)]
+mod flow_tenant_tests {
+    use super::flow_belongs_to;
+
+    #[test]
+    fn a_call_runs_its_tenants_flows_and_those_without_a_tenant() {
+        let tenant = fcp_core::TenantId::new();
+        let mut flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+            "id": "f", "name": "f", "version": 1, "initial_node": "end",
+            "nodes": { "end": { "type": "hangup" } }
+        }))
+        .unwrap();
+        assert!(flow_belongs_to(&flow, &tenant), "no tenant: anyone's");
+        flow.tenant_id = Some(tenant.to_string());
+        assert!(flow_belongs_to(&flow, &tenant));
+        flow.tenant_id = Some(tenant.as_uuid().to_string());
+        assert!(
+            flow_belongs_to(&flow, &tenant),
+            "the bare uuid is the same tenant"
+        );
+        assert!(
+            !flow_belongs_to(&flow, &fcp_core::TenantId::new()),
+            "another tenant's"
+        );
+        flow.tenant_id = Some("garbage".into());
+        assert!(!flow_belongs_to(&flow, &tenant));
+    }
 }

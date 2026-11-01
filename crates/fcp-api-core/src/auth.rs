@@ -499,15 +499,16 @@ async fn validate_api_token(
 
 /// What an admin token may do now: its permissions, less anything its maker
 /// can no longer grant (a maker demoted since takes the token down with
-/// them). A token without a maker keeps what it was given.
+/// them). A token without a maker — made with the static token, or before
+/// makers were recorded — is held to a tenant administrator's reach, as a
+/// made token is (`docs/TENANT_SCOPE.md` §3.7): never system configuration
+/// or another tenant's lifecycle, whatever it carries.
 pub fn effective_permissions(
     stored: &[String],
     maker_roles: Option<&[UserRole]>,
     mode: DeploymentMode,
 ) -> Vec<String> {
-    let Some(roles) = maker_roles else {
-        return stored.to_vec();
-    };
+    let roles = maker_roles.unwrap_or(&[UserRole::TenantAdmin]);
     let allowed: Vec<&str> = fcp_core::permissions::roles_token_permissions(roles, mode)
         .iter()
         .map(|p| p.as_str())
@@ -1001,6 +1002,24 @@ mod tests {
         let mode = DeploymentMode::ServiceProvider;
         let stored = vec!["user_read".to_string(), "user_create".to_string()];
         assert_eq!(effective_permissions(&stored, None, mode), stored);
+        // Without a maker, a tenant administrator's reach: a legacy `admin`
+        // token, or one carrying system configuration, holds none of it.
+        for stored in [
+            vec!["admin".to_string()],
+            vec!["system_config".to_string(), "user_read".to_string()],
+        ] {
+            let reach = effective_permissions(&stored, None, mode);
+            assert!(
+                !reach.contains(&"system_config".to_string()),
+                "{stored:?}: {reach:?}"
+            );
+            assert!(
+                !reach.contains(&"tenant_create".to_string()),
+                "{stored:?}: {reach:?}"
+            );
+        }
+        assert!(effective_permissions(&["admin".to_string()], None, mode)
+            .contains(&"user_create".to_string()));
         assert_eq!(
             effective_permissions(&stored, Some(&[UserRole::TenantAdmin][..]), mode),
             stored

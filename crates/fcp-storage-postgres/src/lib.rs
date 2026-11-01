@@ -7352,6 +7352,70 @@ impl FlowStore for PostgresStorage {
         debug!(flow_id = %id, "Flow disabled in PostgreSQL");
         Ok(())
     }
+
+    async fn adopt_untenanted_flows(&self) -> std::result::Result<u64, FlowError> {
+        // What names a flow without a tenant, by tenant; a flow named by one
+        // tenant alone becomes that tenant's. Ids are compared as text in
+        // the form every table stores (`tenant-<uuid>`).
+        let result = sqlx::query(
+            "WITH orphans AS (SELECT id FROM flows WHERE tenant_id IS NULL),
+                  evidence AS (
+                      SELECT flow_id, tenant_id FROM line_bindings
+                       WHERE flow_id IN (SELECT id FROM orphans)
+                      UNION
+                      SELECT flow_id, tenant_id FROM voicemail_mailboxes
+                       WHERE flow_id IN (SELECT id FROM orphans)
+                      UNION
+                      SELECT flow_id, tenant_id FROM flow_execution_traces
+                       WHERE tenant_id IS NOT NULL AND flow_id IN (SELECT id FROM orphans)
+                  ),
+                  sole AS (
+                      SELECT flow_id, min(tenant_id) AS tenant_id FROM evidence
+                       GROUP BY flow_id HAVING count(DISTINCT tenant_id) = 1
+                  )
+             UPDATE flows f SET tenant_id = sole.tenant_id, updated_at = NOW()
+               FROM sole
+              WHERE f.id = sole.flow_id AND f.tenant_id IS NULL",
+        )
+        .execute(self.writes())
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        self.versions_follow_their_flow().await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn assign_flow_tenant(
+        &self,
+        id: &str,
+        tenant_id: &str,
+    ) -> std::result::Result<bool, FlowError> {
+        let result = sqlx::query(
+            "UPDATE flows SET tenant_id = $2, updated_at = NOW()
+              WHERE id = $1 AND tenant_id IS NULL",
+        )
+        .bind(id)
+        .bind(tenant_id)
+        .execute(self.writes())
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        self.versions_follow_their_flow().await?;
+        Ok(result.rows_affected() == 1)
+    }
+}
+
+impl PostgresStorage {
+    /// A flow's earlier versions take the tenant it was given: its version
+    /// list is read by tenant.
+    async fn versions_follow_their_flow(&self) -> std::result::Result<(), FlowError> {
+        sqlx::query(
+            "UPDATE flow_versions v SET tenant_id = f.tenant_id FROM flows f
+              WHERE v.flow_id = f.id AND v.tenant_id IS NULL AND f.tenant_id IS NOT NULL",
+        )
+        .execute(self.writes())
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // ============================================================================

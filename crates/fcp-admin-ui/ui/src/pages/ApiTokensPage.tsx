@@ -136,8 +136,8 @@ export function ApiTokensPage() {
         if (t.scope === 'personal') return <Badge variant="secondary">Its maker's /me</Badge>
         if (t.legacy_full_access) {
           return (
-            <Badge variant="destructive" className="gap-1" title="Made before permissions were checked: review and replace it">
-              <AlertTriangle className="h-3 w-3" /> Full access (legacy)
+            <Badge variant="destructive" className="gap-1" title="Made before permissions were checked: it reaches what a tenant administrator may, never system configuration. Make a new one with the permissions it needs.">
+              <AlertTriangle className="h-3 w-3" /> Legacy: make a new one
             </Badge>
           )
         }
