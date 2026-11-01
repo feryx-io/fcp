@@ -2533,10 +2533,16 @@ agents = ["1002"]
     };
     let bob_call = incoming.answer().await.unwrap();
     bob_call.media().play_tone(880.0, 3000);
-    assert!(
-        alice_call.media().heard(880, SOON).await,
-        "the caller does not hear the agent"
-    );
+    if !alice_call.media().heard(880, SOON).await {
+        let why = format!(
+            "the caller does not hear the agent ({} packets, {} frames of the tone; \
+             the agent's leg received {} packets)",
+            alice_call.media().packets_received(),
+            alice_call.media().tone_frames(880),
+            bob_call.media().packets_received(),
+        );
+        stack.fail(&why, &alice_phone).await;
+    }
     assert_eq!(alice_call.hangup().await.unwrap(), 200);
     assert!(
         bob_call.ended(SOON).await,
