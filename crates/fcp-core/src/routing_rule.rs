@@ -5,6 +5,7 @@
 //! first match wins.
 
 use crate::identifiers::TenantId;
+use crate::LocationId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::SystemTime;
@@ -106,6 +107,11 @@ pub struct RoutingRule {
     pub description: Option<String>,
     pub priority: i32,
     pub enabled: bool,
+    /// The location whose callers the rule is for (docs/TENANT_SCOPE.md
+    /// §3.6): tried before the tenant's rules without one, and only for a
+    /// call from that location. `None`: every call of the tenant's.
+    #[serde(default)]
+    pub location_id: Option<LocationId>,
 
     // Match conditions
     /// Regex pattern to match against the dialed number/URI
@@ -166,6 +172,7 @@ impl RoutingRule {
             description: None,
             priority: 100,
             enabled: true,
+            location_id: None,
             destination_pattern: None,
             source_pattern: None,
             source_ip_ranges: vec![],

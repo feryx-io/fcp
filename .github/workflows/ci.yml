@@ -54,6 +54,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # The runners' CMake is 4.x since ubuntu-latest became 26.04 (2026-11):
+  # it refuses a project declaring compatibility below 3.5, which the
+  # bundled opus (audiopus_sys) and SVT-AV1's cpuinfo both do. CMake reads
+  # this variable to configure them anyway.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
   CARGO_TERM_COLOR: always
   # Debug info is never inspected in CI and roughly triples the size of the
   # target directory; the hosted runners run out of disk without this.
@@ -84,7 +89,7 @@ jobs:
     # the default `postgres` database.
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -165,9 +170,12 @@ jobs:
       # built it).
       # The restore test (crates/fcp-call-manager/tests/compose_restore.rs)
       # dumps and restores with the client tools, which must be the
-      # service container's major version or newer; the runner image ships
-      # PostgreSQL 16's, the same as `postgres:16`, and this is for the
-      # day it does not.
+      # service container's major version or newer, and a restore into an
+      # older server fails (an 18 client's dump sets `transaction_timeout`,
+      # which 16 does not know). The runner image ships PostgreSQL 18's
+      # since ubuntu-latest became 26.04 (2026-11), so the service
+      # containers are `postgres:18`; this installs them if it ever ships
+      # none.
       - name: Postgres client tools for the restore test
         run: |
           command -v pg_dump >/dev/null || sudo apt-get install -y postgresql-client
@@ -339,7 +347,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -349,8 +357,19 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # The Services page's admin keeps services from Redis (docs/SERVICES.md).
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       FCP_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      FCP_TEST_REDIS_URL: redis://localhost:6379
       FCP_UI_TESTS: required
     steps:
       - uses: actions/checkout@v5

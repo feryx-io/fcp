@@ -431,7 +431,8 @@ F4a done in v0.25.358:
 - `GET /me/directory` lists the tenant's active users and the extensions
   that ring no one person, each with its presence, and takes `q` to search.
   It answers 403 while the tenant's `directory.visible_to_users` is off.
-  The setting is on the tenant API and the admin UI's tenant form.
+  The setting is on the tenant API and the admin UI's tenant form. A user
+  taken out of it (`directory_listed`, `docs/USERS.md` §7a) is not listed.
 
 F4b done in v0.25.363: `GET /me/events` is the event WebSocket for a
 signed-in user (`docs/API_EVENTS.md`), served by the admin API next to

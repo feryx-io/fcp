@@ -50,6 +50,16 @@ pub const SYNC_TABLES: &[&str] = &[
     // The tenant's brand, carrying what its assets are (docs/BRANDING.md);
     // the link fetches their bytes by hash.
     "tenant_brands",
+    // Users' own contacts (docs/RECORD_AND_CONTACTS.md §3), tombstones
+    // included; a site writes its own and ships them up.
+    "personal_contacts",
+    // Presence a person sets (docs/PRESENCE.md §3): users' own statuses
+    // (tombstones included) and the one each chose; a site writes its own
+    // and ships them up.
+    "presence_statuses",
+    "user_presence",
+    // Parking lots (docs/PARKING.md phase 4); a site parks in its own Redis.
+    "parking_lots",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

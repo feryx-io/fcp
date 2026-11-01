@@ -169,6 +169,9 @@ export type CallInfo = S['CallInfo']
 // CDRs (matches cdrs.rs CdrResponse)
 export type CdrResponse = S['CdrResponse']
 
+/** One phone's report of a call's quality (docs/CALL_DIAGNOSTICS.md §2). */
+export type CallQualityResponse = S['CallQualityResponse']
+
 /** A page of CDRs: the list envelope; the total may be an estimate. */
 export type ListCdrsResponse = Page<CdrResponse> & { total: number; total_exact: boolean }
 
@@ -491,6 +494,11 @@ export interface AuditQueryParams {
   action?: string
   /** Unix seconds. */
   since?: number
+  /** Unix seconds: only events before it. */
+  until?: number
+  /** A platform administrator's rows: `all`, `platform` or a tenant id;
+   *  unset follows the tenant picked in the top bar. */
+  tenant?: string
   limit?: number
 }
 
@@ -542,6 +550,12 @@ export interface Page<T> {
 
 // API Tokens (docs/DEVELOPER_SURFACE.md §3, phase 1)
 export type ApiToken = S['ApiTokenResponse']
+/** A user's own contact (docs/RECORD_AND_CONTACTS.md §3). */
+export type PersonalContact = S['PersonalContactResponse']
+export type PersonalContactRequest = S['PersonalContactRequest']
+export type ContactImportResponse = S['ContactImportResponse']
+export type ContactNumber = S['ContactNumber']
+
 /** One of a user's devices, with an app install's session (docs/SOFTPHONE.md §2.1). */
 export type UserDevice = S['UserDeviceResponse']
 
@@ -668,16 +682,30 @@ export type Holiday = S['Holiday']
 
 export type Schedule = S['ScheduleResponse']
 
+/** A tenant's parking lot and the calls waiting in its slots (`docs/PARKING.md`). */
+export type ParkingLot = S['ParkingLotResponse']
+export type ParkingLotRequest = S['ParkingLotRequest']
+export type ParkedCall = S['ParkedCallResponse']
+
 /** A tenant's group (`docs/USERS.md` §5). */
 export type Group = S['GroupResponse']
 
 /** The tenant's provisioning URL (`docs/PROVISIONING.md`). */
 export type ProvisioningKey = S['ProvisioningKeyResponse']
 export type DeviceFetch = S['DeviceFetchResponse']
+
+/** A capture an app uploaded, and an administrator's allow to take them
+ * (docs/CALL_DIAGNOSTICS.md §3). */
+export type CaptureResponse = S['CaptureResponse']
+export type CaptureAllowResponse = S['CaptureAllowResponse']
+export type CaptureAllowRequest = S['CaptureAllowRequest']
+export type TenantDiagnostics = S['TenantDiagnostics']
 /** A phone waiting to be claimed (`docs/PROVISIONING.md` §6). */
 export type PendingDevice = S['PendingDeviceResponse']
 export type ClaimDeviceRequest = S['ClaimDeviceRequest']
 export type LineKey = S['LineKey']
+/** A line on a device (`docs/DEVICE_LINES.md`). */
+export type DeviceLine = S['DeviceLine']
 export type RenderedConfig = S['RenderedConfigResponse']
 export type RenderDeviceRequest = S['RenderDeviceRequest']
 export type ConfigTemplate = S['ConfigTemplateResponse']

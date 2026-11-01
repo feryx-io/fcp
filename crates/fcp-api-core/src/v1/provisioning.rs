@@ -267,68 +267,103 @@ pub(crate) async fn device_context(
     }
     c.hoteling_guest = session.is_some();
 
-    if !c.sip_username.is_empty() {
-        c.accounts.push(TemplateAccount {
-            index: 1,
-            label: if c.effective_user_extension.is_empty() {
-                device.name.clone()
-            } else {
-                c.effective_user_extension.clone()
-            },
-            display_name: if c.effective_user_display_name.is_empty() {
-                c.sip_username.clone()
-            } else {
-                c.effective_user_display_name.clone()
-            },
-            user_name: c.sip_username.clone(),
-            auth_name: c.sip_auth_username.clone(),
-            password: c.sip_password.clone(),
-            shared: false,
-            appearances: 0,
-        });
-    }
-
-    // A shared line the device is on renders as its second account
-    // (`docs/ENTERPRISE_CALLING.md` §3.9): the line's number as the
-    // address, the device's credentials, the line's appearances as keys.
-    // A device on none gets the account turned off.
-    let shared = storage
-        .list_line_bindings_by_device(&device.id)
-        .await
-        .map_err(internal)?
-        .into_iter()
-        .find(|b| b.shared && b.tenant_id == device.tenant_id);
-    let shared_number = match &shared {
-        Some(binding) => storage
-            .get_phone_number(&binding.phone_number_id)
-            .await
-            .map_err(internal)?
-            .map(|n| n.e164),
-        None => None,
-    };
-    match (shared, shared_number) {
-        (Some(binding), Some(number)) => {
+    // The device's lines, where it has them (`docs/DEVICE_LINES.md`): each
+    // an account with the device's credentials, labelled as its owner and
+    // the tenant say. A host lent to a guest is the guest's, as before.
+    if !device.lines.is_empty() && session.is_none() && !c.sip_username.is_empty() {
+        let lines = fcp_sip::device_lines::shown(storage, device).await;
+        for line in &lines {
+            c.accounts.push(TemplateAccount {
+                index: line.index,
+                label: line.label.clone(),
+                display_name: if line.kind == fcp_core::LineKind::Own
+                    && !c.effective_user_display_name.is_empty()
+                {
+                    c.effective_user_display_name.clone()
+                } else {
+                    line.label.clone()
+                },
+                user_name: line.aor_user.clone(),
+                auth_name: c.sip_auth_username.clone(),
+                password: c.sip_password.clone(),
+                shared: line.shared,
+                appearances: line.appearances,
+            });
+        }
+        if let Some(shared) = lines.iter().find(|l| l.shared) {
             c.shared_line_enabled = 1;
             c.shared_line_yes_no = "Yes".to_string();
-            c.shared_line_number = number.clone();
-            c.shared_line_appearances = binding.max_appearances.into();
-            if !c.sip_username.is_empty() {
-                c.accounts.push(TemplateAccount {
-                    index: c.accounts.len() as u32 + 1,
-                    label: number.clone(),
-                    display_name: number.clone(),
-                    user_name: number,
-                    auth_name: c.sip_auth_username.clone(),
-                    password: c.sip_password.clone(),
-                    shared: true,
-                    appearances: binding.max_appearances.into(),
-                });
-            }
-        }
-        _ => {
+            c.shared_line_number = shared.aor_user.clone();
+            c.shared_line_appearances = shared.appearances;
+        } else {
             c.shared_line_enabled = 0;
             c.shared_line_yes_no = "No".to_string();
             c.shared_line_appearances = 0;
+        }
+    } else {
+        if !c.sip_username.is_empty() {
+            c.accounts.push(TemplateAccount {
+                index: 1,
+                label: if c.effective_user_extension.is_empty() {
+                    device.name.clone()
+                } else {
+                    c.effective_user_extension.clone()
+                },
+                display_name: if c.effective_user_display_name.is_empty() {
+                    c.sip_username.clone()
+                } else {
+                    c.effective_user_display_name.clone()
+                },
+                user_name: c.sip_username.clone(),
+                auth_name: c.sip_auth_username.clone(),
+                password: c.sip_password.clone(),
+                shared: false,
+                appearances: 0,
+            });
+        }
+
+        // A shared line the device is on renders as its second account
+        // (`docs/ENTERPRISE_CALLING.md` §3.9): the line's number as the
+        // address, the device's credentials, the line's appearances as keys.
+        // A device on none gets the account turned off.
+        let shared = storage
+            .list_line_bindings_by_device(&device.id)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .find(|b| b.shared && b.tenant_id == device.tenant_id);
+        let shared_number = match &shared {
+            Some(binding) => storage
+                .get_phone_number(&binding.phone_number_id)
+                .await
+                .map_err(internal)?
+                .map(|n| n.e164),
+            None => None,
+        };
+        match (shared, shared_number) {
+            (Some(binding), Some(number)) => {
+                c.shared_line_enabled = 1;
+                c.shared_line_yes_no = "Yes".to_string();
+                c.shared_line_number = number.clone();
+                c.shared_line_appearances = binding.max_appearances.into();
+                if !c.sip_username.is_empty() {
+                    c.accounts.push(TemplateAccount {
+                        index: c.accounts.len() as u32 + 1,
+                        label: number.clone(),
+                        display_name: number.clone(),
+                        user_name: number,
+                        auth_name: c.sip_auth_username.clone(),
+                        password: c.sip_password.clone(),
+                        shared: true,
+                        appearances: binding.max_appearances.into(),
+                    });
+                }
+            }
+            _ => {
+                c.shared_line_enabled = 0;
+                c.shared_line_yes_no = "No".to_string();
+                c.shared_line_appearances = 0;
+            }
         }
     }
 

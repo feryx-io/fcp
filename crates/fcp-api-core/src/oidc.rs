@@ -635,12 +635,9 @@ fn verify_signature(alg: &str, key: &Jwk, input: &[u8], signature: &[u8]) -> Res
             if x.len() != 32 || y.len() != 32 {
                 return Err(bad("a malformed EC key"));
             }
-            let point = p256::EncodedPoint::from_affine_coordinates(
-                p256::FieldBytes::from_slice(&x),
-                p256::FieldBytes::from_slice(&y),
-                false,
-            );
-            let public = p256::ecdsa::VerifyingKey::from_encoded_point(&point)
+            // An uncompressed SEC1 point: 0x04, then x and y.
+            let point = [&[0x04u8][..], &x, &y].concat();
+            let public = p256::ecdsa::VerifyingKey::from_sec1_bytes(&point)
                 .map_err(|_| bad("a malformed EC key"))?;
             let signature =
                 p256::ecdsa::Signature::from_slice(signature).map_err(|_| bad("signature"))?;

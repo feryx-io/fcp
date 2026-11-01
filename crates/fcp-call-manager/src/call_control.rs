@@ -59,6 +59,10 @@ struct NotifyCallBody {
     call_id: Option<String>,
     #[serde(default)]
     test: bool,
+    /// The contact may listen in to the emergency call (`call_id`) once
+    /// told: they are asked, and joined to it if they choose to.
+    #[serde(default)]
+    listen: bool,
 }
 
 /// POST /emergency/notify-call — ring a contact and speak an emergency
@@ -84,11 +88,21 @@ async fn notify_call(
     let tenant = body.tenant_id.unwrap_or(state.default_tenant_id);
     let ring = std::time::Duration::from_secs(body.ring_timeout_secs.unwrap_or(30).clamp(5, 120));
     let repeat = body.repeat.unwrap_or(2).clamp(1, 5);
-    match handler.announce_call(&tenant, to, text, ring, repeat).await {
+    let listen_to = body
+        .call_id
+        .as_deref()
+        .filter(|_| body.listen)
+        .and_then(|id| id.trim_start_matches("call-").parse::<uuid::Uuid>().ok())
+        .map(fcp_b2bua_core::CallId::from_uuid);
+    match handler
+        .announce_call(&tenant, to, text, ring, repeat, listen_to)
+        .await
+    {
         Ok(outcome) => {
             tracing::info!(
                 tenant_id = %tenant, to, from = ?body.from, call_id = ?body.call_id,
-                test = body.test, outcome = %outcome, "Emergency notification call"
+                test = body.test, listen = body.listen, outcome = %outcome,
+                "Emergency notification call"
             );
             (
                 StatusCode::OK,
@@ -483,7 +497,8 @@ fn party_name(party: fcp_b2bua_core::LegSide) -> &'static str {
     }
 }
 
-/// The audio of the tenant's prompt `id`: another tenant's is not found.
+/// The audio of prompt `id` as the tenant hears it (its own, or a system
+/// prompt through its override): another tenant's is not found.
 async fn prompt_file(
     state: &AppState,
     id: &str,
@@ -495,11 +510,9 @@ async fn prompt_file(
         .storage
         .prompt_store()
         .ok_or_else(|| CallControlError::new(503, "prompts are not available on this node"))?;
-    let prompt = store
-        .get_prompt(&prompt_id)
+    let prompt = fcp_core::prompt::effective_prompt_by_id(store.as_ref(), &tenant, &prompt_id)
         .await
         .map_err(|e| CallControlError::new(500, format!("reading the prompt: {e}")))?
-        .filter(|p| p.tenant_id == tenant)
         .ok_or_else(not_found)?;
     prompt
         .audio_path

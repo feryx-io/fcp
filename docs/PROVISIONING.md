@@ -170,6 +170,14 @@ dialog) are its programmed keys, in order:
 
 At most 100; a value of 1 to 128 characters, a label of up to 64.
 
+A `park` key's value is a parking slot (`docs/PARKING.md`). The starters
+write it as a busy lamp on the slot, as a `blf` key is: lit while a call
+waits there; pressed idle it dials the slot, which takes the call back;
+pressed during a call it transfers there, which parks the call in that
+slot. A template copied from a starter before v0.25.485 writes it as a
+speed dial with no lamp; copy the starter again (or change the key's type
+in the copy) to get the lamp.
+
 ### Starters
 
 `GET /api/v1/config-templates/library` lists them and

@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
@@ -88,6 +89,8 @@ export function UserSettingsPage() {
   const [language, setLanguage] = useState('')
   const [profileSaving, setProfileSaving] = useState(false)
   const [profileMsg, setProfileMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [listingSaving, setListingSaving] = useState(false)
+  const [listingError, setListingError] = useState<string | null>(null)
 
   // Avatar
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -241,6 +244,20 @@ export function UserSettingsPage() {
       setProfileMsg({ type: 'error', text: err instanceof Error ? err.message : 'Failed to update profile' })
     } finally {
       setProfileSaving(false)
+    }
+  }
+
+  // Whether others see you in their apps' directory: yours to change only
+  // when the tenant lets its users (D8 finding 27).
+  const setListed = async (listed: boolean) => {
+    setListingSaving(true)
+    setListingError(null)
+    try {
+      setProfile(await me.updateProfile({ directory_listed: listed }))
+    } catch (err) {
+      setListingError(err instanceof Error ? err.message : 'Failed to change your listing')
+    } finally {
+      setListingSaving(false)
     }
   }
 
@@ -452,6 +469,33 @@ export function UserSettingsPage() {
           </form>
         </CardContent>
       </Card>
+
+      {/* Directory listing */}
+      {profile && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Directory</CardTitle>
+            <CardDescription>
+              Whether others see you in their apps&rsquo; directory. Unlisted, you still ring on your extension.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <div className="flex items-center justify-between gap-4">
+              <Label htmlFor="directory-listed" className="cursor-pointer">Show me in the directory</Label>
+              <Switch
+                id="directory-listed"
+                checked={profile.directory_listed}
+                disabled={!profile.may_change_directory_listing || listingSaving}
+                onCheckedChange={setListed}
+              />
+            </div>
+            {!profile.may_change_directory_listing && (
+              <p className="text-xs text-muted-foreground">Your administrator sets this.</p>
+            )}
+            {listingError && <p className="text-sm text-destructive">{listingError}</p>}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Password */}
       <Card>

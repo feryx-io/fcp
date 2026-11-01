@@ -5,6 +5,7 @@ class DataClass(StrEnum):
     CALL_RECORDING = "call_recording"
     CDR = "cdr"
     CONFERENCE_RECORDING = "conference_recording"
+    DEVICE_CAPTURE = "device_capture"
     FLOW_TRACE = "flow_trace"
     SIP_TRACE = "sip_trace"
     VOICEMAIL = "voicemail"

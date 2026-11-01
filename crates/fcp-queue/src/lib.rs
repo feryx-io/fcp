@@ -28,6 +28,6 @@ pub use config::{DistributionStrategy, QueueConfig, QueueSystemConfig};
 pub use distribution::DistributionPlan;
 pub use queue_manager::QueueManager;
 pub use types::{
-    Agent, AgentState, AgentStats, CallbackInfo, CampaignCallOutcome, CampaignNumber,
-    CampaignStats, PresenceChecker, Queue, QueueStats, QueuedCall,
+    Agent, AgentKey, AgentState, AgentStats, CallbackInfo, CampaignCallOutcome, CampaignNumber,
+    CampaignStats, PresenceChecker, Queue, QueueKey, QueueStats, QueuedCall,
 };

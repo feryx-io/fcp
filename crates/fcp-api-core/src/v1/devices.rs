@@ -70,6 +70,9 @@ pub struct DeviceResponse {
     pub codec_support: Vec<String>,
     /// The keys programmed on the phone, in order.
     pub line_keys: Vec<fcp_core::LineKey>,
+    /// The lines it registers and takes calls on (`docs/DEVICE_LINES.md`);
+    /// empty, its own line (and a phone's shared line) as before lines.
+    pub lines: Vec<fcp_core::DeviceLine>,
     pub location: Option<String>,
     pub location_id: Option<String>,
     pub e911_override: Option<E911AddressResponse>,
@@ -127,6 +130,7 @@ impl From<Device> for DeviceResponse {
                 .map(|c| format!("{:?}", c))
                 .collect(),
             line_keys: device.line_keys,
+            lines: device.lines,
             location: device.location,
             location_id: device.location_id.map(|id| id.to_string()),
             e911_override: device.e911_override.map(|a| a.into()),
@@ -166,6 +170,8 @@ pub struct CreateDeviceRequest {
     pub supports_blf: Option<bool>,
     /// The keys programmed on the phone.
     pub line_keys: Option<Vec<fcp_core::LineKey>>,
+    /// Its lines: the first `own`, at most ten, each one the device may be.
+    pub lines: Option<Vec<fcp_core::DeviceLine>>,
     pub config_template_id: Option<String>,
     pub location: Option<String>,
     pub location_id: Option<String>,
@@ -208,6 +214,39 @@ fn parse_vendor(value: &str) -> Result<Option<fcp_core::config_template::PhoneVe
         )));
     }
     Ok(Some(vendor))
+}
+
+/// `lines` for `device`, trimmed and checked: their shape, and that the
+/// device may be each (its owner's extension, a shared line it is on, a
+/// user its owner assists).
+async fn checked_lines(
+    storage: &fcp_core::DynStorage,
+    device: &fcp_core::Device,
+    lines: Vec<fcp_core::DeviceLine>,
+) -> Result<Vec<fcp_core::DeviceLine>, ApiError> {
+    let lines: Vec<fcp_core::DeviceLine> = lines
+        .into_iter()
+        .map(|mut l| {
+            l.value = l.value.trim().to_string();
+            l.label = l.label.and_then(normalize_optional_string);
+            l
+        })
+        .collect();
+    fcp_core::device::validate_lines(&lines).map_err(ApiError::BadRequest)?;
+    if lines.is_empty() {
+        return Ok(lines);
+    }
+    let owner = match device.owner_user_id {
+        Some(id) => storage
+            .get_user_by_id(&id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?,
+        None => None,
+    };
+    fcp_sip::device_lines::resolve(storage, device, owner.as_ref(), &lines)
+        .await
+        .map_err(ApiError::BadRequest)?;
+    Ok(lines)
 }
 
 fn checked_line_keys(keys: Vec<fcp_core::LineKey>) -> Result<Vec<fcp_core::LineKey>, ApiError> {
@@ -460,6 +499,8 @@ pub struct UpdateDeviceRequest {
     pub supports_blf: Option<bool>,
     /// The keys programmed on the phone, replacing what it had.
     pub line_keys: Option<Vec<fcp_core::LineKey>>,
+    /// Its lines, replacing what it had; empty goes back to its own line.
+    pub lines: Option<Vec<fcp_core::DeviceLine>>,
     pub location: Option<String>,
     pub location_id: Option<String>,
     /// The address for this phone alone. `null` removes it, so a phone
@@ -797,6 +838,9 @@ pub async fn create_device(
     if let Some(keys) = req.line_keys {
         device.line_keys = checked_line_keys(keys)?;
     }
+    if let Some(lines) = req.lines {
+        device.lines = checked_lines(storage, &device, lines).await?;
+    }
     if let Some(template) = req.config_template_id.and_then(normalize_optional_string) {
         device.config_template_id =
             Some(validate_config_template_for_tenant(storage, &tenant.0, &template).await?);
@@ -987,6 +1031,9 @@ pub async fn update_device(
 
     if let Some(keys) = req.line_keys {
         device.line_keys = checked_line_keys(keys)?;
+    }
+    if let Some(lines) = req.lines {
+        device.lines = checked_lines(storage, &device, lines).await?;
     }
 
     if let Some(firmware_version) = req.firmware_version {

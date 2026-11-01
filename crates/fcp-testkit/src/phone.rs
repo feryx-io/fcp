@@ -110,6 +110,8 @@ struct CallState {
     timings: Mutex<CallTimings>,
     /// The SDP the far end answered with, once it has.
     answer: Mutex<Option<String>>,
+    /// The 2xx that answered this phone's INVITE, for its headers.
+    answer_response: Mutex<Option<Response>>,
 }
 
 impl CallState {
@@ -153,6 +155,14 @@ struct Inner {
     /// `;transport=tls` for a phone that talks SIPS, else empty: on every
     /// request URI built from `server`.
     transport_param: &'static str,
+    /// Where its RTP is bound: the phone's own address.
+    media_ip: std::net::IpAddr,
+    /// The address its Contact and SDP name: `media_ip`, or for a phone
+    /// behind NAT ([`Phone::behind_nat`]) one it cannot be reached at.
+    advertised: std::net::IpAddr,
+    /// The codec it offers first and, offered it, answers with
+    /// ([`Phone::prefer_codec`]).
+    codec: std::sync::Mutex<crate::media::Codec>,
     /// Every REGISTER this phone has been sent, in order — a carrier's
     /// registrar, for a test that asks who registered and as whom.
     registrations: std::sync::Mutex<Vec<SeenRegistration>>,
@@ -220,7 +230,9 @@ impl Inner {
         } else {
             format!("sip:{target}@{}{}", self.server, self.transport_param)
         };
-        let media = Arc::new(MediaLeg::open().await?);
+        let codec = *self.codec.lock().unwrap();
+        let media =
+            Arc::new(MediaLeg::open_preferring(self.media_ip, self.advertised, codec).await?);
         let offer = edit(media.sdp("sendrecv"));
         let options = match multipart {
             Some(mut body) => {
@@ -272,6 +284,7 @@ impl Inner {
             phase: phase_tx,
             timings: Mutex::new(CallTimings::default()),
             answer: Mutex::new(None),
+            answer_response: Mutex::new(None),
         });
         self.calls.insert(call_id.clone(), Arc::clone(&state));
 
@@ -340,6 +353,7 @@ impl Inner {
                     *st.dialog.write().await = Some(dialog);
                     let answer = String::from_utf8_lossy(resp.body()).to_string();
                     *st.answer.lock().unwrap() = Some(answer.clone());
+                    *st.answer_response.lock().unwrap() = Some(resp.clone());
                     if let Err(e) = st.media.set_remote(&answer).await {
                         warn!(error = %e, "answer SDP unusable");
                     }
@@ -607,7 +621,43 @@ impl Phone {
         server: SocketAddr,
     ) -> Result<Self> {
         Self::build(
-            bind, username, username, password, realm, server, None, None, None,
+            bind, username, username, password, realm, server, None, None, None, None,
+        )
+        .await
+    }
+
+    /// The codec this phone offers first, and answers with when offered
+    /// it — PCMU unless set. Two phones preferring different codecs make
+    /// the node transcode between them.
+    pub fn prefer_codec(&self, codec: crate::media::Codec) {
+        *self.inner.codec.lock().unwrap() = codec;
+    }
+
+    /// A phone behind NAT: bound at `bind`, it names `advertised` in its
+    /// Contact and SDP, an address it cannot be reached at — what a phone
+    /// naming its LAN address, or loopback, does from behind a router.
+    /// Every 127.0.0.0/8 address is local on Linux, so `bind` 127.0.0.2:0
+    /// and `advertised` 127.0.0.1 is a phone the server sees at one address
+    /// that tells it another.
+    pub async fn behind_nat(
+        bind: &str,
+        advertised: std::net::IpAddr,
+        username: &str,
+        password: &str,
+        realm: &str,
+        server: SocketAddr,
+    ) -> Result<Self> {
+        Self::build(
+            bind,
+            username,
+            username,
+            password,
+            realm,
+            server,
+            None,
+            None,
+            None,
+            Some(advertised),
         )
         .await
     }
@@ -629,6 +679,7 @@ impl Phone {
             password,
             realm,
             server,
+            None,
             None,
             None,
             None,
@@ -657,6 +708,7 @@ impl Phone {
             None,
             Some(user_agent),
             None,
+            None,
         )
         .await
     }
@@ -682,6 +734,7 @@ impl Phone {
             realm,
             server,
             Some(ca_pem),
+            None,
             None,
             None,
         )
@@ -710,6 +763,7 @@ impl Phone {
             Some(ca_pem),
             None,
             Some(instance),
+            None,
         )
         .await
     }
@@ -740,13 +794,17 @@ impl Phone {
         tls_ca: Option<&std::path::Path>,
         user_agent: Option<&str>,
         instance: Option<&str>,
+        advertised: Option<std::net::IpAddr>,
     ) -> Result<Self> {
         disable_rate_limits();
         let socket = Arc::new(UdpSocket::bind(bind).await?);
         let local_addr = socket.local_addr()?;
         let local_uri = SipUri::parse(&format!("sip:{username}@{realm}"))
             .map_err(|e| anyhow!("local uri: {e}"))?;
-        let contact = format!("sip:{username}@{local_addr}");
+        let contact = format!(
+            "sip:{username}@{}",
+            SocketAddr::new(advertised.unwrap_or(local_addr.ip()), local_addr.port())
+        );
 
         // The inbound channel: the socket, and any TLS connection, feed it.
         let (tx, mut rx) = mpsc::channel::<InboundPacket>(256);
@@ -784,6 +842,9 @@ impl Phone {
             silent: std::sync::atomic::AtomicBool::new(false),
             server,
             transport_param,
+            media_ip: local_addr.ip(),
+            advertised: advertised.unwrap_or(local_addr.ip()),
+            codec: std::sync::Mutex::new(crate::media::Codec::Pcmu),
         });
 
         let handler: Arc<dyn UasRequestHandler> = Arc::new(Handler(Arc::clone(&inner)));
@@ -814,6 +875,11 @@ impl Phone {
         }
         if let Some(instance) = instance {
             builder = builder.enable_outbound(instance);
+        }
+        if let Some(advertised) = advertised {
+            builder = builder.contact_advertised_addr(
+                SocketAddr::new(advertised, local_addr.port()).to_string(),
+            )?;
         }
         let uac = Arc::new(builder.build()?);
         let _ = inner.uas.set(Arc::clone(&uas));
@@ -1184,6 +1250,13 @@ impl Call {
         self.state.answer.lock().unwrap().clone()
     }
 
+    /// A header of the 2xx that answered this phone's INVITE, by name
+    /// (case-insensitive).
+    pub fn answer_header(&self, name: &str) -> Option<String> {
+        let resp = self.state.answer_response.lock().unwrap();
+        sip_parse::header(resp.as_ref()?.headers(), name).map(|v| v.to_string())
+    }
+
     /// When this call's milestones happened, measured from the INVITE
     /// leaving this phone (`docs/CAPACITY_AND_SURVIVABILITY.md` §8).
     pub fn timings(&self) -> CallTimings {
@@ -1194,15 +1267,24 @@ impl Call {
         self.state.phase.borrow().clone()
     }
 
-    /// Wait for the call to be answered; the failure code otherwise.
+    /// Wait for the call to be answered; the failure code otherwise. A
+    /// call answered and hung up at once is answered: its phase is already
+    /// `Ended` when this looks, and only its 2xx says it was answered.
     pub async fn answered(&self, within: Duration) -> Result<()> {
         let mut rx = self.state.phase.subscribe();
         let deadline = tokio::time::Instant::now() + within;
         loop {
-            match rx.borrow().clone() {
+            let phase = rx.borrow().clone();
+            match phase {
                 CallPhase::Answered => return Ok(()),
                 CallPhase::Failed(code) => return Err(anyhow!("call failed with {code}")),
-                CallPhase::Ended => return Err(anyhow!("call ended before answer")),
+                CallPhase::Ended => {
+                    return if self.was_answered().await {
+                        Ok(())
+                    } else {
+                        Err(anyhow!("call ended before answer"))
+                    };
+                }
                 _ => {}
             }
             tokio::time::timeout_at(deadline, rx.changed())
@@ -1210,6 +1292,30 @@ impl Call {
                 .map_err(|_| anyhow!("not answered within {within:?}"))?
                 .map_err(|_| anyhow!("call state gone"))?;
         }
+    }
+
+    /// Whether this phone's INVITE drew a 2xx. Its BYE can be handled a
+    /// moment before the task waiting on the INVITE records the 2xx, so a
+    /// call that has ended is given a moment for it.
+    async fn was_answered(&self) -> bool {
+        let answered = || {
+            self.state
+                .timings
+                .lock()
+                .unwrap()
+                .final_response
+                .is_some_and(|(code, _)| (200..300).contains(&code))
+        };
+        for _ in 0..10 {
+            if answered() {
+                return true;
+            }
+            if self.state.timings.lock().unwrap().final_response.is_some() {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        answered()
     }
 
     /// Wait for the far end to hang up.
@@ -1283,6 +1389,17 @@ impl Call {
     /// As [`Call::reinvite`], with the SDP the far end answered with.
     pub async fn reinvite_answered(&self, direction: &str) -> Result<(u16, String)> {
         self.reinvite_with(self.state.media.sdp(direction)).await
+    }
+
+    /// As [`Call::reinvite_answered`], offering `first` before the codec
+    /// the phone prefers.
+    pub async fn reinvite_offering_first(
+        &self,
+        direction: &str,
+        first: crate::media::Codec,
+    ) -> Result<(u16, String)> {
+        self.reinvite_with(self.state.media.sdp_preferring(direction, first))
+            .await
     }
 
     /// As [`Call::reinvite_answered`], offering SDES-SRTP with `crypto` as
@@ -1566,7 +1683,9 @@ impl UasRequestHandler for Handler {
 
         // A new call: media, the answer built now (so the 180 carries
         // the same To tag), sent when the test answers.
-        let media = Arc::new(MediaLeg::open().await?);
+        let codec = *self.0.codec.lock().unwrap();
+        let media =
+            Arc::new(MediaLeg::open_preferring(self.0.media_ip, self.0.advertised, codec).await?);
         if !offer.is_empty() {
             if let Err(e) = media.set_remote(&offer).await {
                 warn!(error = %e, "offer SDP unusable");
@@ -1596,6 +1715,7 @@ impl UasRequestHandler for Handler {
             phase: phase_tx,
             timings: Mutex::new(CallTimings::default()),
             answer: Mutex::new(None),
+            answer_response: Mutex::new(None),
         });
         self.0.calls.insert(call_id.clone(), Arc::clone(&state));
         let call = Call {

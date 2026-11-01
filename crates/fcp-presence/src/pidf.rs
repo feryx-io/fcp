@@ -168,8 +168,11 @@ pub fn parse_pidf(xml: &str) -> Result<PresenceUpdate> {
         .unwrap_or(BasicStatus::Closed);
 
     let state = match basic_status {
-        BasicStatus::Open => {
-            // Infer richer state from note (same logic as before)
+        // The RPID activity says what the person is doing; a document
+        // without one is read by its note's exact text, as phones that
+        // send no RPID say it (`docs/PRESENCE.md` §1: a busy "WFH" was
+        // read as open).
+        BasicStatus::Open => rpid_state(xml).unwrap_or_else(|| {
             let note_text = first_tuple.and_then(|t| t.notes().next());
             match note_text {
                 Some("Away") => PresenceState::Away,
@@ -178,7 +181,7 @@ pub fn parse_pidf(xml: &str) -> Result<PresenceUpdate> {
                 Some("Ringing") => PresenceState::Ringing,
                 _ => PresenceState::Open,
             }
-        }
+        }),
         BasicStatus::Closed => PresenceState::Closed,
     };
 
@@ -188,6 +191,45 @@ pub fn parse_pidf(xml: &str) -> Result<PresenceUpdate> {
         .or_else(|| doc.notes().next().map(|n| n.to_string()));
 
     Ok(PresenceUpdate { aor, state, note })
+}
+
+/// The state an RFC 4480 `<activities>` element says, its first activity
+/// that maps to one: on the phone; busy, in a meeting or presenting; away,
+/// on holiday or asleep. Any namespace prefix.
+fn rpid_state(xml: &str) -> Option<PresenceState> {
+    use quick_xml::Reader;
+    let mut reader = Reader::from_str(xml);
+    let mut in_activities = false;
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let name = e.local_name();
+                let name = std::str::from_utf8(name.as_ref()).unwrap_or("");
+                if name == "activities" {
+                    in_activities = true;
+                } else if in_activities {
+                    let state = match name {
+                        "on-the-phone" => Some(PresenceState::OnThePhone),
+                        "busy" | "meeting" | "appointment" | "presentation" | "performance"
+                        | "worship" => Some(PresenceState::Busy),
+                        "away" | "vacation" | "holiday" | "sleeping" | "travel" | "in-transit"
+                        | "meal" => Some(PresenceState::Away),
+                        _ => None,
+                    };
+                    if state.is_some() {
+                        return state;
+                    }
+                }
+            }
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"activities" => {
+                in_activities = false;
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
 }
 
 #[cfg(test)]
@@ -323,6 +365,27 @@ mod tests {
         let xml = generate_pidf("user@example.com", &PresenceState::Closed, None, None);
         let update = parse_pidf(&xml).unwrap();
         assert_eq!(update.state, PresenceState::Closed);
+    }
+
+    #[test]
+    fn the_rpid_activity_says_the_state_whatever_the_note() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<presence xmlns="urn:ietf:params:xml:ns:pidf" xmlns:dm="urn:ietf:params:xml:ns:pidf:data-model" xmlns:rpid="urn:ietf:params:xml:ns:pidf:rpid" entity="sip:bob@example.com">
+  <tuple id="t1"><status><basic>open</basic></status><note>WFH</note></tuple>
+  <dm:person id="p1"><rpid:activities><rpid:busy/></rpid:activities></dm:person>
+</presence>"#;
+        let update = parse_pidf(xml).unwrap();
+        assert_eq!(update.state, PresenceState::Busy);
+        assert_eq!(update.note.as_deref(), Some("WFH"));
+
+        let meeting = xml.replace("<rpid:busy/>", "<rpid:meeting/>");
+        assert_eq!(parse_pidf(&meeting).unwrap().state, PresenceState::Busy);
+        let holiday = xml.replace("<rpid:busy/>", "<rpid:vacation/>");
+        assert_eq!(parse_pidf(&holiday).unwrap().state, PresenceState::Away);
+        let unknown = xml.replace("<rpid:busy/>", "<rpid:unknown/>");
+        assert_eq!(parse_pidf(&unknown).unwrap().state, PresenceState::Open);
+        let closed = xml.replace("<basic>open</basic>", "<basic>closed</basic>");
+        assert_eq!(parse_pidf(&closed).unwrap().state, PresenceState::Closed);
     }
 
     #[test]

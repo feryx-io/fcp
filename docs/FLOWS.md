@@ -1,6 +1,6 @@
-# Flows: the Http node and versions
+# Flows: the Http node, versions and menus
 
-What a flow developer needs about the `Http` node and about flow versions
+What a flow developer needs about the `Http` node, flow versions and menus
 (`docs/DEVELOPER_SURFACE.md` phase 7b). Flows that listen — Gather by
 speech and the Transcribe node — are in `docs/SPEECH.md` §6.
 
@@ -92,3 +92,47 @@ record flow, `*98`'s access flow, hoteling's login — are not stored:
 flows, and a call's are let go when the call ends (migration 117 removed
 the ones written before, `docs/DEEP_TESTING.md` D8).
 
+
+## Menus: the Gather node's timeout and retries
+
+A Gather's `timeout` (seconds) is how long the caller has to begin once
+its prompt has finished — or from the moment they press or speak over it.
+It used to run from the prompt's start, so a prompt as long as the
+timeout left no time at all (`docs/DEEP_TESTING.md` D8).
+
+A menu can ask more than once:
+
+| Field | Meaning |
+|---|---|
+| `max_attempts` | How many times the caller is asked. Unset, or 1, asks once: nothing heard takes `on_timeout`, a key with no branch takes `default`, at once — as before. |
+| `no_input_prompt` | Played before the menu is asked again when nothing was heard; a prompt like `prompt` (`{"type": "say", "text": …}` or `{"type": "play", "url": …}`). |
+| `invalid_prompt` | Played before the menu is asked again after a key (or words) it has no branch for. |
+| `on_max_attempts` | Where the call goes when the attempts are spent. Unset, `on_timeout` for nothing heard and `default` for an invalid choice. |
+
+Each failed attempt plays its retry prompt (when there is one), then the
+menu's own prompt again; a choice the menu has resets the count, so a
+caller who comes back to the menu later has every attempt again. The
+flow builder gives a new Gather 3 attempts, "Sorry, I didn't hear
+anything." and "That is not a valid choice.", and shows the four fields
+on every Gather.
+
+```json
+"menu": {
+  "type": "gather", "num_digits": 1, "timeout": 5,
+  "prompt": {"type": "say", "text": "Press 1 for sales, 2 for support."},
+  "transitions": {"1": "sales", "2": "support"},
+  "max_attempts": 3,
+  "no_input_prompt": {"type": "say", "text": "Sorry, I didn't hear anything."},
+  "invalid_prompt": {"type": "say", "text": "That is not a valid choice."},
+  "on_max_attempts": "operator"
+}
+```
+
+### Reading keys back
+
+`{{keys|digits}}` reads a value one key at a time: `5551#` is spoken
+"5 5 5 1 pound", not five thousand five hundred and fifty-one (`*` is
+"star"). A Say node's `{"type": "say", "text": "You entered {{keys|digits}}"}`
+is the usual case. In the engine an unknown filter is an error; a filter
+in a Gather's retry prompt is applied the same way, and an unknown one
+leaves the value as it is.

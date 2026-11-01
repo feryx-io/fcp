@@ -342,8 +342,8 @@ async fn main() -> Result<()> {
     //     These are TTS-backed prompts that users can see and re-synthesize
     //     in the Audio Prompts page. The actual WAV files are generated
     //     when the admin calls POST /prompts/{id}/synthesize (Kokoro TTS).
+    //     System prompts: the platform's, for every tenant's rooms.
     if let Some(prompt_store) = dyn_storage.prompt_store() {
-        let tenant_id = config.service.default_tenant_id;
         let default_prompts = vec![
             (
                 "conf_pin_prompt",
@@ -419,17 +419,18 @@ async fn main() -> Result<()> {
             ),
         ];
         for (name, description, tts_text, category) in default_prompts {
-            match prompt_store.get_prompt_by_name(&tenant_id, name).await {
+            match prompt_store
+                .get_prompt_by_name_and_language(None, name, "en-US")
+                .await
+            {
                 Ok(Some(_)) => {
                     // Already exists, don't overwrite user edits
                 }
                 Ok(None) => {
-                    let mut prompt = fcp_core::prompt::Prompt::new_tts(
-                        tenant_id, name, category, "en-US", tts_text,
-                    );
+                    let mut prompt =
+                        fcp_core::prompt::Prompt::system_tts(name, category, "en-US", tts_text);
                     prompt.description = Some(description.to_string());
                     prompt.tts_voice = Some("af_heart".to_string());
-                    prompt.is_system = true;
                     if let Err(e) = prompt_store.put_prompt(prompt).await {
                         warn!(name, error = %e, "Failed to seed conference prompt");
                     } else {
@@ -971,7 +972,6 @@ async fn main() -> Result<()> {
     // Auto-synthesize any conference prompts that are missing audio files.
     // This runs once at startup so callers hear prompts on the first call.
     if let (Some(ref tts), Some(prompt_store)) = (&tts_service, dyn_storage.prompt_store()) {
-        let tenant_id = config.service.default_tenant_id;
         let prompts_dir = std::path::PathBuf::from(&config.tts.cache_dir);
         let _ = tokio::fs::create_dir_all(&prompts_dir).await;
         for name in &[
@@ -988,7 +988,10 @@ async fn main() -> Result<()> {
             "conf_unlocked",
             "conf_ending",
         ] {
-            match prompt_store.get_prompt_by_name(&tenant_id, name).await {
+            match prompt_store
+                .get_prompt_by_name_and_language(None, name, "en-US")
+                .await
+            {
                 Ok(Some(mut prompt)) if prompt.audio_path.is_none() => {
                     if let Some(ref text) = prompt.tts_text {
                         let voice = prompt.tts_voice.as_deref();
@@ -1050,8 +1053,8 @@ async fn main() -> Result<()> {
     }
 
     // Load pre-synthesized mute/unmute audio samples for DTMF feedback
+    // The system prompts': these sounds are loaded once for every room.
     if let Some(prompt_store) = dyn_storage.prompt_store() {
-        let tenant_id = config.service.default_tenant_id;
         let player = forge_conference::AudioFeedbackPlayer::new(config.conference.sample_rate);
         for (prompt_name, field_setter) in [
             ("conf_muted", "muted" as &str),
@@ -1060,10 +1063,7 @@ async fn main() -> Result<()> {
             ("conf_unlocked", "unlocked"),
             ("conf_ending", "ending"),
         ] {
-            if let Ok(Some(prompt)) = prompt_store
-                .get_prompt_by_name(&tenant_id, prompt_name)
-                .await
-            {
+            if let Ok(Some(prompt)) = prompt_store.resolve_prompt(None, prompt_name, None).await {
                 if let Some(ref path) = prompt.audio_path {
                     if let Some(samples) = player.load_audio_file(path) {
                         match field_setter {
@@ -1206,6 +1206,46 @@ async fn main() -> Result<()> {
         config.service.node_id.clone(),
         config.service.drain_wait_secs,
     ));
+
+    // Say this process is there, member or not (`docs/SERVICES.md`).
+    #[cfg(feature = "storage-redis")]
+    let beacon = config.storage.redis_url.as_ref().map(|url| {
+        let (load, leaving) = (Arc::clone(&drain), Arc::clone(&drain));
+        let mut beacon = fcp_cluster::ServiceBeacon::new(
+            fcp_cluster::ServiceIdentity::new(&config.service.node_id, "conference")
+                .region(fcp_cluster::resolve_region(
+                    config.cluster.region.as_deref(),
+                ))
+                .member(config.cluster.enabled)
+                .http(fcp_cluster::advertised_address(
+                    config.http.bind_address,
+                    config.sip.local_ip.as_deref(),
+                ))
+                .sip(&config.sip.udp_bind),
+        )
+        .check(fcp_cluster::Check::tenants(
+            Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::TenantStore>
+        ))
+        .load(move || {
+            let drain = Arc::clone(&load);
+            async move {
+                std::collections::BTreeMap::from([(
+                    "participants".to_string(),
+                    drain.carrying().await as u64,
+                )])
+            }
+        })
+        .draining(move || leaving.is_draining());
+        if let Some(events) = &config.events.server_url {
+            beacon = beacon.check(fcp_cluster::Check::health("events", events));
+        }
+        let handle = beacon.start(fcp_storage_redis::RedisConfig {
+            url: url.clone(),
+            ..Default::default()
+        });
+        drain.set_health(handle.health());
+        handle
+    });
 
     // BFCP floor control for SIP room systems (design §15.6, 7e): one
     // address, UDP and TCP, serving every room's floor.
@@ -1948,6 +1988,10 @@ async fn main() -> Result<()> {
             }
         }
         cm.shutdown().await;
+    }
+    #[cfg(feature = "storage-redis")]
+    if let Some(beacon) = &beacon {
+        beacon.shutdown().await;
     }
 
     if let Some(tx) = trunk_shutdown_tx {

@@ -99,6 +99,15 @@ impl HoldMusic {
     /// silence.
     async fn music_for(&self, call: &Call, held: LegSide) -> Option<String> {
         if let Some(storage) = &self.storage {
+            // The lot a parked call waits in.
+            if call.state == fcp_b2bua_core::CallState::Parked {
+                if let Some(id) = call.parked_music.as_deref() {
+                    if let Some(path) = self.prompt_audio(storage, call, id).await {
+                        return Some(path);
+                    }
+                    warn!(call_id = %call.id, prompt = %id, "The parking lot's music has no audio; using the parker's");
+                }
+            }
             // The holder: the parker of a parked call, the callee the plan
             // rang (phase 1 keeps it on the call), or whoever the leg's
             // address names — an extension or a username.
@@ -176,7 +185,7 @@ impl HoldMusic {
             }
             if let Some(prompts) = storage.prompt_store() {
                 match prompts
-                    .list_prompts(&call.tenant_id, Some(PromptCategory::Moh), None)
+                    .list_prompts(Some(&call.tenant_id), Some(PromptCategory::Moh), None)
                     .await
                 {
                     Ok(list) => {
@@ -202,15 +211,14 @@ impl HoldMusic {
 
     async fn prompt_audio(&self, storage: &DynStorage, call: &Call, id: &str) -> Option<String> {
         let prompt_id = id.parse::<fcp_core::PromptId>().ok()?;
-        let prompt = storage
-            .prompt_store()?
-            .get_prompt(&prompt_id)
-            .await
-            .ok()
-            .flatten()?;
-        (prompt.tenant_id == call.tenant_id)
-            .then_some(prompt.audio_path)
-            .flatten()
+        let store = storage.prompt_store()?;
+        let prompt =
+            fcp_core::prompt::effective_prompt_by_id(store.as_ref(), &call.tenant_id, &prompt_id)
+                .await
+                .ok()
+                .flatten()?;
+        prompt
+            .audio_path
             .filter(|p| p.is_file())
             .map(|p| p.to_string_lossy().into_owned())
     }

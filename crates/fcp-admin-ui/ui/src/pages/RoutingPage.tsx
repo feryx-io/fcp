@@ -22,8 +22,12 @@ import {
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { routing, trunks } from '@/api/endpoints'
-import type { RoutingRule, CreateRoutingRuleRequest, RoutePreview, RoutePreviewTrunk, SipTrunk } from '@/types'
+import { locations, routing, trunks } from '@/api/endpoints'
+import type { Location, RoutingRule, CreateRoutingRuleRequest, RoutePreview, RoutePreviewTrunk, SipTrunk } from '@/types'
+
+/** The list filter's two values besides a location. */
+const ALL = '__all__'
+const TENANT_WIDE = '__none__'
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
@@ -50,6 +54,8 @@ interface RuleFormData {
   description: string
   priority: number
   enabled: boolean
+  /** A location's id, or '' for every caller. */
+  location_id: string
   destination_pattern: string
   source_pattern: string
   source_ip_ranges: string
@@ -68,6 +74,7 @@ const defaultValues: RuleFormData = {
   description: '',
   priority: 100,
   enabled: true,
+  location_id: '',
   destination_pattern: '',
   source_pattern: '',
   source_ip_ranges: '',
@@ -87,6 +94,7 @@ function ruleToForm(r: RoutingRule): RuleFormData {
     description: r.description ?? '',
     priority: r.priority,
     enabled: r.enabled,
+    location_id: r.location_id ?? '',
     destination_pattern: r.destination_pattern ?? '',
     source_pattern: r.source_pattern ?? '',
     source_ip_ranges: r.source_ip_ranges.join(', '),
@@ -110,6 +118,7 @@ function formToUpdate(f: RuleFormData): Partial<CreateRoutingRuleRequest> {
   const routes = f.action === 'route_to_trunk'
   return {
     ...formToRequest(f),
+    location_id: f.location_id,
     description: f.description,
     destination_pattern: f.destination_pattern,
     source_pattern: f.source_pattern,
@@ -128,6 +137,7 @@ function formToRequest(f: RuleFormData): CreateRoutingRuleRequest {
     description: f.description || undefined,
     priority: f.priority,
     enabled: f.enabled,
+    location_id: f.location_id || undefined,
     destination_pattern: f.destination_pattern || undefined,
     source_pattern: f.source_pattern || undefined,
     source_ip_ranges: f.source_ip_ranges ? f.source_ip_ranges.split(',').map((s) => s.trim()).filter(Boolean) : [],
@@ -162,6 +172,19 @@ export function RoutingPage() {
     queryKey: ['trunks'],
     queryFn: trunks.list,
   })
+
+  // A rule may be for one location's callers (docs/TENANT_SCOPE.md §3.6).
+  const { data: locationList = [] } = useQuery({
+    queryKey: ['locations'],
+    queryFn: locations.list,
+  })
+  const locationName = (id: string | null | undefined) =>
+    id ? locationList.find((l) => l.id === id)?.name ?? id : null
+  const [locationFilter, setLocationFilter] = useState(ALL)
+  const shown = rules.filter((r) =>
+    locationFilter === ALL ? true
+      : locationFilter === TENANT_WIDE ? !r.location_id
+        : r.location_id === locationFilter)
 
   const createMutation = useMutation({
     mutationFn: (data: CreateRoutingRuleRequest) => routing.create(data),
@@ -210,6 +233,16 @@ export function RoutingPage() {
           {row.original.description && <p className="text-xs text-muted-foreground">{row.original.description}</p>}
         </div>
       ),
+    },
+    {
+      accessorKey: 'location_id',
+      header: 'Location',
+      cell: ({ row }) => {
+        const name = locationName(row.original.location_id)
+        return name
+          ? <Badge variant="outline">{name}</Badge>
+          : <span className="text-muted-foreground text-xs">Every caller</span>
+      },
     },
     {
       accessorKey: 'action',
@@ -313,7 +346,9 @@ export function RoutingPage() {
         <CardContent className="text-sm text-muted-foreground space-y-1">
           <p>
             Every call manager applies these rules to your calls as they arrive, lowest priority number first; the
-            first rule that matches decides. <strong>Deny</strong> refuses the call (403). <strong>Allow</strong> lets it
+            first rule that matches decides. A call from a location meets that location&apos;s rules first, then the
+            rules for every caller; the caller&apos;s location is their phone&apos;s, else their extension&apos;s, else
+            their number&apos;s. <strong>Deny</strong> refuses the call (403). <strong>Allow</strong> lets it
             route normally. <strong>Route to Trunk</strong> sends it out only on the trunk or trunk group named — if
             none of those can take it, the call is refused (503) rather than sent elsewhere; name a group for failover.
           </p>
@@ -325,12 +360,28 @@ export function RoutingPage() {
         </CardContent>
       </Card>
 
-      <RoutePreviewPanel />
+      <RoutePreviewPanel locationList={locationList} />
+
+      {locationList.length > 0 && (
+        <div className="flex items-center gap-2">
+          <Label htmlFor="rule-location-filter">Rules for</Label>
+          <select
+            id="rule-location-filter"
+            className="h-9 rounded-md border bg-background px-2 text-sm"
+            value={locationFilter}
+            onChange={(e) => setLocationFilter(e.target.value)}
+          >
+            <option value={ALL}>Every rule</option>
+            <option value={TENANT_WIDE}>Every caller</option>
+            {locationList.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+          </select>
+        </div>
+      )}
 
       {isLoading ? (
         <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>
       ) : (
-        <DataTable columns={columns} data={rules} searchKey="name" searchPlaceholder="Search rules..." />
+        <DataTable columns={columns} data={shown} searchKey="name" searchPlaceholder="Search rules..." />
       )}
 
       {/* Create Dialog */}
@@ -340,7 +391,7 @@ export function RoutingPage() {
             <DialogTitle>Create Routing Rule</DialogTitle>
             <DialogDescription>Define how calls are matched and where they're routed.</DialogDescription>
           </DialogHeader>
-          <RuleForm form={createForm} trunkList={trunkList} error={error} onSubmit={(d) => createMutation.mutate(formToRequest(d))} isSubmitting={createMutation.isPending} />
+          <RuleForm form={createForm} trunkList={trunkList} locationList={locationList} error={error} onSubmit={(d) => createMutation.mutate(formToRequest(d))} isSubmitting={createMutation.isPending} />
         </DialogContent>
       </Dialog>
 
@@ -354,6 +405,7 @@ export function RoutingPage() {
           <RuleForm
             form={editForm}
             trunkList={trunkList}
+            locationList={locationList}
             error={error}
             onSubmit={(d) => editRule && updateMutation.mutate({ id: editRule.id, data: formToUpdate(d) })}
             isSubmitting={updateMutation.isPending}
@@ -382,9 +434,10 @@ export function RoutingPage() {
   )
 }
 
-function RuleForm({ form, trunkList, error, onSubmit, isSubmitting, submitLabel = 'Create Rule' }: {
+function RuleForm({ form, trunkList, locationList, error, onSubmit, isSubmitting, submitLabel = 'Create Rule' }: {
   form: ReturnType<typeof useForm<RuleFormData>>
   trunkList: SipTrunk[]
+  locationList: Location[]
   error: string | null
   onSubmit: (data: RuleFormData) => void
   isSubmitting: boolean
@@ -431,6 +484,17 @@ function RuleForm({ form, trunkList, error, onSubmit, isSubmitting, submitLabel 
           <div className="col-span-2">
             <Label htmlFor="description">Description</Label>
             <Input id="description" placeholder="What this rule does" {...register('description')} />
+          </div>
+          <div className="col-span-2">
+            <Label htmlFor="rule-location">For callers at</Label>
+            <select
+              id="rule-location"
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              {...register('location_id')}
+            >
+              <option value="">Every location</option>
+              {locationList.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+            </select>
           </div>
         </div>
       </div>
@@ -603,11 +667,12 @@ function PreviewTrunkRow({ trunk, index }: { trunk: RoutePreviewTrunk; index?: n
  * the node's answer, from its own policy, rules, least-cost routes and
  * trunks — nothing is dialled.
  */
-function RoutePreviewPanel() {
+function RoutePreviewPanel({ locationList }: { locationList: Location[] }) {
   const [to, setTo] = useState('')
   const [from, setFrom] = useState('')
+  const [location, setLocation] = useState('')
   const preview = useMutation({
-    mutationFn: () => routing.preview(to.trim(), from.trim() || undefined),
+    mutationFn: () => routing.preview(to.trim(), from.trim() || undefined, location || undefined),
   })
   const result = preview.data
   const lines = result
@@ -633,6 +698,20 @@ function RoutePreviewPanel() {
             <Label htmlFor="preview-from">Caller (optional)</Label>
             <Input id="preview-from" className="font-mono w-56" placeholder="1001" value={from} onChange={(e) => setFrom(e.target.value)} />
           </div>
+          {locationList.length > 0 && (
+            <div>
+              <Label htmlFor="preview-location">Caller at</Label>
+              <select
+                id="preview-location"
+                className="h-9 w-48 rounded-md border bg-background px-2 text-sm"
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+              >
+                <option value="">No location</option>
+                {locationList.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+              </select>
+            </div>
+          )}
           <Button type="submit" disabled={!to.trim() || preview.isPending}>
             {preview.isPending ? 'Asking...' : 'Test'}
           </Button>

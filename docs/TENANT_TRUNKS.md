@@ -849,6 +849,9 @@ One PR per phase, reviewed before the next starts.
      condition a rule sets must hold. Disabled rules are not in force; a
      stored rule that does not compile is logged and skipped, and a row
      whose action does not read is an error rather than an `allow`.
+     Since v0.25.500 a rule may also name one of the tenant's locations:
+     it is tried, ahead of the rules without one, for that location's
+     callers alone (`docs/TENANT_SCOPE.md` §3.6).
    - **`route_to_trunk` confines the call.** The call carries the rule's
      target (`Call::trunk_target`); every place an ordinary call looks for
      a trunk asks for only that target

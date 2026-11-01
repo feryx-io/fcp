@@ -29,6 +29,8 @@ class UpdateProfileRequest:
             phone_number (None | str | Unset):
             timezone (None | str | Unset):
             language (None | str | Unset):
+            directory_listed (bool | None | Unset): Listed in the tenant's directory, or not: 403 unless the tenant
+                lets its users change it (`directory.users_may_unlist`).
      """
 
     display_name: None | str | Unset = UNSET
@@ -36,6 +38,7 @@ class UpdateProfileRequest:
     phone_number: None | str | Unset = UNSET
     timezone: None | str | Unset = UNSET
     language: None | str | Unset = UNSET
+    directory_listed: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -73,6 +76,12 @@ class UpdateProfileRequest:
         else:
             language = self.language
 
+        directory_listed: bool | None | Unset
+        if isinstance(self.directory_listed, Unset):
+            directory_listed = UNSET
+        else:
+            directory_listed = self.directory_listed
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -88,6 +97,8 @@ class UpdateProfileRequest:
             field_dict["timezone"] = timezone
         if language is not UNSET:
             field_dict["language"] = language
+        if directory_listed is not UNSET:
+            field_dict["directory_listed"] = directory_listed
 
         return field_dict
 
@@ -146,12 +157,23 @@ class UpdateProfileRequest:
         language = _parse_language(d.pop("language", UNSET))
 
 
+        def _parse_directory_listed(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        directory_listed = _parse_directory_listed(d.pop("directory_listed", UNSET))
+
+
         update_profile_request = cls(
             display_name=display_name,
             email=email,
             phone_number=phone_number,
             timezone=timezone,
             language=language,
+            directory_listed=directory_listed,
         )
 
 

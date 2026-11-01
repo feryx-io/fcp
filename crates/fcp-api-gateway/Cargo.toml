@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 fcp-core = { path = "../fcp-core" }
+fcp-cluster = { path = "../fcp-cluster" }
+fcp-storage-redis = { path = "../fcp-storage-redis" }
 # HTTP server and middleware
 axum = { version = "0.7", features = ["ws"] }
 tower = { version = "0.4", features = ["full"] }

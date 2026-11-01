@@ -22,6 +22,7 @@ export const person = () => account('FCP_UI_USER')
  */
 const NOTHING_YET = [
   '/api/v1/branding', // a tenant without a brand
+  '/api/v1/branding/deployment-profile', // a platform administrator with no tenant chosen
   '/api/v1/provisioning/key', // no provisioning key made
   '/api/v1/config/call-manager/b2bua', // no call manager has written its configuration
   '/api/v1/me/voicemail', // a user without a mailbox
@@ -75,6 +76,19 @@ export async function signIn(page: Page, who: Account) {
   await page.locator('#password').fill(who.password)
   await page.getByRole('button', { name: 'Sign in' }).click()
   await page.waitForURL((url) => !url.pathname.startsWith('/login'))
+}
+
+/** The default tenant: the static token's, and where the suite's people are. */
+export const DEFAULT_TENANT = 'tenant-00000000-0000-0000-0000-000000000000'
+
+/**
+ * As a platform administrator, work in a tenant: pick it in the top bar
+ * (docs/TENANT_SCOPE.md §3.1). Its name is read through the API.
+ */
+export async function pickTenant(page: Page, api: APIRequestContext, id = DEFAULT_TENANT) {
+  const tenant = await (await api.get(`/api/v1/tenants/${id}`)).json()
+  await page.getByRole('combobox').filter({ hasText: /All Tenants/i }).click()
+  await page.getByRole('option', { name: tenant.name, exact: true }).click()
 }
 
 /** Wait until a page has loaded what it asks for. */

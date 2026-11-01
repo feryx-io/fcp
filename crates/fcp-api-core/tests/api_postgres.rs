@@ -212,52 +212,69 @@ impl App {
         let sip_traces = Arc::new(PostgresSipTraceStore::new(storage.pool().clone()));
         let emergency = Arc::new(PostgresEmergencyStore::new(storage.pool().clone()));
         let compliance = Arc::new(PostgresComplianceStore::new(storage.pool().clone()));
-        let dyn_storage = Arc::new(
-            DynStorage::from_all_in_one(Arc::clone(&storage))
-                .with_api_token_store(api_tokens)
-                .with_totp_store(Arc::clone(&storage) as Arc<dyn fcp_core::totp::TotpStore>)
-                .with_identity_store(
-                    Arc::clone(&storage) as Arc<dyn fcp_core::identity::IdentityStore>
-                )
-                .with_login_session_store(Arc::new(
-                    fcp_storage_postgres::login_session::PostgresLoginSessionStore::new(
+        let dyn_storage =
+            Arc::new(
+                DynStorage::from_all_in_one(Arc::clone(&storage))
+                    .with_api_token_store(api_tokens)
+                    .with_totp_store(Arc::clone(&storage) as Arc<dyn fcp_core::totp::TotpStore>)
+                    .with_identity_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::identity::IdentityStore>
+                    )
+                    .with_login_session_store(Arc::new(
+                        fcp_storage_postgres::login_session::PostgresLoginSessionStore::new(
+                            storage.pool().clone(),
+                        ),
+                    )
+                        as Arc<dyn fcp_core::session::LoginSessionStore>)
+                    .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>)
+                    .with_sip_trace_store(Arc::clone(&sip_traces) as Arc<dyn SipTraceStore>)
+                    .with_emergency_store(
+                        Arc::clone(&emergency) as Arc<dyn fcp_core::e911::EmergencyStore>
+                    )
+                    .with_compliance_store(
+                        Arc::clone(&compliance) as Arc<dyn fcp_core::compliance::ComplianceStore>
+                    )
+                    .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
+                        as Arc<dyn fcp_core::prompt::PromptStore>)
+                    .with_recording_store(Arc::new(PostgresRecordingStore::new(
                         storage.pool().clone(),
+                    ))
+                        as Arc<dyn fcp_core::recording::RecordingStore>)
+                    .with_call_recording_store(Arc::new(PostgresRecordingStore::new(
+                        storage.pool().clone(),
+                    ))
+                        as Arc<dyn fcp_core::recording::CallRecordingStore>)
+                    .with_subject_data_store(Arc::clone(&storage)
+                        as Arc<dyn fcp_core::subject_request::SubjectDataStore>)
+                    .with_subject_erase_store(Arc::clone(&storage)
+                        as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>)
+                    .with_offboarding_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::offboarding::OffboardingStore>
+                    )
+                    .with_group_store(Arc::clone(&storage) as Arc<dyn fcp_core::group::GroupStore>)
+                    .with_brand_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::branding::BrandStore>
+                    )
+                    .with_contact_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::contact::ContactStore>
+                    )
+                    .with_parking_lot_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::parking::ParkingLotStore>
+                    )
+                    .with_line_label_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::line_label::LineLabelStore>
+                    )
+                    .with_call_quality_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::call_quality::CallQualityStore>
+                    )
+                    .with_device_capture_store(Arc::clone(&storage)
+                        as Arc<dyn fcp_core::device_capture::DeviceCaptureStore>)
+                    .with_presence_status_store(Arc::clone(&storage)
+                        as Arc<dyn fcp_core::presence_status::PresenceStatusStore>)
+                    .with_provisioning_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::provisioning::ProvisioningStore>
                     ),
-                )
-                    as Arc<dyn fcp_core::session::LoginSessionStore>)
-                .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>)
-                .with_sip_trace_store(Arc::clone(&sip_traces) as Arc<dyn SipTraceStore>)
-                .with_emergency_store(
-                    Arc::clone(&emergency) as Arc<dyn fcp_core::e911::EmergencyStore>
-                )
-                .with_compliance_store(
-                    Arc::clone(&compliance) as Arc<dyn fcp_core::compliance::ComplianceStore>
-                )
-                .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
-                    as Arc<dyn fcp_core::prompt::PromptStore>)
-                .with_recording_store(
-                    Arc::new(PostgresRecordingStore::new(storage.pool().clone()))
-                        as Arc<dyn fcp_core::recording::RecordingStore>,
-                )
-                .with_call_recording_store(Arc::new(PostgresRecordingStore::new(
-                    storage.pool().clone(),
-                ))
-                    as Arc<dyn fcp_core::recording::CallRecordingStore>)
-                .with_subject_data_store(
-                    Arc::clone(&storage) as Arc<dyn fcp_core::subject_request::SubjectDataStore>
-                )
-                .with_subject_erase_store(
-                    Arc::clone(&storage) as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>
-                )
-                .with_offboarding_store(
-                    Arc::clone(&storage) as Arc<dyn fcp_core::offboarding::OffboardingStore>
-                )
-                .with_group_store(Arc::clone(&storage) as Arc<dyn fcp_core::group::GroupStore>)
-                .with_brand_store(Arc::clone(&storage) as Arc<dyn fcp_core::branding::BrandStore>)
-                .with_provisioning_store(
-                    Arc::clone(&storage) as Arc<dyn fcp_core::provisioning::ProvisioningStore>
-                ),
-        );
+            );
         let dir = tempfile::Builder::new()
             .prefix("fcp-api-test-")
             .tempdir()
@@ -326,6 +343,11 @@ impl App {
             tenant_a,
         )
         .with_deployment_mode(mode)
+        // Each person's presence; a test hands it events itself.
+        .with_people_presence(fcp_api_core::people_presence::PeoplePresence::new(
+            Arc::clone(&dyn_storage),
+            Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+        ))
         .with_config_store(Arc::clone(&storage) as Arc<dyn fcp_core::config_store::ConfigStore>)
         .with_managed_by(managed_by)
         .with_conference_server_url(conference_url)
@@ -2589,6 +2611,52 @@ async fn every_list_pages_by_cursor() {
     unique.dedup();
     assert_eq!(unique.len(), ids.len(), "each row once: {ids:?}");
 
+    // The log exported (D8, finding 36): every event the listing walked,
+    // newest first, as CSV with a header or as JSON Lines.
+    let csv = app
+        .admin(Method::GET, "/api/v1/audit-log/export", None)
+        .await;
+    assert_eq!(csv.status, StatusCode::OK, "{}", csv.text);
+    let mut lines = csv.text.lines();
+    assert_eq!(
+        lines.next(),
+        Some(
+            "id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail,actor_tenant_id"
+        )
+    );
+    let exported: Vec<i64> = lines
+        .map(|l| l.split(',').next().unwrap().parse().unwrap())
+        .collect();
+    assert!(
+        ids.iter().all(|id| exported.contains(id)),
+        "every listed event exported: {ids:?} vs {exported:?}"
+    );
+    let jsonl = app
+        .admin(Method::GET, "/api/v1/audit-log/export?format=jsonl", None)
+        .await;
+    assert_eq!(jsonl.status, StatusCode::OK, "{}", jsonl.text);
+    let first: serde_json::Value =
+        serde_json::from_str(jsonl.text.lines().next().expect("a line")).unwrap();
+    assert_eq!(
+        first["id"].as_i64(),
+        exported.first().copied(),
+        "newest first"
+    );
+    // The listing's filters: nothing before the epoch's first second.
+    let none = app
+        .admin(Method::GET, "/api/v1/audit-log/export?until=1", None)
+        .await;
+    assert_eq!(
+        none.text.lines().count(),
+        1,
+        "the header alone: {}",
+        none.text
+    );
+    let bad = app
+        .admin(Method::GET, "/api/v1/audit-log/export?format=xml", None)
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+
     // A limit or a cursor the API cannot use is a 400.
     for bad in [
         "/api/v1/users?limit=0",
@@ -3119,6 +3187,65 @@ async fn queue_configs_crud_and_runtime_absent() {
         .await;
     assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
 
+    // A queue is its name within its tenant (docs/TENANT_SCOPE.md §4b):
+    // B has a `billing` at 7100 too, and is told nothing of A's. A second
+    // `billing`, or a second queue at 7100, in one tenant is refused.
+    let theirs = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            "/api/v1/queue-configs",
+            Some(json!({"name": "billing", "extension": "7100"})),
+        )
+        .await;
+    assert_eq!(theirs.status, StatusCode::CREATED, "{}", theirs.text);
+    for clash in [
+        json!({"name": "billing", "extension": "7101"}),
+        json!({"name": "billing-2", "extension": "7100"}),
+    ] {
+        let refused = app
+            .admin(Method::POST, "/api/v1/queue-configs", Some(clash))
+            .await;
+        assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+        assert!(!refused.text.contains(&app.tenant_b.to_string()));
+    }
+    let other = app
+        .admin(
+            Method::POST,
+            "/api/v1/queue-configs",
+            Some(json!({"name": "billing-2", "extension": "7101"})),
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::CREATED, "{}", other.text);
+    let other_id = other.json["id"].as_str().unwrap().to_string();
+    let renamed = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/queue-configs/{other_id}"),
+            Some(json!({"name": "billing"})),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::CONFLICT, "{}", renamed.text);
+    let kept = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/queue-configs/{other_id}"),
+            Some(json!({"name": "billing-2", "max_wait_time_secs": 60})),
+        )
+        .await;
+    assert_eq!(
+        kept.status,
+        StatusCode::OK,
+        "its own name is no clash: {}",
+        kept.text
+    );
+    app.admin(
+        Method::DELETE,
+        &format!("/api/v1/queue-configs/{other_id}"),
+        None,
+    )
+    .await;
+
     // Stored configs are not runtime queues until synced: the listing comes
     // from the live QueueManager, and runtime-only endpoints answer 404 (not
     // 500) for a config it has not loaded.
@@ -3381,6 +3508,28 @@ async fn voicemail_mailboxes_crud() {
         StatusCode::NOT_FOUND
     );
 
+    // A user with an extension and no line has a mailbox too: calls find
+    // it by user, and it answers the user's extension (D8: Bob, 1002, had
+    // none to bind and so no mailbox).
+    let lineless = app.create_user("vm-noline", None).await;
+    let mailbox = app
+        .admin(
+            Method::POST,
+            "/api/v1/voicemail/mailboxes",
+            Some(json!({
+                "tenant_id": app.tenant_a,
+                "user_id": lineless,
+                "pin": "8765",
+            })),
+        )
+        .await;
+    assert_eq!(mailbox.status, StatusCode::CREATED, "{}", mailbox.text);
+    assert_eq!(mailbox.json["user_id"], lineless);
+    assert!(
+        mailbox.json["line_binding_id"].is_null(),
+        "{}",
+        mailbox.text
+    );
     app.finish().await;
 }
 
@@ -5096,6 +5245,558 @@ async fn prompts_crud_and_audio_upload() {
     app.finish().await;
 }
 
+/// System prompts are the platform's (docs/TENANT_SCOPE.md §3.2): every
+/// tenant sees and hears them, only a platform administrator changes them, a
+/// tenant overrides one with its own copy, and deleting the copy restores it.
+#[tokio::test]
+async fn system_prompts_are_every_tenants_and_overridden_per_tenant() {
+    use fcp_core::prompt::{effective_prompt_by_id, PromptStore};
+    let app = require_app!();
+    let store = PostgresPromptStore::new(app.storage.pool().clone());
+
+    // The platform's prompt, with audio.
+    let system = app
+        .admin(
+            Method::POST,
+            "/api/v1/prompts",
+            Some(json!({ "name": "vm_goodbye", "category": "system", "source_type": "file", "system": true })),
+        )
+        .await;
+    assert_eq!(system.status, StatusCode::CREATED, "{}", system.text);
+    assert_eq!(system.json["tenant_id"], Value::Null, "{}", system.text);
+    assert_eq!(system.json["is_system"], true);
+    let sys_id = system.json["id"].as_str().unwrap().to_string();
+    let sys_audio = format!("/api/v1/prompts/{sys_id}/audio");
+    let platform_wav = wav_bytes(800);
+    let uploaded = app
+        .send_multipart(
+            ADMIN_TOKEN,
+            &sys_audio,
+            &[("audio", Some(("bye.wav", "audio/wav")), &platform_wav)],
+        )
+        .await;
+    assert_eq!(uploaded.status, StatusCode::OK, "{}", uploaded.text);
+
+    // A tenant administrator sees it and may play it, but not change it.
+    app.create_user_with_role("pr-a", "tenant_admin").await;
+    let jwt_a = app.login("pr-a", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let listed = app
+        .send_as(&jwt_a, Method::GET, "/api/v1/prompts", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    let rows = listed.json.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{}", listed.text);
+    assert_eq!(rows[0]["id"], sys_id.as_str());
+    assert_eq!(rows[0]["overridden_by"], Value::Null);
+    let heard = app.send_as(&jwt_a, Method::GET, &sys_audio, None).await;
+    assert_eq!(heard.status, StatusCode::OK, "{}", heard.text);
+    assert_eq!(heard.bytes, platform_wav);
+    for (method, path, body) in [
+        (
+            Method::PUT,
+            format!("/api/v1/prompts/{sys_id}"),
+            Some(json!({ "description": "mine" })),
+        ),
+        (Method::DELETE, format!("/api/v1/prompts/{sys_id}"), None),
+        (
+            Method::POST,
+            format!("/api/v1/prompts/{sys_id}/synthesize"),
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/v1/prompts".to_string(),
+            Some(json!({ "name": "x", "source_type": "file", "system": true })),
+        ),
+    ] {
+        let refused = app.send_as(&jwt_a, method.clone(), &path, body).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path}: {}",
+            refused.text
+        );
+    }
+    let refused_upload = app
+        .send_multipart(
+            &jwt_a,
+            &sys_audio,
+            &[("audio", Some(("x.wav", "audio/wav")), &wav_bytes(10))],
+        )
+        .await;
+    assert_eq!(
+        refused_upload.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        refused_upload.text
+    );
+
+    // The override: the tenant's copy, with the system prompt's audio.
+    let copied = app
+        .send_as(
+            &jwt_a,
+            Method::POST,
+            &format!("/api/v1/prompts/{sys_id}/override"),
+            None,
+        )
+        .await;
+    assert_eq!(copied.status, StatusCode::CREATED, "{}", copied.text);
+    let over_id = copied.json["id"].as_str().unwrap().to_string();
+    assert_eq!(copied.json["tenant_id"], app.tenant_a.to_string());
+    assert_eq!(copied.json["name"], "vm_goodbye");
+    assert_eq!(copied.json["is_system"], false);
+    assert_eq!(copied.json["overrides"], sys_id.as_str());
+    assert_eq!(copied.json["has_audio"], true, "{}", copied.text);
+    let again = app
+        .send_as(
+            &jwt_a,
+            Method::POST,
+            &format!("/api/v1/prompts/{sys_id}/override"),
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.text);
+    let duplicate = app
+        .send_as(
+            &jwt_a,
+            Method::POST,
+            "/api/v1/prompts",
+            Some(json!({ "name": "vm_goodbye", "source_type": "file" })),
+        )
+        .await;
+    assert_eq!(duplicate.status, StatusCode::CONFLICT, "{}", duplicate.text);
+    let own_wav = wav_bytes(400);
+    let replaced = app
+        .send_multipart(
+            &jwt_a,
+            &format!("/api/v1/prompts/{over_id}/audio"),
+            &[("audio", Some(("mine.wav", "audio/wav")), &own_wav)],
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.text);
+    assert_eq!(
+        app.send_as(&jwt_a, Method::GET, &sys_audio, None)
+            .await
+            .bytes,
+        platform_wav,
+        "the system prompt's audio is untouched"
+    );
+    let listed = app
+        .send_as(&jwt_a, Method::GET, "/api/v1/prompts", None)
+        .await;
+    let rows = listed.json.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{}", listed.text);
+    let sys_row = rows.iter().find(|r| r["id"] == sys_id.as_str()).unwrap();
+    assert_eq!(
+        sys_row["overridden_by"],
+        over_id.as_str(),
+        "{}",
+        listed.text
+    );
+    let scoped = app
+        .send_as(&jwt_a, Method::GET, "/api/v1/prompts?scope=tenant", None)
+        .await;
+    assert_eq!(scoped.json.as_array().unwrap().len(), 1, "{}", scoped.text);
+    let system_only = app
+        .send_as(&jwt_a, Method::GET, "/api/v1/prompts?scope=system", None)
+        .await;
+    assert_eq!(
+        system_only.json[0]["id"],
+        sys_id.as_str(),
+        "{}",
+        system_only.text
+    );
+
+    // Another tenant hears the system prompt and never sees the copy.
+    let b_user = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({ "username": "pr-b", "password": PASSWORD, "role": "tenant_admin" })),
+        )
+        .await;
+    assert_eq!(b_user.status, StatusCode::CREATED, "{}", b_user.text);
+    let jwt_b = app.login("pr-b", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b_list = app
+        .send_as(&jwt_b, Method::GET, "/api/v1/prompts", None)
+        .await;
+    let b_rows = b_list.json.as_array().unwrap();
+    assert_eq!(b_rows.len(), 1, "{}", b_list.text);
+    assert_eq!(b_rows[0]["overridden_by"], Value::Null, "{}", b_list.text);
+    let hidden = app
+        .send_as(
+            &jwt_b,
+            Method::GET,
+            &format!("/api/v1/prompts/{over_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.text);
+    let not_system = app
+        .send_as(
+            &jwt_b,
+            Method::POST,
+            &format!("/api/v1/prompts/{over_id}/override"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        not_system.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        not_system.text
+    );
+
+    // What a call hears: the override for A, the system prompt for B and for
+    // a call without a tenant, nothing of A's for B.
+    let sys_prompt_id = sys_id.parse().unwrap();
+    let over_prompt_id = over_id.parse().unwrap();
+    let a_hears = effective_prompt_by_id(&store, &app.tenant_a, &sys_prompt_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(a_hears.id.to_string(), over_id);
+    let b_hears = effective_prompt_by_id(&store, &app.tenant_b, &sys_prompt_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(b_hears.id.to_string(), sys_id);
+    assert!(
+        effective_prompt_by_id(&store, &app.tenant_b, &over_prompt_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let by_name = |tenant: Option<TenantId>| {
+        let store = store.clone();
+        async move {
+            store
+                .resolve_prompt(tenant.as_ref(), "vm_goodbye", Some("en-US"))
+                .await
+                .unwrap()
+                .unwrap()
+                .id
+                .to_string()
+        }
+    };
+    assert_eq!(by_name(Some(app.tenant_a)).await, over_id);
+    assert_eq!(by_name(Some(app.tenant_b)).await, sys_id);
+    assert_eq!(by_name(None).await, sys_id);
+    // A language without its own prompt falls back to any language.
+    let other_language = store
+        .resolve_prompt(Some(&app.tenant_a), "vm_goodbye", Some("fr-FR"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(other_language.id.to_string(), over_id);
+
+    // Restore: deleting the copy brings back the system prompt.
+    let restored = app
+        .send_as(
+            &jwt_a,
+            Method::DELETE,
+            &format!("/api/v1/prompts/{over_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::NO_CONTENT, "{}", restored.text);
+    assert_eq!(by_name(Some(app.tenant_a)).await, sys_id);
+    let listed = app
+        .send_as(
+            &jwt_a,
+            Method::GET,
+            &format!("/api/v1/prompts/{sys_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(listed.json["overridden_by"], Value::Null, "{}", listed.text);
+
+    // The platform administrator changes the system prompt for everyone.
+    let edited = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/prompts/{sys_id}"),
+            Some(json!({ "description": "Said at the end" })),
+        )
+        .await;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.text);
+    let seen_by_b = app
+        .send_as(
+            &jwt_b,
+            Method::GET,
+            &format!("/api/v1/prompts/{sys_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(seen_by_b.json["description"], "Said at the end");
+    let still_system = app
+        .admin(Method::DELETE, &format!("/api/v1/prompts/{sys_id}"), None)
+        .await;
+    assert_eq!(
+        still_system.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        still_system.text
+    );
+
+    app.finish().await;
+}
+
+/// Tenant scope phase 4 (docs/TENANT_SCOPE.md §3.4, §3.7): flows without a
+/// tenant adopted or assigned, flow traces paged by tenant in SQL, tokens
+/// without a maker held to a tenant administrator, a number's state
+/// following its bindings.
+#[tokio::test]
+async fn flows_traces_tokens_and_numbers_keep_to_their_tenant() {
+    use fcp_flow::FlowStore;
+    let app = require_app!();
+    let a = app.tenant_a.to_string();
+    let b = app.tenant_b.to_string();
+
+    // ── Flows without a tenant ──
+    let orphan = |id: &str| {
+        let mut flow: fcp_flow::FlowDefinition = serde_json::from_value(json!({
+            "id": id, "name": id, "version": 1, "initial_node": "end",
+            "nodes": { "end": { "type": "hangup" } }
+        }))
+        .unwrap();
+        flow.tenant_id = None;
+        flow
+    };
+    for id in ["orphan-a", "orphan-x", "orphan-none"] {
+        app.storage.insert_flow(orphan(id)).await.unwrap();
+    }
+    let trace = |flow: &str, tenant: &str| FlowTraceEntry {
+        id: 0,
+        call_id: CallId::new().to_string(),
+        tenant_id: Some(tenant.to_string()),
+        flow_id: flow.to_string(),
+        flow_name: None,
+        node_id: None,
+        event_type: FlowTraceEventType::Started,
+        timestamp: SystemTime::now(),
+        detail: None,
+        flow_version: Some(1),
+        elapsed_ms: None,
+    };
+    // orphan-a ran for tenant A alone; orphan-x for both.
+    for (flow, tenant) in [("orphan-a", &a), ("orphan-x", &a), ("orphan-x", &b)] {
+        app.traces
+            .insert_flow_trace(&trace(flow, tenant))
+            .await
+            .unwrap();
+    }
+    let left = app
+        .admin(Method::GET, "/api/v1/flows/untenanted", None)
+        .await;
+    assert_eq!(left.status, StatusCode::OK, "{}", left.text);
+    let ids: Vec<&str> = left
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["orphan-none", "orphan-x"], "{}", left.text);
+    let adopted = app.admin(Method::GET, "/api/v1/flows/orphan-a", None).await;
+    assert_eq!(
+        adopted.status,
+        StatusCode::OK,
+        "A sees the flow it ran: {}",
+        adopted.text
+    );
+    assert_eq!(adopted.json["tenant_id"], a.as_str());
+    let versions = app
+        .admin(Method::GET, "/api/v1/flows/orphan-a/versions", None)
+        .await;
+    assert_eq!(
+        versions.status,
+        StatusCode::OK,
+        "its versions came along: {}",
+        versions.text
+    );
+
+    let assigned = app
+        .admin(
+            Method::POST,
+            "/api/v1/flows/orphan-x/assign",
+            Some(json!({ "tenant_id": b })),
+        )
+        .await;
+    assert_eq!(assigned.status, StatusCode::OK, "{}", assigned.text);
+    assert_eq!(assigned.json["tenant_id"], b.as_str());
+    let again = app
+        .admin(
+            Method::POST,
+            "/api/v1/flows/orphan-x/assign",
+            Some(json!({ "tenant_id": a })),
+        )
+        .await;
+    assert_eq!(
+        again.status,
+        StatusCode::CONFLICT,
+        "a tenant's flow is never moved: {}",
+        again.text
+    );
+    let nowhere = app
+        .admin(
+            Method::POST,
+            "/api/v1/flows/orphan-none/assign",
+            Some(json!({ "tenant_id": TenantId::new().to_string() })),
+        )
+        .await;
+    assert_eq!(nowhere.status, StatusCode::NOT_FOUND, "{}", nowhere.text);
+    app.create_user_with_role("flows-a", "tenant_admin").await;
+    let jwt_a = app.login("flows-a", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (method, path, body) in [
+        (Method::GET, "/api/v1/flows/untenanted", None),
+        (
+            Method::POST,
+            "/api/v1/flows/orphan-none/assign",
+            Some(json!({ "tenant_id": a })),
+        ),
+    ] {
+        let refused = app.send_as(&jwt_a, method.clone(), path, body).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path}: {}",
+            refused.text
+        );
+    }
+
+    // ── Flow traces by tenant, in SQL ──
+    for _ in 0..5 {
+        app.traces
+            .insert_flow_trace(&trace("paged", &a))
+            .await
+            .unwrap();
+    }
+    for _ in 0..7 {
+        app.traces
+            .insert_flow_trace(&trace("paged", &b))
+            .await
+            .unwrap();
+    }
+    let mut seen = 0;
+    let mut path = "/api/v1/flow-traces?flow_id=paged&limit=2".to_string();
+    loop {
+        let res = app.send_as(&jwt_a, Method::GET, &path, None).await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+        let rows = res.json.as_array().unwrap();
+        assert!(
+            rows.iter().all(|r| r["call_id"].is_string()),
+            "{}",
+            res.text
+        );
+        assert_eq!(res.body["total"], 5, "the tenant's total: {}", res.text);
+        seen += rows.len();
+        match res.body["next_cursor"].as_str() {
+            Some(c) => {
+                assert_eq!(rows.len(), 2, "a page before the last is full");
+                path = format!("/api/v1/flow-traces?flow_id=paged&limit=2&cursor={c}");
+            }
+            None => break,
+        }
+    }
+    assert_eq!(seen, 5, "tenant A's five and none of B's");
+
+    // ── A token without a maker reaches what a tenant administrator may ──
+    // A legacy token: made before makers and permissions were recorded,
+    // carrying `admin`. The API no longer makes one, so it is written here.
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/api-tokens",
+            Some(json!({ "name": "unmade", "permissions": ["user_read"] })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let secret = made.json["secret"].as_str().unwrap().to_string();
+    sqlx::query("UPDATE api_tokens SET permissions = '[\"admin\"]', user_id = '' WHERE id = $1")
+        .bind(made.json["token"]["id"].as_str().unwrap())
+        .execute(app.storage.pool())
+        .await
+        .unwrap();
+    let listed = app.admin(Method::GET, "/api/v1/api-tokens", None).await;
+    let row = listed
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "unmade")
+        .cloned()
+        .unwrap();
+    assert_eq!(row["legacy_full_access"], true, "{row}");
+    let read = app
+        .send_as(&secret, Method::GET, "/api/v1/users", None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    // System configuration, which only the permission guards: a legacy
+    // token reached it before.
+    let system = app
+        .send_as(&secret, Method::GET, "/api/v1/config", None)
+        .await;
+    assert_eq!(system.status, StatusCode::FORBIDDEN, "{}", system.text);
+    let platform = app.admin(Method::GET, "/api/v1/config", None).await;
+    assert_eq!(platform.status, StatusCode::OK, "{}", platform.text);
+
+    // ── A number's state follows its bindings ──
+    let number = app
+        .admin(
+            Method::POST,
+            "/api/v1/phone-numbers",
+            Some(json!({ "e164": "+15125550466" })),
+        )
+        .await;
+    assert_eq!(number.status, StatusCode::CREATED, "{}", number.text);
+    let number_id = number.json["id"].as_str().unwrap().to_string();
+    assert_eq!(number.json["state"], "unassigned", "{}", number.text);
+    let owner = app.create_user("bound-owner", None).await;
+    let bound = app
+        .admin(
+            Method::POST,
+            "/api/v1/line-bindings",
+            Some(json!({ "phone_number_id": number_id, "owner_user_id": owner, "binding_type": "user" })),
+        )
+        .await;
+    assert_eq!(bound.status, StatusCode::CREATED, "{}", bound.text);
+    let state = |id: String| {
+        let app = &app;
+        async move {
+            app.admin(Method::GET, &format!("/api/v1/phone-numbers/{id}"), None)
+                .await
+                .json["state"]
+                .clone()
+        }
+    };
+    assert_eq!(state(number_id.clone()).await, "assigned");
+    let unbound = app
+        .admin(
+            Method::DELETE,
+            &format!(
+                "/api/v1/line-bindings/{}",
+                bound.json["id"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(unbound.status, StatusCode::NO_CONTENT, "{}", unbound.text);
+    assert_eq!(state(number_id).await, "unassigned");
+
+    app.finish().await;
+}
+
 // ─── SIP traces ──────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -5684,6 +6385,25 @@ async fn e911_config_readiness_validation_and_audit() {
     assert_eq!(cfg.json["configured"], false);
     assert_eq!(cfg.json["emergency_numbers"], json!(["911"]));
     assert_eq!(cfg.json["test_numbers"], json!(["933"]));
+    // A test call is read back here unless the tenant says otherwise.
+    assert_eq!(cfg.json["test_call_mode"], "local");
+    let mode = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "test_call_mode": "pstn" })),
+        )
+        .await;
+    assert_eq!(mode.status, StatusCode::BAD_REQUEST, "{}", mode.text);
+    let mode = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "test_call_mode": "carrier" })),
+        )
+        .await;
+    assert_eq!(mode.status, StatusCode::OK, "{}", mode.text);
+    assert_eq!(mode.json["test_call_mode"], "carrier");
 
     let bad = app
         .admin(
@@ -5726,6 +6446,7 @@ async fn e911_config_readiness_validation_and_audit() {
         "untouched fields keep defaults"
     );
     assert_eq!(saved.json["require_dispatchable_location"], true);
+    assert_eq!(saved.json["test_call_mode"], "carrier", "kept");
     let reread = app
         .admin(Method::GET, "/api/v1/emergency/config", None)
         .await;
@@ -5768,6 +6489,42 @@ async fn e911_config_readiness_validation_and_audit() {
         typed.json["notify_contacts"],
         json!(["security@example.com", "+15185550143", "2001"])
     );
+    assert_eq!(typed.json["contacts"][2]["listen"], false);
+    // A call contact may listen in; nothing else can.
+    let listening = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "contacts": [{ "kind": "call", "target": "2001", "listen": true }] })),
+        )
+        .await;
+    assert_eq!(listening.status, StatusCode::OK, "{}", listening.text);
+    assert_eq!(listening.json["contacts"][0]["listen"], true);
+    let not_a_call = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "contacts": [{ "kind": "sms", "target": "+15185550143", "listen": true }] })),
+        )
+        .await;
+    assert_eq!(
+        not_a_call.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        not_a_call.text
+    );
+    let restored = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "contacts": [
+                { "kind": "email", "target": "security@example.com", "name": "Front desk" },
+                { "kind": "sms", "target": "+15185550143" },
+                "2001"
+            ]})),
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text);
     let refused = app
         .admin(
             Method::PUT,
@@ -6394,6 +7151,7 @@ async fn e911_config_readiness_validation_and_audit() {
         location_source: Some("user_location".to_string()),
         client_address: None,
         trunk_name: Some("e911-trunk".to_string()),
+        location_id: None,
         placed_at: SystemTime::now(),
     };
     let mut delivered = fcp_core::e911::notify::EmergencyNotification::first(
@@ -6520,6 +7278,234 @@ async fn wait_for_audit(app: &App, path: &str, pred: impl Fn(&Value) -> bool) ->
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     panic!("audit entry never appeared at {path}");
+}
+
+/// An audit row belongs to the tenant acted on (docs/TENANT_SCOPE.md §3.3):
+/// a platform administrator's action on a tenant is that tenant's, shown to
+/// its administrators as "platform administrator"; the platform's own
+/// actions have no tenant; a platform administrator reads all, one tenant's
+/// or the platform's.
+#[tokio::test]
+async fn an_audit_row_belongs_to_the_tenant_acted_on() {
+    let app = require_app!();
+    let list = |path: String| {
+        let app = &app;
+        async move { app.admin(Method::GET, &path, None).await }
+    };
+
+    // The static token, working in tenant B through the picker.
+    let made = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({ "username": "b-ops", "password": PASSWORD, "role": "tenant_admin" })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let in_b = wait_for_audit(&app, "/api/v1/audit-log?action=POST%20/api/v1/users", |e| {
+        e["status"] == 201 && e["tenant_id"] == app.tenant_b.to_string()
+    })
+    .await;
+    assert_eq!(in_b["actor"], "static_token", "{in_b}");
+    assert_eq!(in_b["actor_tenant_id"], Value::Null, "{in_b}");
+
+    // A super administrator of tenant A, in tenant B: B's row, A's actor.
+    app.create_user_with_role("root", "super_admin").await;
+    let root = app.login("root", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let picked = app
+        .send(
+            Method::POST,
+            "/api/v1/schedules",
+            &[
+                (AUTH_HEADER, format!("Bearer {root}").as_str()),
+                ("x-fcp-tenant-id", app.tenant_b.to_string().as_str()),
+            ],
+            Some(json!({ "name": "root-hours", "timezone": "UTC" })),
+        )
+        .await;
+    assert_eq!(picked.status, StatusCode::CREATED, "{}", picked.text);
+    let by_root = wait_for_audit(&app, "/api/v1/audit-log?actor=root", |e| {
+        e["action"] == "POST /api/v1/schedules"
+    })
+    .await;
+    assert_eq!(by_root["tenant_id"], app.tenant_b.to_string(), "{by_root}");
+    assert_eq!(
+        by_root["actor_tenant_id"],
+        app.tenant_a.to_string(),
+        "{by_root}"
+    );
+
+    // A tenant route is that tenant's, whatever is picked; a new tenant's
+    // creation is the new tenant's.
+    let renamed = app
+        .admin_in(
+            app.tenant_a,
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_b),
+            Some(json!({ "display_name": "Bee" })),
+        )
+        .await;
+    assert!(renamed.status.is_success(), "{}", renamed.text);
+    wait_for_audit(
+        &app,
+        "/api/v1/audit-log?action=PUT%20/api/v1/tenants/:id",
+        |e| e["tenant_id"] == app.tenant_b.to_string(),
+    )
+    .await;
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/tenants",
+            Some(json!({ "name": "audited-co" })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let new_tenant = created.json["id"].as_str().unwrap().to_string();
+    wait_for_audit(
+        &app,
+        "/api/v1/audit-log?action=POST%20/api/v1/tenants",
+        |e| e["tenant_id"] == new_tenant.as_str(),
+    )
+    .await;
+
+    // The platform's own action (a firmware image, refused or not) has no
+    // tenant, though a tenant was picked.
+    let _ = app
+        .send_raw(
+            ADMIN_TOKEN,
+            Method::POST,
+            "/api/v1/firmware?vendor=yealink&version=1",
+            "application/octet-stream",
+            b"not firmware".to_vec(),
+        )
+        .await;
+    let firmware = wait_for_audit(&app, "/api/v1/audit-log?tenant=platform", |e| {
+        e["action"] == "POST /api/v1/firmware"
+    })
+    .await;
+    assert_eq!(firmware["tenant_id"], Value::Null, "{firmware}");
+
+    // A platform administrator's views.
+    let platform = list("/api/v1/audit-log?tenant=platform&limit=200".into()).await;
+    assert!(
+        platform
+            .json
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["tenant_id"].is_null()),
+        "{}",
+        platform.text
+    );
+    let only_b = list(format!(
+        "/api/v1/audit-log?tenant={}&limit=200",
+        app.tenant_b
+    ))
+    .await;
+    let rows = only_b.json.as_array().unwrap();
+    assert!(rows.len() >= 3, "{}", only_b.text);
+    assert!(
+        rows.iter()
+            .all(|e| e["tenant_id"] == app.tenant_b.to_string()),
+        "{}",
+        only_b.text
+    );
+    let all = list("/api/v1/audit-log?tenant=all&limit=200".into()).await;
+    let tenants: std::collections::HashSet<String> = all
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["tenant_id"].to_string())
+        .collect();
+    assert!(
+        tenants.len() >= 3,
+        "every tenant's rows and the platform's: {tenants:?}"
+    );
+    let picked_a = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            "/api/v1/audit-log?limit=200",
+            None,
+        )
+        .await;
+    assert!(
+        picked_a
+            .json
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["tenant_id"] == app.tenant_a.to_string()),
+        "{}",
+        picked_a.text
+    );
+    let bad = list("/api/v1/audit-log?tenant=nobody".into()).await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+
+    // B's administrator sees what the platform did to B, not who did it,
+    // and nothing else, whatever they ask for.
+    let jwt_b = app.login("b-ops", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for query in ["", "&tenant=platform", "&tenant=all"] {
+        let seen = app
+            .send_as(
+                &jwt_b,
+                Method::GET,
+                &format!("/api/v1/audit-log?limit=200{query}"),
+                None,
+            )
+            .await;
+        assert_eq!(seen.status, StatusCode::OK, "{}", seen.text);
+        let rows = seen.json.as_array().unwrap();
+        assert!(
+            rows.iter()
+                .all(|e| e["tenant_id"] == app.tenant_b.to_string()),
+            "{query}: {}",
+            seen.text
+        );
+        for action in [
+            "POST /api/v1/users",
+            "POST /api/v1/schedules",
+            "PUT /api/v1/tenants/:id",
+        ] {
+            let row = rows
+                .iter()
+                .find(|e| e["action"] == action)
+                .unwrap_or_else(|| panic!("{action} missing for B: {}", seen.text));
+            assert_eq!(row["actor"], "platform administrator", "{row}");
+            assert_eq!(row["actor_kind"], "platform", "{row}");
+            assert_eq!(row["actor_tenant_id"], Value::Null, "{row}");
+            assert_eq!(row["source_ip"], Value::Null, "{row}");
+        }
+    }
+    // B's administrator's own actions keep their name.
+    let own = app
+        .send_as(
+            &jwt_b,
+            Method::POST,
+            "/api/v1/schedules",
+            Some(json!({ "name": "b-hours", "timezone": "UTC" })),
+        )
+        .await;
+    assert_eq!(own.status, StatusCode::CREATED, "{}", own.text);
+    let mine = wait_for_audit(&app, "/api/v1/audit-log?actor=b-ops", |e| {
+        e["action"] == "POST /api/v1/schedules"
+    })
+    .await;
+    assert_eq!(mine["tenant_id"], app.tenant_b.to_string());
+    let seen = app
+        .send_as(&jwt_b, Method::GET, "/api/v1/audit-log?actor=b-ops", None)
+        .await;
+    assert_eq!(seen.json[0]["actor"], "b-ops", "{}", seen.text);
+
+    app.finish().await;
 }
 
 #[tokio::test]
@@ -7006,6 +7992,7 @@ async fn compliance_policy_audit_log_export_and_retention() {
         .record_audit_event(&AuditEvent {
             id: 0,
             tenant_id: Some(app.tenant_a),
+            actor_tenant_id: None,
             actor: "static_token".into(),
             actor_kind: "static_token".into(),
             method: "DELETE".into(),
@@ -8534,6 +9521,120 @@ async fn sites_are_made_with_a_token_shown_once_and_managed_in_their_tenant() {
         .await;
     assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.text);
 
+    app.finish().await;
+}
+
+// ─── Parking lots (docs/PARKING.md) ──────────────────────────────────────
+
+#[tokio::test]
+async fn parking_lots_are_the_tenants_and_clash_with_its_dial_plan() {
+    let app = require_app!();
+    let lot =
+        |name: &str, first: &str, last: &str| json!({ "name": name, "first": first, "last": last });
+    // A range of the tenant's own numbering, leading zero kept.
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/parking/lots",
+            Some(lot("Lobby", "050", "059")),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    assert_eq!(created.json["first"], "050");
+    assert_eq!(created.json["slots"], 10);
+    assert_eq!(created.json["timeout_secs"], 60);
+    let id = created.json["id"].as_str().unwrap().to_string();
+
+    // Ranges no phone could dial.
+    for bad in [
+        json!({ "name": "Flow", "first": "601", "last": "609", "fallback": "flow:menu" }),
+        lot("Mixed", "701", "7020"),
+        lot("Backwards", "720", "701"),
+        lot("Letters", "70a", "720"),
+        lot("Huge", "1000", "2000"),
+    ] {
+        let res = app
+            .admin(Method::POST, "/api/v1/parking/lots", Some(bad.clone()))
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{bad}: {}", res.text);
+    }
+
+    // Overlapping another lot, or a number something else dials.
+    let overlap = app
+        .admin(
+            Method::POST,
+            "/api/v1/parking/lots",
+            Some(lot("Over", "055", "065")),
+        )
+        .await;
+    assert_eq!(overlap.status, StatusCode::CONFLICT, "{}", overlap.text);
+    assert!(
+        overlap.text.contains("Lobby"),
+        "names the clash: {}",
+        overlap.text
+    );
+    let bob = app.create_user_with_role("bob", "end_user").await;
+    let ext = app
+        .admin(
+            Method::POST,
+            "/api/v1/extensions",
+            Some(json!({ "number": "705", "target": { "type": "user", "id": bob } })),
+        )
+        .await;
+    assert_eq!(ext.status, StatusCode::CREATED, "{}", ext.text);
+    let on_ext = app
+        .admin(
+            Method::POST,
+            "/api/v1/parking/lots",
+            Some(lot("Main", "701", "720")),
+        )
+        .await;
+    assert_eq!(on_ext.status, StatusCode::CONFLICT, "{}", on_ext.text);
+    assert!(on_ext.text.contains("705"), "{}", on_ext.text);
+    let main = app
+        .admin(
+            Method::POST,
+            "/api/v1/parking/lots",
+            Some(json!({
+                "name": "Main", "first": "4320", "last": "4329",
+                "park_number": "4300", "timeout_secs": 90, "fallback": "voicemail"
+            })),
+        )
+        .await;
+    assert_eq!(main.status, StatusCode::CREATED, "{}", main.text);
+    assert_eq!(main.json["fallback"], "voicemail");
+
+    // Listed in order of their numbering (another tenant's are the route
+    // matrix's to try).
+    let list = app.admin(Method::GET, "/api/v1/parking/lots", None).await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text);
+    let firsts: Vec<&str> = list
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["first"].as_str().unwrap())
+        .collect();
+    assert_eq!(firsts, ["050", "4320"]);
+
+    // Replaced whole, then removed.
+    let updated = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/parking/lots/{id}"),
+            Some(lot("Lobby", "050", "054")),
+        )
+        .await;
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.text);
+    assert_eq!(updated.json["slots"], 5);
+    let gone = app
+        .admin(Method::DELETE, &format!("/api/v1/parking/lots/{id}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+    let after = app
+        .admin(Method::GET, &format!("/api/v1/parking/lots/{id}"), None)
+        .await;
+    assert_eq!(after.status, StatusCode::NOT_FOUND);
     app.finish().await;
 }
 
@@ -14993,6 +16094,117 @@ async fn an_app_signs_in_through_the_browser_and_keeps_its_session() {
             .status,
         StatusCode::UNAUTHORIZED
     );
+    // And the install's device with it: a signed-out app stayed on the
+    // Devices page with its registrations (D8).
+    let device = second.json["device"]["id"].as_str().expect("the device");
+    let device = device.parse::<fcp_core::DeviceId>().unwrap();
+    assert!(
+        fcp_core::storage::DeviceStore::get_device(&*app.storage, &device)
+            .await
+            .unwrap()
+            .is_none(),
+        "the signed-out app's device is still there"
+    );
+}
+
+/// An app device no live session uses is removed by the hourly sweep: an
+/// install that signed out before sign-out took its device, or one replaced
+/// without signing out whose session ended. A device a moment old, its
+/// session not yet begun, and one in use are kept (D8: Bob's Devices page
+/// showed every install he had ever signed in from).
+#[tokio::test]
+async fn app_devices_nobody_signs_in_as_are_swept() {
+    use fcp_core::storage::DeviceStore;
+    let app = require_app!();
+    app.create_user_with_role("bea", "end_user").await;
+    let token = app.login("bea", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut devices = std::collections::HashMap::new();
+    for (install, name) in [
+        ("install-gone", "Bea's laptop"),
+        ("install-used", "Bea's laptop"),
+        ("install-new", "Bea's laptop"),
+        ("install-replaced", "Bea's laptop"),
+        ("install-idle", "Bea's phone"),
+    ] {
+        let res = app
+            .send_as(
+                &token,
+                Method::POST,
+                "/api/v1/auth/app/sessions",
+                Some(json!({ "client_name": name, "install_id": install })),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+        let id: fcp_core::DeviceId = res.json["device"]["id"].as_str().unwrap().parse().unwrap();
+        devices.insert(install, id);
+    }
+    // Two installs made two hours ago, the third just now; the first's
+    // session and the third's ended without taking their devices.
+    for install in ["install-gone", "install-used"] {
+        sqlx::query(
+            "UPDATE app_installs SET created_at = NOW() - INTERVAL '2 hours' WHERE install_id = $1",
+        )
+        .bind(install)
+        .execute(app.storage.pool())
+        .await
+        .unwrap();
+    }
+    for install in ["install-gone", "install-new"] {
+        sqlx::query(
+            "UPDATE login_sessions SET revoked_at = NOW(), revoked_reason = 'the app signed out'
+             WHERE device_id = $1",
+        )
+        .bind(devices[install].to_string())
+        .execute(app.storage.pool())
+        .await
+        .unwrap();
+    }
+    // Two signed in a month ago and quiet since: the laptop's install was
+    // replaced by a newer one of the same app; the phone's has none.
+    for install in ["install-replaced", "install-idle"] {
+        sqlx::query(
+            "UPDATE app_installs SET created_at = NOW() - INTERVAL '30 days' WHERE install_id = $1",
+        )
+        .bind(install)
+        .execute(app.storage.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE login_sessions SET refreshed_at = NOW() - INTERVAL '30 days' WHERE device_id = $1",
+        )
+        .bind(devices[install].to_string())
+        .execute(app.storage.pool())
+        .await
+        .unwrap();
+    }
+
+    let removed =
+        fcp_api_core::v1::app_auth::sweep_abandoned_devices(&app.state, SystemTime::now()).await;
+    assert_eq!(removed, 2);
+    let kept = |install: &str| {
+        let id = devices[install];
+        let storage = app.storage.clone();
+        async move { storage.get_device(&id).await.unwrap().is_some() }
+    };
+    assert!(!kept("install-gone").await, "the abandoned device stayed");
+    assert!(kept("install-used").await, "a device in use was taken");
+    assert!(kept("install-new").await, "a device a moment old was taken");
+    assert!(
+        !kept("install-replaced").await,
+        "the replaced install stayed"
+    );
+    assert!(kept("install-idle").await, "a device only unused was taken");
+    let (live,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM login_sessions WHERE device_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(devices["install-replaced"].to_string())
+    .fetch_one(app.storage.pool())
+    .await
+    .unwrap();
+    assert_eq!(live, 0, "the replaced install's session went on");
 }
 
 // ---------------------------------------------------------------------------
@@ -15663,6 +16875,87 @@ async fn a_tenant_brands_its_softphone() {
     assert_eq!(fresh.json["app_name"], "Acme Calls");
     assert_ne!(fresh.headers[header::ETAG].to_str().unwrap(), etag);
 
+    // The softphone's deployment profile (Anvil's MANAGED_INSTALLS.md):
+    // this admin as the server, locked; the brand with its files.
+    let profile = app
+        .send_as(
+            &admin,
+            Method::GET,
+            "/api/v1/branding/deployment-profile?format=json",
+            None,
+        )
+        .await;
+    assert_eq!(profile.status, StatusCode::OK, "{}", profile.text);
+    let p = &profile.json;
+    assert_eq!(p["profile_version"], 1);
+    assert_eq!(p["server"], SSO_PUBLIC_URL);
+    assert_eq!(p["lock_server"], true);
+    assert_eq!(p["sign_in"], "auto", "the tenant allows passwords");
+    assert_eq!(p["updates"], "auto");
+    assert_eq!(p["username_from_system"], false, "no login domain");
+    assert!(p.get("login_domain").is_none(), "{p}");
+    assert_eq!(p["brand"]["app_name"], "Acme Calls");
+    assert_eq!(p["brand"]["colors"]["primary"], "#1A73E8");
+    assert_eq!(p["brand"]["icon"], "icon.png");
+    assert!(p["brand"]["logo"].is_string(), "{p}");
+    assert!(p["brand"]["ringtone"].is_string(), "{p}");
+    let zip = app
+        .send_as(
+            &admin,
+            Method::GET,
+            "/api/v1/branding/deployment-profile?sign_in=sso&updates=off&lock_server=false",
+            None,
+        )
+        .await;
+    assert_eq!(zip.status, StatusCode::OK, "{}", zip.text);
+    assert_eq!(zip.headers[header::CONTENT_TYPE], "application/zip");
+    assert!(zip.headers[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap()
+        .contains("acme-calls-profile.zip"));
+    assert_eq!(&zip.bytes[..4], b"PK\x03\x04");
+    let holds = |needle: &[u8]| zip.bytes.windows(needle.len()).any(|w| w == needle);
+    assert!(holds(b"profile.json") && holds(b"icon.png"));
+    assert!(holds(&icon_png), "the icon's bytes, stored");
+    assert!(holds(br#""sign_in": "sso""#) && holds(br#""updates": "off""#));
+    assert!(holds(br#""lock_server": false"#));
+    let reg = app
+        .send_as(
+            &admin,
+            Method::GET,
+            "/api/v1/branding/deployment-profile?format=reg",
+            None,
+        )
+        .await;
+    assert_eq!(reg.status, StatusCode::OK, "{}", reg.text);
+    let units: Vec<u16> = reg.bytes[2..]
+        .chunks(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let text = String::from_utf16(&units).unwrap();
+    assert!(
+        text.contains(&format!("\"Server\"=\"{SSO_PUBLIC_URL}\"")),
+        "{text}"
+    );
+    let bad = app
+        .send_as(
+            &admin,
+            Method::GET,
+            "/api/v1/branding/deployment-profile?updates=never",
+            None,
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+    let refused = app
+        .send_as(
+            &user,
+            Method::GET,
+            "/api/v1/branding/deployment-profile",
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+
     // An asset the brand names stays; another goes.
     let named = app
         .send_as(
@@ -15918,6 +17211,910 @@ async fn a_user_sees_the_directory_while_the_tenant_shows_it() {
         .await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
     app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Lines on a device (docs/DEVICE_LINES.md)
+// ---------------------------------------------------------------------------
+
+/// A device's lines are checked against what its owner may be, shown to
+/// the app with their labels, and named by the user only where the tenant
+/// lets them — the name kept by the line, on every device that has it.
+#[tokio::test]
+async fn a_devices_lines_are_checked_shown_and_named() {
+    let app = require_app!();
+    let bob = app.create_user_with_role("bob", "end_user").await;
+    app.create_user_with_role("mary", "end_user").await;
+    let carol = app.create_user_with_role("carol", "end_user").await;
+    for (who, ext) in [("bob", "1002"), ("carol", "1003")] {
+        let set = app
+            .admin(
+                Method::PUT,
+                &format!("/api/v1/users/{who}"),
+                Some(json!({ "extension": ext })),
+            )
+            .await;
+        assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    }
+    let extra = app
+        .admin(
+            Method::POST,
+            "/api/v1/extensions",
+            Some(json!({ "number": "1005", "target": { "type": "user", "id": bob } })),
+        )
+        .await;
+    assert_eq!(extra.status, StatusCode::CREATED, "{}", extra.text);
+    let assists = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/mary/calling",
+            Some(json!({ "executive": { "enabled": true, "assistants": ["bob"] } })),
+        )
+        .await;
+    assert_eq!(assists.status, StatusCode::OK, "{}", assists.text);
+    let _ = carol;
+
+    // Bob's app, signed in: a device of his own.
+    let web = app.login("bob", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let signed_in = app
+        .send_as(
+            &web,
+            Method::POST,
+            "/api/v1/auth/app/sessions",
+            Some(json!({ "client_name": "Bob's laptop", "install_id": "bob-laptop" })),
+        )
+        .await;
+    assert_eq!(signed_in.status, StatusCode::CREATED, "{}", signed_in.text);
+    let access = signed_in.json["access_token"].as_str().unwrap().to_string();
+    let device = signed_in.json["device"]["id"].as_str().unwrap().to_string();
+    let device_path = format!("/api/v1/devices/{device}");
+
+    // Lines the device may not be are refused, naming why.
+    for (lines, why) in [
+        (json!([{ "kind": "extension", "value": "1005" }]), "own"),
+        (
+            json!([{ "kind": "own" }, { "kind": "extension", "value": "1003" }]),
+            "1003",
+        ),
+        (
+            json!([{ "kind": "own" }, { "kind": "on_behalf", "value": "carol" }]),
+            "assistants",
+        ),
+        (
+            json!([{ "kind": "own" }, { "kind": "extension", "value": "1005" },
+                { "kind": "extension", "value": "1005" }]),
+            "twice",
+        ),
+    ] {
+        let res = app
+            .admin(Method::PATCH, &device_path, Some(json!({ "lines": lines })))
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{lines}: {}", res.text);
+        assert!(res.text.contains(why), "{why} in {}", res.text);
+    }
+
+    // His own, another extension of his, and Mary's, whom he assists.
+    let set = app
+        .admin(
+            Method::PATCH,
+            &device_path,
+            Some(json!({ "lines": [
+                { "kind": "own" },
+                { "kind": "extension", "value": "1005", "label": "Sales" },
+                { "kind": "on_behalf", "value": "mary", "ring": false },
+            ] })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    assert_eq!(
+        set.json["lines"].as_array().map(Vec::len),
+        Some(3),
+        "{}",
+        set.text
+    );
+
+    let shown = |config: &Value| -> Vec<(String, String, String, bool)> {
+        config["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["line"].as_str().unwrap().to_string(),
+                    l["aor"].as_str().unwrap().to_string(),
+                    l["label"].as_str().unwrap().to_string(),
+                    l["ring"].as_bool().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let config = app
+        .send_as(&access, Method::GET, "/api/v1/me/softphone", None)
+        .await;
+    assert_eq!(config.status, StatusCode::OK, "{}", config.text);
+    let lines = shown(&config.json);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[0].0, "own");
+    assert!(
+        lines[0].1.starts_with("sip:bob@"),
+        "the app's own address: {lines:?}"
+    );
+    assert_eq!(lines[0].2, "1002 - bob", "the default label");
+    assert_eq!(lines[1].0, "extension:1005");
+    assert!(lines[1].1.starts_with("sip:1005@"), "{lines:?}");
+    assert_eq!(lines[1].2, "Sales", "the administrator's label");
+    assert_eq!(lines[2].0, "on_behalf:mary");
+    assert!(lines[2].1.starts_with("sip:mary@"), "{lines:?}");
+    assert!(!lines[2].3, "a line it only calls out on");
+    assert_eq!(config.json["may_rename_lines"], false);
+
+    // Renaming is the tenant's to allow.
+    let label = |line: &str, name: &str| {
+        let (app, access) = (&app, &access);
+        let path = format!("/api/v1/me/lines/{line}/label");
+        let body = json!({ "label": name });
+        async move { app.send_as(access, Method::PUT, &path, Some(body)).await }
+    };
+    let refused = label("own", "Desk").await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let allow = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({ "lines": { "users_may_rename": true } })),
+        )
+        .await;
+    assert_eq!(allow.status, StatusCode::OK, "{}", allow.text);
+    assert_eq!(allow.json["lines"]["users_may_rename"], true);
+    let named = label("own", "Desk").await;
+    assert_eq!(named.status, StatusCode::NO_CONTENT, "{}", named.text);
+    let unknown = label("extension:1003", "Not mine").await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.text);
+    let config = app
+        .send_as(&access, Method::GET, "/api/v1/me/softphone", None)
+        .await;
+    let lines = shown(&config.json);
+    assert_eq!(lines[0].2, "Desk", "his own name for it");
+    assert_eq!(lines[1].2, "Sales", "the others keep theirs");
+    assert_eq!(config.json["may_rename_lines"], true);
+
+    // Cleared, the line shows its default again; the tenant taking the
+    // choice back hides his names too.
+    assert_eq!(label("own", "").await.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        label("extension:1005", "My sales").await.status,
+        StatusCode::NO_CONTENT
+    );
+    let back = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({ "lines": { "users_may_rename": false } })),
+        )
+        .await;
+    assert_eq!(back.status, StatusCode::OK, "{}", back.text);
+    let config = app
+        .send_as(&access, Method::GET, "/api/v1/me/softphone", None)
+        .await;
+    let lines = shown(&config.json);
+    assert_eq!(lines[0].2, "1002 - bob");
+    assert_eq!(
+        lines[1].2, "Sales",
+        "his name is not shown while renaming is off"
+    );
+
+    // A VVX written from the same lines: an account each, with its label.
+    let template = app
+        .admin(
+            Method::POST,
+            "/api/v1/config-templates/library/polycom",
+            None,
+        )
+        .await;
+    assert_eq!(template.status, StatusCode::CREATED, "{}", template.text);
+    let template_id = template.json["id"].as_str().unwrap().to_string();
+    let on_vvx = app
+        .admin(
+            Method::PATCH,
+            &device_path,
+            Some(json!({ "vendor": "polycom", "config_template_id": template_id })),
+        )
+        .await;
+    assert_eq!(on_vvx.status, StatusCode::OK, "{}", on_vvx.text);
+    let rendered = app
+        .admin(Method::POST, &format!("{device_path}/render"), None)
+        .await;
+    assert_eq!(rendered.status, StatusCode::OK, "{}", rendered.text);
+    let body = rendered.json["content"].as_str().unwrap();
+    for want in [
+        r#"reg.1.label="1002 - bob""#,
+        r#"reg.2.address="1005@"#,
+        r#"reg.2.label="Sales""#,
+        r#"reg.3.address="mary@"#,
+        r#"reg.3.label="mary""#,
+    ] {
+        assert!(body.contains(want), "{want} in\n{body}");
+    }
+    assert!(
+        !body.contains("reg.4."),
+        "three lines, three accounts:\n{body}"
+    );
+
+    // A shared line the device is on: the app is told its appearances and
+    // whether it may barge in.
+    let number = app
+        .admin(
+            Method::POST,
+            "/api/v1/phone-numbers",
+            Some(json!({ "e164": "+15550004444", "tenant_id": app.tenant_a })),
+        )
+        .await;
+    assert_eq!(number.status, StatusCode::CREATED, "{}", number.text);
+    let binding = app
+        .admin(
+            Method::POST,
+            "/api/v1/line-bindings",
+            Some(json!({
+                "phone_number_id": number.json["id"],
+                "owner_user_id": bob,
+                "binding_type": "user",
+                "tenant_id": app.tenant_a,
+                "devices": [{ "device_id": device, "priority": 1, "line_appearance": 2,
+                    "shared_line": true, "enabled": true }],
+                "shared": true,
+                "max_appearances": 2,
+                "barge_in": true,
+            })),
+        )
+        .await;
+    assert_eq!(binding.status, StatusCode::CREATED, "{}", binding.text);
+    let set = app
+        .admin(
+            Method::PATCH,
+            &device_path,
+            Some(json!({ "lines": [{ "kind": "own" }, { "kind": "shared", "value": "15550004444" }] })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let config = app
+        .send_as(&access, Method::GET, "/api/v1/me/softphone", None)
+        .await;
+    let shared = &config.json["lines"][1];
+    assert_eq!(shared["line"], "shared:+15550004444", "{}", config.text);
+    assert_eq!(shared["shared"], true);
+    assert_eq!(shared["appearances"], 2);
+    assert_eq!(shared["barge_in"], true);
+    assert_eq!(config.json["lines"][0]["barge_in"], false);
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// A call's quality as the app measured it (docs/CALL_DIAGNOSTICS.md §2)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_apps_call_quality_is_kept_shown_and_a_poor_call_announced() {
+    let app = require_app!();
+    let domains = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"sip_domains": ["calls.test"]})),
+        )
+        .await;
+    assert_eq!(domains.status, StatusCode::OK, "{}", domains.text);
+    app.create_user_with_role("carol", "end_user").await;
+    let web = app.login("carol", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let signed_in = app
+        .send_as(
+            &web,
+            Method::POST,
+            "/api/v1/auth/app/sessions",
+            Some(json!({ "client_name": "Carol's phone", "install_id": "carol-phone" })),
+        )
+        .await;
+    assert_eq!(signed_in.status, StatusCode::CREATED, "{}", signed_in.text);
+    let access = signed_in.json["access_token"].as_str().unwrap().to_string();
+    let device = signed_in.json["device"]["id"].as_str().unwrap().to_string();
+
+    // Carol's call, and Dan's with Erin.
+    let now = SystemTime::now();
+    let mut hers = cdr_record(
+        app.tenant_a,
+        Some(30_000),
+        None,
+        now - Duration::from_secs(120),
+    );
+    hers.from_uri = "sip:carol@calls.test".into();
+    hers.to_uri = "sip:+15550001@calls.test".into();
+    let call = hers.call_id.to_string();
+    app.storage.insert_cdr(hers).await.unwrap();
+    let mut theirs = cdr_record(app.tenant_a, Some(30_000), None, now);
+    theirs.from_uri = "sip:dan@calls.test".into();
+    theirs.to_uri = "sip:erin@calls.test".into();
+    let not_hers = theirs.call_id.to_string();
+    app.storage.insert_cdr(theirs).await.unwrap();
+
+    let report = |mos: f64, far: Option<f64>| {
+        json!({
+            "direction": "outgoing",
+            "codec": "PCMU",
+            "srtp": true,
+            "duration_seconds": 30,
+            "packets_sent": 1500,
+            "packets_received": 1490,
+            "packets_expected": 1500,
+            "packets_lost": 15,
+            "jitter_ms": 4.5,
+            "rtt_ms": 42.0,
+            "far_loss_pct": 0.5,
+            "far_jitter_ms": 2.0,
+            "far_lost": 7,
+            "mos": mos,
+            "far_mos": far,
+            "local_rtp": "192.168.1.20:40000",
+            "remote_rtp": "203.0.113.5:30000",
+        })
+    };
+    let path = |id: &str| format!("/api/v1/me/calls/{id}/quality");
+
+    // Only the app reports; only for the user's own calls; only sense.
+    let web_report = app
+        .send_as(&web, Method::POST, &path(&call), Some(report(4.3, None)))
+        .await;
+    assert_eq!(
+        web_report.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        web_report.text
+    );
+    let other = app
+        .send_as(
+            &access,
+            Method::POST,
+            &path(&not_hers),
+            Some(report(4.3, None)),
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND, "{}", other.text);
+    for (field, value) in [
+        ("mos", json!(5.0)),
+        ("direction", json!("sideways")),
+        ("packets_lost", json!(2000)),
+        ("jitter_ms", json!(-1.0)),
+        ("far_loss_pct", json!(140.0)),
+    ] {
+        let mut bad = report(4.3, None);
+        bad[field] = value;
+        let res = app
+            .send_as(&access, Method::POST, &path(&call), Some(bad))
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{field}: {}", res.text);
+    }
+
+    // A good call is kept, quietly.
+    let mut events = fcp_events::EventSubscriber::subscribe(
+        app.event_bus.as_ref(),
+        fcp_events::EventFilter::new(),
+    )
+    .await
+    .expect("subscribe");
+    let kept = app
+        .send_as(
+            &access,
+            Method::POST,
+            &path(&call),
+            Some(report(4.3, Some(4.2))),
+        )
+        .await;
+    assert_eq!(kept.status, StatusCode::CREATED, "{}", kept.text);
+    assert_eq!(kept.json["device_id"], device.as_str());
+    assert_eq!(kept.json["codec"], "pcmu");
+    assert_eq!(kept.json["loss_pct"], 1.0);
+    assert_eq!(kept.json["poor"], false);
+
+    // Its record shows it; her recents carry the score.
+    let read = app
+        .admin(Method::GET, &format!("/api/v1/cdrs/{call}/quality"), None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    let reports = read.json.as_array().expect("a list").clone();
+    assert_eq!(reports.len(), 1, "{}", read.text);
+    assert_eq!(reports[0]["username"], "carol");
+    assert_eq!(reports[0]["remote_rtp"], "203.0.113.5:30000");
+    let recents = app
+        .send_as(&web, Method::GET, "/api/v1/me/calls", None)
+        .await;
+    assert_eq!(recents.status, StatusCode::OK, "{}", recents.text);
+    let mine = recents
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["call_id"] == call.as_str())
+        .expect("her call")
+        .clone();
+    assert_eq!(mine["quality"]["poor"], false, "{mine}");
+    assert!((mine["quality"]["far_mos"].as_f64().unwrap() - 4.2).abs() < 0.01);
+
+    // Reported again, poor this time: it replaces the first and is
+    // announced. A call whose record is not yet written is taken too.
+    let poor = app
+        .send_as(
+            &access,
+            Method::POST,
+            &path(&call),
+            Some(report(4.1, Some(2.6))),
+        )
+        .await;
+    assert_eq!(poor.status, StatusCode::CREATED, "{}", poor.text);
+    assert_eq!(poor.json["poor"], true);
+    let announced = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match events.next().await {
+                Some(PlatformEvent::Call(fcp_events::CallEvent::QualityPoor {
+                    call_id,
+                    username,
+                    device_id,
+                    far_mos,
+                    ..
+                })) => return (call_id.to_string(), username, device_id, far_mos),
+                Some(_) => continue,
+                None => panic!("the bus closed"),
+            }
+        }
+    })
+    .await
+    .expect("call.quality_poor");
+    assert_eq!(
+        announced,
+        (
+            call.clone(),
+            "carol".to_string(),
+            Some(device.clone()),
+            Some(2.6)
+        )
+    );
+    let read = app
+        .admin(Method::GET, &format!("/api/v1/cdrs/{call}/quality"), None)
+        .await;
+    assert_eq!(read.json.as_array().unwrap().len(), 1, "{}", read.text);
+    assert_eq!(read.json[0]["poor"], true);
+
+    let unwritten = CallId::new().to_string();
+    let early = app
+        .send_as(
+            &access,
+            Method::POST,
+            &path(&unwritten),
+            Some(report(4.4, None)),
+        )
+        .await;
+    assert_eq!(early.status, StatusCode::CREATED, "{}", early.text);
+    // Another tenant's administrator sees none of it.
+    let elsewhere = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/cdrs/{call}/quality"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        elsewhere.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        elsewhere.text
+    );
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Captures from the app (docs/CALL_DIAGNOSTICS.md §3)
+// ---------------------------------------------------------------------------
+
+impl App {
+    /// The app keeping captures in `dir`.
+    fn with_captures(mut self, dir: &std::path::Path) -> Self {
+        let api_config = ApiConfig {
+            captures: fcp_core::ApiCapturesConfig {
+                directory: Some(dir.to_string_lossy().into_owned()),
+                s3: None,
+            },
+            ..test_api_config()
+        };
+        self.router = create_router(self.state.clone(), &api_config);
+        self
+    }
+}
+
+#[tokio::test]
+async fn an_app_captures_only_while_allowed_and_its_captures_are_kept_held_and_swept() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().expect("a directory");
+    let app = require_app!().with_captures(dir.path());
+    let domains = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"sip_domains": ["calls.test"]})),
+        )
+        .await;
+    assert_eq!(domains.status, StatusCode::OK, "{}", domains.text);
+    app.create_user_with_role("carol", "end_user").await;
+    let web = app.login("carol", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let signed_in = app
+        .send_as(
+            &web,
+            Method::POST,
+            "/api/v1/auth/app/sessions",
+            Some(json!({ "client_name": "Carol's phone", "install_id": "carol-phone" })),
+        )
+        .await;
+    assert_eq!(signed_in.status, StatusCode::CREATED, "{}", signed_in.text);
+    let access = signed_in.json["access_token"].as_str().unwrap().to_string();
+    let device = signed_in.json["device"]["id"].as_str().unwrap().to_string();
+
+    let now = SystemTime::now();
+    let mut hers = cdr_record(app.tenant_a, Some(30_000), None, now);
+    hers.from_uri = "sip:carol@calls.test".into();
+    hers.to_uri = "sip:+15550001@calls.test".into();
+    let call = hers.call_id.to_string();
+    app.storage.insert_cdr(hers).await.unwrap();
+    let mut theirs = cdr_record(app.tenant_a, Some(30_000), None, now);
+    theirs.from_uri = "sip:dan@calls.test".into();
+    theirs.to_uri = "sip:erin@calls.test".into();
+    let not_hers = theirs.call_id.to_string();
+    app.storage.insert_cdr(theirs).await.unwrap();
+
+    // A pcapng file: its section header block, then anything.
+    let mut pcapng = vec![
+        0x0a, 0x0d, 0x0d, 0x0a, 0x1c, 0, 0, 0, 0x4d, 0x3c, 0x2b, 0x1a,
+    ];
+    pcapng.extend(b"SIP/2.0 200 OK ".repeat(100));
+    let upload = |token: String, path: String, body: Vec<u8>| {
+        let app = &app;
+        async move {
+            app.send_raw(
+                &token,
+                Method::POST,
+                &path,
+                "application/vnd.tcpdump.pcapng",
+                body,
+            )
+            .await
+        }
+    };
+    let mine = format!("/api/v1/me/devices/{device}/captures?call_id={call}");
+    let config = || app.send_as(&access, Method::GET, "/api/v1/me/softphone", None);
+    let until = |days: u64| {
+        fcp_api_core::time::format_system_time(
+            SystemTime::now() + Duration::from_secs(days * 86_400),
+        )
+    };
+
+    // Off by default: the app is told so, and nothing is taken.
+    let told = config().await;
+    assert_eq!(told.json["capture"]["allowed"], false, "{}", told.text);
+    assert_eq!(told.json["capture"]["max_mb"], 50);
+    let refused = upload(access.clone(), mine.clone(), pcapng.clone()).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let allow = json!({ "device_id": device, "until": until(2), "reason": "one-way audio" });
+    let off = app
+        .admin(Method::POST, "/api/v1/captures/allows", Some(allow.clone()))
+        .await;
+    assert_eq!(off.status, StatusCode::CONFLICT, "{}", off.text);
+
+    // The tenant turns captures on, with its own limits.
+    let on = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"diagnostics": {
+                "capture_allowed": true, "capture_max_mb": 1, "capture_keep_days": 1
+            }})),
+        )
+        .await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.text);
+    assert_eq!(on.json["diagnostics"]["capture_max_mb"], 1);
+    for bad in [
+        json!({"diagnostics": {"capture_allowed": true, "capture_max_mb": 0}}),
+        json!({"diagnostics": {"capture_allowed": true, "capture_keep_days": 400}}),
+    ] {
+        let res = app
+            .admin(
+                Method::PUT,
+                &format!("/api/v1/tenants/{}", app.tenant_a),
+                Some(bad),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.text);
+    }
+
+    // An allow ends within 30 days, names one user or device of the tenant.
+    for bad in [
+        json!({ "device_id": device, "until": until(31) }),
+        json!({ "username": "carol", "until": fcp_api_core::time::format_system_time(now - Duration::from_secs(60)) }),
+        json!({ "until": until(1) }),
+        json!({ "username": "carol", "device_id": device, "until": until(1) }),
+    ] {
+        let res = app
+            .admin(Method::POST, "/api/v1/captures/allows", Some(bad.clone()))
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{bad}: {}", res.text);
+    }
+    let nobody = app
+        .admin(
+            Method::POST,
+            "/api/v1/captures/allows",
+            Some(json!({ "username": "nobody", "until": until(1) })),
+        )
+        .await;
+    assert_eq!(nobody.status, StatusCode::NOT_FOUND, "{}", nobody.text);
+    let allowed = app
+        .admin(Method::POST, "/api/v1/captures/allows", Some(allow))
+        .await;
+    assert_eq!(allowed.status, StatusCode::CREATED, "{}", allowed.text);
+    assert_eq!(allowed.json["kind"], "device");
+    assert_eq!(allowed.json["active"], true);
+    assert_eq!(allowed.json["device_name"], "Carol's phone");
+    let allow_id = allowed.json["id"].as_str().unwrap().to_string();
+    let listed = app
+        .admin(Method::GET, "/api/v1/captures/allows", None)
+        .await;
+    assert_eq!(
+        listed.json.as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        listed.text
+    );
+
+    // Now the app may, until the allow ends, at most the tenant's 1 MB.
+    let told = config().await;
+    assert_eq!(told.json["capture"]["allowed"], true, "{}", told.text);
+    assert_eq!(told.json["capture"]["max_mb"], 1);
+    assert!(told.json["capture"]["until"].is_string());
+    for (token, path, body, status) in [
+        (
+            web.clone(),
+            mine.clone(),
+            pcapng.clone(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            access.clone(),
+            format!("/api/v1/me/devices/{}/captures", fcp_core::DeviceId::new()),
+            pcapng.clone(),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            access.clone(),
+            format!("/api/v1/me/devices/{device}/captures?call_id={not_hers}"),
+            pcapng.clone(),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            access.clone(),
+            mine.clone(),
+            b"not a capture".to_vec(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            access.clone(),
+            mine.clone(),
+            Vec::new(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            access.clone(),
+            mine.clone(),
+            [pcapng.clone(), vec![0u8; 1024 * 1024]].concat(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+        ),
+    ] {
+        let res = upload(token, path.clone(), body).await;
+        assert_eq!(res.status, status, "{path}: {}", res.text);
+    }
+    let kept = upload(access.clone(), mine.clone(), pcapng.clone()).await;
+    assert_eq!(kept.status, StatusCode::CREATED, "{}", kept.text);
+    let capture = kept.json["id"].as_str().unwrap().to_string();
+    assert!(capture.starts_with("cap-"), "{capture}");
+    assert_eq!(kept.json["call_id"], call.as_str());
+    assert_eq!(kept.json["username"], "carol");
+    assert_eq!(kept.json["size"], pcapng.len());
+    assert_eq!(
+        kept.json["sha256"],
+        format!("{:x}", Sha256::digest(&pcapng))
+    );
+    assert_eq!(kept.json["held"], false);
+    // The rejected uploads left nothing staged: only the kept file.
+    let files: Vec<_> = walk(dir.path());
+    assert_eq!(files.len(), 1, "{files:?}");
+
+    // The administrator finds it by the device; Carol sees her own.
+    let by_device = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/captures?device_id={device}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        by_device.json.as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        by_device.text
+    );
+    let by_user = app
+        .admin(Method::GET, "/api/v1/captures?username=carol", None)
+        .await;
+    assert_eq!(
+        by_user.json.as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        by_user.text
+    );
+    let by_other = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/captures?device_id={}", fcp_core::DeviceId::new()),
+            None,
+        )
+        .await;
+    assert_eq!(
+        by_other.json.as_array().map(Vec::len),
+        Some(0),
+        "{}",
+        by_other.text
+    );
+    let own = app
+        .send_as(&web, Method::GET, "/api/v1/me/captures", None)
+        .await;
+    assert_eq!(own.json.as_array().map(Vec::len), Some(1), "{}", own.text);
+
+    // Downloaded as it was sent, and the download audited.
+    let file_path = format!("/api/v1/captures/{capture}/file");
+    let got = app.admin(Method::GET, &file_path, None).await;
+    assert_eq!(got.status, StatusCode::OK);
+    assert_eq!(got.bytes, pcapng);
+    assert_eq!(
+        got.headers["content-type"],
+        "application/vnd.tcpdump.pcapng"
+    );
+    let audited = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let log = app
+                .admin(Method::GET, "/api/v1/audit-log?limit=1000", None)
+                .await;
+            if log
+                .json
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["method"] == "GET" && e["path"] == file_path.as_str())
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    assert!(audited.is_ok(), "the download is in the audit log");
+    let elsewhere = app
+        .admin_in(app.tenant_b, Method::GET, &file_path, None)
+        .await;
+    assert_eq!(
+        elsewhere.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        elsewhere.text
+    );
+
+    // A hold on Carol keeps it: past its expiry, and from a delete.
+    let placed = app
+        .admin(
+            Method::POST,
+            "/api/v1/compliance/holds",
+            Some(json!({
+                "matter": "Capture review",
+                "subjects": [{ "type": "user", "username": "carol" }],
+                "classes": ["device_capture"],
+            })),
+        )
+        .await;
+    assert_eq!(placed.status, StatusCode::CREATED, "{}", placed.text);
+    let hold_id = placed.json["id"].as_str().unwrap().to_string();
+    let one = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/compliance/holds/{hold_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(one.json["held"]["device_capture"], 1, "{}", one.text);
+    let held = app
+        .admin(Method::DELETE, &format!("/api/v1/captures/{capture}"), None)
+        .await;
+    assert_eq!(held.status, StatusCode::CONFLICT, "{}", held.text);
+    assert!(held.text.contains(&hold_id), "{}", held.text);
+    let state = app
+        .state
+        .clone()
+        .with_captures_config(&fcp_core::ApiCapturesConfig {
+            directory: Some(dir.path().to_string_lossy().into_owned()),
+            s3: None,
+        });
+    let later = SystemTime::now() + Duration::from_secs(2 * 86_400);
+    let swept = fcp_api_core::v1::device_captures::run_sweep(&state, later).await;
+    assert_eq!(swept.expired, 0, "{swept:?}");
+    let still = app.admin(Method::GET, "/api/v1/captures", None).await;
+    assert_eq!(still.json[0]["held"], true, "{}", still.text);
+
+    // Released, the sweep removes it and its file.
+    let released = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/compliance/holds/{hold_id}/release"),
+            Some(json!({ "reason": "reviewed" })),
+        )
+        .await;
+    assert_eq!(released.status, StatusCode::OK, "{}", released.text);
+    let swept = fcp_api_core::v1::device_captures::run_sweep(&state, later).await;
+    assert_eq!((swept.expired, swept.files_removed), (1, 1), "{swept:?}");
+    assert!(swept.errors.is_empty(), "{swept:?}");
+    assert!(walk(dir.path()).is_empty());
+    let gone = app.admin(Method::GET, "/api/v1/captures", None).await;
+    assert_eq!(gone.json.as_array().map(Vec::len), Some(0), "{}", gone.text);
+
+    // A second capture, removed by the administrator before its time.
+    let again = upload(access.clone(), mine.clone(), pcapng.clone()).await;
+    assert_eq!(again.status, StatusCode::CREATED, "{}", again.text);
+    let removed = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/captures/{}", again.json["id"].as_str().unwrap()),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
+    assert!(walk(dir.path()).is_empty());
+
+    // The allow ended, the app may not.
+    let ended = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/captures/allows/{allow_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(ended.status, StatusCode::NO_CONTENT, "{}", ended.text);
+    assert_eq!(config().await.json["capture"]["allowed"], false);
+    let refused = upload(access.clone(), mine.clone(), pcapng.clone()).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    app.finish().await;
+}
+
+/// Every file under `dir`.
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -16182,3 +18379,9 @@ mod voicemail;
 
 #[path = "api_postgres/platform.rs"]
 mod platform;
+
+#[path = "api_postgres/contacts.rs"]
+mod contacts;
+
+#[path = "api_postgres/presence.rs"]
+mod presence;

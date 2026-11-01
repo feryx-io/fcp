@@ -29,23 +29,30 @@
 
 pub mod api_token;
 mod branding;
+mod call_quality;
 mod cdr_archive;
 mod cdr_volume;
 pub mod compliance;
 pub mod config;
+mod contact;
 mod deletion;
+mod device_capture;
 pub mod emergency;
 pub mod encryption;
 pub mod flow_trace;
 mod group;
 mod holds;
 mod identity;
+mod line_label;
 pub mod login_session;
 mod offboarding;
+mod parking;
+mod presence_status;
 pub mod primary_health;
 pub mod prompt;
 mod provisioning;
 pub mod recording;
+mod service_registry;
 pub mod sip_trace;
 mod subject_erase;
 mod subject_export;
@@ -806,6 +813,30 @@ impl PostgresStorage {
         &self.pool
     }
 
+    /// One trivial query on the primary: the service beacon's `database`
+    /// check (`docs/SERVICES.md` §2).
+    pub async fn ping(&self) -> Result<(), String> {
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// [`Self::ping`] as a closure, for `fcp_cluster::Check::database`.
+    pub fn ping_check(
+        self: &Arc<Self>,
+    ) -> impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+           + Send
+           + Sync
+           + 'static {
+        let storage = Arc::clone(self);
+        move || {
+            let storage = Arc::clone(&storage);
+            Box::pin(async move { storage.ping().await })
+        }
+    }
+
     /// Close the connection pool and wait for all connections to be released.
     pub async fn close(&self) {
         self.pool.close().await;
@@ -888,7 +919,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              WHERE username = $1",
         )
@@ -918,7 +949,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              WHERE username = $1 AND tenant_id = $2",
         )
@@ -941,7 +972,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              WHERE username = $1
              ORDER BY tenant_id",
@@ -971,7 +1002,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              WHERE tenant_id = $1 AND LOWER(email) = LOWER($2)",
         )
@@ -994,7 +1025,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              WHERE id = $1",
         )
@@ -1052,9 +1083,9 @@ impl CredentialStore for PostgresStorage {
                 extension, department, job_title, location, location_id, language, timezone,
                 account_status, last_login, emergency_contact_json,
                 primary_phone_number_id, voicemail_box_id, profile_picture,
-                failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              )
-	             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38)
+	             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39)
 	             ON CONFLICT(username, tenant_id) DO UPDATE SET
 	                 password_hash = EXCLUDED.password_hash,
 	                 digest_password = EXCLUDED.digest_password,
@@ -1089,7 +1120,8 @@ impl CredentialStore for PostgresStorage {
                  deprovisioned_at = EXCLUDED.deprovisioned_at,
                  sip_username = EXCLUDED.sip_username,
                  scim_managed = EXCLUDED.scim_managed,
-                 scim_external_id = EXCLUDED.scim_external_id",
+                 scim_external_id = EXCLUDED.scim_external_id,
+                 directory_listed = EXCLUDED.directory_listed",
         )
         .bind(&id)
         .bind(&user.username)
@@ -1129,6 +1161,7 @@ impl CredentialStore for PostgresStorage {
         .bind(&user.sip_username)
         .bind(user.scim_managed)
         .bind(&user.scim_external_id)
+        .bind(user.directory_listed)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1193,7 +1226,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              WHERE tenant_id = $1
                AND ($2::TEXT IS NULL OR account_status = $2)
@@ -1309,7 +1342,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
              FROM users
              ORDER BY username",
         )
@@ -1555,7 +1588,7 @@ const TENANT_SELECT_COLS: &str = "id, name, description, status, contact_email, 
     max_users, max_phone_numbers, max_concurrent_calls, billing_id,
     created_at, updated_at, trial_expires_at, metadata, sip_domains,
     platform_trunk_fallback, calling_json, login_domains, sign_in_json, offboarding_json,
-    provisioning_json, directory_json";
+    provisioning_json, directory_json, lines_json, diagnostics_json";
 
 #[async_trait]
 impl TenantStore for PostgresStorage {
@@ -1677,9 +1710,9 @@ impl TenantStore for PostgresStorage {
                 max_users, max_phone_numbers, max_concurrent_calls, billing_id,
                 created_at, updated_at, trial_expires_at, metadata, sip_domains,
                 platform_trunk_fallback, data, calling_json, login_domains, sign_in_json,
-                offboarding_json, provisioning_json, directory_json
+                offboarding_json, provisioning_json, directory_json, lines_json, diagnostics_json
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17, $18, $19, $20, $21, $22)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17, $18, $19, $20, $21, $22, $23, $24)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
@@ -1700,7 +1733,9 @@ impl TenantStore for PostgresStorage {
                  sign_in_json = EXCLUDED.sign_in_json,
                  offboarding_json = EXCLUDED.offboarding_json,
                  provisioning_json = EXCLUDED.provisioning_json,
-                 directory_json = EXCLUDED.directory_json",
+                 directory_json = EXCLUDED.directory_json,
+                 lines_json = EXCLUDED.lines_json,
+                 diagnostics_json = EXCLUDED.diagnostics_json",
         )
         .bind(&id)
         .bind(&tenant.name)
@@ -1724,6 +1759,8 @@ impl TenantStore for PostgresStorage {
         .bind(serde_json::to_value(&tenant.offboarding)?)
         .bind(serde_json::to_value(&tenant.provisioning)?)
         .bind(serde_json::to_value(&tenant.directory)?)
+        .bind(serde_json::to_value(&tenant.lines)?)
+        .bind(serde_json::to_value(&tenant.diagnostics)?)
         .execute(self.writes())
         .await?;
 
@@ -1796,6 +1833,9 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
             .context("a tenant's provisioning")?,
         directory: serde_json::from_value(row.get("directory_json"))
             .context("a tenant's directory")?,
+        lines: serde_json::from_value(row.get("lines_json")).context("a tenant's lines")?,
+        diagnostics: serde_json::from_value(row.get("diagnostics_json"))
+            .context("a tenant's diagnostics")?,
     })
 }
 
@@ -2005,6 +2045,19 @@ impl CdrStore for PostgresStorage {
                 break;
             }
         }
+        // A call's quality goes with its record: reported before the cut
+        // and with no record of the call left (a held one stays, and so
+        // does what was said of it).
+        sqlx::query(
+            "DELETE FROM call_quality q
+             WHERE q.tenant_id = $1 AND q.reported_at < $2
+               AND NOT EXISTS (SELECT 1 FROM cdrs c
+                               WHERE c.tenant_id = q.tenant_id AND c.call_id = q.call_id)",
+        )
+        .bind(tenant_id.to_string())
+        .bind(system_time_to_datetime(before))
+        .execute(self.writes())
+        .await?;
         Ok(deleted)
     }
 
@@ -3199,6 +3252,7 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         sip_ha1_hash: row.get("sip_ha1_hash"),
         sip_provisioning_password: row.get("sip_provisioning_password"),
         display_name: row.get("display_name"),
+        directory_listed: row.get("directory_listed"),
         tenant_id,
         role,
         department_id: row.get("department_id"),
@@ -4024,7 +4078,7 @@ macro_rules! device_columns {
          max_lines, supports_video, supports_blf, codec_support,
          location, location_id, e911_override_json, e911_trust_location, provisioning_url,
          config_template_id, provisioning_token_hash, enabled, created_at, updated_at,
-         vendor, line_keys_json, push_provider"
+         vendor, line_keys_json, push_provider, lines_json"
     };
 }
 
@@ -4127,6 +4181,7 @@ impl DeviceStore for PostgresStorage {
         let sip_provisioning_password =
             self.seal_opt(device.sip_provisioning_password.as_deref())?;
         let line_keys_json = serde_json::to_value(&device.line_keys)?;
+        let lines_json = serde_json::to_value(&device.lines)?;
 
         sqlx::query(
             "INSERT INTO devices (
@@ -4135,9 +4190,9 @@ impl DeviceStore for PostgresStorage {
                 sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                 max_lines, supports_video, supports_blf, codec_support,
                 location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
-                created_at, updated_at, vendor, line_keys_json, push_provider
+                created_at, updated_at, vendor, line_keys_json, push_provider, lines_json
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  mac_address = EXCLUDED.mac_address,
@@ -4168,7 +4223,8 @@ impl DeviceStore for PostgresStorage {
                  updated_at = EXCLUDED.updated_at,
                  vendor = EXCLUDED.vendor,
                  line_keys_json = EXCLUDED.line_keys_json,
-                 push_provider = EXCLUDED.push_provider",
+                 push_provider = EXCLUDED.push_provider,
+                 lines_json = EXCLUDED.lines_json",
         )
         .bind(&id)
         .bind(&device.name)
@@ -4204,6 +4260,7 @@ impl DeviceStore for PostgresStorage {
         .bind(device.vendor.map(|v| v.to_string()))
         .bind(&line_keys_json)
         .bind(&device.push_provider)
+        .bind(&lines_json)
         .execute(self.writes())
         .await
         .map_err(map_device_write_error)?;
@@ -4997,6 +5054,12 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
             .get::<Option<serde_json::Value>, _>("line_keys_json")
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default(),
+        lines: row
+            .try_get::<Option<serde_json::Value>, _>("lines_json")
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
         location: row.get("location"),
         location_id: row
             .get::<Option<String>, _>("location_id")
@@ -5038,7 +5101,7 @@ fn row_to_config_template(
     })
 }
 
-fn row_to_site_location(row: sqlx::postgres::PgRow) -> Result<SiteLocation> {
+pub(crate) fn row_to_site_location(row: sqlx::postgres::PgRow) -> Result<SiteLocation> {
     use sqlx::Row;
     let id = LocationId::from_str(&row.get::<String, _>("id"))?;
     let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
@@ -5062,8 +5125,12 @@ fn row_to_site_location(row: sqlx::postgres::PgRow) -> Result<SiteLocation> {
         longitude: row.get("longitude"),
         phone_number: row.get("phone_number"),
         timezone: row.get("timezone"),
-        emergency_contact_name: row.get("emergency_contact_name"),
-        emergency_contact_phone: row.get("emergency_contact_phone"),
+        emergency_contacts: row
+            .try_get::<serde_json::Value, _>("emergency_contacts")
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
+        notify_tenant_contacts: row.try_get("notify_tenant_contacts").unwrap_or(true),
         e911_callback_number: row.try_get("e911_callback_number").unwrap_or(None),
         civic: row
             .try_get::<Option<serde_json::Value>, _>("civic")
@@ -5708,6 +5775,13 @@ fn row_to_routing_rule(row: sqlx::postgres::PgRow) -> Result<RoutingRule> {
         description: row.try_get("description")?,
         priority: row.try_get("priority")?,
         enabled: row.try_get("enabled")?,
+        location_id: row
+            .try_get::<Option<String>, _>("location_id")?
+            .map(|id| {
+                id.parse::<LocationId>()
+                    .map_err(|e| anyhow::anyhow!("location_id '{id}': {e}"))
+            })
+            .transpose()?,
         destination_pattern: row.try_get("destination_pattern")?,
         source_pattern: row.try_get("source_pattern")?,
         source_ip_ranges: row
@@ -5786,8 +5860,8 @@ impl RoutingRuleStore for PostgresStorage {
                     destination_pattern, source_pattern, source_ip_ranges,
                     time_window_days, time_window_start, time_window_end, time_window_timezone,
                     action, target_trunk_id, target_trunk_group, reason,
-                    created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                    created_at, updated_at, location_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name, description = EXCLUDED.description,
                 priority = EXCLUDED.priority, enabled = EXCLUDED.enabled,
@@ -5802,7 +5876,8 @@ impl RoutingRuleStore for PostgresStorage {
                 target_trunk_id = EXCLUDED.target_trunk_id,
                 target_trunk_group = EXCLUDED.target_trunk_group,
                 reason = EXCLUDED.reason,
-                updated_at = EXCLUDED.updated_at",
+                updated_at = EXCLUDED.updated_at,
+                location_id = EXCLUDED.location_id",
         )
         .bind(rule.id.to_string())
         .bind(rule.tenant_id.to_string())
@@ -5823,6 +5898,7 @@ impl RoutingRuleStore for PostgresStorage {
         .bind(&rule.reason)
         .bind(system_time_to_datetime(rule.created_at))
         .bind(system_time_to_datetime(rule.updated_at))
+        .bind(rule.location_id.map(|id| id.to_string()))
         .execute(self.writes())
         .await?;
         Ok(())
@@ -5995,7 +6071,7 @@ impl SiteLocationStore for PostgresStorage {
             "SELECT id, tenant_id, name, description, address_line1, address_line2,
                     city, state, postal_code, country, floor, building,
                     latitude, longitude, phone_number, timezone,
-                    emergency_contact_name, emergency_contact_phone,
+                    emergency_contacts, notify_tenant_contacts,
                     created_at, updated_at, e911_callback_number, civic,
                     e911_validated_at, e911_validated_by, e911_validation_reference
              FROM locations
@@ -6016,7 +6092,7 @@ impl SiteLocationStore for PostgresStorage {
             "SELECT id, tenant_id, name, description, address_line1, address_line2,
                     city, state, postal_code, country, floor, building,
                     latitude, longitude, phone_number, timezone,
-                    emergency_contact_name, emergency_contact_phone,
+                    emergency_contacts, notify_tenant_contacts,
                     created_at, updated_at, e911_callback_number, civic,
                     e911_validated_at, e911_validated_by, e911_validation_reference
              FROM locations
@@ -6046,7 +6122,7 @@ impl SiteLocationStore for PostgresStorage {
                 id, tenant_id, name, description, address_line1, address_line2,
                 city, state, postal_code, country, floor, building,
                 latitude, longitude, phone_number, timezone,
-                emergency_contact_name, emergency_contact_phone,
+                emergency_contacts, notify_tenant_contacts,
                 created_at, updated_at, e911_callback_number, civic,
                 e911_validated_at, e911_validated_by, e911_validation_reference
              )
@@ -6066,8 +6142,8 @@ impl SiteLocationStore for PostgresStorage {
                  longitude = EXCLUDED.longitude,
                  phone_number = EXCLUDED.phone_number,
                  timezone = EXCLUDED.timezone,
-                 emergency_contact_name = EXCLUDED.emergency_contact_name,
-                 emergency_contact_phone = EXCLUDED.emergency_contact_phone,
+                 emergency_contacts = EXCLUDED.emergency_contacts,
+                 notify_tenant_contacts = EXCLUDED.notify_tenant_contacts,
                  e911_callback_number = EXCLUDED.e911_callback_number,
                  civic = EXCLUDED.civic,
                  e911_validated_at = EXCLUDED.e911_validated_at,
@@ -6091,8 +6167,8 @@ impl SiteLocationStore for PostgresStorage {
         .bind(location.longitude)
         .bind(&location.phone_number)
         .bind(&location.timezone)
-        .bind(&location.emergency_contact_name)
-        .bind(&location.emergency_contact_phone)
+        .bind(serde_json::to_value(&location.emergency_contacts)?)
+        .bind(location.notify_tenant_contacts)
         .bind(created_at)
         .bind(updated_at)
         .bind(&location.e911_callback_number)
@@ -7283,6 +7359,70 @@ impl FlowStore for PostgresStorage {
         }
 
         debug!(flow_id = %id, "Flow disabled in PostgreSQL");
+        Ok(())
+    }
+
+    async fn adopt_untenanted_flows(&self) -> std::result::Result<u64, FlowError> {
+        // What names a flow without a tenant, by tenant; a flow named by one
+        // tenant alone becomes that tenant's. Ids are compared as text in
+        // the form every table stores (`tenant-<uuid>`).
+        let result = sqlx::query(
+            "WITH orphans AS (SELECT id FROM flows WHERE tenant_id IS NULL),
+                  evidence AS (
+                      SELECT flow_id, tenant_id FROM line_bindings
+                       WHERE flow_id IN (SELECT id FROM orphans)
+                      UNION
+                      SELECT flow_id, tenant_id FROM voicemail_mailboxes
+                       WHERE flow_id IN (SELECT id FROM orphans)
+                      UNION
+                      SELECT flow_id, tenant_id FROM flow_execution_traces
+                       WHERE tenant_id IS NOT NULL AND flow_id IN (SELECT id FROM orphans)
+                  ),
+                  sole AS (
+                      SELECT flow_id, min(tenant_id) AS tenant_id FROM evidence
+                       GROUP BY flow_id HAVING count(DISTINCT tenant_id) = 1
+                  )
+             UPDATE flows f SET tenant_id = sole.tenant_id, updated_at = NOW()
+               FROM sole
+              WHERE f.id = sole.flow_id AND f.tenant_id IS NULL",
+        )
+        .execute(self.writes())
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        self.versions_follow_their_flow().await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn assign_flow_tenant(
+        &self,
+        id: &str,
+        tenant_id: &str,
+    ) -> std::result::Result<bool, FlowError> {
+        let result = sqlx::query(
+            "UPDATE flows SET tenant_id = $2, updated_at = NOW()
+              WHERE id = $1 AND tenant_id IS NULL",
+        )
+        .bind(id)
+        .bind(tenant_id)
+        .execute(self.writes())
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        self.versions_follow_their_flow().await?;
+        Ok(result.rows_affected() == 1)
+    }
+}
+
+impl PostgresStorage {
+    /// A flow's earlier versions take the tenant it was given: its version
+    /// list is read by tenant.
+    async fn versions_follow_their_flow(&self) -> std::result::Result<(), FlowError> {
+        sqlx::query(
+            "UPDATE flow_versions v SET tenant_id = f.tenant_id FROM flows f
+              WHERE v.flow_id = f.id AND v.tenant_id IS NULL AND f.tenant_id IS NOT NULL",
+        )
+        .execute(self.writes())
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
         Ok(())
     }
 }

@@ -29,16 +29,20 @@ class ContactReadiness:
         Attributes:
             kind (str):
             target (str):
+            listen (bool): Whether this contact may listen in to the call.
             issues (list[str]): What keeps this contact from being delivered to.
             name (None | str | Unset):
+            site (None | str | Unset): The site whose contact this is; absent for the tenant's own.
             last_delivery_at (datetime.datetime | None | Unset): When anything was last delivered to it.
             last_test_at (datetime.datetime | None | Unset): When a `933` test call's notice last reached it.
      """
 
     kind: str
     target: str
+    listen: bool
     issues: list[str]
     name: None | str | Unset = UNSET
+    site: None | str | Unset = UNSET
     last_delivery_at: datetime.datetime | None | Unset = UNSET
     last_test_at: datetime.datetime | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -52,6 +56,8 @@ class ContactReadiness:
 
         target = self.target
 
+        listen = self.listen
+
         issues = self.issues
 
 
@@ -61,6 +67,12 @@ class ContactReadiness:
             name = UNSET
         else:
             name = self.name
+
+        site: None | str | Unset
+        if isinstance(self.site, Unset):
+            site = UNSET
+        else:
+            site = self.site
 
         last_delivery_at: None | str | Unset
         if isinstance(self.last_delivery_at, Unset):
@@ -84,10 +96,13 @@ class ContactReadiness:
         field_dict.update({
             "kind": kind,
             "target": target,
+            "listen": listen,
             "issues": issues,
         })
         if name is not UNSET:
             field_dict["name"] = name
+        if site is not UNSET:
+            field_dict["site"] = site
         if last_delivery_at is not UNSET:
             field_dict["last_delivery_at"] = last_delivery_at
         if last_test_at is not UNSET:
@@ -104,6 +119,8 @@ class ContactReadiness:
 
         target = d.pop("target")
 
+        listen = d.pop("listen")
+
         issues = cast(list[str], d.pop("issues"))
 
 
@@ -115,6 +132,16 @@ class ContactReadiness:
             return cast(None | str | Unset, data)
 
         name = _parse_name(d.pop("name", UNSET))
+
+
+        def _parse_site(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        site = _parse_site(d.pop("site", UNSET))
 
 
         def _parse_last_delivery_at(data: object) -> datetime.datetime | None | Unset:
@@ -160,8 +187,10 @@ class ContactReadiness:
         contact_readiness = cls(
             kind=kind,
             target=target,
+            listen=listen,
             issues=issues,
             name=name,
+            site=site,
             last_delivery_at=last_delivery_at,
             last_test_at=last_test_at,
         )

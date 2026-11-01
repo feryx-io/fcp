@@ -847,6 +847,285 @@ async fn the_callee_can_hang_up() {
     stack.finish().await;
 }
 
+/// Phones behind NAT (`fcp_sip::nat`): each names, in its Contact and its
+/// SDP, an address it cannot be reached at — loopback, as Anvil did on D8 —
+/// and is seen at another. The callee is rung where it registered from,
+/// each side's RTP is learned from where it comes from, and requests
+/// inside the call reach both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn phones_behind_nat_ring_hear_each_other_and_hang_up() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let nowhere: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    let alice_phone = Phone::behind_nat(
+        "127.0.0.2:0",
+        nowhere,
+        &alice.username,
+        &alice.password,
+        REALM,
+        stack.sip,
+    )
+    .await
+    .unwrap();
+    let bob_phone = Phone::behind_nat(
+        "127.0.0.3:0",
+        nowhere,
+        &bob.username,
+        &bob.password,
+        REALM,
+        stack.sip,
+    )
+    .await
+    .unwrap();
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        let why = format!(
+            "Bob's phone, registered from 127.0.0.3 naming 127.0.0.1, did not ring; \
+             Alice's call is {:?}",
+            alice_call.phase()
+        );
+        stack.fail(&why, &alice_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+
+    // Both talk at once, as phones send from the answer: a leg's address
+    // is learned from what it sends, so a silent one is reached only once
+    // it speaks.
+    alice_call.media().play_tone(440.0, 1500);
+    bob_call.media().play_tone(880.0, 1500);
+    if !bob_call.media().heard(440, SOON).await {
+        let why = format!(
+            "Bob does not hear Alice's 440 Hz (received {} packets)",
+            bob_call.media().packets_received()
+        );
+        stack.fail(&why, &bob_phone).await;
+    }
+    if !alice_call.media().heard(880, SOON).await {
+        let why = format!(
+            "Alice does not hear Bob's 880 Hz (received {} packets)",
+            alice_call.media().packets_received()
+        );
+        stack.fail(&why, &alice_phone).await;
+    }
+
+    // Inside the call: an offer relayed each way reaches the far phone,
+    // Bob's BYE reaches Alice where her INVITE was seen from, and on a
+    // second call Alice's BYE reaches Bob where his answer was.
+    let (code, _) = alice_call.reinvite_answered("sendrecv").await.unwrap();
+    assert_eq!(code, 200, "Alice's re-INVITE is answered");
+    if bob_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::ReInvite { .. }))
+        .await
+        .is_none()
+    {
+        stack
+            .fail("Bob's phone did not get Alice's re-INVITE", &bob_phone)
+            .await;
+    }
+    let (code, _) = bob_call.reinvite_answered("sendrecv").await.unwrap();
+    assert_eq!(code, 200, "Bob's re-INVITE is answered");
+    if alice_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::ReInvite { .. }))
+        .await
+        .is_none()
+    {
+        stack
+            .fail("Alice's phone did not get Bob's re-INVITE", &alice_phone)
+            .await;
+    }
+    assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    if alice_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::Bye { .. }))
+        .await
+        .is_none()
+    {
+        stack
+            .fail("Alice's phone did not get the BYE", &alice_phone)
+            .await;
+    }
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let bob_call = bob_phone
+        .incoming(SOON)
+        .await
+        .expect("Bob's phone rings again")
+        .answer()
+        .await
+        .unwrap();
+    alice_call.answered(SOON).await.unwrap();
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    if bob_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::Bye { .. }))
+        .await
+        .is_none()
+    {
+        stack
+            .fail("Bob's phone did not get the BYE", &bob_phone)
+            .await;
+    }
+    assert!(bob_call.ended(SOON).await);
+
+    stack.finish().await;
+}
+
+/// Two phones behind one router, as on D8 (`docs/NAT_AND_TLS.md`): one
+/// public address, each phone naming an address it cannot be reached at
+/// (no SIP ALG), on different codecs so the node transcodes. The legs'
+/// addresses are learned from their first packets; with one port for both
+/// legs the first packet from the shared address was taken as leg A's
+/// whoever sent it, and transcoding ran backwards. Both hear each other,
+/// and a hold's music reaches the held phone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_phones_behind_one_address_hear_each_other() {
+    behind_one_address(false).await;
+}
+
+/// The same router with a SIP ALG: each phone's Contact and SDP name the
+/// shared address and the phone's own port.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_phones_behind_one_address_with_an_alg_hear_each_other() {
+    behind_one_address(true).await;
+}
+
+async fn behind_one_address(alg: bool) {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let shared = "127.0.0.2";
+    let named: std::net::IpAddr = if alg { shared } else { "127.0.0.1" }.parse().unwrap();
+    let bind = format!("{shared}:0");
+    let alice_phone = Phone::behind_nat(
+        &bind,
+        named,
+        &alice.username,
+        &alice.password,
+        REALM,
+        stack.sip,
+    )
+    .await
+    .unwrap();
+    let bob_phone = Phone::behind_nat(&bind, named, &bob.username, &bob.password, REALM, stack.sip)
+        .await
+        .unwrap();
+    alice_phone.prefer_codec(fcp_testkit::media::Codec::Pcma);
+    bob_phone.prefer_codec(fcp_testkit::media::Codec::Pcmu);
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack
+            .fail(
+                "Bob's phone, behind Alice's address, did not ring",
+                &alice_phone,
+            )
+            .await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+
+    // Bob speaks first, as the VVX did.
+    bob_call.media().play_tone(880.0, 3000);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    alice_call.media().play_tone(440.0, 3000);
+    if !bob_call.media().heard(440, SOON).await {
+        let why = format!(
+            "Bob does not hear Alice's 440 Hz across PCMA to PCMU (received {} packets)",
+            bob_call.media().packets_received()
+        );
+        stack.fail(&why, &bob_phone).await;
+    }
+    if !alice_call.media().heard(880, SOON).await {
+        let why = format!(
+            "Alice does not hear Bob's 880 Hz across PCMU to PCMA (received {} packets)",
+            alice_call.media().packets_received()
+        );
+        stack.fail(&why, &alice_phone).await;
+    }
+
+    // Alice holds: the music reaches Bob, the held phone, and not Alice.
+    alice_call.media().stop_tone();
+    bob_call.media().stop_tone();
+    assert_eq!(alice_call.hold().await.unwrap(), 200);
+    if !bob_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await {
+        stack
+            .fail("Bob, held, does not hear the hold music", &bob_phone)
+            .await;
+    }
+    assert!(
+        !alice_call
+            .media()
+            .heard(DEFAULT_MUSIC_HZ, Duration::from_secs(1))
+            .await,
+        "the holder hears the held phone's music"
+    );
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    stack.finish().await;
+}
+
+/// A phone resuming a call offers its codecs again, perhaps in another
+/// order: in D8 a VVX answered PCMU and resumed offering G.722 first. The
+/// node answers a resume itself under hold music, and answered in the
+/// offer's first codec while its media session went on decoding the old
+/// one, so Anvil heard white noise. It answers in the codec the leg uses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_offering_another_codec_first_keeps_the_call_s_codec() {
+    use fcp_testkit::media::Codec;
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    alice_phone.prefer_codec(Codec::Pcma);
+    bob_phone.prefer_codec(Codec::Pcmu);
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+
+    // Bob holds; Alice hears the music.
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    if !alice_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await {
+        stack
+            .fail("Alice, held, does not hear the hold music", &alice_phone)
+            .await;
+    }
+
+    // Bob resumes offering PCMA first: answered in PCMU, the call's.
+    let (code, answer) = bob_call
+        .reinvite_offering_first("sendrecv", Codec::Pcma)
+        .await
+        .unwrap();
+    assert_eq!(code, 200);
+    let media = answer
+        .lines()
+        .find(|l| l.starts_with("m=audio"))
+        .unwrap_or_default();
+    assert_eq!(
+        media.split_whitespace().nth(3),
+        Some("0"),
+        "the resume was answered in another codec than the call's:\n{answer}"
+    );
+    assert!(!answer.contains("PCMA"), "{answer}");
+
+    bob_call.media().play_tone(880.0, 3000);
+    if !alice_call.media().heard(880, SOON).await {
+        stack
+            .fail("Alice does not hear Bob after he resumed", &alice_phone)
+            .await;
+    }
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    stack.finish().await;
+}
+
 /// Two registered phones with the callee answered: the start of most
 /// feature scenarios.
 async fn answered_call(stack: &Stack) -> (Phone, fcp_testkit::Call, Phone, fcp_testkit::Call) {
@@ -1350,6 +1629,194 @@ enabled = true
     stack.finish().await;
 }
 
+/// A caller who hangs up while the queue rings its agent stops the ring:
+/// the agent's phone is cancelled at once. The queue used to abort its ring
+/// task as it signalled it, so no CANCEL was sent — the phone rang on until
+/// the B2BUA's own ring timeout (3 s here), and one picked up in the
+/// meantime was answered onto nobody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_leaving_the_queue_stops_the_agents_ring() {
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+
+[queue.queues.support]
+name = "support"
+extension = "7000"
+agents = ["1002"]
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let (_alice, alice_phone, _bob, bob_phone) = two_phones(&stack).await;
+    let (code, login) = stack.post("/agents/1002/login", "{}").await;
+    assert_eq!(code, 200, "{login}");
+
+    let call = alice_phone.call("7000").await.unwrap();
+    call.answered(SOON).await.unwrap();
+    let Some(ringing) = bob_phone.incoming(Duration::from_secs(10)).await else {
+        stack.fail("the agent was not rung", &alice_phone).await;
+    };
+    let ringing = ringing.leave_ringing();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    if bob_phone
+        .expect(Duration::from_millis(1500), |e| {
+            matches!(e, PhoneEvent::Cancelled { .. })
+        })
+        .await
+        .is_none()
+    {
+        stack
+            .fail(
+                "the agent's phone rang on after the caller left",
+                &bob_phone,
+            )
+            .await;
+    }
+    assert!(ringing.ended(SOON).await);
+    stack.finish().await;
+}
+
+/// Two tenants each have a queue called `sales` at 7000 with their own
+/// agent at 1001 (docs/TENANT_SCOPE.md §4b). Each caller's call waits in
+/// its own tenant's queue and rings its own tenant's agent. Before, the
+/// second `sales` stopped the node loading any queue from the database, and
+/// a queue rang its agent's extension in the node's default tenant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_tenants_queues_of_one_name_ring_their_own_agents() {
+    use fcp_core::storage::QueueStore;
+    use fcp_core::QueueConfigStore;
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let acme = stack.seed.tenant_id;
+    let globex = stack.seed.tenant("globex", "globex.e2e.local").await;
+    let ann = stack.seed.user("ann", "ann-pw", "1001").await;
+    let carl = stack.seed.user("carl", "carl-pw", "1003").await;
+    let ben = stack
+        .seed
+        .user_in(globex, "ben-globex", "ben-pw", "1001")
+        .await;
+    let cara = stack
+        .seed
+        .user_in(globex, "cara-globex", "cara-pw", "1003")
+        .await;
+    let storage = stack.seed.storage();
+    for tenant in [acme, globex] {
+        let mut sales = fcp_core::QueueConfigRecord::new("sales".into(), "7000".into(), tenant);
+        sales.agents = vec!["1001".into()];
+        storage.put_queue_config(sales).await.unwrap();
+    }
+    let (code, reloaded) = stack.post("/queues/reload", "").await;
+    assert_eq!(code, 200, "{reloaded}");
+    assert_eq!(reloaded["status"], "reloaded", "{reloaded}");
+
+    let globex_phone = |user: &SeededUser| {
+        let user = user.clone();
+        let sip = stack.sip;
+        async move {
+            Phone::new(&user.username, &user.password, "globex.e2e.local", sip)
+                .await
+                .unwrap()
+        }
+    };
+    let ann_phone = stack.phone(&ann).await;
+    let carl_phone = stack.phone(&carl).await;
+    let ben_phone = globex_phone(&ben).await;
+    let cara_phone = globex_phone(&cara).await;
+    for phone in [&ann_phone, &carl_phone, &ben_phone, &cara_phone] {
+        assert_eq!(phone.register().await.unwrap(), 200);
+    }
+
+    // Each agent logs in to its own tenant's `sales`.
+    let _ann_login = ann_phone.call("*50").await.unwrap();
+    let _ben_login = ben_phone.call("*50").await.unwrap();
+    let deadline = tokio::time::Instant::now() + SOON;
+    loop {
+        let acme_agents = logged_in_agents(&stack).await;
+        let globex_agents = storage.load_agents(&globex).await.unwrap();
+        if acme_agents.iter().any(|a| a == "ann")
+            && globex_agents
+                .iter()
+                .any(|a| a.id == "ben-globex" && a.queues == ["sales"])
+        {
+            assert!(!acme_agents.iter().any(|a| a == "ben-globex"));
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the agents never logged in: {acme_agents:?} {globex_agents:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // Cara (globex) calls 7000: Ben is rung, Ann is not.
+    let cara_call = cara_phone.call("7000").await.unwrap();
+    if let Err(e) = cara_call.answered(SOON).await {
+        stack
+            .fail(&format!("globex's queue did not answer: {e}"), &cara_phone)
+            .await;
+    }
+    let Some(incoming) = ben_phone.incoming(Duration::from_secs(10)).await else {
+        stack
+            .fail("globex's agent was not rung by globex's queue", &cara_phone)
+            .await;
+    };
+    assert!(
+        ann_phone
+            .incoming(Duration::from_millis(500))
+            .await
+            .is_none(),
+        "acme's agent was rung for globex's caller"
+    );
+    let ben_call = incoming.answer().await.unwrap();
+    cara_call.media().play_tone(440.0, 1000);
+    assert!(ben_call.media().heard(440, SOON).await);
+    assert_eq!(cara_call.hangup().await.unwrap(), 200);
+    assert!(ben_call.ended(SOON).await);
+
+    // Carl (acme) calls 7000: Ann is rung, Ben is not.
+    let carl_call = carl_phone.call("7000").await.unwrap();
+    carl_call.answered(SOON).await.unwrap();
+    let Some(incoming) = ann_phone.incoming(Duration::from_secs(10)).await else {
+        stack
+            .fail("acme's agent was not rung by acme's queue", &carl_phone)
+            .await;
+    };
+    assert!(
+        ben_phone
+            .incoming(Duration::from_millis(500))
+            .await
+            .is_none(),
+        "globex's agent was rung for acme's caller"
+    );
+    let ann_call = incoming.answer().await.unwrap();
+    assert_eq!(carl_call.hangup().await.unwrap(), 200);
+    if !ann_call.ended(SOON).await {
+        stack
+            .fail(
+                "acme's agent was left on after the caller hung up",
+                &ann_phone,
+            )
+            .await;
+    }
+    stack.finish().await;
+}
+
 // ── Recording consent (docs/COMPLIANCE_FOLLOWUPS.md §8, §10) ───────────
 
 /// The prompt's tone: neither phone plays it, so hearing it is hearing the
@@ -1704,6 +2171,98 @@ async fn the_api_records_an_anchored_call_once_its_announcement_has_played() {
     stack.finish().await;
 }
 
+/// A party records their own call from their app (`docs/RECORD_AND_CONTACTS.md`
+/// §2): the API names them in `for_user`, the node checks they are on the
+/// call, both parties hear the announcement, and only they stop it. The
+/// caller's 200 OK names the call, so an app can ask for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_party_records_their_own_call_and_only_they_stop_it() {
+    use fcp_core::compliance::ConsentFailureAction;
+
+    let stack = stack_or_skip!();
+    let prompt = tone_prompt(&stack);
+    announce_recordings(&stack, &prompt, ConsentFailureAction::Record, None).await;
+    let (alice, alice_phone, bob, bob_phone) = two_phones(&stack).await;
+    let id_of = |username: String| {
+        let storage = stack.seed.storage();
+        let tenant = stack.seed.tenant_id;
+        async move {
+            fcp_core::storage::CredentialStore::get_user_in_tenant(storage, &username, &tenant)
+                .await
+                .unwrap()
+                .unwrap()
+                .id
+        }
+    };
+    let alice_id = id_of(alice.username.clone()).await;
+    let bob_id = id_of(bob.username.clone()).await;
+    let carol = stack.seed.user("carol", "carol-pw", "1003").await;
+    let carol_id = id_of(carol.username.clone()).await;
+
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+
+    let calls = stack.get("/calls").await;
+    let call_id = calls["calls"][0]["call_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        alice_call.answer_header("X-FCP-Call-Id").as_deref(),
+        Some(call_id.as_str()),
+        "the caller's 200 OK names the call"
+    );
+    let start = format!("/calls/{call_id}/recording/start");
+    let stop = format!("/calls/{call_id}/recording/stop");
+    let as_user = |user: fcp_core::UserId| format!(r#"{{"for_user": "{user}"}}"#);
+
+    // Someone not on the call finds no call.
+    assert_eq!(stack.post(&start, &as_user(carol_id)).await.0, 404);
+
+    let alices = as_user(alice_id);
+    let (started, alice_heard, bob_heard) = tokio::join!(
+        stack.post(&start, &alices),
+        alice_call.media().heard(PROMPT_HZ, SOON),
+        bob_call.media().heard(PROMPT_HZ, SOON)
+    );
+    assert_eq!(started.0, 200, "{}", started.1);
+    assert_eq!(started.1["consent"], "announced", "{}", started.1);
+    assert!(
+        alice_heard && bob_heard,
+        "Alice {alice_heard}, Bob {bob_heard}"
+    );
+
+    // Bob is on the call but did not start it; Carol is not on it.
+    assert_eq!(stack.post(&stop, &as_user(carol_id)).await.0, 404);
+    let bobs = stack.post(&stop, &as_user(bob_id)).await;
+    assert_eq!(bobs.0, 409, "{}", bobs.1);
+    assert_eq!(stack.post(&stop, &as_user(alice_id)).await.0, 200);
+
+    // A recording the API started is not Alice's to stop.
+    assert_eq!(stack.post(&start, "").await.0, 200);
+    let refused = stack.post(&stop, &as_user(alice_id)).await;
+    assert_eq!(refused.0, 409, "{}", refused.1);
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(bob_call.ended(SOON).await);
+    let cdr = stack.cdrs(1, SOON).await.remove(0);
+    let mut sources: Vec<_> = recording_rows(&stack, &cdr)
+        .await
+        .into_iter()
+        .map(|r| r.source)
+        .collect();
+    sources.sort_by_key(|s| s.as_str());
+    assert_eq!(
+        sources,
+        [
+            fcp_core::recording::CallRecordingSource::Api,
+            fcp_core::recording::CallRecordingSource::OnDemand,
+        ]
+    );
+    stack.finish().await;
+}
+
 fn uuid_like() -> &'static str {
     "00000000-0000-4000-8000-000000000000"
 }
@@ -1815,6 +2374,322 @@ record_calls = true
     );
     stack.finish().await;
 }
+
+/// A flow's Queue node puts the caller in the queue: the agent rings and
+/// they talk. It set variables nobody read and went on at once, so the D8
+/// menu's "press 2 for the queue" said goodbye (`docs/DEEP_TESTING.md` D8).
+/// A queue that does not exist takes the node's error branch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flows_queue_node_puts_the_caller_in_the_queue() {
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+
+[queue.queues.support]
+name = "support"
+extension = "7000"
+agents = ["1002"]
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let (_alice, alice_phone, _bob, bob_phone) = two_phones(&stack).await;
+    let (code, login) = stack.post("/agents/1002/login", "{}").await;
+    assert_eq!(code, 200, "{login}");
+
+    // 1 for the queue, 2 for one that is not there, whose error branch
+    // hangs up (its answer branch would go back to the menu).
+    let menu = stack.seed.user("menu", "menu-pw", "1500").await;
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "queue-menu", "name": "Menu", "version": 1, "initial_node": "answer",
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "menu"},
+            "menu": {
+                "id": "menu", "name": "Menu", "type": "gather", "num_digits": 1,
+                "timeout": 20, "transitions": {"1": "support", "2": "missing"},
+                "default": "menu", "on_timeout": "menu"
+            },
+            "support": {
+                "id": "support", "name": "Support", "type": "queue", "queue_name": "support",
+                "next_on_answer": "done", "next_on_error": "menu"
+            },
+            "missing": {
+                "id": "missing", "name": "Missing", "type": "queue", "queue_name": "nobody",
+                "next_on_answer": "menu", "next_on_error": "done"
+            },
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    let storage = stack.seed.storage();
+    fcp_flow::FlowStore::insert_flow(storage, flow)
+        .await
+        .expect("seed flow");
+    let menu_id = fcp_core::storage::CredentialStore::get_user_in_tenant(
+        storage,
+        &menu.username,
+        &stack.seed.tenant_id,
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .id;
+    let mut settings = fcp_core::CallingSettings::defaults(stack.seed.tenant_id, menu_id);
+    settings.forward_all = Some(fcp_core::CallTarget::Flow("queue-menu".into()));
+    fcp_core::CallingStore::put_calling_settings(storage, settings)
+        .await
+        .unwrap();
+
+    let alice_call = alice_phone.call(&menu.extension).await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    alice_call.media().send_dtmf('1');
+    let Some(incoming) = bob_phone.incoming(Duration::from_secs(10)).await else {
+        stack
+            .fail("the Queue node did not ring the agent", &alice_phone)
+            .await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.media().play_tone(440.0, 3000);
+    bob_call.media().play_tone(880.0, 3000);
+    assert!(
+        bob_call.media().heard(440, SOON).await,
+        "the agent does not hear the caller"
+    );
+    assert!(
+        alice_call.media().heard(880, SOON).await,
+        "the caller does not hear the agent"
+    );
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(
+        bob_call.ended(SOON).await,
+        "the agent's leg outlived the call"
+    );
+
+    let lost = alice_phone.call(&menu.extension).await.unwrap();
+    lost.answered(SOON).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    lost.media().send_dtmf('2');
+    assert!(
+        lost.ended(SOON).await,
+        "a missing queue did not take the error branch"
+    );
+    stack.finish().await;
+}
+
+/// A queue with no audio of its own plays the node's hold music, and an
+/// agent the queue lists by extension logs in with `*50` from a phone that
+/// dials by name. On the D8 server the caller waited two minutes in
+/// silence, and the agent's `*50` would have been refused: the queue said
+/// `1001`, the phone said `alice` (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_waiting_caller_hears_music_until_an_agent_logs_in_by_name() {
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+
+[queue.queues.support]
+name = "support"
+extension = "7000"
+agents = ["1002"]
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let (_alice, alice_phone, _bob, bob_phone) = two_phones(&stack).await;
+
+    let alice_call = alice_phone.call("7000").await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+    assert!(
+        alice_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await,
+        "the waiting caller hears no music"
+    );
+
+    let login = bob_phone.call("*50").await.unwrap();
+    if let Err(e) = login.answered(SOON).await {
+        stack
+            .fail(&format!("the agent's *50 was refused: {e}"), &bob_phone)
+            .await;
+    }
+    // Told, then hung up on: a bare 200 left the phone on a call (D8).
+    assert!(
+        login.ended(Duration::from_secs(15)).await,
+        "the *50 call was never ended"
+    );
+    let Some(incoming) = bob_phone.incoming(Duration::from_secs(10)).await else {
+        stack
+            .fail("the logged-in agent was not rung", &alice_phone)
+            .await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    bob_call.media().play_tone(880.0, 3000);
+    if !alice_call.media().heard(880, SOON).await {
+        let why = format!(
+            "the caller does not hear the agent ({} packets, {} frames of the tone; \
+             the agent's leg received {} packets)",
+            alice_call.media().packets_received(),
+            alice_call.media().tone_frames(880),
+            bob_call.media().packets_received(),
+        );
+        stack.fail(&why, &alice_phone).await;
+    }
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(
+        bob_call.ended(SOON).await,
+        "the agent's leg outlived the call"
+    );
+    stack.finish().await;
+}
+
+/// The agent hangs up first: the caller is hung up on, and the agent,
+/// after wrap-up, takes the next caller. On the D8 server the caller
+/// stayed on the line, and the queue never let its agent off the call
+/// (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_hanging_up_ends_the_callers_call_and_takes_the_next() {
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+wrap_up_time_secs = 1
+
+[queue.queues.support]
+name = "support"
+extension = "7000"
+agents = ["1002"]
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let (_alice, alice_phone, _bob, bob_phone) = two_phones(&stack).await;
+    let login = bob_phone.call("*50").await.unwrap();
+    login.answered(SOON).await.unwrap();
+    assert!(login.ended(Duration::from_secs(15)).await);
+
+    for round in ["first", "second"] {
+        let alice_call = alice_phone.call("7000").await.unwrap();
+        alice_call.answered(SOON).await.unwrap();
+        let Some(incoming) = bob_phone.incoming(Duration::from_secs(10)).await else {
+            stack
+                .fail(
+                    &format!("the agent was not rung for the {round} caller"),
+                    &bob_phone,
+                )
+                .await;
+        };
+        let bob_call = incoming.answer().await.unwrap();
+        bob_call.media().play_tone(880.0, 3000);
+        assert!(
+            alice_call.media().heard(880, SOON).await,
+            "the {round} caller does not hear the agent"
+        );
+        assert_eq!(bob_call.hangup().await.unwrap(), 200);
+        if !alice_call.ended(SOON).await {
+            stack
+                .fail(
+                    &format!("the {round} caller stayed on after the agent hung up"),
+                    &alice_phone,
+                )
+                .await;
+        }
+        // Wrap-up, then available again.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    stack.finish().await;
+}
+
+/// Between the agent's answer and the legs connected (the announcement a
+/// recorded queue plays first) either party may hang up. The agent's
+/// dialog was the queue's only once they were connected: the agent's BYE
+/// there was refused 481 and the caller left talking to no one, and the
+/// caller's left the agent on the line, on a call for good
+/// (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hangup_during_the_announcement_ends_both_parties() {
+    use fcp_core::compliance::ConsentFailureAction;
+
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+wrap_up_time_secs = 1
+recording_dir = "{dir}/queue-recordings"
+
+[queue.queues.support]
+name = "support"
+extension = "7000"
+agents = ["1002"]
+record_calls = true
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let prompt = stack.dir().join("long-consent.wav");
+    fcp_testkit::wav::write_tone(&prompt, PROMPT_HZ as f32, 6000).unwrap();
+    announce_recordings(&stack, &prompt, ConsentFailureAction::Record, None).await;
+    let (_alice, alice_phone, _bob, bob_phone) = two_phones(&stack).await;
+    let (code, login) = stack.post("/agents/1002/login", "{}").await;
+    assert_eq!(code, 200, "{login}");
+
+    for agent_leaves in [true, false] {
+        let who = if agent_leaves { "agent" } else { "caller" };
+        let alice_call = alice_phone.call("7000").await.unwrap();
+        alice_call.answered(SOON).await.unwrap();
+        let Some(incoming) = bob_phone.incoming(Duration::from_secs(10)).await else {
+            stack
+                .fail(&format!("the agent was not rung ({who} round)"), &bob_phone)
+                .await;
+        };
+        let bob_call = incoming.answer().await.unwrap();
+        // Inside the announcement: both are hearing it.
+        assert!(
+            bob_call.media().heard(PROMPT_HZ, SOON).await,
+            "the agent never heard the announcement ({who} round)"
+        );
+        let (leaving, staying, staying_phone) = if agent_leaves {
+            (&bob_call, &alice_call, &alice_phone)
+        } else {
+            (&alice_call, &bob_call, &bob_phone)
+        };
+        assert_eq!(
+            leaving.hangup().await.unwrap(),
+            200,
+            "the {who}'s BYE during the announcement"
+        );
+        if !staying.ended(SOON).await {
+            stack
+                .fail(
+                    &format!("the other party stayed on after the {who} hung up"),
+                    staying_phone,
+                )
+                .await;
+        }
+        // Wrap-up, then the agent is rung for the next caller.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    stack.finish().await;
+}
+
+/// The built-in hold music's first note (`fcp_sip::hold_music`).
+const DEFAULT_MUSIC_HZ: u32 = 659;
 
 /// A registration whose phone is gone — crashed, or brought back by a
 /// restore — is one of the contacts a call to the user forks to. The

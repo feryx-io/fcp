@@ -1,6 +1,7 @@
 import type { components } from '@/api/schema'
 import { apiClient, ApiRequestError } from './client'
 import type {
+  ParkingLot, ParkingLotRequest, ParkedCall,
   Brand, BrandAsset, BrandRequest,
   DiscoverResponse,
   IdentityProvider,
@@ -15,6 +16,9 @@ import type {
   GroupMember,
   ProvisioningKey,
   DeviceFetch,
+  CaptureResponse,
+  CaptureAllowResponse,
+  CaptureAllowRequest,
   PendingDevice,
   ClaimDeviceRequest,
   RenderedConfig,
@@ -57,6 +61,7 @@ import type {
   ChangeExpiredPasswordRequest,
   CallInfo,
   CdrResponse,
+  CallQualityResponse,
   ListCdrsResponse,
   CdrQueryParams,
   QueueResponse,
@@ -151,6 +156,9 @@ import type {
   SubjectRequest,
   FileSubjectRequest,
   UserDevice,
+  PersonalContact,
+  PersonalContactRequest,
+  ContactImportResponse,
 } from '@/types'
 
 // Auth
@@ -195,6 +203,7 @@ export const system = {
 export const users = {
   list: () => apiClient.getAll<User>('/users'),
   get: (username: string) => apiClient.get<User>(`/users/${encodeURIComponent(username)}`),
+  byId: (id: string) => apiClient.get<User>(`/users/by-id/${encodeURIComponent(id)}`),
   create: (data: CreateUserRequest) => apiClient.post<User>('/users', data),
   update: (username: string, data: UpdateUserRequest) =>
     apiClient.put<User>(`/users/${encodeURIComponent(username)}`, data),
@@ -215,6 +224,11 @@ export const users = {
     apiClient.get<CallingSettings>(`/users/${encodeURIComponent(username)}/calling`),
   updateCalling: (username: string, data: UpdateCallingRequest) =>
     apiClient.put<CallingSettings>(`/users/${encodeURIComponent(username)}/calling`, data),
+  /** What others see of a user and the status they chose (docs/PRESENCE.md); read only. */
+  getPresence: (username: string) =>
+    apiClient.get<components['schemas']['UserPresenceResponse']>(
+      `/users/${encodeURIComponent(username)}/presence`,
+    ),
 }
 
 // Tenants
@@ -415,6 +429,30 @@ export const calls = {
 }
 
 // CDRs (Phase 2 - call detail records)
+// Apps' captures and who may take them (docs/CALL_DIAGNOSTICS.md §3)
+export const captures = {
+  list: (params: { device_id?: string; username?: string } = {}) => {
+    const q = new URLSearchParams()
+    if (params.device_id) q.set('device_id', params.device_id)
+    if (params.username) q.set('username', params.username)
+    const qs = q.toString()
+    return apiClient.getAll<CaptureResponse>(`/captures${qs ? `?${qs}` : ''}`)
+  },
+  allows: () => apiClient.getAll<CaptureAllowResponse>('/captures/allows'),
+  allow: (data: CaptureAllowRequest) => apiClient.post<CaptureAllowResponse>('/captures/allows', data),
+  endAllow: (id: string) => apiClient.delete<void>(`/captures/allows/${encodeURIComponent(id)}`),
+  delete: (id: string) => apiClient.delete<void>(`/captures/${encodeURIComponent(id)}`),
+  /** Save the capture's file; the download is in the audit log. */
+  download: async (capture: CaptureResponse) => {
+    const url = await apiClient.fetchBlobUrl(`/captures/${encodeURIComponent(capture.id)}/file`)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${capture.id}.pcapng`
+    a.click()
+    URL.revokeObjectURL(url)
+  },
+}
+
 export const cdrs = {
   list: (params?: CdrQueryParams) => {
     const searchParams = new URLSearchParams()
@@ -429,6 +467,9 @@ export const cdrs = {
     return apiClient.get<ListCdrsResponse>(`/cdrs${query ? `?${query}` : ''}`)
   },
   get: (callId: string) => apiClient.get<CdrResponse>(`/cdrs/${encodeURIComponent(callId)}`),
+  /** Every phone's report of the call's quality. */
+  quality: (callId: string) =>
+    apiClient.get<Page<CallQualityResponse>>(`/cdrs/${encodeURIComponent(callId)}/quality`),
 }
 
 // SIP Trace (for ladder diagram debugging)
@@ -569,6 +610,9 @@ export const prompts = {
   },
   audioUrl: (id: string) => `/api/v1/prompts/${encodeURIComponent(id)}/audio`,
   synthesize: (id: string) => apiClient.post<PromptResponse>(`/prompts/${encodeURIComponent(id)}/synthesize`, {}),
+  // The tenant's own copy of a system prompt (docs/TENANT_SCOPE.md §3.2);
+  // deleting the copy restores the system prompt.
+  override: (id: string) => apiClient.post<PromptResponse>(`/prompts/${encodeURIComponent(id)}/override`, {}),
 }
 
 // Presence (Phase 2)
@@ -615,9 +659,10 @@ export const trunkStatus = {
 // Routing / Policy Rules
 export const routing = {
   /** What a live call manager would do with this tenant's call to `to`. */
-  preview: (to: string, from?: string) => {
+  preview: (to: string, from?: string, locationId?: string) => {
     const params = new URLSearchParams({ to })
     if (from) params.set('from', from)
+    if (locationId) params.set('location_id', locationId)
     return apiClient.get<RoutePreview>(`/routing/preview?${params.toString()}`)
   },
   list: () => apiClient.getAll<RoutingRule>('/routing/rules'),
@@ -657,6 +702,11 @@ export const flows = {
     apiClient.put<FlowResponse>(`/flows/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/flows/${encodeURIComponent(id)}`),
   versions: (id: string) => apiClient.getAll<FlowResponse>(`/flows/${encodeURIComponent(id)}/versions`),
+  // Flows from before tenancy that nothing tied to one tenant, for a
+  // platform administrator to assign (docs/TENANT_SCOPE.md §3.4).
+  untenanted: () => apiClient.getAll<FlowResponse>('/flows/untenanted'),
+  assign: (id: string, tenantId: string) =>
+    apiClient.post<FlowResponse>(`/flows/${encodeURIComponent(id)}/assign`, { tenant_id: tenantId }),
 }
 
 // Sites: a tenant's own stack on its network, enrolled to this cloud
@@ -671,6 +721,20 @@ export const schedules = {
   update: (id: string, data: ScheduleRequest) =>
     apiClient.put<Schedule>(`/schedules/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/schedules/${encodeURIComponent(id)}`),
+}
+
+export const parking = {
+  lots: () => apiClient.getAll<ParkingLot>('/parking/lots'),
+  createLot: (data: ParkingLotRequest) => apiClient.post<ParkingLot>('/parking/lots', data),
+  updateLot: (id: string, data: ParkingLotRequest) =>
+    apiClient.put<ParkingLot>(`/parking/lots/${encodeURIComponent(id)}`, data),
+  deleteLot: (id: string) => apiClient.delete<void>(`/parking/lots/${encodeURIComponent(id)}`),
+  /** The calls parked now, on every call manager. */
+  calls: () => apiClient.getAll<ParkedCall>('/parking/calls'),
+  /** Ring `target` (an extension or a user) with the call in the slot. */
+  retrieve: (slot: string, target: string) =>
+    apiClient.post<unknown>(`/parking/calls/${encodeURIComponent(slot)}/retrieve`, { target }),
+  hangUp: (slot: string) => apiClient.delete<unknown>(`/parking/calls/${encodeURIComponent(slot)}`),
 }
 
 export const groups = {
@@ -724,6 +788,23 @@ export const cluster = {
   sites: () => apiClient.get<ClusterSitesResponse>('/cluster/sites'),
 }
 
+// Every running service, the platform's and its sites' (docs/SERVICES.md):
+// platform administrators only.
+export type ServiceView = components['schemas']['ServiceView']
+export type ServicesSummary = components['schemas']['ServicesSummary']
+
+const siteQuery = (siteId?: string | null) =>
+  siteId ? `?site_id=${encodeURIComponent(siteId)}` : ''
+
+export const services = {
+  list: () => apiClient.getAll<ServiceView>('/system/services'),
+  summary: () => apiClient.get<ServicesSummary>('/system/services/summary'),
+  get: (id: string, siteId?: string | null) =>
+    apiClient.get<ServiceView>(`/system/services/${encodeURIComponent(id)}${siteQuery(siteId)}`),
+  forget: (id: string, siteId?: string | null) =>
+    apiClient.delete<void>(`/system/services/${encodeURIComponent(id)}${siteQuery(siteId)}`),
+}
+
 // Audit Log
 export const recordings = {
   list: (params?: RecordingQueryParams) => {
@@ -764,6 +845,9 @@ export const auditLog = {
   // The newest `limit` entries (the log grows without bound: one page).
   list: (params?: AuditQueryParams) =>
     apiClient.getPage<AuditEntry>(`/audit-log${query(params)}`).then((p) => p.data),
+  /** Every entry the filters match, as a CSV or JSON Lines file: an object URL. */
+  exportUrl: (format: 'csv' | 'jsonl', params?: Omit<AuditQueryParams, 'limit'>) =>
+    apiClient.fetchBlobUrl(`/audit-log/export${query({ ...params, format })}`),
   deletions: (params?: DeletionQueryParams) =>
     apiClient
       .getPage<DeletionEntry>(`/compliance/deletions${query(params)}`)
@@ -857,6 +941,12 @@ export const branding = {
   upload: (file: File) =>
     apiClient.uploadRaw<BrandAsset>(`/branding/assets?name=${encodeURIComponent(file.name)}`, file),
   deleteAsset: (sha256: string) => apiClient.delete<void>(`/branding/assets/${encodeURIComponent(sha256)}`),
+  /** The softphone's deployment profile (`profile.json`), with `query`'s choices. */
+  deploymentProfile: (query: string) =>
+    apiClient.get<Record<string, unknown>>(`/branding/deployment-profile?format=json${query}`),
+  /** The profile as a .zip, or its settings as a Windows policy .reg: an object URL. */
+  deploymentFile: (format: 'zip' | 'reg', query: string) =>
+    apiClient.fetchBlobUrl(`/branding/deployment-profile?format=${format}${query}`),
 }
 
 export const identityProviders = {
@@ -940,6 +1030,20 @@ export const config = {
 
 // Self-service (end-user portal)
 export const me = {
+  // Contacts: the user's own, shared with every app they sign in to
+  // (docs/RECORD_AND_CONTACTS.md §3)
+  listContacts: () => apiClient.getAll<PersonalContact>('/me/contacts'),
+  createContact: (data: PersonalContactRequest) =>
+    apiClient.post<PersonalContact>('/me/contacts', data),
+  updateContact: (id: string, data: PersonalContactRequest) =>
+    apiClient.put<PersonalContact>(`/me/contacts/${encodeURIComponent(id)}`, data),
+  deleteContact: (id: string) => apiClient.delete<void>(`/me/contacts/${encodeURIComponent(id)}`),
+  /** The contacts as a vCard or CSV file: an object URL. */
+  exportContacts: (format: 'vcard' | 'csv') =>
+    apiClient.fetchBlobUrl(`/me/contacts/export?format=${format}`),
+  /** Contacts from a vCard or CSV file, kept on the account. */
+  importContacts: (file: Blob, format: 'vcard' | 'csv') =>
+    apiClient.uploadRaw<ContactImportResponse>(`/me/contacts/import?format=${format}`, file),
   // Devices: phones and app installs (docs/SOFTPHONE.md §2.1)
   listDevices: () => apiClient.getAll<UserDevice>('/me/devices'),
   removeDevice: (id: string) => apiClient.delete<void>(`/me/devices/${encodeURIComponent(id)}`),

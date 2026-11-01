@@ -45,6 +45,10 @@ pub struct EmergencyConfig {
     pub emergency_numbers: Vec<String>,
     /// Dialed strings that are emergency test calls (`933`).
     pub test_numbers: Vec<String>,
+    /// Who answers a test call: this platform, reading back what a real
+    /// emergency call would carry, or the carrier's own test service.
+    #[serde(default)]
+    pub test_call_mode: TestCallMode,
     /// Outside-line prefixes stripped before matching (`9` → `9911`).
     pub dial_prefixes: Vec<String>,
     /// Who is told when an emergency call is placed (Kari's Law on-site
@@ -67,6 +71,41 @@ pub struct EmergencyConfig {
     #[serde(default = "default_declared_ttl")]
     pub declared_location_ttl: Duration,
     pub updated_at: SystemTime,
+}
+
+/// Who answers an emergency test call (`933`, `docs/E911.md` "Test
+/// calls").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestCallMode {
+    /// The call manager answers and reads back what a real call would
+    /// carry: the location and where it came from, the callback number,
+    /// the trunks in the order they would be tried and how each takes the
+    /// location, and what is missing. No carrier is called, so it works
+    /// whichever carriers a deployment has and whether they offer a test
+    /// service or not.
+    #[default]
+    Local,
+    /// The call goes to the emergency trunks as a live call would, for
+    /// the carrier's own test service to read back what it holds.
+    Carrier,
+}
+
+impl TestCallMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Carrier => "carrier",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "local" => Some(Self::Local),
+            "carrier" => Some(Self::Carrier),
+            _ => None,
+        }
+    }
 }
 
 /// A day: how long a declared location stands unless the tenant says
@@ -102,6 +141,7 @@ impl EmergencyConfig {
                 .map(|s| s.to_string())
                 .collect(),
             test_numbers: DEFAULT_TEST_NUMBERS.iter().map(|s| s.to_string()).collect(),
+            test_call_mode: TestCallMode::default(),
             dial_prefixes: DEFAULT_DIAL_PREFIXES
                 .iter()
                 .map(|s| s.to_string())
@@ -512,26 +552,7 @@ pub fn resolve_dispatchable_location(inputs: &LocationInputs<'_>) -> Option<Disp
             (address, LocationSource::PhoneNumber, None, None)
         };
 
-    // The callback number: the site the address came from first, then the
-    // sites the caller is provisioned at, then the number's own.
-    let callback_number = site
-        .and_then(|s| non_empty(s.e911_callback_number.as_deref()))
-        .or_else(|| {
-            inputs
-                .device_site
-                .and_then(|s| non_empty(s.e911_callback_number.as_deref()))
-        })
-        .or_else(|| {
-            inputs
-                .user_site
-                .and_then(|s| non_empty(s.e911_callback_number.as_deref()))
-        })
-        .or_else(|| {
-            inputs
-                .phone_number
-                .and_then(|n| non_empty(n.e911_callback.as_deref()))
-        })
-        .or_else(|| inputs.phone_number.map(|n| n.e164.clone()));
+    let callback_number = callback_number(site, inputs);
 
     Some(DispatchableLocation {
         address,
@@ -551,6 +572,30 @@ pub fn resolve_dispatchable_location(inputs: &LocationInputs<'_>) -> Option<Disp
         client_address,
         declared_age,
     })
+}
+
+/// The callback number: the site the address came from first (`site`),
+/// then the sites the caller is provisioned at, then the number's E911
+/// callback, then the number itself. Chosen whether or not any address
+/// was found.
+fn callback_number(site: Option<&SiteLocation>, inputs: &LocationInputs<'_>) -> Option<String> {
+    site.and_then(|s| non_empty(s.e911_callback_number.as_deref()))
+        .or_else(|| {
+            inputs
+                .device_site
+                .and_then(|s| non_empty(s.e911_callback_number.as_deref()))
+        })
+        .or_else(|| {
+            inputs
+                .user_site
+                .and_then(|s| non_empty(s.e911_callback_number.as_deref()))
+        })
+        .or_else(|| {
+            inputs
+                .phone_number
+                .and_then(|n| non_empty(n.e911_callback.as_deref()))
+        })
+        .or_else(|| inputs.phone_number.map(|n| n.e164.clone()))
 }
 
 /// What is known about the caller when their location is resolved.
@@ -579,51 +624,13 @@ pub async fn resolve_for_user(
     user: &crate::storage::User,
     caller: CallerContext<'_>,
 ) -> Option<DispatchableLocation> {
-    use crate::storage::{DeviceStore, LineBindingStore, PhoneNumberStore, SiteLocationStore};
-
-    let devices = storage
-        .list_devices_by_user(&user.id)
-        .await
-        .unwrap_or_default();
-    let wanted = caller
-        .prefer_device_aor
-        .map(|a| a.trim_start_matches("sip:").to_ascii_lowercase());
-    let device = devices
-        .iter()
-        .find(|d| {
-            d.sip_uri.as_deref().is_some_and(|s| {
-                wanted.as_deref()
-                    == Some(s.trim_start_matches("sip:").to_ascii_lowercase().as_str())
-            })
-        })
-        .or_else(|| {
-            devices
-                .iter()
-                .find(|d| d.e911_override.is_some() || d.location_id.is_some())
-        })
-        .or_else(|| devices.first());
-
-    let device_site = match device.and_then(|d| d.location_id) {
-        Some(id) => storage.get_location(&id).await.ok().flatten(),
-        None => None,
-    };
-    let user_site = match user.location_id {
-        Some(id) => storage.get_location(&id).await.ok().flatten(),
-        None => None,
-    };
-    let phone_number = match storage
-        .list_line_bindings_by_user(&user.id)
-        .await
-        .ok()
-        .and_then(|b| b.into_iter().next())
-    {
-        Some(binding) => storage
-            .get_phone_number(&binding.phone_number_id)
-            .await
-            .ok()
-            .flatten(),
-        None => None,
-    };
+    let CallerRecords {
+        device,
+        device_site,
+        user_site,
+        phone_number,
+    } = caller_records(storage, user, caller.prefer_device_aor).await;
+    let device = device.as_ref();
 
     // A location the device sent is used only from a device this tenant
     // trusts to send one (§6.3, §12.3).
@@ -652,12 +659,15 @@ pub async fn resolve_for_user(
                 .await
                 .unwrap_or_default();
             match match_network(&networks, address, device.map(|d| d.device_type)) {
-                Some(network) => storage
-                    .get_location(&network.location_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|site| (network.clone(), site)),
+                Some(network) => {
+                    use crate::storage::SiteLocationStore;
+                    storage
+                        .get_location(&network.location_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|site| (network.clone(), site))
+                }
                 None => None,
             }
         }
@@ -685,6 +695,101 @@ pub async fn resolve_for_user(
         client_address,
         declared: declared.as_ref(),
     })
+}
+
+/// The callback number of a caller with no dispatchable location: their
+/// sites' ELINs, then their number's E911 callback, then the number. Not
+/// located, the call still names someone the PSAP can call back, and a
+/// carrier that keeps addresses by number (Twilio's emergency calling)
+/// finds the one registered on it (`docs/DEEP_TESTING.md` D8).
+pub async fn callback_for_user(
+    storage: &crate::DynStorage,
+    user: &crate::storage::User,
+    prefer_device_aor: Option<&str>,
+) -> Option<String> {
+    let records = caller_records(storage, user, prefer_device_aor).await;
+    callback_number(
+        None,
+        &LocationInputs {
+            device: records.device.as_ref(),
+            device_site: records.device_site.as_ref(),
+            user_site: records.user_site.as_ref(),
+            phone_number: records.phone_number.as_ref(),
+            supplied: None,
+            network: None,
+            client_address: None,
+            declared: None,
+        },
+    )
+}
+
+/// What the store holds about a caller that places them: the device
+/// placing the call, the sites it and the user are assigned to, the DID.
+struct CallerRecords {
+    device: Option<Device>,
+    device_site: Option<SiteLocation>,
+    user_site: Option<SiteLocation>,
+    phone_number: Option<PhoneNumber>,
+}
+
+/// The caller's [`CallerRecords`]: their devices (preferring the one
+/// registered as `prefer_device_aor`, then any with an E911 override or a
+/// site), the sites those point at and the DID bound to them.
+async fn caller_records(
+    storage: &crate::DynStorage,
+    user: &crate::storage::User,
+    prefer_device_aor: Option<&str>,
+) -> CallerRecords {
+    use crate::storage::{DeviceStore, LineBindingStore, PhoneNumberStore, SiteLocationStore};
+
+    let devices = storage
+        .list_devices_by_user(&user.id)
+        .await
+        .unwrap_or_default();
+    let wanted = prefer_device_aor.map(|a| a.trim_start_matches("sip:").to_ascii_lowercase());
+    let device = devices
+        .iter()
+        .find(|d| {
+            d.sip_uri.as_deref().is_some_and(|s| {
+                wanted.as_deref()
+                    == Some(s.trim_start_matches("sip:").to_ascii_lowercase().as_str())
+            })
+        })
+        .or_else(|| {
+            devices
+                .iter()
+                .find(|d| d.e911_override.is_some() || d.location_id.is_some())
+        })
+        .or_else(|| devices.first())
+        .cloned();
+
+    let device_site = match device.as_ref().and_then(|d| d.location_id) {
+        Some(id) => storage.get_location(&id).await.ok().flatten(),
+        None => None,
+    };
+    let user_site = match user.location_id {
+        Some(id) => storage.get_location(&id).await.ok().flatten(),
+        None => None,
+    };
+    let phone_number = match storage
+        .list_line_bindings_by_user(&user.id)
+        .await
+        .ok()
+        .and_then(|b| b.into_iter().next())
+    {
+        Some(binding) => storage
+            .get_phone_number(&binding.phone_number_id)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    CallerRecords {
+        device,
+        device_site,
+        user_site,
+        phone_number,
+    }
 }
 
 /// The address a device last registered from, when it has registered.
@@ -1493,6 +1598,16 @@ pub trait EmergencyStore: Send + Sync {
         _test_only: bool,
     ) -> anyhow::Result<Vec<EmergencyNotification>> {
         Ok(Vec::new())
+    }
+
+    /// The tenant's site an emergency call was placed from, for its own
+    /// contacts (`notify::contacts_for_site`). `None` for another tenant's.
+    async fn get_emergency_site(
+        &self,
+        _tenant_id: &TenantId,
+        _location_id: &LocationId,
+    ) -> anyhow::Result<Option<SiteLocation>> {
+        Ok(None)
     }
 }
 

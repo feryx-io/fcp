@@ -227,6 +227,117 @@ impl CallSupervisor for NodeCallSupervisor {
         Err(last_error.unwrap_or_else(|| "no call manager to ask".to_string()))
     }
 
+    /// Every call manager is asked, a degraded one too (it still holds its
+    /// parked calls); the lists are put together by slot.
+    async fn parked_calls(&self, tenant: TenantId) -> Result<Vec<serde_json::Value>, String> {
+        let mut calls = Vec::new();
+        let mut answered = false;
+        let mut last_error = None;
+        let nodes = match self
+            .nodes_where(|status| status != ClusterNodeStatus::Offline)
+            .await
+        {
+            Ok(nodes) => nodes,
+            // No call manager in the cluster holds anything parked.
+            Err(_) if self.config.url.is_none() => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        for base in nodes {
+            let builder = self
+                .http
+                .get(format!("{base}/parking/calls"))
+                .query(&[("tenant_id", tenant.to_string())]);
+            let builder = match &self.config.auth_token {
+                Some(token) => builder.bearer_auth(token),
+                None => builder,
+            };
+            match builder.send().await {
+                Ok(response) if response.status().is_success() => {
+                    answered = true;
+                    let body = response
+                        .json::<serde_json::Value>()
+                        .await
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    if let Some(list) = body["calls"].as_array() {
+                        calls.extend(list.iter().cloned());
+                    }
+                }
+                Ok(response) => {
+                    last_error = Some(format!(
+                        "the call manager at {base} answered {}",
+                        response.status()
+                    ))
+                }
+                Err(e) => {
+                    last_error = Some(format!("the call manager at {base} did not answer: {e}"))
+                }
+            }
+        }
+        if !answered {
+            return Err(last_error.unwrap_or_else(|| "no call manager to ask".to_string()));
+        }
+        calls.sort_by(|a, b| {
+            let key = |v: &serde_json::Value| {
+                let slot = v["slot"].as_str().unwrap_or_default().to_string();
+                (slot.len(), slot)
+            };
+            key(a).cmp(&key(b))
+        });
+        Ok(calls)
+    }
+
+    /// Each call manager in turn until one holds the slot (a node without
+    /// it answers 404).
+    async fn parked_call(
+        &self,
+        tenant: TenantId,
+        slot: &str,
+        target: Option<&str>,
+    ) -> Result<(u16, serde_json::Value), String> {
+        let mut last_error = None;
+        for base in self
+            .nodes_where(|status| status != ClusterNodeStatus::Offline)
+            .await?
+        {
+            let url = format!("{base}/parking/calls/{slot}");
+            let builder = match target {
+                Some(target) => self
+                    .http
+                    .post(format!("{url}/retrieve"))
+                    .json(&serde_json::json!({ "target": target, "tenant_id": tenant })),
+                None => self
+                    .http
+                    .delete(&url)
+                    .query(&[("tenant_id", tenant.to_string())]),
+            };
+            let builder = match &self.config.auth_token {
+                Some(token) => builder.bearer_auth(token),
+                None => builder,
+            };
+            match builder.send().await {
+                Ok(response) if response.status().as_u16() == 404 => continue,
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let body = response
+                        .json::<serde_json::Value>()
+                        .await
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    return Ok((status, body));
+                }
+                Err(e) => {
+                    last_error = Some(format!("the call manager at {base} did not answer: {e}"))
+                }
+            }
+        }
+        match last_error {
+            Some(e) => Err(e),
+            None => Ok((
+                404,
+                serde_json::json!({"error": format!("No call is parked in {slot}")}),
+            )),
+        }
+    }
+
     /// The first call manager that answers places it: any node can ring a
     /// tenant's phone. One that cannot speak (503) passes it on.
     async fn notify_call(

@@ -13,7 +13,9 @@ from typing import cast
 
 if TYPE_CHECKING:
   from ..models.softphone_account import SoftphoneAccount
+  from ..models.softphone_capture import SoftphoneCapture
   from ..models.softphone_config_feature_codes import SoftphoneConfigFeatureCodes
+  from ..models.softphone_line import SoftphoneLine
   from ..models.softphone_media import SoftphoneMedia
 
 
@@ -34,6 +36,16 @@ class SoftphoneConfig:
             username (str): The user as FCP knows them.
             feature_codes (SoftphoneConfigFeatureCodes): The feature codes, by name (`park`, `voicemail`, `dnd_on`, …).
             device_id (str): The device the app is.
+            may_record (bool): The user may record a call they are on
+                (`/me/calls/{call_id}/recording/start`); the app shows its record
+                button only then.
+            directory_listed (bool): Listed in the tenant's directory, and whether the user may change
+                that themselves (`directory_listed` on `PUT /me/profile`).
+            may_change_directory_listing (bool):
+            lines (list[SoftphoneLine]): The app's lines, its own first; `account` is the first, kept for a
+                release.
+            may_rename_lines (bool): Whether the user may name their lines (the tenant's choice).
+            capture (SoftphoneCapture): Whether the app may capture (`capture` on `/me/softphone`).
             extension (None | str | Unset):
             api_url (None | str | Unset): Where this admin is, for the app's API calls.
      """
@@ -43,6 +55,12 @@ class SoftphoneConfig:
     username: str
     feature_codes: SoftphoneConfigFeatureCodes
     device_id: str
+    may_record: bool
+    directory_listed: bool
+    may_change_directory_listing: bool
+    lines: list[SoftphoneLine]
+    may_rename_lines: bool
+    capture: SoftphoneCapture
     extension: None | str | Unset = UNSET
     api_url: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -53,7 +71,9 @@ class SoftphoneConfig:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.softphone_account import SoftphoneAccount # noqa: PLC0415
+        from ..models.softphone_capture import SoftphoneCapture # noqa: PLC0415
         from ..models.softphone_config_feature_codes import SoftphoneConfigFeatureCodes # noqa: PLC0415
+        from ..models.softphone_line import SoftphoneLine # noqa: PLC0415
         from ..models.softphone_media import SoftphoneMedia # noqa: PLC0415
         account = self.account.to_dict()
 
@@ -64,6 +84,23 @@ class SoftphoneConfig:
         feature_codes = self.feature_codes.to_dict()
 
         device_id = self.device_id
+
+        may_record = self.may_record
+
+        directory_listed = self.directory_listed
+
+        may_change_directory_listing = self.may_change_directory_listing
+
+        lines = []
+        for lines_item_data in self.lines:
+            lines_item = lines_item_data.to_dict()
+            lines.append(lines_item)
+
+
+
+        may_rename_lines = self.may_rename_lines
+
+        capture = self.capture.to_dict()
 
         extension: None | str | Unset
         if isinstance(self.extension, Unset):
@@ -86,6 +123,12 @@ class SoftphoneConfig:
             "username": username,
             "feature_codes": feature_codes,
             "device_id": device_id,
+            "may_record": may_record,
+            "directory_listed": directory_listed,
+            "may_change_directory_listing": may_change_directory_listing,
+            "lines": lines,
+            "may_rename_lines": may_rename_lines,
+            "capture": capture,
         })
         if extension is not UNSET:
             field_dict["extension"] = extension
@@ -99,7 +142,9 @@ class SoftphoneConfig:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.softphone_account import SoftphoneAccount # noqa: PLC0415
+        from ..models.softphone_capture import SoftphoneCapture # noqa: PLC0415
         from ..models.softphone_config_feature_codes import SoftphoneConfigFeatureCodes # noqa: PLC0415
+        from ..models.softphone_line import SoftphoneLine # noqa: PLC0415
         from ..models.softphone_media import SoftphoneMedia # noqa: PLC0415
         d = dict(src_dict)
         account = SoftphoneAccount.from_dict(d.pop("account"))
@@ -120,6 +165,29 @@ class SoftphoneConfig:
 
 
         device_id = d.pop("device_id")
+
+        may_record = d.pop("may_record")
+
+        directory_listed = d.pop("directory_listed")
+
+        may_change_directory_listing = d.pop("may_change_directory_listing")
+
+        lines = []
+        _lines = d.pop("lines")
+        for lines_item_data in (_lines):
+            lines_item = SoftphoneLine.from_dict(lines_item_data)
+
+
+
+            lines.append(lines_item)
+
+
+        may_rename_lines = d.pop("may_rename_lines")
+
+        capture = SoftphoneCapture.from_dict(d.pop("capture"))
+
+
+
 
         def _parse_extension(data: object) -> None | str | Unset:
             if data is None:
@@ -147,6 +215,12 @@ class SoftphoneConfig:
             username=username,
             feature_codes=feature_codes,
             device_id=device_id,
+            may_record=may_record,
+            directory_listed=directory_listed,
+            may_change_directory_listing=may_change_directory_listing,
+            lines=lines,
+            may_rename_lines=may_rename_lines,
+            capture=capture,
             extension=extension,
             api_url=api_url,
         )

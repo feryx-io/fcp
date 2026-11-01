@@ -95,6 +95,11 @@ is derived from `auth_token`. The events server takes the same key as
 `[auth] session_signing_key` (`FCP_EVENTS_SESSION_SIGNING_KEY`) so the
 admin UI's live views work (`docs/API_TOKENS.md` §7).
 
+**Emergency notification calls** are placed for the events server by a
+call manager (`[notifications.call]`, `docs/E911.md` "On-site
+notification"), which it calls with the call manager's API token:
+`[notifications.call] auth_token`, or `FCP_EVENTS_NOTIFY_CALL_TOKEN`.
+
 **Single sign-on** (`[api.sso] public_url`) is where browsers reach the
 admin. Tenants' identity providers send people back there. Unset, nobody
 signs in through a provider (`docs/SSO.md`).
@@ -191,6 +196,32 @@ and RTP `10000–20000`, and the HTTP defaults are `127.0.0.1:8080`
 voicemail, `:8090` conference, `0.0.0.0:8080` media and WebRTC,
 `0.0.0.0:8000` gateway. Two services on their defaults collide; use the
 files.
+
+### Phones behind NAT
+
+A phone behind a home or office router often names, in its Contact and
+its SDP, an address nobody outside its network can reach — its LAN
+address, or loopback when it knows no better. The call manager goes by
+what the network saw instead (`fcp_sip::nat`), for a UDP phone without
+an RFC 5626 flow whose named address is local (private, loopback,
+link-local, CGNAT, IPv6 unique-local) while it was seen at a public one
+(loopback is never right, wherever it was seen from):
+
+- a call to it is sent where its REGISTER came from; the registration
+  keeps the Contact as sent, and the 200 OK echoes it;
+- the Contact of each request it sends is made the address it was seen
+  at, so the call's later requests (re-INVITE, BYE) reach it;
+- its call is anchored, and each leg behind NAT has its RTP address
+  learned from its first packet, accepted only from the address its SIP
+  came from. A leg that never sends is never sent to.
+
+A phone on the server's own network naming its own address, and a trunk
+whose media comes from another public address than its signalling, are
+left alone. `c=0.0.0.0` is an old-style hold, not an address. Over TCP or
+TLS a phone is reached down the connection it opened (its flow), so none
+of this applies. A callee behind NAT is learned only on an anchored call:
+a call nothing anchors (no caller behind NAT, no DTMF, recording, music on
+hold or emergency) passes the callee's SDP through as it is.
 
 ## 6. What connects to what
 
@@ -396,8 +427,12 @@ ended before the node did.
 
 Hold music (`[media] hold_music`, on by default,
 `docs/ENTERPRISE_CALLING.md` §3.3) anchors every call through the node,
-so every call takes an RTP port pair from `[media] rtp_port_start` to
-`rtp_port_end`: size that range for the concurrent calls you expect, or
+so every call takes two RTP port pairs — one per leg
+(`docs/NAT_AND_TLS.md`) — from `[media] rtp_port_start` to
+`rtp_port_end`: a range of N ports carries about N / 4 calls (the
+default 10000–20000 about 2500, compose's 10000–10999 about 249), less
+what queues and supervisors take from the same range. Size it for the
+concurrent calls you expect, or
 set `hold_music = false` to let calls without another reason to be
 anchored send their media directly — holds are then passed to the far
 phone and held callers hear silence.

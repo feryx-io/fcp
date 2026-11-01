@@ -65,6 +65,10 @@ pub struct ApiState {
     /// Presence manager for presence/BLF operations (optional)
     pub presence_manager: Option<fcp_presence::PresenceManager>,
 
+    /// Each person's presence (`docs/PRESENCE.md`), worked out by the
+    /// admin; none elsewhere.
+    pub people_presence: Option<crate::people_presence::PeoplePresence>,
+
     /// SIP realm for authentication
     pub realm: String,
 
@@ -152,12 +156,20 @@ pub struct ApiState {
     /// The images' store: the directory's, or a bucket the admin wires in.
     pub firmware_files: Option<Arc<dyn crate::firmware_files::FirmwareFiles>>,
 
+    /// Where apps' captures are kept (`[api.captures]`): a directory or a
+    /// bucket the admin wires in. None, no app may capture.
+    pub capture_files: Option<Arc<dyn crate::firmware_files::FirmwareFiles>>,
+    /// Where an upload is staged before it goes to a bucket.
+    pub capture_staging: Option<std::path::PathBuf>,
+
     /// Trunk health monitoring map (populated by background health probe task).
     pub trunk_health: Option<crate::trunk_health::TrunkHealthMap>,
     /// Where the view each node has of its trunks is read from
     /// (`docs/TENANT_TRUNKS.md` §9). Absent on a deployment with no
     /// cluster, where this server's own probes are the only view there is.
     pub trunk_reports: Option<Arc<dyn crate::TrunkNodeReports>>,
+    /// More lines for `/metrics`.
+    pub metrics_sources: Vec<Arc<dyn crate::MetricsSource>>,
     /// Where a route preview is asked (`docs/TENANT_TRUNKS.md` §12, phase
     /// 6d). Absent when no call manager can be reached: the preview then
     /// answers 503.
@@ -242,6 +254,7 @@ impl ApiState {
             event_bus,
             queue_manager,
             presence_manager,
+            people_presence: None,
             realm,
             default_tenant_id,
             start_time: std::time::Instant::now(),
@@ -268,8 +281,11 @@ impl ApiState {
             redirection: fcp_core::ApiRedirectionConfig::default(),
             firmware: fcp_core::ApiFirmwareConfig::default(),
             firmware_files: None,
+            capture_files: None,
+            capture_staging: None,
             trunk_health: None,
             trunk_reports: None,
+            metrics_sources: Vec::new(),
             route_previewer: None,
             call_supervisor: None,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
@@ -288,6 +304,12 @@ impl ApiState {
     }
 
     /// Set the events server URL for proxying cluster-wide queries.
+    /// Work out each person's presence (`docs/PRESENCE.md`).
+    pub fn with_people_presence(mut self, people: crate::people_presence::PeoplePresence) -> Self {
+        self.people_presence = Some(people);
+        self
+    }
+
     pub fn with_events_server_url(mut self, url: Option<String>) -> Self {
         self.events_server_url = url;
         self
@@ -401,6 +423,32 @@ impl ApiState {
         self
     }
 
+    /// Where captures are kept, from `[api.captures]`. Without a store
+    /// already given (a bucket), a directory set here is the store, and
+    /// uploads are staged in it.
+    pub fn with_captures_config(mut self, config: &fcp_core::ApiCapturesConfig) -> Self {
+        if let Some(dir) = config.directory.as_deref() {
+            if self.capture_files.is_none() && config.s3.is_none() {
+                self.capture_files =
+                    Some(Arc::new(crate::firmware_files::DirectoryFiles::new(dir)));
+            }
+            self.capture_staging.get_or_insert_with(|| dir.into());
+        }
+        self
+    }
+
+    /// The captures' store, and where uploads are staged
+    /// (`docs/CALL_DIAGNOSTICS.md` §3).
+    pub fn with_capture_files(
+        mut self,
+        files: Arc<dyn crate::firmware_files::FirmwareFiles>,
+        staging: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.capture_files = Some(files);
+        self.capture_staging = staging;
+        self
+    }
+
     /// Where vendors' redirection services answer.
     pub fn with_redirection_config(mut self, config: fcp_core::ApiRedirectionConfig) -> Self {
         self.redirection = config;
@@ -472,6 +520,12 @@ impl ApiState {
     /// Where to read what each node sees of its trunks.
     pub fn with_trunk_reports(mut self, reports: Arc<dyn crate::TrunkNodeReports>) -> Self {
         self.trunk_reports = Some(reports);
+        self
+    }
+
+    /// Add lines to `/metrics`.
+    pub fn with_metrics_source(mut self, source: Arc<dyn crate::MetricsSource>) -> Self {
+        self.metrics_sources.push(source);
         self
     }
 

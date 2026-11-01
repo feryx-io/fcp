@@ -80,6 +80,21 @@ pub fn with_direction(sdp: &str, dir: &str) -> String {
     joined
 }
 
+/// A hold's offer, or its resume's, kept to the codec the leg uses now: the
+/// first one `current` (the leg's SDP) names, with telephone-event. The node
+/// answering it then changes no codec; a phone offering its whole list on
+/// resume (a VVX puts G.722 first) is not answered in a codec the node is
+/// not decoding. `None` when the offer no longer has that codec.
+pub fn keeping_codec(offer: &str, current: &str) -> Option<String> {
+    let codec = fcp_media::parse_sdp_codecs(current)
+        .into_iter()
+        .find(|c| !c.encoding_name.eq_ignore_ascii_case("CN"))?;
+    fcp_media::parse_sdp_codecs(offer)
+        .iter()
+        .any(|c| c.encoding_name.eq_ignore_ascii_case(&codec.encoding_name))
+        .then(|| fcp_media::filter_sdp_codecs(offer, &[codec.encoding_name.as_str()]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +136,21 @@ mod tests {
         let fixed = with_direction(&session, "sendrecv");
         assert_eq!(fixed.matches("a=").filter(|_| true).count(), 2, "{fixed}");
         assert_eq!(direction(&fixed), Some("sendrecv"));
+    }
+
+    #[test]
+    fn a_resume_offering_another_codec_first_keeps_the_leg_s() {
+        // The VVX answered PCMU; its resume offers G.722 first.
+        let answered = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\nm=audio 2234 RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:101 telephone-event/8000\r\n";
+        let resume = "v=0\r\no=- 1 2 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\nm=audio 2234 RTP/AVP 9 0 8 101\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:101 telephone-event/8000\r\na=sendrecv\r\n";
+        let kept = keeping_codec(resume, answered).expect("PCMU is offered");
+        assert!(kept.contains("m=audio 2234 RTP/AVP 0 101\r\n"), "{kept}");
+        assert!(!kept.contains("G722"), "{kept}");
+        assert!(kept.contains("a=rtpmap:101 telephone-event/8000"), "{kept}");
+        assert_eq!(direction(&kept), Some("sendrecv"));
+
+        let without = resume.replace(" 9 0 8 ", " 9 8 ");
+        let without = without.replace("a=rtpmap:0 PCMU/8000\r\n", "");
+        assert_eq!(keeping_codec(&without, answered), None);
     }
 }

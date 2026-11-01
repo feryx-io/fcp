@@ -5,9 +5,20 @@ const API_BASE = '/api/v1'
 export class ApiClient {
   private token: string | null = null
   private refresher: (() => Promise<boolean>) | null = null
+  private tenant: string | null = null
 
   setToken(token: string | null) {
     this.token = token
+  }
+
+  /**
+   * The tenant a platform administrator picked in the top bar, sent with
+   * every request (`x-fcp-tenant-id`) so every page works in it
+   * (docs/TENANT_SCOPE.md §3.1); `null` for "All tenants". The server
+   * ignores it from anyone else.
+   */
+  setTenant(tenantId: string | null) {
+    this.tenant = tenantId
   }
 
   /**
@@ -25,10 +36,10 @@ export class ApiClient {
   }
 
   private authHeaders(): Record<string, string> {
-    if (this.token) {
-      return { Authorization: `Bearer ${this.token}` }
-    }
-    return {}
+    const headers: Record<string, string> = {}
+    if (this.token) headers.Authorization = `Bearer ${this.token}`
+    if (this.tenant) headers['x-fcp-tenant-id'] = this.tenant
+    return headers
   }
 
   private async request<T>(

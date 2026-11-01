@@ -20,6 +20,7 @@ pub mod offboarding;
 pub mod oidc;
 pub mod openapi;
 pub mod page;
+pub mod people_presence;
 pub mod rate_limit;
 pub mod redirection;
 pub mod route_log;
@@ -40,6 +41,14 @@ pub mod trunk_health;
 #[async_trait::async_trait]
 pub trait TrunkNodeReports: Send + Sync {
     async fn reports(&self) -> Vec<fcp_core::trunk_report::TrunkNodeReport>;
+}
+
+/// More lines for `/metrics` from whatever wires the API up — the admin's
+/// record of services (`docs/SERVICES.md`).
+#[async_trait::async_trait]
+pub trait MetricsSource: Send + Sync {
+    /// Prometheus text exposition lines, `# HELP` and `# TYPE` included.
+    async fn render(&self) -> String;
 }
 
 /// What a call manager would do with a call, asked of a live one
@@ -130,6 +139,29 @@ pub trait CallSupervisor: Send + Sync {
         let _ = (tenant, device_id);
         Err("no call manager can push".to_string())
     }
+
+    /// The tenant's parked calls on every call manager
+    /// (`docs/PARKING.md` §4), as each node lists them.
+    async fn parked_calls(
+        &self,
+        tenant: fcp_core::TenantId,
+    ) -> std::result::Result<Vec<serde_json::Value>, String> {
+        let _ = tenant;
+        Err("no call manager to ask".to_string())
+    }
+
+    /// Send the call parked in the tenant's `slot` to `target`, or hang it
+    /// up when `target` is `None`, at the node holding it: the node's
+    /// status and body.
+    async fn parked_call(
+        &self,
+        tenant: fcp_core::TenantId,
+        slot: &str,
+        target: Option<&str>,
+    ) -> std::result::Result<(u16, serde_json::Value), String> {
+        let _ = (tenant, slot, target);
+        Err("no call manager to ask".to_string())
+    }
 }
 
 /// What a route preview asks about.
@@ -145,6 +177,12 @@ pub struct RoutePreviewQuery {
     #[schema(value_type = Option<String>)]
     #[param(value_type = Option<String>)]
     pub source_ip: Option<std::net::IpAddr>,
+    /// The caller's location, for a location's rules
+    /// (docs/TENANT_SCOPE.md §3.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    #[param(value_type = Option<String>)]
+    pub location_id: Option<fcp_core::LocationId>,
 }
 pub mod v1;
 pub mod validation;
@@ -277,7 +315,8 @@ pub fn create_router_with(
         .with_provisioning_require_https(api_config.provisioning_require_https)
         .with_provisioning_config(api_config.provisioning.clone())
         .with_redirection_config(api_config.redirection.clone())
-        .with_firmware_config(api_config.firmware.clone());
+        .with_firmware_config(api_config.firmware.clone())
+        .with_captures_config(&api_config.captures);
 
     // Conditionally apply bearer token authentication middleware
     if api_config.auth_enabled {

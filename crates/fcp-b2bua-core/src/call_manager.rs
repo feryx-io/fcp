@@ -365,6 +365,10 @@ impl CallManager {
             location_source: em.location.as_ref().map(|l| l.source.to_string()),
             location_summary: em.location.as_ref().map(|l| l.summary()),
             client_address: em.location.as_ref().and_then(|l| l.client_address.clone()),
+            location_id: em
+                .location
+                .as_ref()
+                .and_then(|l| l.location_id.map(|id| id.to_string())),
             trunk_name: call.trunk_name.clone(),
             notify_contacts,
             timestamp: std::time::SystemTime::now(),
@@ -655,7 +659,8 @@ impl CallManager {
                     Some(PlatformEvent::Call(CallEvent::Parked {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
                         tenant_id: Some(updated_call.tenant_id),
-                        orbit: updated_call.parked_orbit.unwrap_or_default(),
+                        slot: updated_call.parked_slot.clone().unwrap_or_default(),
+                        orbit: legacy_orbit(updated_call.parked_slot.as_deref()),
                         parker_extension: updated_call.parker_extension.clone().unwrap_or_default(),
                         timestamp: std::time::SystemTime::now(),
                     }))
@@ -664,7 +669,8 @@ impl CallManager {
                     Some(PlatformEvent::Call(CallEvent::Unparked {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
                         tenant_id: Some(updated_call.tenant_id),
-                        orbit: 0,
+                        slot: updated_call.parked_slot.clone().unwrap_or_default(),
+                        orbit: legacy_orbit(updated_call.parked_slot.as_deref()),
                         retriever_extension: updated_call
                             .b_leg
                             .as_ref()
@@ -1181,14 +1187,21 @@ impl CallManager {
             if call.state != CallState::Established || !wanted(call) {
                 return None;
             }
-            let is = |uri: &str| {
-                extract_user_from_uri(uri)
-                    .map(|u| u == user)
-                    .unwrap_or(false)
+            // A leg is the party's when the phone at its far end is
+            // theirs (the dialog's remote target, which names the phone
+            // that answered) or its From/To names them: a B-leg's To is
+            // the number dialed, not who answered it.
+            let is = |leg: &crate::call::CallLeg| {
+                leg.dialog
+                    .as_ref()
+                    .is_some_and(|d| d.remote_target().user() == Some(user))
+                    || extract_user_from_uri(&leg.remote_uri)
+                        .map(|u| u == user)
+                        .unwrap_or(false)
             };
-            if is(&call.a_leg.remote_uri) {
+            if is(&call.a_leg) {
                 Some((call.clone(), crate::call::LegSide::A))
-            } else if call.b_leg.as_ref().is_some_and(|b| is(&b.remote_uri)) {
+            } else if call.b_leg.as_ref().is_some_and(is) {
                 Some((call.clone(), crate::call::LegSide::B))
             } else {
                 None
@@ -1310,6 +1323,14 @@ pub struct CallStats {
 
     /// Number of failed calls
     pub failed: usize,
+}
+
+/// A slot as the events' old `orbit` number: 0 when it is not one, or when
+/// a leading zero would be lost.
+fn legacy_orbit(slot: Option<&str>) -> u16 {
+    slot.filter(|s| !s.starts_with('0'))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -29,7 +29,7 @@ use fcp_core::compliance::{
     ConsentPlan, RecordingCounters, NOTICE_TONE_HZ, NOTICE_TONE_MS, RECORDING_CONSENT_TEXT,
 };
 use fcp_core::recording::{CallRecording, CallRecordingSource};
-use fcp_core::{RecordingConsent, RecordingId};
+use fcp_core::{RecordingConsent, RecordingId, UserId};
 use fcp_events::{PlatformEvent, RecordingEvent};
 use fcp_media::{AudioTarget, MediaManager};
 use std::sync::Arc;
@@ -58,6 +58,8 @@ pub enum RecordingError {
     AlreadyRecording,
     #[error("the call is not being recorded")]
     NotRecording,
+    #[error("the call's recording was not started on demand by this user")]
+    NotStartedByUser,
     #[error(
         "the recording announcement could not be played and the tenant's policy does not \
          record without one"
@@ -102,6 +104,9 @@ impl RecordingPath {
 /// its start is still in its consent step.
 struct Active {
     recording: Option<RecordingId>,
+    source: CallRecordingSource,
+    /// The party who asked, for an `on_demand` recording.
+    started_by: Option<UserId>,
     session_id: fcp_core::CallId,
     notice: Option<JoinHandle<()>>,
 }
@@ -140,6 +145,33 @@ impl CallRecorder {
         source: CallRecordingSource,
         path: RecordingPath,
     ) -> Result<StartedRecording, RecordingError> {
+        self.start_as(call_id, source, path, None).await
+    }
+
+    /// Record `call_id` because `user`, one of its parties, asked
+    /// (`docs/RECORD_AND_CONTACTS.md` §2). The caller has checked that they
+    /// may.
+    pub async fn start_on_demand(
+        &self,
+        call_id: &CallId,
+        user: UserId,
+    ) -> Result<StartedRecording, RecordingError> {
+        self.start_as(
+            call_id,
+            CallRecordingSource::OnDemand,
+            RecordingPath::wav(),
+            Some(user),
+        )
+        .await
+    }
+
+    async fn start_as(
+        &self,
+        call_id: &CallId,
+        source: CallRecordingSource,
+        path: RecordingPath,
+        started_by: Option<UserId>,
+    ) -> Result<StartedRecording, RecordingError> {
         let media = self.media_manager.clone().ok_or(RecordingError::NoMedia)?;
         let call = self
             .call_manager
@@ -161,6 +193,8 @@ impl CallRecorder {
             Entry::Vacant(slot) => {
                 slot.insert(Active {
                     recording: None,
+                    source,
+                    started_by,
                     session_id,
                     notice: None,
                 });
@@ -296,6 +330,7 @@ impl CallRecorder {
             tenant_id: tenant,
             source: source.as_str().to_string(),
             consent: consent.as_str().to_string(),
+            started_by,
             timestamp: SystemTime::now(),
         }));
         Ok(StartedRecording {
@@ -303,6 +338,26 @@ impl CallRecorder {
             file,
             consent,
         })
+    }
+
+    /// Stop the call's recording for `user`: only one they started on
+    /// demand. Any other recording (the user's own record-all among them)
+    /// goes on.
+    pub async fn stop_on_demand(
+        &self,
+        call_id: &CallId,
+        user: UserId,
+    ) -> Result<(), RecordingError> {
+        let theirs = match self.active.get(call_id) {
+            None => return Err(RecordingError::NotRecording),
+            Some(active) => {
+                active.source == CallRecordingSource::OnDemand && active.started_by == Some(user)
+            }
+        };
+        if !theirs {
+            return Err(RecordingError::NotStartedByUser);
+        }
+        self.stop(call_id).await
     }
 
     /// Stop the call's recording and close its row.

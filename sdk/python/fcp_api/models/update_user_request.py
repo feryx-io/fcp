@@ -11,6 +11,8 @@ from ..types import UNSET, Unset
 from ..types import UNSET, Unset
 from typing import cast
 
+if TYPE_CHECKING:
+  from ..models.media_preferences import MediaPreferences
 
 
 
@@ -45,6 +47,9 @@ class UpdateUserRequest:
             account_status (None | str | Unset):
             emergency_contact_name (None | str | Unset):
             emergency_contact_phone (None | str | Unset):
+            media_preferences (MediaPreferences | None | Unset):
+            directory_listed (bool | None | Unset): Listed in the tenant's directory for its users (`/me/directory`);
+                an unlisted user still rings and is seen by administrators.
      """
 
     username: None | str | Unset = UNSET
@@ -66,6 +71,8 @@ class UpdateUserRequest:
     account_status: None | str | Unset = UNSET
     emergency_contact_name: None | str | Unset = UNSET
     emergency_contact_phone: None | str | Unset = UNSET
+    media_preferences: MediaPreferences | None | Unset = UNSET
+    directory_listed: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -73,6 +80,7 @@ class UpdateUserRequest:
 
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.media_preferences import MediaPreferences # noqa: PLC0415
         username: None | str | Unset
         if isinstance(self.username, Unset):
             username = UNSET
@@ -187,6 +195,20 @@ class UpdateUserRequest:
         else:
             emergency_contact_phone = self.emergency_contact_phone
 
+        media_preferences: dict[str, Any] | None | Unset
+        if isinstance(self.media_preferences, Unset):
+            media_preferences = UNSET
+        elif isinstance(self.media_preferences, MediaPreferences):
+            media_preferences = self.media_preferences.to_dict()
+        else:
+            media_preferences = self.media_preferences
+
+        directory_listed: bool | None | Unset
+        if isinstance(self.directory_listed, Unset):
+            directory_listed = UNSET
+        else:
+            directory_listed = self.directory_listed
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -230,6 +252,10 @@ class UpdateUserRequest:
             field_dict["emergency_contact_name"] = emergency_contact_name
         if emergency_contact_phone is not UNSET:
             field_dict["emergency_contact_phone"] = emergency_contact_phone
+        if media_preferences is not UNSET:
+            field_dict["media_preferences"] = media_preferences
+        if directory_listed is not UNSET:
+            field_dict["directory_listed"] = directory_listed
 
         return field_dict
 
@@ -237,6 +263,7 @@ class UpdateUserRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.media_preferences import MediaPreferences # noqa: PLC0415
         d = dict(src_dict)
         def _parse_username(data: object) -> None | str | Unset:
             if data is None:
@@ -428,6 +455,36 @@ class UpdateUserRequest:
         emergency_contact_phone = _parse_emergency_contact_phone(d.pop("emergency_contact_phone", UNSET))
 
 
+        def _parse_media_preferences(data: object) -> MediaPreferences | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                media_preferences_type_0 = MediaPreferences.from_dict(data)
+
+
+
+                return media_preferences_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(MediaPreferences | None | Unset, data)
+
+        media_preferences = _parse_media_preferences(d.pop("media_preferences", UNSET))
+
+
+        def _parse_directory_listed(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        directory_listed = _parse_directory_listed(d.pop("directory_listed", UNSET))
+
+
         update_user_request = cls(
             username=username,
             display_name=display_name,
@@ -448,6 +505,8 @@ class UpdateUserRequest:
             account_status=account_status,
             emergency_contact_name=emergency_contact_name,
             emergency_contact_phone=emergency_contact_phone,
+            media_preferences=media_preferences,
+            directory_listed=directory_listed,
         )
 
 

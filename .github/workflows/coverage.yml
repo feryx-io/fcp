@@ -16,6 +16,11 @@ permissions:
   contents: read
 
 env:
+  # The runners' CMake is 4.x since ubuntu-latest became 26.04 (2026-11):
+  # it refuses a project declaring compatibility below 3.5, which the
+  # bundled opus (audiopus_sys) and SVT-AV1's cpuinfo both do. CMake reads
+  # this variable to configure them anyway.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
   CARGO_TERM_COLOR: always
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
@@ -27,7 +32,7 @@ jobs:
     timeout-minutes: 240
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_PASSWORD: postgres
         ports:

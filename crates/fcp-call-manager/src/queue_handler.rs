@@ -11,7 +11,7 @@ use fcp_core::storage::CdrKind;
 use fcp_core::{TenantId, TenantStore};
 use fcp_events::EventPublisher;
 use fcp_media::{construct_answer_for_a_leg, extract_telephone_event_pt, parse_sdp_codecs};
-use fcp_queue::{QueueManager, QueueSystemConfig, QueuedCall};
+use fcp_queue::{AgentKey, QueueKey, QueueManager, QueueSystemConfig, QueuedCall};
 use fcp_sip::prelude::SipUserAgentClient;
 use forge_dtmf::Rfc2833Detector;
 use forge_rtp::{PortPair, PortPool, RemoteEndpoint, RtpSocketConfig, RtpSocketPair};
@@ -111,7 +111,7 @@ struct QueueSession {
     /// Whether this session is a campaign-originated call (both legs outbound).
     is_campaign_call: bool,
     /// Agent ID currently being rung (if any).
-    ringing_agent: Option<String>,
+    ringing_agent: Option<AgentKey>,
     /// Handle for cancelling an in-progress agent ring task.
     ring_task_handle: Option<JoinHandle<()>>,
     /// Sender to cancel an in-progress agent INVITE (sends SIP CANCEL).
@@ -126,6 +126,33 @@ struct QueueSession {
     /// and the queue record's `call_id`. `None` for calls the queue placed
     /// itself (callbacks, campaigns).
     b2bua_call_id: Option<fcp_sip::CallId>,
+}
+
+impl QueueSession {
+    /// Whether the call waits in (or was answered from) this tenant's queue.
+    fn is_in(&self, queue: &QueueKey) -> bool {
+        self.tenant_id == queue.tenant_id && self.queue_name == queue.name
+    }
+
+    fn queue_key(&self) -> QueueKey {
+        QueueKey::new(self.tenant_id, self.queue_name.clone())
+    }
+}
+
+/// CANCEL a ring nobody is waiting for any more. A 200 that crossed the
+/// CANCEL (RFC 3261 §9.1) leaves the answerer on a call with nobody; once
+/// it is ACKed, it is sent a BYE, as the B2BUA does for a fork's losers.
+/// Run last: a phone that never answers holds this for a transaction's life.
+async fn cancel_ring(uac: &SipUserAgentClient, handle: &sip_uac::integrated::CallHandle) {
+    let _ = handle.cancel().await;
+    let outcome = tokio::time::timeout(Duration::from_secs(32), handle.invite_outcome()).await;
+    if matches!(outcome, Ok(sip_uac::InviteOutcome::Final(code)) if (200..300).contains(&code)) {
+        let dialog = handle.dialog.read().await.clone();
+        info!(call_id = %dialog.id().call_id(), "A ring was answered as it was cancelled; hanging up the answered leg");
+        if let Err(e) = uac.bye(&dialog).await {
+            warn!(error = %e, "Failed to send BYE to a leg answered as it was cancelled");
+        }
+    }
 }
 
 /// The call id a queue segment's record and recording carry.
@@ -195,13 +222,14 @@ pub struct QueueCallHandler {
 }
 
 impl QueueCallHandler {
-    /// The groups (by id) of the user an agent's extension names — their
-    /// username, else the extension on their record — if they may work.
-    async fn groups_of_extension(&self, extension: &str, tenant_id: &TenantId) -> Vec<String> {
+    /// The user an agent's extension names — their username, else the
+    /// extension on their record — if they may work.
+    async fn user_of_extension(
+        &self,
+        extension: &str,
+        tenant_id: &TenantId,
+    ) -> Option<fcp_core::User> {
         use fcp_core::CredentialStore;
-        let Some(groups) = self.storage.group_store() else {
-            return Vec::new();
-        };
         let user = match self
             .storage
             .get_user_by_sip_name(extension, tenant_id)
@@ -219,16 +247,36 @@ impl QueueCallHandler {
                         .find(|u| u.extension.as_deref() == Some(extension))
                 }),
         };
-        let Some(user) = user.filter(|u| u.may_use_services()) else {
+        user.filter(|u| u.may_use_services())
+    }
+
+    /// The groups (by id) of `user`.
+    async fn groups_of_user(&self, user: &fcp_core::User) -> Vec<String> {
+        let Some(groups) = self.storage.group_store() else {
             return Vec::new();
         };
         match groups.groups_of_user(&user.id).await {
             Ok(groups) => groups.into_iter().map(|g| g.id.to_string()).collect(),
             Err(e) => {
-                warn!(extension, error = %e, "Could not read an agent's groups");
+                warn!(user = %user.username, error = %e, "Could not read an agent's groups");
                 Vec::new()
             }
         }
+    }
+
+    /// The node's hold music (`path`) for a queue whose class has no
+    /// audio, so a waiting caller is never left on dead air.
+    pub fn with_default_moh(mut self, path: Option<&std::path::Path>) -> Self {
+        if let Some(path) = path {
+            let cache = self
+                .moh_cache
+                .take()
+                .map(|c| Arc::try_unwrap(c).unwrap_or_default())
+                .unwrap_or_default()
+                .with_default(path);
+            self.moh_cache = (!cache.is_empty()).then(|| Arc::new(cache));
+        }
+        self
     }
 
     /// Speech for recording announcements when a tenant's prompt has no
@@ -344,9 +392,9 @@ impl QueueCallHandler {
             tts: None,
         };
 
-        // Spawn distribution loops for each configured queue
-        for queue_name in config.queues.keys() {
-            handler.spawn_distribution_loop(queue_name.clone(), config.max_ring_time_secs);
+        // Spawn distribution loops for every tenant's queues
+        for queue_name in handler.queue_manager.list_queues() {
+            handler.spawn_distribution_loop(queue_name, config.max_ring_time_secs);
         }
 
         // Start daily stats reset scheduler
@@ -376,20 +424,16 @@ impl QueueCallHandler {
 
     /// Spawn a distribution loop for a dynamically added queue.
     /// Called after reload_config() adds new queues.
-    pub fn spawn_distribution_loop_for(&self, queue_name: String) {
+    pub fn spawn_distribution_loop_for(&self, queue_name: QueueKey) {
         let ring_timeout = self.config.max_ring_time_secs;
         self.spawn_distribution_loop(queue_name, ring_timeout);
     }
 
     /// Build an AnnounceConfig if position announcements are enabled for the given queue.
-    fn build_announce_config(&self, queue_name: &str) -> Option<AnnounceConfig> {
+    fn build_announce_config(&self, queue_name: &QueueKey) -> Option<AnnounceConfig> {
         let cache = self.announcement_cache.as_ref()?;
 
-        let queue_cfg = self
-            .config
-            .queues
-            .get(queue_name)
-            .or_else(|| self.config.queues.values().find(|qc| qc.announce_position))?;
+        let queue_cfg = self.queue_manager.get_queue_config(queue_name)?;
 
         if !queue_cfg.announce_position {
             return None;
@@ -414,15 +458,24 @@ impl QueueCallHandler {
     }
 
     /// Resolve MOH frames for a given queue and codec.
-    /// Looks up the queue's `moh_class` (defaulting to `"default"`) in the MOH cache.
-    fn resolve_moh_frames(&self, queue_name: &str, codec_name: &str) -> Option<Arc<Vec<Vec<u8>>>> {
+    /// Looks up the queue's `moh_class` in the MOH cache, falling back to
+    /// `"default"` for a queue with none (or an empty one, as the API
+    /// stores it) or a class with no audio.
+    fn resolve_moh_frames(
+        &self,
+        queue_name: &QueueKey,
+        codec_name: &str,
+    ) -> Option<Arc<Vec<Vec<u8>>>> {
         let cache = self.moh_cache.as_ref()?;
         let moh_class = self
             .queue_manager
             .get_queue_config(queue_name)
             .and_then(|c| c.moh_class.clone())
+            .filter(|class| !class.is_empty())
             .unwrap_or_else(|| "default".to_string());
-        let frames = cache.get_frames(&moh_class, codec_name)?;
+        let frames = cache
+            .get_frames(&moh_class, codec_name)
+            .or_else(|| cache.get_frames("default", codec_name))?;
         Some(Arc::new(frames.to_vec()))
     }
 
@@ -756,7 +809,7 @@ impl QueueCallHandler {
     ///
     /// Runs every 500ms, checking for waiting calls and attempting to
     /// match them with available agents via `QueueManager::select_agent()`.
-    fn spawn_distribution_loop(&self, queue_name: String, ring_timeout_secs: u32) {
+    fn spawn_distribution_loop(&self, queue_name: QueueKey, ring_timeout_secs: u32) {
         let sessions = Arc::clone(&self.sessions);
         let queue_manager = self.queue_manager.clone();
         let port_pool = Arc::clone(&self.port_pool);
@@ -787,10 +840,11 @@ impl QueueCallHandler {
                     continue;
                 }
 
-                let Some(queue_tenant_id) = queue_manager.get_queue_tenant(&queue_name) else {
+                if queue_manager.get_queue_config(&queue_name).is_none() {
                     debug!(queue = %queue_name, "Skipping distribution tick for missing queue");
                     continue;
-                };
+                }
+                let queue_tenant_id = queue_name.tenant_id;
 
                 // Check for callers who have exceeded max wait time
                 if let Some(config) = queue_manager.get_queue_config(&queue_name) {
@@ -800,7 +854,7 @@ impl QueueCallHandler {
                             .iter()
                             .filter(|entry| {
                                 let s = entry.value();
-                                s.queue_name == queue_name
+                                s.is_in(&queue_name)
                                     && s.state == QueueCallState::WaitingInQueue
                                     && s.enqueued_at.elapsed() > max_wait
                             })
@@ -863,7 +917,7 @@ impl QueueCallHandler {
                     .iter()
                     .filter(|entry| {
                         let s = entry.value();
-                        s.queue_name == queue_name && s.state == QueueCallState::WaitingInQueue
+                        s.is_in(&queue_name) && s.state == QueueCallState::WaitingInQueue
                     })
                     .map(|entry| entry.key().clone())
                     .collect();
@@ -874,7 +928,7 @@ impl QueueCallHandler {
                     let cb_uri = expired.callback_uri.as_deref().unwrap_or("");
                     fcp_queue::events::callback_failed(
                         &Some(Arc::clone(&event_bus)),
-                        &queue_name,
+                        &queue_name.name,
                         &expired.call_id,
                         cb_uri,
                         "max_attempts_exceeded",
@@ -1004,7 +1058,7 @@ impl QueueCallHandler {
                             // Emit event
                             fcp_queue::events::campaign_call_placed(
                                 &Some(Arc::clone(&event_bus)),
-                                &queue_name,
+                                &queue_name.name,
                                 &dest,
                                 &queue_tenant_id,
                             )
@@ -1055,11 +1109,15 @@ impl QueueCallHandler {
 
                 // Check if queue is fully drained (draining + no waiting + no active sessions)
                 if queue_manager.is_queue_draining(&queue_name) && no_waiting {
-                    let active = sessions.iter().any(|e| e.value().queue_name == queue_name);
+                    let active = sessions.iter().any(|e| e.value().is_in(&queue_name));
                     if !active {
                         let events = queue_manager.events_ref();
-                        fcp_queue::events::queue_drained(&events, &queue_name, &queue_tenant_id)
-                            .await;
+                        fcp_queue::events::queue_drained(
+                            &events,
+                            &queue_name.name,
+                            &queue_tenant_id,
+                        )
+                        .await;
                     }
                 }
             }
@@ -1116,7 +1174,10 @@ impl QueueCallHandler {
 
             // 3. INVITE the agent
             let agent_uri = format!("sip:{}@{}", agent_extension, extract_domain(&local_uri));
-            let call_handle = match uac.invite(&agent_uri, Some(&sdp_offer)).await {
+            let call_handle = match uac
+                .invite_for_tenant(&agent_uri, Some(&sdp_offer), &agent_id.tenant_id)
+                .await
+            {
                 Ok(h) => h,
                 Err(e) => {
                     warn!(
@@ -1148,9 +1209,9 @@ impl QueueCallHandler {
                         agent = %agent_id,
                         "Caller hung up, cancelling agent INVITE"
                     );
-                    let _ = call_handle.cancel().await;
                     port_pool.deallocate(agent_port_pair).await;
                     queue_manager.agent_no_answer_for_cancel(&agent_id, &call_id).await;
+                    cancel_ring(&uac, &call_handle).await;
                     return;
                 }
             };
@@ -1186,6 +1247,13 @@ impl QueueCallHandler {
                             Ok(s) => Arc::new(s),
                             Err(e) => {
                                 warn!(error = %e, "Failed to create agent RTP socket");
+                                // The call goes back to the queue; the
+                                // agent, who answered, is hung up.
+                                let dialog = call_handle.dialog.read().await.clone();
+                                let uac = Arc::clone(&uac);
+                                tokio::spawn(async move {
+                                    let _ = uac.bye(&dialog).await;
+                                });
                                 port_pool.deallocate(agent_port_pair).await;
                                 Self::return_to_waiting(
                                     &call_id,
@@ -1209,16 +1277,43 @@ impl QueueCallHandler {
                             .await;
                     }
 
-                    // Get the agent's dialog
+                    // The agent's dialog is the session's from the 200 on.
+                    // Saved only once the legs were connected, the agent's
+                    // BYE during the connect prompt or the recording
+                    // announcement found no session and was refused 481,
+                    // and a caller hanging up then left the agent on the
+                    // line, on a call for good (`docs/DEEP_TESTING.md` D8).
                     let agent_dialog = call_handle.dialog.read().await.clone();
-
-                    // Update QueueManager
+                    let kept = match sessions.get_mut(&call_id) {
+                        Some(mut session) => {
+                            session.agent_dialog = Some(agent_dialog.clone());
+                            session.agent_port_pair = Some(agent_port_pair);
+                            session.agent_answered_at = Some(Instant::now());
+                            true
+                        }
+                        None => false,
+                    };
+                    // After the store: a caller leaving from here on sends
+                    // the agent to wrap-up through `remove_session`.
                     queue_manager.agent_answered(&agent_id, &call_id).await;
+                    if !kept {
+                        info!(call_id = %call_id, agent = %agent_id, "The caller left as the agent answered; ending the agent's leg");
+                        queue_manager.agent_call_completed(&agent_id);
+                        let uac = Arc::clone(&uac);
+                        let dialog = agent_dialog.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = uac.bye(&dialog).await {
+                                warn!(error = %e, "Failed to send BYE to agent");
+                            }
+                        });
+                        port_pool.deallocate(agent_port_pair).await;
+                        return;
+                    }
 
                     // Play connect prompt to caller if configured
                     if let Some(ref pc) = prompt_cache {
                         if let Some(session) = sessions.get(&call_id) {
-                            let queue_name = session.queue_name.clone();
+                            let queue_name = session.queue_key();
                             let codec_name = session.codec_name.clone();
                             let pt = session.payload_type;
                             let caller_socket = Arc::clone(&session.rtp_socket);
@@ -1245,7 +1340,7 @@ impl QueueCallHandler {
                                 codec: session.codec_name.clone(),
                                 payload_type: session.payload_type,
                             },
-                            session.queue_name.clone(),
+                            session.queue_key(),
                             session.tenant_id,
                             session.b2bua_call_id,
                         )
@@ -1289,12 +1384,15 @@ impl QueueCallHandler {
                                 session.recording_path = bridge.recording_path;
                                 session.recording_consent = bridge.recording_consent;
                                 session.state = QueueCallState::Connected;
-                                session.agent_answered_at = Some(Instant::now());
                                 session.agent_codec_name = Some(agent_codec_name.clone());
                                 session.agent_port_pair = Some(agent_port_pair);
                                 session.agent_rtp_socket = Some(agent_rtp_socket);
                                 session.agent_dialog = Some(agent_dialog);
-                                session.ringing_agent = None;
+                                // Kept: the agent on the call, whose call
+                                // ends with the session (wrap-up, then
+                                // available) and whom the record names.
+                                // Cleared, the agent stayed on a call for
+                                // good (`docs/DEEP_TESTING.md` D8).
                                 session.ring_task_handle = None;
                             }
                             (Some(bridge), None) => {
@@ -1351,7 +1449,6 @@ impl QueueCallHandler {
                         timeout_secs = ring_timeout_secs,
                         "Agent ring timeout, cancelling INVITE"
                     );
-                    let _ = call_handle.cancel().await;
                     port_pool.deallocate(agent_port_pair).await;
                     Self::return_to_waiting(
                         &call_id,
@@ -1361,6 +1458,7 @@ impl QueueCallHandler {
                         announce_config.clone(),
                     )
                     .await;
+                    cancel_ring(&uac, &call_handle).await;
                 }
             }
         })
@@ -1369,7 +1467,7 @@ impl QueueCallHandler {
     /// Return a call to WaitingInQueue state after a failed agent attempt.
     async fn return_to_waiting(
         call_id: &str,
-        agent_id: &str,
+        agent_id: &AgentKey,
         sessions: &DashMap<String, QueueSession>,
         queue_manager: &QueueManager,
         announce: Option<AnnounceConfig>,
@@ -1441,7 +1539,10 @@ impl QueueCallHandler {
                 session.enqueued_at,
                 session.agent_answered_at,
                 session.state,
-                session.ringing_agent.as_deref(),
+                session
+                    .ringing_agent
+                    .as_ref()
+                    .map(|agent| agent.id.as_str()),
                 session.recording_path.as_deref(),
                 session.recording_consent,
                 &self.node_id,
@@ -1457,13 +1558,17 @@ impl QueueCallHandler {
                 dtmf.abort();
             }
 
-            // Send cancel signal to ring task (triggers SIP CANCEL to agent)
-            if let Some(cancel_tx) = session.ring_cancel_tx {
-                let _ = cancel_tx.send(());
-            }
+            // Send cancel signal to ring task (triggers SIP CANCEL to agent).
+            // A ring task that takes it is left to CANCEL the agent — and to
+            // hang up one whose answer crossed the CANCEL: aborted, it sent
+            // neither, and the agent's phone rang on, or was answered onto
+            // nobody. The signal waits for a task not yet at its select!.
+            let signalled = session
+                .ring_cancel_tx
+                .is_some_and(|cancel_tx| cancel_tx.send(()).is_ok());
 
-            // Abort ring task as fallback (in case select! hasn't started yet)
-            if let Some(ring_task) = session.ring_task_handle {
+            // Abort a ring task that could not be told
+            if let Some(ring_task) = session.ring_task_handle.filter(|_| !signalled) {
                 ring_task.abort();
             }
 
@@ -1563,8 +1668,10 @@ impl QueueCallHandler {
                 }
             });
 
-            // Notify QueueManager if still in queue
-            if session.state != QueueCallState::Connected
+            // Notify QueueManager if still in queue; an agent who answered
+            // is on the call, connected yet or not.
+            if session.agent_answered_at.is_none()
+                && session.state != QueueCallState::Connected
                 && session.state != QueueCallState::OverflowedToDestination
             {
                 let qm = self.queue_manager.clone();
@@ -1610,15 +1717,19 @@ impl QueueCallHandler {
             .context("Failed to allocate RTP port for supervisor")?;
 
         // Build SDP offer for supervisor
-        let codec_name = {
+        let (codec_name, tenant_id) = {
             let session = self.sessions.get(call_id).context("Call not found")?;
-            session.codec_name.clone()
+            (session.codec_name.clone(), session.tenant_id)
         };
         let sdp_offer = build_sdp_offer(&self.local_addr, sup_port_pair.rtp_port, &codec_name);
 
-        // INVITE the supervisor
+        // INVITE the supervisor, in the call's tenant
         let sup_uri = format!("sip:{}@{}", supervisor_ext, extract_domain(&self.local_uri));
-        let call_handle = match self.uac.invite(&sup_uri, Some(&sdp_offer)).await {
+        let call_handle = match self
+            .uac
+            .invite_for_tenant(&sup_uri, Some(&sdp_offer), &tenant_id)
+            .await
+        {
             Ok(h) => h,
             Err(e) => {
                 self.port_pool.deallocate(sup_port_pair).await;
@@ -1845,11 +1956,13 @@ impl QueueCallHandler {
         if let Some(target_queue) = overflow_dest.strip_prefix("queue:") {
             let from_queue = {
                 let session = self.sessions.get(call_id).context("Session not found")?;
-                session.queue_name.clone()
+                session.queue_key()
             };
+            // Only to a queue of the caller's own tenant.
+            let to_queue = QueueKey::new(from_queue.tenant_id, target_queue);
             let position = self
                 .queue_manager
-                .transfer_to_queue(call_id, &from_queue, target_queue)
+                .transfer_to_queue(call_id, &from_queue, &to_queue)
                 .await?;
 
             // Update session's queue_name
@@ -1877,7 +1990,7 @@ impl QueueCallHandler {
             (
                 session.codec_name.clone(),
                 Arc::clone(&session.rtp_socket),
-                session.queue_name.clone(),
+                session.queue_key(),
                 session.tenant_id,
             )
         };
@@ -1895,7 +2008,11 @@ impl QueueCallHandler {
         let sdp_offer = build_sdp_offer(&self.local_addr, b_port_pair.rtp_port, &codec_name);
 
         // INVITE the overflow destination
-        let call_handle = match self.uac.invite(&dest_uri, Some(&sdp_offer)).await {
+        let call_handle = match self
+            .uac
+            .invite_for_tenant(&dest_uri, Some(&sdp_offer), &tenant_id)
+            .await
+        {
             Ok(h) => h,
             Err(e) => {
                 self.port_pool.deallocate(b_port_pair).await;
@@ -1972,7 +2089,7 @@ impl QueueCallHandler {
                 // Publish overflow event
                 fcp_queue::events::caller_overflowed(
                     &Some(Arc::clone(&self.event_bus)),
-                    &queue_name,
+                    &queue_name.name,
                     call_id,
                     overflow_dest,
                     reason,
@@ -2030,20 +2147,31 @@ impl QueueCallHandler {
 
 #[async_trait::async_trait]
 impl fcp_sip::queue::QueueHandler for QueueCallHandler {
-    async fn can_handle(&self, request: &sip_core::Request) -> bool {
+    fn extension_of(&self, tenant_id: &fcp_core::TenantId, queue: &str) -> Option<String> {
+        if !self.queue_manager.is_enabled() {
+            return None;
+        }
+        if let Some(config) = self
+            .queue_manager
+            .get_queue_config(&QueueKey::new(*tenant_id, queue))
+        {
+            return Some(config.extension);
+        }
+        self.queue_manager
+            .get_queue_for_extension_in_tenant(tenant_id, queue)
+            .map(|_| queue.to_string())
+    }
+
+    async fn can_handle(&self, request: &sip_core::Request, tenant_id: &TenantId) -> bool {
         if !self.queue_manager.is_enabled() {
             return false;
         }
-        let tenant_id = match self.resolve_tenant(request).await {
-            Ok(tenant_id) => tenant_id,
-            Err(_) => return false,
-        };
         let extension = match Self::extract_extension(request) {
             Some(ext) => ext,
             None => return false,
         };
         self.queue_manager
-            .get_queue_for_extension_in_tenant(&tenant_id, &extension)
+            .get_queue_for_extension_in_tenant(tenant_id, &extension)
             .is_some()
     }
 
@@ -2058,7 +2186,17 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         let extension = Self::extract_extension(request)
             .context("Failed to extract extension from Request-URI")?;
         let call_id = Self::extract_call_id(request);
-        let tenant_id = match self.resolve_tenant(request).await {
+        // The call's tenant, as the B2BUA decided it: a registered caller's
+        // is its registration's, whatever address it dialed.
+        let call_tenant = self
+            .call_manager
+            .get_call(&b2bua_call_id)
+            .map(|call| call.tenant_id);
+        let resolved = match call_tenant {
+            Some(tenant_id) => Ok(tenant_id),
+            None => self.resolve_tenant(request).await,
+        };
+        let tenant_id = match resolved {
             Ok(tenant_id) => tenant_id,
             Err(e) => {
                 warn!(call_id = %call_id, error = %e, "Rejecting queue INVITE: tenant resolution failed");
@@ -2252,7 +2390,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         let queued_call = QueuedCall {
             id: uuid::Uuid::new_v4().to_string(),
             call_id: call_id.clone(),
-            queue_name: queue_name.clone(),
+            queue_name: queue_name.name.clone(),
             tenant_id,
             caller_uri: caller_uri.clone(),
             caller_display: caller_display.clone(),
@@ -2293,7 +2431,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                         call_id.clone(),
                         QueueSession {
                             call_id: call_id.clone(),
-                            queue_name: queue_name.clone(),
+                            queue_name: queue_name.name.clone(),
                             tenant_id,
                             caller_uri,
                             caller_display,
@@ -2394,7 +2532,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             call_id.clone(),
             QueueSession {
                 call_id,
-                queue_name,
+                queue_name: queue_name.name,
                 tenant_id,
                 caller_uri,
                 caller_display,
@@ -2456,6 +2594,35 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 }
                 return Ok(());
             }
+            // The agent hung up: so is the caller. Only the caller's own
+            // BYE was matched, and a caller whose agent hung up stayed on
+            // the line until they hung up too (`docs/DEEP_TESTING.md` D8).
+            let caller_call_id = self
+                .sessions
+                .iter()
+                .find(|s| {
+                    s.agent_dialog
+                        .as_ref()
+                        .is_some_and(|d| d.id().call_id() == call_id)
+                })
+                .map(|s| s.key().clone());
+            if let Some(caller_call_id) = caller_call_id {
+                info!(call_id = %caller_call_id, "The agent hung up; ending the caller's call");
+                let caller_dialog = self.sessions.get_mut(&caller_call_id).map(|mut s| {
+                    s.agent_dialog = None;
+                    s.dialog.clone()
+                });
+                self.remove_session(&caller_call_id);
+                if let Some(dialog) = caller_dialog {
+                    let uac = Arc::clone(&self.uac);
+                    tokio::spawn(async move {
+                        if let Err(e) = uac.bye(&dialog).await {
+                            warn!(error = %e, "Failed to send BYE to the queue caller");
+                        }
+                    });
+                }
+                return Ok(());
+            }
             anyhow::bail!("No queue session for call_id: {}", call_id)
         }
     }
@@ -2471,20 +2638,26 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
     }
 
     async fn agent_login(&self, extension: &str, tenant_id: &TenantId) -> Result<()> {
-        // Find which queues this extension belongs to from config
-        let config = self.queue_manager.get_system_config();
-        // A queue may take its agents from a group (docs/USERS.md §5): the
-        // caller's groups, asked only when some queue has one.
-        let groups = if config.queues.values().any(|qc| qc.agent_group_id.is_some()) {
-            self.groups_of_extension(extension, tenant_id).await
-        } else {
-            Vec::new()
+        // Find which of the tenant's queues this extension belongs to
+        let queues = self.queue_manager.queue_configs_for_tenant(tenant_id);
+        // A phone dials in by its user's name; a queue may list that user
+        // by name or by extension, or take its agents from a group
+        // (docs/USERS.md §5).
+        let user = self.user_of_extension(extension, tenant_id).await;
+        let groups = match &user {
+            Some(user) if queues.iter().any(|(_, qc)| qc.agent_group_id.is_some()) => {
+                self.groups_of_user(user).await
+            }
+            _ => Vec::new(),
         };
-        let queue_names: Vec<String> = config
-            .queues
+        let names: Vec<&str> = std::iter::once(extension)
+            .chain(user.iter().map(|u| u.username.as_str()))
+            .chain(user.iter().filter_map(|u| u.extension.as_deref()))
+            .collect();
+        let queue_names: Vec<String> = queues
             .iter()
             .filter(|(_, qc)| {
-                qc.agents.contains(&extension.to_string())
+                qc.agents.iter().any(|a| names.contains(&a.as_str()))
                     || qc
                         .agent_group_id
                         .as_ref()
@@ -2507,21 +2680,27 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         );
 
         // Look up skills from config for this agent extension
-        let skills = config
-            .queues
-            .values()
-            .find_map(|qc| qc.agent_skills.get(extension))
+        let skills = queues
+            .iter()
+            .find_map(|(_, qc)| qc.agent_skills.get(extension))
             .cloned()
             .unwrap_or_default();
 
         self.queue_manager
-            .agent_login(extension, extension, &queue_names, *tenant_id, skills)
+            .agent_login(
+                &AgentKey::new(*tenant_id, extension),
+                extension,
+                &queue_names,
+                skills,
+            )
             .await
     }
 
-    async fn agent_logout(&self, extension: &str) -> Result<()> {
+    async fn agent_logout(&self, extension: &str, tenant_id: &TenantId) -> Result<()> {
         info!(extension = %extension, "Agent logging out via feature code");
-        self.queue_manager.agent_logout(extension).await
+        self.queue_manager
+            .agent_logout(&AgentKey::new(*tenant_id, extension))
+            .await
     }
 }
 
@@ -3240,7 +3419,7 @@ fn spawn_callback_ring(
     local_uri: String,
     uac: Arc<SipUserAgentClient>,
     event_bus: Arc<dyn EventPublisher>,
-    queue_name: String,
+    queue_name: QueueKey,
     queue_tenant_id: TenantId,
 ) {
     tokio::spawn(async move {
@@ -3270,7 +3449,10 @@ fn spawn_callback_ring(
         let agent_uri = format!("sip:{}@{}", agent_extension, domain);
         let sdp_offer = build_sdp_offer(&local_addr, agent_port_pair.rtp_port, "PCMU");
 
-        let agent_handle = match uac.invite(&agent_uri, Some(&sdp_offer)).await {
+        let agent_handle = match uac
+            .invite_for_tenant(&agent_uri, Some(&sdp_offer), &tenant_id)
+            .await
+        {
             Ok(h) => h,
             Err(e) => {
                 warn!(call_id = %call_id, error = %e, "Callback: failed to INVITE agent");
@@ -3293,9 +3475,9 @@ fn spawn_callback_ring(
                 return;
             }
             Err(_) => {
-                let _ = agent_handle.cancel().await;
                 port_pool.deallocate(agent_port_pair).await;
                 queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                cancel_ring(&uac, &agent_handle).await;
                 return;
             }
         };
@@ -3350,7 +3532,10 @@ fn spawn_callback_ring(
         let cb_sdp = build_sdp_offer(&local_addr, callback_port_pair.rtp_port, "PCMU");
         let cb_dest = parse_overflow_destination(&callback_uri, &domain);
 
-        let cb_handle = match uac.invite(&cb_dest, Some(&cb_sdp)).await {
+        let cb_handle = match uac
+            .invite_for_tenant(&cb_dest, Some(&cb_sdp), &tenant_id)
+            .await
+        {
             Ok(h) => h,
             Err(e) => {
                 warn!(call_id = %call_id, error = %e, "Callback: failed to INVITE callback URI");
@@ -3367,7 +3552,7 @@ fn spawn_callback_ring(
                     .unwrap_or(0);
                 fcp_queue::events::callback_attempted(
                     &events,
-                    &queue_name,
+                    &queue_name.name,
                     &call_id,
                     &callback_uri,
                     attempts,
@@ -3401,7 +3586,7 @@ fn spawn_callback_ring(
                     .unwrap_or(0);
                 fcp_queue::events::callback_attempted(
                     &events,
-                    &queue_name,
+                    &queue_name.name,
                     &call_id,
                     &callback_uri,
                     attempts,
@@ -3411,8 +3596,8 @@ fn spawn_callback_ring(
                 return;
             }
             Err(_) => {
-                let _ = cb_handle.cancel().await;
                 let _ = uac.bye(&agent_dialog).await;
+                cancel_ring(&uac, &cb_handle).await;
                 port_pool.deallocate(agent_port_pair).await;
                 port_pool.deallocate(callback_port_pair).await;
                 // Stage 2 timeout — don't penalize agent
@@ -3425,7 +3610,7 @@ fn spawn_callback_ring(
                     .unwrap_or(0);
                 fcp_queue::events::callback_attempted(
                     &events,
-                    &queue_name,
+                    &queue_name.name,
                     &call_id,
                     &callback_uri,
                     attempts,
@@ -3478,10 +3663,10 @@ fn spawn_callback_ring(
         // Publish CallbackCompleted event
         fcp_queue::events::callback_completed(
             &events,
-            &queue_name,
+            &queue_name.name,
             &call_id,
             &callback_uri,
-            &agent_id,
+            &agent_id.id,
             cb_attempts + 1,
             &tenant_id,
         )
@@ -3551,7 +3736,7 @@ fn spawn_dtmf_listener(
     callback_enabled: bool,
     callback_digit: Option<String>,
     caller_uri: String,
-    queue_name: String,
+    queue_name: QueueKey,
     sessions: Arc<DashMap<String, QueueSession>>,
     queue_manager: Arc<QueueManager>,
     uac: Arc<SipUserAgentClient>,
@@ -3634,7 +3819,7 @@ fn spawn_dtmf_listener(
                             // Publish callback event
                             fcp_queue::events::callback_initiated(
                                 &Some(Arc::clone(&event_bus)),
-                                &queue_name,
+                                &queue_name.name,
                                 &call_id,
                                 &caller_uri,
                                 &queue_manager
@@ -3689,7 +3874,7 @@ fn spawn_dtmf_listener(
 async fn overflow_expired_call_multi(
     call_id: &str,
     destinations: &[String],
-    queue_name: &str,
+    queue_name: &QueueKey,
     sessions: &Arc<DashMap<String, QueueSession>>,
     queue_manager: &Arc<QueueManager>,
     uac: &Arc<SipUserAgentClient>,
@@ -3743,7 +3928,7 @@ async fn overflow_expired_call_multi(
 async fn overflow_expired_call_single(
     call_id: &str,
     overflow_dest: &str,
-    queue_name: &str,
+    queue_name: &QueueKey,
     sessions: &Arc<DashMap<String, QueueSession>>,
     queue_manager: &Arc<QueueManager>,
     uac: &Arc<SipUserAgentClient>,
@@ -3755,7 +3940,11 @@ async fn overflow_expired_call_single(
     // Queue chaining: if destination is "queue:<name>", transfer to another queue
     if let Some(target_queue) = overflow_dest.strip_prefix("queue:") {
         match queue_manager
-            .transfer_to_queue(call_id, queue_name, target_queue)
+            .transfer_to_queue(
+                call_id,
+                queue_name,
+                &QueueKey::new(queue_name.tenant_id, target_queue),
+            )
             .await
         {
             Ok(position) => {
@@ -3810,7 +3999,10 @@ async fn overflow_expired_call_single(
     let sdp_offer = build_sdp_offer(local_addr, b_port_pair.rtp_port, &codec_name);
 
     // INVITE the overflow destination
-    let call_handle = match uac.invite(&dest_uri, Some(&sdp_offer)).await {
+    let call_handle = match uac
+        .invite_for_tenant(&dest_uri, Some(&sdp_offer), &tenant_id)
+        .await
+    {
         Ok(h) => h,
         Err(e) => {
             warn!(call_id = %call_id, error = %e, "Failed to INVITE overflow dest");
@@ -3878,7 +4070,7 @@ async fn overflow_expired_call_single(
 
             fcp_queue::events::caller_overflowed(
                 &Some(Arc::clone(event_bus)),
-                queue_name,
+                &queue_name.name,
                 call_id,
                 overflow_dest,
                 "max_wait_time",
@@ -4063,7 +4255,7 @@ fn queue_record(
 async fn campaign_dial_task(
     destination: String,
     _number: fcp_queue::CampaignNumber,
-    queue_name: String,
+    queue_name: QueueKey,
     queue_manager: Arc<QueueManager>,
     uac: Arc<SipUserAgentClient>,
     event_bus: Arc<dyn EventPublisher>,
@@ -4093,7 +4285,7 @@ async fn campaign_dial_task(
             );
             fcp_queue::events::campaign_call_failed(
                 &Some(Arc::clone(&event_bus)),
-                &queue_name,
+                &queue_name.name,
                 &destination,
                 "port_allocation_failed",
                 &tenant_id,
@@ -4111,7 +4303,10 @@ async fn campaign_dial_task(
         format!("sip:{}@{}", destination, extract_domain(&local_uri))
     };
 
-    let call_handle = match uac.invite(&dest_uri, Some(&sdp_offer)).await {
+    let call_handle = match uac
+        .invite_for_tenant(&dest_uri, Some(&sdp_offer), &tenant_id)
+        .await
+    {
         Ok(h) => h,
         Err(e) => {
             warn!(dest = %destination, queue = %queue_name, error = %e, "Campaign: INVITE failed");
@@ -4123,7 +4318,7 @@ async fn campaign_dial_task(
             );
             fcp_queue::events::campaign_call_failed(
                 &Some(Arc::clone(&event_bus)),
-                &queue_name,
+                &queue_name.name,
                 &destination,
                 "invite_failed",
                 &tenant_id,
@@ -4182,7 +4377,10 @@ async fn campaign_dial_task(
                     );
                     let agent_ring_timeout = Duration::from_secs(ring_timeout_secs as u64);
 
-                    match uac.invite(&agent_uri, Some(&agent_sdp)).await {
+                    match uac
+                        .invite_for_tenant(&agent_uri, Some(&agent_sdp), &tenant_id)
+                        .await
+                    {
                         Ok(agent_handle) => {
                             match tokio::time::timeout(
                                 agent_ring_timeout,
@@ -4207,9 +4405,9 @@ async fn campaign_dial_task(
                                     );
                                     fcp_queue::events::campaign_call_connected(
                                         &Some(Arc::clone(&event_bus)),
-                                        &queue_name,
+                                        &queue_name.name,
                                         &destination,
-                                        &agent_id,
+                                        &agent_id.id,
                                         &tenant_id,
                                     )
                                     .await;
@@ -4354,7 +4552,7 @@ async fn campaign_dial_task(
                                         callee_call_id.clone(),
                                         QueueSession {
                                             call_id: callee_call_id.clone(),
-                                            queue_name: queue_name.clone(),
+                                            queue_name: queue_name.name.clone(),
                                             tenant_id,
                                             caller_uri: destination.clone(),
                                             caller_display: None,
@@ -4416,7 +4614,7 @@ async fn campaign_dial_task(
                                     );
                                     fcp_queue::events::campaign_call_failed(
                                         &Some(Arc::clone(&event_bus)),
-                                        &queue_name,
+                                        &queue_name.name,
                                         &destination,
                                         "abandoned",
                                         &tenant_id,
@@ -4453,7 +4651,7 @@ async fn campaign_dial_task(
                     );
                     fcp_queue::events::campaign_call_failed(
                         &Some(Arc::clone(&event_bus)),
-                        &queue_name,
+                        &queue_name.name,
                         &destination,
                         "abandoned",
                         &tenant_id,
@@ -4475,7 +4673,7 @@ async fn campaign_dial_task(
             );
             fcp_queue::events::campaign_call_failed(
                 &Some(Arc::clone(&event_bus)),
-                &queue_name,
+                &queue_name.name,
                 &destination,
                 "busy",
                 &tenant_id,
@@ -4493,7 +4691,7 @@ async fn campaign_dial_task(
             );
             fcp_queue::events::campaign_call_failed(
                 &Some(Arc::clone(&event_bus)),
-                &queue_name,
+                &queue_name.name,
                 &destination,
                 "failed",
                 &tenant_id,
@@ -4511,7 +4709,7 @@ async fn campaign_dial_task(
             );
             fcp_queue::events::campaign_call_failed(
                 &Some(Arc::clone(&event_bus)),
-                &queue_name,
+                &queue_name.name,
                 &destination,
                 "error",
                 &tenant_id,
@@ -4521,7 +4719,6 @@ async fn campaign_dial_task(
         Err(_) => {
             // Ring timeout — no answer
             info!(dest = %destination, queue = %queue_name, "Campaign call no answer (timeout)");
-            let _ = call_handle.cancel().await;
             port_pool.deallocate(outbound_pp).await;
             queue_manager.campaign_call_result(
                 &queue_name,
@@ -4530,12 +4727,13 @@ async fn campaign_dial_task(
             );
             fcp_queue::events::campaign_call_failed(
                 &Some(Arc::clone(&event_bus)),
-                &queue_name,
+                &queue_name.name,
                 &destination,
                 "no_answer",
                 &tenant_id,
             )
             .await;
+            cancel_ring(&uac, &call_handle).await;
         }
     }
 }

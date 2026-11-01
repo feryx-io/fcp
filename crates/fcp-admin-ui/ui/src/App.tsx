@@ -1,3 +1,4 @@
+import { TenantScope } from '@/components/TenantSelector'
 import { lazy, Suspense } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
@@ -24,6 +25,7 @@ const PresencePage = lazy(() => import('@/pages/PresencePage').then((m) => ({ de
 const ConferencesPage = lazy(() => import('@/pages/ConferencesPage').then((m) => ({ default: m.ConferencesPage })))
 const TrunksPage = lazy(() => import('@/pages/TrunksPage').then((m) => ({ default: m.TrunksPage })))
 const RoutingPage = lazy(() => import('@/pages/RoutingPage').then((m) => ({ default: m.RoutingPage })))
+const ParkingPage = lazy(() => import('@/pages/ParkingPage').then((m) => ({ default: m.ParkingPage })))
 const HotelingPage = lazy(() => import('@/pages/HotelingPage').then((m) => ({ default: m.HotelingPage })))
 const ClassesOfServicePage = lazy(() => import('@/pages/ClassesOfServicePage').then((m) => ({ default: m.ClassesOfServicePage })))
 const GroupsPage = lazy(() => import('@/pages/GroupsPage').then((m) => ({ default: m.GroupsPage })))
@@ -38,6 +40,8 @@ const FlowTracesPage = lazy(() => import('@/pages/FlowTracesPage').then((m) => (
 const RegistrationsPage = lazy(() => import('@/pages/RegistrationsPage').then((m) => ({ default: m.RegistrationsPage })))
 const EventsPage = lazy(() => import('@/pages/EventsPage').then((m) => ({ default: m.EventsPage })))
 const SitesPage = lazy(() => import('@/pages/SitesPage').then((m) => ({ default: m.SitesPage })))
+const ServicesPage = lazy(() => import('@/pages/ServicesPage').then((m) => ({ default: m.ServicesPage })))
+const ServicePage = lazy(() => import('@/pages/ServicesPage').then((m) => ({ default: m.ServicePage })))
 const ClusterPage = lazy(() => import('@/pages/ClusterPage').then((m) => ({ default: m.ClusterPage })))
 const AuditLogPage = lazy(() => import('@/pages/AuditLogPage').then((m) => ({ default: m.AuditLogPage })))
 const CompliancePage = lazy(() => import('@/pages/CompliancePage').then((m) => ({ default: m.CompliancePage })))
@@ -55,6 +59,7 @@ const SipLadderPage = lazy(() => import('@/pages/SipLadderPage').then((m) => ({ 
 const UserDashboardPage = lazy(() => import('@/pages/user/UserDashboardPage').then((m) => ({ default: m.UserDashboardPage })))
 const UserVoicemailPage = lazy(() => import('@/pages/user/UserVoicemailPage').then((m) => ({ default: m.UserVoicemailPage })))
 const UserCallingPage = lazy(() => import('@/pages/user/UserCallingPage').then((m) => ({ default: m.UserCallingPage })))
+const UserContactsPage = lazy(() => import('@/pages/user/UserContactsPage').then((m) => ({ default: m.UserContactsPage })))
 const UserDevicesPage = lazy(() => import('@/pages/user/UserDevicesPage').then((m) => ({ default: m.UserDevicesPage })))
 const UserApiTokensPage = lazy(() => import('@/pages/user/UserApiTokensPage').then((m) => ({ default: m.UserApiTokensPage })))
 const UserSettingsPage = lazy(() => import('@/pages/user/UserSettingsPage').then((m) => ({ default: m.UserSettingsPage })))
@@ -145,19 +150,22 @@ export function App() {
               <Route path="prompts" element={<Suspense fallback={<PageLoader />}><PromptsPage /></Suspense>} />
               <Route path="events" element={<Suspense fallback={<PageLoader />}><EventsPage /></Suspense>} />
               {/* Advanced */}
-              <Route path="trunks" element={<Suspense fallback={<PageLoader />}><TrunksPage /></Suspense>} />
-              <Route path="routing" element={<Suspense fallback={<PageLoader />}><RoutingPage /></Suspense>} />
-              <Route path="schedules" element={<Suspense fallback={<PageLoader />}><SchedulesPage /></Suspense>} />
+              <Route path="trunks" element={<Suspense fallback={<PageLoader />}><TenantScope what="Trunks"><TrunksPage /></TenantScope></Suspense>} />
+              <Route path="routing" element={<Suspense fallback={<PageLoader />}><TenantScope what="Routing rules"><RoutingPage /></TenantScope></Suspense>} />
+              <Route path="schedules" element={<Suspense fallback={<PageLoader />}><TenantScope what="Schedules"><SchedulesPage /></TenantScope></Suspense>} />
               <Route path="groups" element={<Suspense fallback={<PageLoader />}><GroupsPage /></Suspense>} />
               <Route path="templates" element={<Suspense fallback={<PageLoader />}><TemplatesPage /></Suspense>} />
               <Route path="firmware" element={<Suspense fallback={<PageLoader />}><FirmwarePage /></Suspense>} />
               <Route path="branding" element={<Suspense fallback={<PageLoader />}><BrandingPage /></Suspense>} />
-              <Route path="classes-of-service" element={<Suspense fallback={<PageLoader />}><ClassesOfServicePage /></Suspense>} />
+              <Route path="classes-of-service" element={<Suspense fallback={<PageLoader />}><TenantScope what="Classes of service"><ClassesOfServicePage /></TenantScope></Suspense>} />
               <Route path="hoteling" element={<Suspense fallback={<PageLoader />}><HotelingPage /></Suspense>} />
-              <Route path="lcr" element={<Suspense fallback={<PageLoader />}><LcrRoutesPage /></Suspense>} />
-              <Route path="flows" element={<Suspense fallback={<PageLoader />}><FlowsPage /></Suspense>} />
-              <Route path="flows/:id" element={<Suspense fallback={<PageLoader />}><FlowBuilderPage /></Suspense>} />
+              <Route path="parking" element={<Suspense fallback={<PageLoader />}><TenantScope what="Parking lots"><ParkingPage /></TenantScope></Suspense>} />
+              <Route path="lcr" element={<Suspense fallback={<PageLoader />}><TenantScope what="Least-cost routes"><LcrRoutesPage /></TenantScope></Suspense>} />
+              <Route path="flows" element={<Suspense fallback={<PageLoader />}><TenantScope what="Flows"><FlowsPage /></TenantScope></Suspense>} />
+              <Route path="flows/:id" element={<Suspense fallback={<PageLoader />}><TenantScope what="Flows"><FlowBuilderPage /></TenantScope></Suspense>} />
               <Route path="flow-traces" element={<Suspense fallback={<PageLoader />}><FlowTracesPage /></Suspense>} />
+              <Route path="services" element={<Suspense fallback={<PageLoader />}><ServicesPage /></Suspense>} />
+              <Route path="services/:id" element={<Suspense fallback={<PageLoader />}><ServicePage /></Suspense>} />
               <Route path="cluster" element={<Suspense fallback={<PageLoader />}><ClusterPage /></Suspense>} />
               <Route path="sites" element={<Suspense fallback={<PageLoader />}><SitesPage /></Suspense>} />
               <Route path="compliance" element={<Suspense fallback={<PageLoader />}><CompliancePage /></Suspense>} />
@@ -182,6 +190,7 @@ export function App() {
               <Route index element={<Suspense fallback={<PageLoader />}><UserDashboardPage /></Suspense>} />
               <Route path="voicemail" element={<Suspense fallback={<PageLoader />}><UserVoicemailPage /></Suspense>} />
               <Route path="calling" element={<Suspense fallback={<PageLoader />}><UserCallingPage /></Suspense>} />
+              <Route path="contacts" element={<Suspense fallback={<PageLoader />}><UserContactsPage /></Suspense>} />
               <Route path="devices" element={<Suspense fallback={<PageLoader />}><UserDevicesPage /></Suspense>} />
               <Route path="api-tokens" element={<Suspense fallback={<PageLoader />}><UserApiTokensPage /></Suspense>} />
               <Route path="conferences" element={<Suspense fallback={<PageLoader />}><UserConferencesPage /></Suspense>} />

@@ -1,8 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
-import { Users, Phone, MonitorSmartphone, PhoneCall } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Users, Phone, MonitorSmartphone, PhoneCall, HeartPulse } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { dashboard, system } from '@/api/endpoints'
+import { dashboard, services, system } from '@/api/endpoints'
 import { formatDuration } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth'
 
 export function DashboardPage() {
   const { data: summary } = useQuery({
@@ -15,6 +17,15 @@ export function DashboardPage() {
     queryKey: ['system', 'status'],
     queryFn: system.status,
     refetchInterval: 30_000,
+  })
+
+  // The platform's services (docs/SERVICES.md §3), for its administrators.
+  const platformAdmin = useAuthStore((s) => s.user?.role === 'super_admin')
+  const { data: serviceSummary } = useQuery({
+    queryKey: ['services', 'summary'],
+    queryFn: services.summary,
+    refetchInterval: 10_000,
+    enabled: platformAdmin,
   })
 
   const cards = [
@@ -77,6 +88,40 @@ export function DashboardPage() {
           )
         })}
       </div>
+
+      {platformAdmin && serviceSummary && serviceSummary.total > 0 && (
+        <ServicesTile summary={serviceSummary} />
+      )}
     </div>
+  )
+}
+
+function ServicesTile({ summary }: { summary: import('@/api/endpoints').ServicesSummary }) {
+  const notServing = summary.total - summary.serving
+  const href = notServing > 0 ? '/admin/services?state=attention' : '/admin/services'
+  return (
+    <Link to={href} className="block max-w-sm">
+      <Card className={notServing > 0 ? 'border-yellow-500 hover:bg-accent/50' : 'hover:bg-accent/50'}>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardTitle className="text-sm font-medium">Services</CardTitle>
+          <HeartPulse className="h-4 w-4 text-muted-foreground" />
+        </CardHeader>
+        <CardContent>
+          <div className="text-2xl font-bold">
+            {summary.serving} of {summary.total} serving
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {notServing === 0
+              ? 'Every service is serving'
+              : [
+                  summary.down > 0 && `${summary.down} down`,
+                  summary.attention > 0 && `${summary.attention} need attention`,
+                  summary.unknown > 0 && `${summary.unknown} unknown`,
+                ].filter(Boolean).join(', ')}
+            {!summary.redis_reachable && ' · Redis cannot be read'}
+          </p>
+        </CardContent>
+      </Card>
+    </Link>
   )
 }

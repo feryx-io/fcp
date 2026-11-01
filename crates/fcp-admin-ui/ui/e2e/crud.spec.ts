@@ -1,7 +1,7 @@
 // Each page's main object made, changed and deleted through its form, and
 // checked through the API afterwards (docs/DEEP_TESTING.md D7). As a tenant
 // administrator, who keeps these day to day.
-import { test, expect, admin, tenantAdmin, signIn, settled, type Page } from './fixtures'
+import { test, expect, admin, tenantAdmin, signIn, settled, pickTenant, type Page } from './fixtures'
 
 /** A name no earlier run used. */
 const unique = (prefix: string) => `${prefix}-${Date.now().toString(36)}`
@@ -173,6 +173,11 @@ test('a trunk is made, changed and deleted', async ({ page, api }) => {
   const name = unique('ui-trunk')
   await page.goto('/admin/trunks')
   await settled(page)
+  // A platform administrator picks the tenant the trunk is the tenant's in.
+  await expect(page.getByTestId('pick-tenant')).toBeVisible()
+  await pickTenant(page, api)
+  await expect(page.getByTestId('tenant-badge')).toBeVisible()
+  await expect(page.getByTestId('platform-trunks')).toBeVisible()
   await page.getByRole('button', { name: 'Add Trunk' }).click()
   const dialog = page.getByRole('dialog')
   await dialog.locator('#name').fill(name)
@@ -300,6 +305,33 @@ test('a prompt is made, changed and deleted', async ({ page, api }) => {
   await expect.poll(async () => find(api, '/api/v1/prompts', 'name', name)).toBeUndefined()
 })
 
+test('a system prompt is overridden and restored', async ({ page, api }) => {
+  // The platform's prompt (the static token is a platform administrator's).
+  const name = unique('ui-system')
+  const made = await api.post('/api/v1/prompts', {
+    data: { name, source_type: 'tts', tts_text: 'Goodbye.', system: true },
+  })
+  expect(made.status()).toBe(201)
+  const system = await made.json()
+
+  await page.goto('/admin/prompts')
+  await settled(page)
+  // A tenant administrator can only override it.
+  const r = await row(page, name)
+  await r.getByRole('button', { name: 'Actions' }).click()
+  await expect(page.getByRole('menuitem', { name: 'Edit', exact: true })).toHaveCount(0)
+  await page.getByRole('menuitem', { name: 'Override', exact: true }).click()
+  await expect.poll(async () => (await find(api, '/api/v1/prompts', 'overrides', system.id))?.name).toBe(name)
+
+  // The tenant's copy is listed beside it; deleting the copy restores it.
+  const copy = page.getByRole('row').filter({ hasText: name }).filter({ hasText: /Override(?!n)/ })
+  await expect(copy).toHaveCount(1)
+  acceptConfirm(page)
+  await copy.getByRole('button', { name: 'Actions' }).click()
+  await page.getByRole('menuitem', { name: 'Restore system prompt', exact: true }).click()
+  await expect.poll(async () => find(api, '/api/v1/prompts', 'overrides', system.id)).toBeUndefined()
+})
+
 test('a webhook is made, changed and deleted', async ({ page, api }) => {
   const url = `http://127.0.0.1:9/${unique('ui-hook')}`
   await page.goto('/admin/webhooks')
@@ -355,4 +387,46 @@ test('an identity provider is made, changed and deleted', async ({ page, api }) 
   acceptConfirm(page)
   await holder(page, name).getByTitle('Delete', { exact: true }).click()
   await expect.poll(async () => find(api, '/api/v1/identity-providers', 'name', name)).toBeUndefined()
+})
+
+test('a location is made with its emergency contacts, changed and deleted', async ({ page, api }) => {
+  const name = unique('ui-site')
+  await page.goto('/admin/locations')
+  await settled(page)
+  await page.getByRole('button', { name: 'Add Location' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.locator('#f-name').fill(name)
+  // Security, rung and allowed to listen in, and the front desk by email.
+  await dialog.getByRole('button', { name: 'Add contact' }).click()
+  await dialog.getByRole('combobox', { name: 'Contact kind' }).click()
+  await page.getByRole('option', { name: 'Call', exact: true }).click()
+  await dialog.getByLabel('Contact target').fill('2001')
+  await dialog.getByLabel('Contact name').fill('Security')
+  await dialog.getByLabel('May listen in').click()
+  await dialog.getByRole('button', { name: 'Add contact' }).click()
+  await dialog.getByLabel('Contact target').nth(1).fill('desk@example.com')
+  await dialog.getByLabel("Tell the tenant's contacts too").click()
+  await dialog.getByRole('button', { name: 'Add Location' }).click()
+  await expect(dialog).toBeHidden()
+  let made = await find(api, '/api/v1/locations', 'name', name)
+  expect(made, 'the location is listed').toBeTruthy()
+  expect(made!.notify_tenant_contacts).toBe(false)
+  expect(made!.emergency_contacts).toEqual([
+    { kind: 'call', target: '2001', name: 'Security', listen: true },
+    { kind: 'email', target: 'desk@example.com', listen: false },
+  ])
+
+  await rowAction(page, name, 'Edit')
+  const edit = page.getByRole('dialog')
+  await expect(edit.getByLabel('Contact target')).toHaveCount(2)
+  await edit.getByRole('button', { name: 'Remove contact' }).nth(1).click()
+  await edit.getByRole('button', { name: 'Save Changes' }).click()
+  await expect(edit).toBeHidden()
+  made = await find(api, '/api/v1/locations', 'name', name)
+  expect(made!.emergency_contacts).toHaveLength(1)
+  expect(made!.emergency_contacts[0].listen).toBe(true)
+
+  acceptConfirm(page)
+  await rowAction(page, name, 'Delete')
+  await expect.poll(async () => find(api, '/api/v1/locations', 'name', name)).toBeUndefined()
 })

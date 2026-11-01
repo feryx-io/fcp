@@ -46,6 +46,7 @@ wherever it backs up.
 | `fcp-voicemail` | `[voicemail] recordings_dir`, `greetings_dir` | `/var/fcp/voicemail/…` | `/var/lib/fcp/voicemail/…` (`voicemail-data`) |
 | `fcp-admin` | `[compliance] exports_dir` | `/var/lib/fcp/exports` | `/app/data/exports` (`admin-data`) |
 | | `[api.firmware] directory` | unset (no uploads) | `/app/data/firmware` (`admin-data`): uploaded firmware images, re-derivable by uploading them again, but the rows in `firmware_images` name them |
+| | `[api.captures] directory` | unset (no captures) | `/app/data/captures` (`admin-data`): captures apps uploaded (`docs/CALL_DIAGNOSTICS.md` §3), not re-derivable; the rows in `device_captures` name them, and a file restored without its row is never served or removed |
 | `fcp-tts` | `[tts] cache_dir` | `/tmp/fcp/tts_cache` | `/var/lib/fcp/tts_cache` (`tts-cache`; a cache) |
 | every binary that opens Postgres | `FCP_MASTER_KEY_FILE` | unset (encryption off) | `/var/lib/fcp/certs/master.key` (`fcp-certs`) |
 
@@ -344,6 +345,43 @@ Changes that need something of a configuration the operator keeps:
   runs on one host. Phones answer the challenge with the credentials they
   register with. Setting `auth_invites = false` keeps the old behaviour,
   and is warned about at every start.
+- **v0.25.453: an emergency test call (`933`) is answered by the call
+  manager** (`docs/E911.md` "Test calls"), which reads back what a live
+  call would carry and calls no carrier. Migration 120 gives every tenant
+  `test_call_mode = 'local'`. A tenant that relied on its carrier's test
+  service sets `test_call_mode` to `carrier` on `/api/v1/emergency/config`
+  or the Emergency page.
+- **v0.25.496: system prompts have no tenant** (`docs/TENANT_SCOPE.md`
+  §3.2). Migration 133 moves the prompts the call manager and conference
+  server seeded into their default tenant (`is_system`) to the platform:
+  every tenant hears them, and the default tenant's edits to them are
+  every tenant's. Where two tenants held a system row of one name and
+  language, the newer becomes the system prompt and the other stays its
+  tenant's, as an override. While an upgrade runs, a node of an earlier
+  release cannot read a prompt without a tenant: it speaks those prompts
+  with TTS, and an earlier admin answers 500 on its prompt list, until it
+  is upgraded. New system prompt audio goes under `<prompts_dir>/system/`;
+  files already under the default tenant's directory stay where they are.
+- **v0.25.497: an audit row belongs to the tenant acted on**
+  (`docs/TENANT_SCOPE.md` §3.3, `docs/COMPLIANCE.md`). From this release
+  a platform administrator's action on a tenant is that tenant's row, and
+  the platform's own actions have no tenant. Rows written before it stay
+  under the actor's tenant: a platform administrator's earlier actions on
+  other tenants are in the platform administrator's own tenant (the
+  default tenant for the static token), and those tenants' administrators
+  do not see them. Migration 134 adds `actor_tenant_id`, empty on the
+  earlier rows.
+- **v0.25.498: tokens without a maker are held to a tenant administrator**
+  (`docs/API_TOKENS.md`, `docs/TENANT_SCOPE.md` §3.7). A token made with
+  the static token or before makers were recorded — a legacy `admin` or
+  `*` token among them — no longer reaches system configuration (`/config`,
+  encryption, firmware images) or tenant creation. An integration that used
+  one for those uses the static token instead; for anything else, replace
+  the token with one made by a person and scoped to what it needs. The same
+  release refuses a call another tenant's flow (a flow without a tenant is
+  still anyone's until assigned on the Flows page), parks `*70` in the lot
+  of the parker's location, and marks bound numbers `assigned`
+  (migration 135).
 
 ### 5.5 Proved
 

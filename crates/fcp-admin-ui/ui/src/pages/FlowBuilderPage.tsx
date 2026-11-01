@@ -21,6 +21,7 @@ import {
   Upload, Volume2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useThemeStore } from '@/stores/theme'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
@@ -80,7 +81,7 @@ const HIDDEN_FIELDS = new Set(['type', 'label', 'id', 'name'])
 const NODE_REF_FIELDS = new Set([
   'next', 'on_error', 'on_busy', 'on_no_answer', 'on_timeout',
   'default', 'if_true', 'if_false', 'next_on_success', 'next_on_error',
-  'on_auth_failure',
+  'on_auth_failure', 'on_max_attempts',
 ])
 
 // Boolean fields
@@ -92,8 +93,20 @@ const MAP_FIELDS = new Set(['transitions', 'branches', 'speech_transitions'])
 // Numeric fields
 const NUMERIC_FIELDS = new Set([
   'loop_count', 'num_digits', 'timeout', 'max_duration',
-  'max_pin_attempts', 'duration', 'speech_timeout_ms',
+  'max_pin_attempts', 'duration', 'speech_timeout_ms', 'max_attempts',
 ])
+
+// A Gather's prompts: the menu's own, and the two played before it is
+// asked again
+const PROMPT_FIELDS = new Set(['prompt', 'no_input_prompt', 'invalid_prompt'])
+
+// A Gather's retry fields, shown on every menu even before they are set
+const GATHER_RETRY_FIELDS: Record<string, unknown> = {
+  max_attempts: undefined,
+  no_input_prompt: undefined,
+  invalid_prompt: undefined,
+  on_max_attempts: undefined,
+}
 
 // Select field options
 const SELECT_OPTIONS: Record<string, { label: string; value: string }[]> = {
@@ -199,6 +212,10 @@ const FIELD_LABELS: Record<string, string> = {
   headers: 'Headers',
   destinations: 'Destinations',
   prompt: 'Prompt',
+  max_attempts: 'Max Attempts',
+  no_input_prompt: 'No-Input Prompt',
+  invalid_prompt: 'Invalid-Choice Prompt',
+  on_max_attempts: 'After Last Attempt',
 }
 
 type PositionMap = Record<string, { x: number; y: number }>
@@ -328,6 +345,8 @@ function reactFlowToFlowNodes(
 }
 
 export function FlowBuilderPage() {
+  // The canvas's controls and dots follow the app's theme (D8 finding 47).
+  const theme = useThemeStore((s) => s.theme)
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -689,6 +708,10 @@ export function FlowBuilderPage() {
       gather: {
         input: 'dtmf', num_digits: 1, timeout: 5, variable: 'digits', transitions: {},
         speech_transitions: {}, hints: [], language: '', speech_timeout_ms: 800, barge_in: true,
+        max_attempts: 3,
+        no_input_prompt: { type: 'say', text: "Sorry, I didn't hear anything.", voice: '', language: 'en-US' },
+        invalid_prompt: { type: 'say', text: 'That is not a valid choice.', voice: '', language: 'en-US' },
+        on_max_attempts: '',
       },
       transcribe: { action: 'start', leg: 'caller', hints: [], language: '', interim_results: false, next: '' },
       dial: { destination: '', timeout: 30, max_duration: 0, next: '' },
@@ -836,7 +859,7 @@ export function FlowBuilderPage() {
     }
 
     // Gather prompt field - type selector + audio picker or TTS fields
-    if (key === 'prompt') {
+    if (PROMPT_FIELDS.has(key)) {
       const prompt = (value as Record<string, unknown>) || null
       const promptType = prompt?.type as string || 'play'
       const promptUrl = (prompt?.url as string) || ''
@@ -1242,6 +1265,7 @@ export function FlowBuilderPage() {
             onConnect={onConnect}
             onNodeClick={(_, node) => setSelectedNode(node.id)}
             onPaneClick={() => setSelectedNode(null)}
+            colorMode={theme}
             fitView
           >
             <Controls />
@@ -1306,7 +1330,11 @@ export function FlowBuilderPage() {
               <div className="border-t pt-2" />
 
               {/* All other properties */}
-              {Object.entries(selectedFlowNode as Record<string, unknown>)
+              {Object.entries(
+                selectedFlowNode.type === 'gather'
+                  ? { ...GATHER_RETRY_FIELDS, ...(selectedFlowNode as Record<string, unknown>) }
+                  : (selectedFlowNode as Record<string, unknown>),
+              )
                 .filter(([k]) => !HIDDEN_FIELDS.has(k))
                 .map(([key, value]) => renderPropertyField(selectedNode, key, value))}
             </div>

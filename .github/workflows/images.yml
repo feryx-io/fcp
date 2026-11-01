@@ -28,6 +28,11 @@ permissions:
   packages: write
 
 env:
+  # The runners' CMake is 4.x since ubuntu-latest became 26.04 (2026-11):
+  # it refuses a project declaring compatibility below 3.5, which the
+  # bundled opus (audiopus_sys) and SVT-AV1's cpuinfo both do. CMake reads
+  # this variable to configure them anyway.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
   REGISTRY: ghcr.io
   OWNER: thevoiceguy
   IMAGE_TAG: ${{ inputs.image_tag || github.sha }}

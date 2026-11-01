@@ -19,6 +19,7 @@ def _get_kwargs(
     *,
     category: str | Unset = UNSET,
     language: str | Unset = UNSET,
+    scope: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -32,6 +33,8 @@ def _get_kwargs(
     params["category"] = category
 
     params["language"] = language
+
+    params["scope"] = scope
 
     params["limit"] = limit
 
@@ -82,6 +85,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     category: str | Unset = UNSET,
     language: str | Unset = UNSET,
+    scope: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -91,6 +95,7 @@ def sync_detailed(
     Args:
         category (str | Unset):
         language (str | Unset):
+        scope (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -106,6 +111,7 @@ def sync_detailed(
     kwargs = _get_kwargs(
         category=category,
 language=language,
+scope=scope,
 limit=limit,
 cursor=cursor,
 
@@ -122,6 +128,7 @@ def sync(
     client: AuthenticatedClient | Client,
     category: str | Unset = UNSET,
     language: str | Unset = UNSET,
+    scope: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -131,6 +138,7 @@ def sync(
     Args:
         category (str | Unset):
         language (str | Unset):
+        scope (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -147,6 +155,7 @@ def sync(
         client=client,
 category=category,
 language=language,
+scope=scope,
 limit=limit,
 cursor=cursor,
 
@@ -157,6 +166,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     category: str | Unset = UNSET,
     language: str | Unset = UNSET,
+    scope: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -166,6 +176,7 @@ async def asyncio_detailed(
     Args:
         category (str | Unset):
         language (str | Unset):
+        scope (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -181,6 +192,7 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         category=category,
 language=language,
+scope=scope,
 limit=limit,
 cursor=cursor,
 
@@ -197,6 +209,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     category: str | Unset = UNSET,
     language: str | Unset = UNSET,
+    scope: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -206,6 +219,7 @@ async def asyncio(
     Args:
         category (str | Unset):
         language (str | Unset):
+        scope (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -222,6 +236,7 @@ async def asyncio(
         client=client,
 category=category,
 language=language,
+scope=scope,
 limit=limit,
 cursor=cursor,
 

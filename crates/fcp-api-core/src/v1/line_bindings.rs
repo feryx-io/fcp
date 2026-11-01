@@ -369,6 +369,7 @@ pub async fn create_line_binding(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create line binding: {}", e)))?;
 
+    number_follows_its_bindings(storage.as_ref(), &binding.phone_number_id).await?;
     info!(
         "Created line binding {} for phone number {}",
         binding.id, binding.phone_number_id
@@ -516,12 +517,50 @@ pub async fn delete_line_binding(
         .delete_line_binding(&binding.id)
         .await
         .map_err(ApiError::storage)?;
+    number_follows_its_bindings(storage.as_ref(), &binding.phone_number_id).await?;
 
     info!("Deleted line binding {}", id);
     Ok(StatusCode::NO_CONTENT)
 }
 
 // Helper functions
+
+/// A number's state follows its line bindings (D8 finding 46,
+/// `docs/TENANT_SCOPE.md` §3.7): bound, an `unassigned` number becomes
+/// `assigned`; its last binding gone, an `assigned` one is `unassigned`
+/// again. Any other state (active, reserved, quarantine, …) is the number's
+/// own and left alone.
+async fn number_follows_its_bindings(
+    storage: &fcp_core::DynStorage,
+    number_id: &PhoneNumberId,
+) -> Result<(), ApiError> {
+    use fcp_core::NumberState;
+    let Some(mut number) = storage
+        .get_phone_number(number_id)
+        .await
+        .map_err(ApiError::storage)?
+    else {
+        return Ok(());
+    };
+    let bound = storage
+        .get_line_binding_by_phone_number(number_id)
+        .await
+        .map_err(ApiError::storage)?
+        .is_some();
+    let state = match (number.state, bound) {
+        (NumberState::Unassigned, true) => NumberState::Assigned,
+        (NumberState::Assigned, false) => NumberState::Unassigned,
+        _ => return Ok(()),
+    };
+    info!(number = %number.e164, from = %number.state, to = %state, "A number follows its line bindings");
+    number.state = state;
+    number.updated_at = SystemTime::now();
+    storage
+        .put_phone_number(number)
+        .await
+        .map_err(ApiError::storage)?;
+    Ok(())
+}
 
 /// The flow a line runs, checked to be the tenant's: the call manager
 /// loads a flow by id alone, so another tenant's would run on this

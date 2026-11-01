@@ -19,6 +19,7 @@ def _get_kwargs(
     *,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
+    location_id: str | Unset = UNSET,
 
 ) -> dict[str, Any]:
     
@@ -30,6 +31,8 @@ def _get_kwargs(
     params["limit"] = limit
 
     params["cursor"] = cursor
+
+    params["location_id"] = location_id
 
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
@@ -76,12 +79,14 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
+    location_id: str | Unset = UNSET,
 
 ) -> Response[ErrorResponse | PageRoutingRuleResponse]:
     """ 
     Args:
         limit (int | Unset):
         cursor (str | Unset):
+        location_id (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -95,6 +100,7 @@ def sync_detailed(
     kwargs = _get_kwargs(
         limit=limit,
 cursor=cursor,
+location_id=location_id,
 
     )
 
@@ -109,12 +115,14 @@ def sync(
     client: AuthenticatedClient | Client,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
+    location_id: str | Unset = UNSET,
 
 ) -> ErrorResponse | PageRoutingRuleResponse | None:
     """ 
     Args:
         limit (int | Unset):
         cursor (str | Unset):
+        location_id (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -129,6 +137,7 @@ def sync(
         client=client,
 limit=limit,
 cursor=cursor,
+location_id=location_id,
 
     ).parsed
 
@@ -137,12 +146,14 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
+    location_id: str | Unset = UNSET,
 
 ) -> Response[ErrorResponse | PageRoutingRuleResponse]:
     """ 
     Args:
         limit (int | Unset):
         cursor (str | Unset):
+        location_id (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -156,6 +167,7 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         limit=limit,
 cursor=cursor,
+location_id=location_id,
 
     )
 
@@ -170,12 +182,14 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
+    location_id: str | Unset = UNSET,
 
 ) -> ErrorResponse | PageRoutingRuleResponse | None:
     """ 
     Args:
         limit (int | Unset):
         cursor (str | Unset):
+        location_id (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -190,5 +204,6 @@ async def asyncio(
         client=client,
 limit=limit,
 cursor=cursor,
+location_id=location_id,
 
     )).parsed

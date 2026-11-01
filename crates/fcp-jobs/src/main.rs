@@ -151,6 +151,31 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Say this process is there (`docs/SERVICES.md`).
+    let mut beacon = fcp_cluster::ServiceBeacon::new(
+        fcp_cluster::ServiceIdentity::new(&config.service.node_id, "jobs")
+            .http(config.health.bind_address),
+    );
+    let queue = Arc::clone(&state.queue);
+    beacon = beacon.load(move || {
+        let queue = Arc::clone(&queue);
+        async move {
+            let mut load = std::collections::BTreeMap::new();
+            if let Ok(stats) = queue.get_stats().await {
+                load.insert("jobs_queued".to_string(), stats.total_pending() as u64);
+                load.insert("jobs_failed".to_string(), stats.failed as u64);
+            }
+            load
+        }
+    });
+    if let Some(role) = &cdr_role {
+        beacon = beacon.check(fcp_cluster::Check::database(role.database.ping_check()));
+    }
+    let beacon = beacon.start(fcp_storage_redis::RedisConfig {
+        url: config.redis.url.clone(),
+        ..Default::default()
+    });
+
     info!("FCP Jobs service started successfully");
 
     // Wait for shutdown signal
@@ -177,6 +202,8 @@ async fn main() -> Result<()> {
     if let Some(role) = &archive_role {
         role.stop();
     }
+
+    beacon.shutdown().await;
 
     // Shutdown health check server
     if let Some(handle) = server_handle {

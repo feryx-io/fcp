@@ -32,6 +32,12 @@ pub struct ShipCursors {
     pub voicemail_messages: i64,
     #[serde(default)]
     pub deletions: i64,
+    #[serde(default)]
+    pub personal_contacts: i64,
+    #[serde(default)]
+    pub presence_statuses: i64,
+    #[serde(default)]
+    pub user_presence: i64,
 }
 
 /// What the status page shows of the shipping.
@@ -289,6 +295,48 @@ impl Shipper {
                 .puts
                 .push(record("voicemail_messages", &row.id, &row)?);
         }
+        // Users' contacts, written here or taken from the cloud: the
+        // cloud keeps what is newer than its copy, so the echo of its own
+        // change is let go there (docs/RECORD_AND_CONTACTS.md §3).
+        if let Some(store) = storage.contact_store() {
+            for (seq, row) in store
+                .contacts_after(cursors.personal_contacts, self.batch)
+                .await
+                .context("reading the site's contacts")?
+            {
+                next.personal_contacts = seq;
+                if row.tenant_id == self.tenant {
+                    batch.puts.push(record("personal_contacts", &row.id, &row)?);
+                }
+            }
+        }
+        // Presence a person sets, the same way (docs/PRESENCE.md §3): a
+        // deleted status is a tombstone and a cleared one a plain
+        // `available` row, so both cross as rows.
+        if let Some(store) = storage.presence_status_store() {
+            for (seq, row) in store
+                .own_statuses_after(cursors.presence_statuses, self.batch)
+                .await
+                .context("reading the site's presence statuses")?
+            {
+                next.presence_statuses = seq;
+                if row.tenant_id == self.tenant {
+                    batch.puts.push(record("presence_statuses", &row.id, &row)?);
+                }
+            }
+            for (seq, row) in store
+                .chosen_statuses_after(cursors.user_presence, self.batch)
+                .await
+                .context("reading the site's chosen statuses")?
+            {
+                next.user_presence = seq;
+                if row.tenant_id == self.tenant {
+                    batch
+                        .puts
+                        .push(record("user_presence", &row.user_id, &row)?);
+                }
+            }
+        }
         if let Some(store) = storage.compliance_store() {
             let deletions: Vec<DeletionRecord> = store
                 .deletions_after(cursors.deletions, self.batch)
@@ -316,7 +364,7 @@ impl Shipper {
             self.post(
                 "/link/v1/records",
                 &batch,
-                "the site's recordings and voicemail",
+                "the site's recordings, voicemail, contacts and presence",
             )
             .await?
         };

@@ -67,6 +67,9 @@ pub struct FlowTraceEntry {
 /// Query parameters for listing flow traces.
 #[derive(Debug, Clone, Default)]
 pub struct FlowTraceQuery {
+    /// Only this tenant's traces (as stored, `tenant-<uuid>`); every
+    /// tenant's when `None`.
+    pub tenant_id: Option<String>,
     /// Filter by call ID
     pub call_id: Option<String>,
     /// Filter by flow ID

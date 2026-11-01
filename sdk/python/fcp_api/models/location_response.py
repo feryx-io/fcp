@@ -14,6 +14,7 @@ import datetime
 
 if TYPE_CHECKING:
   from ..models.civic_elements import CivicElements
+  from ..models.contact_response import ContactResponse
 
 
 
@@ -31,6 +32,9 @@ class LocationResponse:
             id (str):
             tenant_id (str):
             name (str):
+            emergency_contacts (list[ContactResponse]): Who is told about an emergency call from this site, before the
+                tenant's contacts (`docs/E911.md` "On-site notification").
+            notify_tenant_contacts (bool): Whether the tenant's contacts are told too.
             civic (CivicElements): The RFC 5139 civic address elements beyond city, state, postal code and
                 country, which [`E911Address`] carries as fields of its own.
             e911_validated (bool): Whether a validator has confirmed the address
@@ -50,8 +54,6 @@ class LocationResponse:
             longitude (float | None | Unset):
             phone_number (None | str | Unset):
             timezone (None | str | Unset):
-            emergency_contact_name (None | str | Unset):
-            emergency_contact_phone (None | str | Unset):
             e911_callback_number (None | str | Unset):
             e911_validated_at (datetime.datetime | None | Unset):
             e911_validated_by (None | str | Unset):
@@ -61,6 +63,8 @@ class LocationResponse:
     id: str
     tenant_id: str
     name: str
+    emergency_contacts: list[ContactResponse]
+    notify_tenant_contacts: bool
     civic: CivicElements
     e911_validated: bool
     created_at: datetime.datetime
@@ -78,8 +82,6 @@ class LocationResponse:
     longitude: float | None | Unset = UNSET
     phone_number: None | str | Unset = UNSET
     timezone: None | str | Unset = UNSET
-    emergency_contact_name: None | str | Unset = UNSET
-    emergency_contact_phone: None | str | Unset = UNSET
     e911_callback_number: None | str | Unset = UNSET
     e911_validated_at: datetime.datetime | None | Unset = UNSET
     e911_validated_by: None | str | Unset = UNSET
@@ -92,11 +94,21 @@ class LocationResponse:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.civic_elements import CivicElements # noqa: PLC0415
+        from ..models.contact_response import ContactResponse # noqa: PLC0415
         id = self.id
 
         tenant_id = self.tenant_id
 
         name = self.name
+
+        emergency_contacts = []
+        for emergency_contacts_item_data in self.emergency_contacts:
+            emergency_contacts_item = emergency_contacts_item_data.to_dict()
+            emergency_contacts.append(emergency_contacts_item)
+
+
+
+        notify_tenant_contacts = self.notify_tenant_contacts
 
         civic = self.civic.to_dict()
 
@@ -184,18 +196,6 @@ class LocationResponse:
         else:
             timezone = self.timezone
 
-        emergency_contact_name: None | str | Unset
-        if isinstance(self.emergency_contact_name, Unset):
-            emergency_contact_name = UNSET
-        else:
-            emergency_contact_name = self.emergency_contact_name
-
-        emergency_contact_phone: None | str | Unset
-        if isinstance(self.emergency_contact_phone, Unset):
-            emergency_contact_phone = UNSET
-        else:
-            emergency_contact_phone = self.emergency_contact_phone
-
         e911_callback_number: None | str | Unset
         if isinstance(self.e911_callback_number, Unset):
             e911_callback_number = UNSET
@@ -229,6 +229,8 @@ class LocationResponse:
             "id": id,
             "tenant_id": tenant_id,
             "name": name,
+            "emergency_contacts": emergency_contacts,
+            "notify_tenant_contacts": notify_tenant_contacts,
             "civic": civic,
             "e911_validated": e911_validated,
             "created_at": created_at,
@@ -260,10 +262,6 @@ class LocationResponse:
             field_dict["phone_number"] = phone_number
         if timezone is not UNSET:
             field_dict["timezone"] = timezone
-        if emergency_contact_name is not UNSET:
-            field_dict["emergency_contact_name"] = emergency_contact_name
-        if emergency_contact_phone is not UNSET:
-            field_dict["emergency_contact_phone"] = emergency_contact_phone
         if e911_callback_number is not UNSET:
             field_dict["e911_callback_number"] = e911_callback_number
         if e911_validated_at is not UNSET:
@@ -280,12 +278,25 @@ class LocationResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.civic_elements import CivicElements # noqa: PLC0415
+        from ..models.contact_response import ContactResponse # noqa: PLC0415
         d = dict(src_dict)
         id = d.pop("id")
 
         tenant_id = d.pop("tenant_id")
 
         name = d.pop("name")
+
+        emergency_contacts = []
+        _emergency_contacts = d.pop("emergency_contacts")
+        for emergency_contacts_item_data in (_emergency_contacts):
+            emergency_contacts_item = ContactResponse.from_dict(emergency_contacts_item_data)
+
+
+
+            emergency_contacts.append(emergency_contacts_item)
+
+
+        notify_tenant_contacts = d.pop("notify_tenant_contacts")
 
         civic = CivicElements.from_dict(d.pop("civic"))
 
@@ -434,26 +445,6 @@ class LocationResponse:
         timezone = _parse_timezone(d.pop("timezone", UNSET))
 
 
-        def _parse_emergency_contact_name(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        emergency_contact_name = _parse_emergency_contact_name(d.pop("emergency_contact_name", UNSET))
-
-
-        def _parse_emergency_contact_phone(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        emergency_contact_phone = _parse_emergency_contact_phone(d.pop("emergency_contact_phone", UNSET))
-
-
         def _parse_e911_callback_number(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -508,6 +499,8 @@ class LocationResponse:
             id=id,
             tenant_id=tenant_id,
             name=name,
+            emergency_contacts=emergency_contacts,
+            notify_tenant_contacts=notify_tenant_contacts,
             civic=civic,
             e911_validated=e911_validated,
             created_at=created_at,
@@ -525,8 +518,6 @@ class LocationResponse:
             longitude=longitude,
             phone_number=phone_number,
             timezone=timezone,
-            emergency_contact_name=emergency_contact_name,
-            emergency_contact_phone=emergency_contact_phone,
             e911_callback_number=e911_callback_number,
             e911_validated_at=e911_validated_at,
             e911_validated_by=e911_validated_by,

@@ -26,6 +26,8 @@ pub struct RtpSessionInfo {
     pub transcoding_active: bool,
     /// Local RTP port
     pub local_rtp_port: u16,
+    /// Leg B's local RTP port (each leg has its own).
+    pub local_rtp_port_b: u16,
     /// Session duration in seconds
     pub duration_secs: u64,
 }
@@ -107,6 +109,24 @@ pub trait MediaBackend: Send + Sync {
     /// A backend that cannot leaves the leg as its SDP said.
     async fn latch_leg(&self, call_id: &CallId, leg: Leg, source: IpAddr) -> Result<()> {
         let _ = (call_id, leg, source);
+        Ok(())
+    }
+
+    /// Put the peer on `from` on `to` as well — where its packets come
+    /// from and how that is learned — and leave `from` with no peer:
+    /// nothing relayed to it, no packet claiming it, until an SDP names
+    /// its next one. A parked party moved to the A slot (`docs/DEEP_TESTING.md`
+    /// D8: the slot the parker left still named the parked party, who heard
+    /// its own audio between the hold music's packets).
+    async fn move_peer(&self, call_id: &CallId, from: Leg, to: Leg) -> Result<()> {
+        let _ = (call_id, from, to);
+        Ok(())
+    }
+
+    /// Leave `leg` with no peer, as [`MediaBackend::move_peer`] leaves the
+    /// leg it moved from: the slot a parker left.
+    async fn release_leg(&self, call_id: &CallId, leg: Leg) -> Result<()> {
+        let _ = (call_id, leg);
         Ok(())
     }
 
@@ -439,6 +459,7 @@ pub mod embedded {
     };
     use forge_injection::FileSource;
     use forge_rtp::PortPoolConfig;
+    use std::collections::HashSet;
     use std::time::Duration;
     use tracing::{debug, error, info, warn};
 
@@ -632,10 +653,14 @@ pub mod embedded {
     impl SessionInfo {
         fn latched(&self, leg: Leg) -> Option<IpAddr> {
             let held = self.latched.lock().unwrap_or_else(|e| e.into_inner());
-            held[match leg {
-                Leg::A => 0,
-                Leg::B => 1,
-            }]
+            held[leg_index(leg)]
+        }
+    }
+
+    fn leg_index(leg: Leg) -> usize {
+        match leg {
+            Leg::A => 0,
+            Leg::B => 1,
         }
     }
 
@@ -867,10 +892,7 @@ pub mod embedded {
                     .latched
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
-                held[match leg {
-                    Leg::A => 0,
-                    Leg::B => 1,
-                }] = Some(source);
+                held[leg_index(leg)] = Some(source);
             }
             // Whatever an SDP already pinned is undone: the first packet
             // from `source` says where the peer really is.
@@ -882,6 +904,80 @@ pub mod embedded {
             p.remote_addr = None;
             p.latch_allowed_ips = Some(std::iter::once(source).collect());
             info!(?call_id, ?leg, %source, "Leg's RTP address will be learned from its first packet");
+            Ok(())
+        }
+
+        async fn move_peer(&self, call_id: &CallId, from: Leg, to: Leg) -> Result<()> {
+            if from == to {
+                return Ok(());
+            }
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+            {
+                let mut held = session_info
+                    .latched
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                held[leg_index(to)] = held[leg_index(from)].take();
+            }
+            let session = &session_info.forge_session;
+            let (source, target) = match from {
+                Leg::A => (session.participant_a(), session.participant_b()),
+                Leg::B => (session.participant_b(), session.participant_a()),
+            };
+            {
+                let mut source = source.write().await;
+                let mut target = target.write().await;
+                target.remote_addr = source.remote_addr.take();
+                target.latch_allowed_ips = source.latch_allowed_ips.replace(HashSet::new());
+            }
+            // The keys the peer was given travel with it.
+            let (source, target) = match from {
+                Leg::A => (session.srtp_a(), session.srtp_b()),
+                Leg::B => (session.srtp_b(), session.srtp_a()),
+            };
+            {
+                let mut source = source.lock().await;
+                let mut target = target.lock().await;
+                *target = std::mem::replace(&mut *source, forge_rtp::srtp::SrtpContext::new());
+            }
+            // So does the port it was told: it keeps sending to it, and
+            // hears from it, now as the other leg. The leg it left gets the
+            // other port, for whoever is told it next.
+            session.swap_leg_sockets();
+            info!(
+                ?call_id,
+                ?from,
+                ?to,
+                "Leg's peer moved with its port; the leg it left has none"
+            );
+            Ok(())
+        }
+
+        async fn release_leg(&self, call_id: &CallId, leg: Leg) -> Result<()> {
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+            session_info
+                .latched
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())[leg_index(leg)] = None;
+            let session = &session_info.forge_session;
+            let (participant, srtp) = match leg {
+                Leg::A => (session.participant_a(), session.srtp_a()),
+                Leg::B => (session.participant_b(), session.srtp_b()),
+            };
+            {
+                let mut p = participant.write().await;
+                p.remote_addr = None;
+                // No packet may claim it: a stray one would be relayed to.
+                p.latch_allowed_ips = Some(HashSet::new());
+            }
+            *srtp.lock().await = forge_rtp::srtp::SrtpContext::new();
+            info!(?call_id, ?leg, "Leg has no peer");
             Ok(())
         }
 
@@ -967,17 +1063,14 @@ pub mod embedded {
                 .await
                 .map_err(|e| Error::ForgeMedia(format!("Failed to start forwarding: {}", e)))?;
 
-            // Get RTP/RTCP ports from forge-media session
-            let ports = forge_session.ports();
-
-            // Create FCP MediaSession wrapper
+            // Create FCP MediaSession wrapper, which reads each leg's
+            // ports from forge-media's session
             let fcp_session = Arc::new(MediaSession::new(
                 call_id,
                 dialog_id,
                 forge_call_id.0.clone(), // Use forge CallId string as session ID
                 config,
-                ports.rtp_port,
-                ports.rtcp_port,
+                forge_session.leg_sockets().clone(),
             ));
 
             // Update state to active
@@ -2093,8 +2186,13 @@ pub mod embedded {
                 // Get session state
                 let state = info.forge_session.state().await;
 
-                // Get port info
-                let ports = info.forge_session.ports();
+                // Get port info: each leg's own
+                let ports = info
+                    .forge_session
+                    .ports_for(forge_engine::ParticipantLabel::A);
+                let ports_b = info
+                    .forge_session
+                    .ports_for(forge_engine::ParticipantLabel::B);
 
                 // Calculate duration from uptime
                 let duration_secs = info.forge_session.uptime().as_secs();
@@ -2125,6 +2223,7 @@ pub mod embedded {
                     },
                     transcoding_active,
                     local_rtp_port: ports.rtp_port,
+                    local_rtp_port_b: ports_b.rtp_port,
                     duration_secs,
                 });
             }
@@ -2158,7 +2257,10 @@ pub mod embedded {
         advertise_ip: &str,
         enable_srtp: bool,
     ) -> Result<SdpNegotiationResult> {
-        let ports = session_info.forge_session.ports();
+        // The answer goes to leg A's peer, told leg A's port.
+        let ports = session_info
+            .forge_session
+            .ports_for(forge_engine::ParticipantLabel::A);
         let remote_codecs = crate::sdp::parse_sdp_codecs(remote_sdp);
         let supported = crate::codec::supported_codec_registry();
 
@@ -2530,6 +2632,51 @@ pub mod embedded {
                 session.transcoder_b_to_a().lock().await.is_some(),
                 "PCMU to Opus must be armed"
             );
+
+            // B's G.711, 160 ticks per 20 ms, reaches A as Opus on Opus's
+            // clock: 960 ticks per 20 ms. Each phone talks to its own leg's
+            // port.
+            let session = std::sync::Arc::new(session);
+            let phone_a = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let phone_b = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            session.participant_a().write().await.remote_addr = Some(phone_a.local_addr().unwrap());
+            session.participant_b().write().await.remote_addr = Some(phone_b.local_addr().unwrap());
+            session.start_forwarding().await.unwrap();
+            let b_port = session
+                .ports_for(forge_engine::ParticipantLabel::B)
+                .rtp_port;
+            for sequence in 0..5u16 {
+                let packet = forge_rtp::RtpPacket::build(
+                    0,
+                    sequence,
+                    8_000 + u32::from(sequence) * 160,
+                    0xB,
+                    vec![0xffu8; 160].into(),
+                    false,
+                );
+                phone_b
+                    .send_to(&packet.to_bytes(), ("127.0.0.1", b_port))
+                    .await
+                    .unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let mut stamps = Vec::new();
+            let mut buf = [0u8; 2048];
+            while stamps.len() < 3 {
+                let (len, _) = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    phone_a.recv_from(&mut buf),
+                )
+                .await
+                .expect("A hears B")
+                .unwrap();
+                assert!(len > 12);
+                assert_eq!(buf[1] & 0x7f, 111, "as Opus");
+                stamps.push(u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]));
+            }
+            assert_eq!(stamps[1].wrapping_sub(stamps[0]), 960, "{stamps:?}");
+            assert_eq!(stamps[2].wrapping_sub(stamps[1]), 960, "{stamps:?}");
+            session.stop_forwarding().await.unwrap();
         }
 
         #[test]

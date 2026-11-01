@@ -603,7 +603,7 @@
         "tags": [
           "app_auth"
         ],
-        "summary": "POST /api/v1/auth/app/revoke — an app signs out: its session ends.\nAnswers 200 whether or not the token named a live session (RFC 7009\n§2.2).",
+        "summary": "POST /api/v1/auth/app/revoke — an app signs out: its session ends and\nthe install's device is removed. Answers 200 whether or not the token named a live session (RFC 7009\n§2.2).",
         "operationId": "app_auth_revoke",
         "requestBody": {
           "content": {
@@ -683,6 +683,51 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/lines/{line}/label": {
+      "put": {
+        "tags": [
+          "softphone"
+        ],
+        "summary": "PUT /api/v1/me/lines/{line}/label — name one of your lines, on every\ndevice that has it (`docs/DEVICE_LINES.md` §2). 403 unless the tenant\nlets its users rename; 404 for a line none of your devices has.",
+        "operationId": "softphone_set_line_label",
+        "parameters": [
+          {
+            "name": "line",
+            "in": "path",
+            "description": "`own`, `extension:1005`, `shared:+15551234567`, `on_behalf:<user>`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LineLabelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Named"
           },
           "default": {
             "description": "An error",
@@ -2775,12 +2820,264 @@
         }
       }
     },
+    "/api/v1/me/calls/{call_id}/recording/start": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/calls/:call_id/recording/start — record a call the user is on,\nwhen an administrator lets them (`record_on_demand`; 403 otherwise).\nThe tenant's consent announcement plays to both parties first; this\nreturns once the recorder runs. 404 for a call that is not theirs, 409\nwhen it is not anchored or already recorded.",
+        "operationId": "self_service_start_my_recording",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "description": "FCP's id for the call (`X-FCP-Call-Id`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recording",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/media.RecordingResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/calls/{call_id}/recording/stop": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/calls/:call_id/recording/stop — stop a recording the user\nstarted on demand. Any other recording of the call goes on (409).",
+        "operationId": "self_service_stop_my_recording",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "description": "FCP's id for the call (`X-FCP-Call-Id`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/media.RecordingResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/calls/{call_id}/quality": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/calls/:call_id/quality — the app's final figures for a call\nit was on, sent when the call ends. A second report from the same app\nreplaces its first. 404 when the call's record names other people (one\nnot yet written is taken on the app's word); `call.quality_poor` when\neither score is under 3.1.",
+        "operationId": "self_service_report_call_quality",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "description": "FCP's id for the call (`X-FCP-Call-Id`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallQualityReport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallQualityResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/devices/{id}/captures": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/devices/:id/captures — the app uploads a capture it took\n(pcapng, as the body), from its own session and while it is allowed.\n403 when it is not allowed, 413 over the tenant's limit, 404 when the\ncall named was not the user's.",
+        "operationId": "self_service_upload_capture",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The app's device",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "call_id",
+            "in": "query",
+            "description": "FCP's id for the call the capture holds (`X-FCP-Call-Id`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/vnd.tcpdump.pcapng": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/captures": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/captures — the user's own captures, newest first.",
+        "operationId": "self_service_list_captures",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CaptureResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/directory": {
       "get": {
         "tags": [
           "self_service"
         ],
-        "summary": "GET /me/directory — the tenant's people and the extensions that ring\nno one person, each with its presence, while the tenant lets its users\nsee them (`directory.visible_to_users`; 403 otherwise).",
+        "summary": "GET /me/directory — the tenant's people and the extensions that ring\nno one person, each with its presence, while the tenant lets its users\nsee them (`directory.visible_to_users`; 403 otherwise). A user taken out\nof the directory (`directory_listed`) is not among them.",
         "operationId": "self_service_list_directory",
         "parameters": [
           {
@@ -2817,6 +3114,641 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Page_DirectoryEntry"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/contacts": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/contacts — the user's contacts, by name.",
+        "operationId": "self_service_list_contacts",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "A word in a name, company, email or number.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PersonalContactResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/contacts — keep a new contact.",
+        "operationId": "self_service_create_contact",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalContactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalContactResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/contacts/{id}": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/contacts/:id",
+        "operationId": "self_service_get_contact",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalContactResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "PUT /me/contacts/:id — replace a contact.",
+        "operationId": "self_service_update_contact",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalContactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalContactResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "DELETE /me/contacts/:id — the contact goes from every app; its\ntombstone carries the delete to the tenant's sites.",
+        "operationId": "self_service_delete_contact",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/contacts/export": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/contacts/export — the user's contacts as one file, vCard 3.0 or\nCSV (Google's columns), to take to another phone or address book.",
+        "operationId": "self_service_export_contacts",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`vcard` or `csv`. On import, left out, the file says (`BEGIN:VCARD`\nis vCard, anything else CSV); on export, vCard.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "text/vcard": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/contacts/import": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/contacts/import — contacts from a vCard or CSV file (the body),\nkept on the user's account. One already kept, with the same name and\nnumbers, is not made again. The user's apps hear one\n`user.contact_changed` (`change`: `imported`) for the lot.",
+        "operationId": "self_service_import_contacts",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`vcard` or `csv`. On import, left out, the file says (`BEGIN:VCARD`\nis vCard, anything else CSV); on export, vCard.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The file: vCard or CSV",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            },
+            "text/csv": {
+              "schema": {
+                "type": "string"
+              }
+            },
+            "text/vcard": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Imported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactImportResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/presence": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/presence",
+        "operationId": "self_service_get_presence",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyPresenceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "PUT /me/presence",
+        "operationId": "self_service_update_presence",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMyPresenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyPresenceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/presence/statuses": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/presence/statuses",
+        "operationId": "self_service_list_presence_statuses",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_OwnStatusResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/presence/statuses",
+        "operationId": "self_service_create_presence_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnStatusResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/presence/statuses/{id}": {
+      "put": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "PUT /me/presence/statuses/{id}",
+        "operationId": "self_service_update_presence_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateOwnStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnStatusResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "DELETE /me/presence/statuses/{id}",
+        "operationId": "self_service_delete_presence_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/presence/statuses/order": {
+      "put": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "PUT /me/presence/statuses/order",
+        "operationId": "self_service_order_presence_statuses",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderStatusesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_OwnStatusResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{username}/presence": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "GET /users/{username}/presence",
+        "operationId": "users_get_presence",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserPresenceResponse"
                 }
               }
             }
@@ -7660,7 +8592,7 @@
         "tags": [
           "compliance"
         ],
-        "summary": "Tenant admins see their tenant; the platform token sees every tenant\nunless it selected one with the override header.",
+        "summary": "A row belongs to the tenant acted on (docs/TENANT_SCOPE.md §3.3).\nTenant admins see their tenant's rows, platform administrators' actions\non it included; a platform administrator sees every row, one tenant's\n(`tenant` or the picked tenant) or the platform's own.",
         "operationId": "compliance_list_audit_log",
         "parameters": [
           {
@@ -7692,6 +8624,26 @@
             }
           },
           {
+            "name": "until",
+            "in": "query",
+            "description": "Unix seconds: only events before it.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "description": "A platform administrator's choice of rows: `all`, `platform` (the\nplatform's own actions, without a tenant) or a tenant's id. Without\nit, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else\nreads their own tenant's rows whatever this says.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -7716,6 +8668,96 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Page_AuditEventResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/audit-log/export": {
+      "get": {
+        "tags": [
+          "compliance"
+        ],
+        "summary": "`GET /audit-log/export`: every event the listing's filters match,\nnewest first, streamed page by page as CSV or JSON Lines (D8, finding\n36). Who may see what is the listing's.",
+        "operationId": "compliance_export_audit_log",
+        "parameters": [
+          {
+            "name": "actor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Route-template prefix, e.g. `POST /api/v1/users`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Unix seconds.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Unix seconds: only events before it.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "description": "A platform administrator's choice of rows: `all`, `platform` (the\nplatform's own actions, without a tenant) or a tenant's id. Without\nit, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else\nreads their own tenant's rows whatever this says.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`csv` (the default) or `jsonl`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The events, streamed as CSV or JSON Lines",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -8779,6 +9821,318 @@
         }
       }
     },
+    "/api/v1/cdrs/{call_id}/quality": {
+      "get": {
+        "tags": [
+          "cdrs"
+        ],
+        "summary": "GET /cdrs/:call_id/quality — every phone's report of a call, oldest\nfirst, as one page; empty when none reported, 404 for another\ntenant's call.",
+        "operationId": "cdrs_get_call_quality",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CallQualityResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/captures": {
+      "get": {
+        "tags": [
+          "captures"
+        ],
+        "summary": "GET /captures — the tenant's captures, newest first, of one device or\nuser when named.",
+        "operationId": "captures_list",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "query",
+            "description": "One device's captures.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "username",
+            "in": "query",
+            "description": "One user's captures.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CaptureResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/captures/allows": {
+      "get": {
+        "tags": [
+          "captures"
+        ],
+        "summary": "GET /captures/allows — the tenant's allows, ended ones too, newest\nfirst.",
+        "operationId": "captures_list_allows",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CaptureAllowResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "captures"
+        ],
+        "summary": "POST /captures/allows — allow a user or a device to capture until a\ndate. 409 while the tenant has captures off.",
+        "operationId": "captures_create_allow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureAllowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Made",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureAllowResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/captures/allows/{id}": {
+      "delete": {
+        "tags": [
+          "captures"
+        ],
+        "summary": "DELETE /captures/allows/:id — end an allow now.",
+        "operationId": "captures_delete_allow",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/captures/{id}": {
+      "delete": {
+        "tags": [
+          "captures"
+        ],
+        "summary": "DELETE /captures/:id — remove a capture before its expiry; 409 while a\nlegal hold keeps it.",
+        "operationId": "captures_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/captures/{id}/file": {
+      "get": {
+        "tags": [
+          "captures"
+        ],
+        "summary": "GET /captures/:id/file — the capture itself (pcapng). Every download\nis in the audit log.",
+        "operationId": "captures_download",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The capture",
+            "content": {
+              "application/vnd.tcpdump.pcapng": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/flow-traces": {
       "get": {
         "tags": [
@@ -9278,6 +10632,109 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlowResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flows/untenanted": {
+      "get": {
+        "tags": [
+          "flows"
+        ],
+        "summary": "GET /api/v1/flows/untenanted — Flows with no tenant, for a platform\nadministrator to assign (docs/TENANT_SCOPE.md §3.4)",
+        "description": "Each one named by a single tenant's line bindings, mailboxes or traces\nis first given to that tenant; what is left is listed.",
+        "operationId": "flows_list_untenanted_flows",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_FlowResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flows/{id}/assign": {
+      "post": {
+        "tags": [
+          "flows"
+        ],
+        "summary": "POST /api/v1/flows/:id/assign — Give a flow without a tenant to one",
+        "description": "Only a flow without a tenant: a tenant's flow is never moved (409).",
+        "operationId": "flows_assign_flow",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignFlowRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "OK",
@@ -12388,6 +13845,15 @@
             }
           },
           {
+            "name": "scope",
+            "in": "query",
+            "description": "`all` (the default: the tenant's prompts and the system prompts),\n`tenant` or `system`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -12705,6 +14171,49 @@
         "responses": {
           "200": {
             "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/prompts/{id}/override": {
+      "post": {
+        "tags": [
+          "prompts"
+        ],
+        "summary": "POST /api/v1/prompts/:id/override — The tenant's own copy of a system prompt",
+        "description": "The copy has the system prompt's name, language, category, words and voice,\nand a copy of its audio, so the tenant's calls hear the same until the copy\nis changed (new words, an upload, a recording). Deleting the copy restores\nthe system prompt.",
+        "operationId": "prompts_override_prompt",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "A system prompt's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "The tenant's override",
             "content": {
               "application/json": {
                 "schema": {
@@ -14419,7 +15928,7 @@
         "tags": [
           "routing"
         ],
-        "summary": "`GET /v1/routing/preview?to=…[&from=…][&source_ip=…]`: what a live call\nmanager would do with this tenant's call — the policy and rule that\ndecide it and the trunks it would try, in order, each with its price\n(`docs/TENANT_TRUNKS.md` §12, phase 6d).",
+        "summary": "`GET /v1/routing/preview?to=…[&from=…][&source_ip=…][&location_id=…]`: what a live call\nmanager would do with this tenant's call — the policy and rule that\ndecide it and the trunks it would try, in order, each with its price\n(`docs/TENANT_TRUNKS.md` §12, phase 6d).",
         "operationId": "routing_preview_routing",
         "parameters": [
           {
@@ -14441,6 +15950,15 @@
           {
             "name": "source_ip",
             "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "query",
+            "description": "The caller's location, for a location's rules\n(docs/TENANT_SCOPE.md §3.6).",
             "required": false,
             "schema": {
               "type": "string"
@@ -15362,6 +16880,89 @@
         "responses": {
           "204": {
             "description": "Removed"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/branding/deployment-profile": {
+      "get": {
+        "tags": [
+          "branding"
+        ],
+        "summary": "GET /api/v1/branding/deployment-profile — the tenant's softphone profile\n(Anvil's `docs/MANAGED_INSTALLS.md` §2.1): this admin's address as the\nserver, the tenant's first login domain, its sign-in, and its brand with\nthe files, for `Anvil-…-setup.exe /PROFILE=` or Windows policy.",
+        "operationId": "branding_deployment_profile",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`zip` (the default): `profile.json` and the brand's files; `json`:\n`profile.json` alone; `reg`: the same settings as Windows policy.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sign_in",
+            "in": "query",
+            "description": "`auto`, `sso` or `password`; unset, `sso` when the tenant allows no\npassword, else `auto`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "updates",
+            "in": "query",
+            "description": "`auto` (the default), `notify` or `off`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lock_server",
+            "in": "query",
+            "description": "Whether the server field is locked; unset, it is.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "username_from_system",
+            "in": "query",
+            "description": "Fill the username in from Windows' user principal name; unset, when\nthe tenant has a login domain.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The profile: a .zip, its profile.json (format=json) or a .reg (format=reg)",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
           },
           "default": {
             "description": "An error",
@@ -16597,6 +18198,345 @@
         }
       }
     },
+    "/api/v1/parking/lots": {
+      "get": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "GET /api/v1/parking/lots — none listed means the node's own range\n(`[pbx.parking]`) is the tenant's.",
+        "operationId": "parking_list_lots",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ParkingLotResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "POST /api/v1/parking/lots — 409 when one of its numbers is taken.",
+        "operationId": "parking_create_lot",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParkingLotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParkingLotResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/parking/lots/{id}": {
+      "get": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "GET /api/v1/parking/lots/:id",
+        "operationId": "parking_get_lot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParkingLotResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "PUT /api/v1/parking/lots/:id — the whole lot, replaced.",
+        "operationId": "parking_update_lot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParkingLotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParkingLotResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "DELETE /api/v1/parking/lots/:id — calls parked in it stay until taken\nor timed out.",
+        "operationId": "parking_delete_lot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/parking/calls": {
+      "get": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "GET /api/v1/parking/calls — the tenant's parked calls on every call\nmanager, by slot.",
+        "operationId": "parking_list_calls",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ParkedCallResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/parking/calls/{slot}/retrieve": {
+      "post": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "POST /api/v1/parking/calls/:slot/retrieve — ring `target` with the\ncall in the slot (202); 404 when the slot is empty.",
+        "operationId": "parking_retrieve_call",
+        "parameters": [
+          {
+            "name": "slot",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetrieveParkedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Ringing the target"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/parking/calls/{slot}": {
+      "delete": {
+        "tags": [
+          "parking"
+        ],
+        "summary": "DELETE /api/v1/parking/calls/:slot — hang up the call in the slot.",
+        "operationId": "parking_hang_up_call",
+        "parameters": [
+          {
+            "name": "slot",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ended"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/routing/rules": {
       "get": {
         "tags": [
@@ -16616,6 +18556,15 @@
           {
             "name": "cursor",
             "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "query",
+            "description": "A location id, or `none` for the rules without one.",
             "required": false,
             "schema": {
               "type": "string"
@@ -18240,6 +20189,218 @@
           }
         }
       }
+    },
+    "/api/v1/system/services": {
+      "get": {
+        "tags": [
+          "services"
+        ],
+        "operationId": "services_list",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "description": "Only this kind (`voicemail`, …).",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "state",
+            "in": "path",
+            "description": "Only this state (`down`, `degraded`, …).",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "site_id",
+            "in": "path",
+            "description": "Only this site's; `platform` for the platform's own.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every service the platform has seen, its own and its sites'",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ServiceView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/services/summary": {
+      "get": {
+        "tags": [
+          "services"
+        ],
+        "operationId": "services_summary",
+        "responses": {
+          "200": {
+            "description": "Every service in one number each",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServicesSummary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/services/{id}": {
+      "get": {
+        "tags": [
+          "services"
+        ],
+        "operationId": "services_get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The service's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "site_id",
+            "in": "path",
+            "description": "The site the service runs at; absent for the platform's own.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One service",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "services"
+        ],
+        "operationId": "services_forget",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The service's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "site_id",
+            "in": "path",
+            "description": "The site the service runs at; absent for the platform's own.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Forgotten"
+          },
+          "default": {
+            "description": "An error; 409 for a service that is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "webhooks": {
@@ -18402,7 +20563,7 @@
           },
           "legacy_full_access": {
             "type": "boolean",
-            "description": "A token made before permissions were checked, carrying `admin` or\n`*`: it reaches everything in its tenant. Review and replace it."
+            "description": "A token made before permissions were checked, carrying `admin` or\n`*`. Since v0.25.498 it reaches what a tenant administrator may (or\nits maker, when it has one), never system configuration: make a new\none with the permissions it needs."
           },
           "expires_at": {
             "type": [
@@ -18672,6 +20833,18 @@
           }
         }
       },
+      "AssignFlowRequest": {
+        "type": "object",
+        "required": [
+          "tenant_id"
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "description": "The tenant the flow becomes."
+          }
+        }
+      },
       "AssistantView": {
         "type": "object",
         "required": [
@@ -18765,10 +20938,19 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The tenant acted on; `null` for the platform's own actions."
+          },
+          "actor_tenant_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The actor's own tenant, `null` for the static token. Shown only to a\nplatform administrator."
           },
           "actor": {
-            "type": "string"
+            "type": "string",
+            "description": "Who acted. A tenant's readers see an actor from outside it (a\nplatform administrator) as `platform administrator`."
           },
           "actor_kind": {
             "type": "string"
@@ -19479,6 +21661,270 @@
           }
         }
       },
+      "CallQualityReport": {
+        "type": "object",
+        "description": "A call's final figures, as the app measured them.",
+        "required": [
+          "direction",
+          "codec",
+          "packets_sent",
+          "packets_received",
+          "packets_expected",
+          "packets_lost",
+          "jitter_ms",
+          "mos"
+        ],
+        "properties": {
+          "direction": {
+            "type": "string",
+            "description": "`incoming` or `outgoing`, from the phone's side."
+          },
+          "codec": {
+            "type": "string",
+            "description": "The codec (`pcmu`, `opus`, …)."
+          },
+          "srtp": {
+            "type": "boolean"
+          },
+          "duration_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Talk time, as the phone counted it.",
+            "minimum": 0
+          },
+          "packets_sent": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "packets_received": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "packets_expected": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The far end's packets its sequence numbers say were sent, and those\nthat never arrived.",
+            "minimum": 0
+          },
+          "packets_lost": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "jitter_ms": {
+            "type": "number",
+            "format": "float",
+            "description": "The phone's jitter estimate on what it received, at the end, in ms."
+          },
+          "rtt_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The round trip from RTCP, when it was measured."
+          },
+          "far_loss_pct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "What the far end last reported over RTCP: its loss in its last\ninterval in percent, its jitter in ms, its losses in all."
+          },
+          "far_jitter_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "far_lost": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "mos": {
+            "type": "number",
+            "format": "float",
+            "description": "The estimated score (E-model MOS, 1 to 4.5) of what the user heard,\nand of what the far end heard once it reported."
+          },
+          "far_mos": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "local_rtp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where media flowed between, as the phone saw it (`address:port`)."
+          },
+          "remote_rtp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "CallQualityResponse": {
+        "type": "object",
+        "description": "One phone's report of a call.",
+        "required": [
+          "call_id",
+          "user_id",
+          "direction",
+          "codec",
+          "srtp",
+          "packets_sent",
+          "packets_received",
+          "packets_expected",
+          "packets_lost",
+          "loss_pct",
+          "jitter_ms",
+          "mos",
+          "poor",
+          "reported_at"
+        ],
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The reporting user's name, while they exist."
+          },
+          "device_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "direction": {
+            "type": "string"
+          },
+          "codec": {
+            "type": "string"
+          },
+          "srtp": {
+            "type": "boolean"
+          },
+          "duration_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "packets_sent": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "packets_received": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "packets_expected": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "packets_lost": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "loss_pct": {
+            "type": "number",
+            "format": "float",
+            "description": "`packets_lost` of `packets_expected`, in percent."
+          },
+          "jitter_ms": {
+            "type": "number",
+            "format": "float"
+          },
+          "rtt_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "far_loss_pct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "far_jitter_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "far_lost": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "mos": {
+            "type": "number",
+            "format": "float"
+          },
+          "far_mos": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "poor": {
+            "type": "boolean",
+            "description": "Either score under 3.1."
+          },
+          "local_rtp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remote_rtp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reported_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "CallerIdPolicy": {
         "type": "string",
         "description": "How a user's caller ID leaves on a trunk.",
@@ -19595,6 +22041,175 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "CaptureAllowRequest": {
+        "type": "object",
+        "description": "Allow a user (every app they sign in to) or one device to capture.",
+        "required": [
+          "until"
+        ],
+        "properties": {
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The user; or name `device_id`."
+          },
+          "device_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the allow ends: in the future, at most 30 days away."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why, for the record."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaptureAllowResponse": {
+        "type": "object",
+        "description": "An administrator's allow.",
+        "required": [
+          "id",
+          "kind",
+          "until",
+          "active",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`user` or `device`."
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The user's name, while they exist."
+          },
+          "device_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "device_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The device's name, while it exists."
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Not yet ended."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CaptureResponse": {
+        "type": "object",
+        "description": "An uploaded capture.",
+        "required": [
+          "id",
+          "device_id",
+          "user_id",
+          "size",
+          "sha256",
+          "uploaded_at",
+          "expires_at",
+          "held"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string",
+            "description": "The app that took it, which may since have been removed."
+          },
+          "device_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "call_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The call it holds, when the app named one."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "uploaded_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When retention removes it, unless a hold keeps it."
+          },
+          "held": {
+            "type": "boolean",
+            "description": "A legal hold keeps it past its expiry."
           }
         }
       },
@@ -20628,6 +23243,50 @@
           }
         }
       },
+      "ContactImportResponse": {
+        "type": "object",
+        "description": "What an import did.",
+        "required": [
+          "imported",
+          "duplicates",
+          "skipped"
+        ],
+        "properties": {
+          "imported": {
+            "type": "integer",
+            "description": "Contacts made.",
+            "minimum": 0
+          },
+          "duplicates": {
+            "type": "integer",
+            "description": "Entries already among the user's contacts (the same name and\nnumbers), or twice in the file: not made again.",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContactImportSkip"
+            },
+            "description": "Entries not made, each with its place in the file (a vCard's\nnumber, a CSV row's line) and why."
+          }
+        }
+      },
+      "ContactImportSkip": {
+        "type": "object",
+        "required": [
+          "entry",
+          "reason"
+        ],
+        "properties": {
+          "entry": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
       "ContactInput": {
         "oneOf": [
           {
@@ -20651,11 +23310,30 @@
                   "string",
                   "null"
                 ]
+              },
+              "listen": {
+                "type": "boolean",
+                "description": "A `call` contact may listen in to the emergency call."
               }
             }
           }
         ],
         "description": "A contact on the way in: either the plain string the API took before\nblock 2, read by its shape, or a typed object."
+      },
+      "ContactNumber": {
+        "type": "object",
+        "description": "One of a contact's numbers: what it is (`mobile`, `work`, …) and what\nto dial.",
+        "required": [
+          "number"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          }
+        }
       },
       "ContactReadiness": {
         "type": "object",
@@ -20663,6 +23341,7 @@
         "required": [
           "kind",
           "target",
+          "listen",
           "issues"
         ],
         "properties": {
@@ -20677,6 +23356,17 @@
               "string",
               "null"
             ]
+          },
+          "site": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The site whose contact this is; absent for the tenant's own."
+          },
+          "listen": {
+            "type": "boolean",
+            "description": "Whether this contact may listen in to the call."
           },
           "issues": {
             "type": "array",
@@ -20708,7 +23398,8 @@
         "description": "One notification contact as the API shows it.",
         "required": [
           "kind",
-          "target"
+          "target",
+          "listen"
         ],
         "properties": {
           "kind": {
@@ -20723,6 +23414,10 @@
               "string",
               "null"
             ]
+          },
+          "listen": {
+            "type": "boolean",
+            "description": "A `call` contact who may listen in to the emergency call once told\n(`docs/E911.md` \"Listening in\")."
           },
           "issues": {
             "type": "array",
@@ -20903,6 +23598,16 @@
               "$ref": "#/components/schemas/LineKey"
             },
             "description": "The keys programmed on the phone."
+          },
+          "lines": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/DeviceLine"
+            },
+            "description": "Its lines: the first `own`, at most ten, each one the device may be."
           },
           "config_template_id": {
             "type": [
@@ -21249,17 +23954,22 @@
               "null"
             ]
           },
-          "emergency_contact_name": {
+          "emergency_contacts": {
             "type": [
-              "string",
+              "array",
               "null"
-            ]
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ContactInput"
+            },
+            "description": "The site's emergency contacts, as `/emergency/config` takes them."
           },
-          "emergency_contact_phone": {
+          "notify_tenant_contacts": {
             "type": [
-              "string",
+              "boolean",
               "null"
-            ]
+            ],
+            "description": "Whether the tenant's contacts are told too (true when unsaid)."
           },
           "e911_callback_number": {
             "type": [
@@ -21285,7 +23995,6 @@
         "required": [
           "tenant_id",
           "user_id",
-          "line_binding_id",
           "pin"
         ],
         "properties": {
@@ -21296,7 +24005,11 @@
             "type": "string"
           },
           "line_binding_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The line the mailbox answers for, when the user has one. A mailbox\nis the user's: calls find it by user, and it answers the user's\nextension, so a user with no line has one too."
           },
           "pin": {
             "type": "string"
@@ -21634,6 +24347,10 @@
               "string",
               "null"
             ]
+          },
+          "system": {
+            "type": "boolean",
+            "description": "A system prompt, for every tenant: a platform administrator's only."
           }
         }
       },
@@ -21829,6 +24546,13 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "location_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One of the tenant's locations: the rule is for its callers alone,\nand tried before the tenant-wide rules."
           },
           "destination_pattern": {
             "type": [
@@ -22039,6 +24763,28 @@
               {
                 "$ref": "#/components/schemas/TenantDirectory",
                 "description": "What the tenant's people see of each other; unset, they see the\ndirectory."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lines": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantLines",
+                "description": "Whether its users may name their own lines; unset, they may not."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnostics": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantDiagnostics",
+                "description": "Captures from its people's apps; unset, none may be taken."
               },
               {
                 "type": "null"
@@ -22397,6 +25143,10 @@
           "media_preferences": {
             "$ref": "#/components/schemas/MediaPreferences"
           },
+          "directory_listed": {
+            "type": "boolean",
+            "description": "Listed in the tenant's directory for its users; listed unless false."
+          },
           "email": {
             "type": [
               "string",
@@ -22562,7 +25312,8 @@
           "voicemail",
           "sip_trace",
           "flow_trace",
-          "audit_event"
+          "audit_event",
+          "device_capture"
         ]
       },
       "DeadLetterReport": {
@@ -22883,6 +25634,33 @@
           }
         }
       },
+      "DeviceLine": {
+        "type": "object",
+        "description": "A line on a device (`docs/DEVICE_LINES.md` §2): an account it registers\nand takes calls on, as a desk phone's line keys are.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/LineKind"
+          },
+          "value": {
+            "type": "string",
+            "description": "The extension (`extension`), the number (`shared`) or the user's\nname or id (`on_behalf`); empty for `own`."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The administrator's label; unset, the line's default."
+          },
+          "ring": {
+            "type": "boolean",
+            "description": "Whether calls to the line ring this device."
+          }
+        }
+      },
       "DeviceRedirectionResponse": {
         "type": "object",
         "description": "Where a device stands with its vendor's service.",
@@ -22935,6 +25713,7 @@
           "supports_blf",
           "codec_support",
           "line_keys",
+          "lines",
           "has_provisioning_token",
           "enabled",
           "created_at",
@@ -23073,6 +25852,13 @@
               "$ref": "#/components/schemas/LineKey"
             },
             "description": "The keys programmed on the phone, in order."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceLine"
+            },
+            "description": "The lines it registers and takes calls on (`docs/DEVICE_LINES.md`);\nempty, its own line (and a phone's shared line) as before lines."
           },
           "location": {
             "type": [
@@ -23281,13 +26067,24 @@
               "string",
               "null"
             ],
-            "description": "Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`\nor `ringing`; unset when nothing is known."
+            "description": "What others see of them (`docs/PRESENCE.md`): for a user,\n`available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or\n`offline`; for an extension, its SIP presence (`open`, `closed`,\n`away`, `busy`, `on_the_phone`, `ringing`); unset when nothing is\nknown."
+          },
+          "presence_label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A user's own status's label (\"WFH\")."
           },
           "presence_note": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "presence_idle": {
+            "type": "boolean",
+            "description": "A user shown away because their apps say they are idle."
           }
         }
       },
@@ -23566,6 +26363,7 @@
           "tenant_id",
           "emergency_numbers",
           "test_numbers",
+          "test_call_mode",
           "dial_prefixes",
           "contacts",
           "notify_contacts",
@@ -23590,6 +26388,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "test_call_mode": {
+            "type": "string",
+            "description": "Who answers a test call: `local`, this platform reading back what a\nlive call would carry, or `carrier`, the carrier's test service."
           },
           "dial_prefixes": {
             "type": "array",
@@ -25312,6 +28114,30 @@
           "park"
         ]
       },
+      "LineKind": {
+        "type": "string",
+        "description": "What a line is.",
+        "enum": [
+          "own",
+          "extension",
+          "shared",
+          "on_behalf"
+        ]
+      },
+      "LineLabelRequest": {
+        "type": "object",
+        "description": "A user's name for one of their lines.",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Empty clears it: the line shows the administrator's label again."
+          }
+        },
+        "additionalProperties": false
+      },
       "ListCdrsResponse": {
         "type": "object",
         "description": "A page of CDRs: the list envelope (`crate::page`), whose cursor is the\nCDR store's own keyset cursor, and whose total may be an estimate.",
@@ -25351,6 +28177,8 @@
           "id",
           "tenant_id",
           "name",
+          "emergency_contacts",
+          "notify_tenant_contacts",
           "civic",
           "e911_validated",
           "created_at",
@@ -25446,17 +28274,16 @@
               "null"
             ]
           },
-          "emergency_contact_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "emergency_contacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContactResponse"
+            },
+            "description": "Who is told about an emergency call from this site, before the\ntenant's contacts (`docs/E911.md` \"On-site notification\")."
           },
-          "emergency_contact_phone": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "notify_tenant_contacts": {
+            "type": "boolean",
+            "description": "Whether the tenant's contacts are told too."
           },
           "e911_callback_number": {
             "type": [
@@ -25779,6 +28606,10 @@
             "type": "boolean",
             "description": "Record all calls for this user"
           },
+          "record_on_demand": {
+            "type": "boolean",
+            "description": "The user may record a call they are on, and stop that recording,\nfrom their app (`docs/RECORD_AND_CONTACTS.md` §2). Set by an\nadministrator only."
+          },
           "preferred_codecs": {
             "type": "array",
             "items": {
@@ -26094,6 +28925,31 @@
           }
         }
       },
+      "MyCallQuality": {
+        "type": "object",
+        "description": "How one of the user's calls went, by their phone: on `/me/calls`.",
+        "required": [
+          "mos",
+          "poor"
+        ],
+        "properties": {
+          "mos": {
+            "type": "number",
+            "format": "float"
+          },
+          "far_mos": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "poor": {
+            "type": "boolean",
+            "description": "Either score under 3.1."
+          }
+        }
+      },
       "MyCallResponse": {
         "type": "object",
         "description": "One of the user's calls, from their side.",
@@ -26162,6 +29018,17 @@
             "format": "int64",
             "description": "Talk time, from the answer.",
             "minimum": 0
+          },
+          "quality": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MyCallQuality",
+                "description": "How the call went, when the user's phone reported it\n(`docs/CALL_DIAGNOSTICS.md` §2)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -26226,6 +29093,50 @@
             "format": "int64",
             "description": "A temporary greeting's lifetime, in hours.",
             "minimum": 0
+          }
+        }
+      },
+      "MyPresenceResponse": {
+        "type": "object",
+        "description": "A user's presence: what others see, what they chose, and their own\nstatuses to choose from.",
+        "required": [
+          "presence",
+          "status",
+          "status_state",
+          "statuses"
+        ],
+        "properties": {
+          "presence": {
+            "$ref": "#/components/schemas/Presence",
+            "description": "What others see."
+          },
+          "status": {
+            "type": "string",
+            "description": "What they chose: a built-in state's name or one of `statuses`' ids."
+          },
+          "status_state": {
+            "$ref": "#/components/schemas/StatusState",
+            "description": "The chosen status's state."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the chosen status clears back to available."
+          },
+          "statuses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OwnStatusResponse"
+            }
           }
         }
       },
@@ -26549,6 +29460,57 @@
           }
         }
       },
+      "OrderStatusesRequest": {
+        "type": "object",
+        "description": "A user's own statuses in a new order: every id, once.",
+        "required": [
+          "ids"
+        ],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "OwnStatusRequest": {
+        "type": "object",
+        "description": "One of a user's own statuses, as written.",
+        "required": [
+          "label",
+          "state"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/StatusState"
+          }
+        }
+      },
+      "OwnStatusResponse": {
+        "type": "object",
+        "description": "One of a user's own statuses.",
+        "required": [
+          "id",
+          "label",
+          "state"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/StatusState"
+          }
+        }
+      },
       "Page_AgentResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -26668,7 +29630,7 @@
                 },
                 "legacy_full_access": {
                   "type": "boolean",
-                  "description": "A token made before permissions were checked, carrying `admin` or\n`*`: it reaches everything in its tenant. Review and replace it."
+                  "description": "A token made before permissions were checked, carrying `admin` or\n`*`. Since v0.25.498 it reaches what a tenant administrator may (or\nits maker, when it has one), never system configuration: make a new\none with the permissions it needs."
                 },
                 "expires_at": {
                   "type": [
@@ -26846,10 +29808,19 @@
                   "type": [
                     "string",
                     "null"
-                  ]
+                  ],
+                  "description": "The tenant acted on; `null` for the platform's own actions."
+                },
+                "actor_tenant_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The actor's own tenant, `null` for the static token. Shown only to a\nplatform administrator."
                 },
                 "actor": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Who acted. A tenant's readers see an actor from outside it (a\nplatform administrator) as `platform administrator`."
                 },
                 "actor_kind": {
                   "type": "string"
@@ -27152,6 +30123,370 @@
                     "string",
                     "null"
                   ]
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_CallQualityResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One phone's report of a call.",
+              "required": [
+                "call_id",
+                "user_id",
+                "direction",
+                "codec",
+                "srtp",
+                "packets_sent",
+                "packets_received",
+                "packets_expected",
+                "packets_lost",
+                "loss_pct",
+                "jitter_ms",
+                "mos",
+                "poor",
+                "reported_at"
+              ],
+              "properties": {
+                "call_id": {
+                  "type": "string"
+                },
+                "user_id": {
+                  "type": "string"
+                },
+                "username": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The reporting user's name, while they exist."
+                },
+                "device_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "direction": {
+                  "type": "string"
+                },
+                "codec": {
+                  "type": "string"
+                },
+                "srtp": {
+                  "type": "boolean"
+                },
+                "duration_seconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "packets_sent": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "packets_received": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "packets_expected": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "packets_lost": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "loss_pct": {
+                  "type": "number",
+                  "format": "float",
+                  "description": "`packets_lost` of `packets_expected`, in percent."
+                },
+                "jitter_ms": {
+                  "type": "number",
+                  "format": "float"
+                },
+                "rtt_ms": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "float"
+                },
+                "far_loss_pct": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "float"
+                },
+                "far_jitter_ms": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "float"
+                },
+                "far_lost": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "mos": {
+                  "type": "number",
+                  "format": "float"
+                },
+                "far_mos": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "float"
+                },
+                "poor": {
+                  "type": "boolean",
+                  "description": "Either score under 3.1."
+                },
+                "local_rtp": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "remote_rtp": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reported_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_CaptureAllowResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "An administrator's allow.",
+              "required": [
+                "id",
+                "kind",
+                "until",
+                "active",
+                "created_by",
+                "created_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`user` or `device`."
+                },
+                "user_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "username": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The user's name, while they exist."
+                },
+                "device_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "device_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The device's name, while it exists."
+                },
+                "until": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "active": {
+                  "type": "boolean",
+                  "description": "Not yet ended."
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_by": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_CaptureResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "An uploaded capture.",
+              "required": [
+                "id",
+                "device_id",
+                "user_id",
+                "size",
+                "sha256",
+                "uploaded_at",
+                "expires_at",
+                "held"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "device_id": {
+                  "type": "string",
+                  "description": "The app that took it, which may since have been removed."
+                },
+                "device_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "user_id": {
+                  "type": "string"
+                },
+                "username": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "call_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The call it holds, when the app named one."
+                },
+                "size": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "sha256": {
+                  "type": "string"
+                },
+                "uploaded_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "expires_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When retention removes it, unless a hold keeps it."
+                },
+                "held": {
+                  "type": "boolean",
+                  "description": "A legal hold keeps it past its expiry."
                 }
               }
             }
@@ -27559,6 +30894,7 @@
                 "supports_blf",
                 "codec_support",
                 "line_keys",
+                "lines",
                 "has_provisioning_token",
                 "enabled",
                 "created_at",
@@ -27697,6 +31033,13 @@
                     "$ref": "#/components/schemas/LineKey"
                   },
                   "description": "The keys programmed on the phone, in order."
+                },
+                "lines": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeviceLine"
+                  },
+                  "description": "The lines it registers and takes calls on (`docs/DEVICE_LINES.md`);\nempty, its own line (and a phone's shared line) as before lines."
                 },
                 "location": {
                   "type": [
@@ -27931,13 +31274,24 @@
                     "string",
                     "null"
                   ],
-                  "description": "Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`\nor `ringing`; unset when nothing is known."
+                  "description": "What others see of them (`docs/PRESENCE.md`): for a user,\n`available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or\n`offline`; for an extension, its SIP presence (`open`, `closed`,\n`away`, `busy`, `on_the_phone`, `ringing`); unset when nothing is\nknown."
+                },
+                "presence_label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A user's own status's label (\"WFH\")."
                 },
                 "presence_note": {
                   "type": [
                     "string",
                     "null"
                   ]
+                },
+                "presence_idle": {
+                  "type": "boolean",
+                  "description": "A user shown away because their apps say they are idle."
                 }
               }
             }
@@ -29368,6 +32722,8 @@
                 "id",
                 "tenant_id",
                 "name",
+                "emergency_contacts",
+                "notify_tenant_contacts",
                 "civic",
                 "e911_validated",
                 "created_at",
@@ -29463,17 +32819,16 @@
                     "null"
                   ]
                 },
-                "emergency_contact_name": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                "emergency_contacts": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ContactResponse"
+                  },
+                  "description": "Who is told about an emergency call from this site, before the\ntenant's contacts (`docs/E911.md` \"On-site notification\")."
                 },
-                "emergency_contact_phone": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                "notify_tenant_contacts": {
+                  "type": "boolean",
+                  "description": "Whether the tenant's contacts are told too."
                 },
                 "e911_callback_number": {
                   "type": [
@@ -30040,6 +33395,17 @@
                   "format": "int64",
                   "description": "Talk time, from the answer.",
                   "minimum": 0
+                },
+                "quality": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/MyCallQuality",
+                      "description": "How the call went, when the user's phone reported it\n(`docs/CALL_DIAGNOSTICS.md` §2)."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               }
             }
@@ -30379,6 +33745,255 @@
           }
         }
       },
+      "Page_OwnStatusResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One of a user's own statuses.",
+              "required": [
+                "id",
+                "label",
+                "state"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "state": {
+                  "$ref": "#/components/schemas/StatusState"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_ParkedCallResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A call waiting in a slot, on whichever call manager holds it.",
+              "required": [
+                "slot",
+                "lot_id",
+                "call_id",
+                "parker_extension",
+                "parked_secs",
+                "timeout_secs",
+                "node_id"
+              ],
+              "properties": {
+                "slot": {
+                  "type": "string"
+                },
+                "lot_id": {
+                  "type": "string",
+                  "description": "The lot; `default` for the node's own range."
+                },
+                "call_id": {
+                  "type": "string"
+                },
+                "caller": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ParkedCaller"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "parker_extension": {
+                  "type": "string"
+                },
+                "parked_secs": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "How long it has waited, and how long it may.",
+                  "minimum": 0
+                },
+                "timeout_secs": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "node_id": {
+                  "type": "string",
+                  "description": "The call manager holding it."
+                },
+                "site_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A site's call (`docs/PARKING.md` phase 4), as its link last told\nthe cloud: taken back or hung up at the site, not here."
+                },
+                "site_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_ParkingLotResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "tenant_id",
+                "name",
+                "first",
+                "last",
+                "slots",
+                "timeout_secs",
+                "enabled",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "tenant_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "first": {
+                  "type": "string",
+                  "description": "The first and last slot: digit strings of one width."
+                },
+                "last": {
+                  "type": "string"
+                },
+                "slots": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "park_number": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "timeout_secs": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "fallback": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Where a call goes when its parker does not take it back\n(`ext:1001`, `queue:support`, `voicemail`, …)."
+                },
+                "music": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "location_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_PendingDeviceResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -30443,6 +34058,91 @@
                   "type": "integer",
                   "format": "int32",
                   "minimum": 0
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_PersonalContactResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A contact.",
+              "required": [
+                "id",
+                "name",
+                "numbers",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "company": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "numbers": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ContactNumber"
+                  }
+                },
+                "email": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "notes": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ringtone": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
                 }
               }
             }
@@ -30712,7 +34412,6 @@
               "type": "object",
               "required": [
                 "id",
-                "tenant_id",
                 "name",
                 "category",
                 "language",
@@ -30727,7 +34426,11 @@
                   "type": "string"
                 },
                 "tenant_id": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The owning tenant; `null` for a system prompt, the platform's."
                 },
                 "name": {
                   "type": "string"
@@ -30792,6 +34495,20 @@
                 },
                 "has_audio": {
                   "type": "boolean"
+                },
+                "overridden_by": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "On a system prompt: the id of the tenant's override of it, which the\ntenant's calls hear instead."
+                },
+                "overrides": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "On a tenant's prompt: the id of the system prompt it overrides."
                 },
                 "created_at": {
                   "type": "string",
@@ -31772,6 +35489,13 @@
                 "enabled": {
                   "type": "boolean"
                 },
+                "location_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The location whose callers the rule is for; `null` for every call."
+                },
                 "destination_pattern": {
                   "type": [
                     "string",
@@ -31914,6 +35638,149 @@
                 "updated_at": {
                   "type": "string",
                   "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_ServiceView": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One service.",
+              "required": [
+                "id",
+                "kind",
+                "host",
+                "version",
+                "state",
+                "first_seen",
+                "last_seen",
+                "member",
+                "checks",
+                "load"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "site_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The site it runs at; null for the platform's own."
+                },
+                "site_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "host": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "description": "`serving`, `degraded`, `draining`, `stopping`, `down` (its beacon\nwent), `stopped` (it said it was stopping), or `unknown` (Redis, or\nthe site's link, cannot be read now)."
+                },
+                "first_seen": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "last_seen": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "down_since": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "started_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "When the process started, from its last beacon."
+                },
+                "region": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "member": {
+                  "type": "boolean",
+                  "description": "Also a cluster member."
+                },
+                "http_address": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sip_address": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "public_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "checks": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ServiceCheckView"
+                  }
+                },
+                "load": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
                 }
               }
             }
@@ -32449,6 +36316,8 @@
                 "sign_in",
                 "offboarding",
                 "directory",
+                "lines",
+                "diagnostics",
                 "provisioning"
               ],
               "properties": {
@@ -32563,6 +36432,14 @@
                 "directory": {
                   "$ref": "#/components/schemas/TenantDirectory",
                   "description": "What the tenant's people see of each other (`/me/directory`)."
+                },
+                "lines": {
+                  "$ref": "#/components/schemas/TenantLines",
+                  "description": "Whether its users may name their own lines."
+                },
+                "diagnostics": {
+                  "$ref": "#/components/schemas/TenantDiagnostics",
+                  "description": "Whether its people's apps may capture calls, and how captures are\nkept."
                 },
                 "provisioning": {
                   "$ref": "#/components/schemas/TenantProvisioning",
@@ -33057,7 +36934,9 @@
                 "account_status",
                 "failed_login_attempts",
                 "sip_username",
-                "scim_managed"
+                "scim_managed",
+                "media_preferences",
+                "directory_listed"
               ],
               "properties": {
                 "id": {
@@ -33204,6 +37083,14 @@
                   ],
                   "format": "date-time",
                   "description": "When the user was deleted; they are purged the tenant's\n`offboarding.grace_days` later unless restored."
+                },
+                "media_preferences": {
+                  "$ref": "#/components/schemas/MediaPreferences",
+                  "description": "Recording and media defaults for the user's calls."
+                },
+                "directory_listed": {
+                  "type": "boolean",
+                  "description": "Listed in the tenant's directory for its users (`/me/directory`)."
                 }
               }
             }
@@ -33726,6 +37613,226 @@
           }
         }
       },
+      "ParkedCallResponse": {
+        "type": "object",
+        "description": "A call waiting in a slot, on whichever call manager holds it.",
+        "required": [
+          "slot",
+          "lot_id",
+          "call_id",
+          "parker_extension",
+          "parked_secs",
+          "timeout_secs",
+          "node_id"
+        ],
+        "properties": {
+          "slot": {
+            "type": "string"
+          },
+          "lot_id": {
+            "type": "string",
+            "description": "The lot; `default` for the node's own range."
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "caller": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ParkedCaller"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parker_extension": {
+            "type": "string"
+          },
+          "parked_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long it has waited, and how long it may.",
+            "minimum": 0
+          },
+          "timeout_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "node_id": {
+            "type": "string",
+            "description": "The call manager holding it."
+          },
+          "site_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A site's call (`docs/PARKING.md` phase 4), as its link last told\nthe cloud: taken back or hung up at the site, not here."
+          },
+          "site_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ParkedCaller": {
+        "type": "object",
+        "description": "Who a parked call is from.",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ParkingLotRequest": {
+        "type": "object",
+        "description": "What a lot is written as; a `PUT` replaces it whole.",
+        "required": [
+          "name",
+          "first",
+          "last"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "first": {
+            "type": "string"
+          },
+          "last": {
+            "type": "string"
+          },
+          "park_number": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeout_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Seconds; 60 when unset.",
+            "minimum": 0
+          },
+          "fallback": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "music": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParkingLotResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "name",
+          "first",
+          "last",
+          "slots",
+          "timeout_secs",
+          "enabled",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "first": {
+            "type": "string",
+            "description": "The first and last slot: digit strings of one width."
+          },
+          "last": {
+            "type": "string"
+          },
+          "slots": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "park_number": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeout_secs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "fallback": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where a call goes when its parker does not take it back\n(`ext:1001`, `queue:support`, `voicemail`, …)."
+          },
+          "music": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "PasswordLogin": {
         "type": "string",
         "description": "Who may sign in with a password.",
@@ -33790,6 +37897,106 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "PersonalContactRequest": {
+        "type": "object",
+        "description": "A contact, as written.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "company": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "numbers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContactNumber"
+            }
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ringtone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ringtone the user's apps ring with for this contact, by the\napp's id for it; `null` rings with the app's own choice, and left\nout a change keeps the one set (an app or page that has none to\noffer does not clear it)."
+          }
+        }
+      },
+      "PersonalContactResponse": {
+        "type": "object",
+        "description": "A contact.",
+        "required": [
+          "id",
+          "name",
+          "numbers",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "company": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "numbers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContactNumber"
+            }
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ringtone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -34122,6 +38329,35 @@
           }
         }
       },
+      "Presence": {
+        "type": "object",
+        "description": "What others see of a person.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/Shown"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their own status's label, kept beside a call (\"On a call · WFH\")."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idle": {
+            "type": "boolean",
+            "description": "Shown away because they are idle, not because they said so."
+          }
+        }
+      },
       "PresenceAuthPolicy": {
         "type": "object",
         "description": "Authorization policy for presence subscriptions.\n\nDetermines which watchers are allowed to subscribe to a presentity's state.\nIf no policy is set for a presentity, all watchers are allowed (default open).\n\nEvaluation order (first match wins):\n1. Block list (AOR exact match) → deny\n2. Per-event block list → deny\n3. Block patterns (domain wildcard) → deny\n4. Allow list (AOR exact match) → allow\n5. Per-event allow list → allow (if non-empty, restricts to listed AORs)\n6. Allow patterns (domain wildcard) → allow\n7. Time window check → deny if outside windows\n8. Default",
@@ -34337,7 +38573,9 @@
           "language",
           "timezone",
           "role",
-          "has_profile_picture"
+          "has_profile_picture",
+          "directory_listed",
+          "may_change_directory_listing"
         ],
         "properties": {
           "username": {
@@ -34396,6 +38634,14 @@
           },
           "has_profile_picture": {
             "type": "boolean"
+          },
+          "directory_listed": {
+            "type": "boolean",
+            "description": "Listed in the tenant's directory for its users."
+          },
+          "may_change_directory_listing": {
+            "type": "boolean",
+            "description": "The tenant lets its users take themselves out of the directory, or\nput themselves back (`directory_listed` on `PUT /me/profile`)."
           }
         }
       },
@@ -34417,7 +38663,6 @@
         "type": "object",
         "required": [
           "id",
-          "tenant_id",
           "name",
           "category",
           "language",
@@ -34432,7 +38677,11 @@
             "type": "string"
           },
           "tenant_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The owning tenant; `null` for a system prompt, the platform's."
           },
           "name": {
             "type": "string"
@@ -34497,6 +38746,20 @@
           },
           "has_audio": {
             "type": "boolean"
+          },
+          "overridden_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "On a system prompt: the id of the tenant's override of it, which the\ntenant's calls hear instead."
+          },
+          "overrides": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "On a tenant's prompt: the id of the system prompt it overrides."
           },
           "created_at": {
             "type": "string",
@@ -35807,6 +40070,20 @@
           }
         }
       },
+      "RetrieveParkedRequest": {
+        "type": "object",
+        "description": "Where a parked call is sent.",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "An extension or a user: their phones ring, and answering takes the\ncall. Unanswered, their own plan decides (their voicemail)."
+          }
+        },
+        "additionalProperties": false
+      },
       "RewrapReport": {
         "type": "object",
         "description": "Outcome of moving the key ring to a new KEK.",
@@ -35912,6 +40189,13 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "location_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The location whose callers the rule is for; `null` for every call."
           },
           "destination_pattern": {
             "type": [
@@ -36188,6 +40472,214 @@
           }
         }
       },
+      "ServiceCheckView": {
+        "type": "object",
+        "description": "One check, as the page shows it.",
+        "required": [
+          "name",
+          "required",
+          "ok",
+          "since"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it came to its current answer."
+          }
+        }
+      },
+      "ServiceView": {
+        "type": "object",
+        "description": "One service.",
+        "required": [
+          "id",
+          "kind",
+          "host",
+          "version",
+          "state",
+          "first_seen",
+          "last_seen",
+          "member",
+          "checks",
+          "load"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The site it runs at; null for the platform's own."
+          },
+          "site_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`serving`, `degraded`, `draining`, `stopping`, `down` (its beacon\nwent), `stopped` (it said it was stopping), or `unknown` (Redis, or\nthe site's link, cannot be read now)."
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "down_since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the process started, from its last beacon."
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "member": {
+            "type": "boolean",
+            "description": "Also a cluster member."
+          },
+          "http_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sip_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceCheckView"
+            }
+          },
+          "load": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ServicesSummary": {
+        "type": "object",
+        "description": "Every service in one number each, for the dashboard.",
+        "required": [
+          "total",
+          "serving",
+          "attention",
+          "down",
+          "unknown",
+          "redis_reachable"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "serving": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Serving.",
+            "minimum": 0
+          },
+          "attention": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Degraded or draining.",
+            "minimum": 0
+          },
+          "down": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Down or stopped.",
+            "minimum": 0
+          },
+          "unknown": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "redis_reachable": {
+            "type": "boolean",
+            "description": "Whether this admin can read the platform's Redis now."
+          },
+          "redis_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it cannot, when it cannot."
+          },
+          "read_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the beacons were last read."
+          }
+        }
+      },
       "SessionResponse": {
         "type": "object",
         "description": "A session, with the names of the host and the guest.",
@@ -36271,6 +40763,19 @@
             "type": "string"
           }
         }
+      },
+      "Shown": {
+        "type": "string",
+        "description": "What others see of a person.",
+        "enum": [
+          "available",
+          "away",
+          "busy",
+          "dnd",
+          "ringing",
+          "on_call",
+          "offline"
+        ]
       },
       "SignupRequest": {
         "type": "object",
@@ -36702,6 +41207,34 @@
           }
         }
       },
+      "SoftphoneCapture": {
+        "type": "object",
+        "description": "Whether the app may capture (`capture` on `/me/softphone`).",
+        "required": [
+          "allowed",
+          "max_mb"
+        ],
+        "properties": {
+          "allowed": {
+            "type": "boolean",
+            "description": "The tenant has captures on, an administrator allows this user or\napp, and this admin keeps captures."
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Until when, while allowed."
+          },
+          "max_mb": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The largest capture the app should keep or upload, in MB.",
+            "minimum": 0
+          }
+        }
+      },
       "SoftphoneConfig": {
         "type": "object",
         "description": "Everything the app needs.",
@@ -36710,7 +41243,13 @@
           "media",
           "username",
           "feature_codes",
-          "device_id"
+          "device_id",
+          "may_record",
+          "directory_listed",
+          "may_change_directory_listing",
+          "lines",
+          "may_rename_lines",
+          "capture"
         ],
         "properties": {
           "account": {
@@ -36749,6 +41288,91 @@
           "device_id": {
             "type": "string",
             "description": "The device the app is."
+          },
+          "may_record": {
+            "type": "boolean",
+            "description": "The user may record a call they are on\n(`/me/calls/{call_id}/recording/start`); the app shows its record\nbutton only then."
+          },
+          "directory_listed": {
+            "type": "boolean",
+            "description": "Listed in the tenant's directory, and whether the user may change\nthat themselves (`directory_listed` on `PUT /me/profile`)."
+          },
+          "may_change_directory_listing": {
+            "type": "boolean"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SoftphoneLine"
+            },
+            "description": "The app's lines, its own first; `account` is the first, kept for a\nrelease."
+          },
+          "may_rename_lines": {
+            "type": "boolean",
+            "description": "Whether the user may name their lines (the tenant's choice)."
+          },
+          "capture": {
+            "$ref": "#/components/schemas/SoftphoneCapture",
+            "description": "Whether the app may capture calls, until when, and how large a\ncapture may be (`docs/CALL_DIAGNOSTICS.md` §3)."
+          }
+        }
+      },
+      "SoftphoneLine": {
+        "type": "object",
+        "description": "A line on the app (`docs/DEVICE_LINES.md`): an account it registers\nwith its own credentials and takes calls on.",
+        "required": [
+          "index",
+          "kind",
+          "line",
+          "aor",
+          "label",
+          "default_label",
+          "shared",
+          "appearances",
+          "barge_in",
+          "ring"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 for the first; the first is the user's own.",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "description": "`own`, `extension`, `shared` or `on_behalf`."
+          },
+          "line": {
+            "type": "string",
+            "description": "The line itself, as `PUT /me/lines/{line}/label` names it."
+          },
+          "aor": {
+            "type": "string",
+            "description": "What the app registers the line as."
+          },
+          "label": {
+            "type": "string",
+            "description": "What it is called: the user's name, the administrator's, or\n`default_label`."
+          },
+          "default_label": {
+            "type": "string"
+          },
+          "shared": {
+            "type": "boolean"
+          },
+          "appearances": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "barge_in": {
+            "type": "boolean",
+            "description": "A shared line whose active calls the app may join (barge in)."
+          },
+          "ring": {
+            "type": "boolean",
+            "description": "Whether calls to the line ring the app."
           }
         }
       },
@@ -36859,6 +41483,16 @@
             "description": "The realm SIP digest hashes are computed in: the registrars' own\nmust say the same (`[sip] realm`)."
           }
         }
+      },
+      "StatusState": {
+        "type": "string",
+        "description": "The state a status carries: what colour it is and what others' phones\nare told.",
+        "enum": [
+          "available",
+          "away",
+          "busy",
+          "dnd"
+        ]
       },
       "SubjectExpansion": {
         "type": "object",
@@ -37270,6 +41904,28 @@
           }
         }
       },
+      "TenantDiagnostics": {
+        "type": "object",
+        "description": "A tenant's word on captures from its people's apps: off unless it turns\nthem on, and then only for a user or device an administrator allows.",
+        "properties": {
+          "capture_allowed": {
+            "type": "boolean",
+            "description": "Captures may be allowed at all."
+          },
+          "capture_max_mb": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The largest capture an app keeps or uploads, in MB (1 to 500).",
+            "minimum": 0
+          },
+          "capture_keep_days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Days an uploaded capture is kept (1 to 365), unless a hold keeps it.",
+            "minimum": 0
+          }
+        }
+      },
       "TenantDirectory": {
         "type": "object",
         "description": "What a tenant's people see of each other through `/me/directory`.",
@@ -37277,12 +41933,26 @@
           "visible_to_users": {
             "type": "boolean",
             "description": "Whether its users may list the tenant's users, extensions and\npresence; on unless a tenant turns it off."
+          },
+          "users_may_unlist": {
+            "type": "boolean",
+            "description": "Whether a user may take themselves out of the directory, or put\nthemselves back (`PUT /me/directory-listing`); off, only an\nadministrator sets a user's `directory_listed`."
           }
         }
       },
       "TenantId": {
         "type": "string",
         "description": "A TenantId: `tenant-<uuid>`, or the bare UUID"
+      },
+      "TenantLines": {
+        "type": "object",
+        "description": "What a tenant's people may do with the lines on their devices.",
+        "properties": {
+          "users_may_rename": {
+            "type": "boolean",
+            "description": "A user may rename their lines (`PUT /me/lines/{line}/label`)."
+          }
+        }
       },
       "TenantOffboarding": {
         "type": "object",
@@ -37336,6 +42006,8 @@
           "sign_in",
           "offboarding",
           "directory",
+          "lines",
+          "diagnostics",
           "provisioning"
         ],
         "properties": {
@@ -37450,6 +42122,14 @@
           "directory": {
             "$ref": "#/components/schemas/TenantDirectory",
             "description": "What the tenant's people see of each other (`/me/directory`)."
+          },
+          "lines": {
+            "$ref": "#/components/schemas/TenantLines",
+            "description": "Whether its users may name their own lines."
+          },
+          "diagnostics": {
+            "$ref": "#/components/schemas/TenantDiagnostics",
+            "description": "Whether its people's apps may capture calls, and how captures are\nkept."
           },
           "provisioning": {
             "$ref": "#/components/schemas/TenantProvisioning",
@@ -38360,6 +43040,16 @@
             },
             "description": "The keys programmed on the phone, replacing what it had."
           },
+          "lines": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/DeviceLine"
+            },
+            "description": "Its lines, replacing what it had; empty goes back to its own line."
+          },
           "location": {
             "type": [
               "string",
@@ -38453,6 +43143,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "test_call_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`local` (read back here) or `carrier` (sent to the emergency trunks)."
           },
           "dial_prefixes": {
             "type": [
@@ -38800,15 +43497,19 @@
               "null"
             ]
           },
-          "emergency_contact_name": {
+          "emergency_contacts": {
             "type": [
-              "string",
+              "array",
               "null"
-            ]
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ContactInput"
+            },
+            "description": "Replaces the site's emergency contacts when given."
           },
-          "emergency_contact_phone": {
+          "notify_tenant_contacts": {
             "type": [
-              "string",
+              "boolean",
               "null"
             ]
           },
@@ -39197,6 +43898,38 @@
           }
         }
       },
+      "UpdateMyPresenceRequest": {
+        "type": "object",
+        "description": "What may change. `status` sets the chosen status (a built-in state's\nname or one of the user's statuses' ids) with `note` and `until`, both\ncleared when left out; without `status`, a `note` or `until` given\nchanges only that (`null` clears it). `idle` is an app's word that its\nperson is idle (`true`) or back (`false`), lasting 15 minutes unless\nrepeated.",
+        "properties": {
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "RFC 3339, in the future and within 7 days."
+          },
+          "idle": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
       "UpdateNetworkRequest": {
         "type": "object",
         "properties": {
@@ -39229,6 +43962,28 @@
             "type": [
               "string",
               "null"
+            ]
+          }
+        }
+      },
+      "UpdateOwnStatusRequest": {
+        "type": "object",
+        "description": "What may change of one of a user's own statuses.",
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StatusState"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         }
@@ -39481,6 +44236,13 @@
               "string",
               "null"
             ]
+          },
+          "directory_listed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Listed in the tenant's directory, or not: 403 unless the tenant\nlets its users change it (`directory.users_may_unlist`)."
           }
         }
       },
@@ -39738,6 +44500,13 @@
               "null"
             ]
           },
+          "location_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A location, or `\"\"` for every call of the tenant's."
+          },
           "destination_pattern": {
             "type": [
               "string",
@@ -39954,6 +44723,28 @@
               {
                 "$ref": "#/components/schemas/TenantDirectory",
                 "description": "Replaces what the tenant's people see of each other."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lines": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantLines",
+                "description": "Replaces whether its users may name their own lines."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnostics": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantDiagnostics",
+                "description": "Replaces its word on captures."
               },
               {
                 "type": "null"
@@ -40340,6 +45131,24 @@
               "string",
               "null"
             ]
+          },
+          "media_preferences": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MediaPreferences",
+                "description": "Replaces the user's media preferences whole: `record_all_calls`,\n`record_on_demand` and the rest."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "directory_listed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Listed in the tenant's directory for its users (`/me/directory`);\nan unlisted user still rings and is seen by administrators."
           }
         }
       },
@@ -40597,6 +45406,49 @@
           }
         }
       },
+      "UserPresenceResponse": {
+        "type": "object",
+        "description": "A user's presence, as an administrator reads it.",
+        "required": [
+          "username",
+          "presence",
+          "status",
+          "status_state"
+        ],
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "presence": {
+            "$ref": "#/components/schemas/Presence"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_state": {
+            "$ref": "#/components/schemas/StatusState"
+          },
+          "status_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
       "UserReadiness": {
         "type": "object",
         "required": [
@@ -40655,7 +45507,9 @@
           "account_status",
           "failed_login_attempts",
           "sip_username",
-          "scim_managed"
+          "scim_managed",
+          "media_preferences",
+          "directory_listed"
         ],
         "properties": {
           "id": {
@@ -40802,6 +45656,14 @@
             ],
             "format": "date-time",
             "description": "When the user was deleted; they are purged the tenant's\n`offboarding.grace_days` later unless restored."
+          },
+          "media_preferences": {
+            "$ref": "#/components/schemas/MediaPreferences",
+            "description": "Recording and media defaults for the user's calls."
+          },
+          "directory_listed": {
+            "type": "boolean",
+            "description": "Listed in the tenant's directory for its users (`/me/directory`)."
           }
         }
       },
@@ -41124,6 +45986,8 @@
               "emergency.notification_failed",
               "call.parked",
               "call.unparked",
+              "call.park_timed_out",
+              "call.quality_poor",
               "call.held",
               "call.resumed",
               "call.transcript",
@@ -41156,6 +46020,8 @@
               "system.cluster_view_changed",
               "system.version_skew",
               "system.site_link_changed",
+              "system.service_up",
+              "system.service_down",
               "device.firmware_behind",
               "device.push_failed",
               "user.created",
@@ -41167,6 +46033,7 @@
               "user.enabled",
               "user.disabled",
               "user.calling_changed",
+              "user.contact_changed",
               "user.signed_in",
               "user.sign_in_failed",
               "hoteling.login",
@@ -41232,6 +46099,8 @@
               "presence.watcher_removed",
               "presence.publish_received",
               "presence.dialog_changed",
+              "presence.user_changed",
+              "presence.user_call",
               "presence.publish_expiry_warning",
               "presence.publish_expired",
               "line.appearance_changed",

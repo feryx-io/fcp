@@ -37,6 +37,11 @@ export function CallingDialog({ user, onOpenChange }: { user: User | null; onOpe
     queryFn: users.list,
     enabled: !!user,
   })
+  const presence = useQuery({
+    queryKey: ['users', username, 'presence'],
+    queryFn: () => users.getPresence(username),
+    enabled: !!user,
+  })
   const mutation = useMutation({
     mutationFn: (data: UpdateCallingRequest) => users.updateCalling(username, data),
     onSuccess: (updated) => {
@@ -58,6 +63,7 @@ export function CallingDialog({ user, onOpenChange }: { user: User | null; onOpe
             <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           </div>
         )}
+        {presence.data && <PresenceLine presence={presence.data} />}
         {query.isError && (
           <p className="text-sm text-destructive">{(query.error as Error).message}</p>
         )}
@@ -75,5 +81,33 @@ export function CallingDialog({ user, onOpenChange }: { user: User | null; onOpe
         )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+const shownAs: Record<string, string> = {
+  available: 'Available',
+  away: 'Away',
+  busy: 'Busy',
+  dnd: 'Do not disturb',
+  ringing: 'Ringing',
+  on_call: 'On a call',
+  offline: 'Offline',
+}
+
+/** What others see of the user, and the status they chose: theirs to change. */
+function PresenceLine({ presence }: { presence: NonNullable<Awaited<ReturnType<typeof users.getPresence>>> }) {
+  const p = presence.presence
+  const parts = [
+    p.idle ? 'Away (idle)' : (shownAs[p.state] ?? p.state),
+    p.label,
+    p.note,
+  ].filter(Boolean)
+  const chosen = presence.status_label ?? shownAs[presence.status_state] ?? presence.status
+  return (
+    <p className="text-sm text-muted-foreground" data-testid="user-presence">
+      Presence: <span className="text-foreground">{parts.join(' · ')}</span>
+      {' '}(chose {chosen}
+      {presence.until ? `, until ${new Date(presence.until).toLocaleString()}` : ''})
+    </p>
   )
 }

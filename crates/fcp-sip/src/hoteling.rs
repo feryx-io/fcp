@@ -106,8 +106,16 @@ pub async fn may_act_as(
                 return true;
             }
             if let Some(owner) = device.owner_user_id {
-                if crate::ring_plan::user_of(storage, tenant_id, aor_user).await == Some(owner) {
+                let target = crate::ring_plan::user_of(storage, tenant_id, aor_user).await;
+                if target == Some(owner) {
                     return true;
+                }
+                // An executive's line on an assistant's device
+                // (`docs/DEVICE_LINES.md` §2).
+                if let Some(target) = target {
+                    if crate::device_lines::acts_for(storage, tenant_id, &device, &target).await {
+                        return true;
+                    }
                 }
             }
             line_of_number(storage, tenant_id, aor_user)
@@ -120,7 +128,7 @@ pub async fn may_act_as(
 
 /// The tenant's line for a number written as a user part: `+15551234567`
 /// or its digits.
-async fn line_of_number(
+pub(crate) async fn line_of_number(
     storage: &DynStorage,
     tenant_id: &TenantId,
     name: &str,

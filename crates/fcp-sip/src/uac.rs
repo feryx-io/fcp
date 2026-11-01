@@ -136,6 +136,27 @@ impl SipUserAgentClient {
         }
     }
 
+    /// An INVITE placed for `tenant`'s call. To this node itself it names
+    /// the tenant ([`crate::own_leg::OWN_LEG_TENANT_HEADER`]), so the leg
+    /// is that tenant's and not the node's default tenant's; elsewhere it
+    /// is a plain [`Self::invite`].
+    pub async fn invite_for_tenant(
+        &self,
+        target: &str,
+        sdp_body: Option<&str>,
+        tenant: &fcp_core::TenantId,
+    ) -> Result<CallHandle> {
+        if !self.own.as_ref().is_some_and(|own| own.is_target(target)) {
+            return self.invite(target, sdp_body).await;
+        }
+        let mut headers = Headers::new();
+        let _ = headers.push(
+            smol_str::SmolStr::new(crate::own_leg::OWN_LEG_TENANT_HEADER),
+            smol_str::SmolStr::new(tenant.to_string()),
+        );
+        self.invite_with_headers(target, sdp_body, headers).await
+    }
+
     /// INVITE with extra headers when given, plain INVITE otherwise.
     pub async fn invite_with_optional_headers(
         &self,

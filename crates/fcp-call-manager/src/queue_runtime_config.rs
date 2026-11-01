@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use fcp_core::storage::{QueueConfigStore, TenantStore};
 use fcp_core::{DynStorage, QueueConfigRecord, TenantId};
 use fcp_queue::queue_manager::TenantQueueDefinition;
-use fcp_queue::{DistributionStrategy, QueueConfig, QueueSystemConfig};
+use fcp_queue::{DistributionStrategy, QueueConfig, QueueKey, QueueSystemConfig};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -87,27 +87,26 @@ fn validate_extension_uniqueness(
 /// Build the effective queue runtime configuration by merging file-backed queue
 /// config with database-backed queue-config records from every tenant.
 ///
-/// Queue names are global runtime identifiers (the `QueueManager` keys them in
-/// a flat `DashMap<String, Queue>`). A duplicate queue name across different
-/// tenants is therefore rejected at build time rather than silently collapsing
-/// one tenant's queue into another's.
+/// A queue is its name within its tenant (`fcp_queue::QueueKey`), so two
+/// tenants may each have a `sales` (docs/TENANT_SCOPE.md §4b). A database
+/// record in the default tenant replaces the TOML queue of the same name.
+/// The configuration returned keeps the TOML's queues; the definitions are
+/// every tenant's.
 pub async fn build_effective_queue_runtime(
     base_config: &QueueSystemConfig,
     storage: &Arc<DynStorage>,
     default_tenant_id: TenantId,
 ) -> Result<(QueueSystemConfig, Vec<TenantQueueDefinition>)> {
-    let mut definitions_by_name = HashMap::<String, TenantQueueDefinition>::new();
+    let mut definitions_by_key = HashMap::<QueueKey, TenantQueueDefinition>::new();
 
     // Seed from the TOML file (always owned by the default tenant).
     for (name, config) in &base_config.queues {
-        definitions_by_name.insert(
-            name.clone(),
-            TenantQueueDefinition {
-                name: name.clone(),
-                tenant_id: default_tenant_id,
-                config: config.clone(),
-            },
-        );
+        let definition = TenantQueueDefinition {
+            name: name.clone(),
+            tenant_id: default_tenant_id,
+            config: config.clone(),
+        };
+        definitions_by_key.insert(definition.key(), definition);
     }
 
     // Collect tenant IDs: at minimum the default, plus every tenant in the
@@ -135,29 +134,34 @@ pub async fn build_effective_queue_runtime(
                 tenant_id: record.tenant_id,
                 config: queue_config_from_record(&record),
             };
-
-            if let Some(existing) = definitions_by_name.get(&definition.name) {
-                if existing.tenant_id != definition.tenant_id {
-                    bail!(
-                        "queue name '{}' is configured in multiple tenants ({} and {}); \
-                         runtime queue names must be globally unique",
-                        definition.name,
-                        existing.tenant_id,
-                        definition.tenant_id
-                    );
-                }
-            }
-
-            definitions_by_name.insert(definition.name.clone(), definition);
+            definitions_by_key.insert(definition.key(), definition);
         }
     }
 
-    let definitions = validate_extension_uniqueness(definitions_by_name.into_values())?;
-    let mut effective_config = base_config.clone();
-    effective_config.queues = definitions
-        .iter()
-        .map(|definition| (definition.name.clone(), definition.config.clone()))
-        .collect();
+    let definitions = validate_extension_uniqueness(definitions_by_key.into_values())?;
+    Ok((base_config.clone(), definitions))
+}
 
-    Ok((effective_config, definitions))
+/// Bring the running queues up to date with the database: a queue made,
+/// changed or removed on the admin API is answered, changed or drained
+/// here, and each new one starts distributing. Run at an interval and on
+/// SIGHUP (`docs/DEEP_TESTING.md` D8: a queue made on the API was never
+/// answered until the node was signalled). The names of new queues.
+pub async fn sync_from_store(
+    queue_manager: &fcp_queue::QueueManager,
+    queue_handler: Option<&crate::queue_handler::QueueCallHandler>,
+    base_config: &QueueSystemConfig,
+    storage: &Arc<DynStorage>,
+    default_tenant_id: TenantId,
+) -> Result<Vec<QueueKey>> {
+    let (effective, definitions) =
+        build_effective_queue_runtime(base_config, storage, default_tenant_id).await?;
+    let new_queues = queue_manager.sync_queue_definitions(definitions, effective)?;
+    if let Some(handler) = queue_handler {
+        for name in &new_queues {
+            tracing::info!(queue = %name, "Spawning distribution loop for new queue");
+            handler.spawn_distribution_loop_for(name.clone());
+        }
+    }
+    Ok(new_queues)
 }

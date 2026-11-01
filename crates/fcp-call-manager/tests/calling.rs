@@ -162,7 +162,8 @@ format = "compact"
     }
 
     /// Give a user a number, a line binding and an enabled mailbox.
-    async fn mailbox(&self, user: &SeededUser, e164: &str) {
+    /// A mailbox on a number of the user's own; its id.
+    async fn mailbox(&self, user: &SeededUser, e164: &str) -> String {
         let storage = self.seed.storage();
         let row = fcp_core::storage::CredentialStore::get_user_in_tenant(
             storage,
@@ -189,7 +190,9 @@ format = "compact"
         );
         storage.put_phone_number(number).await.expect("number");
         storage.put_line_binding(binding).await.expect("binding");
+        let id = mailbox.id.to_string();
         storage.put_mailbox(mailbox).await.expect("mailbox");
+        id
     }
 
     /// The node's view of its calls (`GET /calls`).
@@ -375,6 +378,47 @@ async fn forward_on_busy_when_the_phone_refuses() {
     stack.finish().await;
 }
 
+/// A decline on one of Bob's phones is Bob's answer (a 6xx, RFC 3261
+/// §16.7): his other phone stops ringing and the call goes to his busy
+/// treatment at once. It rang on to the ring time, then refused the
+/// caller (`docs/DEEP_TESTING.md` D8: Anvil declined, the VVX heard
+/// ringing, then a fast busy).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_decline_on_one_phone_stops_the_others_and_is_busy() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let bob_desk = stack.phone(&bob).await;
+    stack
+        .calling(&bob, |s| {
+            s.forward_busy = Some(CallTarget::Extension(carol.extension.clone()));
+            s.no_answer_secs = Some(30);
+        })
+        .await;
+
+    let call = alice.call(&bob.extension).await.unwrap();
+    let (Some(at_bob), Some(at_desk)) = (
+        bob_phone.incoming(SOON).await,
+        bob_desk.incoming(SOON).await,
+    ) else {
+        stack.fail("both of Bob's phones should ring", &alice).await;
+    };
+    let ringing = at_desk.leave_ringing();
+    at_bob.reject(603, "Decline").await.unwrap();
+    assert!(
+        ringing.ended(SOON).await,
+        "Bob's other phone rang on after the decline"
+    );
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("Carol's phone did not ring after Bob declined", &alice)
+            .await;
+    };
+    let answered = at_carol.answer().await.unwrap();
+    call.answered(SOON).await.expect("Alice reaches Carol");
+    answered.hangup().await.unwrap();
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn do_not_disturb_is_busy_without_ringing() {
     let stack = stack_or_skip!();
@@ -511,7 +555,7 @@ async fn a_user_with_no_phone_reaches_voicemail_by_extension() {
     let stack = stack_or_skip!();
     let alice = stack.seed.user("alice", "alice-pw", "1001").await;
     let carol = stack.seed.user("carol", "carol-pw", "1003").await;
-    stack.mailbox(&carol, "+15125550103").await;
+    let mailbox_id = stack.mailbox(&carol, "+15125550103").await;
     let alice_phone = stack.phone(&alice).await;
     let voicemail = stack.voicemail_server().await;
 
@@ -523,7 +567,12 @@ async fn a_user_with_no_phone_reaches_voicemail_by_extension() {
             .await;
     };
     let uri = at_voicemail.request_uri();
-    assert!(uri.contains(&carol.extension), "the mailbox dialed: {uri}");
+    // By the mailbox's id: the voicemail server routes every mailbox by
+    // it, where an extension may be one it does not know (D8, 37–38).
+    assert!(
+        uri.starts_with(&format!("sip:{mailbox_id}@")),
+        "the mailbox dialed: {uri}"
+    );
     assert!(uri.contains("reason=unreachable"), "the reason: {uri}");
     let answered = at_voicemail.answer().await.unwrap();
     call.answered(SOON).await.expect("Alice reaches voicemail");
@@ -635,9 +684,7 @@ async fn feature_codes_change_the_callers_own_settings() {
     let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
 
     // *78: do not disturb on. A call to Bob is busy without ringing.
-    let code = bob_phone.call("*78").await.unwrap();
-    code.answered(SOON).await.expect("*78 accepted");
-    let _ = code.hangup().await;
+    dial_code(&stack, &bob_phone, "*78").await;
     let call = alice.call(&bob.extension).await.unwrap();
     match call.failed(SOON).await {
         Some(486) => {}
@@ -649,15 +696,8 @@ async fn feature_codes_change_the_callers_own_settings() {
     }
 
     // *79: off again, and *72 + Carol's extension: every call to Carol.
-    let code = bob_phone.call("*79").await.unwrap();
-    code.answered(SOON).await.expect("*79 accepted");
-    let _ = code.hangup().await;
-    let code = bob_phone
-        .call(&format!("*72{}", carol.extension))
-        .await
-        .unwrap();
-    code.answered(SOON).await.expect("*72 accepted");
-    let _ = code.hangup().await;
+    dial_code(&stack, &bob_phone, "*79").await;
+    dial_code(&stack, &bob_phone, &format!("*72{}", carol.extension)).await;
     let call = alice.call(&bob.extension).await.unwrap();
     let Some(at_carol) = carol_phone.incoming(SOON).await else {
         stack
@@ -669,9 +709,7 @@ async fn feature_codes_change_the_callers_own_settings() {
     answered.hangup().await.unwrap();
 
     // *73: forwarding off; Bob rings again.
-    let code = bob_phone.call("*73").await.unwrap();
-    code.answered(SOON).await.expect("*73 accepted");
-    let _ = code.hangup().await;
+    dial_code(&stack, &bob_phone, "*73").await;
     let call = alice.call(&bob.extension).await.unwrap();
     let Some(at_bob) = bob_phone.incoming(SOON).await else {
         stack
@@ -845,10 +883,14 @@ async fn the_node_carries_out_a_blind_transfer() {
 
     // Alice, on her own call still, hears Carol.
     carol_call.media().play_tone(660.0, 3000);
-    assert!(
-        alice_call.media().heard(660, SOON).await,
-        "Alice does not hear Carol"
-    );
+    if !alice_call.media().heard(660, SOON).await {
+        let why = format!(
+            "Alice does not hear Carol ({} packets, {} frames of the tone)",
+            alice_call.media().packets_received(),
+            alice_call.media().tone_frames(660),
+        );
+        stack.fail(&why, &alice).await;
+    }
     alice_call.hangup().await.unwrap();
     assert!(
         carol_call.ended(SOON).await,
@@ -956,6 +998,88 @@ async fn an_attended_transfer_joins_the_other_two() {
     stack.finish().await;
 }
 
+/// An attended transfer to something the node answers itself — a menu, as
+/// a VVX's Transfer button does to an IVR (`docs/DEEP_TESTING.md` D8): the
+/// consultation call has no second party, only the flow, and the Replaces
+/// was refused 481 ("no party to join"). The transferee takes the
+/// consulting phone's place on the flow: Alice keys 5 and the menu rings
+/// Carol.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attended_transfer_to_a_menu_hands_the_caller_to_it() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let menu = stack.seed.user("menu", "menu-pw", "1500").await;
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "transfer-menu", "name": "Menu", "version": 1, "initial_node": "answer",
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "menu"},
+            "menu": {
+                "id": "menu", "name": "Menu", "type": "gather", "num_digits": 1,
+                "timeout": 20, "transitions": {"5": "dial"}, "default": "menu",
+                "on_timeout": "menu"
+            },
+            "dial": {
+                "id": "dial", "name": "Dial Carol", "type": "dial",
+                "destination": carol.extension, "timeout": 10, "next": "done",
+                "on_error": "done", "on_no_answer": "done", "on_busy": "done"
+            },
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .expect("seed flow");
+    stack
+        .calling(&menu, |s| {
+            s.forward_all = Some(CallTarget::Flow("transfer-menu".into()))
+        })
+        .await;
+
+    let (alice_call, bob_first) = answered(&stack, &alice, &bob, &bob_phone).await;
+    assert_eq!(bob_first.hold().await.unwrap(), 200);
+    let bob_second = bob_phone.call(&menu.extension).await.unwrap();
+    bob_second
+        .answered(SOON)
+        .await
+        .expect("the menu answers Bob");
+
+    // Bob completes the transfer: Alice replaces him on the menu's call.
+    let replaces = bob_second.replaces().await.unwrap();
+    let refer_to = format!(
+        "sip:{}@{}?Replaces={}",
+        menu.extension,
+        stack.sip,
+        escaped(&replaces)
+    );
+    assert_eq!(bob_first.refer(&refer_to).await.unwrap(), 202);
+    assert!(
+        bob_second.ended(SOON).await,
+        "Bob's leg to the menu was not dropped"
+    );
+    assert!(
+        bob_first.ended(RING_OUT).await,
+        "Bob's leg to Alice was not dropped"
+    );
+
+    // Alice is on the menu now: her 5 is heard there, and Carol rings.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    alice_call.media().send_dtmf('5');
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("Alice's key did not reach the menu", &bob_phone)
+            .await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    carol_call.media().play_tone(880.0, 3000);
+    assert!(
+        alice_call.media().heard(880, SOON).await,
+        "Alice does not hear Carol"
+    );
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_call_parked_by_transfer_is_retrieved_from_its_orbit() {
     let stack = stack_or_skip!();
@@ -1011,6 +1135,595 @@ async fn a_call_parked_by_transfer_is_retrieved_from_its_orbit() {
         alice_call.ended(SOON).await,
         "Alice's leg outlived the call"
     );
+    stack.finish().await;
+}
+
+/// A menu's timeout runs from the end of its prompt: a caller who listens
+/// to the whole prompt, then presses, is heard. It ran from the prompt's
+/// start, so the D8 menu — a prompt about as long as its 8 s timeout —
+/// said goodbye as it finished asking (`docs/DEEP_TESTING.md` D8). A key
+/// during the prompt still cuts it short.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_menus_timeout_runs_from_the_end_of_its_prompt() {
+    const PROMPT_HZ: u32 = 500;
+    let stack = stack_or_skip!();
+    let [(_, alice), (carol, carol_phone), _] = three_phones(&stack).await;
+    let menu = stack.seed.user("menu", "menu-pw", "1500").await;
+    let prompt = stack._dir.path().join("long-prompt.wav");
+    tone_wav(&prompt, PROMPT_HZ as f32, 4.0);
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "long-menu", "name": "Menu", "version": 1, "initial_node": "answer",
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "menu"},
+            "menu": {
+                "id": "menu", "name": "Menu", "type": "gather", "num_digits": 1,
+                "timeout": 2, "barge_in": true,
+                "prompt": {"type": "play", "url": prompt.display().to_string()},
+                "transitions": {"3": "dial"}, "default": "done", "on_timeout": "done"
+            },
+            "dial": {
+                "id": "dial", "name": "Dial Carol", "type": "dial",
+                "destination": carol.extension, "timeout": 10, "next": "done",
+                "on_error": "done", "on_no_answer": "done", "on_busy": "done"
+            },
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .expect("seed flow");
+    stack
+        .calling(&menu, |s| {
+            s.forward_all = Some(CallTarget::Flow("long-menu".into()))
+        })
+        .await;
+
+    // The whole 4 s prompt heard, then 3: past the old deadline (2 s from
+    // the prompt's start), inside the new one (2 s from its end).
+    let call = alice.call(&menu.extension).await.unwrap();
+    call.answered(SOON).await.expect("the menu answers");
+    assert!(
+        call.media().heard(PROMPT_HZ, SOON).await,
+        "the prompt is not heard"
+    );
+    tokio::time::sleep(Duration::from_millis(4500)).await;
+    assert!(
+        !call.ended(Duration::ZERO).await,
+        "the menu hung up while the prompt was still playing or just after"
+    );
+    call.media().send_dtmf('3');
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("the 3 pressed after the prompt was not heard", &alice)
+            .await;
+    };
+    at_carol.answer().await.unwrap().hangup().await.unwrap();
+    let _ = call.ended(SOON).await;
+
+    // Pressed during the prompt: the prompt stops and the choice is taken.
+    let call = alice.call(&menu.extension).await.unwrap();
+    call.answered(SOON).await.expect("the menu answers");
+    assert!(call.media().heard(PROMPT_HZ, SOON).await);
+    call.media().send_dtmf('3');
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("a 3 pressed during the prompt was not heard", &alice)
+            .await;
+    };
+    at_carol.answer().await.unwrap().hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// A menu asked up to `max_attempts` times: nothing pressed plays the
+/// no-input prompt and the menu again, a key it has no branch for plays the
+/// invalid-choice prompt and the menu again, and when the attempts are
+/// spent the call goes to `on_max_attempts`. Asked once, it said goodbye
+/// at the first silence (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_menu_asks_again_then_gives_up_where_it_is_told() {
+    const PROMPT_HZ: u32 = 500;
+    const NO_INPUT_HZ: u32 = 700;
+    const INVALID_HZ: u32 = 900;
+    let stack = stack_or_skip!();
+    let [(_, alice), (carol, carol_phone), (dave, dave_phone)] = three_phones(&stack).await;
+    let menu = stack.seed.user("menu", "menu-pw", "1500").await;
+    let wav = |name: &str, hz: u32, secs: f32| {
+        let path = stack._dir.path().join(name);
+        tone_wav(&path, hz as f32, secs);
+        path.display().to_string()
+    };
+    let (prompt, no_input, invalid) = (
+        wav("menu.wav", PROMPT_HZ, 1.0),
+        wav("no-input.wav", NO_INPUT_HZ, 0.6),
+        wav("invalid.wav", INVALID_HZ, 0.6),
+    );
+    let dial = |to: &str| {
+        serde_json::json!({
+            "id": format!("dial_{to}"), "name": "Dial", "type": "dial", "destination": to,
+            "timeout": 10, "next": "done", "on_error": "done", "on_no_answer": "done",
+            "on_busy": "done"
+        })
+    };
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "patient-menu", "name": "Menu", "version": 1, "initial_node": "answer",
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "menu"},
+            "menu": {
+                "id": "menu", "name": "Menu", "type": "gather", "num_digits": 1, "timeout": 1,
+                "prompt": {"type": "play", "url": prompt},
+                "transitions": {"3": format!("dial_{}", carol.extension)},
+                "default": "done", "on_timeout": "done",
+                "max_attempts": 3,
+                "no_input_prompt": {"type": "play", "url": no_input},
+                "invalid_prompt": {"type": "play", "url": invalid},
+                "on_max_attempts": format!("dial_{}", dave.extension)
+            },
+            format!("dial_{}", carol.extension): dial(&carol.extension),
+            format!("dial_{}", dave.extension): dial(&dave.extension),
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .expect("seed flow");
+    stack
+        .calling(&menu, |s| {
+            s.forward_all = Some(CallTarget::Flow("patient-menu".into()))
+        })
+        .await;
+
+    // A wrong key: told so, asked again, then a right one is taken.
+    let call = alice.call(&menu.extension).await.unwrap();
+    call.answered(SOON).await.expect("the menu answers");
+    assert!(call.media().heard(PROMPT_HZ, SOON).await, "no menu prompt");
+    call.media().send_dtmf('9');
+    assert!(
+        call.media().heard(INVALID_HZ, SOON).await,
+        "a wrong key did not play the invalid-choice prompt"
+    );
+    assert!(
+        !call.ended(Duration::from_millis(1500)).await,
+        "a wrong key ended the call"
+    );
+    call.media().send_dtmf('3');
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("the menu asked again did not take the right key", &alice)
+            .await;
+    };
+    at_carol.answer().await.unwrap().hangup().await.unwrap();
+    let _ = call.ended(SOON).await;
+
+    // Nothing pressed: told so twice, then on to the last-attempt branch.
+    let call = alice.call(&menu.extension).await.unwrap();
+    call.answered(SOON).await.expect("the menu answers");
+    let asked = Instant::now();
+    assert!(
+        call.media()
+            .heard(NO_INPUT_HZ, Duration::from_secs(8))
+            .await,
+        "silence did not play the no-input prompt"
+    );
+    let Some(at_dave) = dave_phone.incoming(Duration::from_secs(15)).await else {
+        stack
+            .fail("the spent attempts did not go to on_max_attempts", &alice)
+            .await;
+    };
+    // Three prompts and three timeouts, two no-input prompts between:
+    // about 7 s. Two attempts would be about 4.6 s.
+    let waited = asked.elapsed();
+    assert!(
+        waited >= Duration::from_secs(6),
+        "gave up after {waited:?}: fewer than three attempts"
+    );
+    assert_eq!(
+        call.media().tone_frames(INVALID_HZ),
+        0,
+        "silence played the invalid-choice prompt"
+    );
+    at_dave.answer().await.unwrap().hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// The caller parks the callee with `*70`: the callee moves to the A
+/// slot, and the B slot the caller left must name no one. Still naming the
+/// callee, it sent the callee's own audio back between the hold music's
+/// packets — choppy music on the D8 server (`docs/DEEP_TESTING.md` D8).
+/// The `*70` call is ended by the node, not left for the phone to hang up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_parking_with_the_code_leaves_the_parked_party_only_the_music() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), _] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    assert_eq!(alice_call.hold().await.unwrap(), 200);
+
+    let park = alice.call("*70").await.unwrap();
+    if let Err(e) = park.answered(SOON).await {
+        stack
+            .fail(&format!("*70 was not answered: {e}"), &alice)
+            .await;
+    }
+    // The orbit in the answer, for a phone to show: a prompt alone is lost
+    // to a speaker that wakes slowly (`docs/DEEP_TESTING.md` D8).
+    assert_eq!(park.answer_header("X-FCP-Parked").as_deref(), Some("701"));
+    assert!(park.ended(RING_OUT).await, "the *70 call was never ended");
+    assert!(alice_call.ended(SOON).await, "Alice's leg was not dropped");
+    assert!(
+        bob_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await,
+        "Bob, parked, hears no music"
+    );
+
+    // Bob talks into the park: none of it may come back to him. The music
+    // alone is one packet every 20 ms; Bob's own echoed beside it doubled
+    // that.
+    bob_call.media().heard(1200, Duration::ZERO).await;
+    bob_call.media().play_tone(1200.0, 4000);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let before = bob_call.media().packets_received();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let received = bob_call.media().packets_received() - before;
+    assert!(
+        received < 200,
+        "Bob, parked, got {received} packets in 3 s: his own audio is coming back"
+    );
+    assert!(
+        bob_call.media().tone_frames(1200) == 0,
+        "Bob hears himself while parked"
+    );
+
+    let retrieve = alice.call("*71701").await.unwrap();
+    if let Err(e) = retrieve.answered(SOON).await {
+        stack
+            .fail(&format!("the retrieve was not answered: {e}"), &alice)
+            .await;
+    }
+    retrieve.media().play_tone(660.0, 3000);
+    assert!(
+        bob_call.media().heard(660, SOON).await,
+        "Bob does not hear Alice after the retrieve"
+    );
+    bob_call.media().play_tone(880.0, 3000);
+    assert!(
+        retrieve.media().heard(880, SOON).await,
+        "Alice does not hear Bob after the retrieve"
+    );
+    retrieve.hangup().await.unwrap();
+    assert!(bob_call.ended(SOON).await, "Bob's leg outlived the call");
+    stack.finish().await;
+}
+
+/// The callee parks the caller with `*70`. The callee's leg is To the
+/// extension dialed, not the callee's name, so the lookup by name found no
+/// call and `*70` was refused 480 — busy on the D8 server's VVX, parking a
+/// carrier call it had answered (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_callee_parking_with_the_code_parks_the_caller() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), _] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+
+    let park = bob_phone.call("*70").await.unwrap();
+    if let Err(e) = park.answered(SOON).await {
+        stack
+            .fail(&format!("*70 was not answered: {e}"), &bob_phone)
+            .await;
+    }
+    assert!(park.ended(RING_OUT).await, "the *70 call was never ended");
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+    assert!(
+        alice_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await,
+        "Alice, parked, hears no music"
+    );
+
+    let retrieve = bob_phone.call("*71701").await.unwrap();
+    if let Err(e) = retrieve.answered(SOON).await {
+        stack
+            .fail(&format!("the retrieve was not answered: {e}"), &bob_phone)
+            .await;
+    }
+    retrieve.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Bob after the retrieve"
+    );
+    retrieve.hangup().await.unwrap();
+    assert!(
+        alice_call.ended(SOON).await,
+        "Alice's leg outlived the call"
+    );
+    stack.finish().await;
+}
+
+/// A tenant numbers its own slots (`docs/PARKING.md`, D8 finding 35): with
+/// a lot `4320`–`4321` and the park number `4300`, dialing `4300` parks in
+/// `4320`, the node's own `701`–`720` is not the tenant's, and `*714320`
+/// takes the call back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tenants_own_lot_numbers_the_slots() {
+    let stack = stack_or_skip!();
+    let mut lot =
+        fcp_core::parking::ParkingLot::new(stack.seed.tenant_id, "Front desk", "4320", "4321");
+    lot.park_number = Some("4300".to_string());
+    fcp_core::parking::ParkingLotStore::put_parking_lot(stack.seed.storage(), &lot)
+        .await
+        .unwrap();
+    let [(_, alice), (bob, bob_phone), _] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+
+    let park = bob_phone.call("4300").await.unwrap();
+    if let Err(e) = park.answered(SOON).await {
+        stack
+            .fail(
+                &format!("the park number was not answered: {e}"),
+                &bob_phone,
+            )
+            .await;
+    }
+    assert_eq!(
+        park.answer_header("X-FCP-Parked").as_deref(),
+        Some("4320"),
+        "parked in the lot's first slot"
+    );
+    assert!(park.ended(RING_OUT).await, "the park call was never ended");
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+
+    // The node's own range is not this tenant's any more.
+    let wrong = bob_phone.call("*71701").await.unwrap();
+    assert!(
+        wrong.answered(Duration::from_secs(3)).await.is_err(),
+        "701 held nothing"
+    );
+
+    let retrieve = bob_phone.call("*714320").await.unwrap();
+    if let Err(e) = retrieve.answered(SOON).await {
+        stack
+            .fail(&format!("the retrieve was not answered: {e}"), &bob_phone)
+            .await;
+    }
+    retrieve.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Bob after the retrieve"
+    );
+    retrieve.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// `*70` parks in the lot of the parker's location (`docs/PARKING.md`,
+/// `docs/TENANT_SCOPE.md` §3.5): Bob's extension is at the branch, so he
+/// parks in the branch's lot, not the tenant's lot without a location;
+/// Carol, with no location, parks in that one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_parks_in_the_lot_of_the_parkers_location() {
+    use fcp_core::storage::ExtensionStore;
+    let stack = stack_or_skip!();
+    let branch = fcp_core::LocationId::new();
+    parking_lot(&stack, "4320", "4321", |_| {}).await;
+    parking_lot(&stack, "4330", "4331", |lot| {
+        lot.name = "Branch".to_string();
+        lot.location_id = Some(branch.to_string());
+    })
+    .await;
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let storage = stack.seed.storage();
+    let mut ext = storage
+        .get_extension_by_number(&stack.seed.tenant_id, &bob.extension)
+        .await
+        .unwrap()
+        .expect("Bob's extension");
+    ext.location_id = Some(branch);
+    storage.put_extension(ext).await.unwrap();
+
+    for (who, phone, slot) in [(&bob, &bob_phone, "4330"), (&carol, &carol_phone, "4320")] {
+        let (_alice_call, call) = answered(&stack, &alice, who, phone).await;
+        assert_eq!(call.hold().await.unwrap(), 200);
+        let park = phone.call("*70").await.unwrap();
+        if let Err(e) = park.answered(SOON).await {
+            stack
+                .fail(&format!("*70 was not answered: {e}"), phone)
+                .await;
+        }
+        assert_eq!(
+            park.answer_header("X-FCP-Parked").as_deref(),
+            Some(slot),
+            "{} parked in the wrong lot",
+            who.username
+        );
+        assert!(park.ended(RING_OUT).await, "the *70 call was never ended");
+    }
+    stack.finish().await;
+}
+
+/// A lot of the tenant's own, written as the API would.
+async fn parking_lot(
+    stack: &Stack,
+    first: &str,
+    last: &str,
+    edit: impl FnOnce(&mut fcp_core::parking::ParkingLot),
+) {
+    let mut lot =
+        fcp_core::parking::ParkingLot::new(stack.seed.tenant_id, "Front desk", first, last);
+    edit(&mut lot);
+    fcp_core::parking::ParkingLotStore::put_parking_lot(stack.seed.storage(), &lot)
+        .await
+        .unwrap();
+}
+
+/// The tenant's calls parked on the node (`GET /parking/calls`).
+async fn parked(stack: &Stack) -> Vec<serde_json::Value> {
+    let url = loopback(
+        stack.http,
+        &format!("/parking/calls?tenant_id={}", stack.seed.tenant_id),
+    );
+    let (code, body) = fcp_testkit::smoke::http_get(&url)
+        .await
+        .expect("GET /parking/calls");
+    assert_eq!(code, 200, "{body}");
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    body["calls"].as_array().cloned().unwrap_or_default()
+}
+
+/// Phase 2 of `docs/PARKING.md`: a transfer to a slot parks there (and a
+/// taken slot is refused 486), and dialing the slot takes the call back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transfer_parks_in_the_slot_it_names_and_dialing_it_takes_the_call() {
+    let stack = stack_or_skip!();
+    parking_lot(&stack, "4320", "4329", |_| {}).await;
+    let [(alice, alice_phone), (bob, bob_phone), (_, carol_phone)] = three_phones(&stack).await;
+
+    // Bob transfers Alice to 4325: she waits there.
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    let to_slot = format!("sip:4325@{}", stack.sip);
+    assert_eq!(bob_call.refer(&to_slot).await.unwrap(), 202);
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+    let calls = parked(&stack).await;
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0]["slot"], "4325");
+    assert_eq!(calls[0]["parker_extension"], bob.extension);
+
+    // Carol, transferred to the same slot, is refused it.
+    let (carol_call, bob_again) = answered(&stack, &carol_phone, &bob, &bob_phone).await;
+    assert_eq!(
+        bob_again.refer(&to_slot).await.unwrap(),
+        486,
+        "the slot is taken"
+    );
+    carol_call.hangup().await.unwrap();
+
+    // Dialing 4325 takes Alice back.
+    let retrieve = bob_phone.call("4325").await.unwrap();
+    if let Err(e) = retrieve.answered(SOON).await {
+        stack
+            .fail(
+                &format!("dialing the slot was not answered: {e}"),
+                &bob_phone,
+            )
+            .await;
+    }
+    retrieve.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Bob after he dialed her slot"
+    );
+    assert!(parked(&stack).await.is_empty(), "the slot is free again");
+    let _ = alice;
+    retrieve.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// A parked call nobody takes back rings its parker, and when the parker
+/// does not answer either, the lot's fallback takes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parked_call_its_parker_lets_ring_goes_to_the_lots_fallback() {
+    let Some(stack) = Stack::start_with("[pbx.parking]\nenabled = true\n").await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let [(_, alice_phone), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    parking_lot(&stack, "4320", "4321", |lot| {
+        lot.timeout_secs = 2;
+        lot.fallback = Some(fcp_core::CallTarget::Extension(carol.extension.clone()));
+    })
+    .await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    let park = bob_phone.call("*70").await.unwrap();
+    park.answered(SOON).await.expect("*70 answered");
+    assert!(park.ended(RING_OUT).await, "the *70 call was never ended");
+
+    // Bob's phone rings with the parked call; he lets it ring out.
+    let Some(at_bob) = bob_phone.incoming(Duration::from_secs(15)).await else {
+        stack.fail("the parker was not rung", &alice_phone).await;
+    };
+    let shown = at_bob.header("From").unwrap_or_default();
+    assert!(shown.contains("Parked 4320"), "the slot is shown: {shown}");
+    let Some(at_carol) = carol_phone.incoming(Duration::from_secs(20)).await else {
+        stack
+            .fail("the lot's fallback was not rung", &alice_phone)
+            .await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    carol_call.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Carol"
+    );
+    carol_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// The node's parked calls, sent on to someone and hung up
+/// (`/parking/calls`, which the admin API asks of every call manager).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_node_lists_sends_on_and_hangs_up_parked_calls() {
+    let stack = stack_or_skip!();
+    parking_lot(&stack, "4320", "4329", |_| {}).await;
+    let [(_, alice_phone), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(
+        bob_call
+            .refer(&format!("sip:4320@{}", stack.sip))
+            .await
+            .unwrap(),
+        202
+    );
+    assert_eq!(parked(&stack).await.len(), 1);
+
+    // Sent on to Carol: her phone rings, and answering takes the call.
+    let url = loopback(stack.http, "/parking/calls/4320/retrieve");
+    let body = serde_json::json!({ "target": carol.extension, "tenant_id": stack.seed.tenant_id });
+    let (code, text) = fcp_testkit::smoke::http_post(&url, &body.to_string())
+        .await
+        .unwrap();
+    assert_eq!(code, 202, "{text}");
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("Carol was not rung with the parked call", &alice_phone)
+            .await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    carol_call.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Carol"
+    );
+    carol_call.hangup().await.unwrap();
+    assert!(alice_call.ended(SOON).await);
+
+    // Parked again, then hung up from the node.
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(
+        bob_call
+            .refer(&format!("sip:4321@{}", stack.sip))
+            .await
+            .unwrap(),
+        202
+    );
+    let empty = loopback(
+        stack.http,
+        &format!("/parking/calls/4329?tenant_id={}", stack.seed.tenant_id),
+    );
+    let (code, _) = fcp_testkit::smoke::http_request("DELETE", &empty, &[], None)
+        .await
+        .unwrap();
+    assert_eq!(code, 404, "nothing parked in 4329");
+    let slot = loopback(
+        stack.http,
+        &format!("/parking/calls/4321?tenant_id={}", stack.seed.tenant_id),
+    );
+    let (code, text) = fcp_testkit::smoke::http_request("DELETE", &slot, &[], None)
+        .await
+        .unwrap();
+    assert_eq!(code, 200, "{text}");
+    assert!(
+        alice_call.ended(SOON).await,
+        "the parked call was not hung up"
+    );
+    assert!(parked(&stack).await.is_empty());
     stack.finish().await;
 }
 
@@ -1127,10 +1840,14 @@ async fn an_invite_with_replaces_takes_over_a_call() {
     }
     assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
     carol_call.media().play_tone(660.0, 3000);
-    assert!(
-        alice_call.media().heard(660, SOON).await,
-        "Alice does not hear Carol"
-    );
+    if !alice_call.media().heard(660, SOON).await {
+        let why = format!(
+            "Alice does not hear Carol ({} packets, {} frames of the tone)",
+            alice_call.media().packets_received(),
+            alice_call.media().tone_frames(660),
+        );
+        stack.fail(&why, &alice).await;
+    }
 
     // A dialog nobody holds is refused.
     let stranger = carol_phone
@@ -1431,6 +2148,81 @@ async fn a_numbers_hold_music_plays_to_its_callers_unless_the_holder_chose_their
     stack.finish().await;
 }
 
+/// A system prompt chosen as hold music plays as the tenant's override of it
+/// once the tenant has one (docs/TENANT_SCOPE.md §3.2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_system_prompt_plays_as_the_tenants_override_once_it_has_one() {
+    use fcp_core::prompt::{Prompt, PromptCategory, PromptStore};
+    use fcp_core::storage::TenantStore;
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let prompts =
+        fcp_storage_postgres::prompt::PostgresPromptStore::new(stack.seed.storage().pool().clone());
+
+    // The platform's hold music, 700 Hz, chosen by the tenant.
+    let path = stack._dir.path().join("platform.wav");
+    tone_wav(&path, 700.0, 4.0);
+    let mut system = Prompt::system_tts("platform-hold", PromptCategory::Moh, "en", "music");
+    system.source_type = fcp_core::prompt::PromptSourceType::File;
+    system.audio_path = Some(path);
+    let system_id = system.id.to_string();
+    prompts
+        .put_prompt(system)
+        .await
+        .expect("seed the system prompt");
+    let storage = stack.seed.storage();
+    let mut tenant = storage
+        .get_tenant(&stack.seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    tenant.calling.hold_music = Some(system_id);
+    storage.put_tenant(tenant).await.unwrap();
+
+    let bob_phone = stack.phone(&bob).await;
+    let alice_phone = stack.phone(&alice).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    if !alice_call.media().heard(700, SOON).await {
+        stack
+            .fail("Alice hears no system hold music", &alice_phone)
+            .await;
+    }
+    alice_call.hangup().await.unwrap();
+
+    // The tenant overrides it with its own, 1100 Hz: that plays instead.
+    let path = stack._dir.path().join("override.wav");
+    tone_wav(&path, 1100.0, 4.0);
+    prompts
+        .put_prompt(Prompt::new_file(
+            stack.seed.tenant_id,
+            "platform-hold",
+            PromptCategory::Moh,
+            "en",
+            path,
+        ))
+        .await
+        .expect("seed the override");
+    let alice_phone = stack.phone(&alice).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    if !alice_call.media().heard(1100, SOON).await {
+        stack
+            .fail("Alice does not hear the tenant's override", &alice_phone)
+            .await;
+    }
+    assert!(
+        !alice_call
+            .media()
+            .heard(700, Duration::from_millis(500))
+            .await,
+        "the system prompt played over the tenant's override"
+    );
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tenants_chosen_hold_music_or_silence_plays_to_every_held_caller() {
     use fcp_core::prompt::{Prompt, PromptCategory, PromptStore};
@@ -1549,9 +2341,7 @@ async fn call_waiting_decides_whether_a_second_call_rings() {
     assert_eq!(second.failed(SOON).await, Some(486));
 
     // *57: off. The second call is busy without ringing.
-    let code = bob_phone.call("*57").await.unwrap();
-    code.answered(SOON).await.expect("*57 accepted");
-    let _ = code.hangup().await;
+    dial_code(&stack, &bob_phone, "*57").await;
     let second = carol_phone.call(&bob.extension).await.unwrap();
     match second.failed(SOON).await {
         Some(486) => {}
@@ -1935,6 +2725,38 @@ async fn a_closed_queue_sends_its_callers_on() {
     let answered = at_carol.answer().await.unwrap();
     call.answered(SOON).await.unwrap();
     answered.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// A queue made on the admin API after the node started is answered with
+/// no signal to the node: it read its queues once, at start, and a queue
+/// made later was refused until the node was signalled
+/// (`docs/DEEP_TESTING.md` D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queue_made_after_start_is_answered() {
+    let Some(stack) = Stack::start_with("[queue]\nenabled = true\nstore_sync_secs = 1\n").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let [(_, alice), _, _] = three_phones(&stack).await;
+    let queue = fcp_core::QueueConfigRecord::new(
+        "late".to_string(),
+        "7200".to_string(),
+        stack.seed.tenant_id,
+    );
+    fcp_core::storage::QueueConfigStore::put_queue_config(stack.seed.storage(), queue)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let call = alice.call("7200").await.unwrap();
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(&format!("the new queue did not answer: {e}"), &alice)
+            .await;
+    }
+    call.hangup().await.unwrap();
     stack.finish().await;
 }
 
@@ -2826,7 +3648,125 @@ async fn make_executive(
         .expect("store settings");
 }
 
+/// Lines on a device (`docs/DEVICE_LINES.md` phase 1b): Bob's desk phone
+/// carries his own line, another extension of his and Mary's as her
+/// assistant, each registered with the desk's credentials; a call rings it
+/// saying which line it is for, and Mary's line is told her messages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_desk_phone_registers_its_lines_and_is_told_which_a_call_is_for() {
+    use fcp_core::storage::{CredentialStore, DeviceStore, ExtensionStore};
+    const DESK: &str = "bobdesk";
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let mary = stack.seed.user("mary", "mary-pw", "1009").await;
+    let storage = stack.seed.storage();
+    let bob_row = storage
+        .get_user_in_tenant(&bob.username, &stack.seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    storage
+        .put_extension(
+            fcp_core::Extension::new(
+                "1005".into(),
+                fcp_core::ExtensionTarget::User(bob_row.id),
+                stack.seed.tenant_id,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    make_executive(&stack, &mary, &[&bob], fcp_core::ExecutiveFilter::All).await;
+    stack.mailbox(&mary, "+15125550919").await;
+
+    let mut desk = fcp_core::Device::new(
+        "Bob's desk".into(),
+        fcp_core::DeviceType::DeskPhone,
+        stack.seed.tenant_id,
+    );
+    desk.owner_user_id = Some(bob_row.id);
+    desk.sip_uri = Some(format!("sip:{DESK}@{REALM}"));
+    desk.sip_username = Some(DESK.into());
+    desk.sip_ha1_hash = Some(fcp_core::storage::password::compute_ha1(
+        DESK,
+        REALM,
+        DESK_PASSWORD,
+    ));
+    let line = |kind, value: &str| fcp_core::DeviceLine {
+        kind,
+        value: value.into(),
+        label: None,
+        ring: true,
+    };
+    desk.lines = vec![
+        line(fcp_core::LineKind::Own, ""),
+        line(fcp_core::LineKind::Extension, "1005"),
+        line(fcp_core::LineKind::OnBehalf, "mary"),
+    ];
+    storage.put_device(desk).await.unwrap();
+
+    // Each line registers with the desk's credentials; a line it is not,
+    // Alice's, is refused.
+    let mut phones = Vec::new();
+    for aor in [DESK, "1005", "mary"] {
+        let phone = Phone::with_credentials(aor, DESK, DESK_PASSWORD, REALM, stack.sip)
+            .await
+            .unwrap();
+        assert_eq!(
+            phone.register().await.unwrap(),
+            200,
+            "the desk registers {aor}"
+        );
+        phones.push(phone);
+    }
+    let not_its = Phone::with_credentials("alice", DESK, DESK_PASSWORD, REALM, stack.sip)
+        .await
+        .unwrap();
+    assert_ne!(
+        not_its.register().await.unwrap(),
+        200,
+        "not the desk's line"
+    );
+    let desk_phone = &phones[0];
+    let alice_phone = stack.phone(&alice).await;
+
+    // Rung for the line the call is for.
+    for (dialed, line) in [
+        ("1005", "extension:1005"),
+        ("1002", "own"),
+        ("1009", "on_behalf:mary"),
+    ] {
+        let call = alice_phone.call(dialed).await.unwrap();
+        let Some(incoming) = desk_phone.incoming(SOON).await else {
+            stack
+                .fail(&format!("the desk did not ring for {dialed}"), &alice_phone)
+                .await;
+        };
+        assert_eq!(
+            incoming.header("X-FCP-Line").as_deref(),
+            Some(line),
+            "a call to {dialed}"
+        );
+        // Declined, so the next call rings it afresh.
+        incoming.reject(486, "Busy Here").await.unwrap();
+        let _ = call.ended(SOON).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    // Mary's line is told Mary's messages.
+    let sub = phones[2]
+        .subscribe("mary", "message-summary", 600, None)
+        .await
+        .unwrap();
+    assert_eq!(sub.code, 200, "Mary's line subscribes to her mailbox");
+    let _ = bob;
+    stack.finish().await;
+}
+
 /// Dial a feature code and hang up once it is taken.
+/// A feature code is answered, told, and hung up on by the node: a bare
+/// 200 left the phone on a call nobody ended (`docs/DEEP_TESTING.md` D8).
 async fn dial_code(stack: &Stack, phone: &Phone, code: &str) {
     let call = phone.call(code).await.unwrap();
     if let Err(e) = call.answered(SOON).await {
@@ -2834,7 +3774,11 @@ async fn dial_code(stack: &Stack, phone: &Phone, code: &str) {
             .fail(&format!("{code} was not taken: {e}"), phone)
             .await;
     }
-    let _ = call.hangup().await;
+    if !call.ended(RING_OUT).await {
+        stack
+            .fail(&format!("the node never ended the {code} call"), phone)
+            .await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

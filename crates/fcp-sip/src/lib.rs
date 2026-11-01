@@ -8,6 +8,7 @@
 //! - Transport implementations using fcp-core::Transport trait
 //! - Service implementations using fcp-core::Service trait
 
+pub mod ack_wait;
 pub mod adapters;
 pub mod admission;
 pub mod auth;
@@ -18,6 +19,7 @@ pub mod call_control;
 pub mod conference;
 pub mod conference_migration;
 pub mod config;
+pub mod device_lines;
 pub mod device_sync;
 pub mod drain;
 pub mod edge;
@@ -37,7 +39,9 @@ pub mod listener;
 pub mod metrics;
 pub mod mwi;
 pub mod mwi_subscriptions;
+pub mod nat;
 pub mod own_leg;
+pub mod person_presence;
 pub mod presence;
 pub mod presence_checker;
 pub mod push;

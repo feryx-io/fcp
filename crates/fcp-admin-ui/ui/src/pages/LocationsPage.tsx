@@ -20,7 +20,8 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { emergency, locations, tenants } from '@/api/endpoints'
-import type { AddressValidation, Location, CreateLocationRequest } from '@/types'
+import type { AddressValidation, Location, CreateLocationRequest, NotifyContact } from '@/types'
+import { AddContactButton, EmergencyContacts, contactsToSave, newContact } from '@/components/EmergencyContacts'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 
 const TIMEZONES: Record<string, string[]> = (() => {
@@ -47,8 +48,6 @@ const createSchema = z.object({
   longitude: z.string().optional(),
   phone_number: z.string().optional(),
   timezone: z.string().optional(),
-  emergency_contact_name: z.string().optional(),
-  emergency_contact_phone: z.string().optional(),
   e911_callback_number: z.string().optional(),
   tenant_id: z.string().optional(),
 })
@@ -62,6 +61,9 @@ export function LocationsPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [editItem, setEditItem] = useState<Location | null>(null)
+  // A site's emergency contacts, kept beside the form for the open dialog.
+  const [siteContacts, setSiteContacts] = useState<NotifyContact[]>([])
+  const [tellTenant, setTellTenant] = useState(true)
   const queryClient = useQueryClient()
 
   const { data: rawItems = [], isLoading } = useQuery({
@@ -251,11 +253,11 @@ export function LocationsPage() {
       longitude: editItem.longitude != null ? String(editItem.longitude) : '',
       phone_number: editItem.phone_number || '',
       timezone: editItem.timezone || '',
-      emergency_contact_name: editItem.emergency_contact_name || '',
-      emergency_contact_phone: editItem.emergency_contact_phone || '',
       e911_callback_number: editItem.e911_callback_number || '',
       tenant_id: editItem.tenant_id ?? '',
     })
+    setSiteContacts(editItem.emergency_contacts)
+    setTellTenant(editItem.notify_tenant_contacts)
   }
 
   const formToRequest = (data: CreateForm): CreateLocationRequest => ({
@@ -273,9 +275,9 @@ export function LocationsPage() {
     longitude: data.longitude ? parseFloat(data.longitude) : undefined,
     phone_number: data.phone_number || undefined,
     timezone: data.timezone || undefined,
-    emergency_contact_name: data.emergency_contact_name || undefined,
-    emergency_contact_phone: data.emergency_contact_phone || undefined,
     e911_callback_number: data.e911_callback_number || undefined,
+    emergency_contacts: contactsToSave(siteContacts),
+    notify_tenant_contacts: tellTenant,
   })
 
   const onCreateSubmit = (data: CreateForm) => {
@@ -368,16 +370,23 @@ export function LocationsPage() {
       </div>
 
       {/* Emergency */}
-      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider pt-2">Emergency Contact</p>
-      <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <Label htmlFor="f-emergency_contact_name">Contact Name</Label>
-          <Input id="f-emergency_contact_name" {...form.register('emergency_contact_name')} />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="f-emergency_contact_phone">Contact Phone</Label>
-          <Input id="f-emergency_contact_phone" {...form.register('emergency_contact_phone')} />
-        </div>
+      <div className="flex items-center justify-between gap-4 pt-2">
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Emergency Contacts</p>
+        <AddContactButton onAdd={() => setSiteContacts([...siteContacts, newContact()])} />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Told about an emergency call placed from this site, before the tenant's contacts: the
+        front desk or security here. A call contact may be allowed to listen in.
+      </p>
+      <EmergencyContacts
+        idPrefix="site"
+        contacts={siteContacts}
+        onChange={setSiteContacts}
+        empty={<p className="text-xs text-muted-foreground">None: the tenant's contacts are told.</p>}
+      />
+      <div className="flex items-center justify-between gap-4">
+        <Label htmlFor="f-notify_tenant_contacts">Tell the tenant's contacts too</Label>
+        <Switch id="f-notify_tenant_contacts" checked={tellTenant} onCheckedChange={setTellTenant} />
       </div>
       <div className="space-y-2">
         <Label htmlFor="f-e911_callback_number">E911 Callback Number (ELIN)</Label>
@@ -419,7 +428,7 @@ export function LocationsPage() {
             <Upload className="mr-2 h-4 w-4" />
             Bulk Import
           </Button>
-          <Button onClick={() => { createForm.reset({ tenant_id: effectiveTenantId }); setCreateOpen(true) }}>
+          <Button onClick={() => { createForm.reset({ tenant_id: effectiveTenantId }); setSiteContacts([]); setTellTenant(true); setCreateOpen(true) }}>
             <Plus className="mr-2 h-4 w-4" /> Add Location
           </Button>
         </div>
@@ -553,9 +562,11 @@ export function LocationsPage() {
 const EXPORT_COLUMNS = [
   'name', 'description', 'address_line1', 'address_line2', 'city', 'state',
   'postal_code', 'country', 'floor', 'building', 'latitude', 'longitude',
-  'phone_number', 'timezone', 'emergency_contact_name', 'emergency_contact_phone',
-  'e911_callback_number',
+  'phone_number', 'timezone', 'e911_callback_number',
 ] as const
+
+/** A site's contacts in one CSV field, `kind:target` each, as the API reads them back. */
+const CONTACTS_COLUMN = 'emergency_contacts'
 
 function escapeCSVField(value: string): string {
   // Neutralize spreadsheet formula injection (CWE-1236):
@@ -571,9 +582,12 @@ function escapeCSVField(value: string): string {
 }
 
 function exportLocations(locationList: Location[]) {
-  const header = EXPORT_COLUMNS.join(',')
+  const header = [...EXPORT_COLUMNS, CONTACTS_COLUMN].join(',')
   const rows = locationList.map((loc) =>
-    EXPORT_COLUMNS.map((col) => escapeCSVField(String(loc[col] ?? ''))).join(',')
+    [
+      ...EXPORT_COLUMNS.map((col) => String(loc[col] ?? '')),
+      loc.emergency_contacts.map((c) => `${c.kind}:${c.target}`).join('; '),
+    ].map(escapeCSVField).join(',')
   )
   const csv = [header, ...rows].join('\n') + '\n'
   const blob = new Blob([csv], { type: 'text/csv' })
@@ -588,8 +602,7 @@ function exportLocations(locationList: Location[]) {
 const IMPORT_COLUMNS = [
   'name', 'description', 'address_line1', 'address_line2', 'city', 'state',
   'postal_code', 'country', 'floor', 'building', 'latitude', 'longitude',
-  'phone_number', 'timezone', 'emergency_contact_name', 'emergency_contact_phone',
-  'e911_callback_number',
+  'phone_number', 'timezone', 'e911_callback_number', CONTACTS_COLUMN,
 ] as const
 
 interface ParsedRow {
@@ -791,8 +804,8 @@ function BulkImportDialog({
     if (row.longitude?.trim()) req.longitude = parseFloat(row.longitude.trim())
     if (row.phone_number?.trim()) req.phone_number = row.phone_number.trim()
     if (row.timezone?.trim()) req.timezone = row.timezone.trim()
-    if (row.emergency_contact_name?.trim()) req.emergency_contact_name = row.emergency_contact_name.trim()
-    if (row.emergency_contact_phone?.trim()) req.emergency_contact_phone = row.emergency_contact_phone.trim()
+    const contacts = (row[CONTACTS_COLUMN] ?? '').split(';').map((c) => c.trim()).filter((c) => c)
+    if (contacts.length > 0) req.emergency_contacts = contacts
     if (row.e911_callback_number?.trim()) req.e911_callback_number = row.e911_callback_number.trim()
     return req
   }

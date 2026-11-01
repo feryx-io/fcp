@@ -28,7 +28,7 @@ import type { MailboxResponse, VoicemailMessage, CreateMailboxRequest, UpdateMai
 
 const createSchema = z.object({
   user_id: z.string().min(1, 'User is required'),
-  line_binding_id: z.string().min(1, 'Line binding is required'),
+  line_binding_id: z.string().optional(),
   pin: z.string().min(1, 'PIN is required'),
   max_message_duration: z.coerce.number().min(1).max(3600).optional(),
   max_messages: z.coerce.number().min(1).max(10000).optional(),
@@ -389,7 +389,7 @@ export function VoicemailPage() {
     const payload: CreateMailboxRequest = {
       tenant_id: tenantId,
       user_id: data.user_id,
-      line_binding_id: data.line_binding_id,
+      line_binding_id: data.line_binding_id && data.line_binding_id !== 'none' ? data.line_binding_id : null,
       pin: data.pin,
       max_message_duration: data.max_message_duration,
       max_messages: data.max_messages,
@@ -491,10 +491,11 @@ export function VoicemailPage() {
               {createForm.formState.errors.user_id && <p className="text-sm text-destructive">{createForm.formState.errors.user_id.message}</p>}
             </div>
             <div className="space-y-2">
-              <Label>Line Binding *</Label>
+              <Label>Line</Label>
               <Select onValueChange={(v) => createForm.setValue('line_binding_id', v, { shouldValidate: true })}>
-                <SelectTrigger><SelectValue placeholder="Select line binding" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="None — the user's extension" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="none">None — the user's extension</SelectItem>
                   {lbList.map(lb => {
                     const pn = phoneNumberMap.get(lb.phone_number_id) || lb.phone_number_id.slice(0, 8)
                     const owner = lb.owner_user_id ? (userMap.get(lb.owner_user_id) || '') : ''
@@ -506,7 +507,7 @@ export function VoicemailPage() {
                   })}
                 </SelectContent>
               </Select>
-              {createForm.formState.errors.line_binding_id && <p className="text-sm text-destructive">{createForm.formState.errors.line_binding_id.message}</p>}
+              <p className="text-xs text-muted-foreground">The mailbox is the user's and answers their extension. Pick a line only to tie it to one of the user's numbers as well.</p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="c-pin">PIN *</Label>

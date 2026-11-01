@@ -146,6 +146,22 @@ impl MediaManager {
         self.backend.latch_leg(call_id, leg, source).await
     }
 
+    /// Put the peer on `from` on `to` as well, and leave `from` with no
+    /// peer until an SDP names its next one (a parked party moved to A).
+    pub async fn move_peer(
+        &self,
+        call_id: &CallId,
+        from: crate::backend::Leg,
+        to: crate::backend::Leg,
+    ) -> Result<()> {
+        self.backend.move_peer(call_id, from, to).await
+    }
+
+    /// Leave `leg` with no peer until an SDP names its next one.
+    pub async fn release_leg(&self, call_id: &CallId, leg: crate::backend::Leg) -> Result<()> {
+        self.backend.release_leg(call_id, leg).await
+    }
+
     /// Put call on hold (send silence/comfort noise)
     pub async fn hold_session(&self, call_id: &CallId) -> Result<()> {
         self.backend.hold_session(call_id).await

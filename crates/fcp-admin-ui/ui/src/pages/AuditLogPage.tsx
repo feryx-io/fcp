@@ -12,7 +12,8 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
-import { auditLog } from '@/api/endpoints'
+import { auditLog, tenants } from '@/api/endpoints'
+import { useIsPlatformAdmin } from '@/components/TenantSelector'
 import type {
   AuditEntry, AuditQueryParams, DeletionEntry, DeletionQueryParams,
 } from '@/types'
@@ -34,6 +35,12 @@ const causeBadge = (cause: string) => {
 const sinceOf = (date: string): number | undefined =>
   date ? Math.floor(new Date(`${date}T00:00:00`).getTime() / 1000) : undefined
 
+/** Unix seconds for the end of a `YYYY-MM-DD` date input: the next day's start. */
+const untilOf = (date: string): number | undefined => {
+  const start = sinceOf(date)
+  return start === undefined ? undefined : start + 24 * 60 * 60
+}
+
 const when = (at: string) => new Date(at).toLocaleString()
 
 const LIMITS = [100, 500, 1000]
@@ -48,8 +55,20 @@ export function AuditLogPage() {
   const [requestFilters, setRequestFilters] = useState<AuditQueryParams>({ limit: 100 })
   const [deletionFilters, setDeletionFilters] = useState<DeletionQueryParams>({ limit: 100 })
   const [requestDate, setRequestDate] = useState('')
+  const [requestUntil, setRequestUntil] = useState('')
+  const [exportError, setExportError] = useState<string | null>(null)
   const [deletionDate, setDeletionDate] = useState('')
   const [selected, setSelected] = useState<AuditEntry | DeletionEntry | null>(null)
+  const isPlatformAdmin = useIsPlatformAdmin()
+  // A row is the tenant acted on (docs/TENANT_SCOPE.md §3.3): a platform
+  // administrator sees whose, by name.
+  const tenantList = useQuery({
+    queryKey: ['tenants'],
+    queryFn: tenants.list,
+    enabled: isPlatformAdmin,
+  })
+  const tenantName = (id: string | null | undefined) =>
+    id == null ? 'Platform' : (tenantList.data?.find((t) => t.id === id)?.name ?? id)
 
   const requests = useQuery({
     queryKey: ['audit-log', requestFilters],
@@ -68,15 +87,33 @@ export function AuditLogPage() {
       header: 'Time',
       cell: ({ row }) => when(row.original.occurred_at),
     },
+    ...(isPlatformAdmin
+      ? [{
+          id: 'tenant',
+          header: 'Tenant',
+          cell: ({ row }) => (
+            <span className={row.original.tenant_id == null ? 'text-sm text-muted-foreground' : 'text-sm'}>
+              {tenantName(row.original.tenant_id)}
+            </span>
+          ),
+        } satisfies ColumnDef<AuditEntry>]
+      : []),
     {
       accessorKey: 'actor',
       header: 'Actor',
-      cell: ({ row }) => (
-        <div>
-          <span className="text-sm">{row.original.actor}</span>
-          <p className="text-xs text-muted-foreground">{row.original.actor_kind}</p>
-        </div>
-      ),
+      cell: ({ row }) => {
+        const e = row.original
+        // A platform administrator acting on another tenant than their own.
+        const from = isPlatformAdmin && e.actor_tenant_id && e.actor_tenant_id !== e.tenant_id
+          ? ` · from ${tenantName(e.actor_tenant_id)}`
+          : ''
+        return (
+          <div>
+            <span className="text-sm">{e.actor}</span>
+            <p className="text-xs text-muted-foreground">{e.actor_kind}{from}</p>
+          </div>
+        )
+      },
     },
     {
       accessorKey: 'action',
@@ -154,6 +191,22 @@ export function AuditLogPage() {
     },
   ]
 
+  // The whole log the filters match, not the page shown (D8, finding 36).
+  const exportAs = async (format: 'csv' | 'jsonl') => {
+    setExportError(null)
+    try {
+      const { limit: _limit, ...filters } = requestFilters
+      const url = await auditLog.exportUrl(format, filters)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `audit-log.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const limitSelect = (value: number | undefined, set: (limit: number) => void) => (
     <div className="space-y-1">
       <Label className="text-xs">Show</Label>
@@ -173,7 +226,8 @@ export function AuditLogPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Audit Log</h1>
         <p className="text-muted-foreground">
-          Who changed what through the API, and what was deleted, when, why and by whom
+          Who changed what through the API, and what was deleted, when, why and by whom.
+          Each request is the tenant's it acted on{isPlatformAdmin ? '; the platform\'s own have no tenant' : ', a platform administrator\'s included'}.
         </p>
       </div>
 
@@ -196,7 +250,23 @@ export function AuditLogPage() {
 
       {view === 'requests' ? (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 rounded-lg border bg-card">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-4 p-4 rounded-lg border bg-card">
+            {isPlatformAdmin && (
+              <div className="space-y-1">
+                <Label className="text-xs">Rows</Label>
+                <Select
+                  value={requestFilters.tenant ?? '__picked__'}
+                  onValueChange={(v) => setRequestFilters((f) => ({ ...f, tenant: v === '__picked__' ? undefined : v }))}
+                >
+                  <SelectTrigger aria-label="Rows"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__picked__">As picked in the top bar</SelectItem>
+                    <SelectItem value="all">Every tenant and the platform</SelectItem>
+                    <SelectItem value="platform">The platform only</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="space-y-1">
               <Label className="text-xs">Actor</Label>
               <Input
@@ -224,7 +294,24 @@ export function AuditLogPage() {
                 }}
               />
             </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Until</Label>
+              <Input
+                type="date"
+                value={requestUntil}
+                onChange={(e) => {
+                  setRequestUntil(e.target.value)
+                  setRequestFilters((f) => ({ ...f, until: untilOf(e.target.value) }))
+                }}
+              />
+            </div>
             {limitSelect(requestFilters.limit, (limit) => setRequestFilters((f) => ({ ...f, limit })))}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Export everything these filters match:</span>
+            <Button variant="outline" size="sm" onClick={() => exportAs('csv')}>CSV</Button>
+            <Button variant="outline" size="sm" onClick={() => exportAs('jsonl')}>JSON Lines</Button>
+            {exportError && <span className="text-sm text-destructive">{exportError}</span>}
           </div>
           {requests.isLoading ? (
             <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>

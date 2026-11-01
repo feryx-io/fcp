@@ -81,6 +81,16 @@ pub struct SiteHeartbeat {
     /// site Redis. A summary, not the rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registrations: Option<SiteRegistrations>,
+    /// Every service at the site, as its beacon says it
+    /// (`docs/SERVICES.md`); empty from an older link or one with no site
+    /// Redis.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<crate::service_health::ServiceRecord>,
+    /// The calls parked at the site now, from its Redis
+    /// (`docs/PARKING.md` phase 4), for the cloud's board; empty from an
+    /// older link.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parked: Vec<crate::storage::ClusterParkedCall>,
 }
 
 /// The site's registrations as its link last saw them.
@@ -407,6 +417,8 @@ mod tests {
             ],
             sync: None,
             registrations: None,
+            services: Vec::new(),
+            parked: Vec::new(),
         });
         let groups = site.versions();
         assert_eq!(groups["0.25.268"], vec!["cm-1", "cm-2"]);

@@ -13,6 +13,25 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+/// What a Gather leaves for the flow handler about asking again: the
+/// attempts allowed, where to go when they are spent, and the retry
+/// prompts' audio. Cleared at each Gather.
+pub const GATHER_RETRY_VARIABLES: [&str; 4] = [
+    "__gather_max_attempts",
+    "__gather_on_max_attempts",
+    "__gather_no_input_url",
+    "__gather_invalid_url",
+];
+
+/// A Queue node's dial destination: this prefix, then the queue's name or
+/// extension, resolved by the flow handler to where the queue answers.
+pub const QUEUE_DIAL_PREFIX: &str = "queue:";
+
+/// How long a Queue node waits for its queue to answer the caller's leg.
+/// The queue answers at once and holds the caller itself; this is for a
+/// node that cannot.
+const QUEUE_ANSWER_SECS: u32 = 30;
+
 /// Flow execution engine.
 pub struct FlowEngine {
     /// HTTP client for HTTP nodes
@@ -195,6 +214,10 @@ impl FlowEngine {
                 hints,
                 language,
                 speech_transitions,
+                max_attempts,
+                no_input_prompt,
+                invalid_prompt,
+                on_max_attempts,
             } => {
                 info!(
                     call_id = %context.call_id,
@@ -210,65 +233,33 @@ impl FlowEngine {
                 context.remove_variable("__gather_prompt_url");
                 context.remove_variable("__gather_finish_on_key");
                 context.remove_variable("__gather_on_timeout");
+                for retry in GATHER_RETRY_VARIABLES {
+                    context.remove_variable(retry);
+                }
 
-                // Handle prompt if present
-                if let Some(gather_prompt) = prompt {
-                    use crate::schema::GatherPrompt;
-
-                    match gather_prompt {
-                        GatherPrompt::Play { url } => {
-                            // Store Play prompt information for flow handler
-                            context.set_variable(
-                                "__gather_prompt_type".to_string(),
-                                "play".to_string(),
-                            );
-                            context.set_variable("__gather_prompt_url".to_string(), url.clone());
-                        }
-                        GatherPrompt::Say {
-                            text,
-                            voice,
-                            language,
-                        } => {
-                            // If TTS service is available, synthesize the prompt
-                            if let Some(tts_service) = &self.tts_service {
-                                let interpolated_text =
-                                    self.interpolate_variables(text, context)?;
-
-                                match tts_service
-                                    .synthesize(
-                                        &interpolated_text,
-                                        Some(language),
-                                        voice.as_deref(),
-                                    )
-                                    .await
-                                {
-                                    Ok(audio_path) => {
-                                        // Store synthesized audio path
-                                        context.set_variable(
-                                            "__gather_prompt_type".to_string(),
-                                            "play".to_string(),
-                                        );
-                                        context.set_variable(
-                                            "__gather_prompt_url".to_string(),
-                                            audio_path.display().to_string(),
-                                        );
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            call_id = %context.call_id,
-                                            error = %e,
-                                            "TTS synthesis failed for Gather prompt"
-                                        );
-                                        // Continue anyway - will gather without prompt
-                                    }
-                                }
-                            } else {
-                                warn!(
-                                    call_id = %context.call_id,
-                                    "TTS service not available for Gather prompt"
-                                );
-                            }
-                        }
+                if let Some(url) = self.gather_prompt_audio(prompt.as_deref(), context).await? {
+                    context.set_variable("__gather_prompt_type".to_string(), "play".to_string());
+                    context.set_variable("__gather_prompt_url".to_string(), url);
+                }
+                // Asked more than once: the retry prompts are made ready now,
+                // with the menu's own.
+                if let Some(max) = max_attempts.filter(|max| *max > 1) {
+                    context.set_variable("__gather_max_attempts".to_string(), max.to_string());
+                    // The flow builder writes an unset field empty.
+                    if let Some(node) = on_max_attempts.as_ref().filter(|n| !n.is_empty()) {
+                        context.set_variable("__gather_on_max_attempts".to_string(), node.clone());
+                    }
+                    if let Some(url) = self
+                        .gather_prompt_audio(no_input_prompt.as_deref(), context)
+                        .await?
+                    {
+                        context.set_variable("__gather_no_input_url".to_string(), url);
+                    }
+                    if let Some(url) = self
+                        .gather_prompt_audio(invalid_prompt.as_deref(), context)
+                        .await?
+                    {
+                        context.set_variable("__gather_invalid_url".to_string(), url);
                     }
                 }
 
@@ -737,20 +728,21 @@ impl FlowEngine {
                     "Routing call to ACD queue"
                 );
 
-                // Store queue routing configuration in context for the flow handler
-                context.set_variable("__queue_name".to_string(), interpolated_queue.clone());
-                context.set_variable("__queue_priority".to_string(), priority.to_string());
-                context.set_variable("__queue_next_on_answer".to_string(), next_on_answer.clone());
-                if let Some(timeout_node) = next_on_timeout {
-                    context
-                        .set_variable("__queue_next_on_timeout".to_string(), timeout_node.clone());
-                }
-                if let Some(error_node) = next_on_error {
-                    context.set_variable("__queue_next_on_error".to_string(), error_node.clone());
-                }
-
-                // Continue to the answer node; the flow handler will manage queue routing
-                Ok(FlowExecutionResult::Continue(next_on_answer.clone()))
+                // The caller is dialed into the queue where it answers, as a
+                // Dial to a user is: `next_on_answer` once that call is over.
+                // It only set variables nobody read and went on at once — a
+                // menu's "press 2 for the queue" said goodbye
+                // (`docs/DEEP_TESTING.md` D8).
+                Ok(FlowExecutionResult::WaitingForDial {
+                    destination: format!("{QUEUE_DIAL_PREFIX}{interpolated_queue}"),
+                    timeout_secs: QUEUE_ANSWER_SECS,
+                    caller_id: None,
+                    max_duration_secs: 0,
+                    on_busy: next_on_error.clone(),
+                    on_no_answer: next_on_timeout.clone().or_else(|| next_on_error.clone()),
+                    on_error: next_on_error.clone(),
+                    next: next_on_answer.clone(),
+                })
             }
         };
 
@@ -850,13 +842,72 @@ impl FlowEngine {
     }
 
     /// Interpolate variables in a string (e.g., "Hello {{name}}")
+    /// The audio a Gather prompt plays: a `play` prompt's file, or a `say`
+    /// prompt synthesized. `None` without one, or when it cannot be spoken
+    /// (logged): the menu gathers without it.
+    async fn gather_prompt_audio(
+        &self,
+        prompt: Option<&crate::schema::GatherPrompt>,
+        context: &FlowContext,
+    ) -> Result<Option<String>> {
+        use crate::schema::GatherPrompt;
+        // The flow builder writes an unset prompt with an empty file or
+        // text: nothing to play.
+        match prompt {
+            None => Ok(None),
+            Some(GatherPrompt::Play { url }) if url.is_empty() => Ok(None),
+            Some(GatherPrompt::Say { text, .. }) if text.trim().is_empty() => Ok(None),
+            Some(GatherPrompt::Play { url }) => Ok(Some(url.clone())),
+            Some(GatherPrompt::Say {
+                text,
+                voice,
+                language,
+            }) => {
+                let Some(tts_service) = &self.tts_service else {
+                    warn!(
+                        call_id = %context.call_id,
+                        "TTS service not available for Gather prompt"
+                    );
+                    return Ok(None);
+                };
+                let text = self.interpolate_variables(text, context)?;
+                match tts_service
+                    .synthesize(&text, Some(language), voice.as_deref())
+                    .await
+                {
+                    Ok(audio_path) => Ok(Some(audio_path.display().to_string())),
+                    Err(e) => {
+                        error!(
+                            call_id = %context.call_id,
+                            error = %e,
+                            "TTS synthesis failed for Gather prompt"
+                        );
+                        Ok(None)
+                    }
+                }
+            }
+        }
+    }
+
     fn interpolate_variables(&self, template: &str, context: &FlowContext) -> Result<String> {
         let re = Regex::new(r"\{\{([^}]+)\}\}").unwrap();
         let mut result = template.to_string();
 
         for cap in re.captures_iter(template) {
-            let var_name = cap[1].trim();
+            let (var_name, filter) = match cap[1].split_once('|') {
+                Some((name, filter)) => (name.trim(), Some(filter.trim())),
+                None => (cap[1].trim(), None),
+            };
             let value = context.get_variable(var_name)?;
+            let value = match filter {
+                None => value,
+                Some(filter) => apply_filter(&value, filter).ok_or_else(|| {
+                    FlowError::InvalidDefinition(format!(
+                        "unknown filter `{filter}` in `{}`",
+                        &cap[0]
+                    ))
+                })?,
+            };
             result = result.replace(&cap[0], &value);
         }
 
@@ -1265,6 +1316,30 @@ pub enum FlowExecutionResult {
     },
 }
 
+/// A placeholder's filter (`{{keys|digits}}`) applied to its value; None
+/// for a filter there is no such thing as.
+pub fn apply_filter(value: &str, filter: &str) -> Option<String> {
+    match filter {
+        "digits" => Some(spoken_digits(value)),
+        _ => None,
+    }
+}
+
+/// The `digits` filter: each key on its own, so speech reads 5551 as
+/// "five five five one", not five thousand five hundred and fifty-one.
+fn spoken_digits(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| match c {
+            '*' => "star".to_string(),
+            '#' => "pound".to_string(),
+            c => c.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1469,6 +1544,23 @@ mod tests {
     }
 
     // ---- interpolate_variables tests ----
+
+    #[test]
+    fn the_digits_filter_reads_keys_one_at_a_time() {
+        let engine = test_engine();
+        let mut vars = HashMap::new();
+        vars.insert("keys".to_string(), "5551*0#".to_string());
+        let ctx = test_context_with(vars);
+
+        let result = engine
+            .interpolate_variables("You entered {{keys|digits}}", &ctx)
+            .unwrap();
+        assert_eq!(result, "You entered 5 5 5 1 star 0 pound");
+        assert!(matches!(
+            engine.interpolate_variables("{{ keys | shout }}", &ctx),
+            Err(FlowError::InvalidDefinition(_))
+        ));
+    }
 
     #[test]
     fn test_interpolate_simple() {

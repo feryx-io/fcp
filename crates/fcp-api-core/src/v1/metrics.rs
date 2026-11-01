@@ -115,6 +115,10 @@ pub async fn prometheus_metrics(
     buffer.push_str("# TYPE fcp_calls_failed counter\n");
     buffer.push_str(&format!("fcp_calls_failed {}\n", call_stats.failed));
 
+    for source in &state.metrics_sources {
+        buffer.push_str(&source.render().await);
+    }
+
     Ok((
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
         buffer,

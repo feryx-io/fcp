@@ -29,6 +29,8 @@ class EmergencyConfigResponse:
             tenant_id (str):
             emergency_numbers (list[str]):
             test_numbers (list[str]):
+            test_call_mode (str): Who answers a test call: `local`, this platform reading back what a
+                live call would carry, or `carrier`, the carrier's test service.
             dial_prefixes (list[str]):
             contacts (list[ContactResponse]): Who is told when an emergency call is placed, typed by channel
                 (`docs/E911_BLOCK_2.md` §8.1).
@@ -45,6 +47,7 @@ class EmergencyConfigResponse:
     tenant_id: str
     emergency_numbers: list[str]
     test_numbers: list[str]
+    test_call_mode: str
     dial_prefixes: list[str]
     contacts: list[ContactResponse]
     notify_contacts: list[str]
@@ -70,6 +73,8 @@ class EmergencyConfigResponse:
         test_numbers = self.test_numbers
 
 
+
+        test_call_mode = self.test_call_mode
 
         dial_prefixes = self.dial_prefixes
 
@@ -105,6 +110,7 @@ class EmergencyConfigResponse:
             "tenant_id": tenant_id,
             "emergency_numbers": emergency_numbers,
             "test_numbers": test_numbers,
+            "test_call_mode": test_call_mode,
             "dial_prefixes": dial_prefixes,
             "contacts": contacts,
             "notify_contacts": notify_contacts,
@@ -130,6 +136,8 @@ class EmergencyConfigResponse:
 
         test_numbers = cast(list[str], d.pop("test_numbers"))
 
+
+        test_call_mode = d.pop("test_call_mode")
 
         dial_prefixes = cast(list[str], d.pop("dial_prefixes"))
 
@@ -165,6 +173,7 @@ class EmergencyConfigResponse:
             tenant_id=tenant_id,
             emergency_numbers=emergency_numbers,
             test_numbers=test_numbers,
+            test_call_mode=test_call_mode,
             dial_prefixes=dial_prefixes,
             contacts=contacts,
             notify_contacts=notify_contacts,

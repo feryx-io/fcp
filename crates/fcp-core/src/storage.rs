@@ -283,6 +283,13 @@ pub struct User {
     /// Display name (optional)
     pub display_name: Option<String>,
 
+    /// Listed in the tenant's directory (`/me/directory`), as every user is
+    /// unless an administrator, or the user where the tenant lets them,
+    /// takes them out (an executive, say). An unlisted user still rings on
+    /// their extension and is seen by administrators.
+    #[serde(default = "default_directory_listed")]
+    pub directory_listed: bool,
+
     /// Tenant ID for multi-tenant isolation
     #[serde(default = "default_tenant_id")]
     pub tenant_id: crate::TenantId,
@@ -384,6 +391,10 @@ pub struct User {
     /// `Deprovisioned`.
     #[serde(with = "optional_system_time_serde", default)]
     pub deprovisioned_at: Option<SystemTime>,
+}
+
+fn default_directory_listed() -> bool {
+    true
 }
 
 fn default_language() -> String {
@@ -516,6 +527,12 @@ pub struct MediaPreferences {
     #[serde(default)]
     pub record_all_calls: bool,
 
+    /// The user may record a call they are on, and stop that recording,
+    /// from their app (`docs/RECORD_AND_CONTACTS.md` §2). Set by an
+    /// administrator only.
+    #[serde(default)]
+    pub record_on_demand: bool,
+
     /// Preferred audio codecs in priority order
     #[serde(default = "default_codecs")]
     pub preferred_codecs: Vec<String>,
@@ -527,6 +544,7 @@ impl Default for MediaPreferences {
             force_media_anchoring: false,
             enable_dtmf_detection: true,
             record_all_calls: false,
+            record_on_demand: false,
             preferred_codecs: default_codecs(),
         }
     }
@@ -3164,7 +3182,7 @@ mod optional_system_time_serde {
 // ---------------------------------------------------------------------------
 
 /// A parked call entry stored in the cluster (Redis) for cross-node pickup.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterParkedCall {
     /// Internal call ID (string form of fcp_b2bua_core::CallId).
     pub call_id: String,
@@ -3174,31 +3192,46 @@ pub struct ClusterParkedCall {
     pub parker_extension: String,
     /// Tenant ID (string form).
     pub tenant_id: String,
+    /// The slot, as the tenant numbers it (`docs/PARKING.md`).
+    #[serde(default)]
+    pub slot: String,
+    /// The lot the slot is in.
+    #[serde(default)]
+    pub lot_id: String,
     /// Unix timestamp (seconds) when the call was parked.
     pub parked_at_unix: u64,
 }
 
 /// Distributed parking store for cross-node park/pickup.
 ///
-/// The local `ParkingManager` (in-memory DashMap) handles the primary parking
-/// state on each node. This trait provides a cluster-wide secondary store
-/// (backed by Redis) so that any node can discover parked calls and route
-/// cross-node pickups.
+/// A slot is one call's cluster-wide: a node parks only in a slot it
+/// claimed here, and the claim is the tenant's (`docs/PARKING.md` §2). The
+/// local `ParkingManager` holds the node's own parked calls.
 #[async_trait]
 pub trait ClusterParkingStore: Send + Sync {
-    /// Store a parked call in the cluster.
+    /// Claim the tenant's slot for `info`'s call, for `ttl_secs`; `false`
+    /// when another call holds it.
     async fn cluster_park(
         &self,
-        orbit: u16,
+        tenant_id: &crate::TenantId,
+        slot: &str,
         info: ClusterParkedCall,
-        timeout_secs: u64,
-    ) -> Result<()>;
+        ttl_secs: u64,
+    ) -> Result<bool>;
 
-    /// Look up a parked call by orbit across the cluster.
-    async fn cluster_lookup(&self, orbit: u16) -> Result<Option<ClusterParkedCall>>;
+    /// The call in the tenant's slot, anywhere in the cluster.
+    async fn cluster_lookup(
+        &self,
+        tenant_id: &crate::TenantId,
+        slot: &str,
+    ) -> Result<Option<ClusterParkedCall>>;
 
-    /// Remove a parked call from the cluster store. Returns it if it existed.
-    async fn cluster_unpark(&self, orbit: u16) -> Result<Option<ClusterParkedCall>>;
+    /// Free the tenant's slot; the call that held it, if one did.
+    async fn cluster_unpark(
+        &self,
+        tenant_id: &crate::TenantId,
+        slot: &str,
+    ) -> Result<Option<ClusterParkedCall>>;
 }
 
 /// In-memory storage with JSON file persistence.
@@ -3651,6 +3684,12 @@ pub struct DynStorage {
     offboarding_store: Option<Arc<dyn crate::offboarding::OffboardingStore>>,
     group_store: Option<Arc<dyn crate::group::GroupStore>>,
     brand_store: Option<Arc<dyn crate::branding::BrandStore>>,
+    contact_store: Option<Arc<dyn crate::contact::ContactStore>>,
+    presence_status_store: Option<Arc<dyn crate::presence_status::PresenceStatusStore>>,
+    parking_lot_store: Option<Arc<dyn crate::parking::ParkingLotStore>>,
+    line_label_store: Option<Arc<dyn crate::line_label::LineLabelStore>>,
+    call_quality_store: Option<Arc<dyn crate::call_quality::CallQualityStore>>,
+    device_capture_store: Option<Arc<dyn crate::device_capture::DeviceCaptureStore>>,
     provisioning_store: Option<Arc<dyn crate::provisioning::ProvisioningStore>>,
 }
 
@@ -3734,6 +3773,12 @@ impl DynStorage {
             offboarding_store: None,
             group_store: None,
             brand_store: None,
+            contact_store: None,
+            presence_status_store: None,
+            parking_lot_store: None,
+            line_label_store: None,
+            call_quality_store: None,
+            device_capture_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -3821,6 +3866,12 @@ impl DynStorage {
             offboarding_store: None,
             group_store: None,
             brand_store: None,
+            contact_store: None,
+            presence_status_store: None,
+            parking_lot_store: None,
+            line_label_store: None,
+            call_quality_store: None,
+            device_capture_store: None,
             provisioning_store: None,
             recording_store: None,
             call_recording_store: None,
@@ -4094,6 +4145,93 @@ impl DynStorage {
     pub fn with_brand_store(mut self, store: Arc<dyn crate::branding::BrandStore>) -> Self {
         self.brand_store = Some(store);
         self
+    }
+
+    /// Attach the store of users' own contacts.
+    pub fn with_contact_store(mut self, store: Arc<dyn crate::contact::ContactStore>) -> Self {
+        self.contact_store = Some(store);
+        self
+    }
+
+    /// Attach the store of users' chosen and own statuses.
+    pub fn with_presence_status_store(
+        mut self,
+        store: Arc<dyn crate::presence_status::PresenceStatusStore>,
+    ) -> Self {
+        self.presence_status_store = Some(store);
+        self
+    }
+
+    /// Users' chosen and own statuses (`docs/PRESENCE.md`), when attached.
+    pub fn presence_status_store(
+        &self,
+    ) -> Option<&Arc<dyn crate::presence_status::PresenceStatusStore>> {
+        self.presence_status_store.as_ref()
+    }
+
+    /// Attach the store of tenants' parking lots.
+    pub fn with_parking_lot_store(
+        mut self,
+        store: Arc<dyn crate::parking::ParkingLotStore>,
+    ) -> Self {
+        self.parking_lot_store = Some(store);
+        self
+    }
+
+    /// Attach the store of users' names for their lines.
+    pub fn with_line_label_store(
+        mut self,
+        store: Arc<dyn crate::line_label::LineLabelStore>,
+    ) -> Self {
+        self.line_label_store = Some(store);
+        self
+    }
+
+    /// Attach the store of calls' quality as phones reported it.
+    pub fn with_call_quality_store(
+        mut self,
+        store: Arc<dyn crate::call_quality::CallQualityStore>,
+    ) -> Self {
+        self.call_quality_store = Some(store);
+        self
+    }
+
+    /// Calls' quality as phones reported it (`docs/CALL_DIAGNOSTICS.md`),
+    /// when attached.
+    pub fn call_quality_store(&self) -> Option<&Arc<dyn crate::call_quality::CallQualityStore>> {
+        self.call_quality_store.as_ref()
+    }
+
+    /// Attach the store of phones' captures and who may take them.
+    pub fn with_device_capture_store(
+        mut self,
+        store: Arc<dyn crate::device_capture::DeviceCaptureStore>,
+    ) -> Self {
+        self.device_capture_store = Some(store);
+        self
+    }
+
+    /// Phones' captures and the allows behind them
+    /// (`docs/CALL_DIAGNOSTICS.md` §3), when attached.
+    pub fn device_capture_store(
+        &self,
+    ) -> Option<&Arc<dyn crate::device_capture::DeviceCaptureStore>> {
+        self.device_capture_store.as_ref()
+    }
+
+    /// Users' names for their lines (`docs/DEVICE_LINES.md`), when attached.
+    pub fn line_label_store(&self) -> Option<&Arc<dyn crate::line_label::LineLabelStore>> {
+        self.line_label_store.as_ref()
+    }
+
+    /// Tenants' parking lots (`docs/PARKING.md`), when attached.
+    pub fn parking_lot_store(&self) -> Option<&Arc<dyn crate::parking::ParkingLotStore>> {
+        self.parking_lot_store.as_ref()
+    }
+
+    /// Users' own contacts (`docs/RECORD_AND_CONTACTS.md` §3), when attached.
+    pub fn contact_store(&self) -> Option<&Arc<dyn crate::contact::ContactStore>> {
+        self.contact_store.as_ref()
     }
 
     /// Tenants' brands, when attached.
@@ -5585,6 +5723,7 @@ mod tests {
             sip_ha1_hash: None,
             sip_provisioning_password: None,
             display_name: Some("Alice".to_string()),
+            directory_listed: true,
             tenant_id: crate::TenantId::nil(), // Default tenant for test
             enabled: true,
             role: crate::UserRole::EndUser,

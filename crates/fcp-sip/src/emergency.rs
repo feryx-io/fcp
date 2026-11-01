@@ -19,6 +19,7 @@ use std::sync::Arc;
 use fcp_b2bua_core::EmergencyCallInfo;
 use fcp_core::e911::{
     dialed_user_part, resolve_for_user, EmergencyCallRecord, EmergencyConfig, LocationDelivery,
+    LocationSource,
 };
 use fcp_core::storage::CredentialStore;
 use fcp_core::{SiteId, TenantId};
@@ -223,6 +224,30 @@ pub async fn config_for(
     stored.unwrap_or_else(|| EmergencyConfig::defaults(*tenant_id))
 }
 
+/// Who is told about an emergency call placed from `location`: its site's
+/// own contacts, then the tenant's unless the site says not
+/// (`notify::contacts_for_site`).
+pub async fn contacts_for_call(
+    storage: Option<&Arc<fcp_core::DynStorage>>,
+    config: &EmergencyConfig,
+    location: Option<&fcp_core::e911::DispatchableLocation>,
+) -> Vec<fcp_core::e911::notify::NotifyContact> {
+    let site = match (
+        storage.and_then(|s| s.emergency_store()),
+        location.and_then(|l| l.location_id),
+    ) {
+        (Some(store), Some(location_id)) => store
+            .get_emergency_site(&config.tenant_id, &location_id)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to load the caller's site; telling the tenant's contacts");
+                None
+            }),
+        _ => None,
+    };
+    fcp_core::e911::notify::contacts_for_site(&config.contacts, site.as_ref())
+}
+
 /// Classify `destination` (a URI or a bare number) for the tenant and, when
 /// it is an emergency number, resolve the caller's dispatchable location
 /// and callback number. `caller_aor` (`user@host`) picks the caller's
@@ -247,6 +272,7 @@ pub async fn detect(
         leg: None,
         delivered: Vec::new(),
         geolocation_error: None,
+        read_back: false,
     };
     let Some(storage) = storage else {
         return Some(info);
@@ -265,7 +291,7 @@ pub async fn detect(
         // Where the caller was seen: the address a trusted edge vouched for
         // or the INVITE's own source, else where their device last
         // registered from (§6.2).
-        info.location = resolve_for_user(
+        info.location = Box::pin(resolve_for_user(
             storage.as_ref(),
             user,
             fcp_core::e911::CallerContext {
@@ -274,7 +300,7 @@ pub async fn detect(
                 supplied,
                 config: Some(&config),
             },
-        )
+        ))
         .await;
     }
     info.callback_number = info
@@ -282,10 +308,20 @@ pub async fn detect(
         .as_ref()
         .and_then(|l| l.callback_number.clone());
     if info.location.is_none() {
+        // Not located, the caller still has a number to be called back on.
+        if let Some(user) = &user {
+            info.callback_number = Box::pin(fcp_core::e911::callback_for_user(
+                storage.as_ref(),
+                user,
+                caller_aor,
+            ))
+            .await;
+        }
         warn!(
             tenant_id = %tenant_id,
             caller = %username,
             dialed = %info.dialed,
+            callback = info.callback_number.as_deref().unwrap_or("none"),
             "Emergency call without a dispatchable location"
         );
     }
@@ -545,14 +581,127 @@ pub async fn announce(
     record: EmergencyCallRecord,
 ) {
     // The event carries the plain targets it always has; the notifier
-    // reads the typed contacts from the tenant's configuration (§8.1).
-    let notify_contacts = config_for(call_manager.storage(), &record.tenant_id)
-        .await
-        .contact_targets();
+    // reads the typed contacts from the site and the tenant (§8.1).
+    let config = config_for(call_manager.storage(), &record.tenant_id).await;
+    let notify_contacts =
+        contacts_for_call(call_manager.storage(), &config, record.location.as_ref())
+            .await
+            .iter()
+            .map(|c| c.display_target())
+            .collect();
     if let Some(call) = call_manager.get_call(&call_id) {
         call_manager.publish_emergency(&call, notify_contacts);
     }
     call_manager.record_emergency(call_id, record);
+}
+
+/// What a caller hears when this platform answers their emergency test
+/// call (`TestCallMode::Local`, `docs/E911.md` "Test calls"): what a live
+/// call placed now would carry. `routable` is whether any emergency route
+/// would take it; the routes themselves are the administrator's, and the
+/// caller is not told which carriers they are. `contacts` the notification
+/// contacts a notice is being sent to.
+///
+/// One sentence or two per part, each spoken as its own prompt: the
+/// opening is the same for every caller and synthesized once at start
+/// (`warm_test_opening`), and the parts after it are synthesized while it
+/// plays (`TtsService::warm`), so the caller hears the opening at the
+/// answer rather than after the whole readback is synthesized.
+///
+/// `listeners` is how many of the contacts may listen in. When `stay` and
+/// some may, the caller is asked to stay on the line and the second-last
+/// part is the one after which the call waits ([`LISTEN_TEST_WAIT_SECS`])
+/// before the goodbye, so a listening contact can try joining.
+pub fn test_readback(
+    info: &EmergencyCallInfo,
+    routable: bool,
+    contacts: usize,
+    listeners: usize,
+    stay: bool,
+) -> Vec<String> {
+    let digits = |value: &str| {
+        fcp_flow::apply_filter(value.trim_start_matches('+'), "digits").unwrap_or_default()
+    };
+    let mut said = vec![TEST_OPENING.to_string()];
+
+    match &info.location {
+        Some(location) => {
+            let a = &location.address;
+            let mut street = vec![a.address1.trim().to_string()];
+            if let Some(line) = a.address2.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+                street.push(line.to_string());
+            }
+            said.push(format!(
+                "Your location is {}, {}, {}, {}.",
+                street.join(", "),
+                a.city.trim(),
+                a.state.trim(),
+                digits(&a.postal_code)
+            ));
+            let name = location
+                .location_name
+                .as_deref()
+                .map(|n| format!(", {n}"))
+                .unwrap_or_default();
+            said.push(match location.source {
+                LocationSource::DeviceOverride => "It is the address set on this phone.".to_string(),
+                LocationSource::DeviceSupplied => "It is the location this phone sent.".to_string(),
+                LocationSource::Network => format!("It comes from the network you are on{name}."),
+                LocationSource::DeviceLocation => format!("It is this phone's site{name}."),
+                LocationSource::UserLocation => format!("It is your site{name}."),
+                LocationSource::Declared => "It is the location you declared.".to_string(),
+                LocationSource::PhoneNumber => {
+                    "It is the address on your phone number.".to_string()
+                }
+                LocationSource::SiteSupplied => "It is the location your site sent.".to_string(),
+            });
+        }
+        None => said.push(
+            "No location was found for you. A real call would depend on the address your carrier holds for your callback number."
+                .to_string(),
+        ),
+    }
+
+    said.push(match &info.callback_number {
+        Some(number) => format!("Your callback number is {}.", digits(number)),
+        None => {
+            "There is no callback number. Emergency services could not call you back.".to_string()
+        }
+    });
+
+    if !routable {
+        said.push(
+            "A real emergency call could not be placed from this phone. Tell your administrator."
+                .to_string(),
+        );
+    }
+
+    said.push(match contacts {
+        0 => "No emergency contacts are set, so no one is being told.".to_string(),
+        1 => "Your emergency contact is being told, marked as a test.".to_string(),
+        n => format!("Your {n} emergency contacts are being told, marked as a test."),
+    });
+    if stay && listeners > 0 {
+        said.push(format!(
+            "{} may listen in. Stay on the line for a minute to let them try, or hang up when you are done.",
+            if listeners == 1 { "One of them" } else { "Some of them" }
+        ));
+    }
+    said.push("The test is complete. Goodbye.".to_string());
+    said
+}
+
+/// How long a test call stays up after its readback when a contact may
+/// listen in, for them to try it.
+pub const LISTEN_TEST_WAIT_SECS: u32 = 60;
+
+/// The first thing every emergency test caller hears.
+const TEST_OPENING: &str = "This is an emergency calling test. No emergency call has been placed.";
+
+/// Synthesize the test readback's opening into the TTS cache, so the first
+/// test call after a start hears it at the answer.
+pub fn warm_test_opening(tts: &std::sync::Arc<fcp_media::TtsService>) {
+    tts.warm(vec![TEST_OPENING.to_string()], Some("en-US"));
 }
 
 #[cfg(test)]
@@ -625,6 +774,7 @@ mod tests {
             leg: None,
             delivered: Vec::new(),
             geolocation_error: None,
+            read_back: false,
         };
         let caller = sip_core::SipUri::parse("sip:alice@pbx.example").ok();
         let (from, headers) = outbound_identity(&info, caller, "10.0.0.1");
@@ -671,7 +821,75 @@ mod tests {
             leg: None,
             delivered: Vec::new(),
             geolocation_error: None,
+            read_back: false,
         }
+    }
+
+    #[test]
+    fn a_test_call_hears_what_a_real_call_would_carry() {
+        let info = EmergencyCallInfo {
+            dialed: "933".into(),
+            kind: fcp_core::e911::EmergencyKind::Test,
+            ..located_info()
+        };
+        let parts = test_readback(&info, true, 2, 0, true);
+        assert_eq!(
+            parts[0], TEST_OPENING,
+            "every caller's first prompt is the same, so it is cached"
+        );
+        let said = parts.join(" ");
+        for part in [
+            "No emergency call has been placed.",
+            "Your location is 100 State St, Albany, NY, 1 2 2 0 7.",
+            "It is your site, HQ.",
+            "Your callback number is 1 5 1 8 5 5 5 0 1 0 0.",
+            "Your 2 emergency contacts are being told, marked as a test.",
+        ] {
+            assert!(said.contains(part), "{part:?} not in {said:?}");
+        }
+        assert!(!said.contains("could not be placed"), "{said}");
+        assert!(
+            !said.contains("trunk") && !said.contains("carrier"),
+            "the caller is not told the routing: {said}"
+        );
+    }
+
+    #[test]
+    fn a_test_call_hears_what_is_missing() {
+        let info = EmergencyCallInfo {
+            dialed: "933".into(),
+            kind: fcp_core::e911::EmergencyKind::Test,
+            callback_number: None,
+            location: None,
+            ..located_info()
+        };
+        let said = test_readback(&info, false, 0, 0, true).join(" ");
+        for part in [
+            "No location was found for you.",
+            "There is no callback number.",
+            "A real emergency call could not be placed from this phone.",
+            "No emergency contacts are set",
+        ] {
+            assert!(said.contains(part), "{part:?} not in {said:?}");
+        }
+        let said = test_readback(&info, true, 1, 0, true).join(" ");
+        assert!(!said.contains("listen in"), "{said}");
+        let parts = test_readback(&info, true, 2, 1, true);
+        assert!(
+            parts[parts.len() - 2].starts_with("One of them may listen in. Stay on the line"),
+            "the wait comes after this part: {parts:?}"
+        );
+        assert!(
+            !test_readback(&info, true, 2, 1, false)
+                .join(" ")
+                .contains("Stay on the line"),
+            "a flow's caller is not asked to stay"
+        );
+        assert!(!said.contains("could not be placed"), "{said}");
+        assert!(
+            said.contains("Your emergency contact is being told"),
+            "{said}"
+        );
     }
 
     fn attempt(delivery: &[LocationDelivery]) -> EmergencyAttempt {

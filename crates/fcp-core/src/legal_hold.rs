@@ -26,10 +26,12 @@ pub enum DataClass {
     SipTrace,
     FlowTrace,
     AuditEvent,
+    /// A capture an app uploaded (`docs/CALL_DIAGNOSTICS.md` §3).
+    DeviceCapture,
 }
 
 impl DataClass {
-    pub const ALL: [DataClass; 7] = [
+    pub const ALL: [DataClass; 8] = [
         DataClass::Cdr,
         DataClass::CallRecording,
         DataClass::ConferenceRecording,
@@ -37,6 +39,7 @@ impl DataClass {
         DataClass::SipTrace,
         DataClass::FlowTrace,
         DataClass::AuditEvent,
+        DataClass::DeviceCapture,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -48,6 +51,7 @@ impl DataClass {
             DataClass::SipTrace => "sip_trace",
             DataClass::FlowTrace => "flow_trace",
             DataClass::AuditEvent => "audit_event",
+            DataClass::DeviceCapture => "device_capture",
         }
     }
 

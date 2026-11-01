@@ -1,6 +1,6 @@
 //! Event type definitions for the FCP platform.
 
-use fcp_core::{CallId, SessionId, TenantId};
+use fcp_core::{CallId, SessionId, TenantId, UserId};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::SystemTime;
@@ -180,9 +180,14 @@ pub enum CallEvent {
         /// The address the caller was seen at, when one placed them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_address: Option<String>,
+        /// The tenant's site the caller was placed at, whose own contacts
+        /// are told first.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        location_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trunk_name: Option<String>,
-        /// People/URIs the tenant asked to be told about emergency calls.
+        /// People/URIs told about this call: the site's contacts, then
+        /// the tenant's.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         notify_contacts: Vec<String>,
         #[serde(with = "system_time_serde")]
@@ -333,6 +338,11 @@ pub enum CallEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tenant_id: Option<TenantId>,
         call_id: CallId,
+        /// The slot, as the tenant numbers it (`docs/PARKING.md`).
+        #[serde(default)]
+        slot: String,
+        /// The slot as a number, for consumers of the old field: 0 when it
+        /// is not one (a leading zero, more than 65535). Use `slot`.
         orbit: u16,
         parker_extension: String,
         #[serde(with = "system_time_serde")]
@@ -346,8 +356,53 @@ pub enum CallEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tenant_id: Option<TenantId>,
         call_id: CallId,
+        /// The slot it was retrieved from.
+        #[serde(default)]
+        slot: String,
+        /// The slot as a number (see `Parked`). Use `slot`.
         orbit: u16,
         retriever_extension: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A parked call nobody took back in its lot's time
+    /// (`docs/PARKING.md` §3): it rings its parker, and `fallback` is
+    /// where it goes if the parker does not take it.
+    ParkTimedOut {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
+        call_id: CallId,
+        slot: String,
+        lot_id: String,
+        parker_extension: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fallback: Option<String>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A phone reported a call it was on as poor (`docs/CALL_DIAGNOSTICS.md`
+    /// §2): its estimated score (E-model MOS, 1 to 4.5) under 3.1 — what
+    /// the user heard (`mos`) or what the far end did (`far_mos`).
+    QualityPoor {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
+        call_id: CallId,
+        /// The user whose phone reported it, by id and name.
+        user_id: String,
+        username: String,
+        /// The phone (its device), when the report came from an app.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_id: Option<String>,
+        mos: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        far_mos: Option<f32>,
+        /// The far end's packets lost over the call, in percent.
+        loss_pct: f32,
+        jitter_ms: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rtt_ms: Option<f32>,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
@@ -517,12 +572,15 @@ pub enum RecordingEvent {
         recording_id: String,
         call_id: CallId,
         tenant_id: TenantId,
-        /// Why it is recorded: `api`, `flow`, `queue`, `user`, `number` or
-        /// `platform`.
+        /// Why it is recorded: `api`, `flow`, `queue`, `user`, `on_demand`,
+        /// `number` or `platform`.
         source: String,
         /// What the parties were told: `announced`, `failed` or
         /// `not_required`.
         consent: String,
+        /// The party who asked, for an `on_demand` recording.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_by: Option<UserId>,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
@@ -726,6 +784,44 @@ pub enum SystemEvent {
         timestamp: SystemTime,
     },
 
+    /// A service came up: first seen, or back after it was down
+    /// (`docs/SERVICES.md` §2). Said once by the admin that keeps the
+    /// record of every service.
+    ServiceUp {
+        /// `[service] node_id` of the process.
+        service_id: String,
+        /// `call_manager`, `voicemail`, …
+        kind: String,
+        host: String,
+        version: String,
+        /// The site it runs at; none for the platform's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site_id: Option<String>,
+        /// How long it was down, when it was down before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        down_secs: Option<u64>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A service stopped saying it is there (`docs/SERVICES.md` §2). Said
+    /// once, by the admin, when its beacon expired; never while Redis
+    /// itself cannot be read.
+    ServiceDown {
+        service_id: String,
+        kind: String,
+        host: String,
+        version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site_id: Option<String>,
+        /// It said it was stopping: shut down on purpose, not lost.
+        stopped: bool,
+        /// Its last beacon (Unix seconds).
+        last_seen: u64,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// A phone registered running another firmware than its tenant's
     /// target points it at (`docs/PROVISIONING.md` §11): said once each
     /// time what it runs changes, by the node that took the REGISTER.
@@ -891,6 +987,20 @@ pub enum UserEvent {
         user_id: String,
         username: String,
         tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// One of the user's own contacts was made, changed or deleted
+    /// (`docs/RECORD_AND_CONTACTS.md` §3), through `/me/contacts` or by a
+    /// site, so the apps they are signed in to read their contacts again.
+    /// It names the contact, never what it holds.
+    ContactChanged {
+        user_id: String,
+        tenant_id: TenantId,
+        contact_id: String,
+        /// `created`, `updated` or `deleted`.
+        change: String,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
@@ -1632,6 +1742,42 @@ pub enum PresenceEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// What others see of a person changed (`presence.user_changed`,
+    /// `docs/PRESENCE.md`): the status they chose with calls, do not
+    /// disturb, idleness and being signed out laid over it. `state` is
+    /// `available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or
+    /// `offline`; `label` is their own status's, `idle` says an away is
+    /// the app's doing.
+    UserChanged {
+        user_id: String,
+        username: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extension: Option<String>,
+        state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        #[serde(default)]
+        idle: bool,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A call began or stopped counting against one of its parties
+    /// (`presence.user_call`): the call manager's word, from the parties
+    /// it counts for call waiting, that a person is on a call. The admin
+    /// works presence out from it; apps are not sent it.
+    UserCall {
+        user_id: String,
+        call_id: String,
+        on_call: bool,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Voicemail-related events.
@@ -1824,6 +1970,8 @@ impl PlatformEvent {
         "emergency.notification_failed",
         "call.parked",
         "call.unparked",
+        "call.park_timed_out",
+        "call.quality_poor",
         "call.held",
         "call.resumed",
         "call.transcript",
@@ -1856,6 +2004,8 @@ impl PlatformEvent {
         "system.cluster_view_changed",
         "system.version_skew",
         "system.site_link_changed",
+        "system.service_up",
+        "system.service_down",
         "device.firmware_behind",
         "device.push_failed",
         "user.created",
@@ -1867,6 +2017,7 @@ impl PlatformEvent {
         "user.enabled",
         "user.disabled",
         "user.calling_changed",
+        "user.contact_changed",
         "user.signed_in",
         "user.sign_in_failed",
         "hoteling.login",
@@ -1932,6 +2083,8 @@ impl PlatformEvent {
         "presence.watcher_removed",
         "presence.publish_received",
         "presence.dialog_changed",
+        "presence.user_changed",
+        "presence.user_call",
         "presence.publish_expiry_warning",
         "presence.publish_expired",
         "line.appearance_changed",
@@ -1966,6 +2119,8 @@ impl PlatformEvent {
                 CallEvent::EmergencyNotificationFailed { .. } => "emergency.notification_failed",
                 CallEvent::Parked { .. } => "call.parked",
                 CallEvent::Unparked { .. } => "call.unparked",
+                CallEvent::ParkTimedOut { .. } => "call.park_timed_out",
+                CallEvent::QualityPoor { .. } => "call.quality_poor",
                 CallEvent::Held { .. } => "call.held",
                 CallEvent::Resumed { .. } => "call.resumed",
                 CallEvent::Transcript { .. } => "call.transcript",
@@ -2008,6 +2163,8 @@ impl PlatformEvent {
                 SystemEvent::ClusterViewChanged { .. } => "system.cluster_view_changed",
                 SystemEvent::VersionSkew { .. } => "system.version_skew",
                 SystemEvent::SiteLinkChanged { .. } => "system.site_link_changed",
+                SystemEvent::ServiceUp { .. } => "system.service_up",
+                SystemEvent::ServiceDown { .. } => "system.service_down",
                 SystemEvent::DeviceFirmwareBehind { .. } => "device.firmware_behind",
                 SystemEvent::DevicePushFailed { .. } => "device.push_failed",
             },
@@ -2021,6 +2178,7 @@ impl PlatformEvent {
                 UserEvent::Enabled { .. } => "user.enabled",
                 UserEvent::Disabled { .. } => "user.disabled",
                 UserEvent::CallingChanged { .. } => "user.calling_changed",
+                UserEvent::ContactChanged { .. } => "user.contact_changed",
                 UserEvent::HotelingLogin { .. } => "hoteling.login",
                 UserEvent::HotelingLogout { .. } => "hoteling.logout",
                 UserEvent::SignedIn { .. } => "user.signed_in",
@@ -2099,6 +2257,8 @@ impl PlatformEvent {
                 PresenceEvent::PublishExpiryWarning { .. } => "presence.publish_expiry_warning",
                 PresenceEvent::PublishExpired { .. } => "presence.publish_expired",
                 PresenceEvent::AppearanceChanged { .. } => "line.appearance_changed",
+                PresenceEvent::UserChanged { .. } => "presence.user_changed",
+                PresenceEvent::UserCall { .. } => "presence.user_call",
             },
             PlatformEvent::Sip(e) => match e {
                 SipTraceEvent::MessageCaptured { .. } => "sip.message_captured",
@@ -2150,6 +2310,8 @@ impl PlatformEvent {
                 | CallEvent::Failed { tenant_id, .. }
                 | CallEvent::Parked { tenant_id, .. }
                 | CallEvent::Unparked { tenant_id, .. }
+                | CallEvent::ParkTimedOut { tenant_id, .. }
+                | CallEvent::QualityPoor { tenant_id, .. }
                 | CallEvent::Held { tenant_id, .. }
                 | CallEvent::Resumed { tenant_id, .. }
                 | CallEvent::PartyJoined { tenant_id, .. }
@@ -2165,6 +2327,7 @@ impl PlatformEvent {
                 | UserEvent::Enabled { tenant_id, .. }
                 | UserEvent::Disabled { tenant_id, .. }
                 | UserEvent::CallingChanged { tenant_id, .. }
+                | UserEvent::ContactChanged { tenant_id, .. }
                 | UserEvent::HotelingLogin { tenant_id, .. }
                 | UserEvent::HotelingLogout { tenant_id, .. }
                 | UserEvent::SignedIn { tenant_id, .. } => Some(tenant_id),
@@ -2232,7 +2395,9 @@ impl PlatformEvent {
                 | PresenceEvent::DialogChanged { tenant_id, .. }
                 | PresenceEvent::PublishExpiryWarning { tenant_id, .. }
                 | PresenceEvent::PublishExpired { tenant_id, .. }
-                | PresenceEvent::AppearanceChanged { tenant_id, .. } => Some(tenant_id),
+                | PresenceEvent::AppearanceChanged { tenant_id, .. }
+                | PresenceEvent::UserChanged { tenant_id, .. }
+                | PresenceEvent::UserCall { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::System(e) => match e {
                 SystemEvent::ConfigChanged { tenant_id, .. }
@@ -2247,7 +2412,9 @@ impl PlatformEvent {
                 | SystemEvent::NodeLeft { .. }
                 | SystemEvent::ClusterViewChanged { .. }
                 | SystemEvent::VersionSkew { .. }
-                | SystemEvent::SiteLinkChanged { .. } => None,
+                | SystemEvent::SiteLinkChanged { .. }
+                | SystemEvent::ServiceUp { .. }
+                | SystemEvent::ServiceDown { .. } => None,
             },
             PlatformEvent::Voicemail(e) => match e {
                 VoicemailEvent::MessageTranscribed { tenant_id, .. }
@@ -2351,6 +2518,7 @@ impl UserEvent {
             | UserEvent::Enabled { timestamp, .. }
             | UserEvent::Disabled { timestamp, .. }
             | UserEvent::CallingChanged { timestamp, .. }
+            | UserEvent::ContactChanged { timestamp, .. }
             | UserEvent::HotelingLogin { timestamp, .. }
             | UserEvent::HotelingLogout { timestamp, .. }
             | UserEvent::SignedIn { timestamp, .. }
@@ -2407,6 +2575,8 @@ impl CallEvent {
             | CallEvent::EmergencyNotificationFailed { call_id, .. }
             | CallEvent::Parked { call_id, .. }
             | CallEvent::Unparked { call_id, .. }
+            | CallEvent::ParkTimedOut { call_id, .. }
+            | CallEvent::QualityPoor { call_id, .. }
             | CallEvent::Held { call_id, .. }
             | CallEvent::Resumed { call_id, .. }
             | CallEvent::Transcript { call_id, .. }
@@ -2426,6 +2596,8 @@ impl CallEvent {
             | CallEvent::EmergencyNotificationFailed { timestamp, .. }
             | CallEvent::Parked { timestamp, .. }
             | CallEvent::Unparked { timestamp, .. }
+            | CallEvent::ParkTimedOut { timestamp, .. }
+            | CallEvent::QualityPoor { timestamp, .. }
             | CallEvent::Held { timestamp, .. }
             | CallEvent::Resumed { timestamp, .. }
             | CallEvent::Transcript { timestamp, .. }
@@ -2509,6 +2681,8 @@ impl SystemEvent {
             | SystemEvent::ClusterViewChanged { timestamp, .. }
             | SystemEvent::VersionSkew { timestamp, .. }
             | SystemEvent::SiteLinkChanged { timestamp, .. }
+            | SystemEvent::ServiceUp { timestamp, .. }
+            | SystemEvent::ServiceDown { timestamp, .. }
             | SystemEvent::DeviceFirmwareBehind { timestamp, .. }
             | SystemEvent::DevicePushFailed { timestamp, .. } => *timestamp,
         }
@@ -2610,7 +2784,9 @@ impl PresenceEvent {
             | PresenceEvent::DialogChanged { timestamp, .. }
             | PresenceEvent::PublishExpiryWarning { timestamp, .. }
             | PresenceEvent::PublishExpired { timestamp, .. }
-            | PresenceEvent::AppearanceChanged { timestamp, .. } => *timestamp,
+            | PresenceEvent::AppearanceChanged { timestamp, .. }
+            | PresenceEvent::UserChanged { timestamp, .. }
+            | PresenceEvent::UserCall { timestamp, .. } => *timestamp,
         }
     }
 }

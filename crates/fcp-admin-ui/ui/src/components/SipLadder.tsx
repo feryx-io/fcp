@@ -12,6 +12,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { SipTraceMessage } from '@/api/endpoints'
+import { useThemeStore } from '@/stores/theme'
 
 interface SipLadderProps {
   messages: SipTraceMessage[]
@@ -288,6 +289,7 @@ const nodeTypes = {
 function SipLadderInner({ messages, live }: SipLadderProps) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const reactFlow = useReactFlow()
+  const theme = useThemeStore((s) => s.theme)
 
   const columns = useMemo(() => inferColumns(messages), [messages])
 
@@ -382,6 +384,7 @@ function SipLadderInner({ messages, live }: SipLadderProps) {
           maxZoom={2}
           fitView
           fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
+          colorMode={theme}
         >
           <Background gap={20} />
           <Controls showInteractive={false} />

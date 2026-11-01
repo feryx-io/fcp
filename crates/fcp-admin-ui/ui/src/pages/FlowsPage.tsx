@@ -18,6 +18,8 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { flows } from '@/api/endpoints'
+import { useIsPlatformAdmin } from '@/components/TenantSelector'
+import { useTenantStore } from '@/stores/tenant'
 import type { FlowResponse } from '@/types'
 
 const createFlowSchema = z.object({
@@ -176,6 +178,8 @@ export function FlowsPage() {
         </Button>
       </div>
 
+      <UntenantedFlows />
+
       {isLoading ? (
         <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>
       ) : (
@@ -216,6 +220,52 @@ export function FlowsPage() {
           </form>
         </DialogContent>
       </Dialog>
+    </div>
+  )
+}
+
+/**
+ * Flows from before tenancy that nothing tied to one tenant: a platform
+ * administrator gives each to the tenant picked in the top bar. Nothing
+ * shows when there are none.
+ */
+function UntenantedFlows() {
+  const isPlatformAdmin = useIsPlatformAdmin()
+  const { selectedTenantId } = useTenantStore()
+  const queryClient = useQueryClient()
+  const { data = [] } = useQuery({
+    queryKey: ['flows', 'untenanted'],
+    queryFn: flows.untenanted,
+    enabled: isPlatformAdmin,
+  })
+  const assign = useMutation({
+    mutationFn: (id: string) => flows.assign(id, selectedTenantId ?? ''),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['flows'] }),
+  })
+  if (!isPlatformAdmin || data.length === 0) return null
+  return (
+    <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950/40 space-y-2">
+      <p className="text-sm font-medium">Flows without a tenant</p>
+      <p className="text-xs text-muted-foreground">
+        Made before flows had tenants, and named by no single tenant. Calls of any tenant may still run them
+        until each is given to its tenant.
+      </p>
+      <ul className="space-y-1">
+        {data.map((f) => (
+          <li key={f.id} className="flex items-center justify-between gap-2 text-sm">
+            <span><span className="font-mono">{f.id}</span> {f.name}</span>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!selectedTenantId || assign.isPending}
+              onClick={() => assign.mutate(f.id)}
+            >
+              Give to this tenant
+            </Button>
+          </li>
+        ))}
+      </ul>
+      {assign.error && <p className="text-sm text-destructive">{(assign.error as Error).message}</p>}
     </div>
   )
 }

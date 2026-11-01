@@ -105,6 +105,38 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Say this process is there, to the site's Redis (`docs/SERVICES.md`):
+    // the site's admin lists it, and its link carries it up.
+    let beacon = config.site.redis_url.as_ref().map(|url| {
+        let watched = Arc::clone(&link);
+        let beacon = fcp_cluster::ServiceBeacon::new(
+            fcp_cluster::ServiceIdentity::new(&config.service.node_id, "link")
+                .http(config.health.bind_address),
+        )
+        // The cloud: not required, a site goes on alone.
+        .check(fcp_cluster::Check::new("cloud", false, move || {
+            let status = watched.status();
+            async move {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let window = status.heartbeat_interval_secs.max(1) * 3;
+                match status.last_heartbeat_ok_at {
+                    Some(at) if now.saturating_sub(at) <= window => Ok(()),
+                    _ if !status.enrolled => Err("not enrolled".to_string()),
+                    _ => Err(status
+                        .last_heartbeat_error
+                        .unwrap_or_else(|| "no heartbeat answered".to_string())),
+                }
+            }
+        }));
+        beacon.start(fcp_storage_redis::RedisConfig {
+            url: url.clone(),
+            ..Default::default()
+        })
+    });
+
     let run = Arc::clone(&link);
     let run_task = tokio::spawn(async move { run.run().await });
 
@@ -112,6 +144,9 @@ async fn main() -> Result<()> {
     info!("Shutdown signal received");
     run_task.abort();
     health_task.abort();
+    if let Some(beacon) = &beacon {
+        beacon.shutdown().await;
+    }
     info!("Shutdown complete");
     Ok(())
 }

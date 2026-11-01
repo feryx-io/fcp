@@ -28,12 +28,17 @@
 //!   every day.
 //!
 //! Every condition a rule sets must hold; one it leaves empty holds always.
+//!
+//! A rule may be for one location's callers (`docs/TENANT_SCOPE.md` §3.6).
+//! A call from a location meets that location's rules first, in priority
+//! order, then the tenant's rules without a location; a location's rule
+//! never decides a call from elsewhere, or from no known location.
 
 use crate::evaluator::PolicyEvaluator;
 use crate::models::policy::TimeWindow;
 use chrono::{NaiveTime, Weekday};
 use fcp_core::storage::RoutingRuleStore;
-use fcp_core::{RoutingAction, RoutingRule, TenantId, TrunkTarget};
+use fcp_core::{LocationId, RoutingAction, RoutingRule, TenantId, TrunkTarget};
 use ipnetwork::IpNetwork;
 use regex::Regex;
 use std::collections::HashMap;
@@ -51,6 +56,9 @@ pub struct CallFacts<'a> {
     pub destination: &'a str,
     /// Where the INVITE came from.
     pub source_ip: IpAddr,
+    /// Where the caller is: their device's location, else their
+    /// extension's, else their line's number's. `None` when not known.
+    pub location: Option<LocationId>,
 }
 
 /// What the tenant's rules decided.
@@ -82,6 +90,7 @@ impl RuleOutcome {
 pub struct CompiledRule {
     name: String,
     priority: i32,
+    location: Option<LocationId>,
     destination: Option<Regex>,
     source: Option<Regex>,
     ranges: Vec<IpNetwork>,
@@ -216,6 +225,7 @@ impl CompiledRule {
         Ok(Self {
             name: rule.name.clone(),
             priority: rule.priority,
+            location: rule.location_id,
             destination,
             source,
             ranges,
@@ -228,6 +238,9 @@ impl CompiledRule {
 
     /// Whether this rule matches the call at `now`.
     pub fn matches_at(&self, call: &CallFacts<'_>, now: chrono::DateTime<chrono::Utc>) -> bool {
+        if self.location.is_some() && self.location != call.location {
+            return false;
+        }
         if let Some(re) = &self.destination {
             if !matches_uri(re, call.destination) {
                 return false;
@@ -309,8 +322,15 @@ impl TenantRuleSet {
             }
         }
         for rules in by_tenant.values_mut() {
-            // Lower priority first; the name breaks a tie, as the store orders.
-            rules.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.name.cmp(&b.name)));
+            // A location's rules before the tenant's; then lower priority
+            // first; the name breaks a tie, as the store orders.
+            rules.sort_by(|a, b| {
+                a.location
+                    .is_none()
+                    .cmp(&b.location.is_none())
+                    .then(a.priority.cmp(&b.priority))
+                    .then(a.name.cmp(&b.name))
+            });
         }
         match self.rules.write() {
             Ok(mut current) => *current = by_tenant,
@@ -328,6 +348,18 @@ impl TenantRuleSet {
         let count = self.set_rules(rules);
         debug!(rules = count, "Tenant routing rules refreshed");
         Ok(count)
+    }
+
+    /// Whether any of `tenant`'s rules is for a location: only then is a
+    /// call's location worth looking up.
+    pub fn has_location_rules(&self, tenant: &TenantId) -> bool {
+        self.rules
+            .read()
+            .map(|r| {
+                r.get(tenant)
+                    .is_some_and(|rules| rules.iter().any(|rule| rule.location.is_some()))
+            })
+            .unwrap_or(false)
     }
 
     /// How many rules `tenant` has in force here.
@@ -379,6 +411,7 @@ mod tests {
             caller,
             destination,
             source_ip: "10.0.0.5".parse().unwrap(),
+            location: None,
         }
     }
 
@@ -579,5 +612,57 @@ mod tests {
         fine.target_trunk_group = Some("intl".into());
         fine.source_ip_ranges = vec!["10.0.0.0/8".into(), "192.0.2.7".into()];
         assert_eq!(validate(&fine), Ok(()));
+    }
+
+    /// A location's rules decide its callers' calls before the tenant's;
+    /// they decide no one else's (docs/TENANT_SCOPE.md §3.6).
+    #[test]
+    fn a_locations_rules_come_first_and_only_for_its_callers() {
+        let tenant = TenantId::new();
+        let branch = LocationId::new();
+        let mut tenant_wide = rule(tenant, "tenant-wide", 1, RoutingAction::RouteToTrunk);
+        tenant_wide.target_trunk_group = Some("hq".into());
+        let mut at_branch = rule(tenant, "branch", 50, RoutingAction::RouteToTrunk);
+        at_branch.target_trunk_group = Some("branch".into());
+        at_branch.location_id = Some(branch);
+        let mut branch_premium = rule(tenant, "branch-premium", 10, RoutingAction::Deny);
+        branch_premium.destination_pattern = Some(r"^\+1900".into());
+        branch_premium.location_id = Some(branch);
+        let set = TenantRuleSet::new();
+        set.set_rules(vec![tenant_wide, at_branch, branch_premium]);
+        assert!(set.has_location_rules(&tenant));
+        assert!(!set.has_location_rules(&TenantId::new()));
+
+        let at = |location| CallFacts {
+            location,
+            ..call("sip:1001@pbx", "sip:+15125550100@pbx")
+        };
+        // At the branch: its rule, though the tenant-wide one's priority is lower.
+        assert_eq!(
+            set.evaluate_at(&tenant, &at(Some(branch)), wednesday_afternoon()),
+            RuleOutcome::Route {
+                rule: "branch".into(),
+                target: TrunkTarget::Group("branch".into())
+            }
+        );
+        // Its priority order among its own rules.
+        let premium = CallFacts {
+            location: Some(branch),
+            ..call("sip:1001@pbx", "sip:+19005550100@pbx")
+        };
+        assert_eq!(
+            set.evaluate_at(&tenant, &premium, wednesday_afternoon())
+                .rule(),
+            Some("branch-premium")
+        );
+        // Elsewhere, and nowhere known: the tenant's.
+        for location in [Some(LocationId::new()), None] {
+            assert_eq!(
+                set.evaluate_at(&tenant, &at(location), wednesday_afternoon())
+                    .rule(),
+                Some("tenant-wide"),
+                "{location:?}"
+            );
+        }
     }
 }

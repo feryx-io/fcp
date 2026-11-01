@@ -5,7 +5,7 @@ use crate::auth::{can_access_all_tenants, AuthIdentity, TenantContext, PLATFORM_
 use crate::{error::ApiError, state::ApiState};
 use axum::{
     extract::{Extension, Query, State},
-    http::HeaderMap,
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -274,7 +274,7 @@ pub async fn update_policy(
                     .get_prompt(&id)
                     .await
                     .map_err(|e| ApiError::Internal(e.to_string()))?
-                    .filter(|pr| pr.tenant_id == tenant.0);
+                    .filter(|pr| pr.visible_to(&tenant.0));
                 if found.is_none() {
                     return Err(ApiError::BadRequest(format!("Prompt {p} not found")));
                 }
@@ -458,6 +458,73 @@ pub struct AuditLogQuery {
     pub action: Option<String>,
     /// Unix seconds.
     pub since: Option<u64>,
+    /// Unix seconds: only events before it.
+    pub until: Option<u64>,
+    /// A platform administrator's choice of rows: `all`, `platform` (the
+    /// platform's own actions, without a tenant) or a tenant's id. Without
+    /// it, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else
+    /// reads their own tenant's rows whatever this says.
+    pub tenant: Option<String>,
+}
+
+/// Which audit rows a reader gets: a tenant's, the platform's, or every row.
+struct AuditReach {
+    tenant_id: Option<TenantId>,
+    platform_only: bool,
+    /// The reader is a platform administrator: actors are shown as they are.
+    platform_reader: bool,
+}
+
+fn audit_reach(
+    tenant: &TenantContext,
+    identity: &Option<Extension<AuthIdentity>>,
+    headers: &HeaderMap,
+    q: &AuditLogQuery,
+) -> Result<AuditReach, ApiError> {
+    let platform_reader = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0));
+    if !platform_reader {
+        return Ok(AuditReach {
+            tenant_id: Some(tenant.0),
+            platform_only: false,
+            platform_reader,
+        });
+    }
+    let (tenant_id, platform_only) = match q.tenant.as_deref().map(str::trim) {
+        Some("all") => (None, false),
+        Some("platform") => (None, true),
+        Some(id) if !id.is_empty() => (
+            Some(id.parse::<TenantId>().map_err(|e| {
+                ApiError::BadRequest(format!(
+                    "tenant must be 'all', 'platform' or a tenant id: {e}"
+                ))
+            })?),
+            false,
+        ),
+        _ if headers.contains_key(PLATFORM_TENANT_HEADER) => (Some(tenant.0), false),
+        _ => (None, false),
+    };
+    Ok(AuditReach {
+        tenant_id,
+        platform_only,
+        platform_reader,
+    })
+}
+
+impl AuditLogQuery {
+    /// The store's query for these filters, in the reach's rows.
+    fn to_query(&self, reach: &AuditReach, limit: usize) -> AuditQuery {
+        let at = |s: u64| UNIX_EPOCH + std::time::Duration::from_secs(s);
+        AuditQuery {
+            tenant_id: reach.tenant_id,
+            platform_only: reach.platform_only,
+            actor: self.actor.clone(),
+            action_prefix: self.action.clone(),
+            since: self.since.map(at),
+            until: self.until.map(at),
+            limit,
+            before: None,
+        }
+    }
 }
 
 /// The keyset cursor of a time-ordered log: `(nanoseconds, id)`.
@@ -482,7 +549,13 @@ fn parse_log_key(key: &str) -> Result<(SystemTime, i64), ApiError> {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AuditEventResponse {
     pub id: i64,
+    /// The tenant acted on; `null` for the platform's own actions.
     pub tenant_id: Option<String>,
+    /// The actor's own tenant, `null` for the static token. Shown only to a
+    /// platform administrator.
+    pub actor_tenant_id: Option<String>,
+    /// Who acted. A tenant's readers see an actor from outside it (a
+    /// platform administrator) as `platform administrator`.
     pub actor: String,
     pub actor_kind: String,
     pub method: String,
@@ -501,6 +574,7 @@ impl From<AuditEvent> for AuditEventResponse {
         Self {
             id: e.id,
             tenant_id: e.tenant_id.map(|t| t.to_string()),
+            actor_tenant_id: e.actor_tenant_id.map(|t| t.to_string()),
             actor: e.actor,
             actor_kind: e.actor_kind,
             method: e.method,
@@ -514,8 +588,29 @@ impl From<AuditEvent> for AuditEventResponse {
     }
 }
 
-/// Tenant admins see their tenant; the platform token sees every tenant
-/// unless it selected one with the override header.
+/// An event as a reader sees it: a tenant's reader sees an actor from
+/// outside the tenant — the static token, or someone of another tenant (a
+/// platform administrator) — as `platform administrator`, without their
+/// tenant or address.
+fn as_seen(e: AuditEvent, platform_reader: bool) -> AuditEventResponse {
+    let outsider =
+        e.actor_kind == "static_token" || e.actor_tenant_id.is_some_and(|t| Some(t) != e.tenant_id);
+    let mut r = AuditEventResponse::from(e);
+    if !platform_reader {
+        if outsider {
+            r.actor = "platform administrator".to_string();
+            r.actor_kind = "platform".to_string();
+            r.source_ip = None;
+        }
+        r.actor_tenant_id = None;
+    }
+    r
+}
+
+/// A row belongs to the tenant acted on (docs/TENANT_SCOPE.md §3.3).
+/// Tenant admins see their tenant's rows, platform administrators' actions
+/// on it included; a platform administrator sees every row, one tenant's
+/// (`tenant` or the picked tenant) or the platform's own.
 #[utoipa::path(
     get,
     path = "/api/v1/audit-log",
@@ -537,21 +632,12 @@ pub async fn list_audit_log(
 ) -> Result<impl IntoResponse, ApiError> {
     permit(&state, &identity, Permission::AuditView)?;
     let store = require_store(&state)?;
-    let platform_wide = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
-        && !headers.contains_key(PLATFORM_TENANT_HEADER);
-    let tenant_id: Option<TenantId> = if platform_wide { None } else { Some(tenant.0) };
+    let reach = audit_reach(&tenant, &identity, &headers, &q)?;
+    // One more than the page, to know whether there is another.
+    let mut query = q.to_query(&reach, page.limit()? + 1);
+    query.before = page.after()?.as_deref().map(parse_log_key).transpose()?;
     let events = store
-        .list_audit_events(&AuditQuery {
-            tenant_id,
-            actor: q.actor,
-            action_prefix: q.action,
-            since: q
-                .since
-                .map(|s| UNIX_EPOCH + std::time::Duration::from_secs(s)),
-            // One more than the page, to know whether there is another.
-            limit: page.limit()? + 1,
-            before: page.after()?.as_deref().map(parse_log_key).transpose()?,
-        })
+        .list_audit_events(&query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let limit = page.limit()?;
@@ -559,8 +645,176 @@ pub async fn list_audit_log(
         let last = &events[limit - 1];
         log_key(last.occurred_at, last.id)
     });
-    let out: Vec<AuditEventResponse> = events.into_iter().take(limit).map(Into::into).collect();
+    let out: Vec<AuditEventResponse> = events
+        .into_iter()
+        .take(limit)
+        .map(|e| as_seen(e, reach.platform_reader))
+        .collect();
     Ok(Json(crate::page::Page::new(out, next_key, None)))
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct AuditExportQuery {
+    /// `csv` (the default) or `jsonl`.
+    pub format: Option<String>,
+}
+
+/// One audit event as a CSV line; the header is [`AUDIT_CSV_HEADER`].
+fn audit_csv_row(e: &AuditEventResponse) -> String {
+    let field = |v: &str| {
+        if v.contains([',', '"', '\n', '\r']) {
+            format!("\"{}\"", v.replace('"', "\"\""))
+        } else {
+            v.to_string()
+        }
+    };
+    let opt = |v: &Option<String>| field(v.as_deref().unwrap_or(""));
+    let occurred = crate::time::format(std::time::Duration::from_secs(e.occurred_at));
+    let detail = e.detail.as_ref().map(|d| d.to_string()).unwrap_or_default();
+    let mut line = [
+        e.id.to_string(),
+        field(&occurred),
+        opt(&e.tenant_id),
+        field(&e.actor),
+        field(&e.actor_kind),
+        field(&e.method),
+        field(&e.path),
+        e.status.to_string(),
+        field(&e.action),
+        opt(&e.source_ip),
+        field(&detail),
+        opt(&e.actor_tenant_id),
+    ]
+    .join(",");
+    line.push('\n');
+    line
+}
+
+const AUDIT_CSV_HEADER: &str =
+    "id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail,actor_tenant_id\n";
+
+/// The rows an export reads from the store at a time.
+const AUDIT_EXPORT_PAGE: usize = 1000;
+
+/// `GET /audit-log/export`: every event the listing's filters match,
+/// newest first, streamed page by page as CSV or JSON Lines (D8, finding
+/// 36). Who may see what is the listing's.
+#[utoipa::path(
+    get,
+    path = "/api/v1/audit-log/export",
+    tag = "compliance",
+    operation_id = "compliance_export_audit_log",
+    params(AuditLogQuery, AuditExportQuery),
+    responses(
+        (status = 200, description = "The events, streamed as CSV or JSON Lines", content_type = "text/csv", body = String),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn export_audit_log(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
+    Query(q): Query<AuditLogQuery>,
+    Query(export): Query<AuditExportQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::AuditView)?;
+    let store = Arc::clone(require_store(&state)?);
+    let jsonl = match export.format.as_deref().unwrap_or("csv") {
+        "csv" => false,
+        "jsonl" => true,
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "Invalid format: {other}. Valid values: csv, jsonl"
+            )))
+        }
+    };
+    let reach = audit_reach(&tenant, &identity, &headers, &q)?;
+    let platform_reader = reach.platform_reader;
+    let query = q.to_query(&reach, AUDIT_EXPORT_PAGE);
+
+    // The first page before the response starts: a failing query is an
+    // error status, not an empty file.
+    let first = store
+        .list_audit_events(&query)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    struct Walk {
+        store: Arc<dyn ComplianceStore>,
+        query: AuditQuery,
+        page: Option<Vec<AuditEvent>>,
+        header_sent: bool,
+    }
+    let walk = Walk {
+        store,
+        query,
+        page: Some(first),
+        header_sent: jsonl,
+    };
+    let stream = futures_util::stream::unfold(walk, move |mut walk| async move {
+        if !walk.header_sent {
+            walk.header_sent = true;
+            return Some((
+                Ok::<_, std::io::Error>(axum::body::Bytes::from(AUDIT_CSV_HEADER)),
+                walk,
+            ));
+        }
+        let page = walk.page.take()?;
+        if page.is_empty() {
+            return None;
+        }
+        let full = page.len() == AUDIT_EXPORT_PAGE;
+        let last = page.last().map(|e| (e.occurred_at, e.id));
+        let mut chunk = String::new();
+        for event in page {
+            let event = as_seen(event, platform_reader);
+            if jsonl {
+                chunk.push_str(&serde_json::to_string(&event).unwrap_or_default());
+                chunk.push('\n');
+            } else {
+                chunk.push_str(&audit_csv_row(&event));
+            }
+        }
+        if full {
+            walk.query.before = last;
+            match walk.store.list_audit_events(&walk.query).await {
+                Ok(next) => walk.page = Some(next),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Audit log export failed part way");
+                    return Some((
+                        Err(std::io::Error::other("audit log export failed part way")),
+                        walk,
+                    ));
+                }
+            }
+        } else {
+            walk.page = Some(Vec::new());
+        }
+        Some((Ok(axum::body::Bytes::from(chunk)), walk))
+    });
+
+    let (content_type, filename) = if jsonl {
+        (
+            "application/x-ndjson",
+            "attachment; filename=\"audit-log.jsonl\"",
+        )
+    } else {
+        (
+            "text/csv; charset=utf-8",
+            "attachment; filename=\"audit-log.csv\"",
+        )
+    };
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CONTENT_DISPOSITION, filename),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        axum::body::Body::from_stream(stream),
+    ))
 }
 
 // ─── Deletion log ────────────────────────────────────────────────────────

@@ -177,8 +177,13 @@ services:
       FCP_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
       # Tenants' webhooks are read from Postgres, their secrets sealed at rest.
       FCP_EVENTS_WEBHOOK_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@postgres:5432/fcp
+      # Emergency notification calls are placed by the call manager.
+      FCP_EVENTS_NOTIFY_CALL_TOKEN: ${FCP_CALL_MANAGER_API_TOKEN}
       FCP_ENCRYPTION_PROVIDER: local
       FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
+    # The call manager is on the host's network.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       certs:
         condition: service_completed_successfully
@@ -688,8 +693,9 @@ configs:
         server {
           listen 8444 ssl;
           listen [::]:8444 ssl;
-          # Uploads: prompts (50 MB) and firmware images ([api.firmware]
-          # max_image_mb, 1 GB by default), streamed through.
+          # Uploads: prompts (50 MB), firmware images ([api.firmware]
+          # max_image_mb, 1 GB by default) and apps' captures (a tenant's
+          # capture_max_mb, at most 500 MB), streamed through.
           client_max_body_size 1100m;
           proxy_request_buffering off;
           location / { set $$fcp_admin http://fcp-admin:8080; proxy_pass $$fcp_admin; }

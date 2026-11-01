@@ -531,6 +531,8 @@ fn non_empty(s: &str) -> Option<String> {
 /// - `Cisco/SPA504G-7.6.2b (…)`, `Cisco-CP8861-3PCC/11.3.1`
 /// - `Fanvil X4U 2.12.1 0c383e…`
 /// - `snomD785-SIP 10.1.33.33`, `snomD785/10.1.33.33`
+/// - `Anvil/0.2.3`, FCP's own softphone: no vendor of the provisioned
+///   kind, its release as the firmware
 pub fn identify(user_agent: &str) -> Option<PhoneIdentity> {
     let ua = user_agent.trim();
     let lower = ua.to_ascii_lowercase();
@@ -629,6 +631,18 @@ pub fn identify(user_agent: &str) -> Option<PhoneIdentity> {
             vendor: Some(PhoneVendor::Snom),
             model: non_empty(&model),
             firmware: firmware.and_then(non_empty),
+        });
+    }
+    if let Some(release) = words
+        .first()
+        .and_then(|w| w.split_once('/'))
+        .filter(|(product, _)| product.eq_ignore_ascii_case("anvil"))
+        .map(|(_, release)| release)
+    {
+        return Some(PhoneIdentity {
+            vendor: None,
+            model: Some("Anvil".to_string()),
+            firmware: non_empty(release),
         });
     }
     None
@@ -838,6 +852,14 @@ mod tests {
             some(Snom, "D785", "10.1.33.33")
         );
         assert_eq!(who("snomD785/10.1.33.33"), some(Snom, "D785", "10.1.33.33"));
+        assert_eq!(
+            identify("Anvil/0.2.3"),
+            Some(PhoneIdentity {
+                vendor: None,
+                model: Some("Anvil".into()),
+                firmware: Some("0.2.3".into()),
+            })
+        );
         assert_eq!(identify("Zoiper rv2.10.8.3"), None);
         assert_eq!(identify(""), None);
     }

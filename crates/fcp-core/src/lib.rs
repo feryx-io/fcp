@@ -6,6 +6,7 @@
 pub mod billing;
 pub mod branding;
 pub mod cached_storage;
+pub mod call_quality;
 pub mod calling;
 pub mod cdr_archive;
 pub mod class_of_service;
@@ -14,7 +15,10 @@ pub mod compliance;
 pub mod config;
 pub mod config_store;
 pub mod config_template;
+pub mod contact;
+pub mod contact_file;
 pub mod device;
+pub mod device_capture;
 pub mod e911;
 pub mod encryption;
 pub mod error;
@@ -30,14 +34,17 @@ pub mod join_token;
 pub mod lcr_route;
 pub mod legal_hold;
 pub mod line_binding;
+pub mod line_label;
 pub mod meeting;
 pub mod metrics;
 pub mod migration_ticket;
 pub mod offboarding;
+pub mod parking;
 pub mod permissions;
 pub mod phone_number;
 pub mod pidf_lo;
 pub mod porting;
+pub mod presence_status;
 pub mod prompt;
 pub mod provisioning;
 pub mod push;
@@ -50,6 +57,8 @@ pub mod sca;
 pub mod schedule;
 pub mod secret;
 pub mod service;
+pub mod service_health;
+pub mod service_registry;
 pub mod session;
 pub mod sip_trace;
 pub mod site;
@@ -77,15 +86,18 @@ pub use crate::calling::{
 };
 pub use crate::codec::{AudioCodec, Codec, CodecPreferences, VideoCodec};
 pub use crate::config::{
-    ApiConfig, ApiFirmwareConfig, ApiProvisioningConfig, ApiRateLimitConfig, ApiRedirectionConfig,
-    ApiSessionConfig, ApiSsoConfig, FcpConfig, FirmwareS3Config, LogFormat, NodeConfig,
-    ObservabilityConfig, RegistrarConfig, StorageBackend, StorageConfig, TransportConfig,
+    ApiCapturesConfig, ApiConfig, ApiFirmwareConfig, ApiProvisioningConfig, ApiRateLimitConfig,
+    ApiRedirectionConfig, ApiSessionConfig, ApiSsoConfig, FcpConfig, FirmwareS3Config, LogFormat,
+    NodeConfig, ObservabilityConfig, RegistrarConfig, StorageBackend, StorageConfig,
+    TransportConfig,
 };
 pub use crate::config_store::{
     get_config_with_tenant_fallback, load_or_seed_config, reconcile_with_seed,
     spawn_config_poll_loop, AuditEntry, ConfigEntry, ConfigStore, ConfigWatcher,
 };
-pub use crate::device::{Device, DeviceType, LineKey, LineKeyKind, RegistrationState};
+pub use crate::device::{
+    Device, DeviceLine, DeviceType, LineKey, LineKeyKind, LineKind, RegistrationState,
+};
 pub use crate::encryption::{EncryptionStatus, EncryptionStore, ReencryptReport, RewrapReport};
 pub use crate::error::{
     DialogError, Error, MediaError, ParseError, Result, StorageError, TransactionError,

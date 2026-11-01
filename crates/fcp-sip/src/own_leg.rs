@@ -17,6 +17,20 @@ use sip_core::Request;
 /// The header a leg to this node itself carries.
 pub const OWN_LEG_HEADER: &str = "X-FCP-Own-Leg";
 
+/// The tenant a leg to this node itself is placed for, when it is not a
+/// call's the node has (a queue's agent, callback or campaign leg): kept
+/// only beside this process's token (docs/TENANT_SCOPE.md §4b).
+pub const OWN_LEG_TENANT_HEADER: &str = "X-FCP-Own-Leg-Tenant";
+
+/// The tenant an own leg names, when it proves itself one.
+pub fn tenant(request: &Request) -> Option<fcp_core::TenantId> {
+    if !proves(request) {
+        return None;
+    }
+    sip_parse::header(request.headers(), OWN_LEG_TENANT_HEADER)
+        .and_then(|value| value.as_str().trim().parse().ok())
+}
+
 /// This process's token: 32 random bytes as hex, never logged.
 pub fn token() -> &'static str {
     static TOKEN: OnceLock<String> = OnceLock::new();

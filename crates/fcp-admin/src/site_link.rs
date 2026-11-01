@@ -159,6 +159,9 @@ pub struct LinkState {
     /// The call managers, one of which sends a site's pushes with the
     /// publisher's keys (`docs/PUSH.md` §2.4).
     pub pushes: Option<Arc<crate::call_supervision::NodeCallSupervisor>>,
+    /// The record of every service, which a site's beacons join under its
+    /// id (`docs/SERVICES.md`).
+    pub services: Option<Arc<crate::services::ServiceRegistry>>,
 }
 
 /// `POST /link/v1/enroll`.
@@ -439,6 +442,7 @@ async fn heartbeat(
         None
     };
     site.last_seen_at = Some(now);
+    let services = beat.services.clone();
     site.last_heartbeat = Some(beat);
     site.link_up = true;
     if came_up {
@@ -448,6 +452,14 @@ async fn heartbeat(
     state.storage.put_site(site.clone()).await?;
     if came_up {
         announce(&state, &site, true, lasted).await;
+    }
+    if let Some(registry) = &state.services {
+        if let Err(e) = registry
+            .observe(Some(&site.id.to_string()), &services)
+            .await
+        {
+            warn!(site_id = %site.id, error = %e, "Could not keep the site's services");
+        }
     }
     Ok(Json(HeartbeatResponse {
         ok: true,
@@ -679,6 +691,78 @@ async fn records(
                 } else {
                     storage.put_mailbox(row).await?;
                     true
+                }
+            }
+            // A contact written at the site: taken when newer than the
+            // cloud's copy, for a user of the site's tenant
+            // (docs/RECORD_AND_CONTACTS.md §3).
+            "personal_contacts" => {
+                let row: fcp_core::contact::PersonalContact = serde_json::from_value(put.object)
+                    .map_err(|e| bad_row(&put.table, &put.id, e))?;
+                let owner =
+                    fcp_core::CredentialStore::get_user_by_id(storage.as_ref(), &row.owner_user_id)
+                        .await?;
+                match storage.contact_store() {
+                    Some(store)
+                        if row.tenant_id == site.tenant_id
+                            && owner.is_some_and(|u| u.tenant_id == site.tenant_id) =>
+                    {
+                        let taken = store.put_contact_if_newer(&row).await?;
+                        if taken {
+                            let change = if row.deleted_at.is_some() {
+                                "deleted"
+                            } else if row.created_at == row.updated_at {
+                                "created"
+                            } else {
+                                "updated"
+                            };
+                            fcp_api_core::v1::me_contacts::announce(
+                                state.events.as_ref(),
+                                &row,
+                                change,
+                            )
+                            .await;
+                        }
+                        taken
+                    }
+                    _ => false,
+                }
+            }
+            // A user's own status or chosen status written at the site:
+            // taken when newer than the cloud's copy, for a user of the
+            // site's tenant (docs/PRESENCE.md §3). The cloud's presence
+            // reads it on its next read of the tenant.
+            "presence_statuses" => {
+                let row: fcp_core::presence_status::OwnStatus = serde_json::from_value(put.object)
+                    .map_err(|e| bad_row(&put.table, &put.id, e))?;
+                let owner =
+                    fcp_core::CredentialStore::get_user_by_id(storage.as_ref(), &row.user_id)
+                        .await?;
+                match storage.presence_status_store() {
+                    Some(store)
+                        if row.tenant_id == site.tenant_id
+                            && owner.is_some_and(|u| u.tenant_id == site.tenant_id) =>
+                    {
+                        store.put_own_status_if_newer(&row).await?
+                    }
+                    _ => false,
+                }
+            }
+            "user_presence" => {
+                let row: fcp_core::presence_status::ChosenStatus =
+                    serde_json::from_value(put.object)
+                        .map_err(|e| bad_row(&put.table, &put.id, e))?;
+                let owner =
+                    fcp_core::CredentialStore::get_user_by_id(storage.as_ref(), &row.user_id)
+                        .await?;
+                match storage.presence_status_store() {
+                    Some(store)
+                        if row.tenant_id == site.tenant_id
+                            && owner.is_some_and(|u| u.tenant_id == site.tenant_id) =>
+                    {
+                        store.put_chosen_status_if_newer(&row).await?
+                    }
+                    _ => false,
                 }
             }
             "voicemail_messages" => {
@@ -1023,6 +1107,11 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
     for sched in storage.list_schedules(tenant).await? {
         items.push(item("schedules", &sched.id, &sched)?);
     }
+    if let Some(store) = storage.parking_lot_store() {
+        for lot in store.list_parking_lots(tenant).await? {
+            items.push(item("parking_lots", &lot.id, &lot)?);
+        }
+    }
     for class in storage.list_classes_of_service(tenant).await? {
         items.push(item("classes_of_service", &class.id, &class)?);
     }
@@ -1054,7 +1143,8 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
         items.push(item("flows", &f.id, &f)?);
     }
     if let Some(prompts) = storage.prompt_store() {
-        for p in prompts.list_prompts(tenant, None, None).await? {
+        // The tenant's own: a site's binaries seed the system prompts there.
+        for p in prompts.list_prompts(Some(tenant), None, None).await? {
             items.push(item("prompts", &p.id, &p)?);
         }
     }
@@ -1102,6 +1192,21 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
     // The brand, with what its assets are (docs/BRANDING.md).
     if let Some(synced) = synced_brand(storage, tenant).await? {
         items.push(item("tenant_brands", tenant, &synced)?);
+    }
+    // After the users, who own them (docs/RECORD_AND_CONTACTS.md §3).
+    if let Some(contacts) = storage.contact_store() {
+        for c in contacts.tenant_contacts(tenant).await? {
+            items.push(item("personal_contacts", &c.id, &c)?);
+        }
+    }
+    // After the users, who own them (docs/PRESENCE.md §3).
+    if let Some(statuses) = storage.presence_status_store() {
+        for s in statuses.tenant_own_statuses(tenant).await? {
+            items.push(item("presence_statuses", &s.id, &s)?);
+        }
+        for c in statuses.tenant_chosen_statuses(tenant).await? {
+            items.push(item("user_presence", &c.user_id, &c)?);
+        }
     }
     // After the users: a group's members name them (docs/USERS.md §5).
     if let Some(groups) = storage.group_store() {
@@ -1154,6 +1259,10 @@ async fn object_now(
             Ok(id) => same_tenant!(storage.get_schedule(&id).await?),
             Err(_) => None,
         },
+        "parking_lots" => match storage.parking_lot_store() {
+            Some(store) => same_tenant!(store.get_parking_lot(tenant, id).await?),
+            None => None,
+        },
         "classes_of_service" => match id.parse() {
             Ok(id) => same_tenant!(storage.get_class_of_service(&id).await?),
             Err(_) => None,
@@ -1205,7 +1314,10 @@ async fn object_now(
             _ => None,
         },
         "prompts" => match (storage.prompt_store(), id.parse()) {
-            (Some(prompts), Ok(id)) => same_tenant!(prompts.get_prompt(&id).await?),
+            (Some(prompts), Ok(id)) => match prompts.get_prompt(&id).await? {
+                Some(p) if p.tenant_id == Some(*tenant) => Some(serde_json::to_value(&p)?),
+                _ => None,
+            },
             _ => None,
         },
         "config_templates" => match (storage.config_template_store(), id.parse()) {
@@ -1271,6 +1383,18 @@ async fn object_now(
             .transpose()?,
         "groups" => match (storage.group_store(), id.parse()) {
             (Some(store), Ok(id)) => same_tenant!(store.get_group(&id).await?),
+            _ => None,
+        },
+        "personal_contacts" => match storage.contact_store() {
+            Some(store) => same_tenant!(store.get_contact(id).await?),
+            None => None,
+        },
+        "presence_statuses" => match storage.presence_status_store() {
+            Some(store) => same_tenant!(store.get_own_status(id).await?),
+            None => None,
+        },
+        "user_presence" => match (storage.presence_status_store(), id.parse()) {
+            (Some(store), Ok(user)) => same_tenant!(store.get_chosen_status_row(&user).await?),
             _ => None,
         },
         "group_members" => match (

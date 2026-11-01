@@ -105,6 +105,12 @@ pub struct Device {
     #[serde(default)]
     pub line_keys: Vec<LineKey>,
 
+    /// The device's lines, in order (`docs/DEVICE_LINES.md`): accounts it
+    /// registers and takes calls on. Empty is what a device had before
+    /// lines: its own, then its owner's shared line.
+    #[serde(default)]
+    pub lines: Vec<DeviceLine>,
+
     // ===== Location & E911 =====
     /// Physical location description
     pub location: Option<String>,
@@ -177,6 +183,7 @@ impl Device {
             supports_blf: false,
             codec_support: vec![AudioCodec::Pcmu, AudioCodec::Pcma],
             line_keys: Vec::new(),
+            lines: Vec::new(),
             location: None,
             location_id: None,
             e911_override: None,
@@ -281,6 +288,7 @@ impl fmt::Debug for Device {
             .field("supports_blf", &self.supports_blf)
             .field("codec_support", &self.codec_support)
             .field("line_keys", &self.line_keys)
+            .field("lines", &self.lines)
             .field("location", &self.location)
             .field("location_id", &self.location_id)
             .field("e911_override", &self.e911_override)
@@ -375,6 +383,118 @@ impl LineKeyKind {
             Self::SpeedDial => "speed_dial",
             Self::Park => "park",
         }
+    }
+}
+
+/// A line on a device (`docs/DEVICE_LINES.md` §2): an account it registers
+/// and takes calls on, as a desk phone's line keys are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DeviceLine {
+    pub kind: LineKind,
+    /// The extension (`extension`), the number (`shared`) or the user's
+    /// name or id (`on_behalf`); empty for `own`.
+    #[serde(default)]
+    pub value: String,
+    /// The administrator's label; unset, the line's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Whether calls to the line ring this device.
+    #[serde(default = "ring_by_default")]
+    pub ring: bool,
+}
+
+fn ring_by_default() -> bool {
+    true
+}
+
+/// What a line is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum LineKind {
+    /// The owner's own line.
+    Own,
+    /// Another extension the owner holds.
+    Extension,
+    /// A shared line the device is on: an appearance group.
+    Shared,
+    /// A user the owner acts for: an executive's line, for an assistant.
+    OnBehalf,
+}
+
+impl LineKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Own => "own",
+            Self::Extension => "extension",
+            Self::Shared => "shared",
+            Self::OnBehalf => "on_behalf",
+        }
+    }
+}
+
+impl DeviceLine {
+    /// The line itself, as a user's name for it is kept: `own`,
+    /// `extension:1005`, `shared:+15551234567`, `on_behalf:<user>`.
+    pub fn key(&self) -> String {
+        match self.kind {
+            LineKind::Own => "own".to_string(),
+            kind => format!("{}:{}", kind.as_str(), self.value),
+        }
+    }
+}
+
+/// The most lines a device has.
+pub const MAX_DEVICE_LINES: usize = 10;
+
+/// Refuse lines no phone could carry: at most ten, the first the owner's
+/// own and no other, each but `own` naming something, none twice. Whether
+/// the device may be what each names is checked against the store.
+pub fn validate_lines(lines: &[DeviceLine]) -> Result<(), String> {
+    if lines.is_empty() {
+        return Ok(());
+    }
+    if lines.len() > MAX_DEVICE_LINES {
+        return Err(format!("a device has at most {MAX_DEVICE_LINES} lines"));
+    }
+    if lines[0].kind != LineKind::Own {
+        return Err("the first line is the owner's own (`own`)".to_string());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for (i, line) in lines.iter().enumerate() {
+        let n = i + 1;
+        if i > 0 && line.kind == LineKind::Own {
+            return Err(format!("line {n}: only the first line is `own`"));
+        }
+        let value = line.value.trim();
+        if line.kind != LineKind::Own && (value.is_empty() || value.len() > 128) {
+            return Err(format!("line {n}: value must be 1 to 128 characters"));
+        }
+        let label = line.label.as_deref().unwrap_or("");
+        if label.len() > 64 {
+            return Err(format!("line {n}: label must be at most 64 characters"));
+        }
+        if [value, label]
+            .iter()
+            .any(|s| s.chars().any(char::is_control))
+        {
+            return Err(format!("line {n}: no control characters"));
+        }
+        if !seen.insert(line.key()) {
+            return Err(format!("line {n}: the same line twice"));
+        }
+    }
+    Ok(())
+}
+
+/// A line's label when nobody named it: `1001 - Bob`; what it is alone
+/// when it has no name.
+pub fn default_line_label(what: &str, name: Option<&str>) -> String {
+    match name.map(str::trim).filter(|n| !n.is_empty() && *n != what) {
+        Some(name) if !what.is_empty() => format!("{what} - {name}"),
+        Some(name) => name.to_string(),
+        None => what.to_string(),
     }
 }
 
@@ -608,5 +728,44 @@ mod tests {
         device.set_e911_override(address.clone());
 
         assert_eq!(device.e911_override, Some(address));
+    }
+
+    #[test]
+    fn lines_start_with_the_owners_own_and_name_each_once() {
+        let line = |kind, value: &str| DeviceLine {
+            kind,
+            value: value.into(),
+            label: None,
+            ring: true,
+        };
+        assert!(
+            validate_lines(&[]).is_ok(),
+            "none is the device as before lines"
+        );
+        assert!(
+            validate_lines(&[line(LineKind::Own, ""), line(LineKind::Extension, "1005")]).is_ok()
+        );
+        assert!(
+            validate_lines(&[line(LineKind::Extension, "1005")]).is_err(),
+            "own first"
+        );
+        assert!(validate_lines(&[line(LineKind::Own, ""), line(LineKind::Own, "")]).is_err());
+        assert!(validate_lines(&[line(LineKind::Own, ""), line(LineKind::Shared, "")]).is_err());
+        let eleven: Vec<DeviceLine> = std::iter::once(line(LineKind::Own, ""))
+            .chain((0..10).map(|i| line(LineKind::Extension, &format!("10{i:02}"))))
+            .collect();
+        assert!(validate_lines(&eleven).is_err(), "at most ten");
+        assert_eq!(
+            line(LineKind::Shared, "+15551234567").key(),
+            "shared:+15551234567"
+        );
+        assert_eq!(line(LineKind::Own, "").key(), "own");
+    }
+
+    #[test]
+    fn a_default_label_is_the_line_and_its_name() {
+        assert_eq!(default_line_label("1001", Some("Bob")), "1001 - Bob");
+        assert_eq!(default_line_label("1001", None), "1001");
+        assert_eq!(default_line_label("mary", Some("mary")), "mary");
     }
 }

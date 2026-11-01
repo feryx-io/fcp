@@ -101,7 +101,10 @@ Both answer the same tokens:
 - **One per install.** A second sign-in from the same `install_id` ends the
   first.
 - **Ending.** `POST /auth/app/revoke` `{token: <refresh token>}` signs the
-  app out (200 whether or not the token named a session, RFC 7009). Anything
+  app out (200 whether or not the token named a session, RFC 7009), and
+  removes the install's device: its registrations dropped and its SIP
+  account gone, so it leaves the Devices page. Signing in again makes a
+  new one. Anything
   that signs a user out everywhere ends app sessions too: a password change,
   an administrator's reset, the user suspended, locked or deleted.
 - **What an app may do.** Its access token is the user's, as the web
@@ -133,6 +136,15 @@ own (`app-` and ten hex digits) and a password FCP makes.
     hearing events stops ringing it at once (one with a registration cache
     and no events keeps the binding until the cache's TTL);
   - its credentials go with it, so its next REGISTER is refused.
+- **Abandoned.** An app device that no live app session has used for an hour
+  is removed as above by the admin's hourly sweep: an install that signed out
+  before sign-out took its device, or one whose session expired. An install
+  replaced without signing out (uninstalled, or its files lost) is removed
+  once its session has gone 14 days without a refresh while a newer install
+  of the same app (the same `client_name`) is signed in as the same user; its
+  session is ended with it. A device only unused keeps its session until
+  `sign_in.app_session_days`. Anvil's Windows uninstaller signs out first
+  (anvil v0.2.17), so an uninstall reached FCP leaves nothing.
 - **Seeing them.** `GET /me/devices` lists the user's devices, each app
   install with `app` (`install_id`, `platform`, `version`, `signed_in`,
   `signed_in_at`, `last_seen`); an administrator reads the same at

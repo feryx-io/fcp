@@ -286,6 +286,75 @@ impl Supervisions {
         Ok(dialog)
     }
 
+    /// Put a phone the node already has a call with onto `call_id` in
+    /// `mode`: an emergency contact told by a notification call who chose
+    /// to listen in (`docs/E911.md` "Listening in"). The dialog is moved to
+    /// the party's media by a re-INVITE; it is the supervisor's dialog from
+    /// then on, so their BYE takes them off and the call's end sends them
+    /// one.
+    pub async fn join_dialog(
+        &self,
+        call_id: &CallId,
+        party: &str,
+        mode: Supervision,
+        mut dialog: sip_dialog::Dialog,
+    ) -> Result<(), SuperviseError> {
+        let call = self.anchored(call_id)?;
+        let session = call.media_session_id.ok_or(SuperviseError::NotAnchored)?;
+        match self.active.entry(*call_id) {
+            dashmap::Entry::Occupied(_) => return Err(SuperviseError::AlreadySupervised),
+            dashmap::Entry::Vacant(slot) => {
+                slot.insert(Active {
+                    mode,
+                    party: party.to_string(),
+                    user_id: None,
+                    dialog: None,
+                    session,
+                });
+            }
+        }
+        let joined = async {
+            let offer = self
+                .media
+                .add_party(&session, mode)
+                .await
+                .map_err(|e| SuperviseError::Media(e.to_string()))?;
+            let response = tokio::time::timeout(
+                Duration::from_secs(10),
+                self.uac.send_reinvite(&mut dialog, Some(&offer)),
+            )
+            .await
+            .map_err(|_| SuperviseError::Refused(408))?
+            .map_err(|e| {
+                warn!(call_id = %call_id, error = %e, "The listener's re-INVITE failed");
+                SuperviseError::Refused(503)
+            })?;
+            let code = response.start_line().code();
+            if !(200..300).contains(&code) {
+                return Err(SuperviseError::Refused(code));
+            }
+            let answer = String::from_utf8_lossy(response.body()).to_string();
+            self.media
+                .connect_party(&session, answer)
+                .await
+                .map_err(|e| SuperviseError::Media(e.to_string()))
+        }
+        .await;
+        match joined {
+            Ok(_) => {
+                self.attach_dialog(call_id, dialog);
+                info!(call_id = %call_id, party, mode = mode.as_str(), "An emergency contact is listening in");
+                self.joined(call_id, mode, party, None);
+                Ok(())
+            }
+            Err(e) => {
+                self.active.remove(call_id);
+                let _ = self.media.remove_party(&session).await;
+                Err(e)
+            }
+        }
+    }
+
     /// A phone barging into `call_id` with its own INVITE (a shared line's
     /// active appearance): the party added and connected to its offer; the
     /// answer to send it. [`Supervisions::attach_dialog`] follows once the

@@ -16,7 +16,7 @@ use fcp_core::{CallId, CredentialStore, DynStorage, TenantId};
 use fcp_events::filter::EventType;
 use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus, PlatformEvent};
 use fcp_media::MediaManager;
-use fcp_queue::QueueManager;
+use fcp_queue::{AgentKey, QueueKey, QueueManager};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -89,8 +89,18 @@ fn queue_visible_to_service_tenant(
     tenant_id: &TenantId,
     queue_name: &str,
 ) -> bool {
-    qm.get_queue_config_for_tenant(queue_name, tenant_id)
+    qm.get_queue_config(&QueueKey::new(*tenant_id, queue_name))
         .is_some()
+}
+
+/// The node's own queue routes act in its default tenant: a queue there by
+/// its name, an agent by its id.
+fn service_queue(state: &AppState, name: &str) -> QueueKey {
+    QueueKey::new(state.default_tenant_id, name)
+}
+
+fn service_agent(state: &AppState, id: &str) -> AgentKey {
+    AgentKey::new(state.default_tenant_id, id)
 }
 
 fn queue_not_found(queue_name: &str) -> Json<serde_json::Value> {
@@ -259,6 +269,8 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         )
         // Live call control (`docs/DEVELOPER_SURFACE.md` phase 8)
         .merge(crate::call_control::routes())
+        // Parked calls (`docs/PARKING.md` §4)
+        .merge(crate::parking::routes())
         // Supervisor endpoints
         .route("/calls/:id/monitor", post(monitor_call_handler))
         .route("/calls/:id/whisper", post(whisper_call_handler))
@@ -499,6 +511,11 @@ struct StartRecordingBody {
     /// the node's default tenant otherwise.
     #[serde(default)]
     tenant_id: Option<TenantId>,
+    /// The party asking from their app (`/me/calls/:id/recording`): the
+    /// call must be theirs, and the recording is `on_demand`. The API has
+    /// checked that they may record.
+    #[serde(default)]
+    for_user: Option<fcp_core::UserId>,
 }
 
 #[derive(Deserialize, Default)]
@@ -506,6 +523,9 @@ struct StartRecordingBody {
 struct StopRecordingBody {
     #[serde(default)]
     tenant_id: Option<TenantId>,
+    /// The party asking: only a recording they started on demand stops.
+    #[serde(default)]
+    for_user: Option<fcp_core::UserId>,
 }
 
 /// GET /calls/:id — one of the tenant's calls (`?tenant_id=`, the node's
@@ -558,6 +578,15 @@ fn call_not_found(id: &str) -> Response {
         .into_response()
 }
 
+/// Whether `user` is a party to the call: the effective user of either
+/// leg, so a hoteling guest is their host.
+fn party_to(state: &AppState, call_id: &fcp_b2bua_core::CallId, user: &fcp_core::UserId) -> bool {
+    state
+        .call_manager
+        .get_call(call_id)
+        .is_some_and(|c| c.caller_user_id == Some(*user) || c.callee_user_id == Some(*user))
+}
+
 fn recording_error_response(e: fcp_sip::recording::RecordingError) -> Response {
     use fcp_sip::recording::RecordingError as E;
     let status = match e {
@@ -568,6 +597,7 @@ fn recording_error_response(e: fcp_sip::recording::RecordingError) -> Response {
         | E::NotAnchored
         | E::AlreadyRecording
         | E::NotRecording
+        | E::NotStartedByUser
         | E::ConsentRefused => StatusCode::CONFLICT,
         E::Media(_) | E::NotRegistered(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -601,19 +631,29 @@ async fn start_call_recording_handler(
     let Some(call_id) = scoped_call(&state, &id, req.tenant_id) else {
         return call_not_found(&id);
     };
-    let path = match req.path {
-        Some(p) => fcp_sip::recording::RecordingPath::Supplied(p),
-        None => fcp_sip::recording::RecordingPath::wav(),
+    let started = match req.for_user {
+        Some(user) => {
+            if !party_to(&state, &call_id, &user) {
+                return call_not_found(&id);
+            }
+            state.call_recorder.start_on_demand(&call_id, user).await
+        }
+        None => {
+            let path = match req.path {
+                Some(p) => fcp_sip::recording::RecordingPath::Supplied(p),
+                None => fcp_sip::recording::RecordingPath::wav(),
+            };
+            state
+                .call_recorder
+                .start(
+                    &call_id,
+                    fcp_core::recording::CallRecordingSource::Api,
+                    path,
+                )
+                .await
+        }
     };
-    match state
-        .call_recorder
-        .start(
-            &call_id,
-            fcp_core::recording::CallRecordingSource::Api,
-            path,
-        )
-        .await
-    {
+    match started {
         Ok(started) => Json(serde_json::json!({
             "call_id": id,
             "status": "recording",
@@ -632,11 +672,22 @@ async fn stop_call_recording_handler(
     Path(id): Path<String>,
     body: Option<Json<StopRecordingBody>>,
 ) -> Response {
-    let tenant = body.and_then(|Json(b)| b.tenant_id);
+    let (tenant, for_user) = body
+        .map(|Json(b)| (b.tenant_id, b.for_user))
+        .unwrap_or_default();
     let Some(call_id) = scoped_call(&state, &id, tenant) else {
         return call_not_found(&id);
     };
-    match state.call_recorder.stop(&call_id).await {
+    let stopped = match for_user {
+        Some(user) => {
+            if !party_to(&state, &call_id, &user) {
+                return call_not_found(&id);
+            }
+            state.call_recorder.stop_on_demand(&call_id, user).await
+        }
+        None => state.call_recorder.stop(&call_id).await,
+    };
+    match stopped {
         Ok(()) => Json(serde_json::json!({"call_id": id, "status": "stopped"})).into_response(),
         Err(e) => recording_error_response(e),
     }
@@ -967,6 +1018,7 @@ async fn media_sessions_handler(State(state): State<Arc<AppState>>) -> Json<serd
                 "dialog_id": session.dialog_id,
                 "state": session.state,
                 "local_rtp_port": session.local_rtp_port,
+                "local_rtp_port_b": session.local_rtp_port_b,
                 "duration_secs": session.duration_secs,
                 "transcoding_active": session.transcoding_active,
                 "a_leg": {
@@ -1233,10 +1285,11 @@ async fn get_queue_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qm.queue_stats_for_tenant(&name, &state.default_tenant_id) {
+    let key = service_queue(&state, &name);
+    match qm.queue_stats(&key) {
         Some(stats) => {
-            let agents = qm.list_agents_for_queue_and_tenant(&name, &state.default_tenant_id);
-            let is_draining = qm.is_queue_draining(&name);
+            let agents = qm.list_agents_for_queue(&key);
+            let is_draining = qm.is_queue_draining(&key);
             let agent_list: Vec<serde_json::Value> = agents
                 .iter()
                 .map(|a| {
@@ -1265,7 +1318,7 @@ async fn create_queue_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qm.create_queue(body.key.clone(), body.config, state.default_tenant_id) {
+    match qm.create_queue(service_queue(&state, &body.key), body.config) {
         Ok(()) => Json(serde_json::json!({
             "status": "created",
             "queue": body.key,
@@ -1286,7 +1339,7 @@ async fn update_queue_handler(
     if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &name) {
         return queue_not_found(&name);
     }
-    match qm.update_queue(&name, config) {
+    match qm.update_queue(&service_queue(&state, &name), config) {
         Ok(()) => Json(serde_json::json!({
             "status": "updated",
             "queue": name,
@@ -1306,7 +1359,7 @@ async fn delete_queue_handler(
     if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &name) {
         return queue_not_found(&name);
     }
-    match qm.delete_queue(&name) {
+    match qm.delete_queue(&service_queue(&state, &name)) {
         Ok(()) => Json(serde_json::json!({
             "status": "deleted",
             "queue": name,
@@ -1326,7 +1379,7 @@ async fn drain_queue_handler(
     if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &name) {
         return queue_not_found(&name);
     }
-    match qm.drain_queue(&name).await {
+    match qm.drain_queue(&service_queue(&state, &name)).await {
         Ok(()) => Json(serde_json::json!({
             "status": "draining",
             "queue": name,
@@ -1346,7 +1399,7 @@ async fn undrain_queue_handler(
     if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &name) {
         return queue_not_found(&name);
     }
-    match qm.undrain_queue(&name).await {
+    match qm.undrain_queue(&service_queue(&state, &name)).await {
         Ok(()) => Json(serde_json::json!({
             "status": "active",
             "queue": name,
@@ -1406,7 +1459,10 @@ async fn reload_queues_handler(State(state): State<Arc<AppState>>) -> Json<serde
 
     Json(serde_json::json!({
         "status": "reloaded",
-        "new_queues": new_queues,
+        "new_queues": new_queues
+            .iter()
+            .map(|key| serde_json::json!({ "tenant_id": key.tenant_id, "name": key.name }))
+            .collect::<Vec<_>>(),
     }))
 }
 
@@ -1434,8 +1490,8 @@ async fn get_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qm.get_agent_for_tenant(&id, &state.default_tenant_id) {
-        Some(_) => match qm.agent_stats(&id) {
+    match qm.get_agent(&service_agent(&state, &id)) {
+        Some(_) => match qm.agent_stats(&service_agent(&state, &id)) {
             Some(stats) => Json(serde_json::json!({ "agent": stats })),
             None => agent_not_found(&id),
         },
@@ -1458,14 +1514,15 @@ async fn pause_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    if qm
-        .get_agent_for_tenant(&id, &state.default_tenant_id)
-        .is_none()
-    {
+    if qm.get_agent(&service_agent(&state, &id)).is_none() {
         return agent_not_found(&id);
     }
     match qm
-        .pause_agent(&id, body.duration_secs, body.reason.clone())
+        .pause_agent(
+            &service_agent(&state, &id),
+            body.duration_secs,
+            body.reason.clone(),
+        )
         .await
     {
         Ok(()) => Json(serde_json::json!({
@@ -1485,13 +1542,10 @@ async fn unpause_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    if qm
-        .get_agent_for_tenant(&id, &state.default_tenant_id)
-        .is_none()
-    {
+    if qm.get_agent(&service_agent(&state, &id)).is_none() {
         return agent_not_found(&id);
     }
-    match qm.unpause_agent(&id).await {
+    match qm.unpause_agent(&service_agent(&state, &id)).await {
         Ok(()) => Json(serde_json::json!({"status": "available", "agent_id": id})),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
     }
@@ -1511,14 +1565,11 @@ async fn kick_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    if qm
-        .get_agent_for_tenant(&id, &state.default_tenant_id)
-        .is_none()
-    {
+    if qm.get_agent(&service_agent(&state, &id)).is_none() {
         return agent_not_found(&id);
     }
     let reason = body.reason.as_deref().unwrap_or("admin_kick");
-    match qm.kick_agent(&id, reason).await {
+    match qm.kick_agent(&service_agent(&state, &id), reason).await {
         Ok(()) => Json(serde_json::json!({"status": "kicked", "agent_id": id})),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
     }
@@ -1545,13 +1596,11 @@ async fn login_agent_handler(
     let skills = body.skills.unwrap_or_default();
     if queues.is_empty() {
         // Auto-discover queues from config (same as feature code login)
-        let config = qm.get_system_config();
-        let auto_queues: Vec<String> = config
-            .queues
-            .iter()
+        let auto_queues: Vec<String> = qm
+            .queue_configs_for_tenant(&state.default_tenant_id)
+            .into_iter()
             .filter(|(_, qc)| qc.agents.contains(&extension.to_string()))
-            .filter(|(name, _)| queue_visible_to_service_tenant(qm, &state.default_tenant_id, name))
-            .map(|(name, _)| name.clone())
+            .map(|(name, _)| name)
             .collect();
         if auto_queues.is_empty() {
             return Json(serde_json::json!({
@@ -1559,13 +1608,7 @@ async fn login_agent_handler(
             }));
         }
         match qm
-            .agent_login(
-                &id,
-                extension,
-                &auto_queues,
-                state.default_tenant_id,
-                skills,
-            )
+            .agent_login(&service_agent(&state, &id), extension, &auto_queues, skills)
             .await
         {
             Ok(()) => Json(serde_json::json!({
@@ -1583,7 +1626,7 @@ async fn login_agent_handler(
             return queue_not_found(invalid_queue);
         }
         match qm
-            .agent_login(&id, extension, &queues, state.default_tenant_id, skills)
+            .agent_login(&service_agent(&state, &id), extension, &queues, skills)
             .await
         {
             Ok(()) => Json(serde_json::json!({
@@ -1604,13 +1647,10 @@ async fn logout_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    if qm
-        .get_agent_for_tenant(&id, &state.default_tenant_id)
-        .is_none()
-    {
+    if qm.get_agent(&service_agent(&state, &id)).is_none() {
         return agent_not_found(&id);
     }
-    match qm.agent_logout(&id).await {
+    match qm.agent_logout(&service_agent(&state, &id)).await {
         Ok(()) => Json(serde_json::json!({"status": "logged_out", "agent_id": id})),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
     }
@@ -1624,13 +1664,10 @@ async fn extend_wrapup_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    if qm
-        .get_agent_for_tenant(&id, &state.default_tenant_id)
-        .is_none()
-    {
+    if qm.get_agent(&service_agent(&state, &id)).is_none() {
         return agent_not_found(&id);
     }
-    match qm.extend_wrap_up(&id).await {
+    match qm.extend_wrap_up(&service_agent(&state, &id)).await {
         Ok(extensions_used) => Json(serde_json::json!({
             "status": "extended",
             "agent_id": id,
@@ -1660,7 +1697,7 @@ async fn campaign_load_numbers_handler(
         return queue_not_found(&queue);
     }
     let count = body.numbers.len();
-    qm.load_campaign_numbers(&queue, body.numbers);
+    qm.load_campaign_numbers(&service_queue(&state, &queue), body.numbers);
     Json(serde_json::json!({
         "status": "loaded",
         "queue": queue,
@@ -1679,7 +1716,7 @@ async fn campaign_stats_handler(
     if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &queue) {
         return queue_not_found(&queue);
     }
-    match qm.campaign_stats(&queue) {
+    match qm.campaign_stats(&service_queue(&state, &queue)) {
         Some(stats) => Json(serde_json::json!({
             "queue": queue,
             "stats": stats,
@@ -1701,7 +1738,7 @@ async fn campaign_start_handler(
     if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &queue) {
         return queue_not_found(&queue);
     }
-    qm.set_campaign_running(&queue, true);
+    qm.set_campaign_running(&service_queue(&state, &queue), true);
     Json(serde_json::json!({
         "status": "started",
         "queue": queue,
@@ -1719,7 +1756,7 @@ async fn campaign_stop_handler(
     if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &queue) {
         return queue_not_found(&queue);
     }
-    qm.set_campaign_running(&queue, false);
+    qm.set_campaign_running(&service_queue(&state, &queue), false);
     Json(serde_json::json!({
         "status": "stopped",
         "queue": queue,
@@ -1748,7 +1785,14 @@ async fn transfer_call_handler(
     if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &body.to_queue) {
         return queue_not_found(&body.to_queue);
     }
-    match qm.transfer_to_queue(&call_id, &from, &body.to_queue).await {
+    match qm
+        .transfer_to_queue(
+            &call_id,
+            &service_queue(&state, &from),
+            &service_queue(&state, &body.to_queue),
+        )
+        .await
+    {
         Ok(position) => {
             // Update the session's queue_name if a handler is available
             if let Some(ref qh) = state.queue_handler {
@@ -1991,7 +2035,8 @@ async fn queue_history_handler(
         return queue_not_found(&name);
     }
     let limit = query.limit.unwrap_or(500).min(1440);
-    let snapshots = qm.query_stats_history(&name, query.from, query.to, limit);
+    let snapshots =
+        qm.query_stats_history(&service_queue(&state, &name), query.from, query.to, limit);
     Json(serde_json::json!({
         "queue": name,
         "snapshots": snapshots,
@@ -2450,7 +2495,8 @@ fn verify_cluster_secret(
 /// Request body for POST /internal/unpark
 #[derive(Deserialize)]
 struct InternalUnparkRequest {
-    orbit: u16,
+    tenant_id: fcp_core::TenantId,
+    slot: String,
 }
 
 /// Unpark a call on this node. Called by another node's retrieve handler.
@@ -2489,10 +2535,10 @@ async fn internal_unpark_handler(
     };
 
     // Retrieve from local parking manager
-    match pbx.retrieve_parked_call(req.orbit) {
+    match pbx.retrieve_parked_call(&req.tenant_id, &req.slot) {
         Ok(parked) => {
             info!(
-                orbit = req.orbit,
+                slot = %req.slot,
                 call_id = %parked.call_id,
                 "Internal unpark: retrieved parked call"
             );
@@ -2500,10 +2546,10 @@ async fn internal_unpark_handler(
             // Also remove from cluster store
             if let Some(ref cp) = state.cluster_parking {
                 let cp = Arc::clone(cp);
-                let orbit = req.orbit;
+                let (tenant, slot) = (req.tenant_id, req.slot.clone());
                 tokio::spawn(async move {
-                    if let Err(e) = cp.cluster_unpark(orbit).await {
-                        tracing::warn!(orbit = orbit, error = %e, "Failed to clean up cluster parking entry");
+                    if let Err(e) = cp.cluster_unpark(&tenant, &slot).await {
+                        tracing::warn!(slot = %slot, error = %e, "Failed to clean up cluster parking entry");
                     }
                 });
             }
@@ -2513,17 +2559,17 @@ async fn internal_unpark_handler(
                 Json(serde_json::json!({
                     "status": "ok",
                     "call_id": parked.call_id.to_string(),
-                    "orbit": parked.orbit,
+                    "slot": parked.slot,
                     "parker_extension": parked.parker_extension,
                 })),
             )
                 .into_response()
         }
         Err(e) => {
-            info!(orbit = req.orbit, error = %e, "Internal unpark: orbit not occupied");
+            info!(slot = %req.slot, error = %e, "Internal unpark: slot not occupied");
             (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": format!("Orbit not occupied: {}", e)})),
+                Json(serde_json::json!({"error": format!("Slot not occupied: {}", e)})),
             )
                 .into_response()
         }

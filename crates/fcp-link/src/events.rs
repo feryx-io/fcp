@@ -2,11 +2,14 @@
 //! §3.3): read from the site's own event stream as one more consumer,
 //! sent up the link under the node that published each, and fired in the
 //! cloud once, as the tenant's, with the site named. `cdr.written` stays
-//! behind: the cloud announces its own once it has stored the record.
+//! behind: the cloud announces its own once it has stored the record. So
+//! does `presence.user_changed`: each side works a person's presence out
+//! for itself (`docs/PRESENCE.md` §3), and the cloud's call managers would
+//! otherwise be told two.
 
 use anyhow::{Context, Result};
 use fcp_core::{ShippedAnswer, ShippedEvents, TenantId};
-use fcp_events::{CdrEvent, PlatformEvent};
+use fcp_events::{CdrEvent, PlatformEvent, PresenceEvent};
 use fcp_storage_redis::event_bus::RedisStreamConsumer;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -108,7 +111,11 @@ impl EventForwarder {
             if envelope.event.tenant_id() != Some(&self.tenant) {
                 continue;
             }
-            if matches!(envelope.event, PlatformEvent::Cdr(CdrEvent::Written { .. })) {
+            if matches!(
+                envelope.event,
+                PlatformEvent::Cdr(CdrEvent::Written { .. })
+                    | PlatformEvent::Presence(PresenceEvent::UserChanged { .. })
+            ) {
                 continue;
             }
             by_node

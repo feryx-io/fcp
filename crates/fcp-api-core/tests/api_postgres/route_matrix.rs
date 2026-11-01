@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 /// The routes `fcp-admin` binds on top of the API's router; this harness
 /// serves only the API's, so they answer the router's 404 here.
 fn bound_elsewhere(path: &str) -> bool {
-    path.starts_with("/cluster/")
+    path.starts_with("/cluster/") || path.starts_with("/system/services")
 }
 
 /// `template` with each `:param` replaced by `fill(prefix)`, where
@@ -198,6 +198,43 @@ async fn seed_tenant_b(app: &App) -> Seeded {
     .await;
     ids.insert("/devices", device.clone());
 
+    // An allow and a capture of B's device (docs/CALL_DIAGNOSTICS.md §3).
+    {
+        use fcp_core::device_capture::DeviceCaptureStore;
+        use fcp_core::device_capture::{AllowSubject, CaptureAllow, DeviceCapture};
+        let device_id: fcp_core::DeviceId = device.parse().expect("a device id");
+        let allow = CaptureAllow {
+            id: uuid::Uuid::new_v4(),
+            tenant_id: b,
+            subject: AllowSubject::Device { device_id },
+            until: std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
+            reason: Some("bravo-capture-reason".into()),
+            created_by: "seed".into(),
+            created_at: std::time::SystemTime::now(),
+        };
+        app.storage.put_capture_allow(&allow).await.expect("allow");
+        ids.insert("/captures/allows", format!("allow-{}", allow.id.simple()));
+        let id = uuid::Uuid::new_v4();
+        let capture = DeviceCapture {
+            id,
+            tenant_id: b,
+            device_id,
+            user_id: user_id.parse().expect("a user id"),
+            call_id: None,
+            size: 4,
+            sha256: "00".repeat(32),
+            file_key: DeviceCapture::key_for(&b, &id),
+            subject_keys: Vec::new(),
+            uploaded_at: std::time::SystemTime::now(),
+            expires_at: std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
+        };
+        app.storage
+            .put_device_capture(&capture)
+            .await
+            .expect("capture");
+        ids.insert("/captures", format!("cap-{}", id.simple()));
+    }
+
     let trunk = make_in_b(
         app,
         "/api/v1/trunks",
@@ -304,6 +341,16 @@ async fn seed_tenant_b(app: &App) -> Seeded {
             "/api/v1/schedules",
             json!({"name": "Bravo hours", "timezone": "America/New_York",
                    "weekly": [{"days": ["Mon"], "start": "09:00", "end": "17:00"}]}),
+            "id",
+        )
+        .await,
+    );
+    ids.insert(
+        "/parking/lots",
+        make_in_b(
+            app,
+            "/api/v1/parking/lots",
+            json!({"name": "Bravo lot", "first": "880", "last": "889"}),
             "id",
         )
         .await,
@@ -590,6 +637,7 @@ async fn seed_tenant_b(app: &App) -> Seeded {
             location_source: None,
             client_address: None,
             trunk_name: None,
+            location_id: None,
             placed_at: SystemTime::now(),
         };
         let row = EmergencyNotification::first(
@@ -639,6 +687,9 @@ async fn seed_tenant_b(app: &App) -> Seeded {
     ids.insert("/cdrs", call_id.to_string());
     ids.insert("/flow-traces", call_id.to_string());
     ids.insert("/calls", call_id.to_string());
+    // A slot of B's lot below; the calls in it are held by a call manager,
+    // which this router has none of (503).
+    ids.insert("/parking/calls", "880".to_string());
     app.seed_sip_trace(&call_id.to_string(), &sip_call_id, b, "inbound", "INVITE")
         .await;
     let recording = register_recording(app, b, "2800", "node-b", true).await;
@@ -914,6 +965,129 @@ async fn no_route_reaches_another_tenants_objects() {
         wrong.len(),
         wrong.join("\n")
     );
+    app.finish().await;
+}
+
+/// A platform administrator signed in works in the tenant they pick
+/// (`docs/TENANT_SCOPE.md` §3.1): with tenant B's header, their session
+/// answers every read as the static token does with it — B's lists show
+/// B's objects, B's objects open — and without it, their own tenant. A
+/// tenant administrator's header changes nothing (the probe above).
+#[tokio::test]
+async fn a_platform_administrator_works_in_the_tenant_picked() {
+    let (conference_url, _upstream) = mock_conference_server().await;
+    let Some(app) =
+        App::build_with(DeploymentMode::default(), Some(conference_url), true, None).await
+    else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping PostgreSQL API handler test");
+        return;
+    };
+    let firmware = tempfile::tempdir().unwrap();
+    let app = app.with_firmware(firmware.path());
+    let seeded = seed_tenant_b(&app).await;
+    app.create_user_with_role("platform-admin", "super_admin")
+        .await;
+    let jwt = session(&app, "platform-admin").await;
+    let b = app.tenant_b.to_string();
+    let b_hdr = [("x-fcp-tenant-id", b.as_str())];
+    let shown = |text: &str| -> BTreeSet<String> {
+        seeded
+            .secrets
+            .iter()
+            .filter(|s| text.contains(s.as_str()))
+            .cloned()
+            .collect()
+    };
+
+    let mut wrong: Vec<String> = Vec::new();
+    let mut compared = 0usize;
+    for (m, template, _) in ROUTES {
+        if *m != "GET" || not_cross_tenant(m, template).is_some() || bound_elsewhere(template) {
+            continue;
+        }
+        let Some(path) = concrete(template, |p| seeded.ids.get(p).cloned()) else {
+            continue;
+        };
+        let url = format!("/api/v1{path}");
+        let (Ok(platform), Ok(session)) = (
+            probe(&app, ADMIN_TOKEN, Method::GET, &url, &b_hdr, None).await,
+            probe(&app, &jwt, Method::GET, &url, &b_hdr, None).await,
+        ) else {
+            wrong.push(format!("GET {template}: a probe panicked"));
+            continue;
+        };
+        compared += 1;
+        if platform.status != session.status {
+            wrong.push(format!(
+                "GET {template}: the static token answered {}, the session {}: {}",
+                platform.status,
+                session.status,
+                session.text.chars().take(200).collect::<String>()
+            ));
+        } else if shown(&platform.text) != shown(&session.text) {
+            wrong.push(format!(
+                "GET {template}: the static token shows {:?} of B's, the session {:?}",
+                shown(&platform.text),
+                shown(&session.text)
+            ));
+        }
+    }
+    assert!(compared > 100, "compared only {compared} routes");
+    assert!(
+        wrong.is_empty(),
+        "{} of {compared} reads differ between the static token and a platform \
+         administrator's session in tenant B:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+
+    // Made in the tenant picked; without a pick, in the session's own.
+    let made = app
+        .send(
+            Method::POST,
+            "/api/v1/schedules",
+            &[(AUTH_HEADER, format!("Bearer {jwt}").as_str()), b_hdr[0]],
+            Some(json!({"name": "Picked hours", "timezone": "UTC"})),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    assert_eq!(made.json["tenant_id"], b.as_str(), "{}", made.text);
+    let own = app
+        .send(
+            Method::GET,
+            "/api/v1/schedules",
+            &[(AUTH_HEADER, format!("Bearer {jwt}").as_str())],
+            None,
+        )
+        .await;
+    assert!(!own.text.contains("Picked hours"), "{}", own.text);
+    let unknown = app
+        .send(
+            Method::GET,
+            "/api/v1/schedules",
+            &[
+                (AUTH_HEADER, format!("Bearer {jwt}").as_str()),
+                ("x-fcp-tenant-id", &fcp_core::TenantId::new().to_string()),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.text);
+    // The default tenant, which has no row until something is set on it,
+    // is pickable all the same.
+    let default = app
+        .send(
+            Method::GET,
+            "/api/v1/schedules",
+            &[
+                (AUTH_HEADER, format!("Bearer {jwt}").as_str()),
+                ("x-fcp-tenant-id", &fcp_core::TenantId::nil().to_string()),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(default.status, StatusCode::OK, "{}", default.text);
+
     app.finish().await;
 }
 

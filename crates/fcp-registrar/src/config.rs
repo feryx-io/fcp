@@ -245,6 +245,12 @@ pub struct StorageSection {
     /// Maximum database connections
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+
+    /// The Redis this registrar's service beacon is written to, so the
+    /// admin's Services page lists it (`docs/SERVICES.md`). Unset, it is
+    /// not listed.
+    #[serde(default)]
+    pub redis_url: Option<String>,
 }
 
 fn default_max_replica_lag_secs() -> u64 {
@@ -266,6 +272,7 @@ impl Default for StorageSection {
             read_replica_url: None,
             max_replica_lag_secs: default_max_replica_lag_secs(),
             max_connections: default_max_connections(),
+            redis_url: None,
         }
     }
 }

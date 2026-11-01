@@ -193,7 +193,8 @@ fn class_query(class: ExportClass) -> String {
             "SELECT id::text AS id, 'ids' AS link, to_jsonb(a) AS data, occurred_at AS at,
                     NULL::text AS call_id, NULL::text AS file, ARRAY[actor] AS ids,
                     false AS others
-             FROM admin_audit_log a WHERE tenant_id = $1 AND fcp_subject_keys(actor) && $4"
+             FROM admin_audit_log a WHERE tenant_id = $1 AND fcp_subject_keys(actor) && $4
+               AND (actor_tenant_id IS NULL OR actor_tenant_id = $1)"
         }
         ExportClass::ConfigChanges => {
             "SELECT id::text AS id, 'ids' AS link, to_jsonb(c) AS data, changed_at AS at,
@@ -220,6 +221,12 @@ fn class_query(class: ExportClass) -> String {
                     false AS others
              FROM webhook_delivery_logs l JOIN webhook_endpoints e ON e.id = l.endpoint_id
              WHERE e.tenant_id = $1 AND l.delivery_json::text ILIKE ANY($9)"
+        }
+        ExportClass::PersonalContacts => {
+            "SELECT id, 'owned' AS link, to_jsonb(c) - 'ship_seq' AS data,
+                    created_at AS at, NULL::text AS call_id, NULL::text AS file,
+                    NULL::text[] AS ids, false AS others
+             FROM personal_contacts c WHERE tenant_id = $1 AND owner_user_id = ANY($5)"
         }
         ExportClass::NumberLists => {
             "SELECT pn.id || ':' || x.list || ':' || x.entry AS id, 'ids' AS link,

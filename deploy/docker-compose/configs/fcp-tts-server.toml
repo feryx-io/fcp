@@ -43,6 +43,11 @@ voice = "en_US-ljspeech-medium"
 # api_key = "${OPENAI_API_KEY}"
 # model = "tts-1"
 
+[cluster]
+# Not a member; the Redis its service beacon is written to
+# (docs/SERVICES.md), for the admin's Services page.
+redis_url = "redis://redis:6379"
+
 [logging]
 level = "info"
 format = "pretty"

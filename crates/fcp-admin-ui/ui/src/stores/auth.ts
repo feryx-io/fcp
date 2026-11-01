@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { AuthUser } from '@/types'
 import { apiClient } from '@/api/client'
+import { useTenantStore } from '@/stores/tenant'
 import { auth } from '@/api/endpoints'
 
 /**
@@ -43,6 +44,8 @@ function signedOut(set: (s: Partial<AuthState>) => void) {
   if (timer) clearTimeout(timer)
   timer = null
   apiClient.setToken(null)
+  // The next to sign in starts in their own tenant.
+  useTenantStore.getState().setSelectedTenantId(null)
   set({ token: null, user: null, isAuthenticated: false })
 }
 

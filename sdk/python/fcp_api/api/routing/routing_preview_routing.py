@@ -19,6 +19,7 @@ def _get_kwargs(
     to: str,
     from_: str | Unset = UNSET,
     source_ip: str | Unset = UNSET,
+    location_id: str | Unset = UNSET,
 
 ) -> dict[str, Any]:
     
@@ -32,6 +33,8 @@ def _get_kwargs(
     params["from"] = from_
 
     params["source_ip"] = source_ip
+
+    params["location_id"] = location_id
 
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
@@ -76,9 +79,10 @@ def sync_detailed(
     to: str,
     from_: str | Unset = UNSET,
     source_ip: str | Unset = UNSET,
+    location_id: str | Unset = UNSET,
 
 ) -> Response[Any | ErrorResponse]:
-    """ `GET /v1/routing/preview?to=…[&from=…][&source_ip=…]`: what a live call
+    """ `GET /v1/routing/preview?to=…[&from=…][&source_ip=…][&location_id=…]`: what a live call
     manager would do with this tenant's call — the policy and rule that
     decide it and the trunks it would try, in order, each with its price
     (`docs/TENANT_TRUNKS.md` §12, phase 6d).
@@ -87,6 +91,7 @@ def sync_detailed(
         to (str):
         from_ (str | Unset):
         source_ip (str | Unset):
+        location_id (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -101,6 +106,7 @@ def sync_detailed(
         to=to,
 from_=from_,
 source_ip=source_ip,
+location_id=location_id,
 
     )
 
@@ -116,9 +122,10 @@ def sync(
     to: str,
     from_: str | Unset = UNSET,
     source_ip: str | Unset = UNSET,
+    location_id: str | Unset = UNSET,
 
 ) -> Any | ErrorResponse | None:
-    """ `GET /v1/routing/preview?to=…[&from=…][&source_ip=…]`: what a live call
+    """ `GET /v1/routing/preview?to=…[&from=…][&source_ip=…][&location_id=…]`: what a live call
     manager would do with this tenant's call — the policy and rule that
     decide it and the trunks it would try, in order, each with its price
     (`docs/TENANT_TRUNKS.md` §12, phase 6d).
@@ -127,6 +134,7 @@ def sync(
         to (str):
         from_ (str | Unset):
         source_ip (str | Unset):
+        location_id (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -142,6 +150,7 @@ def sync(
 to=to,
 from_=from_,
 source_ip=source_ip,
+location_id=location_id,
 
     ).parsed
 
@@ -151,9 +160,10 @@ async def asyncio_detailed(
     to: str,
     from_: str | Unset = UNSET,
     source_ip: str | Unset = UNSET,
+    location_id: str | Unset = UNSET,
 
 ) -> Response[Any | ErrorResponse]:
-    """ `GET /v1/routing/preview?to=…[&from=…][&source_ip=…]`: what a live call
+    """ `GET /v1/routing/preview?to=…[&from=…][&source_ip=…][&location_id=…]`: what a live call
     manager would do with this tenant's call — the policy and rule that
     decide it and the trunks it would try, in order, each with its price
     (`docs/TENANT_TRUNKS.md` §12, phase 6d).
@@ -162,6 +172,7 @@ async def asyncio_detailed(
         to (str):
         from_ (str | Unset):
         source_ip (str | Unset):
+        location_id (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -176,6 +187,7 @@ async def asyncio_detailed(
         to=to,
 from_=from_,
 source_ip=source_ip,
+location_id=location_id,
 
     )
 
@@ -191,9 +203,10 @@ async def asyncio(
     to: str,
     from_: str | Unset = UNSET,
     source_ip: str | Unset = UNSET,
+    location_id: str | Unset = UNSET,
 
 ) -> Any | ErrorResponse | None:
-    """ `GET /v1/routing/preview?to=…[&from=…][&source_ip=…]`: what a live call
+    """ `GET /v1/routing/preview?to=…[&from=…][&source_ip=…][&location_id=…]`: what a live call
     manager would do with this tenant's call — the policy and rule that
     decide it and the trunks it would try, in order, each with its price
     (`docs/TENANT_TRUNKS.md` §12, phase 6d).
@@ -202,6 +215,7 @@ async def asyncio(
         to (str):
         from_ (str | Unset):
         source_ip (str | Unset):
+        location_id (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -217,5 +231,6 @@ async def asyncio(
 to=to,
 from_=from_,
 source_ip=source_ip,
+location_id=location_id,
 
     )).parsed

@@ -671,6 +671,7 @@ impl fcp_sip::trunk_egress::TrunkCallSigner for StirSigner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use p256::elliptic_curve::Generate;
 
     // --- Config defaults and validation ---
 
@@ -1001,9 +1002,8 @@ mod tests {
     #[test]
     fn test_generate_and_parse_roundtrip() {
         use p256::ecdsa::SigningKey;
-        use rand::rngs::OsRng;
 
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let cert_url = "https://cert.example.com/cert.pem";
 
         let header_value = generate_identity_header(
@@ -1031,9 +1031,8 @@ mod tests {
     #[test]
     fn test_sign_verify_roundtrip() {
         use p256::ecdsa::{signature::Verifier, Signature, SigningKey, VerifyingKey};
-        use rand::rngs::OsRng;
 
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = VerifyingKey::from(&signing_key);
         let cert_url = "https://cert.example.com/cert.pem";
 
@@ -1053,7 +1052,7 @@ mod tests {
 
         // Decode signature
         let sig_bytes = base64url_decode(&parsed.raw_signature).unwrap();
-        let signature = Signature::from_bytes((&sig_bytes[..]).into()).unwrap();
+        let signature = Signature::from_slice(&sig_bytes).unwrap();
 
         // Verify
         assert!(verifying_key

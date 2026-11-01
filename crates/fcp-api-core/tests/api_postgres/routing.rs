@@ -440,3 +440,123 @@ async fn a_class_of_service_is_replaced_whole() {
     assert_eq!(bad_id.status, StatusCode::BAD_REQUEST, "{}", bad_id.text);
     app.finish().await;
 }
+
+/// A rule may be for one of the tenant's locations (docs/TENANT_SCOPE.md
+/// §3.6): another tenant's location is refused, the list filters by it,
+/// it can be cleared, and the location cannot be deleted under it.
+#[tokio::test]
+async fn a_routing_rule_is_for_one_of_the_tenants_locations() {
+    let app = require_app!();
+    let location = |tenant: TenantId, name: &'static str| {
+        let app = &app;
+        async move {
+            let res = app
+                .admin_in(
+                    tenant,
+                    Method::POST,
+                    "/api/v1/locations",
+                    Some(json!({ "name": name, "city": "Troy", "country": "US" })),
+                )
+                .await;
+            assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+            res.json["id"].as_str().unwrap().to_string()
+        }
+    };
+    let branch = location(app.tenant_a, "Branch").await;
+    let theirs = location(app.tenant_b, "Their branch").await;
+
+    let refused = app
+        .admin(
+            Method::POST,
+            "/api/v1/routing/rules",
+            Some(json!({ "name": "theirs", "action": "deny", "location_id": theirs })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    assert!(refused.text.contains("not one of this tenant's locations"));
+    let bogus = app
+        .admin(
+            Method::POST,
+            "/api/v1/routing/rules",
+            Some(json!({ "name": "bogus", "action": "deny", "location_id": "nowhere" })),
+        )
+        .await;
+    assert_eq!(bogus.status, StatusCode::BAD_REQUEST, "{}", bogus.text);
+
+    let at_branch = app
+        .admin(
+            Method::POST,
+            "/api/v1/routing/rules",
+            Some(json!({ "name": "branch only", "action": "deny",
+                         "destination_pattern": "^\\+44", "location_id": branch })),
+        )
+        .await;
+    assert_eq!(at_branch.status, StatusCode::CREATED, "{}", at_branch.text);
+    assert_eq!(at_branch.json["location_id"], branch.as_str());
+    let id = at_branch.json["id"].as_str().unwrap().to_string();
+    let everywhere = app
+        .admin(
+            Method::POST,
+            "/api/v1/routing/rules",
+            Some(json!({ "name": "everywhere", "action": "allow" })),
+        )
+        .await;
+    assert_eq!(
+        everywhere.status,
+        StatusCode::CREATED,
+        "{}",
+        everywhere.text
+    );
+    assert!(everywhere.json["location_id"].is_null());
+
+    let names = |res: &Response| -> Vec<String> {
+        res.json
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let listed = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/routing/rules?location_id={branch}"),
+            None,
+        )
+        .await;
+    assert_eq!(names(&listed), ["branch only"], "{}", listed.text);
+    let tenant_wide = app
+        .admin(Method::GET, "/api/v1/routing/rules?location_id=none", None)
+        .await;
+    assert_eq!(names(&tenant_wide), ["everywhere"], "{}", tenant_wide.text);
+    let all = app.admin(Method::GET, "/api/v1/routing/rules", None).await;
+    assert_eq!(names(&all).len(), 2, "{}", all.text);
+
+    // Its location cannot go from under it.
+    let in_use = app
+        .admin(Method::DELETE, &format!("/api/v1/locations/{branch}"), None)
+        .await;
+    assert_eq!(in_use.status, StatusCode::CONFLICT, "{}", in_use.text);
+    assert!(
+        in_use.text.contains("routing rule branch only"),
+        "{}",
+        in_use.text
+    );
+
+    // Cleared, it is the tenant's again, and the location may go.
+    let path = format!("/api/v1/routing/rules/{id}");
+    let cleared = app
+        .admin(Method::PATCH, &path, Some(json!({ "location_id": "" })))
+        .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text);
+    assert!(cleared.json["location_id"].is_null(), "{}", cleared.text);
+    let moved = app
+        .admin(Method::PATCH, &path, Some(json!({ "location_id": theirs })))
+        .await;
+    assert_eq!(moved.status, StatusCode::BAD_REQUEST, "{}", moved.text);
+    let gone = app
+        .admin(Method::DELETE, &format!("/api/v1/locations/{branch}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+    app.finish().await;
+}

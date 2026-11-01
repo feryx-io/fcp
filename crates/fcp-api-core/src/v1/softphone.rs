@@ -16,7 +16,7 @@ use axum::{
 };
 use fcp_core::storage::{CredentialStore, DeviceStore};
 use fcp_core::{Device, TenantStore, User};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -54,6 +54,30 @@ pub struct SoftphoneMedia {
     pub dtmf: String,
 }
 
+/// A line on the app (`docs/DEVICE_LINES.md`): an account it registers
+/// with its own credentials and takes calls on.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SoftphoneLine {
+    /// 1 for the first; the first is the user's own.
+    pub index: u32,
+    /// `own`, `extension`, `shared` or `on_behalf`.
+    pub kind: String,
+    /// The line itself, as `PUT /me/lines/{line}/label` names it.
+    pub line: String,
+    /// What the app registers the line as.
+    pub aor: String,
+    /// What it is called: the user's name, the administrator's, or
+    /// `default_label`.
+    pub label: String,
+    pub default_label: String,
+    pub shared: bool,
+    pub appearances: u32,
+    /// A shared line whose active calls the app may join (barge in).
+    pub barge_in: bool,
+    /// Whether calls to the line ring the app.
+    pub ring: bool,
+}
+
 /// Everything the app needs.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SoftphoneConfig {
@@ -68,10 +92,26 @@ pub struct SoftphoneConfig {
     pub api_url: Option<String>,
     /// The device the app is.
     pub device_id: String,
+    /// The user may record a call they are on
+    /// (`/me/calls/{call_id}/recording/start`); the app shows its record
+    /// button only then.
+    pub may_record: bool,
+    /// Listed in the tenant's directory, and whether the user may change
+    /// that themselves (`directory_listed` on `PUT /me/profile`).
+    pub directory_listed: bool,
+    pub may_change_directory_listing: bool,
+    /// The app's lines, its own first; `account` is the first, kept for a
+    /// release.
+    pub lines: Vec<SoftphoneLine>,
+    /// Whether the user may name their lines (the tenant's choice).
+    pub may_rename_lines: bool,
+    /// Whether the app may capture calls, until when, and how large a
+    /// capture may be (`docs/CALL_DIAGNOSTICS.md` §3).
+    pub capture: crate::v1::device_captures::SoftphoneCapture,
 }
 
 /// The app's session and device: what `/me/softphone` answers for.
-async fn app_device(state: &ApiState, me: &Me) -> Result<(User, Device), ApiError> {
+pub(crate) async fn app_device(state: &ApiState, me: &Me) -> Result<(User, Device), ApiError> {
     let not_app = || {
         ApiError::BadRequest(
             "This is the softphone's: sign in through the app (docs/APP_SIGN_IN.md)".to_string(),
@@ -167,6 +207,32 @@ pub async fn get_config(
                 .collect()
         })
         .unwrap_or_default();
+    let aor = |user_part: &str| format!("sip:{user_part}@{domain}");
+    let lines: Vec<SoftphoneLine> = fcp_sip::device_lines::shown(storage, &device)
+        .await
+        .into_iter()
+        .map(|l| SoftphoneLine {
+            index: l.index,
+            kind: l.kind.as_str().to_string(),
+            line: l.key,
+            // The app's own line is the user's address, as `account` is.
+            aor: if l.kind == fcp_core::LineKind::Own {
+                aor(user.sip_name())
+            } else {
+                aor(&l.aor_user)
+            },
+            label: l.label,
+            default_label: l.default_label,
+            shared: l.shared,
+            appearances: l.appearances,
+            barge_in: l.barge_in,
+            ring: l.ring,
+        })
+        .collect();
+    let may_rename_lines = storage
+        .get_tenant(&user.tenant_id)
+        .await?
+        .is_some_and(|t| t.lines.users_may_rename);
     let body = SoftphoneConfig {
         account: SoftphoneAccount {
             aor: format!("sip:{}@{domain}", user.sip_name()),
@@ -195,6 +261,13 @@ pub async fn get_config(
         api_url: crate::v1::provisioning::public_base(&state, &headers)
             .map(|base| format!("{base}/api/v1")),
         device_id: device.id.to_string(),
+        may_record: user.media_preferences.record_on_demand,
+        directory_listed: user.directory_listed,
+        may_change_directory_listing: crate::v1::self_service::may_change_listing(storage, &user)
+            .await?,
+        lines,
+        may_rename_lines,
+        capture: crate::v1::device_captures::capture_permit(&state, &user, &device.id).await?,
     };
     let json = serde_json::to_vec(&body).map_err(|e| ApiError::Internal(e.to_string()))?;
     let digest: String = Sha256::digest(&json)
@@ -217,6 +290,82 @@ pub async fn get_config(
         HeaderValue::from_str(&etag).expect("hex in quotes is a header value"),
     );
     Ok(response)
+}
+
+/// A user's name for one of their lines.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LineLabelRequest {
+    /// Empty clears it: the line shows the administrator's label again.
+    pub label: String,
+}
+
+/// PUT /api/v1/me/lines/{line}/label — name one of your lines, on every
+/// device that has it (`docs/DEVICE_LINES.md` §2). 403 unless the tenant
+/// lets its users rename; 404 for a line none of your devices has.
+#[utoipa::path(
+    put,
+    path = "/api/v1/me/lines/{line}/label",
+    tag = "softphone",
+    operation_id = "softphone_set_line_label",
+    params(("line" = String, Path, description = "`own`, `extension:1005`, `shared:+15551234567`, `on_behalf:<user>`")),
+    request_body = LineLabelRequest,
+    responses(
+        (status = 204, description = "Named"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn set_line_label(
+    State(state): State<ApiState>,
+    me: Me,
+    axum::extract::Path(line): axum::extract::Path<String>,
+    axum::Json(req): axum::Json<LineLabelRequest>,
+) -> Result<Response, ApiError> {
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
+    let user = crate::v1::self_service::load_claims_user(storage, &me.0, &state).await?;
+    let allowed = storage
+        .get_tenant(&user.tenant_id)
+        .await?
+        .is_some_and(|t| t.lines.users_may_rename);
+    if !allowed {
+        return Err(ApiError::Forbidden(
+            "Your organisation names your lines; ask your administrator".to_string(),
+        ));
+    }
+    let label = req.label.trim();
+    if label.len() > fcp_core::line_label::MAX_LABEL_LEN || label.chars().any(char::is_control) {
+        return Err(ApiError::BadRequest(format!(
+            "a line's name is at most {} characters, with no control characters",
+            fcp_core::line_label::MAX_LABEL_LEN
+        )));
+    }
+    let mut known = false;
+    for device in storage.list_devices_by_user(&user.id).await? {
+        if fcp_sip::device_lines::shown(storage, &device)
+            .await
+            .iter()
+            .any(|l| l.key == line)
+        {
+            known = true;
+            break;
+        }
+    }
+    if !known {
+        return Err(ApiError::NotFound(format!(
+            "None of your devices has the line {line}"
+        )));
+    }
+    let store = storage
+        .line_label_store()
+        .ok_or_else(|| ApiError::Internal("Line label store not configured".to_string()))?;
+    store
+        .set_line_label(&user.tenant_id, &user.id, &line, label)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// A new SIP password for the app's device.

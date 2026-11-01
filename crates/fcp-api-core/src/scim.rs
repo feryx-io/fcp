@@ -112,6 +112,7 @@ impl From<ApiError> for ScimError {
             | ApiError::Internal(d)
             | ApiError::Conflict(d)
             | ApiError::ServiceUnavailable(d)
+            | ApiError::PayloadTooLarge(d)
             | ApiError::Gone(d) => d,
         };
         Self::new(status, scim_type, detail)

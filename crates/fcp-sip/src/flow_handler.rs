@@ -106,6 +106,9 @@ pub struct FlowCallHandler {
     /// Storage backend for extension → phone number → device resolution
     storage: Option<Arc<fcp_core::DynStorage>>,
 
+    /// The node's queues, where a Queue node dials its caller
+    queue_handler: Option<Arc<dyn crate::queue::QueueHandler>>,
+
     /// Transport dispatcher for sending out-of-transaction messages (ACK for 2xx)
     dispatcher: Option<Arc<dyn TransportDispatcher>>,
 
@@ -123,6 +126,14 @@ pub struct FlowCallHandler {
 
     /// Each call's live transcript (the Transcribe node), one task per leg.
     transcripts: Arc<DashMap<CallId, Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+/// What a Gather heard, for its retries: a branch chosen, or nothing, or
+/// a choice the menu does not have.
+enum Heard {
+    Chose(String),
+    Nothing,
+    Invalid,
 }
 
 /// A call's Gather collection, taken out of [`FlowCallHandler`]'s map when
@@ -144,6 +155,15 @@ struct EmergencyDialPlan {
     targets: Vec<(sip_core::SipUri, crate::emergency::EmergencyAttempt)>,
     from: Option<sip_core::SipUri>,
     headers: sip_core::Headers,
+}
+
+/// What a `Dial` to an emergency number does.
+enum EmergencyDial {
+    /// Place it on the emergency routes.
+    Place(EmergencyDialPlan),
+    /// A test the tenant has this platform answer: say this to the caller
+    /// and call no carrier (`TestCallMode::Local`), a part at a time.
+    ReadBack(Vec<String>),
 }
 
 /// The outcome of one B-leg INVITE.
@@ -196,6 +216,7 @@ impl FlowCallHandler {
             flow_trace_store: None,
             registrar: None,
             storage: None,
+            queue_handler: None,
             dispatcher: None,
             call_recorder: std::sync::OnceLock::new(),
             outbound_route_provider: None,
@@ -314,6 +335,12 @@ impl FlowCallHandler {
         self
     }
 
+    /// The node's queues, for the Queue node.
+    pub fn with_queue_handler(mut self, queues: Arc<dyn crate::queue::QueueHandler>) -> Self {
+        self.queue_handler = Some(queues);
+        self
+    }
+
     /// Set the transport dispatcher for sending out-of-transaction messages (ACK for 2xx).
     pub fn with_dispatcher(mut self, dispatcher: Arc<dyn TransportDispatcher>) -> Self {
         self.dispatcher = Some(dispatcher);
@@ -329,8 +356,15 @@ impl FlowCallHandler {
     fn interpolate(template: &str, context: &FlowContext) -> String {
         let mut result = template.to_string();
         for cap in INTERPOLATION_RE.captures_iter(template) {
-            let var_name = cap[1].trim();
+            let (var_name, filter) = match cap[1].split_once('|') {
+                Some((name, filter)) => (name.trim(), Some(filter.trim())),
+                None => (cap[1].trim(), None),
+            };
             if let Ok(value) = context.get_variable(var_name) {
+                let value = match filter {
+                    Some(filter) => fcp_flow::apply_filter(&value, filter).unwrap_or(value),
+                    None => value,
+                };
                 result = result.replace(&cap[0], &value);
             }
         }
@@ -384,7 +418,13 @@ impl FlowCallHandler {
     ///
     /// Handles URLs like `/api/v1/prompts/prompt-<uuid>/audio` by extracting the
     /// prompt ID and looking up the audio file path via PromptService.
-    async fn resolve_prompt_url(&self, url: &str) -> Option<String> {
+    /// The prompt is the call's tenant's: its own, or a system prompt
+    /// through the tenant's override (`fcp_core::prompt::effective_prompt_by_id`).
+    async fn resolve_prompt_url(
+        &self,
+        tenant: Option<&fcp_core::TenantId>,
+        url: &str,
+    ) -> Option<String> {
         // Match API prompt URLs: /api/v1/prompts/<prompt-id>/audio
         if let Some(prompt_id_str) = url
             .strip_prefix("/api/v1/prompts/")
@@ -392,7 +432,7 @@ impl FlowCallHandler {
         {
             if let Some(ref ps) = self.prompt_service {
                 if let Ok(prompt_id) = prompt_id_str.parse::<fcp_core::PromptId>() {
-                    match ps.resolve_by_id(&prompt_id).await {
+                    match ps.resolve_by_id(tenant, &prompt_id).await {
                         Ok(Some(path)) => {
                             let path_str = path.to_string_lossy().to_string();
                             info!(
@@ -480,6 +520,18 @@ impl FlowCallHandler {
 
         if !flow.enabled {
             return Err(anyhow::anyhow!("Flow is disabled: {}", flow_id));
+        }
+        // A call runs its own tenant's flows; a flow without a tenant (from
+        // before tenancy) anyone's (docs/TENANT_SCOPE.md §3.4).
+        if !flow_belongs_to(&flow, &call.tenant_id) {
+            warn!(
+                call_id = %call.id,
+                flow_id = %flow_id,
+                flow_tenant = ?flow.tenant_id,
+                call_tenant = %call.tenant_id,
+                "Refused another tenant's flow"
+            );
+            return Err(anyhow::anyhow!("Flow not found: {}", flow_id));
         }
 
         let flow = Arc::new(flow);
@@ -735,6 +787,43 @@ impl FlowCallHandler {
     /// Phase 3 (PENDING): Media bridging
     /// Phase 4 (PENDING): CDR tracking
     /// Phase 5 (PENDING): Advanced features
+    /// `sip:<user>@` this node's own address, port included: a leg placed
+    /// there comes back into this node (`own_leg`).
+    fn own_uri(&self, user: &str) -> Option<sip_core::SipUri> {
+        let local = self.local_uri.as_ref()?;
+        let host = match local.port() {
+            Some(port) => format!("{}:{}", local.host(), port),
+            None => local.host().to_string(),
+        };
+        sip_core::SipUri::parse(&format!("sip:{user}@{host}")).ok()
+    }
+
+    /// Where a Queue node's caller is dialed: the extension at this node
+    /// where the call's tenant's queue, named by its name or extension,
+    /// answers.
+    fn queue_leg_uri(
+        &self,
+        a_leg_call_id: CallId,
+        queue: &str,
+    ) -> std::result::Result<sip_core::SipUri, String> {
+        let queues = self
+            .queue_handler
+            .as_ref()
+            .ok_or("Queues are off on this node")?;
+        let tenant_id = self
+            .call_manager
+            .as_ref()
+            .and_then(|cm| cm.get_call(&a_leg_call_id))
+            .map(|c| c.tenant_id)
+            .ok_or("No tenant for a queue")?;
+        let extension = queues
+            .extension_of(&tenant_id, queue)
+            .ok_or_else(|| format!("No queue '{queue}'"))?;
+        let uri = self.own_uri(&extension).ok_or("SIP URIs not configured")?;
+        info!(a_leg_call_id = %a_leg_call_id, queue = %queue, extension = %extension, "Queue node: the caller is dialed into the queue");
+        Ok(uri)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn handle_dial(
         &self,
@@ -785,7 +874,10 @@ impl FlowCallHandler {
         // each emergency route in turn with the callback number as caller
         // (`docs/E911_BLOCK_2.md` §4).
         let emergency = match self.emergency_dial_plan(a_leg_call_id, &destination).await {
-            Some(Ok(plan)) => Some(plan),
+            Some(Ok(EmergencyDial::Place(plan))) => Some(plan),
+            Some(Ok(EmergencyDial::ReadBack(parts))) => {
+                return self.read_back_test(a_leg_call_id, parts, next).await;
+            }
             Some(Err(error_msg)) => {
                 return self
                     .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
@@ -805,7 +897,24 @@ impl FlowCallHandler {
                     // extension → phone number → device chain to get the actual device contact
                     // (e.g., "1234" → "polycom@192.168.1.12") so we INVITE the device directly
                     // instead of looping through the local B2BUA.
-                    let dest_uri = match sip_core::SipUri::parse(&destination) {
+                    // A Queue node's caller goes to the queue's extension here.
+                    let queue_uri = match destination.strip_prefix(fcp_flow::QUEUE_DIAL_PREFIX) {
+                        Some(queue) => match self.queue_leg_uri(a_leg_call_id, queue) {
+                            Ok(uri) => Some(uri),
+                            Err(error_msg) => {
+                                warn!(a_leg_call_id = %a_leg_call_id, %error_msg);
+                                return self
+                                    .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
+                                    .await;
+                            }
+                        },
+                        None => None,
+                    };
+                    let parsed = match queue_uri {
+                        Some(uri) => Ok(uri),
+                        None => sip_core::SipUri::parse(&destination),
+                    };
+                    let dest_uri = match parsed {
                         Ok(uri) => uri,
                         Err(_) => {
                             // Bare extension — try registrar lookup first
@@ -1018,19 +1127,7 @@ impl FlowCallHandler {
                                                     // as codes (`FLOW_DIAL_HEADER`), so a busy
                                                     // or unanswered user takes the flow's own
                                                     // branches.
-                                                    resolved =
-                                                        self.local_uri.as_ref().and_then(|u| {
-                                                            let host = match u.port() {
-                                                                Some(port) => {
-                                                                    format!("{}:{}", u.host(), port)
-                                                                }
-                                                                None => u.host().to_string(),
-                                                            };
-                                                            sip_core::SipUri::parse(&format!(
-                                                                "sip:{destination}@{host}"
-                                                            ))
-                                                            .ok()
-                                                        });
+                                                    resolved = self.own_uri(&destination);
                                                     info!(a_leg_call_id = %a_leg_call_id, user_id = %user_id, "Dial to a user: rung by their plan at this node");
                                                 }
                                                 other => {
@@ -1140,7 +1237,8 @@ impl FlowCallHandler {
         let sdp_offer = if let Some(ref media_mgr) = self.media_manager {
             match media_mgr.get_session(&session_key).await {
                 Ok(session) => {
-                    let (rtp_port, _rtcp_port) = session.ports();
+                    // The flow's B leg, told leg B's port.
+                    let (rtp_port, _rtcp_port) = session.ports_for(fcp_media::backend::Leg::B);
                     self.generate_sdp_with_port(rtp_port)
                 }
                 Err(_) => self.generate_minimal_sdp(),
@@ -1282,7 +1380,7 @@ impl FlowCallHandler {
         &self,
         a_leg_call_id: CallId,
         destination: &str,
-    ) -> Option<std::result::Result<EmergencyDialPlan, String>> {
+    ) -> Option<std::result::Result<EmergencyDial, String>> {
         let call_mgr = self.call_manager.as_ref()?;
         let call = call_mgr.get_call(&a_leg_call_id)?;
         let caller = call
@@ -1308,7 +1406,7 @@ impl FlowCallHandler {
             .original_invite
             .as_ref()
             .and_then(crate::emergency::supplied_location);
-        let info = crate::emergency::detect(
+        let info = Box::pin(crate::emergency::detect(
             self.storage.as_ref(),
             &call.tenant_id,
             destination,
@@ -1316,7 +1414,7 @@ impl FlowCallHandler {
             aor.as_deref(),
             client_address,
             supplied.as_ref(),
-        )
+        ))
         .await?;
 
         let local_host = self
@@ -1374,6 +1472,46 @@ impl FlowCallHandler {
         );
         crate::emergency::announce(call_mgr, a_leg_call_id, record).await;
 
+        // A test read back here: what a live call would carry, and no
+        // carrier called (`docs/E911.md` "Test calls").
+        if info.kind == fcp_core::e911::EmergencyKind::Test {
+            let config = crate::emergency::config_for(self.storage.as_ref(), &call.tenant_id).await;
+            if config.test_call_mode == fcp_core::e911::TestCallMode::Local {
+                let told: Vec<_> = crate::emergency::contacts_for_call(
+                    self.storage.as_ref(),
+                    &config,
+                    info.location.as_ref(),
+                )
+                .await
+                .into_iter()
+                .filter(|c| c.problems().is_empty())
+                .collect();
+                // The flow goes on after the readback, so its caller is
+                // not asked to stay for a listener.
+                let parts = crate::emergency::test_readback(
+                    &info,
+                    !routes.is_empty(),
+                    told.len(),
+                    0,
+                    false,
+                );
+                let _ = call_mgr.update_call(&a_leg_call_id, |c| {
+                    c.trunk_name = None;
+                    c.trunk_id = None;
+                    c.route_trunks = Vec::new();
+                    if let Some(em) = c.emergency.as_mut() {
+                        em.read_back = true;
+                        em.leg = Some(fcp_b2bua_core::EmergencyLeg {
+                            outcome: "read_back".to_string(),
+                            sip_status: None,
+                            answered_at: Some(std::time::SystemTime::now()),
+                        });
+                    }
+                });
+                return Some(Ok(EmergencyDial::ReadBack(parts)));
+            }
+        }
+
         let targets: Vec<(sip_core::SipUri, crate::emergency::EmergencyAttempt)> = routes
             .iter()
             .filter_map(|r| {
@@ -1399,11 +1537,52 @@ impl FlowCallHandler {
             });
             return Some(Err("No trunk available for emergency call".to_string()));
         }
-        Some(Ok(EmergencyDialPlan {
+        Some(Ok(EmergencyDial::Place(EmergencyDialPlan {
             targets,
             from,
             headers,
-        }))
+        })))
+    }
+
+    /// A `Dial` to a test number read back here: `text` said to the
+    /// flow's caller, then the node's `next`, with `dial_status` set to
+    /// `read_back`.
+    async fn read_back_test(
+        &self,
+        call_id: CallId,
+        parts: Vec<String>,
+        next: String,
+    ) -> Result<()> {
+        info!(call_id = %call_id, "Flow's emergency test read back here");
+        // Synthesized while the opening plays (`emergency::test_readback`).
+        if let Some(tts) = self.media_manager.as_ref().and_then(|mm| mm.tts_service()) {
+            tts.warm(parts.clone(), Some("en-US"));
+        }
+        let session = self
+            .call_manager
+            .as_ref()
+            .and_then(|cm| cm.get_call(&call_id))
+            .and_then(|c| c.media_session_id);
+        match (&self.media_manager, session) {
+            (Some(mm), Some(session)) => {
+                for part in &parts {
+                    self.say(mm, &session, None, "", part).await;
+                }
+            }
+            _ => warn!(call_id = %call_id, "No media to read the emergency test back on"),
+        }
+        let context_entry = self
+            .contexts
+            .get(&call_id)
+            .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+        let context = Arc::clone(context_entry.value());
+        drop(context_entry);
+        {
+            let mut context_guard = context.write().await;
+            context_guard.set_variable("dial_status".to_string(), "read_back".to_string());
+            context_guard.current_node = next;
+        }
+        Box::pin(self.execute_next_node(call_id)).await
     }
 
     /// Place one B-leg INVITE for a `Dial` node and wait for its outcome;
@@ -1520,6 +1699,7 @@ impl FlowCallHandler {
             sip_transaction::fsm::TransportKind::Tls => 5061,
             _ => 5060,
         });
+        let invite = with_own_via(invite, local_uri, transport_kind);
 
         // For MVP, resolve host to IP address using basic DNS lookup
         let peer_addr: SocketAddr = match tokio::net::lookup_host(format!("{}:{}", host, port))
@@ -1751,6 +1931,8 @@ impl FlowCallHandler {
                                             contact_uri.clone(),
                                         )
                                         .create_bye(&dialog);
+                                        let bye =
+                                            with_own_via(bye, local_uri, transport_kind);
                                         if let Err(e) = transaction_manager
                                             .start_client_transaction(
                                                 bye,
@@ -2199,6 +2381,7 @@ impl FlowCallHandler {
                 .prompt_digits(
                     mm,
                     &media_call_id,
+                    Some(&device.tenant_id),
                     "hoteling_enter_extension",
                     "Enter your extension, then pound.",
                 )
@@ -2207,6 +2390,7 @@ impl FlowCallHandler {
                 .prompt_digits(
                     mm,
                     &media_call_id,
+                    Some(&device.tenant_id),
                     "hoteling_enter_pin",
                     "Enter your pin, then pound.",
                 )
@@ -2222,6 +2406,7 @@ impl FlowCallHandler {
                         self.say(
                             mm,
                             &media_call_id,
+                            Some(&device.tenant_id),
                             "hoteling_logged_in",
                             "You are logged in.",
                         )
@@ -2238,6 +2423,7 @@ impl FlowCallHandler {
                     self.say(
                         mm,
                         &media_call_id,
+                        Some(&device.tenant_id),
                         "hoteling_login_incorrect",
                         "Login incorrect.",
                     )
@@ -2254,12 +2440,13 @@ impl FlowCallHandler {
         &self,
         mm: &Arc<fcp_media::MediaManager>,
         cid: &fcp_core::CallId,
+        tenant: Option<&fcp_core::TenantId>,
         prompt: &str,
         text: &str,
     ) -> String {
         use fcp_media::CollectionResult;
         let collector = mm.create_dtmf_collector(cid, 0, Some('#'));
-        let playback = self.start_prompt(mm, cid, prompt, text).await;
+        let playback = self.start_prompt(mm, cid, tenant, prompt, text).await;
         let result = collector.collect(std::time::Duration::from_secs(10)).await;
         if let Some(playback) = playback {
             let _ = mm.stop_playback(cid, playback).await;
@@ -2277,10 +2464,11 @@ impl FlowCallHandler {
         &self,
         mm: &Arc<fcp_media::MediaManager>,
         cid: &fcp_core::CallId,
+        tenant: Option<&fcp_core::TenantId>,
         prompt: &str,
         text: &str,
     ) {
-        if let Some(playback) = self.start_prompt(mm, cid, prompt, text).await {
+        if let Some(playback) = self.start_prompt(mm, cid, tenant, prompt, text).await {
             let _ = mm.wait_playback_completion(playback).await;
         }
     }
@@ -2289,12 +2477,13 @@ impl FlowCallHandler {
         &self,
         mm: &Arc<fcp_media::MediaManager>,
         cid: &fcp_core::CallId,
+        tenant: Option<&fcp_core::TenantId>,
         prompt: &str,
         text: &str,
     ) -> Option<String> {
         use fcp_media::AudioTarget;
         if let Some(ps) = &self.prompt_service {
-            if let Ok(Some(path)) = ps.resolve(prompt, None).await {
+            if let Ok(Some(path)) = ps.resolve(tenant, prompt, None).await {
                 if let Ok(id) = mm
                     .play_file(cid, path.to_string_lossy().to_string(), AudioTarget::Both)
                     .await
@@ -2393,6 +2582,7 @@ impl FlowCallHandler {
         // Helper: start playback of a named system prompt (non-blocking).
         // Returns the playback_id so the caller can stop or wait on it.
         let prompt_service = self.prompt_service.clone();
+        let prompt_tenant = self.tenant_of(&call_id);
         let start_prompt = |mm: &Arc<fcp_media::MediaManager>,
                             cid: &fcp_core::CallId,
                             prompt_name: &str,
@@ -2404,7 +2594,9 @@ impl FlowCallHandler {
             async move {
                 // 1. Try cached WAV file via PromptService
                 if let Some(ref ps) = ps {
-                    if let Ok(Some(path)) = ps.resolve(&prompt_name, None).await {
+                    if let Ok(Some(path)) =
+                        ps.resolve(prompt_tenant.as_ref(), &prompt_name, None).await
+                    {
                         match mm
                             .play_file(&cid, path.to_string_lossy().to_string(), AudioTarget::Both)
                             .await
@@ -2477,7 +2669,7 @@ impl FlowCallHandler {
                     // System prompt (WAV file first, TTS fallback)
                     let mut pid = None;
                     if let Some(ref ps) = ps {
-                        if let Ok(Some(path)) = ps.resolve(pn, None).await {
+                        if let Ok(Some(path)) = ps.resolve(prompt_tenant.as_ref(), pn, None).await {
                             if let Ok(id) = mm
                                 .play_file(
                                     &cid,
@@ -3371,8 +3563,9 @@ impl FlowCallHandler {
                         // Resolve prompt API URLs to filesystem paths.
                         // The admin UI stores URLs like "/api/v1/prompts/<prompt-id>/audio"
                         // but the media manager needs a local filesystem path.
+                        let tenant = self.prompt_tenant(&call_id, &context_guard.flow);
                         let resolved_path = self
-                            .resolve_prompt_url(&url_value)
+                            .resolve_prompt_url(tenant.as_ref(), &url_value)
                             .await
                             .unwrap_or(url_value.clone());
 
@@ -3731,6 +3924,7 @@ impl FlowCallHandler {
 
                 // Check for prompt
                 let prompt_url = context_guard.get_variable("__gather_prompt_url").ok();
+                let prompt_tenant = self.prompt_tenant(&call_id, &context_guard.flow);
 
                 let media_session_id = context_guard.media_session_id;
                 let flow_id = context_guard.flow.id.clone();
@@ -3813,7 +4007,7 @@ impl FlowCallHandler {
                     (&prompt_url, media_session_id)
                 {
                     let resolved_url = self
-                        .resolve_prompt_url(prompt_url)
+                        .resolve_prompt_url(prompt_tenant.as_ref(), prompt_url)
                         .await
                         .unwrap_or(prompt_url.clone());
                     info!(
@@ -3861,22 +4055,25 @@ impl FlowCallHandler {
                     )
                     .await;
                 drop(digit_slot);
+                // The key that finishes the input is not part of it: kept,
+                // "Enter some digits, then press pound" read the pound back
+                // and no transition could name the digits alone
+                // (`docs/DEEP_TESTING.md` D8).
+                let outcome = without_finish_key(outcome, finish_on_key);
                 info!(call_id = %call_id, outcome = ?outcome, "Gather complete");
 
                 use crate::flow_listen::GatherOutcome;
-                let mut context_guard = context.write().await;
-                let next_node = match outcome {
+                let context_guard = context.write().await;
+                let heard = match outcome {
                     GatherOutcome::Digits(digits) => {
                         context_guard.set_variable(variable.clone(), digits.clone());
                         context_guard.set_variable("gather_input".to_string(), "dtmf".to_string());
-                        if let Some(next) = transitions.get(&digits) {
-                            next.clone()
-                        } else if let Some(default_node) = &default {
-                            default_node.clone()
-                        } else {
-                            // No transition and no default: the Gather runs again.
-                            warn!(call_id = %call_id, digits = %digits, "No transition found for collected digits");
-                            context_guard.current_node.clone()
+                        match transitions.get(&digits) {
+                            Some(next) => Heard::Chose(next.clone()),
+                            None => {
+                                warn!(call_id = %call_id, digits = %digits, "No transition found for collected digits");
+                                Heard::Invalid
+                            }
                         }
                     }
                     GatherOutcome::PartialDigits(digits) => {
@@ -3884,15 +4081,9 @@ impl FlowCallHandler {
                         // a valid choice may still have been made.
                         context_guard.set_variable(variable.clone(), digits.clone());
                         context_guard.set_variable("gather_input".to_string(), "dtmf".to_string());
-                        if let Some(next) = transitions.get(&digits) {
-                            next.clone()
-                        } else if let Some(timeout_node) = on_timeout_node {
-                            timeout_node
-                        } else if let Some(default_node) = &default {
-                            default_node.clone()
-                        } else {
-                            warn!(call_id = %call_id, digits = %digits, "Timeout with digits but no matching transition or handler");
-                            context_guard.current_node.clone()
+                        match transitions.get(&digits) {
+                            Some(next) => Heard::Chose(next.clone()),
+                            None => Heard::Nothing,
                         }
                     }
                     GatherOutcome::Speech(transcript) => {
@@ -3906,36 +4097,100 @@ impl FlowCallHandler {
                         );
                         context_guard
                             .set_variable("gather_input".to_string(), "speech".to_string());
-                        if let Some(next) =
-                            fcp_flow::schema::match_speech(&speech.transitions, &transcript.text)
+                        match fcp_flow::schema::match_speech(&speech.transitions, &transcript.text)
                         {
-                            next.clone()
-                        } else if let Some(default_node) = &default {
-                            default_node.clone()
-                        } else {
-                            warn!(call_id = %call_id, speech = %transcript.text, "No transition found for what was said");
-                            context_guard.current_node.clone()
+                            Some(next) => Heard::Chose(next.clone()),
+                            None => {
+                                warn!(call_id = %call_id, speech = %transcript.text, "No transition found for what was said");
+                                Heard::Invalid
+                            }
                         }
                     }
                     GatherOutcome::SpeechUnavailable if on_error.is_some() => {
-                        on_error.clone().unwrap_or_default()
+                        Heard::Chose(on_error.clone().unwrap_or_default())
                     }
-                    GatherOutcome::Timeout | GatherOutcome::SpeechUnavailable => {
-                        if let Some(timeout_node) = on_timeout_node {
-                            timeout_node
-                        } else if let Some(default_node) = default {
-                            default_node
-                        } else {
-                            warn!(call_id = %call_id, "Gather timeout with no timeout handler");
-                            context_guard.current_node.clone()
-                        }
-                    }
+                    GatherOutcome::Timeout | GatherOutcome::SpeechUnavailable => Heard::Nothing,
                     GatherOutcome::Cancelled => {
                         warn!(call_id = %call_id, "Gather cancelled");
                         // The call has likely ended: nothing more runs.
                         return Ok(());
                     }
                 };
+                let this_node = context_guard.current_node.clone();
+                let attempts_key = format!("__gather_attempts.{this_node}");
+                let mut retry_prompt = None;
+                let retry_tenant = self.prompt_tenant(&call_id, &context_guard.flow);
+                let next_node = match heard {
+                    Heard::Chose(next) => {
+                        context_guard.remove_variable(&attempts_key);
+                        next
+                    }
+                    failed => {
+                        let max_attempts = context_guard
+                            .get_variable("__gather_max_attempts")
+                            .ok()
+                            .and_then(|v| v.parse::<u32>().ok())
+                            .unwrap_or(1);
+                        let attempt = context_guard
+                            .get_variable(&attempts_key)
+                            .ok()
+                            .and_then(|v| v.parse::<u32>().ok())
+                            .unwrap_or(0)
+                            + 1;
+                        if attempt < max_attempts {
+                            // Asked again, after the retry prompt for what
+                            // went wrong.
+                            info!(call_id = %call_id, attempt, max_attempts, nothing_heard = matches!(failed, Heard::Nothing), "Gather: asking again");
+                            context_guard.set_variable(attempts_key, attempt.to_string());
+                            let prompt = match failed {
+                                Heard::Nothing => "__gather_no_input_url",
+                                _ => "__gather_invalid_url",
+                            };
+                            retry_prompt = context_guard.get_variable(prompt).ok();
+                            this_node
+                        } else {
+                            context_guard.remove_variable(&attempts_key);
+                            let spent = (max_attempts > 1)
+                                .then(|| {
+                                    context_guard.get_variable("__gather_on_max_attempts").ok()
+                                })
+                                .flatten();
+                            let fallback = match failed {
+                                Heard::Nothing => on_timeout_node.or_else(|| default.clone()),
+                                _ => default.clone(),
+                            };
+                            match spent.or(fallback) {
+                                Some(next) => next,
+                                None => {
+                                    // No branch for it: the Gather runs again.
+                                    warn!(call_id = %call_id, "Gather: no branch for a failed attempt");
+                                    this_node
+                                }
+                            }
+                        }
+                    }
+                };
+                drop(context_guard);
+                if let (Some(url), Some(session_id), Some(media_manager)) =
+                    (retry_prompt, media_session_id, self.media_manager.as_ref())
+                {
+                    let url = self
+                        .resolve_prompt_url(retry_tenant.as_ref(), &url)
+                        .await
+                        .unwrap_or(url);
+                    match media_manager
+                        .play_file(&session_id, url, fcp_media::AudioTarget::ParticipantA)
+                        .await
+                    {
+                        Ok(pid) => {
+                            let _ = media_manager.wait_playback_completion(pid).await;
+                        }
+                        Err(e) => {
+                            warn!(call_id = %call_id, error = %e, "Gather retry prompt not played")
+                        }
+                    }
+                }
+                let mut context_guard = context.write().await;
                 info!(call_id = %call_id, next_node = %next_node, "Gather continuing to next node");
                 context_guard.current_node = next_node;
                 drop(context_guard);
@@ -4290,6 +4545,19 @@ impl FlowCallHandler {
     }
 
     /// The tenant of a call, for the events that name it.
+    /// The tenant whose prompts a call hears: the call's, else its flow's.
+    fn prompt_tenant(
+        &self,
+        call_id: &CallId,
+        flow: &fcp_flow::FlowDefinition,
+    ) -> Option<fcp_core::TenantId> {
+        self.tenant_of(call_id).or_else(|| {
+            flow.tenant_id
+                .as_deref()
+                .and_then(|t| t.parse::<fcp_core::TenantId>().ok())
+        })
+    }
+
     fn tenant_of(&self, call_id: &CallId) -> Option<fcp_core::TenantId> {
         self.call_manager
             .as_ref()
@@ -4375,7 +4643,11 @@ impl ClientTransactionUser for DialTransactionUser {
         );
 
         // Create ACK using UAC helper
-        let ack = self.uac.create_ack(&self.request, &response, None);
+        let ack = with_own_via(
+            self.uac.create_ack(&self.request, &response, None),
+            &self.local_uri,
+            self.ctx.transport(),
+        );
 
         // Dispatch ACK via transport
         if let Some(ref dispatcher) = self.dispatcher {
@@ -4427,7 +4699,7 @@ impl ClientTransactionUser for DialTransactionUser {
         };
 
         let prack = match self.uac.create_prack(&self.request, &response, &dialog) {
-            Ok(prack) => prack,
+            Ok(prack) => with_own_via(prack, &self.local_uri, ctx.transport()),
             Err(e) => {
                 warn!(
                     code = response.code(),
@@ -4730,6 +5002,136 @@ pub(crate) fn transport_of(uri: &sip_core::SipUri) -> sip_transaction::fsm::Tran
     }
 }
 
+/// `outcome` with the Gather's finish key taken off the digits it ends.
+fn without_finish_key(
+    outcome: crate::flow_listen::GatherOutcome,
+    finish_on_key: Option<char>,
+) -> crate::flow_listen::GatherOutcome {
+    use crate::flow_listen::GatherOutcome;
+    let Some(key) = finish_on_key else {
+        return outcome;
+    };
+    match outcome {
+        GatherOutcome::Digits(d) => match d.strip_suffix(key) {
+            Some(rest) => GatherOutcome::Digits(rest.to_string()),
+            None => GatherOutcome::Digits(d),
+        },
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod finish_key_tests {
+    use super::without_finish_key;
+    use crate::flow_listen::GatherOutcome;
+
+    #[test]
+    fn the_finish_key_is_not_part_of_the_digits() {
+        let digits = |o: GatherOutcome| match o {
+            GatherOutcome::Digits(d) => d,
+            other => panic!("{other:?}"),
+        };
+        let out = without_finish_key(GatherOutcome::Digits("5551212#".into()), Some('#'));
+        assert_eq!(digits(out), "5551212");
+        // Only a final key is the finish key; without one nothing changes.
+        let out = without_finish_key(GatherOutcome::Digits("12".into()), Some('#'));
+        assert_eq!(digits(out), "12");
+        let out = without_finish_key(GatherOutcome::Digits("1#".into()), None);
+        assert_eq!(digits(out), "1#");
+    }
+}
+
+/// `request` naming this node in its top Via, its branch kept.
+///
+/// A `Dial` node's INVITE, ACK, PRACK and BYE are built by
+/// `UserAgentClient`, whose Via names `placeholder`, and go straight to the
+/// transaction manager, which sends them as they are; only the integrated
+/// UAC fills it in. A peer that answers to the Via, as RFC 3261 §18.2.2
+/// asks without `rport`, answered a host that does not exist
+/// (`docs/DEEP_TESTING.md` D8).
+pub(crate) fn with_own_via(
+    mut request: Request,
+    local_uri: &sip_core::SipUri,
+    transport: sip_transaction::fsm::TransportKind,
+) -> Request {
+    use sip_transaction::fsm::TransportKind;
+    let Some(via) = request.headers().get("Via") else {
+        return request;
+    };
+    if !via.contains("placeholder") {
+        return request;
+    }
+    let branch = via
+        .split(';')
+        .find_map(|p| p.trim().strip_prefix("branch="))
+        .map(str::to_string)
+        .unwrap_or_else(|| sip_transaction::generate_branch_id().to_string());
+    let (name, default_port) = match transport {
+        TransportKind::Udp => ("UDP", 5060),
+        TransportKind::Tcp => ("TCP", 5060),
+        TransportKind::Tls => ("TLS", 5061),
+        TransportKind::Ws => ("WS", 80),
+        TransportKind::Wss => ("WSS", 443),
+        _ => ("UDP", 5060),
+    };
+    let port = local_uri.port().unwrap_or(default_port);
+    let value = format!(
+        "SIP/2.0/{name} {}:{port};branch={branch};rport",
+        local_uri.host()
+    );
+    let _ = request
+        .headers_mut()
+        .set_or_push("Via", smol_str::SmolStr::new(value));
+    request
+}
+
+#[cfg(test)]
+mod own_via_tests {
+    use super::with_own_via;
+    use sip_transaction::fsm::TransportKind;
+
+    #[test]
+    fn a_dialed_leg_names_the_node_in_its_via() {
+        let local = sip_core::SipUri::parse("sip:fcp@203.0.113.7:5060").unwrap();
+        let remote = sip_core::SipUri::parse("sip:600@203.0.113.7").unwrap();
+        let uac = sip_uac::UserAgentClient::new(local.clone(), local.clone());
+        let invite = uac.create_invite(&remote, None);
+        let branch = invite
+            .headers()
+            .get("Via")
+            .unwrap()
+            .split("branch=")
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        let invite = with_own_via(invite, &local, TransportKind::Udp);
+        let via = invite.headers().get("Via").unwrap();
+        assert_eq!(
+            via,
+            format!("SIP/2.0/UDP 203.0.113.7:5060;branch={branch};rport")
+        );
+        assert_eq!(invite.headers().get_all("Via").count(), 1);
+        // Filled once, a second pass leaves it alone.
+        let again = with_own_via(invite.clone(), &local, TransportKind::Tcp);
+        assert_eq!(again.headers().get("Via").unwrap(), via);
+    }
+}
+
+/// Whether a call of `tenant` may run `flow`: its tenant's, or one without a
+/// tenant. A flow's tenant is stored as text (`tenant-<uuid>` or the bare
+/// uuid), so it is compared as an id.
+pub fn flow_belongs_to(flow: &fcp_flow::FlowDefinition, tenant: &fcp_core::TenantId) -> bool {
+    match flow.tenant_id.as_deref() {
+        None => true,
+        Some(owner) => owner
+            .parse::<fcp_core::TenantId>()
+            .is_ok_and(|t| t == *tenant),
+    }
+}
+
 #[cfg(test)]
 mod transport_of_tests {
     use super::transport_of;
@@ -4777,4 +5179,33 @@ async fn hoteling_guest(
     .await
     .unwrap_or(false);
     matches.then_some(user)
+}
+
+#[cfg(test)]
+mod flow_tenant_tests {
+    use super::flow_belongs_to;
+
+    #[test]
+    fn a_call_runs_its_tenants_flows_and_those_without_a_tenant() {
+        let tenant = fcp_core::TenantId::new();
+        let mut flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+            "id": "f", "name": "f", "version": 1, "initial_node": "end",
+            "nodes": { "end": { "type": "hangup" } }
+        }))
+        .unwrap();
+        assert!(flow_belongs_to(&flow, &tenant), "no tenant: anyone's");
+        flow.tenant_id = Some(tenant.to_string());
+        assert!(flow_belongs_to(&flow, &tenant));
+        flow.tenant_id = Some(tenant.as_uuid().to_string());
+        assert!(
+            flow_belongs_to(&flow, &tenant),
+            "the bare uuid is the same tenant"
+        );
+        assert!(
+            !flow_belongs_to(&flow, &fcp_core::TenantId::new()),
+            "another tenant's"
+        );
+        flow.tenant_id = Some("garbage".into());
+        assert!(!flow_belongs_to(&flow, &tenant));
+    }
 }

@@ -119,16 +119,34 @@ pub(crate) struct TransferRun {
     /// REFER. A transfer the API asks for has a referrer that asked for
     /// nothing, and is only dropped.
     pub notify_referrer: bool,
+    /// Where a parked call goes when its parker does not take it back
+    /// (`docs/PARKING.md` §3): tried once the target fails, before the
+    /// call is ended. A transfer with a referrer has none.
+    pub fallback: Option<String>,
 }
 
 /// Why a transfer did not happen: what the referrer is told, and why.
 type TransferFailure = (u16, &'static str, String);
 
 impl TransferRun {
-    pub async fn run(self) {
+    pub async fn run(mut self) {
         let call_id = self.call_id;
         let outcome = self.transfer().await;
         self.in_flight.remove(&call_id);
+        if outcome.is_err() && self.referrer_dialog.is_none() {
+            if let Some(fallback) = self.fallback.take() {
+                let still_parked = self
+                    .call_manager
+                    .get_call(&call_id)
+                    .is_some_and(|c| c.state == fcp_b2bua_core::CallState::Parked);
+                if still_parked {
+                    info!(call_id = %call_id, parker = %self.target, fallback = %fallback, "The parker did not take the call back; its lot's fallback does");
+                    self.target = fallback;
+                    self.in_flight.insert(call_id, ());
+                    return Box::pin(self.run()).await;
+                }
+            }
+        }
         match outcome {
             Ok(()) => {
                 info!(call_id = %call_id, target = %self.target, "Transfer completed");
@@ -209,25 +227,34 @@ impl TransferRun {
             .then_some(call.media_session_id)
             .flatten()
             .zip(self.media_manager.clone());
-        let rtp_port = match &anchored {
-            Some((session_id, media_manager)) => Some(
-                media_manager
+        // The target takes the referrer's leg and is told its port; the
+        // party keeps its own.
+        let rtp_ports = match &anchored {
+            Some((session_id, media_manager)) => {
+                let session = media_manager
                     .get_session(session_id)
                     .await
-                    .map_err(|e| (500, "Server Internal Error", format!("media session: {e}")))?
-                    .ports()
-                    .0,
-            ),
+                    .map_err(|e| (500, "Server Internal Error", format!("media session: {e}")))?;
+                Some((
+                    session
+                        .ports_for(crate::handler::media_leg(self.referrer))
+                        .0,
+                    session.ports_for(crate::handler::media_leg(party)).0,
+                ))
+            }
             None => None,
         };
 
         // The offer: the transferred party's media (the node's own when
         // anchored), sending both ways whatever hold it is in.
         let offer = crate::hold::with_direction(
-            &match rtp_port {
-                Some(port) => {
-                    fcp_media::rewrite_sdp_for_anchoring(&party_sdp, &self.local_addr, port, None)
-                }
+            &match rtp_ports {
+                Some((target_port, _)) => fcp_media::rewrite_sdp_for_anchoring(
+                    &party_sdp,
+                    &self.local_addr,
+                    target_port,
+                    None,
+                ),
                 None => party_sdp.clone(),
             },
             "sendrecv",
@@ -300,8 +327,8 @@ impl TransferRun {
 
         // Point the transferred party at the target.
         let mut party_sdp_now = party_sdp.clone();
-        match (&anchored, rtp_port) {
-            (Some((session_id, media_manager)), Some(port)) => {
+        match (&anchored, rtp_ports) {
+            (Some((session_id, media_manager)), Some((_, port))) => {
                 let updated = match self.referrer {
                     LegSide::A => media_manager
                         .update_session(session_id, answer.clone())

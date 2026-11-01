@@ -2035,10 +2035,15 @@ impl FcpRegistrar {
         tenant_id: &TenantId,
         aor: &str,
     ) -> Result<Vec<Binding>> {
+        // A call rings a phone behind NAT where it registered from; the
+        // registrar's own matching and its answers keep the contact as sent.
         self.get_registration_rows_impl(tenant_id, aor)
             .await?
-            .iter()
-            .map(LocationStoreAdapter::to_binding)
+            .into_iter()
+            .map(|mut row| {
+                row.contact = crate::nat::reachable_contact(&row);
+                LocationStoreAdapter::to_binding(&row)
+            })
             .collect()
     }
 
@@ -2601,6 +2606,7 @@ mod tests {
             sip_ha1_hash: None,
             sip_provisioning_password: None,
             display_name: Some("Alice".to_string()),
+            directory_listed: true,
             tenant_id: fcp_core::TenantId::nil(), // Default tenant for test
             role: fcp_core::UserRole::default(),
             department_id: None,
@@ -3317,6 +3323,7 @@ mod tests {
             )),
             sip_provisioning_password: None,
             display_name: Some("Alice".to_string()),
+            directory_listed: true,
             tenant_id: fcp_core::TenantId::nil(),
             role: fcp_core::UserRole::default(),
             department_id: None,

@@ -188,6 +188,35 @@ async fn main() -> Result<()> {
         config.service.drain_wait_secs,
     ));
 
+    // Say this process is there (`docs/SERVICES.md`).
+    let beacon = config.storage.redis_url.as_ref().map(|url| {
+        let (load, leaving) = (Arc::clone(&drain), Arc::clone(&drain));
+        let handle = fcp_cluster::ServiceBeacon::new(
+            fcp_cluster::ServiceIdentity::new(&config.service.node_id, "registrar")
+                .http(config.http.bind_address)
+                .sip(&config.sip.udp_bind),
+        )
+        .check(fcp_cluster::Check::tenants(
+            Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::TenantStore>
+        ))
+        .load(move || {
+            let drain = Arc::clone(&load);
+            async move {
+                std::collections::BTreeMap::from([(
+                    "registrations".to_string(),
+                    drain.carrying().await as u64,
+                )])
+            }
+        })
+        .draining(move || leaving.is_draining())
+        .start(fcp_storage_redis::RedisConfig {
+            url: url.clone(),
+            ..Default::default()
+        });
+        drain.set_health(handle.health());
+        handle
+    });
+
     // 9. Spawn HTTP health server
     let app_state = Arc::new(AppState {
         start_time: Instant::now(),
@@ -265,6 +294,9 @@ async fn main() -> Result<()> {
         fcp_sip::drain::drain_for_shutdown(&drain).await;
     } else {
         drain.start().await;
+    }
+    if let Some(beacon) = &beacon {
+        beacon.shutdown().await;
     }
 
     info!("Shutdown complete");

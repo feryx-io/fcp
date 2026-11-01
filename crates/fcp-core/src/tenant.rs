@@ -165,6 +165,64 @@ pub struct Tenant {
     /// §2.7).
     #[serde(default)]
     pub directory: TenantDirectory,
+    /// Whether a user may name their own lines (`docs/DEVICE_LINES.md`
+    /// §2); off, the apps show the administrator's labels.
+    #[serde(default)]
+    pub lines: TenantLines,
+    /// Whether its people's apps may capture calls, and how captures are
+    /// kept (`docs/CALL_DIAGNOSTICS.md` §3).
+    #[serde(default)]
+    pub diagnostics: TenantDiagnostics,
+}
+
+/// A tenant's word on captures from its people's apps: off unless it turns
+/// them on, and then only for a user or device an administrator allows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TenantDiagnostics {
+    /// Captures may be allowed at all.
+    #[serde(default)]
+    pub capture_allowed: bool,
+    /// The largest capture an app keeps or uploads, in MB (1 to 500).
+    #[serde(default = "default_capture_max_mb")]
+    pub capture_max_mb: u32,
+    /// Days an uploaded capture is kept (1 to 365), unless a hold keeps it.
+    #[serde(default = "default_capture_keep_days")]
+    pub capture_keep_days: u32,
+}
+
+/// The largest capture when a tenant names none.
+pub const DEFAULT_CAPTURE_MAX_MB: u32 = 50;
+pub const MAX_CAPTURE_MAX_MB: u32 = 500;
+/// Days an uploaded capture is kept when a tenant names none.
+pub const DEFAULT_CAPTURE_KEEP_DAYS: u32 = 30;
+pub const MAX_CAPTURE_KEEP_DAYS: u32 = 365;
+
+fn default_capture_max_mb() -> u32 {
+    DEFAULT_CAPTURE_MAX_MB
+}
+
+fn default_capture_keep_days() -> u32 {
+    DEFAULT_CAPTURE_KEEP_DAYS
+}
+
+impl Default for TenantDiagnostics {
+    fn default() -> Self {
+        Self {
+            capture_allowed: false,
+            capture_max_mb: DEFAULT_CAPTURE_MAX_MB,
+            capture_keep_days: DEFAULT_CAPTURE_KEEP_DAYS,
+        }
+    }
+}
+
+/// What a tenant's people may do with the lines on their devices.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TenantLines {
+    /// A user may rename their lines (`PUT /me/lines/{line}/label`).
+    #[serde(default)]
+    pub users_may_rename: bool,
 }
 
 /// What a tenant's people see of each other through `/me/directory`.
@@ -175,6 +233,11 @@ pub struct TenantDirectory {
     /// presence; on unless a tenant turns it off.
     #[serde(default = "default_visible_to_users")]
     pub visible_to_users: bool,
+    /// Whether a user may take themselves out of the directory, or put
+    /// themselves back (`PUT /me/directory-listing`); off, only an
+    /// administrator sets a user's `directory_listed`.
+    #[serde(default)]
+    pub users_may_unlist: bool,
 }
 
 fn default_visible_to_users() -> bool {
@@ -185,6 +248,7 @@ impl Default for TenantDirectory {
     fn default() -> Self {
         Self {
             visible_to_users: true,
+            users_may_unlist: false,
         }
     }
 }
@@ -449,6 +513,8 @@ impl Tenant {
             offboarding: TenantOffboarding::default(),
             provisioning: Default::default(),
             directory: TenantDirectory::default(),
+            lines: TenantLines::default(),
+            diagnostics: TenantDiagnostics::default(),
         }
     }
 

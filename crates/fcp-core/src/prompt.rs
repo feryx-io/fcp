@@ -84,11 +84,16 @@ impl std::str::FromStr for PromptSourceType {
 }
 
 /// An audio prompt record.
+///
+/// A prompt without a tenant is a system prompt: the platform's, seeded by
+/// the binaries that play it and heard by every tenant. A tenant's prompt of
+/// the same name and language overrides it for that tenant's calls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prompt {
     pub id: PromptId,
-    pub tenant_id: TenantId,
-    /// Unique name per tenant+language, e.g. "vm_enter_pin"
+    /// The owning tenant; `None` for a system prompt.
+    pub tenant_id: Option<TenantId>,
+    /// Unique name per owner+language, e.g. "vm_enter_pin"
     pub name: String,
     pub description: Option<String>,
     pub category: PromptCategory,
@@ -107,7 +112,8 @@ pub struct Prompt {
     pub duration_ms: Option<u32>,
     /// File size in bytes
     pub file_size: Option<u64>,
-    /// System prompts are seeded at startup and protected from deletion
+    /// A system prompt (no tenant): seeded at startup and protected from
+    /// deletion. Kept equal to `tenant_id.is_none()`.
     pub is_system: bool,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
@@ -125,7 +131,7 @@ impl Prompt {
         let now = SystemTime::now();
         Self {
             id: PromptId::new(),
-            tenant_id,
+            tenant_id: Some(tenant_id),
             name: name.into(),
             description: None,
             category,
@@ -154,7 +160,7 @@ impl Prompt {
         let now = SystemTime::now();
         Self {
             id: PromptId::new(),
-            tenant_id,
+            tenant_id: Some(tenant_id),
             name: name.into(),
             description: None,
             category,
@@ -171,6 +177,32 @@ impl Prompt {
             updated_at: now,
         }
     }
+
+    /// A system prompt spoken by TTS: the platform's, for every tenant.
+    pub fn system_tts(
+        name: impl Into<String>,
+        category: PromptCategory,
+        language: impl Into<String>,
+        tts_text: impl Into<String>,
+    ) -> Self {
+        let mut prompt = Self::new_tts(TenantId::default(), name, category, language, tts_text);
+        prompt.tenant_id = None;
+        prompt.is_system = true;
+        prompt
+    }
+
+    /// Whether `tenant` may see and play this prompt: its own or a system one.
+    pub fn visible_to(&self, tenant: &TenantId) -> bool {
+        self.tenant_id.is_none_or(|t| t == *tenant)
+    }
+
+    /// The directory under the prompts directory its audio is kept in: the
+    /// tenant's id, or `system`.
+    pub fn owner_dir(&self) -> String {
+        self.tenant_id
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "system".to_string())
+    }
 }
 
 /// Storage trait for prompt records.
@@ -179,102 +211,111 @@ pub trait PromptStore: Send + Sync {
     /// Get a prompt by ID.
     async fn get_prompt(&self, id: &PromptId) -> anyhow::Result<Option<Prompt>>;
 
-    /// Get a prompt by tenant + name (returns first matching language).
-    async fn get_prompt_by_name(
+    /// The prompt a call of `tenant` hears for `name`: the tenant's own in
+    /// `language`, else the system prompt in it, else the tenant's then the
+    /// system's in any language. Without a tenant, only system prompts.
+    async fn resolve_prompt(
         &self,
-        tenant_id: &TenantId,
+        tenant: Option<&TenantId>,
         name: &str,
+        language: Option<&str>,
     ) -> anyhow::Result<Option<Prompt>>;
 
-    /// Get a prompt by tenant + name + language.
+    /// The prompt of exactly this owner (`None`: the system), name and
+    /// language.
     async fn get_prompt_by_name_and_language(
         &self,
-        tenant_id: &TenantId,
+        owner: Option<&TenantId>,
         name: &str,
         language: &str,
     ) -> anyhow::Result<Option<Prompt>>;
 
-    /// List prompts for a tenant with optional filters.
+    /// List one owner's prompts (`None`: the system prompts), with optional
+    /// filters.
     async fn list_prompts(
         &self,
-        tenant_id: &TenantId,
+        owner: Option<&TenantId>,
         category: Option<PromptCategory>,
         language: Option<&str>,
     ) -> anyhow::Result<Vec<Prompt>>;
 
-    /// Create or update a prompt (upsert on tenant_id + name + language).
+    /// Create or update a prompt (upsert on owner + name + language).
     async fn put_prompt(&self, prompt: Prompt) -> anyhow::Result<()>;
 
     /// Delete a prompt by ID.
     async fn delete_prompt(&self, id: &PromptId) -> anyhow::Result<()>;
 }
 
+/// The prompt a call of `tenant` hears when something names prompt `id`
+/// (a flow's Play, hold music, a consent announcement): the tenant's own
+/// prompt as it is; a system prompt through the tenant's override of it, if
+/// any; another tenant's prompt not at all.
+pub async fn effective_prompt_by_id(
+    store: &dyn PromptStore,
+    tenant: &TenantId,
+    id: &PromptId,
+) -> anyhow::Result<Option<Prompt>> {
+    let Some(prompt) = store.get_prompt(id).await? else {
+        return Ok(None);
+    };
+    match prompt.tenant_id {
+        Some(owner) if owner == *tenant => Ok(Some(prompt)),
+        Some(_) => Ok(None),
+        None => Ok(Some(
+            store
+                .get_prompt_by_name_and_language(Some(tenant), &prompt.name, &prompt.language)
+                .await?
+                .unwrap_or(prompt),
+        )),
+    }
+}
+
 /// Service for resolving prompt names to audio file paths.
 ///
 /// Used by the IVR engine to find pre-recorded WAV files for system prompts,
-/// falling back to TTS when no audio file is available.
+/// falling back to TTS when no audio file is available. Every lookup is for
+/// a call's tenant: its override first, then the system prompt.
 pub struct PromptService {
     store: Arc<dyn PromptStore>,
-    tenant_id: TenantId,
     default_language: String,
+}
+
+fn audio_on_disk(prompt: Option<Prompt>) -> Option<PathBuf> {
+    prompt
+        .and_then(|p| p.audio_path)
+        .filter(|path| path.exists())
 }
 
 impl PromptService {
     /// Create a new prompt service.
-    pub fn new(
-        store: Arc<dyn PromptStore>,
-        tenant_id: TenantId,
-        default_language: impl Into<String>,
-    ) -> Self {
+    pub fn new(store: Arc<dyn PromptStore>, default_language: impl Into<String>) -> Self {
         Self {
             store,
-            tenant_id,
             default_language: default_language.into(),
         }
     }
 
-    /// Resolve a prompt name to an audio file path.
+    /// Resolve a prompt name to an audio file path for a call of `tenant`.
     ///
-    /// 1. Try name + language match for this tenant — return audio_path if file exists
-    /// 2. Try name-only match (any language) — return audio_path if file exists
-    /// 3. Return None (caller should use TTS fallback)
+    /// The prompt [`PromptStore::resolve_prompt`] picks, if its audio file
+    /// exists; else `None` (the caller speaks its fallback text).
     pub async fn resolve(
         &self,
+        tenant: Option<&TenantId>,
         name: &str,
         language: Option<&str>,
     ) -> anyhow::Result<Option<PathBuf>> {
         let lang = language.unwrap_or(&self.default_language);
-
-        // Try exact name + language match
-        if let Some(prompt) = self
-            .store
-            .get_prompt_by_name_and_language(&self.tenant_id, name, lang)
-            .await?
-        {
-            if let Some(ref path) = prompt.audio_path {
-                if path.exists() {
-                    return Ok(Some(path.clone()));
-                }
-            }
-        }
-
-        // Try name-only match (any language)
-        if let Some(prompt) = self.store.get_prompt_by_name(&self.tenant_id, name).await? {
-            if let Some(ref path) = prompt.audio_path {
-                if path.exists() {
-                    return Ok(Some(path.clone()));
-                }
-            }
-        }
-
-        Ok(None)
+        Ok(audio_on_disk(
+            self.store.resolve_prompt(tenant, name, Some(lang)).await?,
+        ))
     }
 
-    /// Persist a TTS-generated WAV back to a prompt record.
+    /// Persist a TTS-generated WAV back to a system prompt's record.
     ///
     /// Called after TTS fallback succeeds — caches the result so the
     /// next `resolve()` returns the file directly without TTS.
-    pub async fn cache_tts_audio(
+    pub async fn cache_system_audio(
         &self,
         name: &str,
         language: &str,
@@ -283,7 +324,7 @@ impl PromptService {
     ) -> anyhow::Result<()> {
         if let Some(mut prompt) = self
             .store
-            .get_prompt_by_name_and_language(&self.tenant_id, name, language)
+            .get_prompt_by_name_and_language(None, name, language)
             .await?
         {
             prompt.audio_path = Some(audio_path);
@@ -295,42 +336,40 @@ impl PromptService {
         Ok(())
     }
 
-    /// Resolve a prompt by ID to an audio file path.
+    /// Resolve a prompt by ID to an audio file path for a call of `tenant`.
     ///
     /// Used when a flow Play node references a prompt via API URL
-    /// (e.g. `/api/v1/prompts/prompt-<uuid>/audio`).
-    pub async fn resolve_by_id(&self, id: &PromptId) -> anyhow::Result<Option<PathBuf>> {
-        if let Some(prompt) = self.store.get_prompt(id).await? {
-            if let Some(ref path) = prompt.audio_path {
-                if path.exists() {
-                    return Ok(Some(path.clone()));
-                }
-            }
-        }
-        Ok(None)
+    /// (e.g. `/api/v1/prompts/prompt-<uuid>/audio`). See
+    /// [`effective_prompt_by_id`]: without a tenant, only a system prompt.
+    pub async fn resolve_by_id(
+        &self,
+        tenant: Option<&TenantId>,
+        id: &PromptId,
+    ) -> anyhow::Result<Option<PathBuf>> {
+        let prompt = match tenant {
+            Some(tenant) => effective_prompt_by_id(self.store.as_ref(), tenant, id).await?,
+            None => self
+                .store
+                .get_prompt(id)
+                .await?
+                .filter(|p| p.tenant_id.is_none()),
+        };
+        Ok(audio_on_disk(prompt))
     }
 
     /// Get the TTS fallback text for a prompt, if available.
     pub async fn get_tts_text(
         &self,
+        tenant: Option<&TenantId>,
         name: &str,
         language: Option<&str>,
     ) -> anyhow::Result<Option<String>> {
         let lang = language.unwrap_or(&self.default_language);
-
-        if let Some(prompt) = self
+        Ok(self
             .store
-            .get_prompt_by_name_and_language(&self.tenant_id, name, lang)
+            .resolve_prompt(tenant, name, Some(lang))
             .await?
-        {
-            return Ok(prompt.tts_text);
-        }
-
-        if let Some(prompt) = self.store.get_prompt_by_name(&self.tenant_id, name).await? {
-            return Ok(prompt.tts_text);
-        }
-
-        Ok(None)
+            .and_then(|p| p.tts_text))
     }
 }
 

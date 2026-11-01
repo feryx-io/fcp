@@ -79,6 +79,26 @@ pub trait FlowStore: Send + Sync {
     async fn release_flow(&self, _id: &str) -> Result<()> {
         Ok(())
     }
+
+    /// Give each flow without a tenant (from before tenancy) the tenant of
+    /// what names it — line bindings, mailboxes, its own traces — when they
+    /// all name one tenant (`docs/TENANT_SCOPE.md` §3.4). Returns how many.
+    async fn adopt_untenanted_flows(&self) -> Result<u64> {
+        Ok(0)
+    }
+
+    /// Give a flow without a tenant to `tenant_id`. Whether it was one
+    /// without a tenant: a flow with one is never moved.
+    async fn assign_flow_tenant(&self, id: &str, tenant_id: &str) -> Result<bool> {
+        match self.get_flow(id).await? {
+            Some(mut flow) if flow.tenant_id.is_none() => {
+                flow.tenant_id = Some(tenant_id.to_string());
+                self.update_flow(flow).await?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
 }
 
 /// A store's flows, and in front of them the flows a node builds for
@@ -180,6 +200,14 @@ impl FlowStore for BuiltinFlows {
             held.remove(id);
         }
         Ok(())
+    }
+
+    async fn adopt_untenanted_flows(&self) -> Result<u64> {
+        self.inner.adopt_untenanted_flows().await
+    }
+
+    async fn assign_flow_tenant(&self, id: &str, tenant_id: &str) -> Result<bool> {
+        self.inner.assign_flow_tenant(id, tenant_id).await
     }
 }
 

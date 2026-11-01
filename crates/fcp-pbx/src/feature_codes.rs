@@ -18,7 +18,7 @@ pub enum FeatureCodeAction {
     ParkCall,
 
     /// Retrieve a parked call from a specific orbit.
-    RetrieveParkedCall { orbit: u16 },
+    RetrieveParkedCall { slot: String },
 
     /// One-way intercom (listen-only for the target).
     IntercomOneWay { extension: String },
@@ -124,7 +124,7 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
     if is_enabled(&config.retrieve) {
         prefixes.push((&config.retrieve, |suffix| {
             FeatureCodeAction::RetrieveParkedCall {
-                orbit: suffix.parse().unwrap_or(0),
+                slot: suffix.to_string(),
             }
         }));
     }
@@ -337,7 +337,7 @@ mod tests {
         let cfg = default_config();
         assert_eq!(
             parse("*71701", &cfg),
-            Some(FeatureCodeAction::RetrieveParkedCall { orbit: 701 })
+            Some(FeatureCodeAction::RetrieveParkedCall { slot: "701".into() })
         );
     }
 
@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(parse("*70", &cfg), Some(FeatureCodeAction::ParkCall));
         assert_eq!(
             parse("*71701", &cfg),
-            Some(FeatureCodeAction::RetrieveParkedCall { orbit: 701 })
+            Some(FeatureCodeAction::RetrieveParkedCall { slot: "701".into() })
         );
     }
 

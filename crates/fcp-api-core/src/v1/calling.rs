@@ -191,7 +191,7 @@ pub(crate) async fn hold_music_choice(
                 .get_prompt(&prompt_id)
                 .await
                 .map_err(|e| ApiError::Internal(e.to_string()))?
-                .filter(|p| &p.tenant_id == tenant)
+                .filter(|p| p.visible_to(tenant))
                 .ok_or_else(|| ApiError::BadRequest(format!("hold_music: no prompt {id}")))?;
             Some(prompt.id.to_string())
         }
@@ -348,7 +348,7 @@ fn parse_target(name: &str, given: &str) -> Result<Option<CallTarget>, ApiError>
         .map_err(|e| ApiError::BadRequest(format!("{name}: {e}")))
 }
 
-async fn user_named(
+pub(crate) async fn user_named(
     state: &ApiState,
     tenant: &fcp_core::TenantId,
     username: &str,

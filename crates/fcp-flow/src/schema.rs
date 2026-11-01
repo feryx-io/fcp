@@ -127,7 +127,7 @@ pub enum NodeType {
     Gather {
         /// Optional prompt to play/say before gathering
         #[serde(skip_serializing_if = "Option::is_none")]
-        prompt: Option<GatherPrompt>,
+        prompt: Option<Box<GatherPrompt>>,
 
         /// Number of digits to gather (0 = variable length)
         #[serde(default)]
@@ -192,6 +192,30 @@ pub enum NodeType {
         /// `speech_confidence`.
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         speech_transitions: HashMap<String, String>,
+
+        /// How many times the caller is asked before the menu gives up:
+        /// nothing heard, or a choice the menu does not have, plays the
+        /// matching retry prompt and the menu again, until this many
+        /// attempts are spent. Unset, or 1, asks once: the timeout and
+        /// default branches are taken at once, as they always were.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_attempts: Option<u32>,
+
+        /// Played before the menu is asked again when nothing was heard
+        /// ("Sorry, I didn't hear anything.").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        no_input_prompt: Option<Box<GatherPrompt>>,
+
+        /// Played before the menu is asked again after a choice it does
+        /// not have ("That is not a valid choice.").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invalid_prompt: Option<Box<GatherPrompt>>,
+
+        /// Where the call goes when the attempts are spent; unset, the
+        /// timeout branch for nothing heard and the default branch for an
+        /// invalid choice, as with one attempt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_max_attempts: Option<String>,
     },
 
     /// Send a call's live transcript as `call.transcript` events

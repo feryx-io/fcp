@@ -611,6 +611,39 @@ impl Link {
             nodes,
             sync: self.syncer().map(|s| s.state()),
             registrations: self.registrations().await,
+            services: self.services().await,
+            parked: self.parked().await,
+        }
+    }
+
+    /// The calls parked at the site, from its Redis, for the cloud's
+    /// board (`docs/PARKING.md` phase 4).
+    async fn parked(&self) -> Vec<fcp_core::storage::ClusterParkedCall> {
+        let (Some(redis), Some((_, tenant, _))) = (self.redis.as_ref(), self.enrolled()) else {
+            return Vec::new();
+        };
+        let store = fcp_storage_redis::parking::RedisParkingStore::new(redis.clone());
+        match store.list(&tenant).await {
+            Ok(calls) => calls.iter().map(|c| c.to_cluster()).collect(),
+            Err(e) => {
+                warn!(error = %e, "Could not read the site's parked calls");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Every service at the site, from the beacons in its Redis
+    /// (`docs/SERVICES.md`), for the cloud's record.
+    async fn services(&self) -> Vec<fcp_core::service_health::ServiceRecord> {
+        let Some(redis) = self.redis.as_ref() else {
+            return Vec::new();
+        };
+        match fcp_cluster::ServiceBeacon::read_all(redis).await {
+            Ok(records) => records,
+            Err(e) => {
+                warn!(error = %e, "Could not read the site's services");
+                Vec::new()
+            }
         }
     }
 

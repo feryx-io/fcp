@@ -228,6 +228,15 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!("API Gateway listening on {}", bind_addr);
 
+    // Say this process is there (`docs/SERVICES.md`).
+    let beacon = fcp_cluster::ServiceBeacon::new(
+        fcp_cluster::ServiceIdentity::new(&config.service.node_id, "api_gateway").http(bind_addr),
+    )
+    .start(fcp_storage_redis::RedisConfig {
+        url: config.redis.url.clone(),
+        ..Default::default()
+    });
+
     // Spawn server task
     let server_handle = tokio::spawn(async move {
         axum::serve(
@@ -243,6 +252,7 @@ async fn main() -> Result<()> {
 
     // Shutdown server
     server_handle.abort();
+    beacon.shutdown().await;
 
     info!("FCP API Gateway shutdown complete");
     Ok(())

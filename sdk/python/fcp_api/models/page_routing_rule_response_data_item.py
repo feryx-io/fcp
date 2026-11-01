@@ -37,6 +37,7 @@ class PageRoutingRuleResponseDataItem:
             created_at (datetime.datetime):
             updated_at (datetime.datetime):
             description (None | str | Unset):
+            location_id (None | str | Unset): The location whose callers the rule is for; `null` for every call.
             destination_pattern (None | str | Unset):
             source_pattern (None | str | Unset):
             time_window_start (None | str | Unset):
@@ -58,6 +59,7 @@ class PageRoutingRuleResponseDataItem:
     created_at: datetime.datetime
     updated_at: datetime.datetime
     description: None | str | Unset = UNSET
+    location_id: None | str | Unset = UNSET
     destination_pattern: None | str | Unset = UNSET
     source_pattern: None | str | Unset = UNSET
     time_window_start: None | str | Unset = UNSET
@@ -103,6 +105,12 @@ class PageRoutingRuleResponseDataItem:
             description = UNSET
         else:
             description = self.description
+
+        location_id: None | str | Unset
+        if isinstance(self.location_id, Unset):
+            location_id = UNSET
+        else:
+            location_id = self.location_id
 
         destination_pattern: None | str | Unset
         if isinstance(self.destination_pattern, Unset):
@@ -164,6 +172,8 @@ class PageRoutingRuleResponseDataItem:
         })
         if description is not UNSET:
             field_dict["description"] = description
+        if location_id is not UNSET:
+            field_dict["location_id"] = location_id
         if destination_pattern is not UNSET:
             field_dict["destination_pattern"] = destination_pattern
         if source_pattern is not UNSET:
@@ -224,6 +234,16 @@ class PageRoutingRuleResponseDataItem:
             return cast(None | str | Unset, data)
 
         description = _parse_description(d.pop("description", UNSET))
+
+
+        def _parse_location_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        location_id = _parse_location_id(d.pop("location_id", UNSET))
 
 
         def _parse_destination_pattern(data: object) -> None | str | Unset:
@@ -309,6 +329,7 @@ class PageRoutingRuleResponseDataItem:
             created_at=created_at,
             updated_at=updated_at,
             description=description,
+            location_id=location_id,
             destination_pattern=destination_pattern,
             source_pattern=source_pattern,
             time_window_start=time_window_start,

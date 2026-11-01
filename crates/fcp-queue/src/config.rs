@@ -38,6 +38,12 @@ pub struct QueueSystemConfig {
     #[serde(default = "default_stats_publish_interval")]
     pub stats_publish_interval_secs: u64,
 
+    /// How often the queues made on the admin API are read again from the
+    /// database: a queue made, changed or removed there takes effect
+    /// within this many seconds, with no signal to the node.
+    #[serde(default = "default_store_sync")]
+    pub store_sync_secs: u64,
+
     /// Default pause duration (seconds). 0 = no auto-resume (manual unpause only).
     #[serde(default)]
     pub auto_pause_resume_secs: u32,
@@ -84,6 +90,7 @@ impl Default for QueueSystemConfig {
             max_ring_time_secs: default_max_ring_time(),
             queue_audio_dir: None,
             stats_publish_interval_secs: default_stats_publish_interval(),
+            store_sync_secs: default_store_sync(),
             auto_pause_resume_secs: 0,
             max_no_answer: default_max_no_answer(),
             default_max_concurrent_calls: default_one(),
@@ -363,6 +370,10 @@ fn default_announce_interval() -> u32 {
 
 fn default_stats_publish_interval() -> u64 {
     5
+}
+
+fn default_store_sync() -> u64 {
+    30
 }
 
 fn default_max_no_answer() -> u32 {

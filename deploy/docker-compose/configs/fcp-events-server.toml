@@ -31,6 +31,20 @@ max_connections_per_tenant = 50
 # FCP_EVENTS_WEBHOOK_DATABASE_URL; only public HTTPS targets are reached.
 enabled = true
 
+# On-site notification of emergency calls (docs/E911.md): a tenant's and a
+# site's contacts are told. A call contact is rung by the call manager,
+# which speaks the notice and, for a contact who may listen in, offers to
+# join them to the call. Its token is FCP_EVENTS_NOTIFY_CALL_TOKEN, the
+# call manager's FCP_CALL_MANAGER_API_TOKEN. Email and SMS need
+# [notifications.smtp] and [notifications.sms] with a provider's account.
+[notifications]
+enabled = true
+
+[notifications.call]
+call_manager_url = "http://host.docker.internal:8084"
+ring_timeout_secs = 30
+repeat = 2
+
 [logging]
 level = "info"
 format = "pretty"

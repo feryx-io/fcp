@@ -62,11 +62,17 @@ pub struct SiteLocation {
     /// Timezone (e.g., "America/New_York")
     pub timezone: Option<String>,
 
-    /// Emergency contact name
-    pub emergency_contact_name: Option<String>,
+    /// Who is told when an emergency call is placed from this site, before
+    /// the tenant's own contacts (`docs/E911.md` "On-site notification"):
+    /// the front desk or security of this building. Each may be allowed to
+    /// listen in to the call.
+    #[serde(default)]
+    pub emergency_contacts: Vec<crate::e911::notify::NotifyContact>,
 
-    /// Emergency contact phone number
-    pub emergency_contact_phone: Option<String>,
+    /// Whether the tenant's contacts are told too about a call from this
+    /// site; true unless the site's own contacts are all that should be.
+    #[serde(default = "default_true")]
+    pub notify_tenant_contacts: bool,
     /// E911 callback number (ELIN) the carrier maps to this address; sent as
     /// caller ID on emergency calls placed from this site.
     #[serde(default)]
@@ -121,8 +127,8 @@ impl SiteLocation {
             longitude: None,
             phone_number: None,
             timezone: None,
-            emergency_contact_name: None,
-            emergency_contact_phone: None,
+            emergency_contacts: Vec::new(),
+            notify_tenant_contacts: true,
             e911_callback_number: None,
             civic: Default::default(),
             e911_validated_at: None,
@@ -163,6 +169,10 @@ impl SiteLocation {
         ]
         .join("\u{1f}")
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[cfg(test)]

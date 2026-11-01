@@ -11,6 +11,7 @@ from .app_token_request import AppTokenRequest
 from .app_token_response import AppTokenResponse
 from .approve_request import ApproveRequest
 from .approve_response import ApproveResponse
+from .assign_flow_request import AssignFlowRequest
 from .assistant_view import AssistantView
 from .audit_entry_response import AuditEntryResponse
 from .audit_entry_response_new_value import AuditEntryResponseNewValue
@@ -35,8 +36,13 @@ from .brand_ringtone import BrandRingtone
 from .bundle_response import BundleResponse
 from .call_control_response import CallControlResponse
 from .call_info import CallInfo
+from .call_quality_report import CallQualityReport
+from .call_quality_response import CallQualityResponse
 from .caller_id_policy import CallerIdPolicy
 from .calling_response import CallingResponse
+from .capture_allow_request import CaptureAllowRequest
+from .capture_allow_response import CaptureAllowResponse
+from .capture_response import CaptureResponse
 from .cdr_response import CdrResponse
 from .change_expired_password_request import ChangeExpiredPasswordRequest
 from .change_password_request import ChangePasswordRequest
@@ -59,7 +65,10 @@ from .cluster_view import ClusterView
 from .config_entry_response import ConfigEntryResponse
 from .config_entry_response_value import ConfigEntryResponseValue
 from .config_template_response import ConfigTemplateResponse
+from .contact_import_response import ContactImportResponse
+from .contact_import_skip import ContactImportSkip
 from .contact_input_type_1 import ContactInputType1
+from .contact_number import ContactNumber
 from .contact_readiness import ContactReadiness
 from .contact_response import ContactResponse
 from .create_api_token_request import CreateApiTokenRequest
@@ -100,6 +109,7 @@ from .destination_override import DestinationOverride
 from .device_app_response import DeviceAppResponse
 from .device_binding_response import DeviceBindingResponse
 from .device_fetch_response import DeviceFetchResponse
+from .device_line import DeviceLine
 from .device_redirection_response import DeviceRedirectionResponse
 from .device_response import DeviceResponse
 from .device_validation_response import DeviceValidationResponse
@@ -171,6 +181,8 @@ from .library_template_response import LibraryTemplateResponse
 from .line_binding_response import LineBindingResponse
 from .line_key import LineKey
 from .line_key_kind import LineKeyKind
+from .line_kind import LineKind
+from .line_label_request import LineLabelRequest
 from .list_cdrs_response import ListCdrsResponse
 from .location_response import LocationResponse
 from .location_validation_response import LocationValidationResponse
@@ -192,9 +204,11 @@ from .message_response import MessageResponse
 from .mfa_ticket_request import MfaTicketRequest
 from .mint_join_token_request import MintJoinTokenRequest
 from .missing_file import MissingFile
+from .my_call_quality import MyCallQuality
 from .my_call_response import MyCallResponse
 from .my_executive import MyExecutive
 from .my_greeting_upload import MyGreetingUpload
+from .my_presence_response import MyPresenceResponse
 from .network_response import NetworkResponse
 from .node_capacity import NodeCapacity
 from .notification_readiness import NotificationReadiness
@@ -203,6 +217,9 @@ from .notify_call_request import NotifyCallRequest
 from .notify_call_response import NotifyCallResponse
 from .number_usage_response import NumberUsageResponse
 from .number_validation_response import NumberValidationResponse
+from .order_statuses_request import OrderStatusesRequest
+from .own_status_request import OwnStatusRequest
+from .own_status_response import OwnStatusResponse
 from .page_agent_response import PageAgentResponse
 from .page_agent_response_data_item import PageAgentResponseDataItem
 from .page_api_token_response import PageApiTokenResponse
@@ -219,6 +236,12 @@ from .page_brand_asset_response import PageBrandAssetResponse
 from .page_brand_asset_response_data_item import PageBrandAssetResponseDataItem
 from .page_call_info import PageCallInfo
 from .page_call_info_data_item import PageCallInfoDataItem
+from .page_call_quality_response import PageCallQualityResponse
+from .page_call_quality_response_data_item import PageCallQualityResponseDataItem
+from .page_capture_allow_response import PageCaptureAllowResponse
+from .page_capture_allow_response_data_item import PageCaptureAllowResponseDataItem
+from .page_capture_response import PageCaptureResponse
+from .page_capture_response_data_item import PageCaptureResponseDataItem
 from .page_class_of_service_response import PageClassOfServiceResponse
 from .page_class_of_service_response_data_item import PageClassOfServiceResponseDataItem
 from .page_config_entry_response import PageConfigEntryResponse
@@ -291,8 +314,16 @@ from .page_notification_response import PageNotificationResponse
 from .page_notification_response_data_item import PageNotificationResponseDataItem
 from .page_number_usage_response import PageNumberUsageResponse
 from .page_number_usage_response_data_item import PageNumberUsageResponseDataItem
+from .page_own_status_response import PageOwnStatusResponse
+from .page_own_status_response_data_item import PageOwnStatusResponseDataItem
+from .page_parked_call_response import PageParkedCallResponse
+from .page_parked_call_response_data_item import PageParkedCallResponseDataItem
+from .page_parking_lot_response import PageParkingLotResponse
+from .page_parking_lot_response_data_item import PageParkingLotResponseDataItem
 from .page_pending_device_response import PagePendingDeviceResponse
 from .page_pending_device_response_data_item import PagePendingDeviceResponseDataItem
+from .page_personal_contact_response import PagePersonalContactResponse
+from .page_personal_contact_response_data_item import PagePersonalContactResponseDataItem
 from .page_phone_number_response import PagePhoneNumberResponse
 from .page_phone_number_response_data_item import PagePhoneNumberResponseDataItem
 from .page_presence_response import PagePresenceResponse
@@ -324,6 +355,9 @@ from .page_routing_rule_response import PageRoutingRuleResponse
 from .page_routing_rule_response_data_item import PageRoutingRuleResponseDataItem
 from .page_schedule_response import PageScheduleResponse
 from .page_schedule_response_data_item import PageScheduleResponseDataItem
+from .page_service_view import PageServiceView
+from .page_service_view_data_item import PageServiceViewDataItem
+from .page_service_view_data_item_load import PageServiceViewDataItemLoad
 from .page_session_response import PageSessionResponse
 from .page_session_response_data_item import PageSessionResponseDataItem
 from .page_site_response import PageSiteResponse
@@ -352,12 +386,19 @@ from .page_webhook_event_type import PageWebhookEventType
 from .page_webhook_event_type_data_item import PageWebhookEventTypeDataItem
 from .page_webhook_response import PageWebhookResponse
 from .page_webhook_response_data_item import PageWebhookResponseDataItem
+from .parked_call_response import ParkedCallResponse
+from .parked_caller import ParkedCaller
+from .parking_lot_request import ParkingLotRequest
+from .parking_lot_response import ParkingLotResponse
 from .password_login import PasswordLogin
 from .pending_device_response import PendingDeviceResponse
+from .personal_contact_request import PersonalContactRequest
+from .personal_contact_response import PersonalContactResponse
 from .phone_number_response import PhoneNumberResponse
 from .place_hold_request import PlaceHoldRequest
 from .play_request import PlayRequest
 from .policy_response import PolicyResponse
+from .presence import Presence
 from .presence_auth_policy import PresenceAuthPolicy
 from .presence_auth_policy_event_allow import PresenceAuthPolicyEventAllow
 from .presence_auth_policy_event_block import PresenceAuthPolicyEventBlock
@@ -405,6 +446,7 @@ from .required_claim import RequiredClaim
 from .resource_counts import ResourceCounts
 from .resync_response import ResyncResponse
 from .retention_run_response import RetentionRunResponse
+from .retrieve_parked_request import RetrieveParkedRequest
 from .rewrap_report import RewrapReport
 from .rollout_stage import RolloutStage
 from .rotate_api_token_request import RotateApiTokenRequest
@@ -418,9 +460,14 @@ from .schedule_request import ScheduleRequest
 from .schedule_response import ScheduleResponse
 from .seal_request import SealRequest
 from .seal_response import SealResponse
+from .service_check_view import ServiceCheckView
+from .service_view import ServiceView
+from .service_view_load import ServiceViewLoad
+from .services_summary import ServicesSummary
 from .session_response import SessionResponse
 from .set_greeting_active_request import SetGreetingActiveRequest
 from .set_layout_request import SetLayoutRequest
+from .shown import Shown
 from .signup_request import SignupRequest
 from .signup_response import SignupResponse
 from .sip_trace_list_response import SipTraceListResponse
@@ -433,13 +480,16 @@ from .site_response_versions import SiteResponseVersions
 from .site_status import SiteStatus
 from .site_with_token_response import SiteWithTokenResponse
 from .softphone_account import SoftphoneAccount
+from .softphone_capture import SoftphoneCapture
 from .softphone_config import SoftphoneConfig
 from .softphone_config_feature_codes import SoftphoneConfigFeatureCodes
+from .softphone_line import SoftphoneLine
 from .softphone_media import SoftphoneMedia
 from .softphone_password import SoftphonePassword
 from .sso_exchange_request import SsoExchangeRequest
 from .start_recording_request import StartRecordingRequest
 from .status_response import StatusResponse
+from .status_state import StatusState
 from .subject_expansion import SubjectExpansion
 from .subject_identifier_type_0 import SubjectIdentifierType0
 from .subject_identifier_type_0_type import SubjectIdentifierType0Type
@@ -455,7 +505,9 @@ from .supervise_request import SuperviseRequest
 from .synthesize_greeting_request import SynthesizeGreetingRequest
 from .template_resync_response import TemplateResyncResponse
 from .tenant_calling import TenantCalling
+from .tenant_diagnostics import TenantDiagnostics
 from .tenant_directory import TenantDirectory
+from .tenant_lines import TenantLines
 from .tenant_offboarding import TenantOffboarding
 from .tenant_provisioning import TenantProvisioning
 from .tenant_response import TenantResponse
@@ -491,7 +543,9 @@ from .update_meeting_request import UpdateMeetingRequest
 from .update_message_request import UpdateMessageRequest
 from .update_my_conference_request import UpdateMyConferenceRequest
 from .update_my_executive import UpdateMyExecutive
+from .update_my_presence_request import UpdateMyPresenceRequest
 from .update_network_request import UpdateNetworkRequest
+from .update_own_status_request import UpdateOwnStatusRequest
 from .update_password_request import UpdatePasswordRequest
 from .update_phone_number_request import UpdatePhoneNumberRequest
 from .update_policy_request import UpdatePolicyRequest
@@ -510,6 +564,7 @@ from .upsert_rate_request import UpsertRateRequest
 from .usage_response import UsageResponse
 from .user_device_response import UserDeviceResponse
 from .user_identity_response import UserIdentityResponse
+from .user_presence_response import UserPresenceResponse
 from .user_readiness import UserReadiness
 from .user_response import UserResponse
 from .validate_address_request import ValidateAddressRequest
@@ -543,6 +598,7 @@ __all__ = (
     "ApproveResponse",
     "AppTokenRequest",
     "AppTokenResponse",
+    "AssignFlowRequest",
     "AssistantView",
     "AuditEntryResponse",
     "AuditEntryResponseNewValue",
@@ -569,6 +625,11 @@ __all__ = (
     "CallerIdPolicy",
     "CallInfo",
     "CallingResponse",
+    "CallQualityReport",
+    "CallQualityResponse",
+    "CaptureAllowRequest",
+    "CaptureAllowResponse",
+    "CaptureResponse",
     "CdrResponse",
     "ChangeExpiredPasswordRequest",
     "ChangePasswordRequest",
@@ -591,7 +652,10 @@ __all__ = (
     "ConfigEntryResponse",
     "ConfigEntryResponseValue",
     "ConfigTemplateResponse",
+    "ContactImportResponse",
+    "ContactImportSkip",
     "ContactInputType1",
+    "ContactNumber",
     "ContactReadiness",
     "ContactResponse",
     "CreateApiTokenRequest",
@@ -632,6 +696,7 @@ __all__ = (
     "DeviceAppResponse",
     "DeviceBindingResponse",
     "DeviceFetchResponse",
+    "DeviceLine",
     "DeviceRedirectionResponse",
     "DeviceResponse",
     "DeviceValidationResponse",
@@ -703,6 +768,8 @@ __all__ = (
     "LineBindingResponse",
     "LineKey",
     "LineKeyKind",
+    "LineKind",
+    "LineLabelRequest",
     "ListCdrsResponse",
     "LocationResponse",
     "LocationValidationResponse",
@@ -724,9 +791,11 @@ __all__ = (
     "MfaTicketRequest",
     "MintJoinTokenRequest",
     "MissingFile",
+    "MyCallQuality",
     "MyCallResponse",
     "MyExecutive",
     "MyGreetingUpload",
+    "MyPresenceResponse",
     "NetworkResponse",
     "NodeCapacity",
     "NotificationReadiness",
@@ -735,6 +804,9 @@ __all__ = (
     "NotifyCallResponse",
     "NumberUsageResponse",
     "NumberValidationResponse",
+    "OrderStatusesRequest",
+    "OwnStatusRequest",
+    "OwnStatusResponse",
     "PageAgentResponse",
     "PageAgentResponseDataItem",
     "PageApiTokenResponse",
@@ -751,6 +823,12 @@ __all__ = (
     "PageBrandAssetResponseDataItem",
     "PageCallInfo",
     "PageCallInfoDataItem",
+    "PageCallQualityResponse",
+    "PageCallQualityResponseDataItem",
+    "PageCaptureAllowResponse",
+    "PageCaptureAllowResponseDataItem",
+    "PageCaptureResponse",
+    "PageCaptureResponseDataItem",
     "PageClassOfServiceResponse",
     "PageClassOfServiceResponseDataItem",
     "PageConfigEntryResponse",
@@ -823,8 +901,16 @@ __all__ = (
     "PageNotificationResponseDataItem",
     "PageNumberUsageResponse",
     "PageNumberUsageResponseDataItem",
+    "PageOwnStatusResponse",
+    "PageOwnStatusResponseDataItem",
+    "PageParkedCallResponse",
+    "PageParkedCallResponseDataItem",
+    "PageParkingLotResponse",
+    "PageParkingLotResponseDataItem",
     "PagePendingDeviceResponse",
     "PagePendingDeviceResponseDataItem",
+    "PagePersonalContactResponse",
+    "PagePersonalContactResponseDataItem",
     "PagePhoneNumberResponse",
     "PagePhoneNumberResponseDataItem",
     "PagePresenceResponse",
@@ -856,6 +942,9 @@ __all__ = (
     "PageRoutingRuleResponseDataItem",
     "PageScheduleResponse",
     "PageScheduleResponseDataItem",
+    "PageServiceView",
+    "PageServiceViewDataItem",
+    "PageServiceViewDataItemLoad",
     "PageSessionResponse",
     "PageSessionResponseDataItem",
     "PageSiteResponse",
@@ -884,12 +973,19 @@ __all__ = (
     "PageWebhookEventTypeDataItem",
     "PageWebhookResponse",
     "PageWebhookResponseDataItem",
+    "ParkedCaller",
+    "ParkedCallResponse",
+    "ParkingLotRequest",
+    "ParkingLotResponse",
     "PasswordLogin",
     "PendingDeviceResponse",
+    "PersonalContactRequest",
+    "PersonalContactResponse",
     "PhoneNumberResponse",
     "PlaceHoldRequest",
     "PlayRequest",
     "PolicyResponse",
+    "Presence",
     "PresenceAuthPolicy",
     "PresenceAuthPolicyEventAllow",
     "PresenceAuthPolicyEventBlock",
@@ -937,6 +1033,7 @@ __all__ = (
     "ResourceCounts",
     "ResyncResponse",
     "RetentionRunResponse",
+    "RetrieveParkedRequest",
     "RewrapReport",
     "RolloutStage",
     "RotateApiTokenRequest",
@@ -950,9 +1047,14 @@ __all__ = (
     "ScheduleResponse",
     "SealRequest",
     "SealResponse",
+    "ServiceCheckView",
+    "ServicesSummary",
+    "ServiceView",
+    "ServiceViewLoad",
     "SessionResponse",
     "SetGreetingActiveRequest",
     "SetLayoutRequest",
+    "Shown",
     "SignupRequest",
     "SignupResponse",
     "SipTraceListResponse",
@@ -965,13 +1067,16 @@ __all__ = (
     "SiteStatus",
     "SiteWithTokenResponse",
     "SoftphoneAccount",
+    "SoftphoneCapture",
     "SoftphoneConfig",
     "SoftphoneConfigFeatureCodes",
+    "SoftphoneLine",
     "SoftphoneMedia",
     "SoftphonePassword",
     "SsoExchangeRequest",
     "StartRecordingRequest",
     "StatusResponse",
+    "StatusState",
     "SubjectExpansion",
     "SubjectIdentifierType0",
     "SubjectIdentifierType0Type",
@@ -987,7 +1092,9 @@ __all__ = (
     "SynthesizeGreetingRequest",
     "TemplateResyncResponse",
     "TenantCalling",
+    "TenantDiagnostics",
     "TenantDirectory",
+    "TenantLines",
     "TenantOffboarding",
     "TenantProvisioning",
     "TenantResponse",
@@ -1023,7 +1130,9 @@ __all__ = (
     "UpdateMessageRequest",
     "UpdateMyConferenceRequest",
     "UpdateMyExecutive",
+    "UpdateMyPresenceRequest",
     "UpdateNetworkRequest",
+    "UpdateOwnStatusRequest",
     "UpdatePasswordRequest",
     "UpdatePhoneNumberRequest",
     "UpdatePolicyRequest",
@@ -1042,6 +1151,7 @@ __all__ = (
     "UsageResponse",
     "UserDeviceResponse",
     "UserIdentityResponse",
+    "UserPresenceResponse",
     "UserReadiness",
     "UserResponse",
     "ValidateAddressRequest",

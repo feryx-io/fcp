@@ -167,9 +167,7 @@ async fn main() -> Result<()> {
     );
 
     // 5. Initialize config store from PostgreSQL (if database_url is configured)
-    let config_store: Option<Arc<dyn fcp_core::config_store::ConfigStore>> = if let Some(
-        ref db_url,
-    ) =
+    let database: Option<Arc<fcp_storage_postgres::PostgresStorage>> = if let Some(ref db_url) =
         config.storage.database_url
     {
         match fcp_storage_postgres::PostgresStorage::new(fcp_storage_postgres::PostgresConfig {
@@ -184,7 +182,7 @@ async fn main() -> Result<()> {
         {
             Ok(storage) => {
                 info!("PostgreSQL config store initialized");
-                Some(Arc::new(storage) as Arc<dyn fcp_core::config_store::ConfigStore>)
+                Some(Arc::new(storage))
             }
             Err(e) => {
                 warn!(error = %e, "Failed to initialize PostgreSQL config store, using TOML only");
@@ -194,6 +192,9 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+    let config_store: Option<Arc<dyn fcp_core::config_store::ConfigStore>> = database
+        .clone()
+        .map(|s| s as Arc<dyn fcp_core::config_store::ConfigStore>);
 
     // 5b. Seed operational config sections into database (DB primary, TOML seed)
     // Bootstrap sections (service, http, logging, tls, storage) stay TOML-only.
@@ -352,6 +353,26 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Say this process is there, member or not (`docs/SERVICES.md`).
+    #[cfg(feature = "storage-redis")]
+    let beacon = config.storage.redis_url.as_ref().map(|url| {
+        let mut beacon = fcp_cluster::ServiceBeacon::new(
+            fcp_cluster::ServiceIdentity::new(&config.service.node_id, "media")
+                .region(fcp_cluster::resolve_region(
+                    config.cluster.region.as_deref(),
+                ))
+                .member(config.cluster.enabled)
+                .http(config.http.bind_address),
+        );
+        if let Some(database) = &database {
+            beacon = beacon.check(fcp_cluster::Check::database(database.ping_check()));
+        }
+        beacon.start(fcp_storage_redis::RedisConfig {
+            url: url.clone(),
+            ..Default::default()
+        })
+    });
+
     info!(
         http = %config.http.bind_address,
         rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
@@ -419,6 +440,10 @@ async fn main() -> Result<()> {
     #[cfg(feature = "storage-redis")]
     if let Some(ref cm) = _cluster_manager {
         cm.shutdown().await;
+    }
+    #[cfg(feature = "storage-redis")]
+    if let Some(beacon) = &beacon {
+        beacon.shutdown().await;
     }
 
     info!("Shutdown complete");

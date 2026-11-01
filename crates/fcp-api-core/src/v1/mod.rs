@@ -6,6 +6,7 @@ pub mod auth_session;
 pub mod billing;
 pub mod branding;
 pub mod call_control;
+pub mod call_quality;
 pub mod calling;
 pub mod cdrs;
 pub mod classes_of_service;
@@ -16,6 +17,7 @@ pub mod config;
 pub mod config_templates;
 pub mod dashboard;
 pub mod debug;
+pub mod device_captures;
 pub mod devices;
 pub mod emergency;
 pub mod emergency_networks;
@@ -31,10 +33,13 @@ pub mod join_tokens;
 pub mod lcr_routes;
 pub mod line_bindings;
 pub mod locations;
+pub mod me_contacts;
 pub mod me_data;
 pub mod me_events;
+pub mod me_presence;
 pub mod media;
 pub mod metrics;
+pub mod parking;
 pub mod phone_numbers;
 pub mod presence;
 pub mod prompts;
@@ -216,6 +221,7 @@ pub fn router() -> Router<ApiState> {
         )
         // Your devices: phones and app installs (docs/SOFTPHONE.md §2.1)
         .route("/me/softphone", get(softphone::get_config))
+        .route("/me/lines/:line/label", put(softphone::set_line_label))
         .route(
             "/me/softphone/rotate-password",
             post(softphone::rotate_password),
@@ -223,7 +229,57 @@ pub fn router() -> Router<ApiState> {
         .route("/me/devices", get(user_devices::list_mine))
         .route("/me/devices/:id", delete(user_devices::delete_mine))
         .route("/me/calls", get(me_data::list_my_calls))
+        .route(
+            "/me/calls/:call_id/recording/start",
+            post(me_data::start_my_recording),
+        )
+        .route(
+            "/me/calls/:call_id/recording/stop",
+            post(me_data::stop_my_recording),
+        )
+        .route(
+            "/me/calls/:call_id/quality",
+            post(call_quality::report_call_quality),
+        )
+        // Captures from the app (docs/CALL_DIAGNOSTICS.md §3); the body
+        // limit is the handler's (the tenant's capture_max_mb).
+        .route(
+            "/me/devices/:id/captures",
+            post(device_captures::upload_capture).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/me/captures", get(device_captures::list_my_captures))
         .route("/me/directory", get(me_data::list_directory))
+        .route(
+            "/me/contacts",
+            get(me_contacts::list_contacts).post(me_contacts::create_contact),
+        )
+        .route("/me/contacts/export", get(me_contacts::export_contacts))
+        .route(
+            "/me/contacts/import",
+            post(me_contacts::import_contacts).layer(DefaultBodyLimit::max(10 * 1024 * 1024)),
+        )
+        .route(
+            "/me/contacts/:id",
+            get(me_contacts::get_contact)
+                .put(me_contacts::update_contact)
+                .delete(me_contacts::delete_contact),
+        )
+        .route(
+            "/me/presence",
+            get(me_presence::get_my_presence).put(me_presence::update_my_presence),
+        )
+        .route(
+            "/me/presence/statuses",
+            get(me_presence::list_statuses).post(me_presence::create_status),
+        )
+        .route(
+            "/me/presence/statuses/order",
+            put(me_presence::order_statuses),
+        )
+        .route(
+            "/me/presence/statuses/:id",
+            put(me_presence::update_status).delete(me_presence::delete_status),
+        )
         .route("/me/executives", get(self_service::get_my_executives))
         .route(
             "/me/executives/:user_id",
@@ -430,6 +486,10 @@ pub fn router() -> Router<ApiState> {
             "/users/:username/calling",
             get(calling::get_user_calling).put(calling::update_user_calling),
         )
+        .route(
+            "/users/:username/presence",
+            get(me_presence::get_user_presence),
+        )
         .route("/users/:username/devices", get(user_devices::list_users))
         // Registrations
         .route("/registrations", get(registrations::list_registrations))
@@ -490,6 +550,7 @@ pub fn router() -> Router<ApiState> {
             get(compliance::list_retention_runs),
         )
         .route("/audit-log", get(compliance::list_audit_log))
+        .route("/audit-log/export", get(compliance::export_audit_log))
         .route("/compliance/deletions", get(compliance::list_deletions))
         .route(
             "/compliance/holds",
@@ -531,6 +592,22 @@ pub fn router() -> Router<ApiState> {
         .route("/cdrs", get(cdrs::list_cdrs))
         .route("/cdrs/export", get(cdrs::export_cdrs))
         .route("/cdrs/:call_id", get(cdrs::get_cdr))
+        .route(
+            "/cdrs/:call_id/quality",
+            get(call_quality::get_call_quality),
+        )
+        // Apps' captures and who may take them (docs/CALL_DIAGNOSTICS.md §3)
+        .route("/captures", get(device_captures::list_captures))
+        .route(
+            "/captures/allows",
+            get(device_captures::list_allows).post(device_captures::create_allow),
+        )
+        .route(
+            "/captures/allows/:id",
+            delete(device_captures::delete_allow),
+        )
+        .route("/captures/:id", delete(device_captures::delete_capture))
+        .route("/captures/:id/file", get(device_captures::download_capture))
         // Flow execution traces
         .route("/flow-traces", get(flow_traces::list_flow_traces))
         .route(
@@ -539,6 +616,8 @@ pub fn router() -> Router<ApiState> {
         )
         // Flows
         .route("/flows", get(flows::list_flows).post(flows::create_flow))
+        .route("/flows/untenanted", get(flows::list_untenanted_flows))
+        .route("/flows/:id/assign", post(flows::assign_flow))
         .route(
             "/flows/:id",
             get(flows::get_flow)
@@ -670,6 +749,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/branding/assets/:sha256",
             axum::routing::delete(branding::delete_asset),
+        )
+        .route(
+            "/branding/deployment-profile",
+            get(branding::deployment_profile),
         )
         // Zero-touch (docs/PROVISIONING.md §10)
         .route("/provisioning/redirection", get(redirection::list_accounts))
@@ -816,6 +899,7 @@ pub fn router() -> Router<ApiState> {
                 .layer(DefaultBodyLimit::max(50 * 1024 * 1024)), // 50 MB for audio uploads
         )
         .route("/prompts/:id/synthesize", post(prompts::synthesize_prompt))
+        .route("/prompts/:id/override", post(prompts::override_prompt))
         // Voicemail (admin management)
         .route(
             "/voicemail/mailboxes",
@@ -934,6 +1018,22 @@ pub fn router() -> Router<ApiState> {
             get(schedules::get_schedule)
                 .put(schedules::update_schedule)
                 .delete(schedules::delete_schedule),
+        )
+        .route(
+            "/parking/lots",
+            get(parking::list_lots).post(parking::create_lot),
+        )
+        .route("/parking/calls", get(parking::list_calls))
+        .route(
+            "/parking/calls/:slot/retrieve",
+            post(parking::retrieve_call),
+        )
+        .route("/parking/calls/:slot", delete(parking::hang_up_call))
+        .route(
+            "/parking/lots/:id",
+            get(parking::get_lot)
+                .put(parking::update_lot)
+                .delete(parking::delete_lot),
         )
         .route(
             "/routing/rules",

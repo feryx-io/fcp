@@ -419,7 +419,19 @@ pub async fn require_platform_admin(
             ));
         }
     }
-    Ok(next.run(req).await)
+    // What a platform-only router does is the platform's: its audit rows
+    // have no tenant (docs/TENANT_SCOPE.md §3.3).
+    let mut response = next.run(req).await;
+    if response
+        .extensions()
+        .get::<crate::audit::AuditScope>()
+        .is_none()
+    {
+        response
+            .extensions_mut()
+            .insert(crate::audit::AuditScope::Platform);
+    }
+    Ok(response)
 }
 
 /// Validate an `fcp_...` API token against the database.
@@ -487,15 +499,16 @@ async fn validate_api_token(
 
 /// What an admin token may do now: its permissions, less anything its maker
 /// can no longer grant (a maker demoted since takes the token down with
-/// them). A token without a maker keeps what it was given.
+/// them). A token without a maker — made with the static token, or before
+/// makers were recorded — is held to a tenant administrator's reach, as a
+/// made token is (`docs/TENANT_SCOPE.md` §3.7): never system configuration
+/// or another tenant's lifecycle, whatever it carries.
 pub fn effective_permissions(
     stored: &[String],
     maker_roles: Option<&[UserRole]>,
     mode: DeploymentMode,
 ) -> Vec<String> {
-    let Some(roles) = maker_roles else {
-        return stored.to_vec();
-    };
+    let roles = maker_roles.unwrap_or(&[UserRole::TenantAdmin]);
     let allowed: Vec<&str> = fcp_core::permissions::roles_token_permissions(roles, mode)
         .iter()
         .map(|p| p.as_str())
@@ -510,11 +523,13 @@ pub fn effective_permissions(
         .collect()
 }
 
-/// Tenant context extracted from the authenticated session.
+/// The tenant a request works in (`docs/TENANT_SCOPE.md` §3.1).
 ///
-/// SECURITY: Does NOT trust the raw X-Tenant-Id header. In a
-/// single-tenant deployment, always uses the server's default tenant.
-/// Multi-tenant deployments should extract tenant from JWT claims.
+/// A platform administrator (a super_admin session, the static token) works
+/// in the tenant the `x-fcp-tenant-id` header names — the admin UI's picker
+/// — and without one in their own tenant (the default tenant for the
+/// static token). Anyone else works in their own tenant: their header is
+/// ignored, so no one leaves their tenant by naming another.
 pub struct TenantContext(pub fcp_core::TenantId);
 
 #[axum::async_trait]
@@ -526,11 +541,11 @@ impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
         state: &crate::state::ApiState,
     ) -> Result<Self, Self::Rejection> {
         if let Some(identity) = parts.extensions.get::<AuthIdentity>() {
-            if let Some(tenant_id) = identity.tenant_id() {
-                return Ok(TenantContext(*tenant_id));
-            }
-
-            if identity.is_platform_admin() {
+            if !identity.is_platform_admin() {
+                if let Some(tenant_id) = identity.tenant_id() {
+                    return Ok(TenantContext(*tenant_id));
+                }
+            } else {
                 if let Some(raw_tenant_id) = parts
                     .headers
                     .get(PLATFORM_TENANT_HEADER)
@@ -545,7 +560,11 @@ impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
                         ))
                     })?;
 
-                    if let Some(storage) = state.storage.as_ref() {
+                    // The default tenant is a tenant whether or not it has a
+                    // row: requests without a header already work in it.
+                    if let Some(storage) = state.storage.as_ref().filter(|_| {
+                        tenant_id != state.default_tenant_id && tenant_id != TenantId::nil()
+                    }) {
                         match storage.get_tenant(&tenant_id).await {
                             Ok(Some(_)) => {}
                             Ok(None) => {
@@ -564,6 +583,9 @@ impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
                     }
 
                     return Ok(TenantContext(tenant_id));
+                }
+                if let Some(tenant_id) = identity.tenant_id() {
+                    return Ok(TenantContext(*tenant_id));
                 }
             }
         }
@@ -980,6 +1002,24 @@ mod tests {
         let mode = DeploymentMode::ServiceProvider;
         let stored = vec!["user_read".to_string(), "user_create".to_string()];
         assert_eq!(effective_permissions(&stored, None, mode), stored);
+        // Without a maker, a tenant administrator's reach: a legacy `admin`
+        // token, or one carrying system configuration, holds none of it.
+        for stored in [
+            vec!["admin".to_string()],
+            vec!["system_config".to_string(), "user_read".to_string()],
+        ] {
+            let reach = effective_permissions(&stored, None, mode);
+            assert!(
+                !reach.contains(&"system_config".to_string()),
+                "{stored:?}: {reach:?}"
+            );
+            assert!(
+                !reach.contains(&"tenant_create".to_string()),
+                "{stored:?}: {reach:?}"
+            );
+        }
+        assert!(effective_permissions(&["admin".to_string()], None, mode)
+            .contains(&"user_create".to_string()));
         assert_eq!(
             effective_permissions(&stored, Some(&[UserRole::TenantAdmin][..]), mode),
             stored

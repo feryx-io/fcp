@@ -131,7 +131,7 @@ impl StirVerifier {
         let verifying_key = extract_verifying_key_from_cert(&cert_bytes)?;
 
         // Cache the public key bytes
-        let key_bytes = verifying_key.to_encoded_point(false);
+        let key_bytes = verifying_key.to_sec1_point(false);
         self.cert_cache
             .insert(url.to_string(), key_bytes.as_bytes().to_vec());
 
@@ -147,8 +147,8 @@ impl StirVerifier {
         let signing_input = format!("{}.{}", parsed.raw_header, parsed.raw_payload);
 
         let sig_bytes = stir_shaken::base64url_decode(&parsed.raw_signature)?;
-        let signature = Signature::from_bytes((&sig_bytes[..]).into())
-            .map_err(|_| StirError::SignatureInvalid)?;
+        let signature =
+            Signature::from_slice(&sig_bytes).map_err(|_| StirError::SignatureInvalid)?;
 
         verifying_key
             .verify(signing_input.as_bytes(), &signature)
@@ -430,6 +430,7 @@ mod tests {
     use fcp_sbc_core::stir_shaken::{
         PassportHeader, PassportOrig, PassportPayload, PassportTnField,
     };
+    use p256::elliptic_curve::Generate;
 
     /// Helper: build a valid ParsedIdentity with configurable TNs and iat.
     fn make_parsed_identity(orig_tn: &str, dest_tn: &str, iat: u64) -> ParsedIdentity {
@@ -558,7 +559,7 @@ mod tests {
         let verifier = StirVerifier::new(&config);
 
         // Generate a key pair
-        let signing_key = SigningKey::random(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate();
         let verifying_key = VerifyingKey::from(&signing_key);
 
         // Build a minimal ParsedIdentity with real signature
@@ -599,8 +600,8 @@ mod tests {
         let verifier = StirVerifier::new(&config);
 
         // Generate two different key pairs
-        let signing_key = SigningKey::random(&mut rand::thread_rng());
-        let wrong_key = SigningKey::random(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate();
+        let wrong_key = SigningKey::generate();
         let wrong_verifying_key = VerifyingKey::from(&wrong_key);
 
         use p256::ecdsa::signature::Signer;
@@ -641,7 +642,7 @@ mod tests {
     #[test]
     fn test_signer_roundtrip() {
         // Generate a key pair
-        let signing_key = SigningKey::random(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate();
         let verifying_key = VerifyingKey::from(&signing_key);
 
         // Create a signer directly
@@ -693,7 +694,7 @@ mod tests {
             payloads: tokio::sync::Mutex::new(Vec::new()),
         });
 
-        let signing_key = SigningKey::random(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate();
         let signer = Arc::new(StirSigner::from_key(
             signing_key,
             "https://cert.example.com/cert.pem",

@@ -76,6 +76,12 @@ pub async fn open_site(database_url: &str, max_connections: u32) -> Result<SiteS
         .with_offboarding_store(storage.clone() as Arc<dyn fcp_core::offboarding::OffboardingStore>)
         .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>)
         .with_brand_store(storage.clone() as Arc<dyn fcp_core::branding::BrandStore>)
+        .with_contact_store(storage.clone() as Arc<dyn fcp_core::contact::ContactStore>)
+        .with_parking_lot_store(storage.clone() as Arc<dyn fcp_core::parking::ParkingLotStore>)
+        .with_line_label_store(storage.clone() as Arc<dyn fcp_core::line_label::LineLabelStore>)
+        .with_presence_status_store(
+            storage.clone() as Arc<dyn fcp_core::presence_status::PresenceStatusStore>
+        )
         .with_provisioning_store(
             storage.clone() as Arc<dyn fcp_core::provisioning::ProvisioningStore>
         );
@@ -402,6 +408,13 @@ impl Syncer {
             "users" => storage.put_user(parse!()).await?,
             "user_calling_settings" => storage.put_calling_settings(parse!()).await?,
             "schedules" => storage.put_schedule(parse!()).await?,
+            "parking_lots" => match storage.parking_lot_store() {
+                Some(store) => {
+                    let lot: fcp_core::parking::ParkingLot = parse!();
+                    store.put_parking_lot(&lot).await?
+                }
+                None => warn!(table, id, "No parking lot store at the site; skipped"),
+            },
             "classes_of_service" => storage.put_class_of_service(parse!()).await?,
             "devices" => storage.put_device(parse!()).await?,
             "extensions" => storage.put_extension(parse!()).await?,
@@ -482,6 +495,29 @@ impl Syncer {
                 store.add_member(&member).await?;
             }
             "tenant_brands" => self.put_brand(parse!()).await?,
+            // Taken only when newer than the site's copy: the echo of
+            // the site's own change, back from the cloud, is let go
+            // (docs/RECORD_AND_CONTACTS.md §3).
+            "personal_contacts" => {
+                let store = storage.contact_store().context("no contact store")?;
+                let contact: fcp_core::contact::PersonalContact = parse!();
+                store.put_contact_if_newer(&contact).await?;
+            }
+            // The same for presence a person sets (docs/PRESENCE.md §3).
+            "presence_statuses" => {
+                let store = storage
+                    .presence_status_store()
+                    .context("no presence status store")?;
+                let status: fcp_core::presence_status::OwnStatus = parse!();
+                store.put_own_status_if_newer(&status).await?;
+            }
+            "user_presence" => {
+                let store = storage
+                    .presence_status_store()
+                    .context("no presence status store")?;
+                let chosen: fcp_core::presence_status::ChosenStatus = parse!();
+                store.put_chosen_status_if_newer(&chosen).await?;
+            }
             "rate_plans" => {
                 #[derive(Deserialize)]
                 struct PlanWithRates {
@@ -574,6 +610,11 @@ impl Syncer {
                 }
             }
             "schedules" => storage.delete_schedule(&id!()).await?,
+            "parking_lots" => {
+                if let Some(store) = storage.parking_lot_store() {
+                    store.delete_parking_lot(&self.tenant, id).await?;
+                }
+            }
             "classes_of_service" => storage.delete_class_of_service(&id!()).await?,
             "user_calling_settings" => {
                 storage
@@ -668,6 +709,22 @@ impl Syncer {
                         .delete_brand_asset(&self.tenant, &asset.sha256)
                         .await?;
                 }
+            }
+            "personal_contacts" => {
+                let store = storage.contact_store().context("no contact store")?;
+                store.delete_contact_row(id).await?;
+            }
+            "presence_statuses" => {
+                let store = storage
+                    .presence_status_store()
+                    .context("no presence status store")?;
+                store.delete_own_status_row(id).await?;
+            }
+            "user_presence" => {
+                let store = storage
+                    .presence_status_store()
+                    .context("no presence status store")?;
+                store.delete_chosen_status_row(&id!()).await?;
             }
             "group_members" => {
                 let store = storage.group_store().context("no group store")?;

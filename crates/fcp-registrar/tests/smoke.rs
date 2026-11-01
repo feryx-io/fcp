@@ -178,6 +178,108 @@ format = "compact"
 /// A `${NAME}` in the file is resolved from the environment when the
 /// file is loaded and masked like any secret, and a name the environment
 /// lacks refuses the file (`docs/PRODUCTION_STACK.md` phase 2).
+/// The registrar says it is there (`docs/SERVICES.md` phase S1): its
+/// beacon in Redis names it, its database check passes, `/ready` carries
+/// the checks, and it says `stopping` on its way out.
+#[tokio::test]
+async fn a_registrar_says_it_is_there() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping fcp-registrar beacon test");
+        return;
+    };
+    let Ok(redis_url) = std::env::var("FCP_TEST_REDIS_URL") else {
+        eprintln!("FCP_TEST_REDIS_URL not set; skipping fcp-registrar beacon test");
+        return;
+    };
+    let sip = free_port();
+    let http = free_port();
+    let id = format!("beacon-registrar-{sip}");
+    let config = format!(
+        r#"[service]
+node_id = "{id}"
+
+[sip]
+udp_bind = "127.0.0.1:{sip}"
+tcp_bind = "127.0.0.1:{sip}"
+
+[storage]
+database_url = "{db}"
+redis_url = "{redis_url}"
+
+[http]
+bind_address = "127.0.0.1:{http}"
+api_token = "{token}"
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        db = db.url(),
+        token = TOKEN,
+    );
+    let storage = fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+        url: redis_url.clone(),
+        ..Default::default()
+    })
+    .await
+    .expect("redis");
+
+    let watched = id.clone();
+    let reader = storage.clone();
+    let report = Smoke::new(BIN)
+        .config_toml(config)
+        .health_url(smoke::loopback(http, "/health"))
+        .while_up(move || async move {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            let record = loop {
+                let found = fcp_cluster::ServiceBeacon::read_all(&reader)
+                    .await
+                    .expect("read beacons")
+                    .into_iter()
+                    .find(|r| r.id == watched && r.checks.iter().any(|c| c.name == "database"));
+                if let Some(r) = found {
+                    break r;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no beacon for {watched}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            };
+            assert_eq!(record.kind, "registrar");
+            assert_eq!(record.version, env!("CARGO_PKG_VERSION"));
+            assert!(record.checks.iter().all(|c| c.ok), "{:?}", record.checks);
+            assert!(
+                record.load.contains_key("registrations"),
+                "{:?}",
+                record.load
+            );
+
+            let (code, body) = smoke::http_get(&smoke::loopback(http, "/ready"))
+                .await
+                .expect("ready answers");
+            assert_eq!(code, 200, "{body}");
+            assert!(
+                body.contains("\"database\""),
+                "the checks on /ready: {body}"
+            );
+        })
+        .run()
+        .await;
+    report.assert_clean();
+
+    // Its last word.
+    let last = fcp_cluster::ServiceBeacon::read_all(&storage)
+        .await
+        .expect("read beacons")
+        .into_iter()
+        .find(|r| r.id == id)
+        .expect("the stopping record outlives the process by its TTL");
+    assert_eq!(last.state, fcp_core::service_health::ServiceState::Stopping);
+
+    db.drop_db().await;
+}
+
 #[test]
 fn a_reference_in_the_file_is_resolved_from_the_environment() {
     const CONFIG: &str = r#"[sip]

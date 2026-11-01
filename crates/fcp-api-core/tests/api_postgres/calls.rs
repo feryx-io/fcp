@@ -82,6 +82,99 @@ impl CallSupervisor for StandInNode {
             },
         })
     }
+
+    /// One call parked in tenant A's `4320`.
+    async fn parked_calls(&self, tenant: TenantId) -> Result<Vec<Value>, String> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push((tenant, String::new(), "parked".to_string()));
+        if tenant != self.tenant {
+            return Ok(Vec::new());
+        }
+        Ok(vec![json!({
+            "slot": "4320", "lot_id": "lot-1", "call_id": HELD,
+            "caller": { "uri": "sip:alice@pbx.example.com", "name": "Alice" },
+            "parker_extension": "1002", "parked_secs": 12, "timeout_secs": 60,
+            "node_id": "cm-1",
+        })])
+    }
+
+    async fn parked_call(
+        &self,
+        tenant: TenantId,
+        slot: &str,
+        target: Option<&str>,
+    ) -> Result<(u16, Value), String> {
+        self.asked.lock().unwrap().push((
+            tenant,
+            slot.to_string(),
+            format!("park {}", target.unwrap_or("hangup")),
+        ));
+        if tenant != self.tenant || slot != "4320" {
+            return Ok((
+                404,
+                json!({ "error": format!("No call is parked in {slot}") }),
+            ));
+        }
+        Ok(match target {
+            Some(target) => (
+                202,
+                json!({ "slot": slot, "call_id": HELD, "target": target }),
+            ),
+            None => (
+                200,
+                json!({ "slot": slot, "call_id": HELD, "status": "ended" }),
+            ),
+        })
+    }
+}
+
+/// The tenant's parked calls, from every call manager; one sent on and one
+/// hung up at the node holding it (`docs/PARKING.md` §4).
+#[tokio::test]
+async fn parked_calls_are_listed_sent_on_and_hung_up_through_the_node() {
+    let asked: Asked = Default::default();
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let app = app.with_node(&asked);
+    let list = app.admin(Method::GET, "/api/v1/parking/calls", None).await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text);
+    assert_eq!(list.json[0]["slot"], "4320");
+    assert_eq!(list.json[0]["caller"]["name"], "Alice");
+    assert_eq!(list.body["total"], 1);
+
+    let sent = app
+        .admin(
+            Method::POST,
+            "/api/v1/parking/calls/4320/retrieve",
+            Some(json!({ "target": "1003" })),
+        )
+        .await;
+    assert_eq!(sent.status, StatusCode::ACCEPTED, "{}", sent.text);
+    let empty = app
+        .admin(Method::DELETE, "/api/v1/parking/calls/4329", None)
+        .await;
+    assert_eq!(empty.status, StatusCode::NOT_FOUND, "{}", empty.text);
+    assert_eq!(empty.json["code"], "not_found", "{}", empty.text);
+    let ended = app
+        .admin(Method::DELETE, "/api/v1/parking/calls/4320", None)
+        .await;
+    assert_eq!(ended.status, StatusCode::OK, "{}", ended.text);
+    let bad = app
+        .admin(Method::DELETE, "/api/v1/parking/calls/4x20", None)
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+
+    let asked = asked.lock().unwrap().clone();
+    let what: Vec<&str> = asked.iter().map(|(_, _, w)| w.as_str()).collect();
+    assert_eq!(what, ["parked", "park 1003", "park hangup", "park hangup"]);
+    assert!(
+        asked.iter().all(|(t, _, _)| *t == app.tenant_a),
+        "the caller's tenant"
+    );
+    app.finish().await;
 }
 
 impl App {
@@ -293,5 +386,74 @@ async fn without_a_call_manager_a_call_cannot_be_reached() {
             res.text
         );
     }
+    app.finish().await;
+}
+
+/// A user records a call they are on from their app
+/// (`docs/RECORD_AND_CONTACTS.md` §2): refused until an administrator turns
+/// `record_on_demand` on, then put to the node naming them in `for_user`,
+/// answered without the file's path. Whether they are on the call is the
+/// node's to say.
+#[tokio::test]
+async fn a_user_records_their_own_call_once_an_administrator_lets_them() {
+    let asked: Asked = Default::default();
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let app = app.with_node(&asked);
+    let user_id = app.create_user_with_role("recorder", "end_user").await;
+    let login = app.login("recorder", PASSWORD).await;
+    assert_eq!(login.status, StatusCode::OK, "{}", login.text);
+    let token = login.json["token"].as_str().unwrap().to_string();
+    let start = format!("/api/v1/me/calls/{HELD}/recording/start");
+    let stop = format!("/api/v1/me/calls/{HELD}/recording/stop");
+
+    let refused = app.send_as(&token, Method::POST, &start, None).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    assert!(asked.lock().unwrap().is_empty(), "the node was not asked");
+
+    let shown = app.admin(Method::GET, "/api/v1/users/recorder", None).await;
+    assert_eq!(shown.json["media_preferences"]["record_on_demand"], false);
+    let mut prefs = shown.json["media_preferences"].clone();
+    prefs["record_on_demand"] = json!(true);
+    let updated = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/recorder",
+            Some(json!({ "media_preferences": prefs })),
+        )
+        .await;
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.text);
+    assert_eq!(updated.json["media_preferences"]["record_on_demand"], true);
+
+    let started = app.send_as(&token, Method::POST, &start, None).await;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.text);
+    assert_eq!(started.json["status"], "recording");
+    assert_eq!(started.json["recording_id"], "rec-1");
+    assert!(started.json.get("path").is_none(), "{}", started.text);
+    let stopped = app.send_as(&token, Method::POST, &stop, None).await;
+    assert_eq!(stopped.status, StatusCode::OK, "{}", stopped.text);
+
+    let elsewhere = app
+        .send_as(
+            &token,
+            Method::POST,
+            "/api/v1/me/calls/call-00000000-0000-4000-8000-000000000000/recording/start",
+            None,
+        )
+        .await;
+    assert_eq!(
+        elsewhere.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        elsewhere.text
+    );
+
+    let bare = user_id.trim_start_matches("user-");
+    let for_user = format!(r#"{{"for_user":"{bare}"}}"#);
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked[0].0, app.tenant_a);
+    assert_eq!(asked[0].2, format!("recording/start {for_user}"));
+    assert_eq!(asked[1].2, format!("recording/stop {for_user}"));
     app.finish().await;
 }

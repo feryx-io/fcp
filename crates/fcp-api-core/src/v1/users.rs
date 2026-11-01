@@ -76,6 +76,10 @@ pub struct UserResponse {
     #[serde(default, with = "crate::time::rfc3339_opt")]
     #[schema(value_type = Option<String>, format = DateTime)]
     pub deprovisioned_at: Option<std::time::SystemTime>,
+    /// Recording and media defaults for the user's calls.
+    pub media_preferences: fcp_core::MediaPreferences,
+    /// Listed in the tenant's directory for its users (`/me/directory`).
+    pub directory_listed: bool,
 }
 
 impl From<User> for UserResponse {
@@ -116,6 +120,8 @@ impl From<User> for UserResponse {
             sip_username,
             scim_managed: user.scim_managed,
             deprovisioned_at: user.deprovisioned_at,
+            media_preferences: user.media_preferences,
+            directory_listed: user.directory_listed,
         }
     }
 }
@@ -144,6 +150,9 @@ pub struct CreateUserRequest {
     pub department_id: Option<String>, // For department-scoped admins
     #[serde(default)]
     pub media_preferences: fcp_core::MediaPreferences,
+    /// Listed in the tenant's directory for its users; listed unless false.
+    #[serde(default = "default_true")]
+    pub directory_listed: bool,
 
     // Enterprise fields
     pub email: Option<String>,
@@ -252,6 +261,14 @@ pub struct UpdateUserRequest {
     pub account_status: Option<String>,
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
+    /// Replaces the user's media preferences whole: `record_all_calls`,
+    /// `record_on_demand` and the rest.
+    #[serde(default)]
+    pub media_preferences: Option<fcp_core::MediaPreferences>,
+    /// Listed in the tenant's directory for its users (`/me/directory`);
+    /// an unlisted user still rings and is seen by administrators.
+    #[serde(default)]
+    pub directory_listed: Option<bool>,
 }
 
 /// Update password request.
@@ -509,6 +526,7 @@ pub async fn create_user(
         sip_ha1_hash: Some(sip_ha1_hash),
         sip_provisioning_password,
         display_name: req.display_name,
+        directory_listed: req.directory_listed,
         tenant_id: tenant.0,
         enabled: req.enabled,
         role,                             // NEW: User role for RBAC
@@ -761,6 +779,12 @@ pub async fn update_user(
     }
     if let Some(emergency_phone) = req.emergency_contact_phone {
         user.emergency_contact.phone = cleared(emergency_phone);
+    }
+    if let Some(media_preferences) = req.media_preferences {
+        user.media_preferences = media_preferences;
+    }
+    if let Some(listed) = req.directory_listed {
+        user.directory_listed = listed;
     }
 
     user.updated_at = std::time::SystemTime::now();
@@ -1591,6 +1615,7 @@ pub(crate) fn user_without_password(
         sip_ha1_hash: Some(password::compute_ha1(username, realm, &sip_password)),
         sip_provisioning_password: Some(sip_password),
         display_name,
+        directory_listed: true,
         tenant_id,
         enabled: true,
         role,

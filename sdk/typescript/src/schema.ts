@@ -282,8 +282,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * POST /api/v1/auth/app/revoke — an app signs out: its session ends.
-         *     Answers 200 whether or not the token named a live session (RFC 7009
+         * POST /api/v1/auth/app/revoke — an app signs out: its session ends and
+         *     the install's device is removed. Answers 200 whether or not the token named a live session (RFC 7009
          *     §2.2).
          */
         post: operations["app_auth_revoke"];
@@ -327,6 +327,27 @@ export interface paths {
          *     app's device; the old one stops at once.
          */
         post: operations["softphone_rotate_password"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/lines/{line}/label": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * PUT /api/v1/me/lines/{line}/label — name one of your lines, on every
+         *     device that has it (`docs/DEVICE_LINES.md` §2). 403 unless the tenant
+         *     lets its users rename; 404 for a line none of your devices has.
+         */
+        put: operations["softphone_set_line_label"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1075,6 +1096,111 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/calls/{call_id}/recording/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/calls/:call_id/recording/start — record a call the user is on,
+         *     when an administrator lets them (`record_on_demand`; 403 otherwise).
+         *     The tenant's consent announcement plays to both parties first; this
+         *     returns once the recorder runs. 404 for a call that is not theirs, 409
+         *     when it is not anchored or already recorded.
+         */
+        post: operations["self_service_start_my_recording"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/calls/{call_id}/recording/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/calls/:call_id/recording/stop — stop a recording the user
+         *     started on demand. Any other recording of the call goes on (409).
+         */
+        post: operations["self_service_stop_my_recording"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/calls/{call_id}/quality": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/calls/:call_id/quality — the app's final figures for a call
+         *     it was on, sent when the call ends. A second report from the same app
+         *     replaces its first. 404 when the call's record names other people (one
+         *     not yet written is taken on the app's word); `call.quality_poor` when
+         *     either score is under 3.1.
+         */
+        post: operations["self_service_report_call_quality"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/devices/{id}/captures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/devices/:id/captures — the app uploads a capture it took
+         *     (pcapng, as the body), from its own session and while it is allowed.
+         *     403 when it is not allowed, 413 over the tenant's limit, 404 when the
+         *     call named was not the user's.
+         */
+        post: operations["self_service_upload_capture"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/captures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /me/captures — the user's own captures, newest first. */
+        get: operations["self_service_list_captures"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/directory": {
         parameters: {
             query?: never;
@@ -1085,9 +1211,180 @@ export interface paths {
         /**
          * GET /me/directory — the tenant's people and the extensions that ring
          *     no one person, each with its presence, while the tenant lets its users
-         *     see them (`directory.visible_to_users`; 403 otherwise).
+         *     see them (`directory.visible_to_users`; 403 otherwise). A user taken out
+         *     of the directory (`directory_listed`) is not among them.
          */
         get: operations["self_service_list_directory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/contacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /me/contacts — the user's contacts, by name. */
+        get: operations["self_service_list_contacts"];
+        put?: never;
+        /** POST /me/contacts — keep a new contact. */
+        post: operations["self_service_create_contact"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/contacts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /me/contacts/:id */
+        get: operations["self_service_get_contact"];
+        /** PUT /me/contacts/:id — replace a contact. */
+        put: operations["self_service_update_contact"];
+        post?: never;
+        /**
+         * DELETE /me/contacts/:id — the contact goes from every app; its
+         *     tombstone carries the delete to the tenant's sites.
+         */
+        delete: operations["self_service_delete_contact"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/contacts/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /me/contacts/export — the user's contacts as one file, vCard 3.0 or
+         *     CSV (Google's columns), to take to another phone or address book.
+         */
+        get: operations["self_service_export_contacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/contacts/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/contacts/import — contacts from a vCard or CSV file (the body),
+         *     kept on the user's account. One already kept, with the same name and
+         *     numbers, is not made again. The user's apps hear one
+         *     `user.contact_changed` (`change`: `imported`) for the lot.
+         */
+        post: operations["self_service_import_contacts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/presence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /me/presence */
+        get: operations["self_service_get_presence"];
+        /** PUT /me/presence */
+        put: operations["self_service_update_presence"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/presence/statuses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /me/presence/statuses */
+        get: operations["self_service_list_presence_statuses"];
+        put?: never;
+        /** POST /me/presence/statuses */
+        post: operations["self_service_create_presence_status"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/presence/statuses/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /me/presence/statuses/{id} */
+        put: operations["self_service_update_presence_status"];
+        post?: never;
+        /** DELETE /me/presence/statuses/{id} */
+        delete: operations["self_service_delete_presence_status"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/presence/statuses/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /me/presence/statuses/order */
+        put: operations["self_service_order_presence_statuses"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{username}/presence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /users/{username}/presence */
+        get: operations["users_get_presence"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2738,10 +3035,33 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Tenant admins see their tenant; the platform token sees every tenant
-         *     unless it selected one with the override header.
+         * A row belongs to the tenant acted on (docs/TENANT_SCOPE.md §3.3).
+         *     Tenant admins see their tenant's rows, platform administrators' actions
+         *     on it included; a platform administrator sees every row, one tenant's
+         *     (`tenant` or the picked tenant) or the platform's own.
          */
         get: operations["compliance_list_audit_log"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/audit-log/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /audit-log/export`: every event the listing's filters match,
+         *     newest first, streamed page by page as CSV or JSON Lines (D8, finding
+         *     36). Who may see what is the listing's.
+         */
+        get: operations["compliance_export_audit_log"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3033,6 +3353,128 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cdrs/{call_id}/quality": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /cdrs/:call_id/quality — every phone's report of a call, oldest
+         *     first, as one page; empty when none reported, 404 for another
+         *     tenant's call.
+         */
+        get: operations["cdrs_get_call_quality"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/captures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /captures — the tenant's captures, newest first, of one device or
+         *     user when named.
+         */
+        get: operations["captures_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/captures/allows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /captures/allows — the tenant's allows, ended ones too, newest
+         *     first.
+         */
+        get: operations["captures_list_allows"];
+        put?: never;
+        /**
+         * POST /captures/allows — allow a user or a device to capture until a
+         *     date. 409 while the tenant has captures off.
+         */
+        post: operations["captures_create_allow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/captures/allows/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /captures/allows/:id — end an allow now. */
+        delete: operations["captures_delete_allow"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/captures/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /captures/:id — remove a capture before its expiry; 409 while a
+         *     legal hold keeps it.
+         */
+        delete: operations["captures_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/captures/{id}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /captures/:id/file — the capture itself (pcapng). Every download
+         *     is in the audit log.
+         */
+        get: operations["captures_download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/flow-traces": {
         parameters: {
             query?: never;
@@ -3160,6 +3602,48 @@ export interface paths {
         get: operations["flows_get_flow_version"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/flows/untenanted": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/flows/untenanted — Flows with no tenant, for a platform
+         *     administrator to assign (docs/TENANT_SCOPE.md §3.4)
+         * @description Each one named by a single tenant's line bindings, mailboxes or traces
+         *     is first given to that tenant; what is left is listed.
+         */
+        get: operations["flows_list_untenanted_flows"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/flows/{id}/assign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/flows/:id/assign — Give a flow without a tenant to one
+         * @description Only a flow without a tenant: a tenant's flow is never moved (409).
+         */
+        post: operations["flows_assign_flow"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3972,6 +4456,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/prompts/{id}/override": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/prompts/:id/override — The tenant's own copy of a system prompt
+         * @description The copy has the system prompt's name, language, category, words and voice,
+         *     and a copy of its audio, so the tenant's calls hear the same until the copy
+         *     is changed (new words, an upload, a recording). Deleting the copy restores
+         *     the system prompt.
+         */
+        post: operations["prompts_override_prompt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/voicemail/mailboxes": {
         parameters: {
             query?: never;
@@ -4414,7 +4921,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * `GET /v1/routing/preview?to=…[&from=…][&source_ip=…]`: what a live call
+         * `GET /v1/routing/preview?to=…[&from=…][&source_ip=…][&location_id=…]`: what a live call
          *     manager would do with this tenant's call — the policy and rule that
          *     decide it and the trunks it would try, in order, each with its price
          *     (`docs/TENANT_TRUNKS.md` §12, phase 6d).
@@ -4689,6 +5196,28 @@ export interface paths {
          *     refused (409).
          */
         delete: operations["branding_delete_asset"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/branding/deployment-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/branding/deployment-profile — the tenant's softphone profile
+         *     (Anvil's `docs/MANAGED_INSTALLS.md` §2.1): this admin's address as the
+         *     server, the tenant's first login domain, its sign-in, and its brand with
+         *     the files, for `Anvil-…-setup.exe /PROFILE=` or Windows policy.
+         */
+        get: operations["branding_deployment_profile"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -5083,6 +5612,106 @@ export interface paths {
         post?: never;
         /** DELETE /api/v1/schedules/:id — what named it stays open from then on. */
         delete: operations["schedules_delete_schedule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/parking/lots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/parking/lots — none listed means the node's own range
+         *     (`[pbx.parking]`) is the tenant's.
+         */
+        get: operations["parking_list_lots"];
+        put?: never;
+        /** POST /api/v1/parking/lots — 409 when one of its numbers is taken. */
+        post: operations["parking_create_lot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/parking/lots/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/parking/lots/:id */
+        get: operations["parking_get_lot"];
+        /** PUT /api/v1/parking/lots/:id — the whole lot, replaced. */
+        put: operations["parking_update_lot"];
+        post?: never;
+        /**
+         * DELETE /api/v1/parking/lots/:id — calls parked in it stay until taken
+         *     or timed out.
+         */
+        delete: operations["parking_delete_lot"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/parking/calls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/parking/calls — the tenant's parked calls on every call
+         *     manager, by slot.
+         */
+        get: operations["parking_list_calls"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/parking/calls/{slot}/retrieve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/parking/calls/:slot/retrieve — ring `target` with the
+         *     call in the slot (202); 404 when the slot is empty.
+         */
+        post: operations["parking_retrieve_call"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/parking/calls/{slot}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/v1/parking/calls/:slot — hang up the call in the slot. */
+        delete: operations["parking_hang_up_call"];
         options?: never;
         head?: never;
         patch?: never;
@@ -5560,6 +6189,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["services_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/services/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["services_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/services/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["services_get"];
+        put?: never;
+        post?: never;
+        delete: operations["services_forget"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export interface webhooks {
     platform_event: {
@@ -5625,7 +6302,9 @@ export interface components {
             permissions: string[];
             /**
              * @description A token made before permissions were checked, carrying `admin` or
-             *     `*`: it reaches everything in its tenant. Review and replace it.
+             *     `*`. Since v0.25.498 it reaches what a tenant administrator may (or
+             *     its maker, when it has one), never system configuration: make a new
+             *     one with the permissions it needs.
              */
             legacy_full_access: boolean;
             expires_at?: string | null;
@@ -5714,6 +6393,10 @@ export interface components {
             /** @description The app that asked. */
             client_id: string;
         };
+        AssignFlowRequest: {
+            /** @description The tenant the flow becomes. */
+            tenant_id: string;
+        };
         AssistantView: {
             user_id: string;
             opted_in: boolean;
@@ -5738,7 +6421,17 @@ export interface components {
         AuditEventResponse: {
             /** Format: int64 */
             id: number;
+            /** @description The tenant acted on; `null` for the platform's own actions. */
             tenant_id?: string | null;
+            /**
+             * @description The actor's own tenant, `null` for the static token. Shown only to a
+             *     platform administrator.
+             */
+            actor_tenant_id?: string | null;
+            /**
+             * @description Who acted. A tenant's readers see an actor from outside it (a
+             *     platform administrator) as `platform administrator`.
+             */
             actor: string;
             actor_kind: string;
             method: string;
@@ -5955,6 +6648,108 @@ export interface components {
             media_anchored: boolean;
             failure_reason?: string | null;
         };
+        /** @description A call's final figures, as the app measured them. */
+        CallQualityReport: {
+            /** @description `incoming` or `outgoing`, from the phone's side. */
+            direction: string;
+            /** @description The codec (`pcmu`, `opus`, …). */
+            codec: string;
+            srtp?: boolean;
+            /**
+             * Format: int32
+             * @description Talk time, as the phone counted it.
+             */
+            duration_seconds?: number | null;
+            /** Format: int64 */
+            packets_sent: number;
+            /** Format: int64 */
+            packets_received: number;
+            /**
+             * Format: int64
+             * @description The far end's packets its sequence numbers say were sent, and those
+             *     that never arrived.
+             */
+            packets_expected: number;
+            /** Format: int64 */
+            packets_lost: number;
+            /**
+             * Format: float
+             * @description The phone's jitter estimate on what it received, at the end, in ms.
+             */
+            jitter_ms: number;
+            /**
+             * Format: float
+             * @description The round trip from RTCP, when it was measured.
+             */
+            rtt_ms?: number | null;
+            /**
+             * Format: float
+             * @description What the far end last reported over RTCP: its loss in its last
+             *     interval in percent, its jitter in ms, its losses in all.
+             */
+            far_loss_pct?: number | null;
+            /** Format: float */
+            far_jitter_ms?: number | null;
+            /** Format: int64 */
+            far_lost?: number | null;
+            /**
+             * Format: float
+             * @description The estimated score (E-model MOS, 1 to 4.5) of what the user heard,
+             *     and of what the far end heard once it reported.
+             */
+            mos: number;
+            /** Format: float */
+            far_mos?: number | null;
+            /** @description Where media flowed between, as the phone saw it (`address:port`). */
+            local_rtp?: string | null;
+            remote_rtp?: string | null;
+        };
+        /** @description One phone's report of a call. */
+        CallQualityResponse: {
+            call_id: string;
+            user_id: string;
+            /** @description The reporting user's name, while they exist. */
+            username?: string | null;
+            device_id?: string | null;
+            direction: string;
+            codec: string;
+            srtp: boolean;
+            /** Format: int32 */
+            duration_seconds?: number | null;
+            /** Format: int64 */
+            packets_sent: number;
+            /** Format: int64 */
+            packets_received: number;
+            /** Format: int64 */
+            packets_expected: number;
+            /** Format: int64 */
+            packets_lost: number;
+            /**
+             * Format: float
+             * @description `packets_lost` of `packets_expected`, in percent.
+             */
+            loss_pct: number;
+            /** Format: float */
+            jitter_ms: number;
+            /** Format: float */
+            rtt_ms?: number | null;
+            /** Format: float */
+            far_loss_pct?: number | null;
+            /** Format: float */
+            far_jitter_ms?: number | null;
+            /** Format: int64 */
+            far_lost?: number | null;
+            /** Format: float */
+            mos: number;
+            /** Format: float */
+            far_mos?: number | null;
+            /** @description Either score under 3.1. */
+            poor: boolean;
+            local_rtp?: string | null;
+            remote_rtp?: string | null;
+            /** Format: date-time */
+            reported_at: string;
+        };
         /**
          * @description How a user's caller ID leaves on a trunk.
          * @enum {string}
@@ -5989,6 +6784,62 @@ export interface components {
             executive?: components["schemas"]["ExecutiveView"] | null;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description Allow a user (every app they sign in to) or one device to capture. */
+        CaptureAllowRequest: {
+            /** @description The user; or name `device_id`. */
+            username?: string | null;
+            device_id?: string | null;
+            /**
+             * Format: date-time
+             * @description When the allow ends: in the future, at most 30 days away.
+             */
+            until: string;
+            /** @description Why, for the record. */
+            reason?: string | null;
+        };
+        /** @description An administrator's allow. */
+        CaptureAllowResponse: {
+            id: string;
+            /** @description `user` or `device`. */
+            kind: string;
+            user_id?: string | null;
+            /** @description The user's name, while they exist. */
+            username?: string | null;
+            device_id?: string | null;
+            /** @description The device's name, while it exists. */
+            device_name?: string | null;
+            /** Format: date-time */
+            until: string;
+            /** @description Not yet ended. */
+            active: boolean;
+            reason?: string | null;
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        /** @description An uploaded capture. */
+        CaptureResponse: {
+            id: string;
+            /** @description The app that took it, which may since have been removed. */
+            device_id: string;
+            device_name?: string | null;
+            user_id: string;
+            username?: string | null;
+            /** @description The call it holds, when the app named one. */
+            call_id?: string | null;
+            /** Format: int64 */
+            size: number;
+            sha256: string;
+            /** Format: date-time */
+            uploaded_at: string;
+            /**
+             * Format: date-time
+             * @description When retention removes it, unless a hold keeps it.
+             */
+            expires_at: string;
+            /** @description A legal hold keeps it past its expiry. */
+            held: boolean;
         };
         /** @description CDR response model. */
         CdrResponse: {
@@ -6330,6 +7181,25 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description What an import did. */
+        ContactImportResponse: {
+            /** @description Contacts made. */
+            imported: number;
+            /**
+             * @description Entries already among the user's contacts (the same name and
+             *     numbers), or twice in the file: not made again.
+             */
+            duplicates: number;
+            /**
+             * @description Entries not made, each with its place in the file (a vCard's
+             *     number, a CSV row's line) and why.
+             */
+            skipped: components["schemas"]["ContactImportSkip"][];
+        };
+        ContactImportSkip: {
+            entry: number;
+            reason: string;
+        };
         /**
          * @description A contact on the way in: either the plain string the API took before
          *     block 2, read by its shape, or a typed object.
@@ -6338,6 +7208,16 @@ export interface components {
             kind: string;
             target: string;
             name?: string | null;
+            /** @description A `call` contact may listen in to the emergency call. */
+            listen?: boolean;
+        };
+        /**
+         * @description One of a contact's numbers: what it is (`mobile`, `work`, …) and what
+         *     to dial.
+         */
+        ContactNumber: {
+            label?: string;
+            number: string;
         };
         /**
          * @description One contact and how it has fared (§8.4): a tenant should be able to
@@ -6347,6 +7227,10 @@ export interface components {
             kind: string;
             target: string;
             name?: string | null;
+            /** @description The site whose contact this is; absent for the tenant's own. */
+            site?: string | null;
+            /** @description Whether this contact may listen in to the call. */
+            listen: boolean;
             /** @description What keeps this contact from being delivered to. */
             issues: string[];
             /**
@@ -6366,6 +7250,11 @@ export interface components {
             kind: string;
             target: string;
             name?: string | null;
+            /**
+             * @description A `call` contact who may listen in to the emergency call once told
+             *     (`docs/E911.md` "Listening in").
+             */
+            listen: boolean;
             /** @description What keeps this contact from being delivered to, empty when it can. */
             issues?: string[];
         };
@@ -6417,6 +7306,8 @@ export interface components {
             supports_blf?: boolean | null;
             /** @description The keys programmed on the phone. */
             line_keys?: components["schemas"]["LineKey"][] | null;
+            /** @description Its lines: the first `own`, at most ten, each one the device may be. */
+            lines?: components["schemas"]["DeviceLine"][] | null;
             config_template_id?: string | null;
             location?: string | null;
             location_id?: string | null;
@@ -6510,8 +7401,10 @@ export interface components {
             longitude?: number | null;
             phone_number?: string | null;
             timezone?: string | null;
-            emergency_contact_name?: string | null;
-            emergency_contact_phone?: string | null;
+            /** @description The site's emergency contacts, as `/emergency/config` takes them. */
+            emergency_contacts?: components["schemas"]["ContactInput"][] | null;
+            /** @description Whether the tenant's contacts are told too (true when unsaid). */
+            notify_tenant_contacts?: boolean | null;
             e911_callback_number?: string | null;
             civic?: components["schemas"]["CivicElements"] | null;
         };
@@ -6519,7 +7412,12 @@ export interface components {
         CreateMailboxRequest: {
             tenant_id: string;
             user_id: string;
-            line_binding_id: string;
+            /**
+             * @description The line the mailbox answers for, when the user has one. A mailbox
+             *     is the user's: calls find it by user, and it answers the user's
+             *     extension, so a user with no line has one too.
+             */
+            line_binding_id?: string | null;
             pin: string;
             enabled?: boolean;
             /** Format: int32 */
@@ -6607,6 +7505,8 @@ export interface components {
             source_type?: string | null;
             tts_text?: string | null;
             tts_voice?: string | null;
+            /** @description A system prompt, for every tenant: a platform administrator's only. */
+            system?: boolean;
         };
         /** @description Create queue config request. */
         CreateQueueConfigRequest: {
@@ -6657,6 +7557,11 @@ export interface components {
             /** Format: int32 */
             priority?: number;
             enabled?: boolean;
+            /**
+             * @description One of the tenant's locations: the rule is for its callers alone,
+             *     and tried before the tenant-wide rules.
+             */
+            location_id?: string | null;
             destination_pattern?: string | null;
             source_pattern?: string | null;
             source_ip_ranges?: string[];
@@ -6703,6 +7608,8 @@ export interface components {
             sign_in?: components["schemas"]["TenantSignIn"] | null;
             offboarding?: components["schemas"]["TenantOffboarding"] | null;
             directory?: components["schemas"]["TenantDirectory"] | null;
+            lines?: components["schemas"]["TenantLines"] | null;
+            diagnostics?: components["schemas"]["TenantDiagnostics"] | null;
             provisioning?: components["schemas"]["TenantProvisioning"] | null;
         };
         /** @description Credit or adjustment request. */
@@ -6804,6 +7711,8 @@ export interface components {
             role?: string | null;
             department_id?: string | null;
             media_preferences?: components["schemas"]["MediaPreferences"];
+            /** @description Listed in the tenant's directory for its users; listed unless false. */
+            directory_listed?: boolean;
             email?: string | null;
             phone_number?: string | null;
             mobile_number?: string | null;
@@ -6840,7 +7749,7 @@ export interface components {
          * @description The classes of data a hold can cover.
          * @enum {string}
          */
-        DataClass: "cdr" | "call_recording" | "conference_recording" | "voicemail" | "sip_trace" | "flow_trace" | "audit_event";
+        DataClass: "cdr" | "call_recording" | "conference_recording" | "voicemail" | "sip_trace" | "flow_trace" | "audit_event" | "device_capture";
         DeadLetterReport: {
             /** @description Whether this host reached the dead letters. */
             reached: boolean;
@@ -6940,6 +7849,22 @@ export interface components {
             /** @description `served`, `unauthorized`, `not_served` (disabled, or no template)… */
             outcome: string;
         };
+        /**
+         * @description A line on a device (`docs/DEVICE_LINES.md` §2): an account it registers
+         *     and takes calls on, as a desk phone's line keys are.
+         */
+        DeviceLine: {
+            kind: components["schemas"]["LineKind"];
+            /**
+             * @description The extension (`extension`), the number (`shared`) or the user's
+             *     name or id (`on_behalf`); empty for `own`.
+             */
+            value?: string;
+            /** @description The administrator's label; unset, the line's default. */
+            label?: string | null;
+            /** @description Whether calls to the line ring this device. */
+            ring?: boolean;
+        };
         /** @description Where a device stands with its vendor's service. */
         DeviceRedirectionResponse: {
             service: components["schemas"]["RedirectionService"];
@@ -6999,6 +7924,11 @@ export interface components {
             codec_support: string[];
             /** @description The keys programmed on the phone, in order. */
             line_keys: components["schemas"]["LineKey"][];
+            /**
+             * @description The lines it registers and takes calls on (`docs/DEVICE_LINES.md`);
+             *     empty, its own line (and a phone's shared line) as before lines.
+             */
+            lines: components["schemas"]["DeviceLine"][];
             location?: string | null;
             location_id?: string | null;
             e911_override?: components["schemas"]["E911AddressResponse"] | null;
@@ -7056,11 +7986,18 @@ export interface components {
             department?: string | null;
             job_title?: string | null;
             /**
-             * @description Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`
-             *     or `ringing`; unset when nothing is known.
+             * @description What others see of them (`docs/PRESENCE.md`): for a user,
+             *     `available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or
+             *     `offline`; for an extension, its SIP presence (`open`, `closed`,
+             *     `away`, `busy`, `on_the_phone`, `ringing`); unset when nothing is
+             *     known.
              */
             presence?: string | null;
+            /** @description A user's own status's label ("WFH"). */
+            presence_label?: string | null;
             presence_note?: string | null;
+            /** @description A user shown away because their apps say they are idle. */
+            presence_idle?: boolean;
         };
         /** @description What a login may sign in with. */
         DiscoverRequest: {
@@ -7151,6 +8088,11 @@ export interface components {
             tenant_id: string;
             emergency_numbers: string[];
             test_numbers: string[];
+            /**
+             * @description Who answers a test call: `local`, this platform reading back what a
+             *     live call would carry, or `carrier`, the carrier's test service.
+             */
+            test_call_mode: string;
             dial_prefixes: string[];
             /**
              * @description Who is told when an emergency call is placed, typed by channel
@@ -7751,6 +8693,16 @@ export interface components {
          */
         LineKeyKind: "blf" | "speed_dial" | "park";
         /**
+         * @description What a line is.
+         * @enum {string}
+         */
+        LineKind: "own" | "extension" | "shared" | "on_behalf";
+        /** @description A user's name for one of their lines. */
+        LineLabelRequest: {
+            /** @description Empty clears it: the line shows the administrator's label again. */
+            label: string;
+        };
+        /**
          * @description A page of CDRs: the list envelope (`crate::page`), whose cursor is the
          *     CDR store's own keyset cursor, and whose total may be an estimate.
          */
@@ -7785,8 +8737,13 @@ export interface components {
             longitude?: number | null;
             phone_number?: string | null;
             timezone?: string | null;
-            emergency_contact_name?: string | null;
-            emergency_contact_phone?: string | null;
+            /**
+             * @description Who is told about an emergency call from this site, before the
+             *     tenant's contacts (`docs/E911.md` "On-site notification").
+             */
+            emergency_contacts: components["schemas"]["ContactResponse"][];
+            /** @description Whether the tenant's contacts are told too. */
+            notify_tenant_contacts: boolean;
             e911_callback_number?: string | null;
             /**
              * @description The street address as RFC 5139 civic elements (`docs/E911_BLOCK_2.md`
@@ -7910,6 +8867,12 @@ export interface components {
             enable_dtmf_detection?: boolean;
             /** @description Record all calls for this user */
             record_all_calls?: boolean;
+            /**
+             * @description The user may record a call they are on, and stop that recording,
+             *     from their app (`docs/RECORD_AND_CONTACTS.md` §2). Set by an
+             *     administrator only.
+             */
+            record_on_demand?: boolean;
             /** @description Preferred audio codecs in priority order */
             preferred_codecs?: string[];
         };
@@ -8006,6 +8969,15 @@ export interface components {
             path: string;
             reason: string;
         };
+        /** @description How one of the user's calls went, by their phone: on `/me/calls`. */
+        MyCallQuality: {
+            /** Format: float */
+            mos: number;
+            /** Format: float */
+            far_mos?: number | null;
+            /** @description Either score under 3.1. */
+            poor: boolean;
+        };
         /** @description One of the user's calls, from their side. */
         MyCallResponse: {
             /** @description The record's id, as `/cdrs` names it. */
@@ -8031,6 +9003,7 @@ export interface components {
              * @description Talk time, from the answer.
              */
             duration_seconds?: number | null;
+            quality?: components["schemas"]["MyCallQuality"] | null;
         };
         /** @description An executive the user assists (`docs/ENTERPRISE_CALLING.md` §3.10). */
         MyExecutive: {
@@ -8057,6 +9030,25 @@ export interface components {
              * @description A temporary greeting's lifetime, in hours.
              */
             expires_in?: number | null;
+        };
+        /**
+         * @description A user's presence: what others see, what they chose, and their own
+         *     statuses to choose from.
+         */
+        MyPresenceResponse: {
+            /** @description What others see. */
+            presence: components["schemas"]["Presence"];
+            /** @description What they chose: a built-in state's name or one of `statuses`' ids. */
+            status: string;
+            /** @description The chosen status's state. */
+            status_state: components["schemas"]["StatusState"];
+            note?: string | null;
+            /**
+             * Format: date-time
+             * @description When the chosen status clears back to available.
+             */
+            until?: string | null;
+            statuses: components["schemas"]["OwnStatusResponse"][];
         };
         NetworkResponse: {
             id: string;
@@ -8187,6 +9179,21 @@ export interface components {
             /** Format: date-time */
             validated_at?: string | null;
         };
+        /** @description A user's own statuses in a new order: every id, once. */
+        OrderStatusesRequest: {
+            ids: string[];
+        };
+        /** @description One of a user's own statuses, as written. */
+        OwnStatusRequest: {
+            label: string;
+            state: components["schemas"]["StatusState"];
+        };
+        /** @description One of a user's own statuses. */
+        OwnStatusResponse: {
+            id: string;
+            label: string;
+            state: components["schemas"]["StatusState"];
+        };
         /** @description A page of a list. */
         Page_AgentResponse: {
             data: {
@@ -8227,7 +9234,9 @@ export interface components {
                 permissions: string[];
                 /**
                  * @description A token made before permissions were checked, carrying `admin` or
-                 *     `*`: it reaches everything in its tenant. Review and replace it.
+                 *     `*`. Since v0.25.498 it reaches what a tenant administrator may (or
+                 *     its maker, when it has one), never system configuration: make a new
+                 *     one with the permissions it needs.
                  */
                 legacy_full_access: boolean;
                 expires_at?: string | null;
@@ -8279,7 +9288,17 @@ export interface components {
             data: {
                 /** Format: int64 */
                 id: number;
+                /** @description The tenant acted on; `null` for the platform's own actions. */
                 tenant_id?: string | null;
+                /**
+                 * @description The actor's own tenant, `null` for the static token. Shown only to a
+                 *     platform administrator.
+                 */
+                actor_tenant_id?: string | null;
+                /**
+                 * @description Who acted. A tenant's readers see an actor from outside it (a
+                 *     platform administrator) as `platform administrator`.
+                 */
                 actor: string;
                 actor_kind: string;
                 method: string;
@@ -8373,6 +9392,122 @@ export interface components {
                 duration_seconds?: number | null;
                 media_anchored: boolean;
                 failure_reason?: string | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_CallQualityResponse: {
+            data: {
+                call_id: string;
+                user_id: string;
+                /** @description The reporting user's name, while they exist. */
+                username?: string | null;
+                device_id?: string | null;
+                direction: string;
+                codec: string;
+                srtp: boolean;
+                /** Format: int32 */
+                duration_seconds?: number | null;
+                /** Format: int64 */
+                packets_sent: number;
+                /** Format: int64 */
+                packets_received: number;
+                /** Format: int64 */
+                packets_expected: number;
+                /** Format: int64 */
+                packets_lost: number;
+                /**
+                 * Format: float
+                 * @description `packets_lost` of `packets_expected`, in percent.
+                 */
+                loss_pct: number;
+                /** Format: float */
+                jitter_ms: number;
+                /** Format: float */
+                rtt_ms?: number | null;
+                /** Format: float */
+                far_loss_pct?: number | null;
+                /** Format: float */
+                far_jitter_ms?: number | null;
+                /** Format: int64 */
+                far_lost?: number | null;
+                /** Format: float */
+                mos: number;
+                /** Format: float */
+                far_mos?: number | null;
+                /** @description Either score under 3.1. */
+                poor: boolean;
+                local_rtp?: string | null;
+                remote_rtp?: string | null;
+                /** Format: date-time */
+                reported_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_CaptureAllowResponse: {
+            data: {
+                id: string;
+                /** @description `user` or `device`. */
+                kind: string;
+                user_id?: string | null;
+                /** @description The user's name, while they exist. */
+                username?: string | null;
+                device_id?: string | null;
+                /** @description The device's name, while it exists. */
+                device_name?: string | null;
+                /** Format: date-time */
+                until: string;
+                /** @description Not yet ended. */
+                active: boolean;
+                reason?: string | null;
+                created_by: string;
+                /** Format: date-time */
+                created_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_CaptureResponse: {
+            data: {
+                id: string;
+                /** @description The app that took it, which may since have been removed. */
+                device_id: string;
+                device_name?: string | null;
+                user_id: string;
+                username?: string | null;
+                /** @description The call it holds, when the app named one. */
+                call_id?: string | null;
+                /** Format: int64 */
+                size: number;
+                sha256: string;
+                /** Format: date-time */
+                uploaded_at: string;
+                /**
+                 * Format: date-time
+                 * @description When retention removes it, unless a hold keeps it.
+                 */
+                expires_at: string;
+                /** @description A legal hold keeps it past its expiry. */
+                held: boolean;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -8541,6 +9676,11 @@ export interface components {
                 codec_support: string[];
                 /** @description The keys programmed on the phone, in order. */
                 line_keys: components["schemas"]["LineKey"][];
+                /**
+                 * @description The lines it registers and takes calls on (`docs/DEVICE_LINES.md`);
+                 *     empty, its own line (and a phone's shared line) as before lines.
+                 */
+                lines: components["schemas"]["DeviceLine"][];
                 location?: string | null;
                 location_id?: string | null;
                 e911_override?: components["schemas"]["E911AddressResponse"] | null;
@@ -8608,11 +9748,18 @@ export interface components {
                 department?: string | null;
                 job_title?: string | null;
                 /**
-                 * @description Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`
-                 *     or `ringing`; unset when nothing is known.
+                 * @description What others see of them (`docs/PRESENCE.md`): for a user,
+                 *     `available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or
+                 *     `offline`; for an extension, its SIP presence (`open`, `closed`,
+                 *     `away`, `busy`, `on_the_phone`, `ringing`); unset when nothing is
+                 *     known.
                  */
                 presence?: string | null;
+                /** @description A user's own status's label ("WFH"). */
+                presence_label?: string | null;
                 presence_note?: string | null;
+                /** @description A user shown away because their apps say they are idle. */
+                presence_idle?: boolean;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -9079,8 +10226,13 @@ export interface components {
                 longitude?: number | null;
                 phone_number?: string | null;
                 timezone?: string | null;
-                emergency_contact_name?: string | null;
-                emergency_contact_phone?: string | null;
+                /**
+                 * @description Who is told about an emergency call from this site, before the
+                 *     tenant's contacts (`docs/E911.md` "On-site notification").
+                 */
+                emergency_contacts: components["schemas"]["ContactResponse"][];
+                /** @description Whether the tenant's contacts are told too. */
+                notify_tenant_contacts: boolean;
                 e911_callback_number?: string | null;
                 /**
                  * @description The street address as RFC 5139 civic elements (`docs/E911_BLOCK_2.md`
@@ -9260,6 +10412,7 @@ export interface components {
                  * @description Talk time, from the answer.
                  */
                 duration_seconds?: number | null;
+                quality?: components["schemas"]["MyCallQuality"] | null;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -9371,6 +10524,89 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_OwnStatusResponse: {
+            data: {
+                id: string;
+                label: string;
+                state: components["schemas"]["StatusState"];
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_ParkedCallResponse: {
+            data: {
+                slot: string;
+                /** @description The lot; `default` for the node's own range. */
+                lot_id: string;
+                call_id: string;
+                caller?: components["schemas"]["ParkedCaller"] | null;
+                parker_extension: string;
+                /**
+                 * Format: int64
+                 * @description How long it has waited, and how long it may.
+                 */
+                parked_secs: number;
+                /** Format: int64 */
+                timeout_secs: number;
+                /** @description The call manager holding it. */
+                node_id: string;
+                /**
+                 * @description A site's call (`docs/PARKING.md` phase 4), as its link last told
+                 *     the cloud: taken back or hung up at the site, not here.
+                 */
+                site_id?: string | null;
+                site_name?: string | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_ParkingLotResponse: {
+            data: {
+                id: string;
+                tenant_id: string;
+                name: string;
+                /** @description The first and last slot: digit strings of one width. */
+                first: string;
+                last: string;
+                /** Format: int64 */
+                slots: number;
+                park_number?: string | null;
+                /** Format: int32 */
+                timeout_secs: number;
+                /**
+                 * @description Where a call goes when its parker does not take it back
+                 *     (`ext:1001`, `queue:support`, `voicemail`, …).
+                 */
+                fallback?: string | null;
+                music?: string | null;
+                location_id?: string | null;
+                enabled: boolean;
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                updated_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_PendingDeviceResponse: {
             data: {
                 mac_address: string;
@@ -9385,6 +10621,29 @@ export interface components {
                 firmware?: string | null;
                 /** Format: int32 */
                 fetches: number;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_PersonalContactResponse: {
+            data: {
+                id: string;
+                name: string;
+                company?: string | null;
+                numbers: components["schemas"]["ContactNumber"][];
+                email?: string | null;
+                notes?: string | null;
+                ringtone?: string | null;
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                updated_at: string;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -9463,7 +10722,8 @@ export interface components {
         Page_PromptResponse: {
             data: {
                 id: string;
-                tenant_id: string;
+                /** @description The owning tenant; `null` for a system prompt, the platform's. */
+                tenant_id?: string | null;
                 name: string;
                 description?: string | null;
                 category: string;
@@ -9479,6 +10739,13 @@ export interface components {
                 file_size?: number | null;
                 is_system: boolean;
                 has_audio: boolean;
+                /**
+                 * @description On a system prompt: the id of the tenant's override of it, which the
+                 *     tenant's calls hear instead.
+                 */
+                overridden_by?: string | null;
+                /** @description On a tenant's prompt: the id of the system prompt it overrides. */
+                overrides?: string | null;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -9778,6 +11045,8 @@ export interface components {
                 /** Format: int32 */
                 priority: number;
                 enabled: boolean;
+                /** @description The location whose callers the rule is for; `null` for every call. */
+                location_id?: string | null;
                 destination_pattern?: string | null;
                 source_pattern?: string | null;
                 source_ip_ranges: string[];
@@ -9815,6 +11084,52 @@ export interface components {
                 state: string;
                 /** Format: date-time */
                 updated_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_ServiceView: {
+            data: {
+                id: string;
+                /** @description The site it runs at; null for the platform's own. */
+                site_id?: string | null;
+                site_name?: string | null;
+                kind: string;
+                host: string;
+                version: string;
+                /**
+                 * @description `serving`, `degraded`, `draining`, `stopping`, `down` (its beacon
+                 *     went), `stopped` (it said it was stopping), or `unknown` (Redis, or
+                 *     the site's link, cannot be read now).
+                 */
+                state: string;
+                /** Format: date-time */
+                first_seen: string;
+                /** Format: date-time */
+                last_seen: string;
+                /** Format: date-time */
+                down_since?: string | null;
+                /**
+                 * Format: date-time
+                 * @description When the process started, from its last beacon.
+                 */
+                started_at?: string | null;
+                region?: string | null;
+                /** @description Also a cluster member. */
+                member: boolean;
+                http_address?: string | null;
+                sip_address?: string | null;
+                public_url?: string | null;
+                checks: components["schemas"]["ServiceCheckView"][];
+                load: {
+                    [key: string]: number;
+                };
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -10015,6 +11330,13 @@ export interface components {
                 offboarding: components["schemas"]["TenantOffboarding"];
                 /** @description What the tenant's people see of each other (`/me/directory`). */
                 directory: components["schemas"]["TenantDirectory"];
+                /** @description Whether its users may name their own lines. */
+                lines: components["schemas"]["TenantLines"];
+                /**
+                 * @description Whether its people's apps may capture calls, and how captures are
+                 *     kept.
+                 */
+                diagnostics: components["schemas"]["TenantDiagnostics"];
                 /**
                  * @description How the tenant's phones fetch their configuration
                  *     (`docs/PROVISIONING.md` §3).
@@ -10218,6 +11540,10 @@ export interface components {
                  *     `offboarding.grace_days` later unless restored.
                  */
                 deprovisioned_at?: string | null;
+                /** @description Recording and media defaults for the user's calls. */
+                media_preferences: components["schemas"]["MediaPreferences"];
+                /** @description Listed in the tenant's directory for its users (`/me/directory`). */
+                directory_listed: boolean;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -10387,6 +11713,76 @@ export interface components {
              */
             total?: number | null;
         };
+        /** @description A call waiting in a slot, on whichever call manager holds it. */
+        ParkedCallResponse: {
+            slot: string;
+            /** @description The lot; `default` for the node's own range. */
+            lot_id: string;
+            call_id: string;
+            caller?: components["schemas"]["ParkedCaller"] | null;
+            parker_extension: string;
+            /**
+             * Format: int64
+             * @description How long it has waited, and how long it may.
+             */
+            parked_secs: number;
+            /** Format: int64 */
+            timeout_secs: number;
+            /** @description The call manager holding it. */
+            node_id: string;
+            /**
+             * @description A site's call (`docs/PARKING.md` phase 4), as its link last told
+             *     the cloud: taken back or hung up at the site, not here.
+             */
+            site_id?: string | null;
+            site_name?: string | null;
+        };
+        /** @description Who a parked call is from. */
+        ParkedCaller: {
+            uri: string;
+            name?: string | null;
+        };
+        /** @description What a lot is written as; a `PUT` replaces it whole. */
+        ParkingLotRequest: {
+            name: string;
+            first: string;
+            last: string;
+            park_number?: string | null;
+            /**
+             * Format: int32
+             * @description Seconds; 60 when unset.
+             */
+            timeout_secs?: number | null;
+            fallback?: string | null;
+            music?: string | null;
+            location_id?: string | null;
+            enabled?: boolean;
+        };
+        ParkingLotResponse: {
+            id: string;
+            tenant_id: string;
+            name: string;
+            /** @description The first and last slot: digit strings of one width. */
+            first: string;
+            last: string;
+            /** Format: int64 */
+            slots: number;
+            park_number?: string | null;
+            /** Format: int32 */
+            timeout_secs: number;
+            /**
+             * @description Where a call goes when its parker does not take it back
+             *     (`ext:1001`, `queue:support`, `voicemail`, …).
+             */
+            fallback?: string | null;
+            music?: string | null;
+            location_id?: string | null;
+            enabled: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
         /**
          * @description Who may sign in with a password.
          * @enum {string}
@@ -10406,6 +11802,35 @@ export interface components {
             firmware?: string | null;
             /** Format: int32 */
             fetches: number;
+        };
+        /** @description A contact, as written. */
+        PersonalContactRequest: {
+            name: string;
+            company?: string | null;
+            numbers?: components["schemas"]["ContactNumber"][];
+            email?: string | null;
+            notes?: string | null;
+            /**
+             * @description The ringtone the user's apps ring with for this contact, by the
+             *     app's id for it; `null` rings with the app's own choice, and left
+             *     out a change keeps the one set (an app or page that has none to
+             *     offer does not clear it).
+             */
+            ringtone?: string | null;
+        };
+        /** @description A contact. */
+        PersonalContactResponse: {
+            id: string;
+            name: string;
+            company?: string | null;
+            numbers: components["schemas"]["ContactNumber"][];
+            email?: string | null;
+            notes?: string | null;
+            ringtone?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
         };
         /** @description Phone number response. */
         PhoneNumberResponse: {
@@ -10513,6 +11938,15 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description What others see of a person. */
+        Presence: {
+            state: components["schemas"]["Shown"];
+            /** @description Their own status's label, kept beside a call ("On a call · WFH"). */
+            label?: string | null;
+            note?: string | null;
+            /** @description Shown away because they are idle, not because they said so. */
+            idle?: boolean;
+        };
         /**
          * @description Authorization policy for presence subscriptions.
          *
@@ -10614,6 +12048,13 @@ export interface components {
             timezone: string;
             role: string;
             has_profile_picture: boolean;
+            /** @description Listed in the tenant's directory for its users. */
+            directory_listed: boolean;
+            /**
+             * @description The tenant lets its users take themselves out of the directory, or
+             *     put themselves back (`directory_listed` on `PUT /me/profile`).
+             */
+            may_change_directory_listing: boolean;
         };
         /** @description `POST /prompts/:id/audio`. */
         PromptAudioUpload: {
@@ -10625,7 +12066,8 @@ export interface components {
         };
         PromptResponse: {
             id: string;
-            tenant_id: string;
+            /** @description The owning tenant; `null` for a system prompt, the platform's. */
+            tenant_id?: string | null;
             name: string;
             description?: string | null;
             category: string;
@@ -10641,6 +12083,13 @@ export interface components {
             file_size?: number | null;
             is_system: boolean;
             has_audio: boolean;
+            /**
+             * @description On a system prompt: the id of the tenant's override of it, which the
+             *     tenant's calls hear instead.
+             */
+            overridden_by?: string | null;
+            /** @description On a tenant's prompt: the id of the system prompt it overrides. */
+            overrides?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -11114,6 +12563,14 @@ export interface components {
             total_deleted: number;
             errors: string[];
         };
+        /** @description Where a parked call is sent. */
+        RetrieveParkedRequest: {
+            /**
+             * @description An extension or a user: their phones ring, and answering takes the
+             *     call. Unanswered, their own plan decides (their voicemail).
+             */
+            target: string;
+        };
         /** @description Outcome of moving the key ring to a new KEK. */
         RewrapReport: {
             /**
@@ -11163,6 +12620,8 @@ export interface components {
             /** Format: int32 */
             priority: number;
             enabled: boolean;
+            /** @description The location whose callers the rule is for; `null` for every call. */
+            location_id?: string | null;
             destination_pattern?: string | null;
             source_pattern?: string | null;
             source_ip_ranges: string[];
@@ -11262,6 +12721,86 @@ export interface components {
             /** @description The sealed form (`enc:v1:…`) to put in a configuration file. */
             sealed: string;
         };
+        /** @description One check, as the page shows it. */
+        ServiceCheckView: {
+            name: string;
+            required: boolean;
+            ok: boolean;
+            error?: string | null;
+            /**
+             * Format: date-time
+             * @description When it came to its current answer.
+             */
+            since: string;
+        };
+        /** @description One service. */
+        ServiceView: {
+            id: string;
+            /** @description The site it runs at; null for the platform's own. */
+            site_id?: string | null;
+            site_name?: string | null;
+            kind: string;
+            host: string;
+            version: string;
+            /**
+             * @description `serving`, `degraded`, `draining`, `stopping`, `down` (its beacon
+             *     went), `stopped` (it said it was stopping), or `unknown` (Redis, or
+             *     the site's link, cannot be read now).
+             */
+            state: string;
+            /** Format: date-time */
+            first_seen: string;
+            /** Format: date-time */
+            last_seen: string;
+            /** Format: date-time */
+            down_since?: string | null;
+            /**
+             * Format: date-time
+             * @description When the process started, from its last beacon.
+             */
+            started_at?: string | null;
+            region?: string | null;
+            /** @description Also a cluster member. */
+            member: boolean;
+            http_address?: string | null;
+            sip_address?: string | null;
+            public_url?: string | null;
+            checks: components["schemas"]["ServiceCheckView"][];
+            load: {
+                [key: string]: number;
+            };
+        };
+        /** @description Every service in one number each, for the dashboard. */
+        ServicesSummary: {
+            /** Format: int64 */
+            total: number;
+            /**
+             * Format: int64
+             * @description Serving.
+             */
+            serving: number;
+            /**
+             * Format: int64
+             * @description Degraded or draining.
+             */
+            attention: number;
+            /**
+             * Format: int64
+             * @description Down or stopped.
+             */
+            down: number;
+            /** Format: int64 */
+            unknown: number;
+            /** @description Whether this admin can read the platform's Redis now. */
+            redis_reachable: boolean;
+            /** @description Why it cannot, when it cannot. */
+            redis_error?: string | null;
+            /**
+             * Format: date-time
+             * @description When the beacons were last read.
+             */
+            read_at?: string | null;
+        };
         /** @description A session, with the names of the host and the guest. */
         SessionResponse: {
             id: string;
@@ -11287,6 +12826,11 @@ export interface components {
         SetLayoutRequest: {
             layout: string;
         };
+        /**
+         * @description What others see of a person.
+         * @enum {string}
+         */
+        Shown: "available" | "away" | "busy" | "dnd" | "ringing" | "on_call" | "offline";
         SignupRequest: {
             company_name: string;
             username: string;
@@ -11440,6 +12984,24 @@ export interface components {
              */
             register_expires: number;
         };
+        /** @description Whether the app may capture (`capture` on `/me/softphone`). */
+        SoftphoneCapture: {
+            /**
+             * @description The tenant has captures on, an administrator allows this user or
+             *     app, and this admin keeps captures.
+             */
+            allowed: boolean;
+            /**
+             * Format: date-time
+             * @description Until when, while allowed.
+             */
+            until?: string | null;
+            /**
+             * Format: int32
+             * @description The largest capture the app should keep or upload, in MB.
+             */
+            max_mb: number;
+        };
         /** @description Everything the app needs. */
         SoftphoneConfig: {
             account: components["schemas"]["SoftphoneAccount"];
@@ -11455,6 +13017,60 @@ export interface components {
             api_url?: string | null;
             /** @description The device the app is. */
             device_id: string;
+            /**
+             * @description The user may record a call they are on
+             *     (`/me/calls/{call_id}/recording/start`); the app shows its record
+             *     button only then.
+             */
+            may_record: boolean;
+            /**
+             * @description Listed in the tenant's directory, and whether the user may change
+             *     that themselves (`directory_listed` on `PUT /me/profile`).
+             */
+            directory_listed: boolean;
+            may_change_directory_listing: boolean;
+            /**
+             * @description The app's lines, its own first; `account` is the first, kept for a
+             *     release.
+             */
+            lines: components["schemas"]["SoftphoneLine"][];
+            /** @description Whether the user may name their lines (the tenant's choice). */
+            may_rename_lines: boolean;
+            /**
+             * @description Whether the app may capture calls, until when, and how large a
+             *     capture may be (`docs/CALL_DIAGNOSTICS.md` §3).
+             */
+            capture: components["schemas"]["SoftphoneCapture"];
+        };
+        /**
+         * @description A line on the app (`docs/DEVICE_LINES.md`): an account it registers
+         *     with its own credentials and takes calls on.
+         */
+        SoftphoneLine: {
+            /**
+             * Format: int32
+             * @description 1 for the first; the first is the user's own.
+             */
+            index: number;
+            /** @description `own`, `extension`, `shared` or `on_behalf`. */
+            kind: string;
+            /** @description The line itself, as `PUT /me/lines/{line}/label` names it. */
+            line: string;
+            /** @description What the app registers the line as. */
+            aor: string;
+            /**
+             * @description What it is called: the user's name, the administrator's, or
+             *     `default_label`.
+             */
+            label: string;
+            default_label: string;
+            shared: boolean;
+            /** Format: int32 */
+            appearances: number;
+            /** @description A shared line whose active calls the app may join (barge in). */
+            barge_in: boolean;
+            /** @description Whether calls to the line ring the app. */
+            ring: boolean;
         };
         /** @description The media the app offers. */
         SoftphoneMedia: {
@@ -11498,6 +13114,12 @@ export interface components {
              */
             sip_realm: string;
         };
+        /**
+         * @description The state a status carries: what colour it is and what others' phones
+         *     are told.
+         * @enum {string}
+         */
+        StatusState: "available" | "away" | "busy" | "dnd";
         /**
          * @description A subject as the tenant knows them: every spelling that identifies them,
          *     and the platform objects that are theirs (`docs/COMPLIANCE_FOLLOWUPS.md`
@@ -11634,6 +13256,24 @@ export interface components {
              */
             hold_music?: string | null;
         };
+        /**
+         * @description A tenant's word on captures from its people's apps: off unless it turns
+         *     them on, and then only for a user or device an administrator allows.
+         */
+        TenantDiagnostics: {
+            /** @description Captures may be allowed at all. */
+            capture_allowed?: boolean;
+            /**
+             * Format: int32
+             * @description The largest capture an app keeps or uploads, in MB (1 to 500).
+             */
+            capture_max_mb?: number;
+            /**
+             * Format: int32
+             * @description Days an uploaded capture is kept (1 to 365), unless a hold keeps it.
+             */
+            capture_keep_days?: number;
+        };
         /** @description What a tenant's people see of each other through `/me/directory`. */
         TenantDirectory: {
             /**
@@ -11641,9 +13281,20 @@ export interface components {
              *     presence; on unless a tenant turns it off.
              */
             visible_to_users?: boolean;
+            /**
+             * @description Whether a user may take themselves out of the directory, or put
+             *     themselves back (`PUT /me/directory-listing`); off, only an
+             *     administrator sets a user's `directory_listed`.
+             */
+            users_may_unlist?: boolean;
         };
         /** @description A TenantId: `tenant-<uuid>`, or the bare UUID */
         TenantId: string;
+        /** @description What a tenant's people may do with the lines on their devices. */
+        TenantLines: {
+            /** @description A user may rename their lines (`PUT /me/lines/{line}/label`). */
+            users_may_rename?: boolean;
+        };
         /**
          * @description What happens to a tenant's deleted user (`docs/USERS.md` §4): they are
          *     suspended at once and purged `grace_days` later.
@@ -11716,6 +13367,13 @@ export interface components {
             offboarding: components["schemas"]["TenantOffboarding"];
             /** @description What the tenant's people see of each other (`/me/directory`). */
             directory: components["schemas"]["TenantDirectory"];
+            /** @description Whether its users may name their own lines. */
+            lines: components["schemas"]["TenantLines"];
+            /**
+             * @description Whether its people's apps may capture calls, and how captures are
+             *     kept.
+             */
+            diagnostics: components["schemas"]["TenantDiagnostics"];
             /**
              * @description How the tenant's phones fetch their configuration
              *     (`docs/PROVISIONING.md` §3).
@@ -12070,6 +13728,8 @@ export interface components {
             supports_blf?: boolean | null;
             /** @description The keys programmed on the phone, replacing what it had. */
             line_keys?: components["schemas"]["LineKey"][] | null;
+            /** @description Its lines, replacing what it had; empty goes back to its own line. */
+            lines?: components["schemas"]["DeviceLine"][] | null;
             location?: string | null;
             location_id?: string | null;
             e911_override?: components["schemas"]["E911AddressResponse"] | null;
@@ -12098,6 +13758,8 @@ export interface components {
         UpdateEmergencyConfigRequest: {
             emergency_numbers?: string[] | null;
             test_numbers?: string[] | null;
+            /** @description `local` (read back here) or `carrier` (sent to the emergency trunks). */
+            test_call_mode?: string | null;
             dial_prefixes?: string[] | null;
             /** @description Replaces the notification contacts. Strings are read by shape. */
             contacts?: components["schemas"]["ContactInput"][] | null;
@@ -12193,8 +13855,9 @@ export interface components {
             longitude?: number | null;
             phone_number?: string | null;
             timezone?: string | null;
-            emergency_contact_name?: string | null;
-            emergency_contact_phone?: string | null;
+            /** @description Replaces the site's emergency contacts when given. */
+            emergency_contacts?: components["schemas"]["ContactInput"][] | null;
+            notify_tenant_contacts?: boolean | null;
             e911_callback_number?: string | null;
             civic?: components["schemas"]["CivicElements"] | null;
         };
@@ -12285,6 +13948,24 @@ export interface components {
         UpdateMyExecutive: {
             opted_in: boolean;
         };
+        /**
+         * @description What may change. `status` sets the chosen status (a built-in state's
+         *     name or one of the user's statuses' ids) with `note` and `until`, both
+         *     cleared when left out; without `status`, a `note` or `until` given
+         *     changes only that (`null` clears it). `idle` is an app's word that its
+         *     person is idle (`true`) or back (`false`), lasting 15 minutes unless
+         *     repeated.
+         */
+        UpdateMyPresenceRequest: {
+            status?: string | null;
+            note?: string | null;
+            /**
+             * Format: date-time
+             * @description RFC 3339, in the future and within 7 days.
+             */
+            until?: string | null;
+            idle?: boolean | null;
+        };
         UpdateNetworkRequest: {
             cidr?: string | null;
             location_id?: string | null;
@@ -12292,6 +13973,11 @@ export interface components {
             /** Format: int32 */
             priority?: number | null;
             applies_to?: string | null;
+        };
+        /** @description What may change of one of a user's own statuses. */
+        UpdateOwnStatusRequest: {
+            label?: string | null;
+            state?: components["schemas"]["StatusState"] | null;
         };
         /** @description Update password request. */
         UpdatePasswordRequest: {
@@ -12347,6 +14033,11 @@ export interface components {
             phone_number?: string | null;
             timezone?: string | null;
             language?: string | null;
+            /**
+             * @description Listed in the tenant's directory, or not: 403 unless the tenant
+             *     lets its users change it (`directory.users_may_unlist`).
+             */
+            directory_listed?: boolean | null;
         };
         UpdatePromptRequest: {
             description?: string | null;
@@ -12404,6 +14095,8 @@ export interface components {
             /** Format: int32 */
             priority?: number | null;
             enabled?: boolean | null;
+            /** @description A location, or `""` for every call of the tenant's. */
+            location_id?: string | null;
             destination_pattern?: string | null;
             source_pattern?: string | null;
             source_ip_ranges?: string[] | null;
@@ -12449,6 +14142,8 @@ export interface components {
             sign_in?: components["schemas"]["TenantSignIn"] | null;
             offboarding?: components["schemas"]["TenantOffboarding"] | null;
             directory?: components["schemas"]["TenantDirectory"] | null;
+            lines?: components["schemas"]["TenantLines"] | null;
+            diagnostics?: components["schemas"]["TenantDiagnostics"] | null;
             provisioning?: components["schemas"]["TenantProvisioning"] | null;
         };
         /** @description Update trunk request. */
@@ -12528,6 +14223,12 @@ export interface components {
             account_status?: string | null;
             emergency_contact_name?: string | null;
             emergency_contact_phone?: string | null;
+            media_preferences?: components["schemas"]["MediaPreferences"] | null;
+            /**
+             * @description Listed in the tenant's directory for its users (`/me/directory`);
+             *     an unlisted user still rings and is seen by administrators.
+             */
+            directory_listed?: boolean | null;
         };
         UpdateVoicemailRequest: {
             pin?: string | null;
@@ -12605,6 +14306,17 @@ export interface components {
             /** Format: date-time */
             last_sign_in_at?: string | null;
         };
+        /** @description A user's presence, as an administrator reads it. */
+        UserPresenceResponse: {
+            username: string;
+            presence: components["schemas"]["Presence"];
+            status: string;
+            status_state: components["schemas"]["StatusState"];
+            status_label?: string | null;
+            note?: string | null;
+            /** Format: date-time */
+            until?: string | null;
+        };
         UserReadiness: {
             user_id: string;
             username: string;
@@ -12665,6 +14377,10 @@ export interface components {
              *     `offboarding.grace_days` later unless restored.
              */
             deprovisioned_at?: string | null;
+            /** @description Recording and media defaults for the user's calls. */
+            media_preferences: components["schemas"]["MediaPreferences"];
+            /** @description Listed in the tenant's directory for its users (`/me/directory`). */
+            directory_listed: boolean;
         };
         ValidateAddressRequest: {
             address: components["schemas"]["E911AddressResponse"];
@@ -12777,7 +14493,7 @@ export interface components {
              * @description A name from `/api/v1/webhooks/event-types`, or `webhook.test`
              * @enum {string}
              */
-            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
+            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.quality_poor" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
             /**
              * Format: date-time
              * @description When the event happened, RFC 3339.
@@ -13478,6 +15194,40 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SoftphonePassword"];
                 };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    softphone_set_line_label: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `own`, `extension:1005`, `shared:+15551234567`, `on_behalf:<user>` */
+                line: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LineLabelRequest"];
+            };
+        };
+        responses: {
+            /** @description Named */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description An error */
             default: {
@@ -15116,6 +16866,177 @@ export interface operations {
             };
         };
     };
+    self_service_start_my_recording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description FCP's id for the call (`X-FCP-Call-Id`) */
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recording */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["media.RecordingResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_stop_my_recording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description FCP's id for the call (`X-FCP-Call-Id`) */
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stopped */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["media.RecordingResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_report_call_quality: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description FCP's id for the call (`X-FCP-Call-Id`) */
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CallQualityReport"];
+            };
+        };
+        responses: {
+            /** @description Kept */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallQualityResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_upload_capture: {
+        parameters: {
+            query?: {
+                /** @description FCP's id for the call the capture holds (`X-FCP-Call-Id`). */
+                call_id?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The app's device */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/vnd.tcpdump.pcapng": number[];
+            };
+        };
+        responses: {
+            /** @description Kept */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_list_captures: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_CaptureResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     self_service_list_directory: {
         parameters: {
             query?: {
@@ -15137,6 +17058,497 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_DirectoryEntry"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_list_contacts: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+                /** @description A word in a name, company, email or number. */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_PersonalContactResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_create_contact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PersonalContactRequest"];
+            };
+        };
+        responses: {
+            /** @description Kept */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonalContactResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_get_contact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonalContactResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_update_contact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PersonalContactRequest"];
+            };
+        };
+        responses: {
+            /** @description Kept */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonalContactResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_delete_contact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_export_contacts: {
+        parameters: {
+            query?: {
+                /**
+                 * @description `vcard` or `csv`. On import, left out, the file says (`BEGIN:VCARD`
+                 *     is vCard, anything else CSV); on export, vCard.
+                 */
+                format?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/vcard": string;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_import_contacts: {
+        parameters: {
+            query?: {
+                /**
+                 * @description `vcard` or `csv`. On import, left out, the file says (`BEGIN:VCARD`
+                 *     is vCard, anything else CSV); on export, vCard.
+                 */
+                format?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The file: vCard or CSV */
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+                "text/csv": string;
+                "text/vcard": string;
+            };
+        };
+        responses: {
+            /** @description Imported */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContactImportResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_get_presence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyPresenceResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_update_presence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMyPresenceRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyPresenceResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_list_presence_statuses: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_OwnStatusResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_create_presence_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OwnStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description Kept */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OwnStatusResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_update_presence_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOwnStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OwnStatusResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_delete_presence_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_order_presence_statuses: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrderStatusesRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_OwnStatusResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    users_get_presence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserPresenceResponse"];
                 };
             };
             /** @description An error */
@@ -18740,6 +21152,15 @@ export interface operations {
                 action?: string;
                 /** @description Unix seconds. */
                 since?: number;
+                /** @description Unix seconds: only events before it. */
+                until?: number;
+                /**
+                 * @description A platform administrator's choice of rows: `all`, `platform` (the
+                 *     platform's own actions, without a tenant) or a tenant's id. Without
+                 *     it, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else
+                 *     reads their own tenant's rows whatever this says.
+                 */
+                tenant?: string;
                 limit?: number;
                 cursor?: string;
             };
@@ -18756,6 +21177,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_AuditEventResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    compliance_export_audit_log: {
+        parameters: {
+            query?: {
+                actor?: string;
+                /** @description Route-template prefix, e.g. `POST /api/v1/users`. */
+                action?: string;
+                /** @description Unix seconds. */
+                since?: number;
+                /** @description Unix seconds: only events before it. */
+                until?: number;
+                /**
+                 * @description A platform administrator's choice of rows: `all`, `platform` (the
+                 *     platform's own actions, without a tenant) or a tenant's id. Without
+                 *     it, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else
+                 *     reads their own tenant's rows whatever this says.
+                 */
+                tenant?: string;
+                /** @description `csv` (the default) or `jsonl`. */
+                format?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The events, streamed as CSV or JSON Lines */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
                 };
             };
             /** @description An error */
@@ -19386,6 +21853,227 @@ export interface operations {
             };
         };
     };
+    cdrs_get_call_quality: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_CallQualityResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    captures_list: {
+        parameters: {
+            query?: {
+                /** @description One device's captures. */
+                device_id?: string;
+                /** @description One user's captures. */
+                username?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_CaptureResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    captures_list_allows: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_CaptureAllowResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    captures_create_allow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaptureAllowRequest"];
+            };
+        };
+        responses: {
+            /** @description Made */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureAllowResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    captures_delete_allow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    captures_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    captures_download: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The capture */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.tcpdump.pcapng": number[];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     flow_traces_list_flow_traces: {
         parameters: {
             query?: {
@@ -19677,6 +22365,73 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlowResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    flows_list_untenanted_flows: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_FlowResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    flows_assign_flow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssignFlowRequest"];
+            };
+        };
         responses: {
             /** @description OK */
             200: {
@@ -21863,6 +24618,11 @@ export interface operations {
             query?: {
                 category?: string;
                 language?: string;
+                /**
+                 * @description `all` (the default: the tenant's prompts and the system prompts),
+                 *     `tenant` or `system`.
+                 */
+                scope?: string;
                 limit?: number;
                 cursor?: string;
             };
@@ -22099,6 +24859,38 @@ export interface operations {
         responses: {
             /** @description OK */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    prompts_override_prompt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A system prompt's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The tenant's override */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -23323,6 +26115,11 @@ export interface operations {
                 to: string;
                 from?: string;
                 source_ip?: string;
+                /**
+                 * @description The caller's location, for a location's rules
+                 *     (docs/TENANT_SCOPE.md §3.6).
+                 */
+                location_id?: string;
             };
             header?: never;
             path?: never;
@@ -24060,6 +26857,55 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    branding_deployment_profile: {
+        parameters: {
+            query?: {
+                /**
+                 * @description `zip` (the default): `profile.json` and the brand's files; `json`:
+                 *     `profile.json` alone; `reg`: the same settings as Windows policy.
+                 */
+                format?: string;
+                /**
+                 * @description `auto`, `sso` or `password`; unset, `sso` when the tenant allows no
+                 *     password, else `auto`.
+                 */
+                sign_in?: string;
+                /** @description `auto` (the default), `notify` or `off`. */
+                updates?: string;
+                /** @description Whether the server field is locked; unset, it is. */
+                lock_server?: boolean;
+                /**
+                 * @description Fill the username in from Windows' user principal name; unset, when
+                 *     the tenant has a login domain.
+                 */
+                username_from_system?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The profile: a .zip, its profile.json (format=json) or a .reg (format=reg) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": number[];
+                };
             };
             /** @description An error */
             default: {
@@ -24992,11 +27838,267 @@ export interface operations {
             };
         };
     };
+    parking_list_lots: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_ParkingLotResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    parking_create_lot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ParkingLotRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParkingLotResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    parking_get_lot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParkingLotResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    parking_update_lot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ParkingLotRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParkingLotResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    parking_delete_lot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    parking_list_calls: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_ParkedCallResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    parking_retrieve_call: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetrieveParkedRequest"];
+            };
+        };
+        responses: {
+            /** @description Ringing the target */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    parking_hang_up_call: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ended */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     routing_list_routing_rules: {
         parameters: {
             query?: {
                 limit?: number;
                 cursor?: string;
+                /** @description A location id, or `none` for the rules without one. */
+                location_id?: string;
             };
             header?: never;
             path?: never;
@@ -26228,6 +29330,140 @@ export interface operations {
                 };
             };
             /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    services_list: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Only this kind (`voicemail`, …). */
+                kind: string | null;
+                /** @description Only this state (`down`, `degraded`, …). */
+                state: string | null;
+                /** @description Only this site's; `platform` for the platform's own. */
+                site_id: string | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every service the platform has seen, its own and its sites' */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_ServiceView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    services_summary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every service in one number each */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServicesSummary"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    services_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The service's id */
+                id: string;
+                /** @description The site the service runs at; absent for the platform's own. */
+                site_id: string | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One service */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    services_forget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The service's id */
+                id: string;
+                /** @description The site the service runs at; absent for the platform's own. */
+                site_id: string | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Forgotten */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error; 409 for a service that is up */
             default: {
                 headers: {
                     [name: string]: unknown;

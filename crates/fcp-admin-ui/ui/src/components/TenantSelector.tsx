@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { tenants } from '@/api/endpoints'
 import { useAuthStore } from '@/stores/auth'
 import { useTenantStore } from '@/stores/tenant'
@@ -116,6 +116,7 @@ export function useTenantListFilter<T extends { tenant_id?: string | null }>(
 export function TenantContextPicker() {
   const { user } = useAuthStore()
   const { selectedTenantId, setSelectedTenantId } = useTenantStore()
+  const queryClient = useQueryClient()
   const isPlatformAdmin = user?.role === 'super_admin'
 
   const { data: tenantList = [] } = useQuery({
@@ -131,7 +132,11 @@ export function TenantContextPicker() {
       <Building2 className="h-4 w-4 text-muted-foreground" />
       <Select
         value={selectedTenantId ?? '__all__'}
-        onValueChange={(v) => setSelectedTenantId(v === '__all__' ? null : v)}
+        onValueChange={(v) => {
+          setSelectedTenantId(v === '__all__' ? null : v)
+          // Everything on screen was the last tenant's: read it again.
+          void queryClient.resetQueries()
+        }}
       >
         <SelectTrigger className="w-48 h-8 text-xs">
           <SelectValue placeholder="All Tenants" />
@@ -274,6 +279,48 @@ export function TenantField({
           the top-bar selection. Switch the tenant picker to change.
         </p>
       )}
+    </div>
+  )
+}
+
+/**
+ * A tenant-owned page's frame (docs/TENANT_SCOPE.md §3.1): for a platform
+ * administrator, the tenant the page shows ("Tenant: Acme"); with "All
+ * tenants" picked, a page without an all-tenant view asks for one instead
+ * of showing the administrator's own tenant's. Anyone else sees the page as
+ * it is: their tenant is the only one.
+ */
+export function TenantScope({ what, children }: { what: string; children: React.ReactNode }) {
+  const isPlatformAdmin = useIsPlatformAdmin()
+  const { selectedTenantId } = useTenantStore()
+  const { data: tenantList = [] } = useQuery({
+    queryKey: ['tenants'],
+    queryFn: tenants.list,
+    enabled: isPlatformAdmin,
+  })
+  if (!isPlatformAdmin) return <>{children}</>
+  if (!selectedTenantId) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-2 py-24 text-center" data-testid="pick-tenant">
+        <Building2 className="h-8 w-8 text-muted-foreground" />
+        <p className="font-medium">Pick a tenant</p>
+        <p className="max-w-md text-sm text-muted-foreground">
+          {what} belong to a tenant. Choose one in the top bar to see and manage its {what.toLowerCase()}.
+        </p>
+      </div>
+    )
+  }
+  const name = tenantList.find((t: Tenant) => t.id === selectedTenantId)?.name ?? selectedTenantId
+  return (
+    <div className="space-y-2">
+      <div
+        className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs text-muted-foreground"
+        data-testid="tenant-badge"
+      >
+        <Building2 className="h-3 w-3" />
+        Tenant: <span className="font-medium text-foreground">{name}</span>
+      </div>
+      {children}
     </div>
   )
 }

@@ -70,6 +70,7 @@ impl NotificationChannel for CallChannel {
             "ring_timeout_secs": self.settings.ring_timeout.as_secs(),
             "repeat": self.settings.repeat,
             "test": notice.is_test(),
+            "listen": contact.listen,
         }));
         if let Some(token) = &self.settings.auth_token {
             request = request.bearer_auth(token);

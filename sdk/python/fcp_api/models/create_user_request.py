@@ -43,6 +43,7 @@ class CreateUserRequest:
             department_id (None | str | Unset):
             media_preferences (MediaPreferences | Unset): Media preferences for a user account.
                 These settings control default behavior for calls to/from this user.
+            directory_listed (bool | Unset): Listed in the tenant's directory for its users; listed unless false.
             email (None | str | Unset):
             phone_number (None | str | Unset):
             mobile_number (None | str | Unset):
@@ -68,6 +69,7 @@ class CreateUserRequest:
     role: None | str | Unset = UNSET
     department_id: None | str | Unset = UNSET
     media_preferences: MediaPreferences | Unset = UNSET
+    directory_listed: bool | Unset = UNSET
     email: None | str | Unset = UNSET
     phone_number: None | str | Unset = UNSET
     mobile_number: None | str | Unset = UNSET
@@ -129,6 +131,8 @@ class CreateUserRequest:
         media_preferences: dict[str, Any] | Unset = UNSET
         if not isinstance(self.media_preferences, Unset):
             media_preferences = self.media_preferences.to_dict()
+
+        directory_listed = self.directory_listed
 
         email: None | str | Unset
         if isinstance(self.email, Unset):
@@ -236,6 +240,8 @@ class CreateUserRequest:
             field_dict["department_id"] = department_id
         if media_preferences is not UNSET:
             field_dict["media_preferences"] = media_preferences
+        if directory_listed is not UNSET:
+            field_dict["directory_listed"] = directory_listed
         if email is not UNSET:
             field_dict["email"] = email
         if phone_number is not UNSET:
@@ -338,6 +344,8 @@ class CreateUserRequest:
 
 
 
+
+        directory_listed = d.pop("directory_listed", UNSET)
 
         def _parse_email(data: object) -> None | str | Unset:
             if data is None:
@@ -489,6 +497,7 @@ class CreateUserRequest:
             role=role,
             department_id=department_id,
             media_preferences=media_preferences,
+            directory_listed=directory_listed,
             email=email,
             phone_number=phone_number,
             mobile_number=mobile_number,

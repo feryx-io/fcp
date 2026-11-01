@@ -53,6 +53,9 @@ pub struct EmergencyConfigResponse {
     pub tenant_id: String,
     pub emergency_numbers: Vec<String>,
     pub test_numbers: Vec<String>,
+    /// Who answers a test call: `local`, this platform reading back what a
+    /// live call would carry, or `carrier`, the carrier's test service.
+    pub test_call_mode: String,
     pub dial_prefixes: Vec<String>,
     /// Who is told when an emergency call is placed, typed by channel
     /// (`docs/E911_BLOCK_2.md` §8.1).
@@ -81,6 +84,7 @@ impl EmergencyConfigResponse {
             tenant_id: c.tenant_id.to_string(),
             emergency_numbers: c.emergency_numbers,
             test_numbers: c.test_numbers,
+            test_call_mode: c.test_call_mode.as_str().to_string(),
             dial_prefixes: c.dial_prefixes,
             notify_contacts,
             contacts,
@@ -105,6 +109,9 @@ pub struct ContactResponse {
     pub target: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// A `call` contact who may listen in to the emergency call once told
+    /// (`docs/E911.md` "Listening in").
+    pub listen: bool,
     /// What keeps this contact from being delivered to, empty when it can.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub issues: Vec<String>,
@@ -116,6 +123,7 @@ impl From<&NotifyContact> for ContactResponse {
             kind: c.kind.to_string(),
             target: c.target.clone(),
             name: c.name.clone(),
+            listen: c.listen,
             issues: c.problems(),
         }
     }
@@ -132,7 +140,27 @@ pub enum ContactInput {
         target: String,
         #[serde(default)]
         name: Option<String>,
+        /// A `call` contact may listen in to the emergency call.
+        #[serde(default)]
+        listen: bool,
     },
+}
+
+/// Contacts as given, read and checked, each place once: the tenant's on
+/// `/emergency/config`, a site's on `/locations`.
+pub(crate) fn contacts_from_inputs(
+    field: &str,
+    given: Vec<ContactInput>,
+) -> Result<Vec<NotifyContact>, ApiError> {
+    let mut contacts: Vec<NotifyContact> = Vec::new();
+    for input in given {
+        if let Some(contact) = input.into_contact(field)? {
+            if !contacts.contains(&contact) {
+                contacts.push(contact);
+            }
+        }
+    }
+    Ok(contacts)
 }
 
 impl ContactInput {
@@ -151,7 +179,12 @@ impl ContactInput {
                     ))
                 })?
             }
-            ContactInput::Typed { kind, target, name } => {
+            ContactInput::Typed {
+                kind,
+                target,
+                name,
+                listen,
+            } => {
                 crate::validation::reject_crlf(field, &target)?;
                 let kind = kind
                     .parse::<fcp_core::e911::notify::ContactKind>()
@@ -160,10 +193,11 @@ impl ContactInput {
                     kind,
                     target: target.trim().to_string(),
                     name: name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()),
+                    listen,
                 }
             }
         };
-        let problems = contact.problems();
+        let problems = contact.refusals();
         if !problems.is_empty() {
             return Err(ApiError::BadRequest(format!(
                 "{field}: {}",
@@ -178,6 +212,8 @@ impl ContactInput {
 pub struct UpdateEmergencyConfigRequest {
     pub emergency_numbers: Option<Vec<String>>,
     pub test_numbers: Option<Vec<String>>,
+    /// `local` (read back here) or `carrier` (sent to the emergency trunks).
+    pub test_call_mode: Option<String>,
     pub dial_prefixes: Option<Vec<String>>,
     /// Replaces the notification contacts. Strings are read by shape.
     pub contacts: Option<Vec<ContactInput>>,
@@ -275,6 +311,14 @@ pub async fn update_config(
     if let Some(numbers) = req.test_numbers {
         config.test_numbers = clean_numbers("test_numbers", numbers)?;
     }
+    if let Some(mode) = req.test_call_mode {
+        config.test_call_mode =
+            fcp_core::e911::TestCallMode::parse(mode.trim()).ok_or_else(|| {
+                ApiError::BadRequest(format!(
+                    "test_call_mode: '{mode}' must be 'local' or 'carrier'"
+                ))
+            })?;
+    }
     if let Some(prefixes) = req.dial_prefixes {
         config.dial_prefixes = clean_numbers("dial_prefixes", prefixes)?;
     }
@@ -284,15 +328,7 @@ pub async fn update_config(
         (None, None) => ("contacts", None),
     };
     if let Some(given) = given {
-        let mut contacts: Vec<NotifyContact> = Vec::new();
-        for input in given {
-            if let Some(contact) = input.into_contact(field)? {
-                if !contacts.contains(&contact) {
-                    contacts.push(contact);
-                }
-            }
-        }
-        config.contacts = contacts;
+        config.contacts = contacts_from_inputs(field, given)?;
     }
     if let Some(require) = req.require_dispatchable_location {
         config.require_dispatchable_location = require;
@@ -403,6 +439,11 @@ pub struct ContactReadiness {
     pub target: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The site whose contact this is; absent for the tenant's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+    /// Whether this contact may listen in to the call.
+    pub listen: bool,
     /// What keeps this contact from being delivered to.
     pub issues: Vec<String>,
     /// When anything was last delivered to it.
@@ -583,24 +624,49 @@ async fn notification_readiness(
             .and_then(|n| n.delivered_at)
             .map(unix_secs)
     };
-    let contacts: Vec<ContactReadiness> = config
-        .contacts
-        .iter()
-        .map(|c| ContactReadiness {
-            kind: c.kind.to_string(),
-            target: c.target.clone(),
-            name: c.name.clone(),
-            issues: c.problems(),
-            last_delivery_at: last(&delivered, c),
-            last_test_at: last(&tests, c),
-        })
-        .collect();
-    let deliverable = contacts.iter().filter(|c| c.issues.is_empty()).count();
+    let sites = match state.storage.as_ref() {
+        Some(storage) => {
+            use fcp_core::storage::SiteLocationStore;
+            storage.list_locations(tenant_id).await.unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    let readiness = |c: &NotifyContact, site: Option<&str>| ContactReadiness {
+        kind: c.kind.to_string(),
+        target: c.target.clone(),
+        name: c.name.clone(),
+        site: site.map(str::to_string),
+        listen: c.listen,
+        issues: c.problems(),
+        last_delivery_at: last(&delivered, c),
+        last_test_at: last(&tests, c),
+    };
+    let mut contacts: Vec<ContactReadiness> =
+        config.contacts.iter().map(|c| readiness(c, None)).collect();
     let mut issues = Vec::new();
+    for site in &sites {
+        contacts.extend(
+            site.emergency_contacts
+                .iter()
+                .map(|c| readiness(c, Some(&site.name))),
+        );
+        let told = fcp_core::e911::notify::contacts_for_site(&config.contacts, Some(site));
+        // A site that names its own contacts, or turns the tenant's off,
+        // is judged on its own; one that does neither is the tenant's.
+        let own = !site.emergency_contacts.is_empty() || !site.notify_tenant_contacts;
+        if own && !told.iter().any(|c| c.problems().is_empty()) {
+            issues.push(format!(
+                "nobody would be told about an emergency call from {}: give it a contact that \
+                 can be delivered to, or tell the tenant's contacts too",
+                site.name
+            ));
+        }
+    }
+    let deliverable = contacts.iter().filter(|c| c.issues.is_empty()).count();
     if deliverable == 0 {
         issues.push(
             "nobody would be told about an emergency call: add a contact to \
-             /v1/emergency/config (Kari's Law requires on-site notification)"
+             /v1/emergency/config or to a site (Kari's Law requires on-site notification)"
                 .to_string(),
         );
     } else if contacts.iter().all(|c| c.last_test_at.is_none()) {

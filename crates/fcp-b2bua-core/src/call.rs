@@ -207,6 +207,11 @@ pub struct EmergencyCallInfo {
     /// The `Geolocation-Error` (or 424) a trunk answered the location with.
     #[serde(default)]
     pub geolocation_error: Option<String>,
+    /// A test call this platform answered itself, reading back what a live
+    /// call would carry (`TestCallMode::Local`): no trunk was called and no
+    /// location delivered.
+    #[serde(default)]
+    pub read_back: bool,
 }
 
 /// What became of an emergency leg placed apart from the call's B-leg.
@@ -224,6 +229,9 @@ impl EmergencyCallInfo {
     /// attempt recorded any and there is a callback number.
     pub fn delivery(&self) -> Option<String> {
         use fcp_core::e911::LocationDelivery;
+        if self.read_back {
+            return None;
+        }
         let mut methods: Vec<String> = self
             .delivered
             .iter()
@@ -523,8 +531,13 @@ pub struct Call {
     /// Used by PBX features such as CMC/FAC billing codes.
     pub custom_data: Option<serde_json::Value>,
 
-    /// Parking orbit number (set when call is in Parked state).
-    pub parked_orbit: Option<u16>,
+    /// The parking slot the call is in, or was last in once retrieved
+    /// (`docs/PARKING.md`): a digit string, as the tenant numbers it.
+    pub parked_slot: Option<String>,
+
+    /// The hold music prompt of the lot the call is parked in, which
+    /// plays before the parker's or the tenant's (`docs/PARKING.md` §2).
+    pub parked_music: Option<String>,
 
     /// Extension of the user who parked this call.
     pub parker_extension: Option<String>,
@@ -653,7 +666,7 @@ impl fmt::Debug for Call {
             .field("trunk_name", &self.trunk_name)
             .field("trunk_id", &self.trunk_id)
             .field("custom_data", &self.custom_data)
-            .field("parked_orbit", &self.parked_orbit)
+            .field("parked_slot", &self.parked_slot)
             .field("parker_extension", &self.parker_extension)
             .finish()
     }
@@ -706,7 +719,8 @@ impl Call {
             caller_cancelled: false,
             max_duration: None,
             custom_data: None,
-            parked_orbit: None,
+            parked_slot: None,
+            parked_music: None,
             parker_extension: None,
             line_binding_id: None,
             number_binding_id: None,
@@ -757,17 +771,17 @@ impl Call {
         self.ended_at = Some(SystemTime::now());
     }
 
-    /// Park the call in a parking orbit.
-    pub fn park(&mut self, orbit: u16, parker_ext: String) {
+    /// Park the call in a parking slot.
+    pub fn park(&mut self, slot: String, parker_ext: String) {
         self.state = CallState::Parked;
-        self.parked_orbit = Some(orbit);
+        self.parked_slot = Some(slot);
         self.parker_extension = Some(parker_ext);
     }
 
-    /// Unpark the call (return to Established state).
+    /// Unpark the call (return to Established state). The slot stays, as
+    /// the one it was retrieved from.
     pub fn unpark(&mut self) {
         self.state = CallState::Established;
-        self.parked_orbit = None;
         self.parker_extension = None;
     }
 
@@ -828,7 +842,8 @@ impl Call {
             caller_cancelled: false,
             max_duration: None,
             custom_data: None,
-            parked_orbit: None,
+            parked_slot: None,
+            parked_music: None,
             parker_extension: None,
             line_binding_id: None,
             number_binding_id: None,
@@ -963,19 +978,19 @@ mod tests {
         let mut call = Call::from_invite(request, peer, fcp_core::TenantId::nil());
         call.establish();
         assert_eq!(call.state, CallState::Established);
-        assert!(call.parked_orbit.is_none());
+        assert!(call.parked_slot.is_none());
         assert!(call.parker_extension.is_none());
 
         // Park
-        call.park(701, "100".to_string());
+        call.park("701".to_string(), "100".to_string());
         assert_eq!(call.state, CallState::Parked);
-        assert_eq!(call.parked_orbit, Some(701));
+        assert_eq!(call.parked_slot.as_deref(), Some("701"));
         assert_eq!(call.parker_extension.as_deref(), Some("100"));
 
         // Unpark
         call.unpark();
         assert_eq!(call.state, CallState::Established);
-        assert!(call.parked_orbit.is_none());
+        assert_eq!(call.parked_slot.as_deref(), Some("701"), "retrieved from");
         assert!(call.parker_extension.is_none());
     }
 

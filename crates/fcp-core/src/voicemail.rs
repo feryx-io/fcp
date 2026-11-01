@@ -281,7 +281,7 @@ impl VoicemailMailbox {
     pub fn new(
         tenant_id: TenantId,
         user_id: UserId,
-        line_binding_id: LineBindingId,
+        line_binding_id: impl Into<Option<LineBindingId>>,
         extension: String,
         pin: String,
     ) -> Self {
@@ -289,7 +289,7 @@ impl VoicemailMailbox {
             id: uuid::Uuid::new_v4().to_string(),
             tenant_id,
             user_id,
-            line_binding_id: Some(line_binding_id),
+            line_binding_id: line_binding_id.into(),
             extension,
             pin,
             enabled: true,

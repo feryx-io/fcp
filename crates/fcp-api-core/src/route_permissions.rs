@@ -79,11 +79,31 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (PUT, "/me/location", Open),
     (DELETE, "/me/location", Open),
     (GET, "/me/softphone", Open),
+    (PUT, "/me/lines/:line/label", Open),
     (POST, "/me/softphone/rotate-password", Open),
     (GET, "/me/devices", Open),
     (DELETE, "/me/devices/:id", Open),
+    (POST, "/me/devices/:id/captures", Open),
+    (GET, "/me/captures", Open),
     (GET, "/me/calls", Open),
+    (POST, "/me/calls/:call_id/recording/start", Open),
+    (POST, "/me/calls/:call_id/recording/stop", Open),
+    (POST, "/me/calls/:call_id/quality", Open),
     (GET, "/me/directory", Open),
+    (GET, "/me/contacts", Open),
+    (POST, "/me/contacts", Open),
+    (GET, "/me/contacts/export", Open),
+    (POST, "/me/contacts/import", Open),
+    (GET, "/me/contacts/:id", Open),
+    (PUT, "/me/contacts/:id", Open),
+    (DELETE, "/me/contacts/:id", Open),
+    (GET, "/me/presence", Open),
+    (PUT, "/me/presence", Open),
+    (GET, "/me/presence/statuses", Open),
+    (POST, "/me/presence/statuses", Open),
+    (PUT, "/me/presence/statuses/order", Open),
+    (PUT, "/me/presence/statuses/:id", Open),
+    (DELETE, "/me/presence/statuses/:id", Open),
     (GET, "/me/calling", Open),
     (PUT, "/me/calling", Open),
     (GET, "/me/executives", Open),
@@ -244,6 +264,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     ),
     (GET, "/users/:username/calling", Needs(UserRead)),
     (PUT, "/users/:username/calling", Needs(UserUpdate)),
+    (GET, "/users/:username/presence", Needs(UserRead)),
     (GET, "/users/:username/devices", Needs(DeviceRead)),
     // Registrations.
     (GET, "/registrations", Needs(RegistrationView)),
@@ -279,6 +300,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (POST, "/compliance/retention/run", Needs(ComplianceManage)),
     (GET, "/compliance/retention/runs", Needs(ComplianceManage)),
     (GET, "/audit-log", Needs(AuditView)),
+    (GET, "/audit-log/export", Needs(AuditView)),
     (GET, "/compliance/deletions", Needs(AuditView)),
     (GET, "/compliance/holds", Needs(LegalHoldManage)),
     (POST, "/compliance/holds", Needs(LegalHoldManage)),
@@ -321,6 +343,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/cdrs", Needs(CdrRead)),
     (GET, "/cdrs/export", Needs(CdrRead)),
     (GET, "/cdrs/:call_id", Needs(CdrRead)),
+    (GET, "/cdrs/:call_id/quality", Needs(CdrRead)),
     // Flows.
     (GET, "/flow-traces", Needs(FlowRead)),
     (GET, "/flow-traces/:call_id", Needs(FlowRead)),
@@ -330,6 +353,9 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (PUT, "/flows/:id", Needs(FlowManage)),
     (DELETE, "/flows/:id", Needs(FlowManage)),
     (GET, "/flows/:id/versions", Needs(FlowRead)),
+    // The platform's: flows no tenant owns (docs/TENANT_SCOPE.md §3.4).
+    (GET, "/flows/untenanted", Needs(SystemConfig)),
+    (POST, "/flows/:id/assign", Needs(SystemConfig)),
     (GET, "/flows/:id/versions/:version", Needs(FlowRead)),
     // Numbers, lines and extensions.
     (GET, "/phone-numbers", Needs(PhoneNumberRead)),
@@ -370,6 +396,12 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (POST, "/devices/:id/resync", Needs(DeviceUpdate)),
     (POST, "/devices/:id/push-test", Needs(DeviceUpdate)),
     (POST, "/devices/import", Needs(DeviceCreate)),
+    (GET, "/captures", Needs(DeviceRead)),
+    (GET, "/captures/allows", Needs(DeviceRead)),
+    (POST, "/captures/allows", Needs(DeviceUpdate)),
+    (DELETE, "/captures/allows/:id", Needs(DeviceUpdate)),
+    (DELETE, "/captures/:id", Needs(DeviceDelete)),
+    (GET, "/captures/:id/file", Needs(DeviceUpdate)),
     (GET, "/provisioning/key", Needs(DeviceUpdate)),
     (POST, "/provisioning/key", Needs(DeviceUpdate)),
     (GET, "/provisioning/pending", Needs(DeviceRead)),
@@ -386,6 +418,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/branding/assets", Needs(BrandingManage)),
     (POST, "/branding/assets", Needs(BrandingManage)),
     (DELETE, "/branding/assets/:sha256", Needs(BrandingManage)),
+    (GET, "/branding/deployment-profile", Needs(BrandingManage)),
     (GET, "/provisioning/redirection", Needs(DeviceRead)),
     (
         PUT,
@@ -488,6 +521,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/prompts/:id/audio", Needs(PromptRead)),
     (POST, "/prompts/:id/audio", Needs(PromptManage)),
     (POST, "/prompts/:id/synthesize", Needs(PromptManage)),
+    (POST, "/prompts/:id/override", Needs(PromptManage)),
     // Voicemail.
     (GET, "/voicemail/mailboxes", Needs(VoicemailRead)),
     (POST, "/voicemail/mailboxes", Needs(VoicemailManage)),
@@ -578,6 +612,15 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/schedules/:id", Needs(RoutingRuleRead)),
     (PUT, "/schedules/:id", Needs(RoutingRuleManage)),
     (DELETE, "/schedules/:id", Needs(RoutingRuleManage)),
+    // Parking lots (docs/PARKING.md).
+    (GET, "/parking/lots", Needs(ParkingRead)),
+    (POST, "/parking/lots", Needs(ParkingManage)),
+    (GET, "/parking/lots/:id", Needs(ParkingRead)),
+    (PUT, "/parking/lots/:id", Needs(ParkingManage)),
+    (DELETE, "/parking/lots/:id", Needs(ParkingManage)),
+    (GET, "/parking/calls", Needs(ParkingRead)),
+    (POST, "/parking/calls/:slot/retrieve", Needs(ParkingManage)),
+    (DELETE, "/parking/calls/:slot", Needs(ParkingManage)),
     (GET, "/routing/rules", Needs(RoutingRuleRead)),
     (POST, "/routing/rules", Needs(RoutingRuleManage)),
     (GET, "/routing/rules/:id", Needs(RoutingRuleRead)),
@@ -669,6 +712,12 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/cluster/nodes", Needs(SystemViewLogs)),
     (GET, "/cluster/stats", Needs(SystemViewLogs)),
     (GET, "/cluster/sites", Needs(SiteRead)),
+    // fcp-admin's services (`services.rs`, docs/SERVICES.md), behind the
+    // platform administrator's gate as well.
+    (GET, "/system/services", Needs(SystemViewLogs)),
+    (GET, "/system/services/summary", Needs(SystemViewLogs)),
+    (GET, "/system/services/:id", Needs(SystemViewLogs)),
+    (DELETE, "/system/services/:id", Needs(SystemConfig)),
 ];
 
 /// The gate for a route, by method and path template relative to
@@ -804,6 +853,9 @@ mod tests {
         let mut bound = bound_routes(&v1[start..]);
         bound.extend(bound_routes(include_str!(
             "../../fcp-admin/src/cluster_api.rs"
+        )));
+        bound.extend(bound_routes(include_str!(
+            "../../fcp-admin/src/services.rs"
         )));
         assert!(bound.len() > 250, "parsed only {} routes", bound.len());
 

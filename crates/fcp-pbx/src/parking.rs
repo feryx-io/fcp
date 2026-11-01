@@ -1,20 +1,23 @@
-//! Call parking orbit management.
+//! Parked calls on this node (`docs/PARKING.md`).
 //!
-//! Manages parked calls in numbered orbits. The handler parks a call by
-//! placing its A-leg on hold and recording it here; retrieval removes the
-//! entry and lets the handler reconnect media.
+//! A call is held by its tenant and slot: two tenants may both number a
+//! slot `701`. Which slot a call takes is decided by the handler, which
+//! claims it cluster-wide first; this map is the node's own calls.
 
 use crate::config::ParkingConfig;
 use crate::error::PbxError;
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use fcp_b2bua_core::call::CallId;
+use fcp_core::parking::ParkingLot;
+use fcp_core::TenantId;
 use std::time::{Duration, Instant};
 use tracing::debug;
 
-/// Manages parked calls across numbered orbits.
+/// The calls parked on this node, by tenant and slot.
 pub struct ParkingManager {
     config: ParkingConfig,
-    parked: DashMap<u16, ParkedCall>,
+    parked: DashMap<(TenantId, String), ParkedCall>,
 }
 
 /// A single parked call.
@@ -23,14 +26,18 @@ pub struct ParkedCall {
     /// Internal call ID of the parked call.
     pub call_id: CallId,
 
-    /// Orbit number where the call is parked.
-    pub orbit: u16,
+    /// The slot, as the tenant numbers it.
+    pub slot: String,
+
+    /// The lot it is in ([`fcp_core::parking::DEFAULT_LOT_ID`] for the
+    /// node's own range).
+    pub lot_id: String,
 
     /// Extension of the user who parked the call.
     pub parker_extension: String,
 
     /// Tenant context.
-    pub tenant_id: fcp_core::TenantId,
+    pub tenant_id: TenantId,
 
     /// When the call was parked.
     pub parked_at: Instant,
@@ -55,57 +62,86 @@ impl ParkingManager {
         }
     }
 
-    /// Park a call in the next available orbit.
-    ///
-    /// Returns the assigned orbit number.
-    pub fn park(
-        &self,
-        call_id: CallId,
-        parker_extension: String,
-        tenant_id: fcp_core::TenantId,
-    ) -> Result<u16, PbxError> {
-        let orbit = self.next_available_orbit()?;
-        let timeout = Duration::from_secs(self.config.timeout_seconds);
-
-        let parked_call = ParkedCall {
-            call_id,
-            orbit,
-            parker_extension: parker_extension.clone(),
+    /// The lot a tenant with none of its own parks in: this node's range.
+    pub fn node_lot(&self, tenant_id: TenantId) -> ParkingLot {
+        ParkingLot::node_default(
             tenant_id,
-            parked_at: Instant::now(),
-            timeout,
-        };
-
-        debug!(
-            orbit = orbit,
-            call_id = %call_id,
-            parker = %parker_extension,
-            "Parked call"
-        );
-
-        self.parked.insert(orbit, parked_call);
-        Ok(orbit)
+            self.config.orbit_start,
+            self.config.orbit_end,
+            self.config.timeout_seconds,
+        )
     }
 
-    /// Retrieve (un-park) a call from a specific orbit.
-    ///
-    /// Removes the call from the parking map and returns it.
-    pub fn retrieve(&self, orbit: u16) -> Result<ParkedCall, PbxError> {
-        if orbit < self.config.orbit_start || orbit > self.config.orbit_end {
-            return Err(PbxError::OrbitOutOfRange(
-                orbit,
-                self.config.orbit_start,
-                self.config.orbit_end,
-            ));
-        }
+    /// Whether this node holds a call in the tenant's slot.
+    pub fn is_held(&self, tenant_id: &TenantId, slot: &str) -> bool {
+        self.parked.contains_key(&(*tenant_id, slot.to_string()))
+    }
 
+    /// Hold `call` in its slot; refused when the slot holds a call here.
+    pub fn hold(&self, call: ParkedCall) -> Result<(), PbxError> {
+        match self.parked.entry((call.tenant_id, call.slot.clone())) {
+            Entry::Occupied(_) => Err(PbxError::SlotTaken(call.slot)),
+            Entry::Vacant(v) => {
+                debug!(slot = %call.slot, call_id = %call.call_id, parker = %call.parker_extension, "Parked call");
+                v.insert(call);
+                Ok(())
+            }
+        }
+    }
+
+    /// Park a call in `lot`'s first slot free on this node, with no one
+    /// else to ask: a node without a cluster store.
+    pub fn park_in(
+        &self,
+        lot: &ParkingLot,
+        call_id: CallId,
+        parker_extension: String,
+    ) -> Result<String, PbxError> {
+        for slot in lot.slots() {
+            let call = ParkedCall {
+                call_id,
+                slot: slot.clone(),
+                lot_id: lot.id.clone(),
+                parker_extension: parker_extension.clone(),
+                tenant_id: lot.tenant_id,
+                parked_at: Instant::now(),
+                timeout: Duration::from_secs(u64::from(lot.timeout_secs)),
+            };
+            if self.hold(call).is_ok() {
+                return Ok(slot);
+            }
+        }
+        Err(PbxError::NoParkingOrbitsAvailable)
+    }
+
+    /// Take the call out of the tenant's slot.
+    pub fn retrieve(&self, tenant_id: &TenantId, slot: &str) -> Result<ParkedCall, PbxError> {
         self.parked
-            .remove(&orbit)
+            .remove(&(*tenant_id, slot.to_string()))
             .map(|(_, call)| {
-                debug!(orbit = orbit, call_id = %call.call_id, "Retrieved parked call");
+                debug!(slot = %slot, call_id = %call.call_id, "Retrieved parked call");
                 call
             })
-            .ok_or(PbxError::OrbitNotOccupied(orbit))
+            .ok_or_else(|| PbxError::OrbitNotOccupied(slot.to_string()))
+    }
+
+    /// The tenant's calls parked on this node, by slot.
+    pub fn list(&self, tenant_id: &TenantId) -> Vec<ParkedCall> {
+        let mut calls: Vec<ParkedCall> = self
+            .parked
+            .iter()
+            .filter(|e| e.key().0 == *tenant_id)
+            .map(|e| e.value().clone())
+            .collect();
+        calls.sort_by(|a, b| (a.slot.len(), &a.slot).cmp(&(b.slot.len(), &b.slot)));
+        calls
+    }
+
+    /// The call in the tenant's slot, left where it is.
+    pub fn peek(&self, tenant_id: &TenantId, slot: &str) -> Option<ParkedCall> {
+        self.parked
+            .get(&(*tenant_id, slot.to_string()))
+            .map(|e| e.value().clone())
     }
 
     /// Collect and remove all expired parked calls.
@@ -114,18 +150,18 @@ impl ParkingManager {
     /// (e.g., back to the parker or to voicemail).
     pub fn expired_calls(&self) -> Vec<ParkedCall> {
         let mut expired = Vec::new();
-        self.parked.retain(|_orbit, call| {
+        self.parked.retain(|_, call| {
             if call.is_expired() {
                 debug!(
-                    orbit = call.orbit,
+                    slot = %call.slot,
                     call_id = %call.call_id,
                     parker = %call.parker_extension,
                     "Parked call expired"
                 );
                 expired.push(call.clone());
-                false // remove
+                false
             } else {
-                true // keep
+                true
             }
         });
         expired
@@ -144,16 +180,6 @@ impl ParkingManager {
     /// Get the parking configuration.
     pub fn config(&self) -> &ParkingConfig {
         &self.config
-    }
-
-    /// Find the next available orbit number.
-    fn next_available_orbit(&self) -> Result<u16, PbxError> {
-        for orbit in self.config.orbit_start..=self.config.orbit_end {
-            if !self.parked.contains_key(&orbit) {
-                return Ok(orbit);
-            }
-        }
-        Err(PbxError::NoParkingOrbitsAvailable)
     }
 }
 
@@ -174,66 +200,68 @@ mod tests {
     fn test_park_and_retrieve() {
         let mgr = ParkingManager::new(test_config());
         let call_id = CallId::new();
-        let tenant = fcp_core::TenantId::nil();
+        let tenant = TenantId::nil();
+        let lot = mgr.node_lot(tenant);
 
-        let orbit = mgr.park(call_id, "1001".to_string(), tenant).unwrap();
-        assert_eq!(orbit, 701);
+        let slot = mgr.park_in(&lot, call_id, "1001".to_string()).unwrap();
+        assert_eq!(slot, "701");
         assert_eq!(mgr.parked_count(), 1);
 
-        let parked = mgr.retrieve(701).unwrap();
+        let parked = mgr.retrieve(&tenant, "701").unwrap();
         assert_eq!(parked.call_id, call_id);
         assert_eq!(parked.parker_extension, "1001");
         assert_eq!(mgr.parked_count(), 0);
     }
 
     #[test]
-    fn test_auto_increment_orbits() {
+    fn slots_fill_in_order_until_the_lot_is_full() {
         let mgr = ParkingManager::new(test_config());
-        let tenant = fcp_core::TenantId::nil();
+        let lot = mgr.node_lot(TenantId::nil());
+        let slots: Vec<String> = (0..3)
+            .map(|_| mgr.park_in(&lot, CallId::new(), "1001".into()).unwrap())
+            .collect();
+        assert_eq!(slots, ["701", "702", "703"]);
+        assert!(mgr.park_in(&lot, CallId::new(), "1004".into()).is_err());
+    }
 
-        let o1 = mgr.park(CallId::new(), "1001".to_string(), tenant).unwrap();
-        let o2 = mgr.park(CallId::new(), "1002".to_string(), tenant).unwrap();
-        let o3 = mgr.park(CallId::new(), "1003".to_string(), tenant).unwrap();
-        assert_eq!(o1, 701);
-        assert_eq!(o2, 702);
-        assert_eq!(o3, 703);
+    #[test]
+    fn two_tenants_number_their_slots_alike() {
+        // D8 finding 35: tenant B's `*71701` took tenant A's call.
+        let mgr = ParkingManager::new(test_config());
+        let (a, b) = (TenantId::new(), TenantId::new());
+        mgr.park_in(&mgr.node_lot(a), CallId::new(), "1001".into())
+            .unwrap();
+        assert!(mgr.retrieve(&b, "701").is_err(), "not B's");
+        let at_b = mgr
+            .park_in(&mgr.node_lot(b), CallId::new(), "2001".into())
+            .unwrap();
+        assert_eq!(at_b, "701", "B's own 701");
+        assert!(mgr.retrieve(&a, "701").is_ok());
+    }
 
-        // No more orbits available
-        let result = mgr.park(CallId::new(), "1004".to_string(), tenant);
-        assert!(result.is_err());
+    #[test]
+    fn a_lot_numbers_its_own_slots() {
+        let mgr = ParkingManager::new(test_config());
+        let lot = ParkingLot::new(TenantId::nil(), "Lobby", "050", "051");
+        assert_eq!(mgr.park_in(&lot, CallId::new(), "1".into()).unwrap(), "050");
+        assert_eq!(mgr.park_in(&lot, CallId::new(), "1".into()).unwrap(), "051");
     }
 
     #[test]
     fn test_retrieve_not_occupied() {
         let mgr = ParkingManager::new(test_config());
-        let result = mgr.retrieve(701);
-        assert!(matches!(result, Err(PbxError::OrbitNotOccupied(701))));
-    }
-
-    #[test]
-    fn test_retrieve_out_of_range() {
-        let mgr = ParkingManager::new(test_config());
-        let result = mgr.retrieve(999);
-        assert!(matches!(
-            result,
-            Err(PbxError::OrbitOutOfRange(999, 701, 703))
-        ));
+        let result = mgr.retrieve(&TenantId::nil(), "701");
+        assert!(matches!(result, Err(PbxError::OrbitNotOccupied(s)) if s == "701"));
     }
 
     #[test]
     fn test_expired_calls() {
-        let config = ParkingConfig {
-            enabled: true,
-            orbit_start: 701,
-            orbit_end: 703,
-            timeout_seconds: 0, // immediate expiry
-        };
-        let mgr = ParkingManager::new(config);
-        let tenant = fcp_core::TenantId::nil();
+        let mgr = ParkingManager::new(test_config());
+        let mut lot = mgr.node_lot(TenantId::nil());
+        lot.timeout_secs = 0; // immediate expiry
+        mgr.park_in(&lot, CallId::new(), "1001".to_string())
+            .unwrap();
 
-        mgr.park(CallId::new(), "1001".to_string(), tenant).unwrap();
-
-        // Should be expired immediately (timeout_seconds = 0)
         let expired = mgr.expired_calls();
         assert_eq!(expired.len(), 1);
         assert_eq!(mgr.parked_count(), 0);
@@ -242,13 +270,16 @@ mod tests {
     #[test]
     fn test_orbit_reuse_after_retrieve() {
         let mgr = ParkingManager::new(test_config());
-        let tenant = fcp_core::TenantId::nil();
+        let tenant = TenantId::nil();
+        let lot = mgr.node_lot(tenant);
 
-        mgr.park(CallId::new(), "1001".to_string(), tenant).unwrap();
-        mgr.retrieve(701).unwrap();
+        mgr.park_in(&lot, CallId::new(), "1001".to_string())
+            .unwrap();
+        mgr.retrieve(&tenant, "701").unwrap();
 
-        // Orbit 701 should be available again
-        let orbit = mgr.park(CallId::new(), "1002".to_string(), tenant).unwrap();
-        assert_eq!(orbit, 701);
+        let slot = mgr
+            .park_in(&lot, CallId::new(), "1002".to_string())
+            .unwrap();
+        assert_eq!(slot, "701");
     }
 }

@@ -1,11 +1,15 @@
 //! Audio prompt management API endpoints.
 
-use crate::{auth::TenantContext, error::ApiError, state::ApiState};
+use crate::{
+    auth::{AuthIdentity, TenantContext},
+    error::ApiError,
+    state::ApiState,
+};
 use axum::{
     extract::{Multipart, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use fcp_core::prompt::{Prompt, PromptCategory, PromptSourceType, PromptStore};
 use fcp_core::PromptId;
@@ -30,15 +34,83 @@ fn system_time_to_epoch_secs(st: SystemTime) -> f64 {
         .as_secs_f64()
 }
 
+/// The tenant's own prompt or a system prompt; another tenant's is not found.
 fn ensure_prompt_tenant(
     prompt: Prompt,
     tenant_id: &fcp_core::TenantId,
     id: &str,
 ) -> Result<Prompt, ApiError> {
-    if prompt.tenant_id != *tenant_id {
+    if !prompt.visible_to(tenant_id) {
         return Err(ApiError::NotFound(format!("Prompt {} not found", id)));
     }
     Ok(prompt)
+}
+
+/// Whether the caller manages the platform's system prompts: a platform
+/// administrator, or anyone with authentication off (as
+/// `require_platform_admin` treats it).
+fn is_platform(identity: &Option<Extension<AuthIdentity>>) -> bool {
+    identity
+        .as_ref()
+        .is_none_or(|Extension(identity)| identity.is_platform_admin())
+}
+
+/// A prompt the caller may change: the tenant's own, or a system prompt for a
+/// platform administrator. A tenant changes a system prompt by overriding it.
+fn ensure_writable(
+    prompt: Prompt,
+    tenant_id: &fcp_core::TenantId,
+    identity: &Option<Extension<AuthIdentity>>,
+    id: &str,
+) -> Result<Prompt, ApiError> {
+    let prompt = ensure_prompt_tenant(prompt, tenant_id, id)?;
+    if prompt.tenant_id.is_none() && !is_platform(identity) {
+        return Err(ApiError::Forbidden(format!(
+            "Prompt {id} is a system prompt: override it to change it for your tenant"
+        )));
+    }
+    Ok(prompt)
+}
+
+async fn load_prompt(
+    prompt_store: &std::sync::Arc<dyn PromptStore>,
+    id: &str,
+) -> Result<Prompt, ApiError> {
+    let prompt_id: PromptId = id
+        .parse()
+        .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
+    prompt_store
+        .get_prompt(&prompt_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))
+}
+
+/// A prompt as the tenant sees it, with its override relation: a system
+/// prompt names the tenant's override of it, a tenant's prompt the system
+/// prompt it overrides.
+async fn respond(
+    prompt_store: &std::sync::Arc<dyn PromptStore>,
+    tenant_id: &fcp_core::TenantId,
+    prompt: Prompt,
+) -> Result<PromptResponse, ApiError> {
+    let other = if prompt.tenant_id.is_none() {
+        Some(tenant_id)
+    } else {
+        None
+    };
+    let counterpart = prompt_store
+        .get_prompt_by_name_and_language(other, &prompt.name, &prompt.language)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .map(|p| p.id.to_string());
+    let mut response = PromptResponse::from(prompt);
+    if response.is_system {
+        response.overridden_by = counterpart;
+    } else {
+        response.overrides = counterpart;
+    }
+    Ok(response)
 }
 
 // ── Response types ────────────────────────────────────────────────────
@@ -46,7 +118,8 @@ fn ensure_prompt_tenant(
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PromptResponse {
     pub id: String,
-    pub tenant_id: String,
+    /// The owning tenant; `null` for a system prompt, the platform's.
+    pub tenant_id: Option<String>,
     pub name: String,
     pub description: Option<String>,
     pub category: String,
@@ -60,6 +133,11 @@ pub struct PromptResponse {
     pub file_size: Option<u64>,
     pub is_system: bool,
     pub has_audio: bool,
+    /// On a system prompt: the id of the tenant's override of it, which the
+    /// tenant's calls hear instead.
+    pub overridden_by: Option<String>,
+    /// On a tenant's prompt: the id of the system prompt it overrides.
+    pub overrides: Option<String>,
     #[serde(with = "crate::time::epoch_secs_f64")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: f64,
@@ -77,7 +155,7 @@ impl From<Prompt> for PromptResponse {
             .unwrap_or(false);
         Self {
             id: p.id.to_string(),
-            tenant_id: p.tenant_id.to_string(),
+            tenant_id: p.tenant_id.map(|t| t.to_string()),
             name: p.name,
             description: p.description,
             category: p.category.to_string(),
@@ -89,8 +167,10 @@ impl From<Prompt> for PromptResponse {
             audio_format: p.audio_format,
             duration_ms: p.duration_ms,
             file_size: p.file_size,
-            is_system: p.is_system,
+            is_system: p.tenant_id.is_none(),
             has_audio,
+            overridden_by: None,
+            overrides: None,
             created_at: system_time_to_epoch_secs(p.created_at),
             updated_at: system_time_to_epoch_secs(p.updated_at),
         }
@@ -104,6 +184,9 @@ impl From<Prompt> for PromptResponse {
 pub struct ListPromptsQuery {
     pub category: Option<String>,
     pub language: Option<String>,
+    /// `all` (the default: the tenant's prompts and the system prompts),
+    /// `tenant` or `system`.
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -115,6 +198,9 @@ pub struct CreatePromptRequest {
     pub source_type: Option<String>,
     pub tts_text: Option<String>,
     pub tts_voice: Option<String>,
+    /// A system prompt, for every tenant: a platform administrator's only.
+    #[serde(default)]
+    pub system: bool,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -156,12 +242,46 @@ pub async fn list_prompts(
         None => None,
     };
 
-    let prompts = prompt_store
-        .list_prompts(&tenant.0, category, query.language.as_deref())
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let (own, system) = match query.scope.as_deref().unwrap_or("all") {
+        "all" => (true, true),
+        "tenant" => (true, false),
+        "system" => (false, true),
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "scope must be 'all', 'tenant' or 'system', got '{other}'"
+            )))
+        }
+    };
+    let list = |owner: Option<fcp_core::TenantId>| {
+        let prompt_store = prompt_store.clone();
+        let language = query.language.clone();
+        async move {
+            prompt_store
+                .list_prompts(owner.as_ref(), category, language.as_deref())
+                .await
+                .map_err(|e| ApiError::Internal(e.to_string()))
+        }
+    };
+    let own_prompts = if own {
+        list(Some(tenant.0)).await?
+    } else {
+        Vec::new()
+    };
+    let system_prompts = if system {
+        list(None).await?
+    } else {
+        Vec::new()
+    };
 
-    let responses: Vec<PromptResponse> = prompts.into_iter().map(PromptResponse::from).collect();
+    // Each override names what it overrides, and each system prompt its
+    // override, from the two lists (or a lookup when one was not listed).
+    let mut responses = Vec::with_capacity(own_prompts.len() + system_prompts.len());
+    for prompt in own_prompts.into_iter().chain(system_prompts) {
+        responses.push(respond(prompt_store, &tenant.0, prompt).await?);
+    }
+    responses.sort_by(|a, b| {
+        (&a.name, &a.language, a.is_system).cmp(&(&b.name, &b.language, b.is_system))
+    });
     Ok(Json(crate::page::paginate(
         responses,
         &page,
@@ -188,22 +308,8 @@ pub async fn get_prompt(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let prompt_store = require_prompt_store(&state)?;
-
-    let prompt_id: PromptId = id
-        .parse()
-        .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
-
-    let prompt = ensure_prompt_tenant(
-        prompt_store
-            .get_prompt(&prompt_id)
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?,
-        &tenant.0,
-        &id,
-    )?;
-
-    Ok(Json(PromptResponse::from(prompt)))
+    let prompt = ensure_prompt_tenant(load_prompt(prompt_store, &id).await?, &tenant.0, &id)?;
+    Ok(Json(respond(prompt_store, &tenant.0, prompt).await?))
 }
 
 /// POST /api/v1/prompts
@@ -221,12 +327,18 @@ pub async fn get_prompt(
 pub async fn create_prompt(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Json(req): Json<CreatePromptRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let prompt_store = require_prompt_store(&state)?;
 
     if req.name.is_empty() {
         return Err(ApiError::BadRequest("Name is required".to_string()));
+    }
+    if req.system && !is_platform(&identity) {
+        return Err(ApiError::Forbidden(
+            "System prompts are the platform administrator's".to_string(),
+        ));
     }
 
     let category = req
@@ -263,6 +375,23 @@ pub async fn create_prompt(
 
     prompt.description = req.description;
     prompt.tts_voice = req.tts_voice.clone();
+    if req.system {
+        prompt.tenant_id = None;
+        prompt.is_system = true;
+    }
+    // Made, not upserted: a second prompt of one name and language would
+    // replace the first's row and leave this id pointing at nothing.
+    if prompt_store
+        .get_prompt_by_name_and_language(prompt.tenant_id.as_ref(), &prompt.name, &prompt.language)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .is_some()
+    {
+        return Err(ApiError::Conflict(format!(
+            "A prompt named '{}' in {} already exists",
+            prompt.name, prompt.language
+        )));
+    }
 
     // Auto-synthesize TTS audio if TTS service is available
     if source_type == PromptSourceType::Tts {
@@ -274,7 +403,7 @@ pub async fn create_prompt(
                 .await
             {
                 Ok(cached_path) => {
-                    let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
+                    let tenant_dir = prompts_dir.join(prompt.owner_dir());
                     let _ = tokio::fs::create_dir_all(&tenant_dir).await;
                     let dest_path = tenant_dir.join(format!("{}.wav", prompt.id));
                     if tokio::fs::copy(&cached_path, &dest_path).await.is_ok() {
@@ -300,9 +429,12 @@ pub async fn create_prompt(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    info!(name = %req.name, category = %category, "Created prompt");
+    info!(name = %req.name, category = %category, system = req.system, "Created prompt");
 
-    Ok((StatusCode::CREATED, Json(PromptResponse::from(prompt))))
+    Ok((
+        StatusCode::CREATED,
+        Json(respond(prompt_store, &tenant.0, prompt).await?),
+    ))
 }
 
 /// PUT /api/v1/prompts/:id
@@ -321,22 +453,16 @@ pub async fn create_prompt(
 pub async fn update_prompt(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path(id): Path<String>,
     Json(req): Json<UpdatePromptRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let prompt_store = require_prompt_store(&state)?;
 
-    let prompt_id: PromptId = id
-        .parse()
-        .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
-
-    let mut prompt = ensure_prompt_tenant(
-        prompt_store
-            .get_prompt(&prompt_id)
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?,
+    let mut prompt = ensure_writable(
+        load_prompt(prompt_store, &id).await?,
         &tenant.0,
+        &identity,
         &id,
     )?;
 
@@ -354,6 +480,18 @@ pub async fn update_prompt(
             .map_err(|e: anyhow::Error| ApiError::BadRequest(e.to_string()))?;
     }
     if let Some(lang) = req.language {
+        if lang != prompt.language
+            && prompt_store
+                .get_prompt_by_name_and_language(prompt.tenant_id.as_ref(), &prompt.name, &lang)
+                .await
+                .map_err(|e| ApiError::Internal(e.to_string()))?
+                .is_some()
+        {
+            return Err(ApiError::Conflict(format!(
+                "A prompt named '{}' in {lang} already exists",
+                prompt.name
+            )));
+        }
         prompt.language = lang;
     }
     if let Some(text) = req.tts_text {
@@ -379,7 +517,7 @@ pub async fn update_prompt(
             .synthesize(tts_text, Some(&prompt.language), voice)
             .await
             .map_err(|e| ApiError::ServiceUnavailable(format!("TTS synthesis failed: {e}")))?;
-        let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
+        let tenant_dir = prompts_dir.join(prompt.owner_dir());
         tokio::fs::create_dir_all(&tenant_dir)
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to create prompts directory: {e}")))?;
@@ -408,7 +546,7 @@ pub async fn update_prompt(
 
     info!(id = %id, "Updated prompt");
 
-    Ok(Json(PromptResponse::from(prompt)))
+    Ok(Json(respond(prompt_store, &tenant.0, prompt).await?))
 }
 
 /// POST /api/v1/prompts/:id/audio — Upload/replace audio WAV file
@@ -427,6 +565,7 @@ pub async fn update_prompt(
 pub async fn upload_audio(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path(id): Path<String>,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -437,17 +576,10 @@ pub async fn upload_audio(
         .as_ref()
         .ok_or_else(|| ApiError::Internal("Prompts directory not configured".to_string()))?;
 
-    let prompt_id: PromptId = id
-        .parse()
-        .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
-
-    let mut prompt = ensure_prompt_tenant(
-        prompt_store
-            .get_prompt(&prompt_id)
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?,
+    let mut prompt = ensure_writable(
+        load_prompt(prompt_store, &id).await?,
         &tenant.0,
+        &identity,
         &id,
     )?;
 
@@ -475,7 +607,7 @@ pub async fn upload_audio(
     }
 
     // Create directory: prompts_dir/{tenant_id}/
-    let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
+    let tenant_dir = prompts_dir.join(prompt.owner_dir());
     tokio::fs::create_dir_all(&tenant_dir)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create prompts directory: {}", e)))?;
@@ -500,7 +632,10 @@ pub async fn upload_audio(
 
     info!(id = %id, size = audio_data.len(), "Uploaded prompt audio");
 
-    Ok((StatusCode::OK, Json(PromptResponse::from(prompt))))
+    Ok((
+        StatusCode::OK,
+        Json(respond(prompt_store, &tenant.0, prompt).await?),
+    ))
 }
 
 /// GET /api/v1/prompts/:id/audio — Download/stream audio file
@@ -522,19 +657,7 @@ pub async fn download_audio(
 ) -> Result<impl IntoResponse, ApiError> {
     let prompt_store = require_prompt_store(&state)?;
 
-    let prompt_id: PromptId = id
-        .parse()
-        .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
-
-    let prompt = ensure_prompt_tenant(
-        prompt_store
-            .get_prompt(&prompt_id)
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?,
-        &tenant.0,
-        &id,
-    )?;
+    let prompt = ensure_prompt_tenant(load_prompt(prompt_store, &id).await?, &tenant.0, &id)?;
 
     let audio_path = prompt
         .audio_path
@@ -569,9 +692,17 @@ pub async fn download_audio(
 pub async fn synthesize_prompt(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let prompt_store = require_prompt_store(&state)?;
+
+    let mut prompt = ensure_writable(
+        load_prompt(prompt_store, &id).await?,
+        &tenant.0,
+        &identity,
+        &id,
+    )?;
 
     let prompts_dir = state
         .prompts_dir
@@ -582,20 +713,6 @@ pub async fn synthesize_prompt(
         .tts_service
         .as_ref()
         .ok_or_else(|| ApiError::ServiceUnavailable("TTS service not configured".to_string()))?;
-
-    let prompt_id: PromptId = id
-        .parse()
-        .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
-
-    let mut prompt = ensure_prompt_tenant(
-        prompt_store
-            .get_prompt(&prompt_id)
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?,
-        &tenant.0,
-        &id,
-    )?;
 
     let tts_text = prompt
         .tts_text
@@ -613,7 +730,7 @@ pub async fn synthesize_prompt(
         .map_err(|e| ApiError::ServiceUnavailable(format!("TTS synthesis failed: {}", e)))?;
 
     // Copy to permanent prompts directory
-    let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
+    let tenant_dir = prompts_dir.join(prompt.owner_dir());
     tokio::fs::create_dir_all(&tenant_dir)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create prompts directory: {}", e)))?;
@@ -641,7 +758,7 @@ pub async fn synthesize_prompt(
 
     info!(id = %id, name = %prompt.name, size = file_size, "Synthesized prompt audio via TTS");
 
-    Ok(Json(PromptResponse::from(prompt)))
+    Ok(Json(respond(prompt_store, &tenant.0, prompt).await?))
 }
 
 /// DELETE /api/v1/prompts/:id
@@ -667,18 +784,11 @@ pub async fn delete_prompt(
         .parse()
         .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
 
-    // Check if prompt exists and is not a system prompt
-    let prompt = ensure_prompt_tenant(
-        prompt_store
-            .get_prompt(&prompt_id)
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?,
-        &tenant.0,
-        &id,
-    )?;
+    // Check if prompt exists and is not a system prompt. Deleting a
+    // tenant's override restores the system prompt for its calls.
+    let prompt = ensure_prompt_tenant(load_prompt(prompt_store, &id).await?, &tenant.0, &id)?;
 
-    if prompt.is_system {
+    if prompt.tenant_id.is_none() {
         return Err(ApiError::Forbidden(
             "Cannot delete system prompts".to_string(),
         ));
@@ -697,4 +807,83 @@ pub async fn delete_prompt(
     info!(id = %id, name = %prompt.name, "Deleted prompt");
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /api/v1/prompts/:id/override — The tenant's own copy of a system prompt
+///
+/// The copy has the system prompt's name, language, category, words and voice,
+/// and a copy of its audio, so the tenant's calls hear the same until the copy
+/// is changed (new words, an upload, a recording). Deleting the copy restores
+/// the system prompt.
+#[utoipa::path(
+    post,
+    path = "/api/v1/prompts/{id}/override",
+    tag = "prompts",
+    operation_id = "prompts_override_prompt",
+    params(("id" = String, Path, description = "A system prompt's id")),
+    responses(
+        (status = 201, description = "The tenant's override", body = PromptResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn override_prompt(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let prompt_store = require_prompt_store(&state)?;
+    let system = ensure_prompt_tenant(load_prompt(prompt_store, &id).await?, &tenant.0, &id)?;
+    if system.tenant_id.is_some() {
+        return Err(ApiError::BadRequest(format!(
+            "Prompt {id} is not a system prompt"
+        )));
+    }
+    if let Some(existing) = prompt_store
+        .get_prompt_by_name_and_language(Some(&tenant.0), &system.name, &system.language)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+    {
+        return Err(ApiError::Conflict(format!(
+            "The tenant already overrides '{}' in {}: prompt {}",
+            system.name, system.language, existing.id
+        )));
+    }
+
+    let now = SystemTime::now();
+    let mut copy = Prompt {
+        id: PromptId::new(),
+        tenant_id: Some(tenant.0),
+        is_system: false,
+        audio_path: None,
+        file_size: None,
+        created_at: now,
+        updated_at: now,
+        ..system.clone()
+    };
+    if let (Some(source), Some(prompts_dir)) = (
+        system.audio_path.as_ref().filter(|p| p.is_file()),
+        &state.prompts_dir,
+    ) {
+        let dir = prompts_dir.join(copy.owner_dir());
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to create prompts directory: {e}")))?;
+        let dest = dir.join(format!("{}.wav", copy.id));
+        tokio::fs::copy(source, &dest)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to copy the audio: {e}")))?;
+        copy.file_size = system.file_size;
+        copy.audio_path = Some(dest);
+    }
+
+    prompt_store
+        .put_prompt(copy.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    info!(system = %id, name = %copy.name, tenant_id = %tenant.0, "Overrode a system prompt");
+
+    Ok((
+        StatusCode::CREATED,
+        Json(respond(prompt_store, &tenant.0, copy).await?),
+    ))
 }

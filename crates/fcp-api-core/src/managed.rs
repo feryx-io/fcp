@@ -48,6 +48,9 @@ pub const SYNCED_RESOURCES: &[&str] = &[
     "firmware",
     // The tenant's brand and its assets (docs/BRANDING.md).
     "branding",
+    // Parking lots (docs/PARKING.md phase 4); the calls parked in them are
+    // the site's own (`parking/calls`).
+    "parking/lots",
 ];
 
 /// Whether `path` (relative to the v1 root, no leading slash) is a synced
@@ -118,5 +121,8 @@ mod tests {
             Some("classes-of-service")
         );
         assert_eq!(synced_resource("schedules"), Some("schedules"));
+        // A site's lots are the cloud's; the calls parked in them its own.
+        assert_eq!(synced_resource("parking/lots/lot-1"), Some("parking/lots"));
+        assert_eq!(synced_resource("parking/calls/4320/retrieve"), None);
     }
 }

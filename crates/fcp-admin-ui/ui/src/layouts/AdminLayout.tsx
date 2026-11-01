@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, UsersRound, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Scale, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable, CalendarClock, ShieldCheck, BedDouble, Webhook, KeyRound, Palette,
+  LayoutDashboard, Users, UsersRound, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Scale, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable, CalendarClock, ShieldCheck, BedDouble, Webhook, KeyRound, Palette, HeartPulse, CircleParking,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -23,6 +23,8 @@ interface NavItem {
   href: string
   icon: React.ElementType
   section?: string
+  /** The platform's own, for a platform administrator only. */
+  platformOnly?: boolean
 }
 
 const navItems: NavItem[] = [
@@ -49,6 +51,7 @@ const navItems: NavItem[] = [
   { label: 'Recordings', href: '/admin/recordings', icon: Disc, section: 'Operations' },
   { label: 'Presence', href: '/admin/presence', icon: Radio, section: 'Operations' },
   { label: 'Hoteling', href: '/admin/hoteling', icon: BedDouble, section: 'Operations' },
+  { label: 'Parking', href: '/admin/parking', icon: CircleParking, section: 'Operations' },
   { label: 'Audio Prompts', href: '/admin/prompts', icon: FileAudio, section: 'Operations' },
   { label: 'Events', href: '/admin/events', icon: Activity, section: 'Operations' },
   { label: 'Emergency', href: '/admin/emergency', icon: Siren, section: 'Operations' },
@@ -60,14 +63,16 @@ const navItems: NavItem[] = [
   { label: 'Least-Cost Routes', href: '/admin/lcr', icon: Coins, section: 'Advanced' },
   { label: 'IVR Flows', href: '/admin/flows', icon: Workflow, section: 'Advanced' },
   { label: 'Flow Traces', href: '/admin/flow-traces', icon: Activity, section: 'Advanced' },
-  { label: 'Cluster', href: '/admin/cluster', icon: Globe, section: 'Advanced' },
-  { label: 'Sites', href: '/admin/sites', icon: Cable, section: 'Advanced' },
-  { label: 'Compliance', href: '/admin/compliance', icon: Scale, section: 'Advanced' },
-  { label: 'Audit Log', href: '/admin/audit', icon: ScrollText, section: 'Advanced' },
   { label: 'API Tokens', href: '/admin/tokens', icon: Key, section: 'Advanced' },
   { label: 'Webhooks', href: '/admin/webhooks', icon: Webhook, section: 'Advanced' },
   { label: 'Single Sign-On', href: '/admin/sso', icon: KeyRound, section: 'Advanced' },
-  { label: 'System Settings', href: '/admin/system-settings', icon: Settings, section: 'Advanced' },
+  // System (docs/SERVICES.md §3)
+  { label: 'Services', href: '/admin/services', icon: HeartPulse, section: 'System', platformOnly: true },
+  { label: 'Cluster', href: '/admin/cluster', icon: Globe, section: 'System', platformOnly: true },
+  { label: 'Sites', href: '/admin/sites', icon: Cable, section: 'System' },
+  { label: 'System Settings', href: '/admin/system-settings', icon: Settings, section: 'System' },
+  { label: 'Audit Log', href: '/admin/audit', icon: ScrollText, section: 'System' },
+  { label: 'Compliance', href: '/admin/compliance', icon: Scale, section: 'System' },
 ]
 
 const themeIcon = (theme: string) => {
@@ -131,7 +136,9 @@ export function AdminLayout() {
   // Group nav items by section
   const sections: { label: string | null; items: NavItem[] }[] = []
   let currentSection: string | null | undefined = undefined
-  navItems.forEach((item) => {
+  // A tenant's administrator never sees the platform's own pages.
+  const platformAdmin = user?.role === 'super_admin'
+  navItems.filter((item) => platformAdmin || !item.platformOnly).forEach((item) => {
     const section = item.section ?? null
     if (section !== currentSection) {
       sections.push({ label: section, items: [] })

@@ -5,6 +5,9 @@
 //! transferred away, a call ended. The count is this node's alone, or the
 //! cluster's when a [`UserCallCount`] over Redis is given
 //! (`fcp_cluster::CallLeases`, subject `User`).
+//!
+//! Each party taken or let go is announced as `presence.user_call`, from
+//! which the admin shows the person on a call (`docs/PRESENCE.md`).
 
 use async_trait::async_trait;
 use fcp_b2bua_core::{CallId, CallManager};
@@ -136,6 +139,21 @@ impl UserCalls {
         for user in users.iter().filter(|u| !before.contains(u)) {
             if let Err(e) = self.count.take(&tenant, user, &key).await {
                 warn!(call_id = %call_id, user_id = %user, error = %e, "A user's call not counted");
+            }
+        }
+        if let Some(cm) = self.call_manager.upgrade() {
+            let gone = before.iter().filter(|u| !users.contains(u));
+            let came = users.iter().filter(|u| !before.contains(u));
+            for (user, on_call) in gone.map(|u| (u, false)).chain(came.map(|u| (u, true))) {
+                cm.publish(fcp_events::PlatformEvent::Presence(
+                    fcp_events::PresenceEvent::UserCall {
+                        user_id: user.to_string(),
+                        call_id: key.clone(),
+                        on_call,
+                        tenant_id: tenant,
+                        timestamp: std::time::SystemTime::now(),
+                    },
+                ));
             }
         }
         debug!(call_id = %call_id, users = users.len(), "A call's parties counted");

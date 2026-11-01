@@ -24,14 +24,15 @@ pub struct NodeClient {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnparkResult {
     pub call_id: String,
-    pub orbit: u16,
+    pub slot: String,
     pub node_id: String,
 }
 
-/// Request to unpark a call.
+/// Request to unpark a call: the tenant's slot (`docs/PARKING.md`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnparkRequest {
-    pub orbit: u16,
+    pub tenant_id: String,
+    pub slot: String,
 }
 
 /// Request to hang up a call.
@@ -97,16 +98,24 @@ impl NodeClient {
     }
 
     /// Unpark a call from a remote node.
-    pub async fn unpark(&self, node: &ClusterMember, orbit: u16) -> Result<UnparkResult> {
+    pub async fn unpark(
+        &self,
+        node: &ClusterMember,
+        tenant_id: &str,
+        slot: &str,
+    ) -> Result<UnparkResult> {
         let url = self.internal_url(node, "/unpark");
 
-        debug!(url = %url, orbit = orbit, "Sending unpark request to remote node");
+        debug!(url = %url, slot, "Sending unpark request to remote node");
 
         let req = self
             .http
             .post(&url)
             .bearer_auth(&self.cluster_secret)
-            .json(&UnparkRequest { orbit });
+            .json(&UnparkRequest {
+                tenant_id: tenant_id.to_string(),
+                slot: slot.to_string(),
+            });
 
         let resp = self.inject_headers(req).send().await?;
 

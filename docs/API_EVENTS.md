@@ -211,6 +211,35 @@ Sent when a call fails (4xx/5xx response or timeout).
 }
 ```
 
+#### Parked and Unparked
+
+Sent when a call is parked in a slot and when it is taken back
+(`docs/PARKING.md`). `slot` is the slot as the tenant numbers it, a
+string (`"050"`, `"4320"`); `orbit` is the same as a number for older
+consumers, and `0` when the slot is not one (a leading zero, or more than
+65535). Read `slot`.
+
+```json
+{
+  "event_type": "call",
+  "type": "parked",
+  "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+  "tenant_id": "tenant-00000000-0000-0000-0000-000000000000",
+  "slot": "4320",
+  "orbit": 4320,
+  "parker_extension": "1002",
+  "timestamp": 1705584003
+}
+```
+
+`unparked` carries `slot`, `orbit` and `retriever_extension` instead of
+`parker_extension`.
+
+`park_timed_out` is sent when a parked call waited its lot's time and is
+rung back to its parker: `slot`, `lot_id`, `parker_extension`, and
+`fallback`, the address it goes to if the parker does not take it (absent
+when the lot has none).
+
 ### Media Events
 
 #### Session Started

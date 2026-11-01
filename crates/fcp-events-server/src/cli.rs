@@ -94,4 +94,15 @@ pub struct Cli {
         hide_env_values = true
     )]
     pub webhook_database_url: Option<String>,
+
+    /// The call manager's API token for emergency notification calls
+    /// (`[notifications.call] auth_token`); the call channel must already
+    /// be configured.
+    #[arg(
+        long = "notify-call-token",
+        value_name = "TOKEN",
+        env = "FCP_EVENTS_NOTIFY_CALL_TOKEN",
+        hide_env_values = true
+    )]
+    pub notify_call_token: Option<String>,
 }

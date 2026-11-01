@@ -143,6 +143,12 @@ async fn main() -> Result<()> {
     if let Some(v) = &cli.webhook_database_url {
         config.webhook.database_url = v.clone();
     }
+    if let Some(v) = &cli.notify_call_token {
+        match config.notifications.call.as_mut() {
+            Some(call) => call.auth_token = Some(v.clone()),
+            None => warn!("FCP_EVENTS_NOTIFY_CALL_TOKEN is set but [notifications.call] is not; it is not used"),
+        }
+    }
 
     // Apply CLI overrides
     if let Some(log_level) = cli.log_level {
@@ -305,6 +311,31 @@ async fn main() -> Result<()> {
     let event_bus = Arc::new(InMemoryEventBus::new());
     let remote_event_bus = Arc::new(InMemoryEventBus::new());
     let local_region = fcp_core::region::resolve_region(config.cluster.region.as_deref());
+
+    // Say this process is there, member or not (`docs/SERVICES.md`).
+    #[cfg(feature = "storage-redis")]
+    let beacon = config
+        .cluster
+        .redis_url
+        .as_ref()
+        .or(config.event_bus.redis_url.as_ref())
+        .map(|url| {
+            let mut beacon = fcp_cluster::ServiceBeacon::new(
+                fcp_cluster::ServiceIdentity::new(&config.service.node_id, "events")
+                    .region(local_region.clone())
+                    .member(config.cluster.enabled)
+                    .http(config.websocket.bind_address),
+            );
+            if let Some(storage) = &storage_result {
+                beacon = beacon.check(fcp_cluster::Check::database(
+                    storage.pg_storage.ping_check(),
+                ));
+            }
+            beacon.start(fcp_storage_redis::RedisConfig {
+                url: url.clone(),
+                ..Default::default()
+            })
+        });
 
     // Initialize cluster membership (if configured)
     #[cfg(feature = "storage-redis")]
@@ -736,6 +767,10 @@ async fn main() -> Result<()> {
     #[cfg(feature = "storage-redis")]
     if let Some(ref cm) = _cluster_manager {
         cm.shutdown().await;
+    }
+    #[cfg(feature = "storage-redis")]
+    if let Some(beacon) = &beacon {
+        beacon.shutdown().await;
     }
 
     info!("FCP Events Server shutdown complete");
@@ -1454,6 +1489,19 @@ fn process_event_for_state(
                 } => {
                     info!(site_id = %site_id, name = %name, up = %up, "A site's link changed");
                 }
+                SystemEvent::ServiceUp {
+                    service_id, kind, ..
+                } => {
+                    info!(service_id = %service_id, kind = %kind, "A service came up");
+                }
+                SystemEvent::ServiceDown {
+                    service_id,
+                    kind,
+                    stopped,
+                    ..
+                } => {
+                    info!(service_id = %service_id, kind = %kind, stopped = %stopped, "A service went down");
+                }
             }
         }
         _ => {
@@ -1531,9 +1579,10 @@ async fn build_notifier(
             from: call.from.clone(),
             ring_timeout: Duration::from_secs(call.ring_timeout_secs.max(1)),
             repeat: call.repeat.max(1),
-            // The call rings, is answered and is spoken to, so it takes
-            // longer than the ringing alone.
-            timeout: Duration::from_secs(call.ring_timeout_secs.max(1) + 60),
+            // The call rings, is answered and is spoken to, and a contact
+            // who may listen in is asked whether to and waits for the call
+            // to be answered, so it takes longer than the ringing alone.
+            timeout: Duration::from_secs(call.ring_timeout_secs.max(1) + 150),
         };
         notifier = notifier.with_channel(Arc::new(fcp_notify::call::CallChannel::new(settings)?));
     }
@@ -1564,6 +1613,8 @@ fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
         | CallEvent::EmergencyNotificationFailed { node_id, .. } => node_id.clone(),
         CallEvent::Parked { .. }
         | CallEvent::Unparked { .. }
+        | CallEvent::ParkTimedOut { .. }
+        | CallEvent::QualityPoor { .. }
         | CallEvent::Held { .. }
         | CallEvent::Resumed { .. }
         | CallEvent::Transcript { .. }

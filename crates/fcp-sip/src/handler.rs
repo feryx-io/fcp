@@ -675,6 +675,13 @@ pub struct SipMessageHandler {
     /// Optional cluster-wide parking store for cross-node park/pickup.
     cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>>,
 
+    /// Tenants' parking lots as last read, briefly (`docs/PARKING.md`):
+    /// every dialed number is checked against their park numbers.
+    parking_lots: dashmap::DashMap<
+        fcp_core::TenantId,
+        (std::time::Instant, Arc<Vec<fcp_core::parking::ParkingLot>>),
+    >,
+
     /// Cluster-aware conference placement (None = static conference_server_uri).
     conference_node_selector: Option<Arc<dyn ConferenceNodeSelector>>,
 
@@ -735,6 +742,9 @@ pub struct SipMessageHandler {
     /// Conference calls whose B-leg is being moved to another conference
     /// node (phase 5b), so a second REFER while one is in flight is refused.
     conference_migrations: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, ()>>,
+    /// 2xx responses a flow sent that the caller has not ACKed; the
+    /// flow's BYE waits for the ACK (RFC 3261 §15).
+    ack_waits: Arc<crate::ack_wait::AckWaits>,
     /// Calls being redirected into a flow by the API, until their
     /// dial-back arrives (`docs/DEVELOPER_SURFACE.md` phase 8).
     redirect_tickets: Arc<crate::call_control::RedirectTickets>,
@@ -1113,6 +1123,7 @@ impl SipMessageHandler {
             pbx_handler,
             presence_handler,
             cluster_parking,
+            parking_lots: dashmap::DashMap::new(),
             conference_node_selector: None,
             node_id,
             flow_registry: Arc::new(crate::flow::FlowRegistry::new()),
@@ -1131,6 +1142,7 @@ impl SipMessageHandler {
             admission: None,
             call_signer: None,
             conference_migrations: Arc::new(dashmap::DashMap::new()),
+            ack_waits: Arc::new(crate::ack_wait::AckWaits::new()),
             redirect_tickets: Arc::new(crate::call_control::RedirectTickets::default()),
             serving: Arc::new(std::sync::OnceLock::new()),
         };
@@ -1448,7 +1460,7 @@ impl SipMessageHandler {
             }
             let row = rows[&aor]
                 .iter()
-                .find(|r| r.contact == binding.contact())
+                .find(|r| crate::nat::reachable_contact(r) == binding.contact())
                 .cloned();
             let wakeable = self.push.is_some() && row.as_ref().is_some_and(|r| r.push.is_some());
             // Its flow on another node this node can reach.
@@ -2114,7 +2126,7 @@ impl SipMessageHandler {
     /// reason a `deny` rule refused it. Kept synchronous and out of
     /// `handle_invite`, whose future is deep enough already: nothing here
     /// lives across an await.
-    fn tenant_rule_decision(
+    async fn tenant_rule_decision(
         &self,
         tenant_id: &fcp_core::TenantId,
         request: &sip_core::Request,
@@ -2138,10 +2150,23 @@ impl SipMessageHandler {
             })
             .unwrap_or_default();
         let destination = request.uri().as_str().to_string();
+        // Looked up only for a tenant with a location's rules: most have none.
+        let location = if rules.has_location_rules(tenant_id) {
+            let caller_name = extract_from_uri(request)
+                .ok()
+                .and_then(|u| u.user().map(str::to_string));
+            match caller_name {
+                Some(name) => self.caller_location(tenant_id, request, &name).await,
+                None => None,
+            }
+        } else {
+            None
+        };
         let facts = fcp_policy::CallFacts {
             caller: &caller,
             destination: &destination,
             source_ip: peer.ip(),
+            location,
         };
         match rules.evaluate(tenant_id, &facts) {
             fcp_policy::RuleOutcome::Deny { rule, reason } => {
@@ -3675,7 +3700,7 @@ impl SipMessageHandler {
         // 6b): a deny refuses the call, a route_to_trunk confines it to the
         // trunk or group it names. Never an emergency call's.
         let trunk_target = match emergency {
-            None => match self.tenant_rule_decision(&tenant_id, request, peer) {
+            None => match self.tenant_rule_decision(&tenant_id, request, peer).await {
                 Ok(target) => target,
                 Err(reason) => {
                     let response = self.create_simple_response(request, 403, &reason);
@@ -4094,6 +4119,17 @@ impl SipMessageHandler {
             }
         }
 
+        // An emergency test call the tenant has this platform answer: the
+        // node reads back what a live call would carry, and no carrier is
+        // called (`docs/E911.md` "Test calls").
+        // Boxed and apart: this future is deep, and what a branch holds
+        // across an await here overflowed a debug worker's stack.
+        if let Some(done) =
+            Box::pin(self.read_back_local_test(request, handle, &call_id, tenant_id)).await
+        {
+            return done;
+        }
+
         // Check if this is a PBX feature code (e.g., *8 pickup, *70 park, *81 intercom)
         if let Some(pbx) = &self.pbx_handler {
             if pbx.is_enabled() {
@@ -4108,6 +4144,16 @@ impl SipMessageHandler {
                     return self
                         .handle_pbx_feature_code(request, handle, &call_id, action)
                         .await;
+                }
+                // A lot's park number or one of its slots (`docs/PARKING.md`
+                // §3). Boxed and apart, as the test-call read-back is: this
+                // future is deep, and what it holds across an await here
+                // overflowed the SBC's worker stack (fcp-link's calls test).
+                if let Some(done) =
+                    Box::pin(self.park_by_number(request, handle, &call_id, tenant_id, &dialed))
+                        .await
+                {
+                    return done;
                 }
             }
         }
@@ -4127,7 +4173,7 @@ impl SipMessageHandler {
 
         // Check if a queue handler wants this call (before flow routing)
         if let Some(queue_handler) = &self.queue_handler {
-            if queue_handler.can_handle(request).await {
+            if queue_handler.can_handle(request, &tenant_id).await {
                 // The queue's hours, decided here where a closed caller can
                 // be sent on (`docs/ENTERPRISE_CALLING.md` §3.5).
                 if let Some((state, target)) = self.queue_schedule_divert(request, &call_id).await {
@@ -4270,6 +4316,7 @@ impl SipMessageHandler {
                         let answer_media_manager = self.media_manager.clone();
                         let answer_uas = self.uas.clone();
                         let answer_dialog_manager = Arc::clone(&self.dialog_manager);
+                        let answer_ack_waits = Arc::clone(&self.ack_waits);
                         let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
                             let handle = answer_handle.clone();
                             let request = answer_request.clone();
@@ -4278,6 +4325,7 @@ impl SipMessageHandler {
                             let media_manager = answer_media_manager.clone();
                             let uas = answer_uas.clone();
                             let dialog_manager = Arc::clone(&answer_dialog_manager);
+                            let ack_waits = Arc::clone(&answer_ack_waits);
                             Box::pin(async move {
                                 info!(call_id = %call_id, "Answer callback executing - creating 200 OK");
                                 // Create base 200 OK response
@@ -4380,6 +4428,7 @@ impl SipMessageHandler {
                                 }
 
                                 // Send 200 OK
+                                ack_waits.expect(call_id);
                                 handle.send_final(response.clone()).await;
 
                                 Ok(())
@@ -4390,14 +4439,18 @@ impl SipMessageHandler {
                         let hangup_call_manager = Arc::clone(&self.call_manager);
                         let hangup_uac = self.uac.clone();
                         let hangup_dialog_manager = Arc::clone(&self.dialog_manager);
+                        let hangup_ack_waits = Arc::clone(&self.ack_waits);
                         let hangup_media_manager = self.media_manager.clone();
                         let hangup_callback: fcp_flow::HangupCallback = Arc::new(move |reason| {
                             let call_id = hangup_call_id;
                             let call_manager = Arc::clone(&hangup_call_manager);
                             let uac_opt = hangup_uac.clone();
                             let dialog_manager = Arc::clone(&hangup_dialog_manager);
+                            let ack_waits = Arc::clone(&hangup_ack_waits);
                             let media_manager = hangup_media_manager.clone();
                             Box::pin(async move {
+                                // Not before the caller has ACKed the answer (RFC 3261 §15).
+                                ack_waits.wait(&call_id, crate::ack_wait::ACK_WAIT).await;
                                 info!(call_id = %call_id, reason = ?reason, "Hangup callback executing");
                                 // Get the dialog for this call
                                 if let Some(call_entry) = call_manager.get_call(&call_id) {
@@ -4621,6 +4674,17 @@ impl SipMessageHandler {
             }
         };
 
+        // Where a caller behind NAT was seen: its RTP is learned from there.
+        let caller_behind_nat = self
+            .call_manager
+            .get_call(call_id)
+            .and_then(|c| c.a_leg.contact)
+            .map(|peer| peer.ip())
+            .filter(|peer| {
+                crate::body::request_sdp(request)
+                    .is_some_and(|sdp| crate::nat::learns_media_address(&sdp, *peer))
+            });
+
         // Extract codecs from A-leg SDP
         let a_leg_codecs = if let Some(sdp) = crate::body::request_sdp(request) {
             fcp_media::extract_codecs_from_sdp(&sdp)
@@ -4648,6 +4712,11 @@ impl SipMessageHandler {
             dtmf_requested: user_prefs.enable_dtmf_detection || user_prefs.force_media_anchoring,
             conference_call: false, // TODO: Detect conference scenarios
             hold_music: media_config.hold_music,
+            emergency_call: self
+                .call_manager
+                .get_call(call_id)
+                .is_some_and(|c| c.emergency.is_some()),
+            caller_behind_nat: caller_behind_nat.is_some(),
         };
 
         // Make anchoring decision
@@ -4708,6 +4777,10 @@ impl SipMessageHandler {
                             call.media_session_id = Some(fcp_call_id);
                             call.media_anchored = true;
                         });
+                        if let Some(peer) = caller_behind_nat {
+                            self.latch_leg(call_id, fcp_media::backend::Leg::A, peer)
+                                .await;
+                        }
                     }
                     Err(e) => {
                         error!(
@@ -4830,6 +4903,32 @@ impl SipMessageHandler {
             }
         }
         platform.then_some(CallRecordingSource::Platform)
+    }
+
+    /// Name the call in the answer to a caller who is one of the tenant's
+    /// users, as the INVITE to a phone names it: an app asks for its own
+    /// call by that id (`/me/calls/{id}/recording`, `docs/RECORD_AND_CONTACTS.md`
+    /// §2). A carrier is not told.
+    fn name_call_for_caller(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        response: &mut sip_core::Response,
+    ) {
+        let named = self
+            .call_manager
+            .get_call(call_id)
+            .filter(|c| c.caller_user_id.is_some())
+            .map(|c| {
+                c.relay_for
+                    .map(|r| r.as_uuid().to_string())
+                    .unwrap_or_else(|| c.id.to_string())
+            });
+        if let Some(named) = named {
+            response.headers_mut().remove(fcp_core::CALL_ID_HEADER);
+            let _ = response
+                .headers_mut()
+                .push(SmolStr::new(fcp_core::CALL_ID_HEADER), SmolStr::new(named));
+        }
     }
 
     fn ensure_response_hygiene(
@@ -5117,19 +5216,22 @@ impl SipMessageHandler {
             .get_session(&media_session_id)
             .await
             .with_context(|| format!("{} failed: could not load media session", label))?;
-        let (rtp_port, _rtcp_port) = session.ports();
-        let local_offer = generate_basic_sdp(&self.local_addr, rtp_port);
+        // The original caller is leg A, the picker leg B: each is told its
+        // own leg's port.
+        let (a_port, _) = session.ports_for(fcp_media::backend::Leg::A);
+        let (b_port, _) = session.ports_for(fcp_media::backend::Leg::B);
         let picker_answer = picker_offer
             .map(|offer| {
                 fcp_media::construct_answer_for_a_leg(
                     offer,
                     &self.local_addr,
-                    rtp_port,
+                    b_port,
                     picker_srtp.as_ref(),
                 )
             })
-            .or_else(|| Some(local_offer.clone()));
-        let original_answer = original_answer.or(Some(local_offer));
+            .or_else(|| Some(generate_basic_sdp(&self.local_addr, b_port)));
+        let original_answer =
+            original_answer.or_else(|| Some(generate_basic_sdp(&self.local_addr, a_port)));
 
         info!(
             call_id = %ringing_call_id,
@@ -7322,10 +7424,10 @@ impl SipMessageHandler {
             if let (Some(media_session_id), Some(media_manager)) =
                 (media_session_id, &self.media_manager)
             {
-                // Get media session to extract RTP port
+                // Get media session to extract leg B's RTP port
                 match media_manager.get_session(&media_session_id).await {
                     Ok(session) => {
-                        let (rtp_port, _rtcp_port) = session.ports();
+                        let (rtp_port, _rtcp_port) = session.ports_for(fcp_media::backend::Leg::B);
 
                         // Rewrite SDP to point to server's RTP endpoint, and
                         // offer the trunk's SRTP on it when it wants any.
@@ -7972,6 +8074,16 @@ impl SipMessageHandler {
         {
             let _ = extra_headers.push(SmolStr::new("Alert-Info"), SmolStr::new(alert));
         }
+        // Which of the phone's lines the call is for (`docs/DEVICE_LINES.md`
+        // §3); boxed, for this future's depth.
+        if let Some(line) =
+            Box::pin(self.line_header_for(&call_id_clone, &target_contact.uri)).await
+        {
+            let _ = extra_headers.push(
+                SmolStr::new(crate::device_lines::LINE_HEADER),
+                SmolStr::new(line),
+            );
+        }
         if let Some((_, token)) = &target_contact.relay {
             let _ = extra_headers.push(
                 SmolStr::new(crate::push::FLOW_RELAY_HEADER),
@@ -8401,10 +8513,11 @@ impl SipMessageHandler {
                 if let (Some(media_session_id), Some(media_manager)) =
                     (media_session_id, &self.media_manager)
                 {
-                    // Get media session to extract RTP port
+                    // Get media session to extract leg A's RTP port
                     match media_manager.get_session(&media_session_id).await {
                         Ok(session) => {
-                            let (rtp_port, _rtcp_port) = session.ports();
+                            let (rtp_port, _rtcp_port) =
+                                session.ports_for(fcp_media::backend::Leg::A);
                             // The caller's own key, as the media backend answered its offer: an
                             // encrypted caller is answered encrypted, whichever way the answer is
                             // built.
@@ -8537,6 +8650,7 @@ impl SipMessageHandler {
 
             // Inject RFC 4028 session timer headers into A-leg 200 OK
             inject_session_timer_headers(&self.b2bua_config, &request, &mut a_leg_response);
+            self.name_call_for_caller(&call_id, &mut a_leg_response);
 
             // Create A-leg dialog from the 200 OK response
             let a_leg_dialog = match sip_dialog::Dialog::new_uas(
@@ -8933,6 +9047,20 @@ impl SipMessageHandler {
                                 "B-leg {} returned non-2xx {}, continuing race", i, code
                             );
                             race_failure_code = Some(code);
+                            // A 6xx is the callee's answer for every
+                            // phone (RFC 3261 §16.7): the rest are
+                            // CANCELled and the call goes to its busy
+                            // treatment now. A decline on one phone kept
+                            // the caller ringing out to the others' timeout
+                            // (`docs/DEEP_TESTING.md` D8).
+                            if code >= 600 {
+                                info!(
+                                    call_id = %call_id,
+                                    code,
+                                    "B-leg {} declined for every phone; ending the fork", i
+                                );
+                                return (None, race_failure_code);
+                            }
                         }
                     }
                     Ok(None) => {
@@ -9231,6 +9359,13 @@ impl SipMessageHandler {
                             "Failed to set B-leg media endpoint in parallel fork"
                         );
                     }
+                    // A callee behind NAT answers from where it was rung.
+                    if let Some(rung) = crate::nat::uri_address(&target.to_string())
+                        .filter(|rung| crate::nat::learns_media_address(original_sdp, *rung))
+                    {
+                        self.latch_leg(&call_id, fcp_media::backend::Leg::B, rung)
+                            .await;
+                    }
                     self.arrange_trunk_dtmf(&call_id, original_sdp).await;
                 }
             }
@@ -9252,7 +9387,8 @@ impl SipMessageHandler {
                     // Get media session to extract RTP port (A-leg port)
                     match media_manager.get_session(&media_session_id).await {
                         Ok(session) => {
-                            let (rtp_port, _rtcp_port) = session.ports();
+                            let (rtp_port, _rtcp_port) =
+                                session.ports_for(fcp_media::backend::Leg::A);
                             // The caller's own key, as the media backend answered its offer: an
                             // encrypted caller is answered encrypted, whichever way the answer is
                             // built.
@@ -9394,6 +9530,7 @@ impl SipMessageHandler {
 
             // Inject RFC 4028 session timer headers into forked 200 OK
             inject_session_timer_headers(&self.b2bua_config, &request, &mut ok_response);
+            self.name_call_for_caller(&call_id, &mut ok_response);
 
             // Create A-leg dialog from the 200 OK response
             let a_leg_dialog = match sip_dialog::Dialog::new_uas(
@@ -10010,6 +10147,7 @@ impl SipMessageHandler {
                 state = ?call.state,
                 "ACK received from A-leg - call dialog fully established"
             );
+            self.ack_waits.acked(&call.id);
 
             // The call should already be in Established state from the 200 OK
             // ACK is just confirmation, no state change needed
@@ -10375,7 +10513,9 @@ impl SipMessageHandler {
 
                 match media_manager.get_session(media_session_id).await {
                     Ok(session) => {
-                        let (rtp_port, _rtcp_port) = session.ports();
+                        // Forwarded to the other leg, told its own port.
+                        let (rtp_port, _rtcp_port) = session
+                            .ports_for(media_leg(fcp_b2bua_core::LegSide::of(is_a_leg).other()));
                         let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
                             body_str,
                             &self.local_addr,
@@ -10523,7 +10663,9 @@ impl SipMessageHandler {
 
                     match media_manager.get_session(media_session_id).await {
                         Ok(session) => {
-                            let (rtp_port, _rtcp_port) = session.ports();
+                            // The answer goes back to the sender, on its leg's port.
+                            let (rtp_port, _rtcp_port) =
+                                session.ports_for(media_leg(fcp_b2bua_core::LegSide::of(is_a_leg)));
                             // An encrypted sender is answered encrypted, with its own leg's key.
                             let a_leg_srtp = match sender_offer.as_deref() {
                                 Some(offer) if !fcp_media::parse_sdes_crypto(offer).is_empty() => {
@@ -10664,10 +10806,16 @@ impl SipMessageHandler {
         else {
             return Ok(self.create_simple_response(request, 500, "Media Unavailable"));
         };
+        // Answered in the codec the leg uses now: the media session goes on
+        // decoding it. An offer without it moves the session to the codec
+        // the answer names.
+        let kept = prior_sdp.and_then(|prior| crate::hold::keeping_codec(offer, prior));
+        let codec_changed = kept.is_none() && prior_sdp.is_some();
+        let offer = kept.as_deref().unwrap_or(offer);
         let moved = prior_sdp
             .map(|prior| crate::conference_migration::media_endpoint_changed(prior, offer))
             .unwrap_or(true);
-        if moved {
+        if moved || codec_changed {
             let updated = match sender {
                 fcp_b2bua_core::LegSide::A => media_manager
                     .update_session(&session_id, offer.to_string())
@@ -10705,7 +10853,7 @@ impl SipMessageHandler {
                 return Ok(self.create_simple_response(request, 500, "Media Unavailable"));
             }
         };
-        let port = session.ports().0;
+        let port = session.ports_for(media_leg(sender)).0;
         // An encrypted holder is answered encrypted, with its leg's key.
         let srtp = if fcp_media::parse_sdes_crypto(offer).is_empty() {
             None
@@ -11829,7 +11977,11 @@ impl SipMessageHandler {
                 .link_peers
                 .from_peer(peer, &self.flow_registry)
                 .is_some();
-        let mut info = crate::emergency::detect(
+        // Boxed: every INVITE is classified here, and the location lookups'
+        // future on the stack of a deep INVITE path overflowed a debug
+        // build's worker (a site's call up its link, `docs/DEEP_TESTING.md`
+        // D8).
+        let mut info = Box::pin(crate::emergency::detect(
             self.storage.as_ref(),
             tenant_id,
             &destination,
@@ -11837,7 +11989,7 @@ impl SipMessageHandler {
             aor.as_deref(),
             client_address,
             supplied.as_ref(),
-        )
+        ))
         .await?;
         // A site's call has no user or device here: it is placed where the
         // site, which knows its caller, says (`docs/HYBRID_CONTROL_PLANE.md`
@@ -13151,8 +13303,8 @@ impl SipMessageHandler {
             fcp_pbx::FeatureCodeAction::ParkCall => {
                 self.handle_park_call(request, handle, call_id).await
             }
-            fcp_pbx::FeatureCodeAction::RetrieveParkedCall { orbit } => {
-                self.handle_retrieve_parked(request, handle, call_id, orbit)
+            fcp_pbx::FeatureCodeAction::RetrieveParkedCall { slot } => {
+                self.handle_retrieve_parked(request, handle, call_id, &slot)
                     .await
             }
             fcp_pbx::FeatureCodeAction::IntercomOneWay { extension } => {
@@ -13253,7 +13405,8 @@ impl SipMessageHandler {
             {
                 Some(session) => {
                     info!(call_id = %call_id, device_id = %device.id, user_id = %session.user_id, "Hoteling logout by feature code");
-                    finish(200, "OK").await
+                    self.confirm_feature(request, handle, call_id, "Logged out.")
+                        .await
                 }
                 None => finish(404, "No One Logged In").await,
             };
@@ -13315,6 +13468,7 @@ impl SipMessageHandler {
             &flow_handler,
             flow_def,
             HashMap::new(),
+            Vec::new(),
             "hoteling login",
         )
         .await
@@ -13526,20 +13680,22 @@ impl SipMessageHandler {
                     return Ok(());
                 }
             };
-            let (rtp_port, _rtcp_port) = session.ports();
+            // The original caller is leg A, the picker leg B.
+            let (a_port, _) = session.ports_for(fcp_media::backend::Leg::A);
+            let (b_port, _) = session.ports_for(fcp_media::backend::Leg::B);
 
             let original_answer = original_offer
                 .as_deref()
                 .map(|offer| {
-                    fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, rtp_port, None)
+                    fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, a_port, None)
                 })
-                .unwrap_or_else(|| generate_basic_sdp(&self.local_addr, rtp_port));
+                .unwrap_or_else(|| generate_basic_sdp(&self.local_addr, a_port));
             let picker_answer = picker_offer
                 .as_deref()
                 .map(|offer| {
-                    fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, rtp_port, None)
+                    fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, b_port, None)
                 })
-                .unwrap_or_else(|| generate_basic_sdp(&self.local_addr, rtp_port));
+                .unwrap_or_else(|| generate_basic_sdp(&self.local_addr, b_port));
 
             (Some(original_answer), Some(picker_answer))
         } else {
@@ -13668,13 +13824,31 @@ impl SipMessageHandler {
             return self.create_simple_response(request, 481, "Call/Transaction Does Not Exist");
         };
 
-        // A park code: the transferred party waits in an orbit.
+        // A park code or a lot's park number: the transferred party waits
+        // in the next free slot; a slot itself: in that one, a directed
+        // park (`docs/PARKING.md` §3).
         if target.replaces.is_none() {
             if let Some(pbx) = self.pbx_handler.as_ref().filter(|p| p.is_enabled()) {
-                if matches!(
+                let park_in = if matches!(
                     pbx.parse_feature_code(&target.user),
                     Some(fcp_pbx::FeatureCodeAction::ParkCall)
                 ) {
+                    Some(None)
+                } else {
+                    let lots = self.parking_lots_of(&call.tenant_id).await;
+                    let lot = lots.iter().filter(|l| l.enabled);
+                    if lot
+                        .clone()
+                        .any(|l| l.park_number.as_deref() == Some(target.user.as_str()))
+                    {
+                        Some(None)
+                    } else {
+                        lot.clone()
+                            .find(|l| l.contains(&target.user))
+                            .map(|_| Some(target.user.clone()))
+                    }
+                };
+                if let Some(only) = park_in {
                     let parker = match referrer {
                         fcp_b2bua_core::LegSide::A => call.a_leg.remote_uri.clone(),
                         fcp_b2bua_core::LegSide::B => call
@@ -13684,9 +13858,22 @@ impl SipMessageHandler {
                             .unwrap_or_default(),
                     };
                     let parker = user_of_uri(&parker).unwrap_or_default();
-                    return match self.park_party(pbx, call, referrer, &parker).await {
-                        Ok(orbit) => {
-                            info!(call_id = %call.id, orbit, parker = %parker, "Parked by transfer");
+                    let location = self
+                        .parker_location(&call.tenant_id, request, &parker)
+                        .await;
+                    return match self
+                        .park_party(
+                            pbx,
+                            call,
+                            referrer,
+                            &parker,
+                            only.as_deref(),
+                            location.as_deref(),
+                        )
+                        .await
+                    {
+                        Ok(slot) => {
+                            info!(call_id = %call.id, slot = %slot, parker = %parker, "Parked by transfer");
                             let local_uri = self.uas.local_uri.clone();
                             let mut dialog = referrer_dialog.clone();
                             let flow = match referrer {
@@ -13712,6 +13899,10 @@ impl SipMessageHandler {
                                 drop.await;
                             });
                             self.create_simple_response(request, 202, "Accepted")
+                        }
+                        Err(e) if e.downcast_ref::<SlotTaken>().is_some() => {
+                            info!(call_id = %call.id, slot = ?only, "Directed park: the slot is taken");
+                            self.create_simple_response(request, 486, "Parking Slot Taken")
                         }
                         Err(e) => {
                             warn!(call_id = %call.id, error = %e, "Park by transfer failed");
@@ -13806,6 +13997,7 @@ impl SipMessageHandler {
             headers,
             caller,
             notify_referrer,
+            fallback: None,
         }
     }
 
@@ -13818,40 +14010,46 @@ impl SipMessageHandler {
         call: &fcp_b2bua_core::Call,
         parker: fcp_b2bua_core::LegSide,
         parker_ext: &str,
-    ) -> Result<u16> {
-        let orbit = pbx
-            .park_call(call.id, parker_ext.to_string(), call.tenant_id)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        if let Some(ref cluster_parking) = self.cluster_parking {
-            let info = fcp_core::ClusterParkedCall {
-                call_id: call.id.to_string(),
-                node_id: self.node_id.clone(),
-                parker_extension: parker_ext.to_string(),
-                tenant_id: call.tenant_id.to_string(),
-                parked_at_unix: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
+        only: Option<&str>,
+        location: Option<&str>,
+    ) -> Result<String> {
+        let lot = match only {
+            Some(slot) => self
+                .parking_lots_of(&call.tenant_id)
+                .await
+                .iter()
+                .find(|l| l.enabled && l.contains(slot))
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("{slot} is in none of the tenant's lots"))?,
+            None => self.parking_lot_for(pbx, &call.tenant_id, location).await,
+        };
+        let orbit = self.claim_slot(pbx, &lot, call, parker_ext, only).await?;
+        let lot_music = lot.music.clone();
+        // The parked party goes to the A slot; its media side follows, and
+        // the B side, the parker's, is left with no one on it until the
+        // call is retrieved: still naming the parked party, it relayed the
+        // party's own audio back between the hold music's packets
+        // (`docs/DEEP_TESTING.md` D8).
+        if let (true, Some(session_id), Some(media_manager)) = (
+            call.media_anchored,
+            call.media_session_id,
+            self.media_manager.as_ref(),
+        ) {
+            use fcp_media::backend::Leg;
+            let moved = match parker {
+                fcp_b2bua_core::LegSide::A => {
+                    match call.b_leg.as_ref().and_then(|b| b.sdp.clone()) {
+                        Some(sdp) => match media_manager.update_session(&session_id, sdp).await {
+                            Ok(_) => media_manager.move_peer(&session_id, Leg::B, Leg::A).await,
+                            Err(e) => Err(e),
+                        },
+                        None => media_manager.release_leg(&session_id, Leg::B).await,
+                    }
+                }
+                fcp_b2bua_core::LegSide::B => media_manager.release_leg(&session_id, Leg::B).await,
             };
-            let timeout_secs = pbx.parking_manager().config().timeout_seconds;
-            let cp = Arc::clone(cluster_parking);
-            tokio::spawn(async move {
-                if let Err(e) = cp.cluster_park(orbit, info, timeout_secs).await {
-                    warn!(orbit = orbit, error = %e, "Failed to write parked call to cluster store");
-                }
-            });
-        }
-        // The parked party goes to the A slot; its media side follows.
-        if parker == fcp_b2bua_core::LegSide::A {
-            if let (true, Some(session_id), Some(media_manager), Some(sdp)) = (
-                call.media_anchored,
-                call.media_session_id,
-                self.media_manager.as_ref(),
-                call.b_leg.as_ref().and_then(|b| b.sdp.clone()),
-            ) {
-                if let Err(e) = media_manager.update_session(&session_id, sdp).await {
-                    warn!(call_id = %call.id, error = %e, "Parked party's media not moved to the A side");
-                }
+            if let Err(e) = moved {
+                warn!(call_id = %call.id, error = %e, "Parked party's media not moved to the A side");
             }
         }
         let parker_dialog_id = match parker {
@@ -13880,12 +14078,289 @@ impl SipMessageHandler {
             // Held, whatever the parker did: the parked party hears the
             // hold music (`docs/ENTERPRISE_CALLING.md` §3.3).
             c.held = Some(fcp_b2bua_core::LegSide::A);
-            c.park(orbit, parker_ext.clone());
+            c.parked_music = lot_music.clone();
+            c.park(orbit.clone(), parker_ext.clone());
         })?;
         if let Some(id) = parker_dialog_id {
             self.sip_call_id_map.remove(id.call_id());
         }
         Ok(orbit)
+    }
+
+    /// A call to one of the tenant's lots: its park number parks as `*70`
+    /// does, one of its slots takes back the call parked there. `None` for
+    /// any other number.
+    async fn park_by_number(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        tenant_id: fcp_core::TenantId,
+        dialed: &str,
+    ) -> Option<Result<()>> {
+        let user = user_of_uri(dialed).filter(|u| fcp_core::parking::is_number(u))?;
+        let lots = self.parking_lots_of(&tenant_id).await;
+        let lots = lots.iter().filter(|l| l.enabled);
+        if lots
+            .clone()
+            .any(|l| l.park_number.as_deref() == Some(user.as_str()))
+        {
+            info!(call_id = %call_id, park_number = %user, "A lot's park number");
+            return Some(Box::pin(self.handle_park_call(request, handle, call_id)).await);
+        }
+        if lots.clone().any(|l| l.contains(&user)) {
+            info!(call_id = %call_id, slot = %user, "A parking slot dialed");
+            return Some(
+                Box::pin(self.handle_retrieve_parked(request, handle, call_id, &user)).await,
+            );
+        }
+        None
+    }
+
+    /// The line key a phone is rung with for the call (`X-FCP-Line`): only
+    /// for a call to a user or a shared line, and never toward a trunk.
+    async fn line_header_for(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        target_uri: &str,
+    ) -> Option<String> {
+        let storage = self.storage.as_ref()?;
+        let call = self.call_manager.get_call(call_id)?;
+        if answering_trunk(&call.route_trunks, target_uri).is_some() {
+            return None;
+        }
+        let shared_number = match call.number_binding_id {
+            Some(id) => match storage.get_line_binding(&id).await {
+                Ok(Some(binding)) if binding.shared => storage
+                    .get_phone_number(&binding.phone_number_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|n| n.e164),
+                _ => None,
+            },
+            None => None,
+        };
+        crate::device_lines::line_of_call(
+            storage,
+            &call.tenant_id,
+            call.callee_user_id.as_ref(),
+            call.original_callee.as_deref(),
+            shared_number.as_deref(),
+            call.leg_alert_info.is_some(),
+        )
+        .await
+    }
+
+    /// The tenant's parking lots, read at most every few seconds.
+    async fn parking_lots_of(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+    ) -> Arc<Vec<fcp_core::parking::ParkingLot>> {
+        const FRESH: std::time::Duration = std::time::Duration::from_secs(10);
+        if let Some(entry) = self.parking_lots.get(tenant_id) {
+            if entry.0.elapsed() < FRESH {
+                return Arc::clone(&entry.1);
+            }
+        }
+        let Some(store) = self.storage.as_ref().and_then(|s| s.parking_lot_store()) else {
+            return Arc::new(Vec::new());
+        };
+        let lots = match store.list_parking_lots(tenant_id).await {
+            Ok(lots) => Arc::new(lots),
+            Err(e) => {
+                warn!(tenant_id = %tenant_id, error = %e, "The tenant's parking lots could not be read");
+                return self
+                    .parking_lots
+                    .get(tenant_id)
+                    .map(|e| Arc::clone(&e.1))
+                    .unwrap_or_default();
+            }
+        };
+        self.parking_lots
+            .insert(*tenant_id, (std::time::Instant::now(), Arc::clone(&lots)));
+        lots
+    }
+
+    /// The lot a call of the tenant parks in: one of its own, else this
+    /// node's range (`[pbx.parking]`).
+    async fn parking_lot_for(
+        &self,
+        pbx: &fcp_pbx::PbxHandler,
+        tenant_id: &fcp_core::TenantId,
+        location: Option<&str>,
+    ) -> fcp_core::parking::ParkingLot {
+        let lots = self.parking_lots_of(tenant_id).await;
+        fcp_core::parking::lot_for(&lots, location)
+            .cloned()
+            .unwrap_or_else(|| pbx.parking_manager().node_lot(*tenant_id))
+    }
+
+    /// Where the parker is, for the lot they park in (`docs/PARKING.md`,
+    /// `docs/TENANT_SCOPE.md` §3.5): the location of the device the request
+    /// came from (by its credentials, its User-Agent's MAC, or the parker's
+    /// only device), else of the parker's extension (the parker named by
+    /// their number, or by their SIP name and so their user's extension).
+    async fn parker_location(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        request: &Request,
+        parker: &str,
+    ) -> Option<String> {
+        self.device_or_extension_location(tenant_id, request, parker)
+            .await
+            .map(|location| location.to_string())
+    }
+
+    /// [`Self::parker_location`]'s rule, for any caller.
+    async fn device_or_extension_location(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        request: &Request,
+        caller: &str,
+    ) -> Option<fcp_core::LocationId> {
+        let storage = self.storage.as_ref()?;
+        let auth_username = request
+            .headers()
+            .get_smol("Authorization")
+            .or_else(|| request.headers().get_smol("Proxy-Authorization"))
+            .and_then(sip_parse::parse_authorization_header)
+            .and_then(|auth| auth.param("username").map(|u| u.to_string()));
+        let user_agent = request
+            .headers()
+            .get_smol("User-Agent")
+            .map(|v| v.to_string());
+        if let Some(device) = crate::device_sync::device_for_registration(
+            storage,
+            tenant_id,
+            caller,
+            auth_username.as_deref(),
+            user_agent.as_deref(),
+            None,
+        )
+        .await
+        {
+            if let Some(location) = device.location_id {
+                return Some(location);
+            }
+        }
+        // The caller is named by a number or by their SIP name.
+        let number = match storage.get_user_by_sip_name(caller, tenant_id).await {
+            Ok(Some(user)) => user.extension.unwrap_or_else(|| caller.to_string()),
+            _ => caller.to_string(),
+        };
+        storage
+            .get_extension_by_number(tenant_id, &number)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|ext| ext.location_id)
+    }
+
+    /// Where a caller is, for the routing rules of a location
+    /// (`docs/TENANT_SCOPE.md` §3.6): their device's location, else their
+    /// extension's, else the location of a number one of their lines has.
+    async fn caller_location(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        request: &Request,
+        caller: &str,
+    ) -> Option<fcp_core::LocationId> {
+        if let Some(location) = self
+            .device_or_extension_location(tenant_id, request, caller)
+            .await
+        {
+            return Some(location);
+        }
+        let storage = self.storage.as_ref()?;
+        let user = storage
+            .get_user_by_sip_name(caller, tenant_id)
+            .await
+            .ok()
+            .flatten()?;
+        for binding in storage
+            .list_line_bindings_by_user(&user.id)
+            .await
+            .ok()?
+            .into_iter()
+            .filter(|b| b.tenant_id == *tenant_id)
+        {
+            if let Ok(Some(number)) = storage.get_phone_number(&binding.phone_number_id).await {
+                if let Some(location) = number.location_id {
+                    return Some(location);
+                }
+            }
+        }
+        None
+    }
+
+    /// Take the lot's first free slot for `call`: claimed cluster-wide
+    /// first, so no other node parks in it, then held here
+    /// (`docs/PARKING.md` §2). A claim that cannot be made — Redis down —
+    /// is not waited out: the slot is taken on this node alone.
+    async fn claim_slot(
+        &self,
+        pbx: &fcp_pbx::PbxHandler,
+        lot: &fcp_core::parking::ParkingLot,
+        call: &fcp_b2bua_core::Call,
+        parker_ext: &str,
+        only: Option<&str>,
+    ) -> Result<String> {
+        let tenant = call.tenant_id;
+        let parking = pbx.parking_manager();
+        for slot in lot.slots().filter(|s| only.is_none_or(|o| o == s)) {
+            if parking.is_held(&tenant, &slot) {
+                continue;
+            }
+            if let Some(cp) = self.cluster_parking.as_ref() {
+                let info = fcp_core::ClusterParkedCall {
+                    call_id: call.id.to_string(),
+                    node_id: self.node_id.clone(),
+                    parker_extension: parker_ext.to_string(),
+                    tenant_id: tenant.to_string(),
+                    slot: slot.clone(),
+                    lot_id: lot.id.clone(),
+                    parked_at_unix: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                };
+                // Past the lot's timeout, so the claim outlives the wait
+                // until this node sends the call back.
+                let ttl = u64::from(lot.timeout_secs) + 60;
+                match cp.cluster_park(&tenant, &slot, info, ttl).await {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(e) => {
+                        warn!(slot = %slot, error = %e, "A parking slot could not be claimed in the cluster; taking it on this node");
+                    }
+                }
+            }
+            let held = parking.hold(fcp_pbx::ParkedCall {
+                call_id: call.id,
+                slot: slot.clone(),
+                lot_id: lot.id.clone(),
+                parker_extension: parker_ext.to_string(),
+                tenant_id: tenant,
+                parked_at: std::time::Instant::now(),
+                timeout: std::time::Duration::from_secs(u64::from(lot.timeout_secs)),
+            });
+            match held {
+                Ok(()) => return Ok(slot),
+                Err(_) => {
+                    if let Some(cp) = self.cluster_parking.as_ref() {
+                        let _ = cp.cluster_unpark(&tenant, &slot).await;
+                    }
+                }
+            }
+        }
+        if only.is_some() {
+            return Err(SlotTaken.into());
+        }
+        Err(anyhow::anyhow!(
+            "no slot free in the parking lot {:?}",
+            lot.name
+        ))
     }
 
     /// Drop a leg no call holds any more: its timer stopped, its dialog
@@ -14180,6 +14655,67 @@ impl SipMessageHandler {
             fcp_b2bua_core::LegSide::A => Some(call.a_leg.clone()),
             fcp_b2bua_core::LegSide::B => call.b_leg.clone(),
         };
+        // No second party: the node answered the call itself — a flow, a
+        // menu, voicemail access — and plays into the media session's A
+        // side. Whoever takes the caller's place is pointed at that side,
+        // and the flow carries on with them (`docs/DEEP_TESTING.md` D8: a
+        // VVX's attended transfer to an IVR was refused 481).
+        if party_leg.is_none() && side == fcp_b2bua_core::LegSide::A {
+            let anchored = call
+                .media_anchored
+                .then_some(call.media_session_id)
+                .flatten()
+                .zip(self.media_manager.clone());
+            if let Some((session_id, media_manager)) = anchored {
+                let Some(offer) = crate::body::request_sdp(request) else {
+                    return fail(
+                        488,
+                        "Not Acceptable Here",
+                        "an INVITE without an offer".into(),
+                    )
+                    .await;
+                };
+                let answer = match media_manager.update_session(&session_id, offer).await {
+                    Ok(answer) => answer,
+                    Err(e) => {
+                        return fail(503, "Service Unavailable", format!("media session: {e}"))
+                            .await
+                    }
+                };
+                let response = self.build_final_ok_response(request, None, Some(&answer))?;
+                let new_dialog = self.build_inbound_dialog(request, &response)?;
+                let leg = self.build_pickup_leg(request, new_dialog.clone());
+                let joining_user = self
+                    .call_manager
+                    .get_call(feature_call_id)
+                    .and_then(|c| c.caller_user_id);
+                let updated = self.call_manager.update_call(&call.id, |c| {
+                    c.caller_user_id = joining_user;
+                    c.a_leg = leg.clone();
+                    c.held = None;
+                });
+                if updated.is_err() {
+                    return fail(
+                        481,
+                        "Call/Transaction Does Not Exist",
+                        "the call ended".into(),
+                    )
+                    .await;
+                }
+                let _ = self.dialog_manager.insert(new_dialog.clone());
+                self.start_session_timer(&new_dialog);
+                self.sip_call_id_map
+                    .insert(new_dialog.id().call_id().to_string(), call.id.to_string());
+                handle.send_final(response).await;
+                if let Some((old_dialog, flow)) = old {
+                    self.sip_call_id_map.remove(old_dialog.id().call_id());
+                    self.drop_leg(old_dialog, flow);
+                }
+                self.end_joining_call(feature_call_id, call, label).await;
+                info!(call_id = %call.id, label, "A leg of a call the node answered taken over");
+                return Ok(());
+            }
+        }
         let Some(party_leg) = party_leg else {
             return fail(
                 481,
@@ -14244,7 +14780,10 @@ impl SipMessageHandler {
                             .await
                     }
                 };
-                let port = session.ports().0;
+                // The taker is answered on its leg's port; the party is
+                // taken off hold on its own.
+                let port = session.ports_for(media_leg(side)).0;
+                let party_port = session.ports_for(media_leg(party)).0;
                 let encrypted = !fcp_media::parse_sdes_crypto(&offer).is_empty();
                 let taker_srtp = match (side, encrypted) {
                     (fcp_b2bua_core::LegSide::A, true) => {
@@ -14264,7 +14803,7 @@ impl SipMessageHandler {
                         &fcp_media::rewrite_sdp_for_anchoring(
                             &party_sdp,
                             &self.local_addr,
-                            port,
+                            party_port,
                             party_srtp.as_ref(),
                         ),
                         "sendrecv",
@@ -14362,8 +14901,19 @@ impl SipMessageHandler {
             self.drop_leg(old_dialog, flow);
         }
 
-        // The INVITE's own call: its media session (if it made one) freed,
-        // its record pointing at the call it joined.
+        self.end_joining_call(feature_call_id, call, label).await;
+        info!(call_id = %call.id, side = side.as_str(), label, "A leg taken over");
+        Ok(())
+    }
+
+    /// The INVITE's own call, once it has joined `call`: its media session
+    /// (if it made one) freed, its record pointing at the call it joined.
+    async fn end_joining_call(
+        &self,
+        feature_call_id: &fcp_b2bua_core::CallId,
+        call: &fcp_b2bua_core::Call,
+        label: &str,
+    ) {
         if let Some(own) = self.call_manager.get_call(feature_call_id) {
             if let (true, Some(session_id), Some(media_manager)) = (
                 own.media_anchored,
@@ -14384,8 +14934,6 @@ impl SipMessageHandler {
                 detail: format!("{label} completed"),
             },
         );
-        info!(call_id = %call.id, side = side.as_str(), label, "A leg taken over");
-        Ok(())
     }
 
     /// Handle park call (*70): park the current call in the next available orbit.
@@ -14439,8 +14987,18 @@ impl SipMessageHandler {
                 .as_ref()
                 .and_then(|b| b.flow_token.clone()),
         };
+        let location = self
+            .parker_location(&active_call.tenant_id, request, &caller_ext)
+            .await;
         let orbit = match self
-            .park_party(pbx, &active_call, parker_side, &caller_ext)
+            .park_party(
+                pbx,
+                &active_call,
+                parker_side,
+                &caller_ext,
+                None,
+                location.as_deref(),
+            )
             .await
         {
             Ok(orbit) => orbit,
@@ -14459,15 +15017,32 @@ impl SipMessageHandler {
             self.drop_leg(dialog, parker_flow);
         }
 
-        // Respond 200 OK to the feature-code INVITE with orbit info
-        let response =
-            self.create_simple_response(request, 200, &format!("Parked Orbit {}", orbit));
-        handle.send_final(response).await;
-
-        // Terminate the feature-code call
-        let _ = self.call_manager.terminate_call(call_id, None);
-
-        Ok(())
+        // The parker is told the orbit, then hung up on. A bare 200 told
+        // only a reason phrase no phone shows, answered an offer with no
+        // SDP, and left the phone on a call nobody ended
+        // (`docs/DEEP_TESTING.md` D8).
+        let Some(flow_handler) = self.flow_handler.clone() else {
+            let mut response =
+                self.create_simple_response(request, 200, &format!("Parked Orbit {orbit}"));
+            let _ = response.headers_mut().push(
+                smol_str::SmolStr::new("X-FCP-Parked"),
+                smol_str::SmolStr::new(&orbit),
+            );
+            handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call(call_id, None);
+            return Ok(());
+        };
+        self.start_inline_flow(
+            request,
+            handle,
+            call_id,
+            &flow_handler,
+            park_announcement(call_id, &orbit),
+            HashMap::new(),
+            vec![("X-FCP-Parked", orbit.clone())],
+            "park announcement",
+        )
+        .await
     }
 
     /// Handle retrieve parked call (*71orbit): retrieve a call from a parking orbit.
@@ -14483,7 +15058,7 @@ impl SipMessageHandler {
         request: &sip_core::Request,
         handle: &ServerTransactionHandle,
         call_id: &fcp_b2bua_core::CallId,
-        orbit: u16,
+        slot: &str,
     ) -> Result<()> {
         let pbx = match self.pbx_handler.as_ref() {
             Some(p) => p,
@@ -14493,31 +15068,37 @@ impl SipMessageHandler {
                 return Ok(());
             }
         };
+        // The retriever's tenant's slot: another tenant's `701` is not
+        // theirs to take (`docs/PARKING.md` §1).
+        let Some(tenant) = self.call_manager.get_call(call_id).map(|c| c.tenant_id) else {
+            let response = self.create_simple_response(request, 480, "Call Not Found");
+            handle.send_final(response).await;
+            return Ok(());
+        };
+        let slot = slot.to_string();
 
-        // Retrieve from local parking manager (removes from orbit)
-        let parked = match pbx.retrieve_parked_call(orbit) {
+        // Retrieve from local parking manager (removes it from the slot)
+        let parked = match pbx.retrieve_parked_call(&tenant, &slot) {
             Ok(p) => {
                 // Also remove from cluster store (fire-and-forget)
                 if let Some(ref cp) = self.cluster_parking {
                     let cp = Arc::clone(cp);
+                    let slot = slot.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = cp.cluster_unpark(orbit).await {
-                            tracing::warn!(orbit = orbit, error = %e, "Failed to clean up cluster parking entry");
+                        if let Err(e) = cp.cluster_unpark(&tenant, &slot).await {
+                            tracing::warn!(slot = %slot, error = %e, "Failed to clean up cluster parking entry");
                         }
                     });
                 }
                 p
             }
             Err(_local_err) => {
-                // Local orbit is empty — check cluster store for cross-node parked calls
+                // Not here: the cluster store says whether another node has it
                 if let Some(ref cp) = self.cluster_parking {
-                    match cp.cluster_lookup(orbit).await {
+                    match cp.cluster_lookup(&tenant, &slot).await {
                         Ok(Some(remote)) if remote.node_id != self.node_id => {
-                            // Call is parked on a different node.
-                            // Respond 302 with the owning node's info so the caller
-                            // or a higher-level proxy can redirect, or log it.
                             info!(
-                                orbit = orbit,
+                                slot = %slot,
                                 remote_node = %remote.node_id,
                                 call_id = %remote.call_id,
                                 "Parked call is on remote node — cross-node pickup not yet supported inline"
@@ -14535,16 +15116,14 @@ impl SipMessageHandler {
                             return Ok(());
                         }
                         Ok(Some(_stale)) => {
-                            // Redis says this node owns it, but it's not in local DashMap.
-                            // Stale entry — clean it up.
-                            warn!(
-                                orbit = orbit,
-                                "Stale cluster parking entry for this node, cleaning up"
-                            );
+                            // Redis says this node owns it, but it is not held here:
+                            // a claim a restart left behind.
+                            warn!(slot = %slot, "Stale cluster parking entry for this node, cleaning up");
                             let cp = Arc::clone(cp);
+                            let slot = slot.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = cp.cluster_unpark(orbit).await {
-                                    tracing::warn!(orbit = orbit, error = %e, "Failed to clean up cluster parking entry");
+                                if let Err(e) = cp.cluster_unpark(&tenant, &slot).await {
+                                    tracing::warn!(slot = %slot, error = %e, "Failed to clean up cluster parking entry");
                                 }
                             });
                         }
@@ -14552,7 +15131,7 @@ impl SipMessageHandler {
                     }
                 }
 
-                info!(call_id = %call_id, orbit = orbit, "Failed to retrieve parked call (not found locally or in cluster)");
+                info!(call_id = %call_id, slot = %slot, "Failed to retrieve parked call (not found locally or in cluster)");
                 let response = self.create_simple_response(request, 480, "Orbit Not Occupied");
                 handle.send_final(response).await;
                 let _ = self
@@ -14593,7 +15172,7 @@ impl SipMessageHandler {
 
         info!(
             call_id = %parked_call_id,
-            orbit = orbit,
+            slot = %slot,
             "Retrieved parked call, bridging to retriever"
         );
 
@@ -14647,56 +15226,107 @@ impl SipMessageHandler {
     ) -> Result<()> {
         let parked_call_id = parked.call_id;
         let parker_ext = &parked.parker_extension;
-
-        // Verify the call is still in Parked state
-        let parked_call = match call_manager.get_call(&parked_call_id) {
-            Some(c) if c.state == fcp_b2bua_core::CallState::Parked => c,
-            Some(c) => {
-                debug!(
-                    call_id = %parked_call_id,
-                    state = ?c.state,
-                    "Expired parked call is no longer in Parked state, skipping"
-                );
-                return Ok(());
+        // The slot is free again for the cluster as it is here.
+        if let Some(cp) = self.cluster_parking.as_ref() {
+            if let Err(e) = cp.cluster_unpark(&parked.tenant_id, &parked.slot).await {
+                warn!(slot = %parked.slot, error = %e, "Failed to free an expired call's cluster slot");
             }
-            None => {
-                debug!(call_id = %parked_call_id, "Expired parked call not found, skipping");
-                return Ok(());
-            }
-        };
-
+        }
+        if !call_manager
+            .get_call(&parked_call_id)
+            .is_some_and(|c| c.state == fcp_b2bua_core::CallState::Parked)
+        {
+            debug!(call_id = %parked_call_id, "Expired parked call is gone or no longer parked, skipping");
+            return Ok(());
+        }
         info!(
             call_id = %parked_call_id,
-            orbit = parked.orbit,
+            slot = %parked.slot,
             parker = %parker_ext,
             "Parked call expired, routing back to parker"
         );
 
-        // Back to the parker as a transfer from the empty slot
-        // (`docs/ENTERPRISE_CALLING.md` §3.2): the parker is dialed
-        // through this node, so their own plan applies — a forward, their
-        // voicemail — and a failure ends the call.
+        // The lot's fallback, should the parker not take it back.
+        let lot = self
+            .parking_lots_of(&parked.tenant_id)
+            .await
+            .iter()
+            .find(|l| l.id == parked.lot_id)
+            .cloned();
+        let fallback = match lot.as_ref().and_then(|l| l.fallback.as_ref()) {
+            Some(target) => {
+                self.parking_fallback_uri(&parked_call_id, target, parker_ext, &self.own_host())
+                    .await
+            }
+            None => None,
+        };
+        self.call_manager.publish(fcp_events::PlatformEvent::Call(
+            fcp_events::CallEvent::ParkTimedOut {
+                tenant_id: Some(parked.tenant_id),
+                call_id: fcp_core::CallId::from_uuid(*parked_call_id.as_uuid()),
+                slot: parked.slot.clone(),
+                lot_id: parked.lot_id.clone(),
+                parker_extension: parker_ext.clone(),
+                fallback: fallback.clone(),
+                timestamp: std::time::SystemTime::now(),
+            },
+        ));
+        self.send_parked_call(parked, parker_ext, fallback).await;
+        Ok(())
+    }
+
+    /// This node's SIP host and port, where a number dialed is a new call
+    /// into its own plan.
+    fn own_host(&self) -> String {
+        match self.uas.local_uri.port() {
+            Some(port) => format!("{}:{}", self.uas.local_uri.host(), port),
+            None => self.uas.local_uri.host().to_string(),
+        }
+    }
+
+    /// Ring `target` (an extension or a user, dialed through this node so
+    /// their own plan applies) with a parked call, shown as "Parked
+    /// <slot>"; answering takes it. If nobody takes it, `fallback` is
+    /// tried, else the call ends (`docs/ENTERPRISE_CALLING.md` §3.2,
+    /// `docs/PARKING.md` §3).
+    async fn send_parked_call(
+        &self,
+        parked: &fcp_pbx::ParkedCall,
+        target: &str,
+        fallback: Option<String>,
+    ) {
+        let parked_call_id = parked.call_id;
+        let Some(parked_call) = self
+            .call_manager
+            .get_call(&parked_call_id)
+            .filter(|c| c.state == fcp_b2bua_core::CallState::Parked)
+        else {
+            return;
+        };
         let Some(uac) = self.uac.clone() else {
             warn!(call_id = %parked_call_id, "No UAC configured, terminating parked call");
             self.terminate_parked_a_leg(&parked_call_id).await;
-            return Ok(());
+            return;
         };
         if self
             .conference_migrations
             .insert(parked_call_id, ())
             .is_some()
         {
-            return Ok(());
+            return;
         }
-        let host = match self.uas.local_uri.port() {
-            Some(port) => format!("{}:{}", self.uas.local_uri.host(), port),
-            None => self.uas.local_uri.host().to_string(),
-        };
+        // Whoever rings sees whose call it is and the slot it waited in.
         let caller = parked_call
             .original_invite
             .as_ref()
             .and_then(|invite| extract_from_uri(invite).ok().map(|uri| (invite, uri)))
-            .map(|(invite, uri)| (extract_from_display_name(invite), normalize_from_uri(uri)));
+            .map(|(invite, uri)| {
+                let name = match extract_from_display_name(invite) {
+                    Some(name) => format!("Parked {}: {name}", parked.slot),
+                    None => format!("Parked {}", parked.slot),
+                };
+                (Some(name), normalize_from_uri(uri))
+            });
         let run = crate::transfer::TransferRun {
             uac,
             local_uri: self.uas.local_uri.clone(),
@@ -14712,16 +15342,146 @@ impl SipMessageHandler {
             call_id: parked_call_id,
             referrer: fcp_b2bua_core::LegSide::B,
             referrer_dialog: None,
-            target: format!("sip:{}@{}", parker_ext, host),
+            target: format!("sip:{}@{}", target, self.own_host()),
             headers: vec![(
                 TRANSFERRED_FROM_HEADER.to_string(),
                 parked_call_id.to_string(),
             )],
             caller,
             notify_referrer: true,
+            fallback,
         };
         run.run().await;
-        Ok(())
+    }
+
+    /// The tenant's calls parked on this node, as `GET /parking/calls`
+    /// lists them (`docs/PARKING.md` §4).
+    pub fn parked_calls(&self, tenant_id: &fcp_core::TenantId) -> Vec<serde_json::Value> {
+        let Some(pbx) = self.pbx_handler.as_ref() else {
+            return Vec::new();
+        };
+        pbx.parking_manager()
+            .list(tenant_id)
+            .into_iter()
+            .map(|parked| {
+                let call = self.call_manager.get_call(&parked.call_id);
+                let caller = call.as_ref().and_then(|c| {
+                    c.original_invite.as_ref().and_then(|invite| {
+                        extract_from_uri(invite).ok().map(|uri| {
+                            serde_json::json!({
+                                "uri": normalize_from_uri(uri).as_str(),
+                                "name": extract_from_display_name(invite),
+                            })
+                        })
+                    })
+                });
+                let waited = parked.parked_at.elapsed().as_secs();
+                serde_json::json!({
+                    "slot": parked.slot,
+                    "lot_id": parked.lot_id,
+                    "call_id": parked.call_id.to_string(),
+                    "caller": caller,
+                    "parker_extension": parked.parker_extension,
+                    "parked_secs": waited,
+                    "timeout_secs": parked.timeout.as_secs(),
+                    "node_id": self.node_id,
+                })
+            })
+            .collect()
+    }
+
+    /// Take the tenant's parked call out of its slot and ring `target`
+    /// with it, in the background. `Err` with the status the API answers:
+    /// 404 for an empty slot.
+    pub async fn retrieve_parked_to(
+        self: &Arc<Self>,
+        tenant_id: &fcp_core::TenantId,
+        slot: &str,
+        target: &str,
+    ) -> std::result::Result<String, (u16, String)> {
+        let parked = self.take_parked(tenant_id, slot).await?;
+        let call_id = parked.call_id.to_string();
+        info!(call_id = %call_id, slot, target, "A parked call sent on");
+        let handler = Arc::clone(self);
+        let target = target.to_string();
+        tokio::spawn(async move { handler.send_parked_call(&parked, &target, None).await });
+        Ok(call_id)
+    }
+
+    /// Hang up the tenant's call parked in `slot`.
+    pub async fn hang_up_parked(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        slot: &str,
+    ) -> std::result::Result<String, (u16, String)> {
+        let parked = self.take_parked(tenant_id, slot).await?;
+        info!(call_id = %parked.call_id, slot, "A parked call hung up");
+        self.terminate_parked_a_leg(&parked.call_id).await;
+        Ok(parked.call_id.to_string())
+    }
+
+    /// The parked call in the tenant's slot on this node, taken out of it
+    /// here and in the cluster.
+    async fn take_parked(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        slot: &str,
+    ) -> std::result::Result<fcp_pbx::ParkedCall, (u16, String)> {
+        let pbx = self
+            .pbx_handler
+            .as_ref()
+            .ok_or((503, "parking is not enabled on this node".to_string()))?;
+        let parked = pbx
+            .retrieve_parked_call(tenant_id, slot)
+            .map_err(|_| (404, format!("No call is parked in {slot}")))?;
+        if let Some(cp) = self.cluster_parking.as_ref() {
+            if let Err(e) = cp.cluster_unpark(tenant_id, slot).await {
+                warn!(slot, error = %e, "Failed to free a cluster parking slot");
+            }
+        }
+        Ok(parked)
+    }
+
+    /// Where a lot's fallback is dialed for a parked call nobody took back:
+    /// a number, an extension, a user or a queue at this node, so its own
+    /// plan applies; an address as it is; `voicemail` the parker's mailbox.
+    async fn parking_fallback_uri(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        target: &fcp_core::CallTarget,
+        parker: &str,
+        host: &str,
+    ) -> Option<String> {
+        match target {
+            fcp_core::CallTarget::Voicemail => {
+                let server = self
+                    .voicemail_server_uri_override
+                    .read()
+                    .ok()
+                    .and_then(|o| o.clone())
+                    .or_else(|| self.b2bua_config.voicemail_server_uri.clone())?;
+                let vm_host = server
+                    .trim_start_matches("sips:")
+                    .trim_start_matches("sip:")
+                    .rsplit('@')
+                    .next()
+                    .unwrap_or(&server)
+                    .to_string();
+                Some(format!("sip:{parker}@{vm_host};reason=no-answer"))
+            }
+            fcp_core::CallTarget::Sip(uri) => Some(uri.clone()),
+            other => {
+                let destination = self.forward_destination(*call_id, other).await?;
+                if destination.starts_with("sip:") || destination.starts_with("sips:") {
+                    return Some(destination);
+                }
+                if destination.contains("~") || destination.starts_with("flow:") {
+                    warn!(call_id = %call_id, target = %other.as_string(), "A parking lot's fallback cannot be dialed");
+                    return None;
+                }
+                Some(format!("sip:{destination}@{host}"))
+            }
+        }
     }
 
     /// Handle intercom (*80ext / *81ext): send INVITE with auto-answer headers.
@@ -14826,8 +15586,9 @@ impl SipMessageHandler {
         match queue_handler.agent_login(&caller_ext, &tenant_id).await {
             Ok(()) => {
                 info!(call_id = %call_id, extension = %caller_ext, "Agent logged in via feature code");
-                let response = self.create_simple_response(request, 200, "OK");
-                handle.send_final(response).await;
+                return self
+                    .confirm_feature(request, handle, call_id, "Agent logged in.")
+                    .await;
             }
             Err(e) => {
                 warn!(call_id = %call_id, extension = %caller_ext, error = %e, "Agent login failed");
@@ -14862,11 +15623,38 @@ impl SipMessageHandler {
             .and_then(|from| Self::extract_did_from_uri(from.as_str()))
             .unwrap_or_default();
 
-        match queue_handler.agent_logout(&caller_ext).await {
+        let tenant_id = match self.resolve_runtime_tenant(request, call_id).await {
+            Ok(tenant_id) => tenant_id,
+            Err(e) => {
+                warn!(call_id = %call_id, extension = %caller_ext, error = %e, "Agent logout failed: tenant resolution failed");
+                let status = if e.to_string().contains("unknown tenant domain")
+                    || e.to_string().contains("tenant context required")
+                {
+                    403
+                } else {
+                    503
+                };
+                let reason = if status == 403 {
+                    "Tenant context required"
+                } else {
+                    "Tenant lookup unavailable"
+                };
+                let response = self.create_simple_response(request, status, reason);
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(
+                    call_id,
+                    Some("Agent logout tenant resolution failed".to_string()),
+                );
+                return Ok(());
+            }
+        };
+
+        match queue_handler.agent_logout(&caller_ext, &tenant_id).await {
             Ok(()) => {
                 info!(call_id = %call_id, extension = %caller_ext, "Agent logged out via feature code");
-                let response = self.create_simple_response(request, 200, "OK");
-                handle.send_final(response).await;
+                return self
+                    .confirm_feature(request, handle, call_id, "Agent logged out.")
+                    .await;
             }
             Err(e) => {
                 warn!(call_id = %call_id, extension = %caller_ext, error = %e, "Agent logout failed");
@@ -15028,7 +15816,156 @@ impl SipMessageHandler {
             &flow_handler,
             flow_def,
             initial_variables,
+            Vec::new(),
             "voicemail access",
+        )
+        .await
+    }
+
+    /// `Some` when `call_id` is an emergency test its tenant has this
+    /// platform answer, with what answering it came to; `None` for every
+    /// other call.
+    async fn read_back_local_test(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        tenant_id: fcp_core::TenantId,
+    ) -> Option<Result<()>> {
+        let em = self.call_manager.get_call(call_id)?.emergency?;
+        if em.kind != fcp_core::e911::EmergencyKind::Test {
+            return None;
+        }
+        let config = crate::emergency::config_for(self.storage.as_ref(), &tenant_id).await;
+        if config.test_call_mode != fcp_core::e911::TestCallMode::Local {
+            return None;
+        }
+        Some(
+            self.answer_emergency_test(request, handle, call_id, tenant_id, &em, &config)
+                .await,
+        )
+    }
+
+    /// Answer an emergency test call here and read back what a live call
+    /// placed now would carry (`TestCallMode::Local`): the location and its
+    /// source, the callback number, the emergency routes in order and how
+    /// each takes the location, the contacts told. The record is completed
+    /// as `read_back`, with no trunk.
+    async fn answer_emergency_test(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        tenant_id: fcp_core::TenantId,
+        em: &fcp_b2bua_core::EmergencyCallInfo,
+        config: &fcp_core::e911::EmergencyConfig,
+    ) -> Result<()> {
+        let Some(flow_handler) = self.flow_handler.clone() else {
+            // Nothing here can speak: refused rather than sent to a carrier
+            // the tenant did not ask to test.
+            warn!(call_id = %call_id, "Emergency test call refused: this node runs no flows to read it back");
+            let response = self.create_simple_response(request, 503, "Service Unavailable");
+            handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call_with(
+                call_id,
+                fcp_cdr::TerminationReason::rejected(503, "no flows to read a test call back"),
+            );
+            return Ok(());
+        };
+        let routes = match &self.outbound_route_provider {
+            Some(provider) => {
+                provider
+                    .resolve_emergency_ordered(Some(tenant_id), &request.uri().to_string())
+                    .await
+            }
+            None => Vec::new(),
+        };
+        let told: Vec<_> = crate::emergency::contacts_for_call(
+            self.storage.as_ref(),
+            config,
+            em.location.as_ref(),
+        )
+        .await
+        .into_iter()
+        .filter(|c| c.problems().is_empty())
+        .collect();
+        let listeners = told
+            .iter()
+            .filter(|c| c.listen && c.kind == fcp_core::e911::notify::ContactKind::Call)
+            .count();
+        let parts =
+            crate::emergency::test_readback(em, !routes.is_empty(), told.len(), listeners, true);
+        // Synthesized while the opening plays: the caller would otherwise
+        // wait out the whole readback's synthesis after the answer.
+        if let Some(tts) = self.media_manager.as_ref().and_then(|mm| mm.tts_service()) {
+            tts.warm(parts.clone(), Some("en-US"));
+        }
+        info!(
+            call_id = %call_id,
+            routes = routes.len(),
+            located = em.location.is_some(),
+            callback = em.callback_number.as_deref().unwrap_or("none"),
+            "Emergency test call read back here"
+        );
+        let _ = self.call_manager.update_call(call_id, |call| {
+            if let Some(em) = call.emergency.as_mut() {
+                em.read_back = true;
+                em.leg = Some(fcp_b2bua_core::EmergencyLeg {
+                    outcome: "read_back".to_string(),
+                    sip_status: None,
+                    answered_at: Some(std::time::SystemTime::now()),
+                });
+            }
+        });
+        let mut flow = spoken_confirmation(
+            &format!("emergency-test-{call_id}"),
+            "Emergency test",
+            "Inline flow reading back an emergency test call",
+            parts,
+        );
+        if listeners > 0 {
+            wait_before_last_part(&mut flow, crate::emergency::LISTEN_TEST_WAIT_SECS);
+        }
+        self.start_inline_flow(
+            request,
+            handle,
+            call_id,
+            &flow_handler,
+            flow,
+            HashMap::new(),
+            Vec::new(),
+            "emergency test",
+        )
+        .await
+    }
+
+    /// A feature code done: the caller is told so, then hung up on. A bare
+    /// 200 answered an offer with no SDP and left the phone on a call
+    /// nobody ended (`docs/DEEP_TESTING.md` D8).
+    async fn confirm_feature(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        text: &str,
+    ) -> Result<()> {
+        let Some(flow_handler) = self.flow_handler.clone() else {
+            let response = self.create_simple_response(request, 200, "OK");
+            handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(call_id, Some("Feature code".to_string()));
+            return Ok(());
+        };
+        self.start_inline_flow(
+            request,
+            handle,
+            call_id,
+            &flow_handler,
+            feature_confirmation(call_id, text),
+            HashMap::new(),
+            Vec::new(),
+            "feature confirmation",
         )
         .await
     }
@@ -15044,6 +15981,7 @@ impl SipMessageHandler {
         flow_handler: &Arc<crate::flow_handler::FlowCallHandler>,
         flow_def: fcp_flow::FlowDefinition,
         initial_variables: HashMap<String, String>,
+        answer_headers: Vec<(&'static str, String)>,
         what: &str,
     ) -> Result<()> {
         // Held for the call, not written: the call manager lets it go when
@@ -15065,6 +16003,7 @@ impl SipMessageHandler {
         let answer_handle = handle.clone();
         let answer_call_manager = Arc::clone(&self.call_manager);
         let answer_dialog_manager = Arc::clone(&self.dialog_manager);
+        let answer_ack_waits = Arc::clone(&self.ack_waits);
         let answer_media_manager = self.media_manager.clone();
         let answer_local_addr = self.local_addr.clone();
         let answer_rtp_port = self.rtp_port;
@@ -15073,12 +16012,14 @@ impl SipMessageHandler {
         // A 2xx to an INVITE carries a Contact (RFC 3261 §12.1.1): where the
         // caller's ACK and BYE go.
         let answer_contact = format!("<{}>", self.uas.contact_uri.as_str());
+        let answer_headers = Arc::new(answer_headers);
 
         let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
             let request = answer_request.clone();
             let handle = answer_handle.clone();
             let call_manager = Arc::clone(&answer_call_manager);
             let dialog_manager = Arc::clone(&answer_dialog_manager);
+            let ack_waits = Arc::clone(&answer_ack_waits);
             let local_uri = answer_local_uri.clone();
             let media_manager = answer_media_manager.clone();
             let local_addr = answer_local_addr.clone();
@@ -15086,6 +16027,7 @@ impl SipMessageHandler {
             let media_profile = answer_media_profile.clone();
             let call_id = answer_call_id;
             let contact = answer_contact.clone();
+            let extra_headers = Arc::clone(&answer_headers);
             Box::pin(async move {
                 // Check if a media session already exists (created by evaluate_media_anchoring)
                 let mut actual_rtp_port = rtp_port;
@@ -15103,7 +16045,7 @@ impl SipMessageHandler {
                     if let Some(ref existing_msid) = existing_session_id {
                         // Reuse existing session — just feed it the remote SDP
                         if let Ok(session) = mm.get_session(existing_msid).await {
-                            actual_rtp_port = session.ports().0;
+                            actual_rtp_port = session.ports_for(fcp_media::backend::Leg::A).0;
                         }
                         if let Some(remote_sdp) = crate::body::request_sdp(&request) {
                             session_answer =
@@ -15116,7 +16058,7 @@ impl SipMessageHandler {
                         if let Ok(session) =
                             mm.create_session_default(core_call_id, fcp_dialog_id).await
                         {
-                            actual_rtp_port = session.ports().0;
+                            actual_rtp_port = session.ports_for(fcp_media::backend::Leg::A).0;
                             if let Some(remote_sdp) = crate::body::request_sdp(&request) {
                                 session_answer =
                                     mm.update_session(&core_call_id, remote_sdp).await.ok();
@@ -15161,6 +16103,15 @@ impl SipMessageHandler {
                 } else {
                     sip_uas::UserAgentServer::create_response(&request, 200, "OK")
                 };
+                // What the answer tells the phone besides (the orbit `*70`
+                // parked on), for a phone to show.
+                let mut response = response;
+                for (name, value) in extra_headers.iter() {
+                    let _ = response.headers_mut().push(
+                        smol_str::SmolStr::new(*name),
+                        smol_str::SmolStr::new(value.as_str()),
+                    );
+                }
                 // The dialog before the 200 OK, as the IVR's answer does: the
                 // flow's hangup needs it to send its BYE, and a caller's BYE
                 // needs it to find the call.
@@ -15183,6 +16134,7 @@ impl SipMessageHandler {
                         warn!(call_id = %call_id, "Inline flow: no A-leg dialog from the 200 OK")
                     }
                 }
+                ack_waits.expect(call_id);
                 handle.send_final(response).await;
 
                 Ok(())
@@ -15194,6 +16146,7 @@ impl SipMessageHandler {
         let hangup_call_manager = Arc::clone(&self.call_manager);
         let hangup_uac = self.uac.clone();
         let hangup_dialog_manager = Arc::clone(&self.dialog_manager);
+        let hangup_ack_waits = Arc::clone(&self.ack_waits);
         let hangup_media_manager = self.media_manager.clone();
 
         let hangup_callback: fcp_flow::HangupCallback = Arc::new(move |reason| {
@@ -15201,8 +16154,11 @@ impl SipMessageHandler {
             let call_manager = Arc::clone(&hangup_call_manager);
             let uac_opt = hangup_uac.clone();
             let dialog_manager = Arc::clone(&hangup_dialog_manager);
+            let ack_waits = Arc::clone(&hangup_ack_waits);
             let media_manager = hangup_media_manager.clone();
             Box::pin(async move {
+                // Not before the caller has ACKed the answer (RFC 3261 §15).
+                ack_waits.wait(&call_id, crate::ack_wait::ACK_WAIT).await;
                 if let Some(call_entry) = call_manager.get_call(&call_id) {
                     if call_entry.media_anchored {
                         if let (Some(ref media_session_id), Some(ref mm)) =
@@ -15326,10 +16282,11 @@ impl SipMessageHandler {
 
             // Filter out busy/DND members if skip_busy is enabled
             if plan.skip_busy {
-                if let Some(ref presence) = self.presence_handler {
+                let tenant_id = self.call_manager.get_call(&call_id).map(|c| c.tenant_id);
+                if let (Some(presence), Some(tenant_id)) = (&self.presence_handler, tenant_id) {
                     let before = contacts.len();
                     contacts.retain(|(member, _)| {
-                        let busy = presence.is_busy(member);
+                        let busy = presence.is_busy(&tenant_id, member);
                         if busy {
                             debug!(
                                 call_id = %call_id,
@@ -15686,6 +16643,7 @@ impl SipMessageHandler {
         let answer_media_manager = self.media_manager.clone();
         let answer_uas = self.uas.clone();
         let answer_dialog_manager = Arc::clone(&self.dialog_manager);
+        let answer_ack_waits = Arc::clone(&self.ack_waits);
         let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
             let handle = answer_handle.clone();
             let request = answer_request.clone();
@@ -15694,6 +16652,7 @@ impl SipMessageHandler {
             let media_manager = answer_media_manager.clone();
             let uas = answer_uas.clone();
             let dialog_manager = Arc::clone(&answer_dialog_manager);
+            let ack_waits = Arc::clone(&answer_ack_waits);
             Box::pin(async move {
                 info!(call_id = %call_id, "IVR Answer callback executing - creating 200 OK");
                 let mut response = sip_uas::UserAgentServer::create_response(&request, 200, "OK");
@@ -15751,6 +16710,7 @@ impl SipMessageHandler {
                     });
                 }
 
+                ack_waits.expect(call_id);
                 handle.send_final(response.clone()).await;
 
                 Ok(())
@@ -15762,14 +16722,18 @@ impl SipMessageHandler {
         let hangup_call_manager = Arc::clone(&self.call_manager);
         let hangup_uac = self.uac.clone();
         let hangup_dialog_manager = Arc::clone(&self.dialog_manager);
+        let hangup_ack_waits = Arc::clone(&self.ack_waits);
         let hangup_media_manager = self.media_manager.clone();
         let hangup_callback: fcp_flow::HangupCallback = Arc::new(move |reason| {
             let call_id = hangup_call_id;
             let call_manager = Arc::clone(&hangup_call_manager);
             let uac_opt = hangup_uac.clone();
             let dialog_manager = Arc::clone(&hangup_dialog_manager);
+            let ack_waits = Arc::clone(&hangup_ack_waits);
             let media_manager = hangup_media_manager.clone();
             Box::pin(async move {
+                // Not before the caller has ACKed the answer (RFC 3261 §15).
+                ack_waits.wait(&call_id, crate::ack_wait::ACK_WAIT).await;
                 info!(call_id = %call_id, "IVR Hangup callback executing");
                 // On a task of its own, and awaited so nothing
                 // changes but the stack it runs on. The flow
@@ -15966,7 +16930,7 @@ impl SipMessageHandler {
                         Ok(session) => Some(fcp_media::rewrite_sdp_for_anchoring(
                             sdp,
                             &self.local_addr,
-                            session.ports().0,
+                            session.ports_for(fcp_media::backend::Leg::B).0,
                             None,
                         )),
                         Err(_) => None,
@@ -16527,15 +17491,21 @@ impl SipMessageHandler {
     /// The flow the callee's mailbox hands its calls to, if it has one and
     /// is enabled.
     async fn mailbox_flow_of_callee(&self, call_id: fcp_b2bua_core::CallId) -> Option<String> {
+        let mailbox = self.mailbox_of_callee(call_id).await?;
+        mailbox.flow_id.filter(|id| !id.trim().is_empty())
+    }
+
+    /// The enabled mailbox of the user a call is for.
+    async fn mailbox_of_callee(
+        &self,
+        call_id: fcp_b2bua_core::CallId,
+    ) -> Option<fcp_core::VoicemailMailbox> {
         let storage = self.storage.as_ref()?;
         let user = self.call_manager.get_call(&call_id)?.callee_user_id?;
-        let mailbox =
-            fcp_core::storage::VoicemailStore::get_mailbox_by_user(storage.as_ref(), &user)
-                .await
-                .ok()??;
-        mailbox
-            .flow_id
-            .filter(|id| mailbox.enabled && !id.trim().is_empty())
+        fcp_core::storage::VoicemailStore::get_mailbox_by_user(storage.as_ref(), &user)
+            .await
+            .ok()?
+            .filter(|mailbox| mailbox.enabled)
     }
 
     async fn apply_treatment(
@@ -16910,9 +17880,11 @@ impl SipMessageHandler {
             headers: vec![(TRANSFERRED_FROM_HEADER.to_string(), call.id.to_string())],
             caller,
             notify_referrer: true,
+            fallback: None,
         };
         tokio::spawn(run.run());
-        finish(200, "OK").await
+        self.confirm_feature(request, handle, call_id, "Call pushed.")
+            .await
     }
 
     /// `*64<number>` from an assistant (§3.10): the number called for the
@@ -17074,7 +18046,8 @@ impl SipMessageHandler {
                             },
                         ));
                     }
-                    finish(200, "OK").await
+                    self.confirm_feature(request, handle, call_id, calling_code_confirmation(&code))
+                        .await
                 }
                 Err(e) => {
                     error!(call_id = %call_id, error = %e, "An assistant's opt-in not stored");
@@ -17082,6 +18055,7 @@ impl SipMessageHandler {
                 }
             };
         }
+        let confirmation = calling_code_confirmation(&code);
         let mut settings = crate::ring_plan::settings_for(storage, &tenant_id, &user.id).await;
         let target = |dialed: &str| fcp_core::CallTarget::parse(dialed);
         let executive_on = code == fcp_pbx::CallingCode::ExecutiveOn;
@@ -17170,7 +18144,8 @@ impl SipMessageHandler {
                 timestamp: std::time::SystemTime::now(),
             },
         ));
-        finish(200, "OK").await
+        self.confirm_feature(request, handle, call_id, confirmation)
+            .await
     }
 
     ///
@@ -17202,6 +18177,11 @@ impl SipMessageHandler {
             let into_node = !destination.eq_ignore_ascii_case("voicemail")
                 && !destination.starts_with("sip:")
                 && !destination.starts_with("sips:");
+            let mailbox_id = if destination.eq_ignore_ascii_case("voicemail") {
+                self.mailbox_of_callee(call_id).await.map(|mb| mb.id)
+            } else {
+                None
+            };
             // Resolve the target URI
             let target_uri = if destination.eq_ignore_ascii_case("voicemail") {
                 // Read the runtime-reloadable override first, fall back to static config
@@ -17224,8 +18204,14 @@ impl SipMessageHandler {
                     .next_back()
                     .unwrap_or(vm_uri);
 
-                // Use the original callee as the user part
-                let user = original_callee.unwrap_or("unknown");
+                // The callee's mailbox by its id when the callee is a user:
+                // the dialed name may be one the voicemail server does not
+                // route (`docs/DEEP_TESTING.md` D8, findings 37–38). Else
+                // the original callee as the user part.
+                let user = mailbox_id
+                    .as_deref()
+                    .or(original_callee)
+                    .unwrap_or("unknown");
                 // Strip sip: prefix and @host from callee to get just the user part
                 let user_part = user
                     .strip_prefix("sip:")
@@ -17276,7 +18262,8 @@ impl SipMessageHandler {
                 {
                     match media_manager.get_session(&media_session_id).await {
                         Ok(session) => {
-                            let (rtp_port, _rtcp_port) = session.ports();
+                            let (rtp_port, _rtcp_port) =
+                                session.ports_for(fcp_media::backend::Leg::B);
                             let rewritten = fcp_media::rewrite_sdp_for_anchoring(
                                 &original_sdp,
                                 &self.local_addr,
@@ -17445,6 +18432,10 @@ impl SipMessageHandler {
         if !from_here {
             return None;
         }
+        if let Some(tenant) = crate::own_leg::tenant(request) {
+            debug!(source = %peer, tenant_id = %tenant, "INVITE is a leg this node placed for a tenant");
+            return Some(tenant);
+        }
         let continued = [TRANSFERRED_FROM_HEADER, FORWARDED_FOR_HEADER]
             .into_iter()
             .find_map(|name| sip_parse::header(request.headers(), name))?;
@@ -17546,6 +18537,7 @@ impl SipMessageHandler {
         text: &str,
         ring_timeout: std::time::Duration,
         repeat: u32,
+        listen_to: Option<fcp_b2bua_core::CallId>,
     ) -> Result<AnnouncementOutcome> {
         let uac = self.uac.as_ref().ok_or_else(|| {
             anyhow::anyhow!("UAC not configured — cannot place notification calls")
@@ -17569,7 +18561,8 @@ impl SipMessageHandler {
             .await
             .context("could not create the notification call's media session")?;
         let session = media_manager.get_session(&session_id).await?;
-        let (rtp_port, _rtcp_port) = session.ports();
+        // The callee sits in slot A (`update_session` below).
+        let (rtp_port, _rtcp_port) = session.ports_for(fcp_media::backend::Leg::A);
         let offer = generate_basic_sdp(&self.local_addr, rtp_port);
 
         let outcome = self
@@ -17582,6 +18575,7 @@ impl SipMessageHandler {
                 session_id,
                 ring_timeout,
                 repeat,
+                listen_to,
             )
             .await;
         let _ = media_manager.terminate_session(&session_id).await;
@@ -17605,6 +18599,7 @@ impl SipMessageHandler {
         session_id: fcp_core::CallId,
         ring_timeout: std::time::Duration,
         repeat: u32,
+        listen_to: Option<fcp_b2bua_core::CallId>,
     ) -> Result<AnnouncementOutcome> {
         let handle = uac
             .invite(target, Some(offer))
@@ -17660,10 +18655,142 @@ impl SipMessageHandler {
         }
 
         let dialog = handle.dialog.read().await.clone();
+        if let Some(call_id) = listen_to {
+            if self
+                .offer_listening(media_manager, session_id, &call_id, target, dialog.clone())
+                .await
+            {
+                // The contact's call is the emergency call's supervisor now.
+                return Ok(AnnouncementOutcome::Answered);
+            }
+        }
         if let Err(e) = uac.bye(&dialog).await {
             debug!(error = %e, "Notification call BYE failed");
         }
         Ok(AnnouncementOutcome::Answered)
+    }
+
+    /// Say `text` on a notification call's own session and wait for it.
+    async fn say_on_session(
+        media_manager: &Arc<fcp_media::MediaManager>,
+        session_id: &fcp_core::CallId,
+        text: &str,
+    ) {
+        if let Ok(playback) = media_manager
+            .play_tts(
+                session_id,
+                text.to_string(),
+                "en-US".to_string(),
+                None,
+                fcp_media::AudioTarget::Both,
+            )
+            .await
+        {
+            let _ = media_manager.wait_playback_completion(playback).await;
+        }
+    }
+
+    /// Offer an emergency contact who may listen in the choice, once told
+    /// (`docs/E911.md` "Listening in"): 1 to listen, 2 to listen and
+    /// speak. A choice moves their call onto the emergency call as its
+    /// supervisor, once that call is answered; `true` when it did, and the
+    /// notification call is theirs to end.
+    async fn offer_listening(
+        &self,
+        media_manager: &Arc<fcp_media::MediaManager>,
+        session_id: fcp_core::CallId,
+        call_id: &fcp_b2bua_core::CallId,
+        party: &str,
+        dialog: sip_dialog::Dialog,
+    ) -> bool {
+        const MENU: &str = "To listen to the call, press 1. To listen and speak, press 2.";
+        let Some(supervisions) = self.supervisions.clone() else {
+            return false;
+        };
+        if self.call_manager.get_call(call_id).is_none() {
+            Self::say_on_session(media_manager, &session_id, "The emergency call has ended.").await;
+            return false;
+        }
+        let mut mode = None;
+        for _ in 0..2 {
+            // Made before the prompt, so a key pressed over it counts.
+            let collector = media_manager.create_dtmf_collector(&session_id, 1, None);
+            Self::say_on_session(media_manager, &session_id, MENU).await;
+            let digits = match collector.collect(std::time::Duration::from_secs(6)).await {
+                fcp_media::CollectionResult::Complete(d)
+                | fcp_media::CollectionResult::Timeout(d) => d,
+                fcp_media::CollectionResult::Cancelled => String::new(),
+            };
+            mode = match digits.as_str() {
+                "1" => Some(fcp_media::Supervision::Monitor),
+                "2" => Some(fcp_media::Supervision::Barge),
+                _ => None,
+            };
+            if mode.is_some() {
+                break;
+            }
+        }
+        let Some(mode) = mode else {
+            return false;
+        };
+
+        // A live call may still be ringing at the emergency service.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut told_to_wait = false;
+        loop {
+            match self.call_manager.get_call(call_id) {
+                None => {
+                    Self::say_on_session(
+                        media_manager,
+                        &session_id,
+                        "The emergency call has ended.",
+                    )
+                    .await;
+                    return false;
+                }
+                Some(call) if call.state == fcp_b2bua_core::CallState::Established => break,
+                Some(_) if std::time::Instant::now() >= deadline => {
+                    Self::say_on_session(
+                        media_manager,
+                        &session_id,
+                        "The emergency call was not answered in time.",
+                    )
+                    .await;
+                    return false;
+                }
+                Some(_) => {
+                    if !told_to_wait {
+                        told_to_wait = true;
+                        Self::say_on_session(
+                            media_manager,
+                            &session_id,
+                            "The call is connecting. Please hold.",
+                        )
+                        .await;
+                    } else {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        }
+
+        match supervisions.join_dialog(call_id, party, mode, dialog).await {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(call_id = %call_id, party, error = %e, "An emergency contact could not listen in");
+                let why = match e {
+                    crate::supervision::SuperviseError::AlreadySupervised => {
+                        "Someone else is already listening to the call."
+                    }
+                    crate::supervision::SuperviseError::NoSuchCall => {
+                        "The emergency call has ended."
+                    }
+                    _ => "The call cannot be listened to.",
+                };
+                Self::say_on_session(media_manager, &session_id, why).await;
+                false
+            }
+        }
     }
 
     /// Put `party` of a call on hold from the node
@@ -18224,7 +19351,15 @@ impl InboundMessageHandler for SipMessageHandler {
         let raw_payload_str = String::from_utf8_lossy(&payload);
 
         // Try parsing as request first, then response
-        if let Some(req) = sip_parse::parse_request(&payload) {
+        if let Some(mut req) = sip_parse::parse_request(&payload) {
+            // A caller behind NAT is reached inside its dialog where its
+            // requests come from (`crate::nat`); a callee's dialog already
+            // sends where it was rung.
+            if matches!(transport, sip_transaction::TransportKind::Udp)
+                && req.method() != &sip_core::Method::Register
+            {
+                crate::nat::fix_contact(req.headers_mut(), peer);
+            }
             // Look up FCP internal CallId from the SIP Call-ID header
             // Priority: 1) Fast DashMap lookup, 2) Call manager dialog scan, 3) Raw SIP Call-ID
             let sip_cid = sip_parse::header(req.headers(), "Call-ID");
@@ -18513,6 +19648,181 @@ fn spawn_race_task(
             }
         }
     })
+}
+
+/// What a parker hears on `*70`: the orbit, digit by digit, then the end
+/// of the call. Held for the call alone, like `*98`'s flow.
+/// A directed park's slot holds a call already.
+#[derive(Debug)]
+struct SlotTaken;
+
+impl std::fmt::Display for SlotTaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the parking slot holds a call")
+    }
+}
+
+impl std::error::Error for SlotTaken {}
+
+fn park_announcement(call_id: &fcp_b2bua_core::CallId, slot: &str) -> fcp_flow::FlowDefinition {
+    let digits: Vec<String> = slot.chars().map(String::from).collect();
+    spoken_confirmation(
+        &format!("park-{call_id}"),
+        "Park",
+        "Inline flow telling a parker the orbit (*70)",
+        vec![format!("Parked on {}.", digits.join(" "))],
+    )
+}
+
+/// What a caller hears after a feature code: one sentence, then the end of
+/// the call.
+fn feature_confirmation(call_id: &fcp_b2bua_core::CallId, text: &str) -> fcp_flow::FlowDefinition {
+    spoken_confirmation(
+        &format!("feature-{call_id}"),
+        "Feature code",
+        "Inline flow confirming a feature code",
+        vec![text.to_string()],
+    )
+}
+
+/// The sentence a calling code's caller hears once it is stored.
+fn calling_code_confirmation(code: &fcp_pbx::CallingCode) -> &'static str {
+    use fcp_pbx::CallingCode::*;
+    match code {
+        DndOn => "Do not disturb on.",
+        DndOff => "Do not disturb off.",
+        ForwardAllOn { .. } => "Call forwarding on.",
+        ForwardAllOff => "Call forwarding off.",
+        ForwardBusyOn { .. } => "Forward when busy on.",
+        ForwardBusyOff => "Forward when busy off.",
+        ForwardNoAnswerOn { .. } => "Forward on no answer on.",
+        ForwardNoAnswerOff => "Forward on no answer off.",
+        CallWaitingOn => "Call waiting on.",
+        CallWaitingOff => "Call waiting off.",
+        FindMeOn => "Find me on.",
+        FindMeOff => "Find me off.",
+        ExecutiveOn => "Executive screening on.",
+        ExecutiveOff => "Executive screening off.",
+        AssistantOn => "Assistant on.",
+        AssistantOff => "Assistant off.",
+    }
+}
+
+/// Make a `spoken_confirmation` wait `secs` before its last part: a test
+/// call held open for a contact to try listening in.
+fn wait_before_last_part(flow: &mut fcp_flow::FlowDefinition, secs: u32) {
+    use fcp_flow::{FlowNode, NodeType};
+    let says: Vec<String> = flow
+        .nodes
+        .keys()
+        .filter(|id| id.starts_with("say"))
+        .cloned()
+        .collect();
+    let Some(last) = says.iter().max_by_key(|id| {
+        id.strip_prefix("say-")
+            .and_then(|n| n.parse::<usize>().ok())
+            .unwrap_or(0)
+    }) else {
+        return;
+    };
+    let Some(before) = flow
+        .nodes
+        .values_mut()
+        .find(|node| matches!(&node.node_type, NodeType::Say { next, .. } if next == last))
+    else {
+        return;
+    };
+    if let NodeType::Say { next, .. } = &mut before.node_type {
+        *next = "wait".to_string();
+    }
+    flow.nodes.insert(
+        "wait".to_string(),
+        FlowNode {
+            id: "wait".to_string(),
+            name: Some("Wait for a listener".to_string()),
+            node_type: NodeType::Pause {
+                duration: secs,
+                next: last.clone(),
+            },
+        },
+    );
+}
+
+/// An inline flow that answers, says each of `parts` in turn and hangs up.
+fn spoken_confirmation(
+    id: &str,
+    name: &str,
+    description: &str,
+    parts: Vec<String>,
+) -> fcp_flow::FlowDefinition {
+    use fcp_flow::{FlowDefinition, FlowNode, NodeType};
+    let node = |id: String, name: &str, node_type: NodeType| {
+        (
+            id.clone(),
+            FlowNode {
+                id,
+                name: Some(name.to_string()),
+                node_type,
+            },
+        )
+    };
+    let say_id = |i: usize| {
+        if i == 0 {
+            "say".to_string()
+        } else {
+            format!("say-{i}")
+        }
+    };
+    let count = parts.len();
+    let first = if count == 0 {
+        "hangup".to_string()
+    } else {
+        say_id(0)
+    };
+    let nodes = std::iter::once(node(
+        "answer".to_string(),
+        "Answer call",
+        NodeType::Answer {
+            next: first,
+            on_error: None,
+        },
+    ))
+    .chain(parts.into_iter().enumerate().map(|(i, text)| {
+        node(
+            say_id(i),
+            "Say the confirmation",
+            NodeType::Say {
+                text,
+                voice: None,
+                language: "en-US".to_string(),
+                next: if i + 1 < count {
+                    say_id(i + 1)
+                } else {
+                    "hangup".to_string()
+                },
+                on_error: Some("hangup".to_string()),
+            },
+        )
+    }))
+    .chain(std::iter::once(node(
+        "hangup".to_string(),
+        "Hang up",
+        NodeType::Hangup { reason: None },
+    )))
+    .collect();
+    FlowDefinition {
+        id: id.to_string(),
+        name: name.to_string(),
+        description: Some(description.to_string()),
+        version: 1,
+        initial_node: "answer".to_string(),
+        nodes,
+        variables: HashMap::new(),
+        tenant_id: None,
+        enabled: true,
+        created_at: None,
+        updated_at: None,
+    }
 }
 
 fn extract_tag_value(value: Option<&SmolStr>) -> Option<String> {
@@ -19544,6 +20854,14 @@ fn ensure_supported_timer(response: &mut sip_core::Response) {
 // SDP Helpers
 // ============================================================================
 
+/// The media session's leg for a call's leg: each is told its own port.
+pub(crate) fn media_leg(side: fcp_b2bua_core::LegSide) -> fcp_media::backend::Leg {
+    match side {
+        fcp_b2bua_core::LegSide::A => fcp_media::backend::Leg::A,
+        fcp_b2bua_core::LegSide::B => fcp_media::backend::Leg::B,
+    }
+}
+
 /// Generate a basic SDP offer with `a=sendrecv` for call origination.
 ///
 /// Offers PCMU and PCMA (G.711) codecs which are universally supported.
@@ -19733,7 +21051,7 @@ impl ConferenceMigration {
                     .get_session(session_id)
                     .await
                     .map_err(|e| (500, "Server Internal Error", format!("media session: {e}")))?;
-                let (rtp_port, _) = session.ports();
+                let (rtp_port, _) = session.ports_for(fcp_media::backend::Leg::B);
                 fcp_media::rewrite_sdp_for_anchoring(&a_sdp, &self.local_addr, rtp_port, None)
             }
             None => a_sdp.clone(),

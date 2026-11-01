@@ -51,6 +51,10 @@ pub struct AdminConfig {
     #[serde(default)]
     pub cluster: ClusterConfig,
 
+    /// The record of every service (`docs/SERVICES.md`).
+    #[serde(default)]
+    pub services: ServicesConfig,
+
     /// Conference server used for live room controls
     #[serde(default)]
     pub conference: ConferenceConfig,
@@ -566,6 +570,11 @@ pub struct ApiConfig {
     /// large one may be (`docs/PROVISIONING.md` §11); unset, none can be.
     #[serde(default)]
     pub firmware: fcp_core::ApiFirmwareConfig,
+
+    /// `[api.captures]`: where captures uploaded by apps are kept
+    /// (`docs/CALL_DIAGNOSTICS.md` §3); unset, no app may capture.
+    #[serde(default)]
+    pub captures: fcp_core::ApiCapturesConfig,
 }
 
 fn default_bind_address() -> SocketAddr {
@@ -593,6 +602,7 @@ impl Default for ApiConfig {
             provisioning: fcp_core::ApiProvisioningConfig::default(),
             redirection: fcp_core::ApiRedirectionConfig::default(),
             firmware: fcp_core::ApiFirmwareConfig::default(),
+            captures: fcp_core::ApiCapturesConfig::default(),
         }
     }
 }
@@ -728,6 +738,28 @@ impl Default for ClusterConfig {
     }
 }
 
+/// `[services]`: how long a service that is down stays on the Services
+/// page before it is forgotten.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServicesConfig {
+    /// Days a service may be down before its record is dropped (default 7).
+    #[serde(default = "default_forget_after_days")]
+    pub forget_after_days: u64,
+}
+
+fn default_forget_after_days() -> u64 {
+    7
+}
+
+impl Default for ServicesConfig {
+    fn default() -> Self {
+        Self {
+            forget_after_days: default_forget_after_days(),
+        }
+    }
+}
+
 /// Conference server configuration.
 ///
 /// The call manager the route preview asks what it would do with a call
@@ -824,6 +856,7 @@ pub fn validate_config(config: &AdminConfig) -> Result<()> {
         .validate()
         .map_err(anyhow::Error::msg)?;
     config.api.firmware.validate().map_err(anyhow::Error::msg)?;
+    config.api.captures.validate().map_err(anyhow::Error::msg)?;
     if let Some(cloud) = &config.api.managed_by {
         let cloud = cloud.trim();
         if !(cloud.starts_with("https://") || cloud.starts_with("http://")) {

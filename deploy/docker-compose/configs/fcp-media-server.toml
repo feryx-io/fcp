@@ -29,6 +29,11 @@ key = "/var/lib/fcp/certs/fcp-media.key"
 # tokens: FCP_MEDIA_AUTH_TOKENS (required; the server refuses to start without one).
 tokens = ["set-by-FCP_MEDIA_AUTH_TOKENS"]
 
+[storage]
+# The service beacon (docs/SERVICES.md): the admin's Services page lists
+# this node from it. Host networking reaches Redis on the host.
+redis_url = "redis://127.0.0.1:6379"
+
 [logging]
 level = "info"
 format = "json"

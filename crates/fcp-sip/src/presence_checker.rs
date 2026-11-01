@@ -1,43 +1,35 @@
 //! Presence-aware agent availability checker for queue distribution.
 //!
-//! Extracted adapter that bridges `fcp_presence::PresenceManager` with
-//! `fcp_queue::PresenceChecker` so the queue system can skip DND agents.
+//! Bridges what this node knows of people's presence
+//! ([`PeopleOnPhones`]) with `fcp_queue::PresenceChecker`, so the queue
+//! skips an agent in do not disturb or on a call (`docs/PRESENCE.md` §2):
+//! not one who chose Busy or Away, and not one who is offline, whose ring
+//! attempt fails on its own.
 
-use fcp_presence::PresenceManager;
+use crate::person_presence::PeopleOnPhones;
+use std::sync::Arc;
 use tracing::debug;
 
-/// Adapter that lets the queue manager check presence DND state.
-///
-/// Only explicit `Busy` (DND) causes an agent to be skipped.
-/// `Closed` (offline) agents are NOT skipped — the ring attempt will
-/// fail naturally, which is the correct behavior for hunt groups.
+/// Lets the queue manager ask whether an agent can be offered a call.
 pub struct PresenceCheckerAdapter {
-    presence: PresenceManager,
+    people: Arc<PeopleOnPhones>,
 }
 
 impl PresenceCheckerAdapter {
-    /// Create a new adapter wrapping the given presence manager.
-    pub fn new(presence: PresenceManager) -> Self {
-        Self { presence }
+    pub fn new(people: Arc<PeopleOnPhones>) -> Self {
+        Self { people }
     }
 }
 
 impl fcp_queue::PresenceChecker for PresenceCheckerAdapter {
-    fn is_dnd(&self, agent_extension: &str) -> bool {
-        for info in self.presence.get_all_presences() {
-            let user_part = info.aor.split('@').next().unwrap_or("");
-            if user_part == agent_extension {
-                let is_dnd = info.state.is_dnd_state();
-                if is_dnd {
-                    debug!(
-                        agent = %agent_extension,
-                        state = %info.state,
-                        "Agent filtered from queue distribution: DND"
-                    );
-                }
-                return is_dnd;
-            }
+    fn is_dnd(&self, tenant_id: &fcp_core::TenantId, agent_extension: &str) -> bool {
+        let unavailable = self.people.unavailable(tenant_id, agent_extension);
+        if unavailable {
+            debug!(
+                agent = %agent_extension,
+                "Agent filtered from queue distribution: do not disturb or on a call"
+            );
         }
-        false
+        unavailable
     }
 }

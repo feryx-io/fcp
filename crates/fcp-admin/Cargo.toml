@@ -33,6 +33,8 @@ fcp-flow = { path = "../fcp-flow" }
 
 # For NoopDispatcher
 async-trait = "0.1"
+# The services sweep's lock (docs/SERVICES.md).
+redis = { version = "0.27", features = ["tokio-comp"] }
 urlencoding = "2"
 bytes = { workspace = true }
 
@@ -92,5 +94,4 @@ dashmap = "6"
 
 [dev-dependencies]
 fcp-testkit = { path = "../fcp-testkit" }
-redis = { version = "0.27", features = ["tokio-comp"] }
 tower = { version = "0.5", features = ["util"] }

@@ -76,11 +76,11 @@ pub trait PresenceHandler: Send + Sync {
         Ok(())
     }
 
-    /// Check if a user (identified by extension) is in DND/Busy state.
+    /// Whether the member with this extension is in do not disturb or on a
+    /// call (`docs/PRESENCE.md` §2).
     ///
     /// Used by hunt group routing to skip busy members when `skip_busy` is enabled.
-    /// Returns `true` if the user should be skipped (Busy or Closed state).
-    fn is_busy(&self, _extension: &str) -> bool {
+    fn is_busy(&self, _tenant_id: &TenantId, _extension: &str) -> bool {
         false
     }
 }
@@ -178,6 +178,10 @@ pub struct SipPresenceHandler {
     /// order their events happened, and one that does not answer delays
     /// only its own, never the node's other lamps.
     deliveries: Arc<dashmap::DashMap<String, tokio::sync::mpsc::UnboundedSender<Delivery>>>,
+    /// People's presence as the admin announces it (`docs/PRESENCE.md`):
+    /// laid on an address before its first watcher is told, and asked by
+    /// hunt groups.
+    people: Option<Arc<crate::person_presence::PeopleOnPhones>>,
 }
 
 /// One NOTIFY waiting for its watcher's queue.
@@ -234,6 +238,7 @@ impl SipPresenceHandler {
             auth: None,
             admission: None,
             deliveries: Arc::new(dashmap::DashMap::new()),
+            people: None,
         }
     }
 
@@ -306,6 +311,14 @@ impl SipPresenceHandler {
         self
     }
 
+    /// People's presence (`docs/PRESENCE.md` §3): a person's is laid on an
+    /// address before its first watcher is told, and hunt groups skip a
+    /// member in do not disturb or on a call.
+    pub fn with_people(mut self, people: Arc<crate::person_presence::PeopleOnPhones>) -> Self {
+        self.people = Some(people);
+        self
+    }
+
     /// The tenant an address belongs to: the one claiming its domain, the
     /// default for a host literal or without tenants. `None` for a domain
     /// no tenant claims.
@@ -355,6 +368,7 @@ impl SipPresenceHandler {
             auth: self.auth.clone(),
             admission: self.admission.clone(),
             deliveries: Arc::clone(&self.deliveries),
+            people: self.people.clone(),
         }
     }
 
@@ -1037,6 +1051,16 @@ impl SipPresenceHandler {
             sip_to_tag,
         };
 
+        // The person's presence on the address before anyone watches it,
+        // so laying it there tells nobody twice.
+        if watcher.event_package == "presence" {
+            if let Some(people) = &self.people {
+                people
+                    .seed(&watcher.presentity_aor, &watcher.tenant_id)
+                    .await;
+            }
+        }
+
         if let Err(e) = self.presence.add_watcher(watcher.clone()).await {
             warn!(error = %e, "Failed to add presence watcher");
             let response = sip_uas::UserAgentServer::create_response(request, 500, "Server Error");
@@ -1563,15 +1587,12 @@ impl PresenceHandler for SipPresenceHandler {
         Ok(())
     }
 
-    fn is_busy(&self, extension: &str) -> bool {
-        for info in self.presence.get_all_presences() {
-            let user_part = info.aor.split('@').next().unwrap_or("");
-            if user_part == extension {
-                return info.state.is_dnd_state()
-                    || matches!(info.state, fcp_presence::PresenceState::OnThePhone);
-            }
-        }
-        false
+    fn is_busy(&self, tenant_id: &TenantId, extension: &str) -> bool {
+        // In do not disturb or on a call, by the person's presence; a
+        // chosen Busy or Away is not skipped (`docs/PRESENCE.md` §2).
+        self.people
+            .as_ref()
+            .is_some_and(|people| people.unavailable(tenant_id, extension))
     }
 }
 

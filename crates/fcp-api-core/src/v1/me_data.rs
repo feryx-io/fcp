@@ -59,6 +59,9 @@ pub struct MyCallResponse {
     pub end_time: Option<u64>,
     /// Talk time, from the answer.
     pub duration_seconds: Option<u64>,
+    /// How the call went, when the user's phone reported it
+    /// (`docs/CALL_DIAGNOSTICS.md` §2).
+    pub quality: Option<crate::v1::call_quality::MyCallQuality>,
 }
 
 fn my_call(cdr: CallDetailRecord, outgoing: bool) -> MyCallResponse {
@@ -83,6 +86,7 @@ fn my_call(cdr: CallDetailRecord, outgoing: bool) -> MyCallResponse {
         answer_time: cdr.answer_time.map(epoch),
         end_time: cdr.end_time.map(epoch),
         duration_seconds: cdr.call_duration_ms.map(|ms| ms / 1000),
+        quality: None,
     }
 }
 
@@ -185,6 +189,24 @@ pub async fn list_my_calls(
     let next = more
         .then(|| calls.last().map(|(_, c)| c.encode()))
         .flatten();
+    // What the user's phones said of these calls: the lowest score each.
+    if let Some(quality) = storage.call_quality_store() {
+        let ids: Vec<fcp_core::CallId> = calls
+            .iter()
+            .filter_map(|(c, _)| c.call_id.parse().ok())
+            .collect();
+        for q in quality.call_qualities_of_user(&user.id, &ids).await? {
+            let id = q.call_id.to_string();
+            for (call, _) in calls.iter_mut().filter(|(c, _)| c.call_id == id) {
+                let worse = call.quality.as_ref().is_none_or(|had| {
+                    q.worst_mos() < had.far_mos.map_or(had.mos, |f| f.min(had.mos))
+                });
+                if worse {
+                    call.quality = Some((&q).into());
+                }
+            }
+        }
+    }
     Ok(Json(crate::page::Page::new(
         calls.into_iter().map(|(c, _)| c).collect(),
         next,
@@ -206,10 +228,19 @@ pub struct DirectoryEntry {
     pub email: Option<String>,
     pub department: Option<String>,
     pub job_title: Option<String>,
-    /// Where they are: `open`, `closed`, `away`, `busy`, `on_the_phone`
-    /// or `ringing`; unset when nothing is known.
+    /// What others see of them (`docs/PRESENCE.md`): for a user,
+    /// `available`, `away`, `busy`, `dnd`, `ringing`, `on_call` or
+    /// `offline`; for an extension, its SIP presence (`open`, `closed`,
+    /// `away`, `busy`, `on_the_phone`, `ringing`); unset when nothing is
+    /// known.
     pub presence: Option<String>,
+    /// A user's own status's label ("WFH").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_label: Option<String>,
     pub presence_note: Option<String>,
+    /// A user shown away because their apps say they are idle.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub presence_idle: bool,
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -223,7 +254,8 @@ pub struct DirectoryQuery {
 
 /// GET /me/directory — the tenant's people and the extensions that ring
 /// no one person, each with its presence, while the tenant lets its users
-/// see them (`directory.visible_to_users`; 403 otherwise).
+/// see them (`directory.visible_to_users`; 403 otherwise). A user taken out
+/// of the directory (`directory_listed`) is not among them.
 #[utoipa::path(
     get,
     path = "/api/v1/me/directory",
@@ -293,12 +325,21 @@ pub async fn list_directory(
             .any(|f| f.to_lowercase().contains(n.as_str())),
     };
 
+    // A person's presence from the admin's reckoning, where it is kept.
+    let people = match &state.people_presence {
+        Some(p) => Some(p.tenant_presence(&me.tenant_id).await),
+        None => None,
+    };
     let mut entries = Vec::new();
     let users = storage
         .list_users_in_tenant(&me.tenant_id, &UserFilter::default())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    for u in users.iter().filter(|u| u.may_use_services()) {
+    // An unlisted user is left out; they still ring on their extension.
+    for u in users
+        .iter()
+        .filter(|u| u.may_use_services() && u.directory_listed)
+    {
         let fields = [
             Some(u.username.as_str()),
             u.display_name.as_deref(),
@@ -308,7 +349,21 @@ pub async fn list_directory(
         if !found(&fields) {
             continue;
         }
-        let (state, note) = presence_of(&[Some(u.sip_name()), u.extension.as_deref()]);
+        let (state, label, note, idle) = match &people {
+            Some(people) => match people.get(&u.id) {
+                Some(p) => (
+                    Some(p.state.as_str().to_string()),
+                    p.label.clone(),
+                    p.note.clone(),
+                    p.idle,
+                ),
+                None => (None, None, None, false),
+            },
+            None => {
+                let (state, note) = presence_of(&[Some(u.sip_name()), u.extension.as_deref()]);
+                (state, None, note, false)
+            }
+        };
         entries.push(DirectoryEntry {
             kind: "user",
             user_id: Some(u.id.to_string()),
@@ -319,7 +374,9 @@ pub async fn list_directory(
             department: u.department.clone(),
             job_title: u.job_title.clone(),
             presence: state,
+            presence_label: label,
             presence_note: note,
+            presence_idle: idle,
         });
     }
     let extensions = storage
@@ -344,7 +401,9 @@ pub async fn list_directory(
             department: None,
             job_title: None,
             presence: state,
+            presence_label: None,
             presence_note: note,
+            presence_idle: false,
         });
     }
     let page = crate::page::PageQuery {
@@ -368,4 +427,92 @@ pub async fn list_directory(
             )
         },
     )?))
+}
+
+/// Put a recording request for `user`, a party to the call, to the node
+/// holding it (`docs/RECORD_AND_CONTACTS.md` §2), and answer what it
+/// answered without the file's path.
+async fn my_recording(
+    state: &ApiState,
+    claims: &crate::v1::auth_session::Claims,
+    call_id: &str,
+    action: &'static str,
+) -> Result<axum::response::Response, ApiError> {
+    use axum::http::StatusCode;
+
+    let storage = require_storage!(state);
+    let me = crate::v1::self_service::load_claims_user(storage, claims, state).await?;
+    if !me.media_preferences.record_on_demand {
+        return Err(ApiError::Forbidden(
+            "Recording calls is not turned on for this user".to_string(),
+        ));
+    }
+    let supervisor = state.call_supervisor.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("no call manager can be reached".to_string())
+    })?;
+    let (status, body) = supervisor
+        .supervise(
+            me.tenant_id,
+            call_id,
+            crate::SupervisionRequest::Control {
+                action,
+                body: serde_json::json!({ "for_user": me.id }),
+            },
+        )
+        .await
+        .map_err(ApiError::ServiceUnavailable)?;
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    if !status.is_success() {
+        let error = crate::error::ErrorResponse::from_upstream(status, &body);
+        return Ok((status, Json(error)).into_response());
+    }
+    let mut answer: crate::v1::media::RecordingResponse = serde_json::from_value(body)
+        .map_err(|e| ApiError::Internal(format!("the node's answer did not parse: {e}")))?;
+    answer.path = None;
+    Ok((status, Json(answer)).into_response())
+}
+
+/// POST /me/calls/:call_id/recording/start — record a call the user is on,
+/// when an administrator lets them (`record_on_demand`; 403 otherwise).
+/// The tenant's consent announcement plays to both parties first; this
+/// returns once the recorder runs. 404 for a call that is not theirs, 409
+/// when it is not anchored or already recorded.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/calls/{call_id}/recording/start",
+    tag = "self_service",
+    operation_id = "self_service_start_my_recording",
+    params(("call_id" = String, Path, description = "FCP's id for the call (`X-FCP-Call-Id`)")),
+    responses(
+        (status = 200, description = "Recording", body = crate::v1::media::RecordingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn start_my_recording(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    axum::extract::Path(call_id): axum::extract::Path<String>,
+) -> Result<axum::response::Response, ApiError> {
+    my_recording(&state, &claims, &call_id, "recording/start").await
+}
+
+/// POST /me/calls/:call_id/recording/stop — stop a recording the user
+/// started on demand. Any other recording of the call goes on (409).
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/calls/{call_id}/recording/stop",
+    tag = "self_service",
+    operation_id = "self_service_stop_my_recording",
+    params(("call_id" = String, Path, description = "FCP's id for the call (`X-FCP-Call-Id`)")),
+    responses(
+        (status = 200, description = "Stopped", body = crate::v1::media::RecordingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn stop_my_recording(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    axum::extract::Path(call_id): axum::extract::Path<String>,
+) -> Result<axum::response::Response, ApiError> {
+    my_recording(&state, &claims, &call_id, "recording/stop").await
 }

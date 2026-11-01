@@ -7,10 +7,9 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::storage::{QueueConfigStore, TenantStore};
+use fcp_core::storage::QueueConfigStore;
 use fcp_core::{QueueConfigId, QueueConfigRecord};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::time::SystemTime;
 use tracing::info;
 
@@ -23,45 +22,32 @@ macro_rules! require_storage {
     };
 }
 
-/// Ensure no other tenant already uses this queue name.
-///
-/// Queue names are global runtime identifiers (the QueueManager keys them in
-/// a flat DashMap). Two tenants with the same queue name would collide, so
-/// this check rejects creates/updates that would cause a cross-tenant conflict.
-async fn ensure_runtime_queue_name_available(
+/// Refuse a second queue of the same name or extension in the tenant. A
+/// queue is its name within its tenant (docs/TENANT_SCOPE.md §4b): another
+/// tenant's `sales` is not this one's, and is never looked at.
+async fn ensure_queue_unique_in_tenant(
     state: &ApiState,
-    owner_tenant_id: &fcp_core::TenantId,
-    queue_name: &str,
+    tenant_id: &fcp_core::TenantId,
+    config: (&str, &str),
     exclude_id: Option<&QueueConfigId>,
 ) -> Result<(), ApiError> {
+    let (name, extension) = config;
     let storage = require_storage!(state);
-    let mut tenant_ids = HashSet::from([state.default_tenant_id]);
-    for tenant in storage
-        .list_tenants()
+    let configs = storage
+        .list_queue_configs(tenant_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to list tenants: {}", e)))?
-    {
-        tenant_ids.insert(tenant.id);
-    }
-
-    for tenant_id in tenant_ids {
-        if tenant_id == *owner_tenant_id {
-            continue;
+        .map_err(|e| ApiError::Internal(format!("Failed to list queue configs: {}", e)))?;
+    for other in configs.iter().filter(|other| exclude_id != Some(&other.id)) {
+        if other.name == name {
+            return Err(ApiError::Conflict(format!(
+                "A queue named '{}' already exists",
+                name
+            )));
         }
-        let configs = storage
-            .list_queue_configs(&tenant_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to list queue configs: {}", e)))?;
-        if configs.into_iter().any(|config| {
-            config.name == queue_name
-                && exclude_id
-                    .map(|excluded| config.id != *excluded)
-                    .unwrap_or(true)
-        }) {
-            return Err(ApiError::BadRequest(format!(
-                "Queue name '{}' is already in use by another tenant; \
-                 runtime queue names must be globally unique",
-                queue_name
+        if other.extension == extension {
+            return Err(ApiError::Conflict(format!(
+                "Queue '{}' already answers at extension {}",
+                other.name, extension
             )));
         }
     }
@@ -334,7 +320,7 @@ pub async fn create_queue_config(
     let storage = require_storage!(state);
     let tenant_id = tenant.0;
 
-    ensure_runtime_queue_name_available(&state, &tenant_id, &req.name, None).await?;
+    ensure_queue_unique_in_tenant(&state, &tenant_id, (&req.name, &req.extension), None).await?;
 
     let mut config = QueueConfigRecord::new(req.name, req.extension, tenant_id);
     if let Some(strategy) = req.strategy {
@@ -496,7 +482,13 @@ pub async fn update_queue_config(
     config.updated_at = SystemTime::now();
     check_queue_config(&config)?;
 
-    ensure_runtime_queue_name_available(&state, &tenant.0, &config.name, Some(&config.id)).await?;
+    ensure_queue_unique_in_tenant(
+        &state,
+        &tenant.0,
+        (&config.name, &config.extension),
+        Some(&config.id),
+    )
+    .await?;
 
     info!(queue_name = %config.name, queue_id = %config.id, "Updating queue config");
 

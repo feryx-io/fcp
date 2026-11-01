@@ -270,20 +270,22 @@ impl ConsentPlan {
         if let (Some(id), Some(prompts)) = (policy.recording_consent_prompt_id.as_deref(), prompts)
         {
             match id.parse::<crate::PromptId>() {
-                Ok(prompt_id) => match prompts.get_prompt(&prompt_id).await {
-                    Ok(Some(prompt)) if prompt.tenant_id == *tenant => {
-                        prompt_audio = prompt.audio_path.filter(|p| p.is_file());
-                        if prompt_audio.is_none() {
-                            tracing::warn!(tenant_id = %tenant, prompt = %id, "Recording-consent prompt has no audio file");
+                Ok(prompt_id) => {
+                    match crate::prompt::effective_prompt_by_id(prompts, tenant, &prompt_id).await {
+                        Ok(Some(prompt)) => {
+                            prompt_audio = prompt.audio_path.filter(|p| p.is_file());
+                            if prompt_audio.is_none() {
+                                tracing::warn!(tenant_id = %tenant, prompt = %id, "Recording-consent prompt has no audio file");
+                            }
+                        }
+                        Ok(_) => {
+                            tracing::warn!(tenant_id = %tenant, prompt = %id, "Recording-consent prompt not found")
+                        }
+                        Err(e) => {
+                            tracing::warn!(tenant_id = %tenant, error = %e, "Could not read the recording-consent prompt")
                         }
                     }
-                    Ok(_) => {
-                        tracing::warn!(tenant_id = %tenant, prompt = %id, "Recording-consent prompt not found")
-                    }
-                    Err(e) => {
-                        tracing::warn!(tenant_id = %tenant, error = %e, "Could not read the recording-consent prompt")
-                    }
-                },
+                }
                 Err(e) => {
                     tracing::warn!(tenant_id = %tenant, prompt = %id, error = %e, "Invalid recording-consent prompt id")
                 }
@@ -543,6 +545,11 @@ pub struct AuditEvent {
     pub id: i64,
     /// Tenant the request acted on (`None` for platform-wide requests).
     pub tenant_id: Option<TenantId>,
+    /// The actor's own tenant (`None` for the static token, and for rows
+    /// written before v0.25.497): differs from `tenant_id` when a platform
+    /// administrator acts on another tenant.
+    #[serde(default)]
+    pub actor_tenant_id: Option<TenantId>,
     /// Who: a username, an API token id, `static_token`, or `anonymous`.
     pub actor: String,
     /// `session`, `api_token`, `static_token`, or `anonymous`.
@@ -565,10 +572,14 @@ pub struct AuditEvent {
 pub struct AuditQuery {
     /// `None` lists every tenant (platform admins only).
     pub tenant_id: Option<TenantId>,
+    /// Only the platform's own rows (no tenant); `tenant_id` is then unset.
+    pub platform_only: bool,
     pub actor: Option<String>,
     /// Match on the route template prefix (`POST /api/v1/users`).
     pub action_prefix: Option<String>,
     pub since: Option<SystemTime>,
+    /// Only events before this instant.
+    pub until: Option<SystemTime>,
     pub limit: usize,
     /// Only events older than this `(occurred_at, id)`: the keyset cursor
     /// of the API's pages (docs/DEVELOPER_SURFACE.md §3, phase 2c).

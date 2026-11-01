@@ -14,6 +14,9 @@ pub struct StorageResult {
     pub dyn_storage: Arc<DynStorage>,
     pub config_store: Arc<dyn fcp_core::config_store::ConfigStore>,
     pub flow_store: Arc<dyn fcp_flow::storage::FlowStore>,
+    /// The store itself, for what only the admin keeps (the services
+    /// record, `docs/SERVICES.md`).
+    pub postgres: Arc<PostgresStorage>,
 }
 
 /// Initialize PostgreSQL storage backend from configuration.
@@ -95,6 +98,18 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
         .with_offboarding_store(storage.clone() as Arc<dyn fcp_core::offboarding::OffboardingStore>)
         .with_group_store(storage.clone() as Arc<dyn fcp_core::group::GroupStore>)
         .with_brand_store(storage.clone() as Arc<dyn fcp_core::branding::BrandStore>)
+        .with_contact_store(storage.clone() as Arc<dyn fcp_core::contact::ContactStore>)
+        .with_parking_lot_store(storage.clone() as Arc<dyn fcp_core::parking::ParkingLotStore>)
+        .with_line_label_store(storage.clone() as Arc<dyn fcp_core::line_label::LineLabelStore>)
+        .with_call_quality_store(
+            storage.clone() as Arc<dyn fcp_core::call_quality::CallQualityStore>
+        )
+        .with_device_capture_store(
+            storage.clone() as Arc<dyn fcp_core::device_capture::DeviceCaptureStore>
+        )
+        .with_presence_status_store(
+            storage.clone() as Arc<dyn fcp_core::presence_status::PresenceStatusStore>
+        )
         .with_provisioning_store(
             storage.clone() as Arc<dyn fcp_core::provisioning::ProvisioningStore>
         );
@@ -103,6 +118,7 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
     Ok(StorageResult {
         dyn_storage: Arc::new(dyn_st),
         flow_store: storage.clone() as Arc<dyn fcp_flow::storage::FlowStore>,
+        postgres: storage.clone(),
         config_store: storage,
     })
 }

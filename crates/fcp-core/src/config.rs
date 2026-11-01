@@ -817,6 +817,27 @@ pub struct ApiConfig {
     /// Where firmware images are kept (phase 9).
     #[serde(default)]
     pub firmware: ApiFirmwareConfig,
+
+    /// Where captures from people's apps are kept
+    /// (`docs/CALL_DIAGNOSTICS.md` §3).
+    #[serde(default)]
+    pub captures: ApiCapturesConfig,
+}
+
+/// `[api.captures]`: where captures uploaded by apps are kept — a
+/// directory, or an S3-compatible bucket (`[api.captures.s3]`, keys
+/// `<prefix><tenant>/<capture>.pcapng`, the prefix `captures/` unless set).
+/// Neither set, apps are told they may not capture.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiCapturesConfig {
+    /// The captures, when they are kept on this admin's disk; with a
+    /// bucket, where an upload is staged before it goes up (the system's
+    /// temporary directory when unset).
+    #[serde(default)]
+    pub directory: Option<String>,
+    #[serde(default)]
+    pub s3: Option<FirmwareS3Config>,
 }
 
 /// `[api.firmware]`: where uploaded firmware images are kept — a
@@ -862,9 +883,10 @@ pub struct FirmwareS3Config {
     pub secret_access_key: Option<String>,
     #[serde(default)]
     pub session_token: Option<String>,
-    /// Keys are `<prefix><image>/<file>`.
-    #[serde(default = "default_firmware_prefix")]
-    pub prefix: String,
+    /// What every key starts with: `firmware/` for images, `captures/`
+    /// for captures, unless set.
+    #[serde(default)]
+    pub prefix: Option<String>,
 }
 
 impl std::fmt::Debug for FirmwareS3Config {
@@ -881,10 +903,6 @@ impl std::fmt::Debug for FirmwareS3Config {
 
 fn default_s3_region() -> String {
     "us-east-1".to_string()
-}
-
-fn default_firmware_prefix() -> String {
-    "firmware/".to_string()
 }
 
 fn default_max_image_mb() -> u64 {
@@ -914,16 +932,40 @@ impl ApiFirmwareConfig {
             return Err("api.firmware.directory must not be empty".to_string());
         }
         if let Some(s3) = &self.s3 {
-            if s3.bucket.trim().is_empty() {
-                return Err("api.firmware.s3.bucket must be set".to_string());
-            }
-            if s3
-                .endpoint
-                .as_deref()
-                .is_some_and(|e| !(e.starts_with("https://") || e.starts_with("http://")))
-            {
-                return Err("api.firmware.s3.endpoint must be an http(s):// address".to_string());
-            }
+            s3.validate("api.firmware.s3")?;
+        }
+        Ok(())
+    }
+}
+
+impl FirmwareS3Config {
+    /// The bucket's settings, read as `section`.
+    pub fn validate(&self, section: &str) -> std::result::Result<(), String> {
+        if self.bucket.trim().is_empty() {
+            return Err(format!("{section}.bucket must be set"));
+        }
+        if self
+            .endpoint
+            .as_deref()
+            .is_some_and(|e| !(e.starts_with("https://") || e.starts_with("http://")))
+        {
+            return Err(format!("{section}.endpoint must be an http(s):// address"));
+        }
+        Ok(())
+    }
+}
+
+impl ApiCapturesConfig {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self
+            .directory
+            .as_deref()
+            .is_some_and(|d| d.trim().is_empty())
+        {
+            return Err("api.captures.directory must not be empty".to_string());
+        }
+        if let Some(s3) = &self.s3 {
+            s3.validate("api.captures.s3")?;
         }
         Ok(())
     }
@@ -1249,6 +1291,7 @@ impl Default for ApiConfig {
             provisioning: ApiProvisioningConfig::default(),
             redirection: ApiRedirectionConfig::default(),
             firmware: ApiFirmwareConfig::default(),
+            captures: ApiCapturesConfig::default(),
         }
     }
 }

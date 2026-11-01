@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Trash2, Upload, Play, Pause, Pencil, Volume2 } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Trash2, Upload, Play, Pause, Pencil, Volume2, Copy, RotateCcw } from 'lucide-react'
 import { DataTable } from '@/components/DataTable'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/select'
 import { prompts, type PromptResponse, type CreatePromptRequest, type UpdatePromptRequest } from '@/api/endpoints'
 import { apiClient } from '@/api/client'
-import { useTenantListFilter } from '@/components/TenantSelector'
+import { useIsPlatformAdmin, useTenantListFilter } from '@/components/TenantSelector'
 
 const CATEGORIES = ['system', 'ivr', 'voicemail', 'queue', 'greeting', 'moh', 'custom'] as const
 
@@ -137,6 +137,8 @@ export function PromptsPage() {
   const [formSourceType, setFormSourceType] = useState('tts')
   const [formTtsText, setFormTtsText] = useState('')
   const [formTtsVoice, setFormTtsVoice] = useState('af_heart')
+  const [formSystem, setFormSystem] = useState(false)
+  const isPlatformAdmin = useIsPlatformAdmin()
 
   // Edit form state
   const [editDescription, setEditDescription] = useState('')
@@ -193,6 +195,16 @@ export function PromptsPage() {
     },
   })
 
+  const [overrideError, setOverrideError] = useState<string | null>(null)
+  const overrideMutation = useMutation({
+    mutationFn: prompts.override,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['prompts'] })
+      setOverrideError(null)
+    },
+    onError: (err: Error) => setOverrideError(err.message || 'Failed to override the prompt'),
+  })
+
   const synthesizeMutation = useMutation({
     mutationFn: prompts.synthesize,
     onSuccess: () => {
@@ -208,6 +220,7 @@ export function PromptsPage() {
     setFormSourceType('tts')
     setFormTtsText('')
     setFormTtsVoice('af_heart')
+    setFormSystem(false)
   }
 
   function handleCreate() {
@@ -219,6 +232,7 @@ export function PromptsPage() {
       source_type: formSourceType,
       tts_text: formTtsText || undefined,
       tts_voice: formSourceType === 'tts' ? formTtsVoice || undefined : undefined,
+      system: formSystem || undefined,
     }
     createMutation.mutate(data)
   }
@@ -260,13 +274,8 @@ export function PromptsPage() {
       audioRef.current.pause()
     }
     try {
-      // Fetch audio with auth headers (browser Audio() can't add headers)
-      const resp = await fetch(`/api/v1/prompts/${encodeURIComponent(prompt.id)}/audio`, {
-        headers: { Authorization: `Bearer ${apiClient.getToken() || ''}` },
-      })
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-      const blob = await resp.blob()
-      const url = URL.createObjectURL(blob)
+      // Fetch audio with auth and tenant headers (browser Audio() can't add headers)
+      const url = await apiClient.fetchBlobUrl(`/prompts/${encodeURIComponent(prompt.id)}/audio`)
       const audio = new Audio(url)
       audio.onended = () => { setPlayingId(null); URL.revokeObjectURL(url) }
       audio.onerror = () => { setPlayingId(null); URL.revokeObjectURL(url) }
@@ -342,11 +351,25 @@ export function PromptsPage() {
     },
     {
       id: 'system',
-      header: 'System',
-      cell: ({ row }) =>
-        row.original.is_system ? (
-          <Badge variant="outline" className="bg-blue-50 dark:bg-blue-950">System</Badge>
-        ) : null,
+      header: 'Owner',
+      cell: ({ row }) => {
+        const p = row.original
+        if (p.is_system) {
+          return (
+            <div className="flex flex-wrap gap-1">
+              <Badge variant="outline" className="bg-blue-50 dark:bg-blue-950">System</Badge>
+              {p.overridden_by && (
+                <Badge variant="secondary" title="The tenant's calls hear its own copy">Overridden</Badge>
+              )}
+            </div>
+          )
+        }
+        return p.overrides ? (
+          <Badge variant="outline" title="Heard instead of the system prompt of this name">Override</Badge>
+        ) : (
+          <span className="text-xs text-muted-foreground">Tenant</span>
+        )
+      },
     },
     {
       id: 'actions',
@@ -360,34 +383,62 @@ export function PromptsPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => openEdit(p)}>
-                <Pencil className="mr-2 h-4 w-4" /> Edit
-              </DropdownMenuItem>
-              {p.source_type === 'tts' && p.tts_text && (
+              {/* A system prompt is the platform's: a tenant overrides it. */}
+              {p.is_system && !p.overridden_by && (
                 <DropdownMenuItem
-                  onClick={() => synthesizeMutation.mutate(p.id)}
-                  disabled={synthesizeMutation.isPending}
+                  onClick={() => overrideMutation.mutate(p.id)}
+                  disabled={overrideMutation.isPending}
                 >
-                  <Volume2 className="mr-2 h-4 w-4" />
-                  {synthesizeMutation.isPending ? 'Synthesizing...' : 'Synthesize Audio'}
+                  <Copy className="mr-2 h-4 w-4" /> Override
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onClick={() => setUploadTarget(p)}>
-                <Upload className="mr-2 h-4 w-4" /> Upload Audio
-              </DropdownMenuItem>
+              {(!p.is_system || isPlatformAdmin) && (
+                <>
+                  <DropdownMenuItem onClick={() => openEdit(p)}>
+                    <Pencil className="mr-2 h-4 w-4" /> Edit
+                  </DropdownMenuItem>
+                  {p.source_type === 'tts' && p.tts_text && (
+                    <DropdownMenuItem
+                      onClick={() => synthesizeMutation.mutate(p.id)}
+                      disabled={synthesizeMutation.isPending}
+                    >
+                      <Volume2 className="mr-2 h-4 w-4" />
+                      {synthesizeMutation.isPending ? 'Synthesizing...' : 'Synthesize Audio'}
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem onClick={() => setUploadTarget(p)}>
+                    <Upload className="mr-2 h-4 w-4" /> Upload Audio
+                  </DropdownMenuItem>
+                </>
+              )}
+              {p.is_system && p.overridden_by && !isPlatformAdmin && (
+                <DropdownMenuItem disabled>Overridden by this tenant</DropdownMenuItem>
+              )}
               {!p.is_system && (
                 <>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    className="text-red-600"
-                    onClick={() => {
-                      if (window.confirm(`Delete prompt "${p.name}"?`)) {
-                        deleteMutation.mutate(p.id)
-                      }
-                    }}
-                  >
-                    <Trash2 className="mr-2 h-4 w-4" /> Delete
-                  </DropdownMenuItem>
+                  {p.overrides ? (
+                    <DropdownMenuItem
+                      onClick={() => {
+                        if (window.confirm(`Restore the system prompt "${p.name}"? This tenant's copy is deleted.`)) {
+                          deleteMutation.mutate(p.id)
+                        }
+                      }}
+                    >
+                      <RotateCcw className="mr-2 h-4 w-4" /> Restore system prompt
+                    </DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuItem
+                      className="text-red-600"
+                      onClick={() => {
+                        if (window.confirm(`Delete prompt "${p.name}"?`)) {
+                          deleteMutation.mutate(p.id)
+                        }
+                      }}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" /> Delete
+                    </DropdownMenuItem>
+                  )}
                 </>
               )}
             </DropdownMenuContent>
@@ -404,7 +455,12 @@ export function PromptsPage() {
           <h1 className="text-2xl font-bold">Audio Prompts</h1>
           <p className="text-sm text-muted-foreground">
             Manage pre-recorded and TTS-generated audio prompts for IVR and system use.
+            System prompts are the platform's, heard by every tenant; override one to give
+            this tenant its own.
           </p>
+          {overrideError && (
+            <p className="text-sm text-red-600 dark:text-red-400">{overrideError}</p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Select value={categoryFilter} onValueChange={setCategoryFilter}>
@@ -511,6 +567,16 @@ export function PromptsPage() {
                   <p className="text-xs text-muted-foreground mt-1">Kokoro-82M voice pack</p>
                 </div>
               </>
+            )}
+            {isPlatformAdmin && (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={formSystem}
+                  onChange={(e) => setFormSystem(e.target.checked)}
+                />
+                System prompt (heard by every tenant)
+              </label>
             )}
             {createError && (
               <p className="text-sm text-red-600 dark:text-red-400">{createError}</p>

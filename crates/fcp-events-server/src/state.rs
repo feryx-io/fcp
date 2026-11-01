@@ -229,6 +229,8 @@ impl CallStateStore {
             // Parked/Unparked events don't change the aggregated state significantly
             CallEvent::Parked { .. }
             | CallEvent::Unparked { .. }
+            | CallEvent::ParkTimedOut { .. }
+            | CallEvent::QualityPoor { .. }
             | CallEvent::Held { .. }
             | CallEvent::Resumed { .. }
             | CallEvent::Transcript { .. }

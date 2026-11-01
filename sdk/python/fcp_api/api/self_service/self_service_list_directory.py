@@ -84,7 +84,8 @@ def sync_detailed(
 ) -> Response[ErrorResponse | PageDirectoryEntry]:
     """ GET /me/directory — the tenant's people and the extensions that ring
     no one person, each with its presence, while the tenant lets its users
-    see them (`directory.visible_to_users`; 403 otherwise).
+    see them (`directory.visible_to_users`; 403 otherwise). A user taken out
+    of the directory (`directory_listed`) is not among them.
 
     Args:
         limit (int | Unset):
@@ -123,7 +124,8 @@ def sync(
 ) -> ErrorResponse | PageDirectoryEntry | None:
     """ GET /me/directory — the tenant's people and the extensions that ring
     no one person, each with its presence, while the tenant lets its users
-    see them (`directory.visible_to_users`; 403 otherwise).
+    see them (`directory.visible_to_users`; 403 otherwise). A user taken out
+    of the directory (`directory_listed`) is not among them.
 
     Args:
         limit (int | Unset):
@@ -157,7 +159,8 @@ async def asyncio_detailed(
 ) -> Response[ErrorResponse | PageDirectoryEntry]:
     """ GET /me/directory — the tenant's people and the extensions that ring
     no one person, each with its presence, while the tenant lets its users
-    see them (`directory.visible_to_users`; 403 otherwise).
+    see them (`directory.visible_to_users`; 403 otherwise). A user taken out
+    of the directory (`directory_listed`) is not among them.
 
     Args:
         limit (int | Unset):
@@ -196,7 +199,8 @@ async def asyncio(
 ) -> ErrorResponse | PageDirectoryEntry | None:
     """ GET /me/directory — the tenant's people and the extensions that ring
     no one person, each with its presence, while the tenant lets its users
-    see them (`directory.visible_to_users`; 403 otherwise).
+    see them (`directory.visible_to_users`; 403 otherwise). A user taken out
+    of the directory (`directory_listed`) is not among them.
 
     Args:
         limit (int | Unset):

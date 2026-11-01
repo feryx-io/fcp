@@ -18,8 +18,8 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { lcrRoutes, trunks, sites } from '@/api/endpoints'
-import { useEffectiveTenantId } from '@/components/TenantSelector'
+import { lcrRoutes, trunks, sites, tenants } from '@/api/endpoints'
+import { useEffectiveTenantId, useIsPlatformAdmin } from '@/components/TenantSelector'
 import type { SipTrunk, CreateTrunkRequest, TrunkStatsResponse } from '@/types'
 
 const healthBadge = (status: string) => {
@@ -332,6 +332,8 @@ export function TrunksPage() {
           </Button>
         </div>
       </div>
+
+      <PlatformTrunksCard />
 
       {isLoading ? (
         <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>
@@ -1035,5 +1037,50 @@ function Field({ label, value, badge }: {
       <p className="text-muted-foreground text-xs">{label}</p>
       {badge ? <Badge variant={badge}>{value}</Badge> : <p className="font-medium">{value}</p>}
     </div>
+  )
+}
+
+/** Whether the tenant's calls may leave on the platform's trunks — each
+ * node's own `[[trunks]]` — when none of its own can take them
+ * (docs/TENANT_TRUNKS.md §5, TENANT_SCOPE.md §3.1). A platform
+ * administrator decides; the tenant sees it. */
+function PlatformTrunksCard() {
+  const tenantId = useEffectiveTenantId()
+  const isPlatformAdmin = useIsPlatformAdmin()
+  const queryClient = useQueryClient()
+  const { data: tenant } = useQuery({
+    queryKey: ['tenant', tenantId],
+    queryFn: () => tenants.get(tenantId),
+    enabled: !!tenantId,
+  })
+  const fallback = useMutation({
+    mutationFn: (on: boolean) => tenants.update(tenantId, { platform_trunk_fallback: on }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tenant', tenantId] }),
+  })
+  if (!tenant) return null
+  const on = tenant.platform_trunk_fallback ?? true
+  return (
+    <Card data-testid="platform-trunks">
+      <CardContent className="flex items-center justify-between gap-4 p-4">
+        <div className="space-y-0.5">
+          <p className="text-sm font-medium">Platform trunks as a fallback</p>
+          <p className="text-sm text-muted-foreground">
+            {on
+              ? "Calls none of these trunks can take may leave on the platform's shared trunks."
+              : "Calls leave only on these trunks; the platform's shared trunks are never used."}
+          </p>
+        </div>
+        {isPlatformAdmin ? (
+          <Switch
+            aria-label="Platform trunks as a fallback"
+            checked={on}
+            disabled={fallback.isPending}
+            onCheckedChange={(v) => fallback.mutate(v)}
+          />
+        ) : (
+          <Badge variant="outline">{on ? 'On' : 'Off'}</Badge>
+        )}
+      </CardContent>
+    </Card>
   )
 }

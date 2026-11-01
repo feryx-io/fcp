@@ -8,7 +8,8 @@ use axum::{
     Json,
 };
 use fcp_core::storage::{
-    CredentialStore, DeviceStore, ExtensionStore, PhoneNumberStore, SiteLocationStore, UserFilter,
+    CredentialStore, DeviceStore, ExtensionStore, PhoneNumberStore, RoutingRuleStore,
+    SiteLocationStore, UserFilter,
 };
 use fcp_core::{LocationId, SiteLocation, TenantId};
 use fcp_events::{PlatformEvent, SystemEvent};
@@ -45,8 +46,11 @@ pub struct LocationResponse {
     pub longitude: Option<f64>,
     pub phone_number: Option<String>,
     pub timezone: Option<String>,
-    pub emergency_contact_name: Option<String>,
-    pub emergency_contact_phone: Option<String>,
+    /// Who is told about an emergency call from this site, before the
+    /// tenant's contacts (`docs/E911.md` "On-site notification").
+    pub emergency_contacts: Vec<crate::v1::emergency::ContactResponse>,
+    /// Whether the tenant's contacts are told too.
+    pub notify_tenant_contacts: bool,
     pub e911_callback_number: Option<String>,
     /// The street address as RFC 5139 civic elements (`docs/E911_BLOCK_2.md`
     /// §5.1): what an emergency call's PIDF-LO carries.
@@ -86,8 +90,8 @@ impl From<SiteLocation> for LocationResponse {
             longitude: loc.longitude,
             phone_number: loc.phone_number,
             timezone: loc.timezone,
-            emergency_contact_name: loc.emergency_contact_name,
-            emergency_contact_phone: loc.emergency_contact_phone,
+            emergency_contacts: loc.emergency_contacts.iter().map(Into::into).collect(),
+            notify_tenant_contacts: loc.notify_tenant_contacts,
             e911_callback_number: loc.e911_callback_number,
             e911_validated: loc.e911_validated_at.is_some(),
             e911_validated_at: loc.e911_validated_at,
@@ -119,8 +123,12 @@ pub struct CreateLocationRequest {
     pub longitude: Option<f64>,
     pub phone_number: Option<String>,
     pub timezone: Option<String>,
-    pub emergency_contact_name: Option<String>,
-    pub emergency_contact_phone: Option<String>,
+    /// The site's emergency contacts, as `/emergency/config` takes them.
+    #[serde(default)]
+    pub emergency_contacts: Option<Vec<crate::v1::emergency::ContactInput>>,
+    /// Whether the tenant's contacts are told too (true when unsaid).
+    #[serde(default)]
+    pub notify_tenant_contacts: Option<bool>,
     pub e911_callback_number: Option<String>,
     #[serde(default)]
     pub civic: Option<fcp_core::phone_number::CivicElements>,
@@ -159,8 +167,11 @@ pub struct UpdateLocationRequest {
     pub longitude: Option<f64>,
     pub phone_number: Option<String>,
     pub timezone: Option<String>,
-    pub emergency_contact_name: Option<String>,
-    pub emergency_contact_phone: Option<String>,
+    /// Replaces the site's emergency contacts when given.
+    #[serde(default)]
+    pub emergency_contacts: Option<Vec<crate::v1::emergency::ContactInput>>,
+    #[serde(default)]
+    pub notify_tenant_contacts: Option<bool>,
     pub e911_callback_number: Option<String>,
     /// Replaces the civic elements when given.
     #[serde(default)]
@@ -270,8 +281,13 @@ pub async fn create_location(
     location.longitude = req.longitude;
     location.phone_number = req.phone_number;
     location.timezone = req.timezone;
-    location.emergency_contact_name = req.emergency_contact_name;
-    location.emergency_contact_phone = req.emergency_contact_phone;
+    if let Some(contacts) = req.emergency_contacts {
+        location.emergency_contacts =
+            crate::v1::emergency::contacts_from_inputs("emergency_contacts", contacts)?;
+    }
+    if let Some(tenant_too) = req.notify_tenant_contacts {
+        location.notify_tenant_contacts = tenant_too;
+    }
     location.e911_callback_number = req.e911_callback_number;
     if let Some(civic) = req.civic {
         let problems = civic.problems();
@@ -382,11 +398,12 @@ pub async fn update_location(
     if req.timezone.is_some() {
         location.timezone = req.timezone;
     }
-    if req.emergency_contact_name.is_some() {
-        location.emergency_contact_name = req.emergency_contact_name;
+    if let Some(contacts) = req.emergency_contacts {
+        location.emergency_contacts =
+            crate::v1::emergency::contacts_from_inputs("emergency_contacts", contacts)?;
     }
-    if req.emergency_contact_phone.is_some() {
-        location.emergency_contact_phone = req.emergency_contact_phone;
+    if let Some(tenant_too) = req.notify_tenant_contacts {
+        location.notify_tenant_contacts = tenant_too;
     }
     if req.e911_callback_number.is_some() {
         location.e911_callback_number = req.e911_callback_number;
@@ -524,6 +541,16 @@ async fn location_in_use(
         .find(|n| n.location_id == id)
     {
         return Ok(Some(format!("number {}", n.e164)));
+    }
+    // A rule for the location's callers would, with the location gone,
+    // match nobody; refused so its author decides (docs/TENANT_SCOPE.md §3.6).
+    if let Some(r) = storage
+        .list_routing_rules(tenant)
+        .await?
+        .into_iter()
+        .find(|r| r.location_id == id)
+    {
+        return Ok(Some(format!("routing rule {}", r.name)));
     }
     if let Some(emergency) = storage.emergency_store() {
         if let Some(n) = emergency
