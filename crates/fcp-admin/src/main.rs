@@ -1002,10 +1002,11 @@ async fn main() -> Result<()> {
             .replace("http://", "ws://")
             .replace("https://", "wss://");
         let tenant_id = default_tenant_id.to_string();
-        let ws_url = build_events_ws_url(&ws_url, tenant_id, config.events.auth_token.as_deref());
+        let ws_url = events_ws_url(&ws_url, &tenant_id);
+        let auth_token = config.events.auth_token.clone();
         let event_bus_sub = Arc::clone(&event_bus_for_subscribe);
         tokio::spawn(async move {
-            run_events_subscriber(event_bus_sub, &ws_url).await;
+            run_events_subscriber(event_bus_sub, &ws_url, auth_token).await;
         });
         info!("Events server subscriber started");
     }
@@ -1082,12 +1083,23 @@ async fn build_e911_validator(
 ///
 /// This allows the admin UI's WebSocket to see cluster-wide events (calls, registrations, etc.)
 /// that originate from other services (e.g. fcp-call-manager).
-async fn run_events_subscriber(event_bus: Arc<dyn fcp_events::EventBus>, ws_url: &str) {
+async fn run_events_subscriber(
+    event_bus: Arc<dyn fcp_events::EventBus>,
+    ws_url: &str,
+    auth_token: Option<String>,
+) {
     use futures_util::StreamExt;
 
     loop {
         info!(url = %ws_url, "Connecting to events server WebSocket");
-        match tokio_tungstenite::connect_async(ws_url).await {
+        let request = match events_ws_request(ws_url, auth_token.as_deref()) {
+            Ok(request) => request,
+            Err(e) => {
+                warn!(url = %ws_url, error = %e, "The events server WebSocket request could not be built");
+                return;
+            }
+        };
+        match tokio_tungstenite::connect_async(request).await {
             Ok((ws_stream, _)) => {
                 info!("Connected to events server WebSocket");
                 let (_write, mut read) = ws_stream.split();
@@ -1164,16 +1176,27 @@ async fn run_events_subscriber(event_bus: Arc<dyn fcp_events::EventBus>, ws_url:
     }
 }
 
-fn build_events_ws_url(
-    base_url: &str,
-    tenant_id: impl AsRef<str>,
+/// The events server's WebSocket for `tenant_id`. The token goes in an
+/// `Authorization` header (`events_ws_request`), never the URL, which is
+/// logged (#340).
+fn events_ws_url(base_url: &str, tenant_id: &str) -> String {
+    format!("{}/ws/{}", base_url, tenant_id)
+}
+
+/// A connect request for `url` carrying `auth_token` as a bearer token.
+fn events_ws_request(
+    url: &str,
     auth_token: Option<&str>,
-) -> String {
-    let base = format!("{}/ws/{}", base_url, tenant_id.as_ref());
-    match auth_token {
-        Some(token) => format!("{}?token={}", base, token),
-        None => base,
+) -> anyhow::Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = url.into_client_request()?;
+    if let Some(token) = auth_token {
+        let value = format!("Bearer {token}")
+            .parse()
+            .map_err(|_| anyhow::anyhow!("the events token is not a valid header value"))?;
+        request.headers_mut().insert("authorization", value);
     }
+    Ok(request)
 }
 
 /// Extract the IP:port from a SIP contact URI like "sip:alice@192.168.1.80:5060"
@@ -1267,5 +1290,22 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => info!("Received Ctrl+C"),
         _ = terminate => info!("Received SIGTERM"),
+    }
+}
+
+#[cfg(test)]
+mod events_ws_tests {
+    use super::*;
+
+    /// The token rides in a header; the URL, which is logged, has none (#340).
+    #[test]
+    fn the_events_token_is_a_header_not_in_the_url() {
+        let url = events_ws_url("ws://events:8090", "tenant-1");
+        assert_eq!(url, "ws://events:8090/ws/tenant-1");
+        let request = events_ws_request(&url, Some("s3cret")).unwrap();
+        assert!(!request.uri().to_string().contains("s3cret"));
+        assert_eq!(request.headers()["authorization"], "Bearer s3cret");
+        let request = events_ws_request(&url, None).unwrap();
+        assert!(request.headers().get("authorization").is_none());
     }
 }
