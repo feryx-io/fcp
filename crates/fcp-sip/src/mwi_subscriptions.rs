@@ -158,14 +158,20 @@ impl MwiSubscriptions {
             return Ok(());
         }
         // A refresh of a subscription this node does not hold — it went with
-        // a restart — is 481, so the phone subscribes afresh (RFC 6665
-        // §4.2.1.2). Challenged instead, a VVX resent the same refresh on
-        // its old nonce for ever and never lit (`docs/DEEP_TESTING.md` D8,
-        // finding 39). A VVX 250 on 6.4.7 resends it after the 481 too,
-        // every four seconds, so the subscription is also ended from our
-        // side with `deactivated`, which asks for a new one at once
-        // (RFC 6665 §4.1.3).
-        if header(request, "To").as_deref().and_then(tag_of).is_some() {
+        // a restart. Challenged, a VVX resent the same refresh on its old
+        // nonce for ever and never lit (`docs/DEEP_TESTING.md` D8, finding
+        // 39); answered 481 (RFC 6665 §4.2.1.2), a VVX 250 on 6.4.7 resent
+        // it every four seconds, and ended from our side with `deactivated`
+        // (RFC 6665 §4.1.3) it answered 200 and resent it five minutes
+        // later. So a refresh from where its subscriber registered is taken
+        // up as the subscription it names; any other is 481 and ended.
+        if let Some(to_tag) = header(request, "To").as_deref().and_then(tag_of) {
+            if let Some(mailbox_id) = self.vouched_for(request, peer, transport).await {
+                info!(call_id = %call_id, "A forgotten message-summary subscription taken up: refreshed from where its subscriber registered");
+                return self
+                    .answer(request, handle, mailbox_id, expires, Some(to_tag))
+                    .await;
+            }
             info!(call_id = %call_id, "A message-summary refresh for no subscription here: 481");
             respond(handle, request, 481, "Subscription Does Not Exist").await?;
             self.deactivate(request, peer, transport);
@@ -199,19 +205,21 @@ impl MwiSubscriptions {
             info!(call_id = %call_id, from = ?header(request, "From"), "A message-summary SUBSCRIBE from someone with no mailbox: 404");
             return respond(handle, request, 404, "No Mailbox").await;
         };
-        if expires == 0 {
-            // A fetch (RFC 6665 §4.4.3): the counts once, then over.
-            return self.answer_new(request, handle, mailbox_id, 0).await;
-        }
-        self.answer_new(request, handle, mailbox_id, expires).await
+        // With `expires` 0, a fetch (RFC 6665 §4.4.3): the counts once,
+        // then over.
+        self.answer(request, handle, mailbox_id, expires, None)
+            .await
     }
 
-    async fn answer_new(
+    /// Accept a subscription: a new one, or with `our_tag` a forgotten one
+    /// taken up inside the dialog its refresh names.
+    async fn answer(
         &self,
         request: &Request,
         handle: &sip_transaction::ServerTransactionHandle,
         mailbox_id: String,
         expires: u32,
+        our_tag: Option<String>,
     ) -> anyhow::Result<()> {
         let (Some(contact), Some(from), Some(call_id)) = (
             contact_of(request).and_then(|c| SipUri::parse(&c).ok()),
@@ -225,11 +233,12 @@ impl MwiSubscriptions {
             mailbox_id,
             call_id: call_id.clone(),
             their_tag: tag_of(&from).unwrap_or_default(),
-            our_tag: uuid::Uuid::new_v4().simple().to_string(),
+            // A dialog taken up continues above the NOTIFYs sent before.
+            cseq: AtomicU32::new(if our_tag.is_some() { clock_cseq() } else { 0 }),
+            our_tag: our_tag.unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
             subscriber: without_tag(&from),
             resource: without_tag(&to),
             contact,
-            cseq: AtomicU32::new(0),
             expires_at: std::sync::Mutex::new(
                 Instant::now() + Duration::from_secs(u64::from(expires)),
             ),
@@ -244,6 +253,33 @@ impl MwiSubscriptions {
         self.send_notify(&sub, &format!("active;expires={expires}"), status.as_ref());
         self.subs.insert(call_id, sub);
         Ok(())
+    }
+
+    /// The mailbox of a refresh this node holds no subscription for, when
+    /// the refresh carries its own warrant: over UDP, from exactly where a
+    /// live binding of its `From` was registered (a digest-authenticated
+    /// REGISTER), with a Contact there too, so every NOTIFY goes only to
+    /// that registered address. A forged source gets nothing back.
+    async fn vouched_for(
+        &self,
+        request: &Request,
+        peer: SocketAddr,
+        transport: sip_transaction::TransportKind,
+    ) -> Option<String> {
+        if !matches!(transport, sip_transaction::TransportKind::Udp) {
+            return None;
+        }
+        let contact = contact_of(request).and_then(|c| SipUri::parse(&c).ok())?;
+        if !reaches(&contact, peer)
+            || !self
+                .registrar
+                .as_ref()?
+                .registered_from(request, peer)
+                .await
+        {
+            return None;
+        }
+        self.mailbox_of(request).await
     }
 
     /// End a subscription this node forgot, inside the dialog the refresh
@@ -279,11 +315,7 @@ impl MwiSubscriptions {
             return;
         }
         self.deactivated.insert(call_id.clone(), now);
-        // Above any CSeq of the NOTIFYs the node sent before it forgot.
-        let cseq = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| (d.as_secs() & 0x7fff_ffff) as u32)
-            .unwrap_or(1 << 30);
+        let cseq = clock_cseq();
         let sub = Arc::new(Subscription {
             mailbox_id: String::new(),
             call_id: call_id.clone(),
@@ -359,6 +391,15 @@ impl MwiSubscriptions {
             }
         });
     }
+}
+
+/// A NOTIFY CSeq above any the node sent in a dialog before it forgot it:
+/// the clock's seconds.
+fn clock_cseq() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| (d.as_secs() & 0x7fff_ffff) as u32)
+        .unwrap_or(1 << 30)
 }
 
 /// Whether a UDP Contact is the address a request came from (no port is
