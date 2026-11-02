@@ -87,7 +87,7 @@ async fn summary(phone: &Phone) -> Option<String> {
 
 /// The `Subscription-State` of a message-summary NOTIFY in the
 /// subscription `call_id`, when one comes soon.
-async fn ended(phone: &Phone, call_id: &str) -> Option<String> {
+async fn state_in(phone: &Phone, call_id: &str) -> Option<String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline {
         if let Some(PhoneEvent::Notify {
@@ -222,7 +222,8 @@ async fn a_subscribed_phone_is_told_its_messages() {
     assert!(body.contains("Voice-Message: 2/0"), "{body}");
 
     // A refresh of a subscription the node does not hold — one a restart
-    // took — is 481, so the phone subscribes afresh. Challenged instead, a
+    // took — from a phone not registered where it came from is 481, so the
+    // phone subscribes afresh. Challenged instead, a
     // VVX resent its refresh on a dead nonce for ever (D8, finding 39).
     let mut forgotten = sub.clone();
     forgotten.call_id = format!("{}@127.0.0.1", uuid::Uuid::new_v4().simple());
@@ -234,7 +235,7 @@ async fn a_subscribed_phone_is_told_its_messages() {
     // A VVX 250 on 6.4.7 resent it after the 481 too, every four seconds, so
     // the node also ends it from its side, which asks for a new one at once.
     assert_eq!(
-        ended(&phone, &forgotten.call_id).await.as_deref(),
+        state_in(&phone, &forgotten.call_id).await.as_deref(),
         Some("terminated;reason=deactivated"),
         "a forgotten subscription is ended"
     );
@@ -244,9 +245,28 @@ async fn a_subscribed_phone_is_told_its_messages() {
         481
     );
     assert_eq!(
-        ended(&phone, &forgotten.call_id).await,
+        state_in(&phone, &forgotten.call_id).await,
         None,
         "ended once, not on every refresh"
+    );
+    // A VVX 250 answered that NOTIFY and refreshed again five minutes
+    // later, so a refresh from where its subscriber registered — a digest
+    // REGISTER vouching for the address — is taken up in its dialog.
+    assert_eq!(phone.register().await.unwrap(), 200);
+    assert_eq!(
+        phone.resubscribe(&mut forgotten, 600, None).await.unwrap(),
+        200,
+        "a refresh from where its subscriber registered is taken up"
+    );
+    assert!(
+        state_in(&phone, &forgotten.call_id)
+            .await
+            .is_some_and(|s| s.starts_with("active")),
+        "the counts in the subscription taken up"
+    );
+    assert_eq!(
+        phone.resubscribe(&mut forgotten, 0, None).await.unwrap(),
+        200
     );
 
     // Ended: one last NOTIFY.

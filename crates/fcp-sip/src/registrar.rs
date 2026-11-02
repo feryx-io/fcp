@@ -1315,6 +1315,26 @@ impl FcpRegistrar {
             .ok()
     }
 
+    /// Whether whoever a request's `From` names holds a live binding
+    /// registered from exactly `peer` (address and port): what a
+    /// digest-authenticated REGISTER vouches for, for a request that
+    /// carries no credentials of its own.
+    pub async fn registered_from(&self, request: &Request, peer: std::net::SocketAddr) -> bool {
+        let (Some(tenant), Some(aor)) = (self.caller_tenant(request).await, from_aor(request))
+        else {
+            return false;
+        };
+        let Ok(rows) = self.get_registration_rows_impl(&tenant, &aor).await else {
+            return false;
+        };
+        rows.iter().any(|r| {
+            r.source_address
+                .as_deref()
+                .and_then(|s| s.parse::<std::net::SocketAddr>().ok())
+                .is_some_and(|s| s.port() == peer.port() && same_address(s.ip(), peer.ip()))
+        })
+    }
+
     /// Extract AOR from a REGISTER request's To header.
     fn extract_aor_from_request(&self, request: &Request) -> Option<String> {
         extract_aor_from_request(request)
