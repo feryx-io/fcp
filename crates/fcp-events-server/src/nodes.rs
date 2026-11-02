@@ -150,7 +150,9 @@ impl NodeRegistry {
     }
 
     /// Check for stale nodes and update their status.
-    /// Returns the number of nodes marked offline.
+    /// Returns the number of nodes marked offline by this check: a node
+    /// already offline is not counted again, so the caller's warning is
+    /// once per node going, not every check until it is removed.
     pub fn check_stale_nodes(&self) -> usize {
         let now = SystemTime::now();
         let mut offline_count = 0;
@@ -158,7 +160,9 @@ impl NodeRegistry {
         for mut entry in self.nodes.iter_mut() {
             if let Ok(elapsed) = now.duration_since(entry.last_seen) {
                 let new_status = if elapsed > self.offline_threshold {
-                    offline_count += 1;
+                    if entry.status != NodeStatus::Offline {
+                        offline_count += 1;
+                    }
                     NodeStatus::Offline
                 } else if elapsed > self.degraded_threshold {
                     NodeStatus::Degraded
@@ -345,11 +349,14 @@ mod tests {
 
         // Wait more
         std::thread::sleep(Duration::from_millis(50));
-        registry.check_stale_nodes();
+        assert_eq!(registry.check_stale_nodes(), 1, "marked offline");
         assert_eq!(
             registry.get_node("node-1").unwrap().status,
             NodeStatus::Offline
         );
+
+        // Still offline: not counted again.
+        assert_eq!(registry.check_stale_nodes(), 0, "already offline");
     }
 
     #[test]

@@ -2908,7 +2908,10 @@ impl SipMessageHandler {
                 // Message waiting (RFC 3842), in or out of dialog.
                 if let Some(subs) = &self.mwi_subscriptions {
                     if crate::mwi_subscriptions::MwiSubscriptions::handles_event(request) {
-                        if let Err(e) = subs.handle_subscribe(request, handle).await {
+                        if let Err(e) = subs
+                            .handle_subscribe(request, handle, peer, transport)
+                            .await
+                        {
                             warn!(error = %e, "A message-summary SUBSCRIBE failed");
                             let response =
                                 self.create_simple_response(request, 500, "Server Internal Error");
