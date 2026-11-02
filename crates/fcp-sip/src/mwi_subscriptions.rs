@@ -18,9 +18,10 @@ use fcp_core::storage::{DeviceStore, VoicemailStore};
 use fcp_core::{DynStorage, MwiStatus};
 use sip_core::{Headers, Method, Request, RequestLine, SipUri};
 use smol_str::SmolStr;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
 /// The event package.
@@ -28,6 +29,8 @@ pub const EVENT: &str = "message-summary";
 /// The longest subscription granted, and the length of one that asks for
 /// none.
 const MAX_EXPIRES: u32 = 3600;
+/// How often a forgotten subscription is told it is over.
+const DEACTIVATE_EVERY: Duration = Duration::from_secs(60);
 
 /// One subscription: enough to send NOTIFYs inside it.
 struct Subscription {
@@ -63,6 +66,8 @@ pub struct MwiSubscriptions {
     host: String,
     /// By the subscriber's Call-ID.
     subs: DashMap<String, Arc<Subscription>>,
+    /// Forgotten subscriptions told they are over, by Call-ID: when.
+    deactivated: DashMap<String, Instant>,
 }
 
 /// An RFC 3842 body.
@@ -90,6 +95,7 @@ impl MwiSubscriptions {
             registrar,
             host,
             subs: DashMap::new(),
+            deactivated: DashMap::new(),
         })
     }
 
@@ -125,11 +131,14 @@ impl MwiSubscriptions {
     }
 
     /// Answer a `message-summary` SUBSCRIBE: authenticated like an INVITE,
-    /// for the subscriber's own mailbox.
+    /// for the subscriber's own mailbox. `peer` and `transport` are where
+    /// and how it came.
     pub async fn handle_subscribe(
         &self,
         request: &Request,
         handle: &sip_transaction::ServerTransactionHandle,
+        peer: SocketAddr,
+        transport: sip_transaction::TransportKind,
     ) -> anyhow::Result<()> {
         let call_id = header(request, "Call-ID").unwrap_or_default();
         let expires = expires_of(request).unwrap_or(MAX_EXPIRES).min(MAX_EXPIRES);
@@ -152,10 +161,15 @@ impl MwiSubscriptions {
         // a restart — is 481, so the phone subscribes afresh (RFC 6665
         // §4.2.1.2). Challenged instead, a VVX resent the same refresh on
         // its old nonce for ever and never lit (`docs/DEEP_TESTING.md` D8,
-        // finding 39).
+        // finding 39). A VVX 250 on 6.4.7 resends it after the 481 too,
+        // every four seconds, so the subscription is also ended from our
+        // side with `deactivated`, which asks for a new one at once
+        // (RFC 6665 §4.1.3).
         if header(request, "To").as_deref().and_then(tag_of).is_some() {
             info!(call_id = %call_id, "A message-summary refresh for no subscription here: 481");
-            return respond(handle, request, 481, "Subscription Does Not Exist").await;
+            respond(handle, request, 481, "Subscription Does Not Exist").await?;
+            self.deactivate(request, peer, transport);
+            return Ok(());
         }
 
         if let Some(registrar) = &self.registrar {
@@ -232,6 +246,59 @@ impl MwiSubscriptions {
         Ok(())
     }
 
+    /// End a subscription this node forgot, inside the dialog the refresh
+    /// names, so the subscriber starts a new one. The refresh is not
+    /// authenticated, so the NOTIFY goes only back where it came from — a
+    /// UDP subscriber whose Contact is the address it was seen at (behind
+    /// NAT, made so on arrival) — and once a minute per Call-ID.
+    fn deactivate(
+        &self,
+        request: &Request,
+        peer: SocketAddr,
+        transport: sip_transaction::TransportKind,
+    ) {
+        if !matches!(transport, sip_transaction::TransportKind::Udp) {
+            return;
+        }
+        let (Some(contact), Some(from), Some(to), Some(call_id)) = (
+            contact_of(request).and_then(|c| SipUri::parse(&c).ok()),
+            header(request, "From"),
+            header(request, "To"),
+            header(request, "Call-ID"),
+        ) else {
+            return;
+        };
+        if !reaches(&contact, peer) {
+            debug!(call_id = %call_id, contact = %contact.as_str(), peer = %peer, "A forgotten subscription's Contact is not where it came from: not ended");
+            return;
+        }
+        let now = Instant::now();
+        self.deactivated
+            .retain(|_, at| now.duration_since(*at) < DEACTIVATE_EVERY);
+        if self.deactivated.contains_key(&call_id) {
+            return;
+        }
+        self.deactivated.insert(call_id.clone(), now);
+        // Above any CSeq of the NOTIFYs the node sent before it forgot.
+        let cseq = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| (d.as_secs() & 0x7fff_ffff) as u32)
+            .unwrap_or(1 << 30);
+        let sub = Arc::new(Subscription {
+            mailbox_id: String::new(),
+            call_id: call_id.clone(),
+            their_tag: tag_of(&from).unwrap_or_default(),
+            our_tag: tag_of(&to).unwrap_or_default(),
+            subscriber: without_tag(&from),
+            resource: without_tag(&to),
+            contact,
+            cseq: AtomicU32::new(cseq),
+            expires_at: std::sync::Mutex::new(now),
+        });
+        info!(call_id = %call_id, "A forgotten message-summary subscription ended: deactivated");
+        self.send_notify(&sub, "terminated;reason=deactivated", None);
+    }
+
     async fn status(&self, mailbox_id: &str) -> Option<MwiStatus> {
         match self.storage.get_mwi_status(mailbox_id).await {
             Ok(status) => Some(status),
@@ -294,6 +361,14 @@ impl MwiSubscriptions {
     }
 }
 
+/// Whether a UDP Contact is the address a request came from (no port is
+/// 5060).
+fn reaches(contact: &SipUri, peer: SocketAddr) -> bool {
+    let host = contact.host().trim_start_matches('[').trim_end_matches(']');
+    host.parse::<std::net::IpAddr>().ok() == Some(peer.ip())
+        && contact.port().unwrap_or(5060) == peer.port()
+}
+
 /// A NOTIFY inside `sub`, with the summary when there is one.
 fn notify_request(
     sub: &Subscription,
@@ -344,6 +419,24 @@ fn notify_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_forgotten_subscription_is_ended_only_where_it_came_from() {
+        let peer: SocketAddr = "203.0.113.7:5062".parse().unwrap();
+        let at = |uri: &str| reaches(&SipUri::parse(uri).unwrap(), peer);
+        assert!(at("sip:alice@203.0.113.7:5062"));
+        assert!(!at("sip:alice@203.0.113.7"), "no port is 5060");
+        assert!(!at("sip:alice@198.51.100.9:5062"), "someone else");
+        assert!(
+            !at("sip:alice@example.com:5062"),
+            "a name is not an address"
+        );
+        let default: SocketAddr = "203.0.113.7:5060".parse().unwrap();
+        assert!(reaches(
+            &SipUri::parse("sip:alice@203.0.113.7").unwrap(),
+            default
+        ));
+    }
 
     #[test]
     fn the_body_is_rfc_3842s() {

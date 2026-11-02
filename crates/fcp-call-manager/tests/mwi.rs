@@ -85,6 +85,26 @@ async fn summary(phone: &Phone) -> Option<String> {
     None
 }
 
+/// The `Subscription-State` of a message-summary NOTIFY in the
+/// subscription `call_id`, when one comes soon.
+async fn ended(phone: &Phone, call_id: &str) -> Option<String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        if let Some(PhoneEvent::Notify {
+            call_id: notified,
+            event,
+            state,
+            ..
+        }) = phone.next_event(Duration::from_millis(250)).await
+        {
+            if notified == call_id && event.starts_with("message-summary") {
+                return state;
+            }
+        }
+    }
+    None
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_subscribed_phone_is_told_its_messages() {
     let (Some(db), Some(redis)) = (TestDatabase::create().await, private_redis_url()) else {
@@ -210,6 +230,23 @@ async fn a_subscribed_phone_is_told_its_messages() {
         phone.resubscribe(&mut forgotten, 600, None).await.unwrap(),
         481,
         "a refresh for no subscription here"
+    );
+    // A VVX 250 on 6.4.7 resent it after the 481 too, every four seconds, so
+    // the node also ends it from its side, which asks for a new one at once.
+    assert_eq!(
+        ended(&phone, &forgotten.call_id).await.as_deref(),
+        Some("terminated;reason=deactivated"),
+        "a forgotten subscription is ended"
+    );
+    // Once a minute, not on every refresh.
+    assert_eq!(
+        phone.resubscribe(&mut forgotten, 600, None).await.unwrap(),
+        481
+    );
+    assert_eq!(
+        ended(&phone, &forgotten.call_id).await,
+        None,
+        "ended once, not on every refresh"
     );
 
     // Ended: one last NOTIFY.

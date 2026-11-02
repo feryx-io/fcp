@@ -56,6 +56,9 @@ pub enum PhoneEvent {
         body: String,
         /// The `Call-Info` header: a shared line's lamps.
         call_info: Option<String>,
+        /// The `Subscription-State` header: `active;expires=…`,
+        /// `terminated;reason=…`.
+        state: Option<String>,
     },
 }
 
@@ -1928,11 +1931,14 @@ impl UasRequestHandler for Handler {
             .map(|v| v.to_string())
             .unwrap_or_default();
         let call_info = sip_parse::header(request.headers(), "Call-Info").map(|v| v.to_string());
+        let state =
+            sip_parse::header(request.headers(), "Subscription-State").map(|v| v.to_string());
         self.0.emit(PhoneEvent::Notify {
             call_id,
             event,
             body: String::from_utf8_lossy(request.body()).to_string(),
             call_info,
+            state,
         });
         Ok(())
     }
