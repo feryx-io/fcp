@@ -268,12 +268,12 @@ export function LineBindingsPage() {
     enabled: !!editItem,
   })
   const effectiveTenantId = useEffectiveTenantId()
-  const createForm = useForm<CreateForm>({
+  const createForm = useForm<z.input<typeof createSchema>, unknown, CreateForm>({
     resolver: zodResolver(createSchema),
     defaultValues: { binding_type: 'user', ring_strategy: 'simultaneous', tenant_id: effectiveTenantId },
   })
 
-  const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) })
+  const editForm = useForm<z.input<typeof editSchema>, unknown, EditForm>({ resolver: zodResolver(editSchema) })
 
   const [lastEditId, setLastEditId] = useState<string | null>(null)
   if (editItem && editItem.id !== lastEditId) {
