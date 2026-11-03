@@ -10,7 +10,7 @@ use sip_core::{Headers, Method, Request, Response, StatusLine};
 use sip_parse::parse_authorization_header;
 use smol_str::SmolStr;
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, info};
 
 /// How long a nonce this node issued stays usable.
 ///
@@ -266,6 +266,20 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
             uri.as_str(),
             &request_identity(request),
         ) {
+            // RFC 3261 §22.4: the `uri` signed should be the Request-URI. Not
+            // yet refused (#307): what real phones sign is being measured
+            // first, since anything that rewrites the Request-URI on the way
+            // would be refused with it.
+            if !digest_uri_matches(uri.as_str(), request.uri()) {
+                info!(
+                    username = %username,
+                    method = %request.method().as_str(),
+                    signed = %uri,
+                    request_uri = %request.uri().as_str(),
+                    user_agent = %request.headers().get_smol("User-Agent").map(|v| v.as_str()).unwrap_or(""),
+                    "A digest signed for another Request-URI: accepted for now"
+                );
+            }
             AuthOutcome::Authenticated {
                 username: username.to_string(),
             }
@@ -289,6 +303,48 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
             .map(char::from)
             .collect()
     }
+}
+
+/// Whether the `uri` a digest was computed over names the request's
+/// Request-URI, as RFC 3261 §19.1.4 compares SIP URIs: scheme, user and
+/// port exactly, the host without case, `user`, `ttl`, `method`, `maddr`
+/// and `transport` equal when either has them, any other parameter equal
+/// when both have it, and the same headers. A URI that is not SIP must be
+/// the same text.
+pub fn digest_uri_matches(signed: &str, request_uri: &sip_core::Uri) -> bool {
+    if signed == request_uri.as_str() {
+        return true;
+    }
+    let (Ok(a), Some(b)) = (sip_core::SipUri::parse(signed), request_uri.as_sip()) else {
+        return false;
+    };
+    if a.is_sips() != b.is_sips()
+        || a.user() != b.user()
+        || !a.host().eq_ignore_ascii_case(b.host())
+        || a.port() != b.port()
+    {
+        return false;
+    }
+    let param = |uri: &sip_core::SipUri, name: &str| {
+        uri.params()
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_deref().unwrap_or("").to_ascii_lowercase())
+    };
+    const MUST_MATCH: [&str; 5] = ["user", "ttl", "method", "maddr", "transport"];
+    for name in MUST_MATCH {
+        if param(&a, name) != param(b, name) {
+            return false;
+        }
+    }
+    for name in a.params().keys() {
+        if let Some(theirs) = param(b, name) {
+            if param(&a, name) != Some(theirs) {
+                return false;
+            }
+        }
+    }
+    a.headers() == b.headers()
 }
 
 /// What makes this request *this* request, for telling a retransmission
@@ -316,6 +372,48 @@ fn request_identity(request: &Request) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request_uri(uri: &str) -> sip_core::Uri {
+        sip_core::Uri::parse(uri).unwrap()
+    }
+
+    /// RFC 3261 §19.1.4's comparison for the digest's `uri` (#307).
+    #[test]
+    fn a_digest_uri_is_compared_as_rfc_3261_compares_uris() {
+        let same = |a: &str, b: &str| digest_uri_matches(a, &request_uri(b));
+        assert!(same("sip:e2e.local", "sip:e2e.local"));
+        assert!(
+            same("sip:E2E.Local", "sip:e2e.local"),
+            "the host without case"
+        );
+        assert!(
+            same("sip:alice@e2e.local;lr", "sip:alice@e2e.local"),
+            "a parameter one side lacks"
+        );
+        assert!(same(
+            "sip:e2e.local;TRANSPORT=TCP",
+            "sip:e2e.local;transport=tcp"
+        ));
+        assert!(
+            !same("sip:127.0.0.1:5070", "sip:e2e.local"),
+            "SIPp's: another host"
+        );
+        assert!(
+            !same("sip:e2e.local:5060", "sip:e2e.local"),
+            "an explicit port is not none"
+        );
+        assert!(
+            !same("sip:Alice@e2e.local", "sip:alice@e2e.local"),
+            "the user with case"
+        );
+        assert!(!same("sips:e2e.local", "sip:e2e.local"));
+        assert!(
+            !same("sip:e2e.local;transport=tcp", "sip:e2e.local"),
+            "transport on one side"
+        );
+        assert!(!same("sip:e2e.local;foo=1", "sip:e2e.local;foo=2"));
+        assert!(!same("not a uri", "sip:e2e.local"));
+    }
 
     struct OneUser {
         username: String,
@@ -351,7 +449,11 @@ mod tests {
 
     /// A REGISTER carrying a digest response computed over `nonce`.
     fn register(nonce: &str, nc: Option<&str>, contact: &str) -> Request {
-        let uri = "sip:fcp.local";
+        register_signing(nonce, nc, contact, "sip:fcp.local")
+    }
+
+    /// A `REGISTER sip:fcp.local` whose digest is computed over `uri`.
+    fn register_signing(nonce: &str, nc: Option<&str>, contact: &str, uri: &str) -> Request {
         let ha1 = ha1("alice", "fcp.local", "secret");
         let ha2 = format!("{:x}", md5::compute(format!("REGISTER:{uri}")));
         let response = match nc {
@@ -370,7 +472,7 @@ mod tests {
              uri=\"{uri}\", response=\"{response}\"{qop}"
         );
         let raw = format!(
-            "REGISTER {uri} SIP/2.0\r\n\
+            "REGISTER sip:fcp.local SIP/2.0\r\n\
              Via: SIP/2.0/UDP 10.0.0.9:5060;branch=z9hG4bK1\r\n\
              From: <sip:alice@fcp.local>;tag=1\r\n\
              To: <sip:alice@fcp.local>\r\n\
@@ -426,6 +528,26 @@ mod tests {
                 username: "alice".to_string()
             }
         );
+    }
+
+    /// A digest signed for another URI is still proof until what phones
+    /// sign has been measured (#307); the mismatch is logged.
+    #[tokio::test]
+    async fn a_digest_for_another_uri_is_accepted_for_now() {
+        let auth = authenticator();
+        let seed = register("unused", Some("00000001"), "sip:alice@10.0.0.9");
+        let nonce = issued_nonce(&auth, &seed);
+        let request = register_signing(
+            &nonce,
+            Some("00000001"),
+            "sip:alice@10.0.0.9",
+            "sip:127.0.0.1:5070",
+        );
+        assert!(!digest_uri_matches("sip:127.0.0.1:5070", request.uri()));
+        assert!(matches!(
+            auth.authenticate(&request).await,
+            AuthOutcome::Authenticated { .. }
+        ));
     }
 
     #[tokio::test]
