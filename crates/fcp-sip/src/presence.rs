@@ -162,6 +162,8 @@ pub struct SipPresenceHandler {
     /// Devices, extensions and lines: devices' own credentials, and whom a
     /// credential may act as (`crate::hoteling::may_act_as`).
     identity: Option<Arc<fcp_core::DynStorage>>,
+    /// Whether a digest must be signed for the Request-URI (#307).
+    digest_uri_check: bool,
     /// Default subscription expiry in seconds
     default_expires: u32,
     /// Rate limiter for SUBSCRIBE requests (keyed by source IP and AOR)
@@ -232,6 +234,7 @@ impl SipPresenceHandler {
             tenant_id,
             tenant_store: None,
             identity: None,
+            digest_uri_check: true,
             default_expires,
             subscribe_limiter,
             publish_limiter,
@@ -311,6 +314,14 @@ impl SipPresenceHandler {
         self
     }
 
+    /// Whether a digest must be signed for the Request-URI (on by
+    /// default; `[registrar] digest_uri_check`, #307); call before
+    /// [`with_digest_auth`](Self::with_digest_auth).
+    pub fn with_digest_uri_check(mut self, check: bool) -> Self {
+        self.digest_uri_check = check;
+        self
+    }
+
     /// People's presence (`docs/PRESENCE.md` §3): a person's is laid on an
     /// address before its first watcher is told, and hunt groups skip a
     /// member in do not disturb or on a call.
@@ -350,7 +361,10 @@ impl SipPresenceHandler {
                 .with_tenant_context(self.tenant_store.clone(), Some(self.tenant_id))
                 .with_identity(self.identity.clone());
         self.auth = Some(PresenceDigestAuth {
-            authenticator: Arc::new(crate::auth::Ha1Authenticator::new(realm, adapter)),
+            authenticator: Arc::new(
+                crate::auth::Ha1Authenticator::new(realm, adapter)
+                    .with_uri_check(self.digest_uri_check),
+            ),
         });
         self
     }
@@ -362,6 +376,7 @@ impl SipPresenceHandler {
             tenant_id: self.tenant_id,
             tenant_store: self.tenant_store.clone(),
             identity: self.identity.clone(),
+            digest_uri_check: self.digest_uri_check,
             default_expires: self.default_expires,
             subscribe_limiter: Arc::clone(&self.subscribe_limiter),
             publish_limiter: Arc::clone(&self.publish_limiter),
@@ -487,6 +502,13 @@ impl SipPresenceHandler {
             }
             crate::auth::AuthOutcome::Failed => {
                 handle.send_final(challenge()?).await;
+                return Ok(false);
+            }
+            // Signed for another Request-URI (#307): a retry would be too.
+            crate::auth::AuthOutcome::WrongUri { .. } => {
+                let response =
+                    sip_uas::UserAgentServer::create_response(request, 400, "Bad Request");
+                handle.send_final(response).await;
                 return Ok(false);
             }
         }

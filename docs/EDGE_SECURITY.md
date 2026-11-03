@@ -455,6 +455,21 @@ does. The manager holds 10 000 nonces and evicts the oldest under
 pressure, so a flood costs legitimate clients an extra challenge, not a
 refusal — and REGISTER floods are already bounded per source and per AOR.
 
+The digest's own `uri` was never compared with the Request-URI either
+(RFC 3261 §22.4, #307), so the nonce's replay check was all that tied a
+digest to the request it arrived on. v0.25.511 compared them as RFC 3261
+§19.1.4 compares URIs (`fcp_sip::auth::digest_uri_matches`) and only
+logged a mismatch; on D8 the Polycom VVX 250 and Anvil signed exactly the
+Request-URI on REGISTER and INVITE alike, `user=phone` included. Since
+v0.25.512 a digest signed for another URI is answered `400 Bad Request`
+(RFC 2617 §3.2.2.5), never challenged, since the retry would be signed the
+same way; REGISTER publishes `registration.failed` with
+`digest_uri_mismatch`. `digest_uri_check = false` — `[registrar]` on the
+call manager and the standalone registrar, `[sip]` on the presence server —
+logs and accepts it instead, for a client or a proxy on the way that signs
+another form of the address. SIPp is one: it signs `sip:<host>:<port>`
+unless given `-auth_uri`.
+
 ## 3. Goals
 
 1. A call is placed by someone the node has authenticated, not by

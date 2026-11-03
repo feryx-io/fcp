@@ -413,6 +413,9 @@ impl Sca {
                     info!(line = %line.number, authenticated = %authenticated, "A shared-line SUBSCRIBE from credentials that are not the line's");
                     return respond(handle, request, 403, "Forbidden").await;
                 }
+                InviteAuth::WrongUri { .. } => {
+                    return respond(handle, request, 400, "Bad Request").await;
+                }
                 InviteAuth::Challenge { stale } => {
                     let response = match registrar.invite_challenge(request, stale) {
                         Ok(r) => r,

@@ -10,7 +10,7 @@ use sip_core::{Headers, Method, Request, Response, StatusLine};
 use sip_parse::parse_authorization_header;
 use smol_str::SmolStr;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// How long a nonce this node issued stays usable.
 ///
@@ -33,6 +33,11 @@ pub enum AuthOutcome {
     Stale,
     /// No credentials, or the wrong ones.
     Failed,
+    /// The right password, signed for a `uri` that is not the
+    /// Request-URI (RFC 3261 §22.4). A fresh challenge would be signed
+    /// the same way, so it is answered `400` (RFC 2617 §3.2.2.5), never
+    /// challenged (#307).
+    WrongUri { username: String, signed: String },
 }
 
 #[async_trait]
@@ -58,6 +63,10 @@ pub struct Ha1Authenticator<S: Ha1CredentialStore> {
     /// The nonces this node has issued. A digest is only proof against a
     /// nonce from here (`docs/EDGE_SECURITY.md` §2.7).
     nonces: NonceManager,
+    /// Whether a digest signed for another Request-URI is refused
+    /// ([`AuthOutcome::WrongUri`]) or only logged (`[registrar]
+    /// digest_uri_check`).
+    check_uri: bool,
 }
 
 impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
@@ -75,7 +84,16 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
             // and the request identity below are what separate a
             // retransmission from a replay, not a short reuse window.
             nonces: NonceManager::new(nonce_ttl).with_max_request_age(nonce_ttl),
+            check_uri: true,
         }
+    }
+
+    /// Whether a digest's `uri` must name the Request-URI (on by
+    /// default). Off, a mismatch is logged and accepted, for a client or
+    /// a proxy on the way that signs another form of the address.
+    pub fn with_uri_check(mut self, check: bool) -> Self {
+        self.check_uri = check;
+        self
     }
 
     /// Compute HA2 for authentication
@@ -266,18 +284,36 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
             uri.as_str(),
             &request_identity(request),
         ) {
-            // RFC 3261 §22.4: the `uri` signed should be the Request-URI. Not
-            // yet refused (#307): what real phones sign is being measured
-            // first, since anything that rewrites the Request-URI on the way
-            // would be refused with it.
+            // RFC 3261 §22.4: the `uri` signed is the Request-URI. Phones
+            // were measured signing exactly that (#307); anything else is
+            // a digest for some other request.
             if !digest_uri_matches(uri.as_str(), request.uri()) {
+                let user_agent = request
+                    .headers()
+                    .get_smol("User-Agent")
+                    .map(|v| v.as_str())
+                    .unwrap_or("");
+                if self.check_uri {
+                    warn!(
+                        username = %username,
+                        method = %request.method().as_str(),
+                        signed = %uri,
+                        request_uri = %request.uri().as_str(),
+                        user_agent = %user_agent,
+                        "Refusing credentials: the digest was signed for another Request-URI"
+                    );
+                    return AuthOutcome::WrongUri {
+                        username: username.to_string(),
+                        signed: uri.to_string(),
+                    };
+                }
                 info!(
                     username = %username,
                     method = %request.method().as_str(),
                     signed = %uri,
                     request_uri = %request.uri().as_str(),
-                    user_agent = %request.headers().get_smol("User-Agent").map(|v| v.as_str()).unwrap_or(""),
-                    "A digest signed for another Request-URI: accepted for now"
+                    user_agent = %user_agent,
+                    "A digest signed for another Request-URI: accepted, digest_uri_check is off"
                 );
             }
             AuthOutcome::Authenticated {
@@ -533,17 +569,31 @@ mod tests {
     /// A digest signed for another URI is still proof until what phones
     /// sign has been measured (#307); the mismatch is logged.
     #[tokio::test]
-    async fn a_digest_for_another_uri_is_accepted_for_now() {
+    async fn a_digest_for_another_uri_is_refused_unless_the_check_is_off() {
+        let signed_elsewhere = |auth: &Ha1Authenticator<OneUser>| {
+            let seed = register("unused", Some("00000001"), "sip:alice@10.0.0.9");
+            let nonce = issued_nonce(auth, &seed);
+            register_signing(
+                &nonce,
+                Some("00000001"),
+                "sip:alice@10.0.0.9",
+                "sip:127.0.0.1:5070",
+            )
+        };
+
         let auth = authenticator();
-        let seed = register("unused", Some("00000001"), "sip:alice@10.0.0.9");
-        let nonce = issued_nonce(&auth, &seed);
-        let request = register_signing(
-            &nonce,
-            Some("00000001"),
-            "sip:alice@10.0.0.9",
-            "sip:127.0.0.1:5070",
-        );
+        let request = signed_elsewhere(&auth);
         assert!(!digest_uri_matches("sip:127.0.0.1:5070", request.uri()));
+        assert_eq!(
+            auth.authenticate(&request).await,
+            AuthOutcome::WrongUri {
+                username: "alice".into(),
+                signed: "sip:127.0.0.1:5070".into(),
+            }
+        );
+
+        let auth = authenticator().with_uri_check(false);
+        let request = signed_elsewhere(&auth);
         assert!(matches!(
             auth.authenticate(&request).await,
             AuthOutcome::Authenticated { .. }

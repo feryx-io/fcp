@@ -352,7 +352,8 @@ fn create_registrar(
     .with_default_tenant_id(config.service.default_tenant_id)
     // Devices' own credentials, and who a credential may register as
     // (docs/ENTERPRISE_CALLING.md §3.8).
-    .with_identity(Arc::clone(storage));
+    .with_identity(Arc::clone(storage))
+    .with_digest_uri_check(config.registrar.digest_uri_check);
     // Phone apps the call managers can wake (docs/PUSH.md §2.1).
     Arc::new(match &config.push {
         Some(push) => registrar.with_push(push.clone()),

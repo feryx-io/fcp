@@ -39,7 +39,22 @@ impl Stack {
     }
 
     /// [`Stack::start_with`], with `sip_extra` (keys) added to `[sip]`.
+    ///
+    /// SIPp signs its digests for `sip:<host>:<port>`, not the
+    /// Request-URI, unless given one `-auth_uri` for the whole run — and
+    /// the attended transfer authenticates INVITEs to two callees — so
+    /// these stacks accept the mismatch; [`Stack::start_strict`] does not.
     async fn start_configured(sip_extra: &str, extra: &str) -> Option<Self> {
+        Self::start_full("digest_uri_check = false", sip_extra, extra).await
+    }
+
+    /// A stack that refuses a digest signed for another Request-URI, as a
+    /// node does by default (#307).
+    async fn start_strict() -> Option<Self> {
+        Self::start_full("", "", "").await
+    }
+
+    async fn start_full(registrar_extra: &str, sip_extra: &str, extra: &str) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -61,6 +76,7 @@ local_ip = "127.0.0.1"
 auth_enabled = true
 auth_invites = true
 realm = "{REALM}"
+{registrar_extra}
 
 [storage]
 database_url = "{db}"
@@ -200,6 +216,54 @@ async fn sipp_registers_with_digest() {
     stack.passed(&out, "register").await;
     let bindings = stack.registrations("alice").await;
     assert_eq!(bindings.len(), 1, "{bindings:?}");
+}
+
+/// SIPp's own form, `sip:127.0.0.1:<port>` for `REGISTER sip:<realm>`, is
+/// a digest for another Request-URI: a node refuses it with `400` and
+/// takes it once `-auth_uri` names the Request-URI (#307).
+#[tokio::test]
+async fn a_digest_for_another_request_uri_is_refused() {
+    let Some(sipp) = Sipp::find() else {
+        return;
+    };
+    let Some(stack) = Stack::start_strict().await else {
+        return;
+    };
+    let vars = [
+        ("user", "alice"),
+        ("domain", REALM),
+        ("contact", "127.0.0.1:5999"),
+        ("expires", "300"),
+    ];
+    let out = sipp
+        .run(
+            &scenario("register"),
+            stack.sip,
+            &vars,
+            &["-au", "alice", "-ap", "alice-pw"],
+        )
+        .await;
+    assert_ne!(out.code, Some(0), "SIPp's own uri was taken");
+    assert!(
+        out.messages
+            .contains("SIP/2.0 400 Bad Request - digest uri"),
+        "{}",
+        out.messages
+    );
+    assert!(stack.registrations("alice").await.is_empty());
+
+    let out = sipp
+        .run(
+            &scenario("register"),
+            stack.sip,
+            &vars,
+            &["-au", "alice", "-ap", "alice-pw", "-auth_uri", REALM],
+        )
+        .await;
+    stack
+        .passed(&out, "register signed for the Request-URI")
+        .await;
+    assert_eq!(stack.registrations("alice").await.len(), 1);
 }
 
 #[tokio::test]

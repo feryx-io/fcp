@@ -185,6 +185,9 @@ impl MwiSubscriptions {
                     info!(call_id = %call_id, "A message-summary SUBSCRIBE for someone else's mailbox: 403");
                     return respond(handle, request, 403, "Forbidden").await;
                 }
+                InviteAuth::WrongUri { .. } => {
+                    return respond(handle, request, 400, "Bad Request").await;
+                }
                 InviteAuth::Challenge { stale } => {
                     let response =
                         registrar

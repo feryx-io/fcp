@@ -223,6 +223,10 @@ pub enum InviteAuth {
         authenticated: String,
         claimed: String,
     },
+    /// The right password, signed for another Request-URI
+    /// (`[registrar] digest_uri_check`, #307). Answered `400`, never
+    /// challenged: the retry would be signed the same way.
+    WrongUri { username: String, signed: String },
 }
 
 /// The address of record a request's `From` names — who it says placed
@@ -750,6 +754,10 @@ pub struct FcpRegistrar {
     /// `docs/EDGE_SECURITY.md` §2.1).
     auth_invites: AtomicBool,
 
+    /// Whether a digest must be signed for the Request-URI
+    /// (`[registrar] digest_uri_check`, #307).
+    digest_uri_check: bool,
+
     /// Credential store for looking up user preferences
     credential_store: Option<Arc<dyn CredentialStore>>,
 
@@ -835,6 +843,7 @@ impl FcpRegistrar {
             authenticator: None,
             auth_enabled: AtomicBool::new(auth_enabled),
             auth_invites: AtomicBool::new(false),
+            digest_uri_check: true,
             credential_store,
             identity: None,
             device_registrations: None,
@@ -989,6 +998,7 @@ impl FcpRegistrar {
                     .with_tenant_context(self.tenant_store.clone(), self.default_tenant_id)
                     .with_identity(self.identity.clone());
             Ha1Authenticator::new(self.realm.clone(), cred_adapter)
+                .with_uri_check(self.digest_uri_check)
         });
     }
 
@@ -1013,6 +1023,15 @@ impl FcpRegistrar {
     /// (`[registrar] auth_invites`, `docs/EDGE_SECURITY.md` §2.1).
     pub fn with_auth_invites(self, required: bool) -> Self {
         self.auth_invites.store(required, Ordering::Relaxed);
+        self
+    }
+
+    /// Whether a digest must be signed for the Request-URI it arrives on
+    /// (`[registrar] digest_uri_check`, on by default, #307). Off, a
+    /// mismatch is logged and accepted.
+    pub fn with_digest_uri_check(mut self, check: bool) -> Self {
+        self.digest_uri_check = check;
+        self.refresh_authenticator();
         self
     }
 
@@ -1059,6 +1078,9 @@ impl FcpRegistrar {
         match authenticator.authenticate(request).await {
             crate::auth::AuthOutcome::Failed => InviteAuth::Challenge { stale: false },
             crate::auth::AuthOutcome::Stale => InviteAuth::Challenge { stale: true },
+            crate::auth::AuthOutcome::WrongUri { username, signed } => {
+                InviteAuth::WrongUri { username, signed }
+            }
             crate::auth::AuthOutcome::Authenticated { username } => {
                 match from_user(request) {
                     // A request with no usable `From` user names nobody to
@@ -1260,6 +1282,21 @@ impl FcpRegistrar {
                                 return self.create_error_response(request, 403, "Forbidden");
                             }
                         }
+                    }
+                    // Signed for another Request-URI: a fresh challenge
+                    // would be answered the same way (#307).
+                    crate::auth::AuthOutcome::WrongUri { .. } => {
+                        self.publish_event(RegistrationEvent::Failed {
+                            aor: aor.clone(),
+                            tenant_id: tenant_id.unwrap_or_else(TenantId::nil),
+                            reason: "digest_uri_mismatch".to_string(),
+                            timestamp: SystemTime::now(),
+                        });
+                        return self.create_error_response(
+                            request,
+                            400,
+                            "Bad Request - digest uri is not the Request-URI",
+                        );
                     }
                     // The credentials are right and only the nonce was not
                     // usable, so the phone retries without prompting anyone.

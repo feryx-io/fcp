@@ -355,7 +355,8 @@ async fn main() -> Result<()> {
         // Whose presence a request is about: its domain's tenant.
         .with_tenant_store(Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::TenantStore>)
         .with_identity(Arc::clone(&dyn_storage))
-        .with_admission(Some(Arc::clone(&node_admission)));
+        .with_admission(Some(Arc::clone(&node_admission)))
+        .with_digest_uri_check(config.sip.digest_uri_check);
         if config.sip.auth_enabled {
             handler.with_digest_auth(
                 Arc::clone(&dyn_storage) as Arc<dyn fcp_core::CredentialStore>,
