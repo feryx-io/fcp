@@ -1157,7 +1157,7 @@ async fn a_menus_timeout_runs_from_the_end_of_its_prompt() {
             "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "menu"},
             "menu": {
                 "id": "menu", "name": "Menu", "type": "gather", "num_digits": 1,
-                "timeout": 2, "barge_in": true,
+                "timeout": 3, "barge_in": true,
                 "prompt": {"type": "play", "url": prompt.display().to_string()},
                 "transitions": {"3": "dial"}, "default": "done", "on_timeout": "done"
             },
@@ -1179,15 +1179,19 @@ async fn a_menus_timeout_runs_from_the_end_of_its_prompt() {
         })
         .await;
 
-    // The whole 4 s prompt heard, then 3: past the old deadline (2 s from
-    // the prompt's start), inside the new one (2 s from its end).
+    // The whole 4 s prompt heard, then 3 at 5 s from the answer, when the
+    // prompt starts: past the old deadline (3 s from the prompt's start),
+    // inside the new one (3 s from its end), 2 s from each. Timed from the
+    // answer, not from hearing the tone, so a slow runner cannot eat the
+    // margin.
     let call = alice.call(&menu.extension).await.unwrap();
     call.answered(SOON).await.expect("the menu answers");
+    let answered = tokio::time::Instant::now();
     assert!(
         call.media().heard(PROMPT_HZ, SOON).await,
         "the prompt is not heard"
     );
-    tokio::time::sleep(Duration::from_millis(4500)).await;
+    tokio::time::sleep_until(answered + Duration::from_secs(5)).await;
     assert!(
         !call.ended(Duration::ZERO).await,
         "the menu hung up while the prompt was still playing or just after"
