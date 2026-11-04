@@ -159,6 +159,14 @@ pub struct SipSection {
     /// Authentication realm for SIP Digest.
     #[serde(default = "default_realm")]
     pub realm: String,
+
+    /// Whether a digest must be signed for the Request-URI it arrives on
+    /// (RFC 3261 §22.4). On, one signed for another URI is answered `400`;
+    /// off, it is logged and accepted — for a client or a proxy on the way
+    /// that signs another form of the address (SIPp signs
+    /// `sip:<host>:<port>` unless given `-auth_uri`).
+    #[serde(default = "default_true")]
+    pub digest_uri_check: bool,
 }
 
 fn default_sip_bind() -> String {
@@ -188,6 +196,7 @@ impl Default for SipSection {
             local_uri: None,
             auth_enabled: default_true(),
             realm: default_realm(),
+            digest_uri_check: true,
         }
     }
 }

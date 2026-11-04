@@ -178,6 +178,14 @@ pub struct RegistrarSection {
     #[serde(default = "default_realm")]
     pub realm: String,
 
+    /// Whether a digest must be signed for the Request-URI it arrives on
+    /// (RFC 3261 §22.4). On, one signed for another URI is answered `400`;
+    /// off, it is logged and accepted — for a client or a proxy on the way
+    /// that signs another form of the address (SIPp signs
+    /// `sip:<host>:<port>` unless given `-auth_uri`).
+    #[serde(default = "default_true")]
+    pub digest_uri_check: bool,
+
     /// Default registration expiry in seconds
     #[serde(default = "default_expires")]
     pub default_expires: u32,
@@ -216,6 +224,7 @@ impl Default for RegistrarSection {
         Self {
             auth_enabled: true,
             realm: default_realm(),
+            digest_uri_check: true,
             default_expires: default_expires(),
             min_expires: default_min_expires(),
             max_expires: default_max_expires(),

@@ -345,6 +345,16 @@ Changes that need something of a configuration the operator keeps:
   runs on one host. Phones answer the challenge with the credentials they
   register with. Setting `auth_invites = false` keeps the old behaviour,
   and is warned about at every start.
+- **v0.25.512: a digest must be signed for the Request-URI**
+  (`docs/EDGE_SECURITY.md` §2.7, #307). A REGISTER, INVITE or SUBSCRIBE
+  whose digest `uri` is not the Request-URI, as RFC 3261 §19.1.4 compares
+  them, is answered `400 Bad Request`. Real phones sign the Request-URI;
+  SIPp, and anything on the way that rewrites the Request-URI after the
+  phone signed it, do not. Before upgrading, look in a v0.25.511 call
+  manager's log for "A digest signed for another Request-URI": a device
+  named there is refused after the upgrade. `digest_uri_check = false`
+  (`[registrar]` on the call manager and the standalone registrar, `[sip]`
+  on the presence server) logs and accepts it as before.
 - **v0.25.453: an emergency test call (`933`) is answered by the call
   manager** (`docs/E911.md` "Test calls"), which reads back what a live
   call would carry and calls no carrier. Migration 120 gives every tenant

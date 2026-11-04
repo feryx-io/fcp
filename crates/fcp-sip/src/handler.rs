@@ -3556,6 +3556,24 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
                 return Ok(());
             }
+            crate::registrar::InviteAuth::WrongUri { username, signed } => {
+                // Signed for another Request-URI: the retry would be signed
+                // the same way, so it is answered 400 (RFC 2617 §3.2.2.5).
+                warn!(
+                    source = %peer,
+                    tenant_id = %tenant_id,
+                    username = %username,
+                    signed = %signed,
+                    "Rejecting INVITE: the digest was signed for another Request-URI"
+                );
+                let response = self.create_simple_response(
+                    request,
+                    400,
+                    "Bad Request - digest uri is not the Request-URI",
+                );
+                handle.send_final(response).await;
+                return Ok(());
+            }
             crate::registrar::InviteAuth::Challenge { stale } => {
                 if self
                     .invite_on_trunk(&tenant_id, peer_ip, inbound_trunk.is_some())

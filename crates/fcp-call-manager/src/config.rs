@@ -336,6 +336,14 @@ pub struct RegistrarSection {
     #[serde(default = "default_auth_invites")]
     pub auth_invites: bool,
 
+    /// Whether a digest must be signed for the Request-URI it arrives on
+    /// (RFC 3261 §22.4). On, one signed for another URI is answered `400`;
+    /// off, it is logged and accepted — for a client or a proxy on the way
+    /// that signs another form of the address (SIPp signs
+    /// `sip:<host>:<port>` unless given `-auth_uri`).
+    #[serde(default = "default_digest_uri_check")]
+    pub digest_uri_check: bool,
+
     /// Authentication realm
     #[serde(default = "default_realm")]
     pub realm: String,
@@ -414,12 +422,17 @@ impl Default for RegistrarSection {
             domain_aliases: Vec::new(),
             provisioning_url: None,
             auth_invites: default_auth_invites(),
+            digest_uri_check: default_digest_uri_check(),
             cache_ttl_secs: default_registration_cache_ttl(),
         }
     }
 }
 
 fn default_auth_invites() -> bool {
+    true
+}
+
+fn default_digest_uri_check() -> bool {
     true
 }
 
@@ -1206,6 +1219,7 @@ redis_stream_key = "custom:stream"
             domain_aliases: Vec::new(),
             provisioning_url: None,
             auth_invites: false,
+            digest_uri_check: true,
             cache_ttl_secs: default_registration_cache_ttl(),
         };
         assert!(validate_registrar_config(&sip, &registrar).is_err());

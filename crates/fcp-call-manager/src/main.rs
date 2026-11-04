@@ -1380,7 +1380,8 @@ async fn run() -> Result<()> {
             )
             // Whose presence a request is about: its domain's tenant.
             .with_tenant_store(Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::TenantStore>)
-            .with_identity(Arc::clone(&dyn_storage));
+            .with_identity(Arc::clone(&dyn_storage))
+            .with_digest_uri_check(config.registrar.digest_uri_check);
             let handler = match &people_on_phones {
                 Some(people) => handler.with_people(Arc::clone(people)),
                 None => handler,
@@ -2590,6 +2591,8 @@ fn create_registrar(
     // (docs/ENTERPRISE_CALLING.md §3.8).
     .with_identity(Arc::clone(storage))
     .with_auth_invites(config.registrar.auth_invites)
+    // A digest signed for the Request-URI it arrives on (#307).
+    .with_digest_uri_check(config.registrar.digest_uri_check)
     // Where the admin is, for the softphone (docs/SOFTPHONE.md §2.5).
     .with_provisioning_url(config.registrar.provisioning_url.clone())
     // Bindings name the node holding their flow (docs/PUSH.md §2.4).
