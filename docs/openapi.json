@@ -8635,6 +8635,15 @@
             }
           },
           {
+            "name": "api_request_id",
+            "in": "query",
+            "description": "Only the request with this `X-Request-Id`: what a deletion's\n`api_request_id` names.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "tenant",
             "in": "query",
             "description": "A platform administrator's choice of rows: `all`, `platform` (the\nplatform's own actions, without a tenant) or a tenant's id. Without\nit, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else\nreads their own tenant's rows whatever this says.",
@@ -8690,7 +8699,7 @@
         "tags": [
           "compliance"
         ],
-        "summary": "`GET /audit-log/export`: every event the listing's filters match,\nnewest first, streamed page by page as CSV or JSON Lines (D8, finding\n36). Who may see what is the listing's.",
+        "summary": "`GET /audit-log/export`: every event the listing's filters match,\nnewest first, streamed page by page as CSV or JSON Lines (D8, finding\n36). Who may see what is the listing's; the export is itself audited.",
         "operationId": "compliance_export_audit_log",
         "parameters": [
           {
@@ -8730,6 +8739,15 @@
               "type": "integer",
               "format": "int64",
               "minimum": 0
+            }
+          },
+          {
+            "name": "api_request_id",
+            "in": "query",
+            "description": "Only the request with this `X-Request-Id`: what a deletion's\n`api_request_id` names.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -8804,9 +8822,29 @@
             }
           },
           {
+            "name": "until",
+            "in": "query",
+            "description": "Unix seconds: only deletions before it.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
             "name": "request_id",
             "in": "query",
             "description": "What one subject request deleted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "api_request_id",
+            "in": "query",
+            "description": "What one API request deleted: its audit row's `api_request_id`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -8837,6 +8875,97 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Page_DeletionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/compliance/deletions/export": {
+      "get": {
+        "tags": [
+          "compliance"
+        ],
+        "summary": "`GET /compliance/deletions/export`: every deletion the listing's\nfilters match, newest first, as CSV or JSON Lines (#342). Who may see\nwhat is the listing's; the export is itself audited.",
+        "operationId": "compliance_export_deletions",
+        "parameters": [
+          {
+            "name": "class",
+            "in": "query",
+            "description": "`cdr`, `call_recording`, `conference_recording`, `voicemail`,\n`sip_trace`, `flow_trace`, `audit_event`, `orphan_file`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Unix seconds.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Unix seconds: only deletions before it.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "What one subject request deleted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "api_request_id",
+            "in": "query",
+            "description": "What one API request deleted: its audit row's `api_request_id`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`csv` (the default) or `jsonl`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The deletions, streamed as CSV or JSON Lines",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -13465,12 +13594,13 @@
         "tags": [
           "config"
         ],
-        "summary": "GET /api/v1/config/audit -- audit log",
+        "summary": "GET /api/v1/config/audit -- the configuration's changes, newest first:\none service's, or every service's without `service` (#342).",
         "operationId": "config_get_audit_log",
         "parameters": [
           {
             "name": "service",
             "in": "query",
+            "description": "One service's changes; every service's without it.",
             "required": false,
             "schema": {
               "type": "string"
@@ -13479,6 +13609,7 @@
           {
             "name": "section",
             "in": "query",
+            "description": "One section's changes.",
             "required": false,
             "schema": {
               "type": "string"
@@ -20976,6 +21107,13 @@
               "null"
             ]
           },
+          "api_request_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The request's `X-Request-Id`; the deletions it made name it too."
+          },
           "occurred_at": {
             "type": "string",
             "format": "date-time"
@@ -25487,7 +25625,22 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The subject request the deletion served."
+          },
+          "api_request_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The API request that made it, as its audit row names it."
+          },
+          "via": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How the actor reached it: the phone a mailbox's owner called from."
           },
           "deleted_at": {
             "type": "string",
@@ -29846,6 +29999,13 @@
                     "null"
                   ]
                 },
+                "api_request_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The request's `X-Request-Id`; the deletions it made name it too."
+                },
                 "occurred_at": {
                   "type": "string",
                   "format": "date-time"
@@ -30780,7 +30940,22 @@
                   "type": [
                     "string",
                     "null"
-                  ]
+                  ],
+                  "description": "The subject request the deletion served."
+                },
+                "api_request_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The API request that made it, as its audit row names it."
+                },
+                "via": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "How the actor reached it: the phone a mailbox's owner called from."
                 },
                 "deleted_at": {
                   "type": "string",

@@ -19,7 +19,9 @@ def _get_kwargs(
     *,
     class_: str | Unset = UNSET,
     since: int | Unset = UNSET,
+    until: int | Unset = UNSET,
     request_id: str | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -34,7 +36,11 @@ def _get_kwargs(
 
     params["since"] = since
 
+    params["until"] = until
+
     params["request_id"] = request_id
+
+    params["api_request_id"] = api_request_id
 
     params["limit"] = limit
 
@@ -85,7 +91,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     class_: str | Unset = UNSET,
     since: int | Unset = UNSET,
+    until: int | Unset = UNSET,
     request_id: str | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -98,7 +106,9 @@ def sync_detailed(
     Args:
         class_ (str | Unset):
         since (int | Unset):
+        until (int | Unset):
         request_id (str | Unset):
+        api_request_id (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -114,7 +124,9 @@ def sync_detailed(
     kwargs = _get_kwargs(
         class_=class_,
 since=since,
+until=until,
 request_id=request_id,
+api_request_id=api_request_id,
 limit=limit,
 cursor=cursor,
 
@@ -131,7 +143,9 @@ def sync(
     client: AuthenticatedClient | Client,
     class_: str | Unset = UNSET,
     since: int | Unset = UNSET,
+    until: int | Unset = UNSET,
     request_id: str | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -144,7 +158,9 @@ def sync(
     Args:
         class_ (str | Unset):
         since (int | Unset):
+        until (int | Unset):
         request_id (str | Unset):
+        api_request_id (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -161,7 +177,9 @@ def sync(
         client=client,
 class_=class_,
 since=since,
+until=until,
 request_id=request_id,
+api_request_id=api_request_id,
 limit=limit,
 cursor=cursor,
 
@@ -172,7 +190,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     class_: str | Unset = UNSET,
     since: int | Unset = UNSET,
+    until: int | Unset = UNSET,
     request_id: str | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -185,7 +205,9 @@ async def asyncio_detailed(
     Args:
         class_ (str | Unset):
         since (int | Unset):
+        until (int | Unset):
         request_id (str | Unset):
+        api_request_id (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -201,7 +223,9 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         class_=class_,
 since=since,
+until=until,
 request_id=request_id,
+api_request_id=api_request_id,
 limit=limit,
 cursor=cursor,
 
@@ -218,7 +242,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     class_: str | Unset = UNSET,
     since: int | Unset = UNSET,
+    until: int | Unset = UNSET,
     request_id: str | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -231,7 +257,9 @@ async def asyncio(
     Args:
         class_ (str | Unset):
         since (int | Unset):
+        until (int | Unset):
         request_id (str | Unset):
+        api_request_id (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -248,7 +276,9 @@ async def asyncio(
         client=client,
 class_=class_,
 since=since,
+until=until,
 request_id=request_id,
+api_request_id=api_request_id,
 limit=limit,
 cursor=cursor,
 

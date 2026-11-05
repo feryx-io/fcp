@@ -417,6 +417,12 @@ pub struct Deleter {
     pub actor: String,
     /// The subject request the deletions serve, when one does.
     pub request_id: Option<String>,
+    /// The API request making the deletions (its `X-Request-Id`), which
+    /// its audit row names too (#342).
+    pub api_request_id: Option<String>,
+    /// How the actor reached what they deleted: the phone a mailbox's
+    /// owner called from.
+    pub via: Option<String>,
 }
 
 impl Deleter {
@@ -425,12 +431,26 @@ impl Deleter {
             cause,
             actor: actor.into(),
             request_id: None,
+            api_request_id: None,
+            via: None,
         }
     }
 
     /// The deletions serve request `id`.
     pub fn for_request(mut self, id: impl Into<String>) -> Self {
         self.request_id = Some(id.into());
+        self
+    }
+
+    /// The deletions are API request `id`'s.
+    pub fn in_api_request(mut self, id: Option<String>) -> Self {
+        self.api_request_id = id;
+        self
+    }
+
+    /// The actor reached what they deleted `via` this.
+    pub fn via(mut self, via: impl Into<String>) -> Self {
+        self.via = Some(via.into());
         self
     }
 }
@@ -469,6 +489,12 @@ pub struct DeletionRecord {
     /// The subject request the deletion served.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// The API request that deleted it, as its audit row names it.
+    #[serde(default)]
+    pub api_request_id: Option<String>,
+    /// How the actor reached it (the phone a mailbox's owner called from).
+    #[serde(default)]
+    pub via: Option<String>,
     pub deleted_at: SystemTime,
 }
 
@@ -479,8 +505,12 @@ pub struct DeletionQuery {
     pub tenant_id: Option<TenantId>,
     pub class: Option<String>,
     pub since: Option<SystemTime>,
+    /// Only deletions before this instant.
+    pub until: Option<SystemTime>,
     /// Only what this subject request deleted.
     pub request_id: Option<String>,
+    /// Only what this API request deleted.
+    pub api_request_id: Option<String>,
     pub limit: usize,
     /// Only rows older than this `(deleted_at, id)`: the keyset cursor of
     /// the API's pages (docs/DEVELOPER_SURFACE.md §3, phase 2c).
@@ -564,6 +594,9 @@ pub struct AuditEvent {
     /// Extra context (e.g. `{"export": "cdr", "rows": 120}`).
     pub detail: Option<serde_json::Value>,
     pub source_ip: Option<String>,
+    /// The request's `X-Request-Id`, which the deletions it made name too.
+    #[serde(default)]
+    pub api_request_id: Option<String>,
     pub occurred_at: SystemTime,
 }
 
@@ -580,6 +613,8 @@ pub struct AuditQuery {
     pub since: Option<SystemTime>,
     /// Only events before this instant.
     pub until: Option<SystemTime>,
+    /// Only the request with this `X-Request-Id`.
+    pub api_request_id: Option<String>,
     pub limit: usize,
     /// Only events older than this `(occurred_at, id)`: the keyset cursor
     /// of the API's pages (docs/DEVELOPER_SURFACE.md §3, phase 2c).
@@ -1242,6 +1277,8 @@ async fn remove_orphan_files(
                             cause: DeletionCause::Upkeep.as_str().to_string(),
                             actor: actor.to_string(),
                             request_id: None,
+                            api_request_id: None,
+                            via: None,
                             deleted_at: SystemTime::now(),
                         };
                         if let Err(e) = store.record_deletion(&record).await {

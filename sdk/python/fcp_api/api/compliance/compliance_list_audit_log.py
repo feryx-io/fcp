@@ -21,6 +21,7 @@ def _get_kwargs(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     tenant: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
@@ -39,6 +40,8 @@ def _get_kwargs(
     params["since"] = since
 
     params["until"] = until
+
+    params["api_request_id"] = api_request_id
 
     params["tenant"] = tenant
 
@@ -93,6 +96,7 @@ def sync_detailed(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     tenant: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
@@ -108,6 +112,7 @@ def sync_detailed(
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        api_request_id (str | Unset):
         tenant (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
@@ -126,6 +131,7 @@ def sync_detailed(
 action=action,
 since=since,
 until=until,
+api_request_id=api_request_id,
 tenant=tenant,
 limit=limit,
 cursor=cursor,
@@ -145,6 +151,7 @@ def sync(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     tenant: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
@@ -160,6 +167,7 @@ def sync(
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        api_request_id (str | Unset):
         tenant (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
@@ -179,6 +187,7 @@ actor=actor,
 action=action,
 since=since,
 until=until,
+api_request_id=api_request_id,
 tenant=tenant,
 limit=limit,
 cursor=cursor,
@@ -192,6 +201,7 @@ async def asyncio_detailed(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     tenant: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
@@ -207,6 +217,7 @@ async def asyncio_detailed(
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        api_request_id (str | Unset):
         tenant (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
@@ -225,6 +236,7 @@ async def asyncio_detailed(
 action=action,
 since=since,
 until=until,
+api_request_id=api_request_id,
 tenant=tenant,
 limit=limit,
 cursor=cursor,
@@ -244,6 +256,7 @@ async def asyncio(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     tenant: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
@@ -259,6 +272,7 @@ async def asyncio(
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        api_request_id (str | Unset):
         tenant (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
@@ -278,6 +292,7 @@ actor=actor,
 action=action,
 since=since,
 until=until,
+api_request_id=api_request_id,
 tenant=tenant,
 limit=limit,
 cursor=cursor,

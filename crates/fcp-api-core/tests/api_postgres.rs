@@ -2621,7 +2621,7 @@ async fn every_list_pages_by_cursor() {
     assert_eq!(
         lines.next(),
         Some(
-            "id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail,actor_tenant_id"
+            "id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail,actor_tenant_id,api_request_id"
         )
     );
     let exported: Vec<i64> = lines
@@ -2656,6 +2656,14 @@ async fn every_list_pages_by_cursor() {
         .admin(Method::GET, "/api/v1/audit-log/export?format=xml", None)
         .await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+    // An export is itself in the log (#342).
+    let exported = wait_for_audit(
+        &app,
+        "/api/v1/audit-log?action=GET%20/api/v1/audit-log/export",
+        |e| e["status"] == 200,
+    )
+    .await;
+    assert!(exported["api_request_id"].is_string(), "{exported}");
 
     // A limit or a cursor the API cannot use is a 400.
     for bad in [
@@ -3427,6 +3435,26 @@ async fn voicemail_mailboxes_crud() {
         "{}",
         stats.text
     );
+    // An administrator reading a message (its transcription is content)
+    // is audited (#342); the listing is not.
+    let read = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/voicemail/messages/{}", one.id),
+            None,
+        )
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    let audited_read = wait_for_audit(
+        &app,
+        "/api/v1/audit-log?action=GET%20/api/v1/voicemail/messages/:id",
+        |e| e["status"] == 200,
+    )
+    .await;
+    assert_eq!(
+        audited_read["path"],
+        format!("/api/v1/voicemail/messages/{}", one.id)
+    );
     let gone = app
         .admin(
             Method::DELETE,
@@ -3497,6 +3525,84 @@ async fn voicemail_mailboxes_crud() {
         one.id.as_str(),
         "{audited}"
     );
+    // The request and what it deleted name one request id (#342), and each
+    // finds the other.
+    let request_id = audited["api_request_id"].as_str().expect("a request id");
+    assert_eq!(entry(&one.id)["api_request_id"], request_id);
+    assert_ne!(entry(&two.id)["api_request_id"], request_id);
+    let by_request = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/compliance/deletions?api_request_id={request_id}"),
+            None,
+        )
+        .await;
+    let items: Vec<&str> = by_request
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["item"].as_str().unwrap())
+        .collect();
+    assert_eq!(items, vec![one.id.as_str()], "{}", by_request.text);
+    let row = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/audit-log?api_request_id={request_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(row.json.as_array().map(Vec::len), Some(1), "{}", row.text);
+    // The deletion log exported, by the listing's filters.
+    let csv = app
+        .admin(
+            Method::GET,
+            "/api/v1/compliance/deletions/export?class=voicemail",
+            None,
+        )
+        .await;
+    assert_eq!(csv.status, StatusCode::OK, "{}", csv.text);
+    let mut lines = csv.text.lines();
+    assert_eq!(
+        lines.next(),
+        Some("id,deleted_at,tenant_id,class,item,cause,actor,via,request_id,api_request_id,detail")
+    );
+    let exported: Vec<String> = lines.map(str::to_string).collect();
+    assert_eq!(exported.len(), 2, "{}", csv.text);
+    assert!(
+        exported.iter().any(|l| l.contains(request_id)),
+        "{}",
+        csv.text
+    );
+    let jsonl = app
+        .admin(
+            Method::GET,
+            "/api/v1/compliance/deletions/export?class=voicemail&format=jsonl&until=1",
+            None,
+        )
+        .await;
+    assert_eq!(jsonl.status, StatusCode::OK, "{}", jsonl.text);
+    assert_eq!(jsonl.text, "", "nothing before the epoch's first second");
+    let other = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            "/api/v1/compliance/deletions/export",
+            None,
+        )
+        .await;
+    assert_eq!(
+        other.text.lines().count(),
+        1,
+        "the header alone: {}",
+        other.text
+    );
+    wait_for_audit(
+        &app,
+        "/api/v1/audit-log?action=GET%20/api/v1/compliance/deletions/export",
+        |e| e["status"] == 200,
+    )
+    .await;
     assert_eq!(
         app.admin(
             Method::GET,
@@ -8001,6 +8107,7 @@ async fn compliance_policy_audit_log_export_and_retention() {
             action: "DELETE /api/v1/users/:username".into(),
             detail: None,
             source_ip: None,
+            api_request_id: None,
             occurred_at: SystemTime::now() - days(400),
         })
         .await

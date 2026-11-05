@@ -460,6 +460,9 @@ pub struct AuditLogQuery {
     pub since: Option<u64>,
     /// Unix seconds: only events before it.
     pub until: Option<u64>,
+    /// Only the request with this `X-Request-Id`: what a deletion's
+    /// `api_request_id` names.
+    pub api_request_id: Option<String>,
     /// A platform administrator's choice of rows: `all`, `platform` (the
     /// platform's own actions, without a tenant) or a tenant's id. Without
     /// it, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else
@@ -521,6 +524,7 @@ impl AuditLogQuery {
             action_prefix: self.action.clone(),
             since: self.since.map(at),
             until: self.until.map(at),
+            api_request_id: self.api_request_id.clone(),
             limit,
             before: None,
         }
@@ -564,6 +568,8 @@ pub struct AuditEventResponse {
     pub action: String,
     pub detail: Option<serde_json::Value>,
     pub source_ip: Option<String>,
+    /// The request's `X-Request-Id`; the deletions it made name it too.
+    pub api_request_id: Option<String>,
     #[serde(with = "crate::time::epoch_secs")]
     #[schema(value_type = String, format = DateTime)]
     pub occurred_at: u64,
@@ -583,6 +589,7 @@ impl From<AuditEvent> for AuditEventResponse {
             action: e.action,
             detail: e.detail,
             source_ip: e.source_ip,
+            api_request_id: e.api_request_id,
             occurred_at: unix_secs(e.occurred_at),
         }
     }
@@ -660,46 +667,156 @@ pub struct AuditExportQuery {
     pub format: Option<String>,
 }
 
-/// One audit event as a CSV line; the header is [`AUDIT_CSV_HEADER`].
-fn audit_csv_row(e: &AuditEventResponse) -> String {
-    let field = |v: &str| {
-        if v.contains([',', '"', '\n', '\r']) {
-            format!("\"{}\"", v.replace('"', "\"\""))
-        } else {
-            v.to_string()
+impl AuditExportQuery {
+    /// Whether the export is JSON Lines.
+    fn jsonl(&self) -> Result<bool, ApiError> {
+        match self.format.as_deref().unwrap_or("csv") {
+            "csv" => Ok(false),
+            "jsonl" => Ok(true),
+            other => Err(ApiError::BadRequest(format!(
+                "Invalid format: {other}. Valid values: csv, jsonl"
+            ))),
         }
-    };
-    let opt = |v: &Option<String>| field(v.as_deref().unwrap_or(""));
-    let occurred = crate::time::format(std::time::Duration::from_secs(e.occurred_at));
-    let detail = e.detail.as_ref().map(|d| d.to_string()).unwrap_or_default();
-    let mut line = [
-        e.id.to_string(),
-        field(&occurred),
-        opt(&e.tenant_id),
-        field(&e.actor),
-        field(&e.actor_kind),
-        field(&e.method),
-        field(&e.path),
-        e.status.to_string(),
-        field(&e.action),
-        opt(&e.source_ip),
-        field(&detail),
-        opt(&e.actor_tenant_id),
-    ]
-    .join(",");
+    }
+}
+
+/// A CSV field, quoted when it must be.
+fn csv_field(v: &str) -> String {
+    if v.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", v.replace('"', "\"\""))
+    } else {
+        v.to_string()
+    }
+}
+
+fn csv_line(fields: Vec<String>) -> String {
+    let mut line = fields.join(",");
     line.push('\n');
     line
 }
 
+/// One audit event as a CSV line; the header is [`AUDIT_CSV_HEADER`].
+fn audit_csv_row(e: &AuditEventResponse) -> String {
+    let opt = |v: &Option<String>| csv_field(v.as_deref().unwrap_or(""));
+    let occurred = crate::time::format(std::time::Duration::from_secs(e.occurred_at));
+    let detail = e.detail.as_ref().map(|d| d.to_string()).unwrap_or_default();
+    csv_line(vec![
+        e.id.to_string(),
+        csv_field(&occurred),
+        opt(&e.tenant_id),
+        csv_field(&e.actor),
+        csv_field(&e.actor_kind),
+        csv_field(&e.method),
+        csv_field(&e.path),
+        e.status.to_string(),
+        csv_field(&e.action),
+        opt(&e.source_ip),
+        csv_field(&detail),
+        opt(&e.actor_tenant_id),
+        opt(&e.api_request_id),
+    ])
+}
+
 const AUDIT_CSV_HEADER: &str =
-    "id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail,actor_tenant_id\n";
+    "id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail,actor_tenant_id,api_request_id\n";
 
 /// The rows an export reads from the store at a time.
-const AUDIT_EXPORT_PAGE: usize = 1000;
+const LOG_EXPORT_PAGE: usize = 1000;
+
+/// A whole log as a streamed CSV or JSON Lines body, newest first: `first`
+/// is the first page, read before the response starts so a failing query
+/// is an error status and not an empty file; `fetch` reads the page before
+/// a `(time, id)` key, `key` gives a row's, `render` writes one row.
+fn log_export<R, F, Fut>(
+    what: &'static str,
+    jsonl: bool,
+    csv_header: &'static str,
+    first: Vec<R>,
+    fetch: F,
+    key: fn(&R) -> (SystemTime, i64),
+    render: impl Fn(R) -> String + Send + 'static,
+) -> impl IntoResponse
+where
+    R: Send + 'static,
+    F: Fn((SystemTime, i64)) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<Vec<R>>> + Send,
+{
+    struct Walk<R, F, W> {
+        fetch: F,
+        render: W,
+        page: Option<Vec<R>>,
+        header_sent: bool,
+    }
+    let walk = Walk {
+        fetch,
+        render,
+        page: Some(first),
+        header_sent: jsonl,
+    };
+    let stream = futures_util::stream::unfold(walk, move |mut walk| async move {
+        if !walk.header_sent {
+            walk.header_sent = true;
+            return Some((
+                Ok::<_, std::io::Error>(axum::body::Bytes::from(csv_header)),
+                walk,
+            ));
+        }
+        let page = walk.page.take()?;
+        if page.is_empty() {
+            return None;
+        }
+        let full = page.len() == LOG_EXPORT_PAGE;
+        let last = page.last().map(key);
+        let mut chunk = String::new();
+        for row in page {
+            chunk.push_str(&(walk.render)(row));
+        }
+        match last.filter(|_| full) {
+            Some(last) => match (walk.fetch)(last).await {
+                Ok(next) => walk.page = Some(next),
+                Err(e) => {
+                    tracing::warn!(error = %e, what, "Log export failed part way");
+                    return Some((
+                        Err(std::io::Error::other(format!(
+                            "{what} export failed part way"
+                        ))),
+                        walk,
+                    ));
+                }
+            },
+            None => walk.page = Some(Vec::new()),
+        }
+        Some((Ok(axum::body::Bytes::from(chunk)), walk))
+    });
+    let (content_type, extension) = if jsonl {
+        ("application/x-ndjson", "jsonl")
+    } else {
+        ("text/csv; charset=utf-8", "csv")
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, content_type.to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{what}.{extension}\""),
+            ),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        axum::body::Body::from_stream(stream),
+    )
+}
+
+/// One row as a JSON Lines line.
+fn json_line<T: Serialize>(row: &T) -> String {
+    let mut line = serde_json::to_string(row).unwrap_or_default();
+    line.push('\n');
+    line
+}
 
 /// `GET /audit-log/export`: every event the listing's filters match,
 /// newest first, streamed page by page as CSV or JSON Lines (D8, finding
-/// 36). Who may see what is the listing's.
+/// 36). Who may see what is the listing's; the export is itself audited.
 #[utoipa::path(
     get,
     path = "/api/v1/audit-log/export",
@@ -721,99 +838,34 @@ pub async fn export_audit_log(
 ) -> Result<impl IntoResponse, ApiError> {
     permit(&state, &identity, Permission::AuditView)?;
     let store = Arc::clone(require_store(&state)?);
-    let jsonl = match export.format.as_deref().unwrap_or("csv") {
-        "csv" => false,
-        "jsonl" => true,
-        other => {
-            return Err(ApiError::BadRequest(format!(
-                "Invalid format: {other}. Valid values: csv, jsonl"
-            )))
-        }
-    };
+    let jsonl = export.jsonl()?;
     let reach = audit_reach(&tenant, &identity, &headers, &q)?;
     let platform_reader = reach.platform_reader;
-    let query = q.to_query(&reach, AUDIT_EXPORT_PAGE);
-
-    // The first page before the response starts: a failing query is an
-    // error status, not an empty file.
+    let query = q.to_query(&reach, LOG_EXPORT_PAGE);
     let first = store
         .list_audit_events(&query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-
-    struct Walk {
-        store: Arc<dyn ComplianceStore>,
-        query: AuditQuery,
-        page: Option<Vec<AuditEvent>>,
-        header_sent: bool,
-    }
-    let walk = Walk {
-        store,
-        query,
-        page: Some(first),
-        header_sent: jsonl,
-    };
-    let stream = futures_util::stream::unfold(walk, move |mut walk| async move {
-        if !walk.header_sent {
-            walk.header_sent = true;
-            return Some((
-                Ok::<_, std::io::Error>(axum::body::Bytes::from(AUDIT_CSV_HEADER)),
-                walk,
-            ));
-        }
-        let page = walk.page.take()?;
-        if page.is_empty() {
-            return None;
-        }
-        let full = page.len() == AUDIT_EXPORT_PAGE;
-        let last = page.last().map(|e| (e.occurred_at, e.id));
-        let mut chunk = String::new();
-        for event in page {
-            let event = as_seen(event, platform_reader);
+    Ok(log_export(
+        "audit-log",
+        jsonl,
+        AUDIT_CSV_HEADER,
+        first,
+        move |before| {
+            let store = Arc::clone(&store);
+            let mut query = query.clone();
+            query.before = Some(before);
+            async move { store.list_audit_events(&query).await }
+        },
+        |e: &AuditEvent| (e.occurred_at, e.id),
+        move |e| {
+            let e = as_seen(e, platform_reader);
             if jsonl {
-                chunk.push_str(&serde_json::to_string(&event).unwrap_or_default());
-                chunk.push('\n');
+                json_line(&e)
             } else {
-                chunk.push_str(&audit_csv_row(&event));
+                audit_csv_row(&e)
             }
-        }
-        if full {
-            walk.query.before = last;
-            match walk.store.list_audit_events(&walk.query).await {
-                Ok(next) => walk.page = Some(next),
-                Err(e) => {
-                    tracing::warn!(error = %e, "Audit log export failed part way");
-                    return Some((
-                        Err(std::io::Error::other("audit log export failed part way")),
-                        walk,
-                    ));
-                }
-            }
-        } else {
-            walk.page = Some(Vec::new());
-        }
-        Some((Ok(axum::body::Bytes::from(chunk)), walk))
-    });
-
-    let (content_type, filename) = if jsonl {
-        (
-            "application/x-ndjson",
-            "attachment; filename=\"audit-log.jsonl\"",
-        )
-    } else {
-        (
-            "text/csv; charset=utf-8",
-            "attachment; filename=\"audit-log.csv\"",
-        )
-    };
-    Ok((
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, content_type),
-            (header::CONTENT_DISPOSITION, filename),
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        axum::body::Body::from_stream(stream),
+        },
     ))
 }
 
@@ -827,8 +879,12 @@ pub struct DeletionLogQuery {
     pub class: Option<String>,
     /// Unix seconds.
     pub since: Option<u64>,
+    /// Unix seconds: only deletions before it.
+    pub until: Option<u64>,
     /// What one subject request deleted.
     pub request_id: Option<String>,
+    /// What one API request deleted: its audit row's `api_request_id`.
+    pub api_request_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -840,10 +896,82 @@ pub struct DeletionResponse {
     pub detail: Option<serde_json::Value>,
     pub cause: String,
     pub actor: String,
+    /// The subject request the deletion served.
     pub request_id: Option<String>,
+    /// The API request that made it, as its audit row names it.
+    pub api_request_id: Option<String>,
+    /// How the actor reached it: the phone a mailbox's owner called from.
+    pub via: Option<String>,
     #[serde(with = "crate::time::epoch_secs")]
     #[schema(value_type = String, format = DateTime)]
     pub deleted_at: u64,
+}
+
+impl From<fcp_core::compliance::DeletionRecord> for DeletionResponse {
+    fn from(r: fcp_core::compliance::DeletionRecord) -> Self {
+        Self {
+            id: r.id,
+            tenant_id: r.tenant_id.map(|t| t.to_string()),
+            class: r.class,
+            item: r.item,
+            detail: r.detail,
+            cause: r.cause,
+            actor: r.actor,
+            request_id: r.request_id,
+            api_request_id: r.api_request_id,
+            via: r.via,
+            deleted_at: unix_secs(r.deleted_at),
+        }
+    }
+}
+
+/// One deletion as a CSV line; the header is [`DELETION_CSV_HEADER`].
+fn deletion_csv_row(r: &DeletionResponse) -> String {
+    let opt = |v: &Option<String>| csv_field(v.as_deref().unwrap_or(""));
+    let deleted = crate::time::format(std::time::Duration::from_secs(r.deleted_at));
+    let detail = r.detail.as_ref().map(|d| d.to_string()).unwrap_or_default();
+    csv_line(vec![
+        r.id.to_string(),
+        csv_field(&deleted),
+        opt(&r.tenant_id),
+        csv_field(&r.class),
+        csv_field(&r.item),
+        csv_field(&r.cause),
+        csv_field(&r.actor),
+        opt(&r.via),
+        opt(&r.request_id),
+        opt(&r.api_request_id),
+        csv_field(&detail),
+    ])
+}
+
+const DELETION_CSV_HEADER: &str =
+    "id,deleted_at,tenant_id,class,item,cause,actor,via,request_id,api_request_id,detail\n";
+
+impl DeletionLogQuery {
+    /// The store's query: a tenant's rows, or every tenant's and the
+    /// platform's for a platform administrator who picked none.
+    fn to_query(
+        &self,
+        tenant: &TenantContext,
+        identity: &Option<Extension<AuthIdentity>>,
+        headers: &HeaderMap,
+        limit: usize,
+    ) -> fcp_core::compliance::DeletionQuery {
+        let at = |s: u64| UNIX_EPOCH + std::time::Duration::from_secs(s);
+        let platform_wide = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+            && !headers.contains_key(PLATFORM_TENANT_HEADER);
+        fcp_core::compliance::DeletionQuery {
+            tenant_id: (!platform_wide).then_some(tenant.0),
+            class: self.class.clone(),
+            since: self.since.map(at),
+            until: self.until.map(at),
+            request_id: self.request_id.clone(),
+            api_request_id: self.api_request_id.clone(),
+            limit,
+            before: None,
+        }
+    }
 }
 
 /// `GET /compliance/deletions`: what was deleted, when, why and by whom
@@ -871,19 +999,10 @@ pub async fn list_deletions(
 ) -> Result<impl IntoResponse, ApiError> {
     permit(&state, &identity, Permission::AuditView)?;
     let store = require_store(&state)?;
-    let platform_wide = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
-        && !headers.contains_key(PLATFORM_TENANT_HEADER);
+    let mut query = q.to_query(&tenant, &identity, &headers, page.limit()? + 1);
+    query.before = page.after()?.as_deref().map(parse_log_key).transpose()?;
     let records = store
-        .list_deletions(&fcp_core::compliance::DeletionQuery {
-            tenant_id: (!platform_wide).then_some(tenant.0),
-            class: q.class,
-            since: q
-                .since
-                .map(|s| UNIX_EPOCH + std::time::Duration::from_secs(s)),
-            request_id: q.request_id,
-            limit: page.limit()? + 1,
-            before: page.after()?.as_deref().map(parse_log_key).transpose()?,
-        })
+        .list_deletions(&query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let limit = page.limit()?;
@@ -891,22 +1010,61 @@ pub async fn list_deletions(
         let last = &records[limit - 1];
         log_key(last.deleted_at, last.id)
     });
-    let out: Vec<DeletionResponse> = records
-        .into_iter()
-        .take(limit)
-        .map(|r| DeletionResponse {
-            id: r.id,
-            tenant_id: r.tenant_id.map(|t| t.to_string()),
-            class: r.class,
-            item: r.item,
-            detail: r.detail,
-            cause: r.cause,
-            actor: r.actor,
-            request_id: r.request_id,
-            deleted_at: unix_secs(r.deleted_at),
-        })
-        .collect();
+    let out: Vec<DeletionResponse> = records.into_iter().take(limit).map(Into::into).collect();
     Ok(Json(crate::page::Page::new(out, next_key, None)))
+}
+
+/// `GET /compliance/deletions/export`: every deletion the listing's
+/// filters match, newest first, as CSV or JSON Lines (#342). Who may see
+/// what is the listing's; the export is itself audited.
+#[utoipa::path(
+    get,
+    path = "/api/v1/compliance/deletions/export",
+    tag = "compliance",
+    operation_id = "compliance_export_deletions",
+    params(DeletionLogQuery, AuditExportQuery),
+    responses(
+        (status = 200, description = "The deletions, streamed as CSV or JSON Lines", content_type = "text/csv", body = String),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn export_deletions(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
+    Query(q): Query<DeletionLogQuery>,
+    Query(export): Query<AuditExportQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::AuditView)?;
+    let store = Arc::clone(require_store(&state)?);
+    let jsonl = export.jsonl()?;
+    let query = q.to_query(&tenant, &identity, &headers, LOG_EXPORT_PAGE);
+    let first = store
+        .list_deletions(&query)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(log_export(
+        "deletion-log",
+        jsonl,
+        DELETION_CSV_HEADER,
+        first,
+        move |before| {
+            let store = Arc::clone(&store);
+            let mut query = query.clone();
+            query.before = Some(before);
+            async move { store.list_deletions(&query).await }
+        },
+        |r: &fcp_core::compliance::DeletionRecord| (r.deleted_at, r.id),
+        move |r| {
+            let r = DeletionResponse::from(r);
+            if jsonl {
+                json_line(&r)
+            } else {
+                deletion_csv_row(&r)
+            }
+        },
+    ))
 }
 
 // ─── Legal holds (docs/COMPLIANCE_FOLLOWUPS.md §5) ───────────────────────

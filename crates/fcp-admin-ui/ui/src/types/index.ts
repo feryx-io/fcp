@@ -496,10 +496,13 @@ export interface AuditQueryParams {
   since?: number
   /** Unix seconds: only events before it. */
   until?: number
+  /** One request: what a deletion's `api_request_id` names. */
+  api_request_id?: string
   /** A platform administrator's rows: `all`, `platform` or a tenant id;
    *  unset follows the tenant picked in the top bar. */
   tenant?: string
   limit?: number
+  cursor?: string
 }
 
 /** One entry of the deletion log (`GET /compliance/deletions`). */
@@ -508,7 +511,12 @@ export type DeletionEntry = S['DeletionResponse']
 export interface DeletionQueryParams {
   class?: string
   since?: number
+  /** Unix seconds: only deletions before it. */
+  until?: number
+  /** What one API request deleted: its audit row's `api_request_id`. */
+  api_request_id?: string
   limit?: number
+  cursor?: string
 }
 
 // Compliance (docs/COMPLIANCE.md, docs/COMPLIANCE_FOLLOWUPS.md)

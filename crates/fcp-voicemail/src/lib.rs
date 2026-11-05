@@ -566,16 +566,18 @@ impl VoicemailService {
         // Validate recording path is within allowed directory before deletion
         self.validate_message_path(&message.recording_path)?;
 
-        // Delete from database; the deletion log names the mailbox's owner,
-        // who deleted it from the phone.
-        let deleted = fcp_core::compliance::deleting_as(
+        // Delete from database. The deletion log names who the caller
+        // set (the menu names the user whose PIN opened the mailbox, and
+        // the phone they called from), else the mailbox.
+        let deleter = fcp_core::compliance::current_deleter().unwrap_or_else(|| {
             fcp_core::compliance::Deleter::new(
                 fcp_core::compliance::DeletionCause::Manual,
                 format!("phone:{mailbox_id}"),
-            ),
-            self.storage.delete_message(message_id),
-        )
-        .await;
+            )
+        });
+        let deleted =
+            fcp_core::compliance::deleting_as(deleter, self.storage.delete_message(message_id))
+                .await;
         match deleted {
             Ok(()) => {
                 // Delete audio file

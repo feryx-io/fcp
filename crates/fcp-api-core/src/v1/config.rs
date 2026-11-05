@@ -51,7 +51,9 @@ pub struct ListConfigsQuery {
 #[into_params(parameter_in = Query)]
 #[schema(as = config::AuditLogQuery)]
 pub struct AuditLogQuery {
+    /// One service's changes; every service's without it.
     pub service: Option<String>,
+    /// One section's changes.
     pub section: Option<String>,
 }
 
@@ -359,7 +361,8 @@ pub async fn delete_config(
     Ok(Json(DeleteConfigResponse { deleted }))
 }
 
-/// GET /api/v1/config/audit -- audit log
+/// GET /api/v1/config/audit -- the configuration's changes, newest first:
+/// one service's, or every service's without `service` (#342).
 #[utoipa::path(
     get,
     path = "/api/v1/config/audit",
@@ -380,7 +383,7 @@ pub async fn get_audit_log(
 ) -> Result<Json<crate::page::Page<AuditEntryResponse>>, ApiError> {
     let store = get_store(&state)?;
 
-    let service = params.service.as_deref().unwrap_or("_global");
+    let service = params.service.as_deref().filter(|s| !s.is_empty());
     let tenant_id = scoped_config_tenant_id(&tenant, identity.as_ref().map(|ext| &ext.0), None);
 
     // A section's history: the newest 500 changes are the whole of it for

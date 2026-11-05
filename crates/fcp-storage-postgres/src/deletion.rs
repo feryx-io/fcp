@@ -17,11 +17,15 @@ pub(crate) async fn attributed(
         sqlx::query(
             "SELECT set_config('fcp.deletion_cause', $1, true),
                     set_config('fcp.deletion_actor', $2, true),
-                    set_config('fcp.deletion_request', $3, true)",
+                    set_config('fcp.deletion_request', $3, true),
+                    set_config('fcp.api_request', $4, true),
+                    set_config('fcp.deletion_via', $5, true)",
         )
         .bind(deleter.cause.as_str())
         .bind(&deleter.actor)
         .bind(deleter.request_id.as_deref().unwrap_or(""))
+        .bind(deleter.api_request_id.as_deref().unwrap_or(""))
+        .bind(deleter.via.as_deref().unwrap_or(""))
         .execute(&mut *tx)
         .await?;
     }

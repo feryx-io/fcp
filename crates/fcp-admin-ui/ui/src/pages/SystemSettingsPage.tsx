@@ -17,18 +17,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Save, RotateCcw, X, History, AlertCircle, CheckCircle2, Trash2, RefreshCw, ChevronDown, ChevronRight, Code } from 'lucide-react'
-
-const SERVICES = [
-  { value: 'call-manager', label: 'Call Manager' },
-  { value: 'admin', label: 'Admin' },
-  { value: 'events-server', label: 'Events Server' },
-  { value: 'ivr', label: 'IVR' },
-  { value: 'voicemail', label: 'Voicemail' },
-  { value: 'conference', label: 'Conference' },
-  { value: 'presence', label: 'Presence' },
-  { value: 'media', label: 'Media Server' },
-  { value: 'sbc', label: 'SBC' },
-]
+import { SERVICES } from '@/lib/configServices'
 
 export function SystemSettingsPage() {
   const queryClient = useQueryClient()

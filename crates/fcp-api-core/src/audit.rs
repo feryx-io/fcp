@@ -2,9 +2,11 @@
 //!
 //! Applied inside the bearer-auth layer on the `/api/v1` routers, so it sees
 //! the caller's [`AuthIdentity`] and the matched route template. Every
-//! mutating request (anything but `GET`/`HEAD`/`OPTIONS`) and every CDR
-//! export is written to the compliance store as an [`AuditEvent`]:
-//! who, which tenant, which route, and the status the request ended with.
+//! mutating request (anything but `GET`/`HEAD`/`OPTIONS`), every export and
+//! every read of a call's content is written to the compliance store as an
+//! [`AuditEvent`]: who, which tenant, which route, the status the request
+//! ended with, and the request's `X-Request-Id`, which the deletions it
+//! made carry too (#342).
 //! Login attempts on the pre-auth router are recorded with actor
 //! `anonymous`, so failed logins leave a trace too.
 //!
@@ -24,13 +26,25 @@ use fcp_core::TenantId;
 use std::time::SystemTime;
 use tracing::warn;
 
-/// Which requests are worth an audit row.
+/// Which requests are worth an audit row: changes, and reads that take
+/// data away or hear a call's content — exports, subject bundles, device
+/// captures, recordings, voicemail audio and SIP traces. A person's reads
+/// of their own (`/me/…`) are not audited.
 pub fn should_audit(method: &Method, path: &str) -> bool {
     match *method {
         Method::GET => {
-            path.ends_with("/cdrs/export")
-                || (path.contains("/compliance/subject-requests/") && path.ends_with("/bundle"))
-                || (path.contains("/captures/") && path.ends_with("/file"))
+            let route = path.strip_prefix("/api/v1").unwrap_or(path);
+            !route.starts_with("/me/")
+                && (route.ends_with("/export")
+                    || (route.starts_with("/compliance/subject-requests/")
+                        && route.ends_with("/bundle"))
+                    || (route.starts_with("/captures/") && route.ends_with("/file"))
+                    || (route.starts_with("/recordings/") && route.ends_with("/download"))
+                    || route.starts_with("/voicemail/messages/")
+                    || (route.starts_with("/voicemail/mailboxes/")
+                        && route.contains("/greetings/")
+                        && route.ends_with("/audio"))
+                    || (route.starts_with("/calls/") && route.ends_with("/sip-messages")))
         }
         Method::HEAD | Method::OPTIONS => false,
         _ => true,
@@ -185,17 +199,23 @@ pub async fn audit_requests(State(state): State<ApiState>, req: Request, next: N
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.trim().parse::<TenantId>().ok());
     let ip = source_ip(req.headers());
+    let request_id = req
+        .headers()
+        .get(crate::shape::REQUEST_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     let identity = req.extensions().get::<AuthIdentity>().cloned();
 
     // Whatever the request deletes is the caller's doing, in the deletion
-    // log as well as here.
+    // log as well as here, under the same request id.
     let deleter = fcp_core::compliance::Deleter::new(
         fcp_core::compliance::DeletionCause::Manual,
         identity
             .as_ref()
             .map(AuthIdentity::actor)
             .unwrap_or_else(|| "anonymous".to_string()),
-    );
+    )
+    .in_api_request(request_id.clone());
     let response = fcp_core::compliance::deleting_as(deleter, next.run(req)).await;
 
     if !should_audit(&method, &path) {
@@ -253,6 +273,7 @@ pub async fn audit_requests(State(state): State<ApiState>, req: Request, next: N
         action: format!("{method} {template}"),
         detail,
         source_ip: ip,
+        api_request_id: request_id,
         occurred_at: SystemTime::now(),
     };
     tokio::spawn(async move {
@@ -386,6 +407,40 @@ mod tests {
         ));
         assert!(should_audit(&Method::GET, "/api/v1/captures/cap-1/file"));
         assert!(!should_audit(&Method::GET, "/api/v1/captures"));
+        assert!(should_audit(&Method::GET, "/api/v1/audit-log/export"));
+        assert!(should_audit(
+            &Method::GET,
+            "/api/v1/compliance/deletions/export"
+        ));
+        assert!(!should_audit(&Method::GET, "/api/v1/audit-log"));
+        // A call's content heard or read.
+        assert!(should_audit(
+            &Method::GET,
+            "/api/v1/recordings/rec-1/download"
+        ));
+        assert!(!should_audit(&Method::GET, "/api/v1/recordings/rec-1"));
+        assert!(should_audit(
+            &Method::GET,
+            "/api/v1/voicemail/messages/vm-1"
+        ));
+        assert!(should_audit(
+            &Method::GET,
+            "/api/v1/voicemail/mailboxes/mbx-1/greetings/busy/audio"
+        ));
+        assert!(!should_audit(
+            &Method::GET,
+            "/api/v1/voicemail/mailboxes/mbx-1/messages"
+        ));
+        assert!(should_audit(
+            &Method::GET,
+            "/api/v1/calls/call-1/sip-messages"
+        ));
+        // A person's own.
+        assert!(!should_audit(
+            &Method::GET,
+            "/api/v1/me/voicemail/messages/vm-1/audio"
+        ));
+        assert!(!should_audit(&Method::GET, "/api/v1/me/contacts/export"));
         assert!(!should_audit(&Method::GET, "/api/v1/cdrs"));
         assert!(!should_audit(&Method::OPTIONS, "/api/v1/users"));
     }

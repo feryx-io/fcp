@@ -321,43 +321,39 @@ impl ConfigStore for PostgresStorage {
 
     async fn get_audit_log(
         &self,
-        service: &str,
+        service: Option<&str>,
         tenant_id: &str,
         section: Option<&str>,
         limit: i64,
     ) -> fcp_core::Result<Vec<AuditEntry>> {
-        let rows = match section {
-            Some(sec) => {
-                sqlx::query(
-                    "SELECT id, service, section, tenant_id, old_value, new_value, changed_by, changed_at, version
-                     FROM config_audit_log
-                     WHERE service = $1 AND tenant_id = $2 AND section = $3
-                     ORDER BY changed_at DESC
-                     LIMIT $4",
-                )
-                .bind(service)
-                .bind(tenant_id)
-                .bind(sec)
-                .bind(limit)
-                .fetch_all(self.pool())
-                .await
-            }
-            None => {
-                sqlx::query(
-                    "SELECT id, service, section, tenant_id, old_value, new_value, changed_by, changed_at, version
-                     FROM config_audit_log
-                     WHERE service = $1 AND tenant_id = $2
-                     ORDER BY changed_at DESC
-                     LIMIT $3",
-                )
-                .bind(service)
-                .bind(tenant_id)
-                .bind(limit)
-                .fetch_all(self.pool())
-                .await
-            }
+        let mut sql = String::from(
+            "SELECT id, service, section, tenant_id, old_value, new_value, changed_by, changed_at, version
+             FROM config_audit_log
+             WHERE tenant_id = $1",
+        );
+        let mut n = 1;
+        if service.is_some() {
+            n += 1;
+            sql.push_str(&format!(" AND service = ${n}"));
         }
-        .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
+        if section.is_some() {
+            n += 1;
+            sql.push_str(&format!(" AND section = ${n}"));
+        }
+        sql.push_str(&format!(
+            " ORDER BY changed_at DESC, id DESC LIMIT ${}",
+            n + 1
+        ));
+        let mut q = sqlx::query(&sql).bind(tenant_id);
+        if let Some(service) = service {
+            q = q.bind(service);
+        }
+        if let Some(section) = section {
+            q = q.bind(section);
+        }
+        let rows = q.bind(limit).fetch_all(self.pool()).await.map_err(|e| {
+            fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string()))
+        })?;
 
         let entries = rows
             .into_iter()

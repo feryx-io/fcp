@@ -70,6 +70,7 @@ impl PostgresComplianceStore {
             action: row.try_get("action")?,
             detail: row.try_get("detail")?,
             source_ip: row.try_get("source_ip")?,
+            api_request_id: row.try_get("api_request_id")?,
             occurred_at: to_system_time(occurred_at),
         })
     }
@@ -182,8 +183,8 @@ impl ComplianceStore for PostgresComplianceStore {
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO admin_audit_log
                 (tenant_id, actor, actor_kind, method, path, status, action, detail,
-                 source_ip, occurred_at, actor_tenant_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                 source_ip, occurred_at, actor_tenant_id, api_request_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
              RETURNING id",
         )
         .bind(event.tenant_id.map(|t| t.to_string()))
@@ -197,6 +198,7 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(&event.source_ip)
         .bind(to_datetime(event.occurred_at))
         .bind(event.actor_tenant_id.map(|t| t.to_string()))
+        .bind(&event.api_request_id)
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
@@ -205,7 +207,7 @@ impl ComplianceStore for PostgresComplianceStore {
     async fn list_audit_events(&self, query: &AuditQuery) -> anyhow::Result<Vec<AuditEvent>> {
         let mut sql = String::from(
             "SELECT id, tenant_id, actor, actor_kind, method, path, status, action, detail,
-                    source_ip, occurred_at, actor_tenant_id
+                    source_ip, occurred_at, actor_tenant_id, api_request_id
              FROM admin_audit_log WHERE 1 = 1",
         );
         let mut n = 0;
@@ -230,6 +232,9 @@ impl ComplianceStore for PostgresComplianceStore {
         if query.until.is_some() {
             sql.push_str(&format!(" AND occurred_at < ${}", next()));
         }
+        if query.api_request_id.is_some() {
+            sql.push_str(&format!(" AND api_request_id = ${}", next()));
+        }
         if query.before.is_some() {
             let (at, id) = (next(), next());
             sql.push_str(&format!(" AND (occurred_at, id) < (${at}, ${id})"));
@@ -252,6 +257,9 @@ impl ComplianceStore for PostgresComplianceStore {
         }
         if let Some(until) = query.until {
             q = q.bind(to_datetime(until));
+        }
+        if let Some(request) = &query.api_request_id {
+            q = q.bind(request.clone());
         }
         if let Some((at, id)) = query.before {
             q = q.bind(to_datetime(at)).bind(id);
@@ -304,7 +312,8 @@ impl ComplianceStore for PostgresComplianceStore {
 
     async fn list_deletions(&self, query: &DeletionQuery) -> anyhow::Result<Vec<DeletionRecord>> {
         let mut sql = String::from(
-            "SELECT id, tenant_id, class, item, detail, cause, actor, request_id, deleted_at
+            "SELECT id, tenant_id, class, item, detail, cause, actor, request_id,
+                    api_request_id, via, deleted_at
              FROM deletion_log WHERE 1=1",
         );
         let mut n = 0;
@@ -321,8 +330,14 @@ impl ComplianceStore for PostgresComplianceStore {
         if query.since.is_some() {
             sql.push_str(&format!(" AND deleted_at >= ${}", next()));
         }
+        if query.until.is_some() {
+            sql.push_str(&format!(" AND deleted_at < ${}", next()));
+        }
         if query.request_id.is_some() {
             sql.push_str(&format!(" AND request_id = ${}", next()));
+        }
+        if query.api_request_id.is_some() {
+            sql.push_str(&format!(" AND api_request_id = ${}", next()));
         }
         if query.before.is_some() {
             let (at, id) = (next(), next());
@@ -342,7 +357,13 @@ impl ComplianceStore for PostgresComplianceStore {
         if let Some(since) = query.since {
             q = q.bind(to_datetime(since));
         }
+        if let Some(until) = query.until {
+            q = q.bind(to_datetime(until));
+        }
         if let Some(request) = &query.request_id {
+            q = q.bind(request);
+        }
+        if let Some(request) = &query.api_request_id {
             q = q.bind(request);
         }
         if let Some((at, id)) = query.before {
@@ -364,6 +385,8 @@ impl ComplianceStore for PostgresComplianceStore {
                     cause: row.try_get("cause")?,
                     actor: row.try_get("actor")?,
                     request_id: row.try_get("request_id")?,
+                    api_request_id: row.try_get("api_request_id")?,
+                    via: row.try_get("via")?,
                     deleted_at: to_system_time(at),
                 })
             })
@@ -372,8 +395,9 @@ impl ComplianceStore for PostgresComplianceStore {
 
     async fn record_deletion(&self, record: &DeletionRecord) -> anyhow::Result<()> {
         sqlx::query(
-            "INSERT INTO deletion_log (tenant_id, class, item, detail, cause, actor, deleted_at, request_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "INSERT INTO deletion_log (tenant_id, class, item, detail, cause, actor, deleted_at,
+                                       request_id, api_request_id, via)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(record.tenant_id.map(|t| t.to_string()))
         .bind(&record.class)
@@ -383,6 +407,8 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(&record.actor)
         .bind(to_datetime(record.deleted_at))
         .bind(&record.request_id)
+        .bind(&record.api_request_id)
+        .bind(&record.via)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -426,7 +452,8 @@ impl ComplianceStore for PostgresComplianceStore {
         limit: usize,
     ) -> anyhow::Result<Vec<DeletionRecord>> {
         sqlx::query(
-            "SELECT id, tenant_id, class, item, detail, cause, actor, request_id, deleted_at
+            "SELECT id, tenant_id, class, item, detail, cause, actor, request_id,
+                    api_request_id, via, deleted_at
              FROM deletion_log WHERE id > $1 ORDER BY id LIMIT $2",
         )
         .bind(after)
@@ -446,6 +473,8 @@ impl ComplianceStore for PostgresComplianceStore {
                 cause: row.try_get("cause")?,
                 actor: row.try_get("actor")?,
                 request_id: row.try_get("request_id")?,
+                api_request_id: row.try_get("api_request_id")?,
+                via: row.try_get("via")?,
                 deleted_at: to_system_time(at),
             })
         })

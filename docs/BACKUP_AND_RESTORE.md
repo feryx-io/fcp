@@ -392,6 +392,16 @@ Changes that need something of a configuration the operator keeps:
   still anyone's until assigned on the Flows page), parks `*70` in the lot
   of the parker's location, and marks bound numbers `assigned`
   (migration 135).
+- **v0.25.514: the audit log's links and reads** (`docs/COMPLIANCE.md`,
+  #342). Migration 137 adds `api_request_id` to the audit log and the
+  deletion log, and `via` to the deletion log, all empty on earlier rows.
+  More reads are audited (exports of the audit and deletion logs, recording
+  downloads, an administrator's voicemail reads, SIP messages), so the log
+  grows faster for a tenant that reads them often. `GET /config/audit`
+  without `service` now lists every service's changes, where it listed
+  `_global`'s: a script that relied on that passes `service=_global`. A
+  message deleted from the voicemail menu names the mailbox owner's
+  username, not `phone:<mailbox>`.
 
 ### 5.5 Proved
 

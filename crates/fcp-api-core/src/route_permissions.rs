@@ -302,6 +302,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/audit-log", Needs(AuditView)),
     (GET, "/audit-log/export", Needs(AuditView)),
     (GET, "/compliance/deletions", Needs(AuditView)),
+    (GET, "/compliance/deletions/export", Needs(AuditView)),
     (GET, "/compliance/holds", Needs(LegalHoldManage)),
     (POST, "/compliance/holds", Needs(LegalHoldManage)),
     (GET, "/compliance/holds/:id", Needs(LegalHoldManage)),
