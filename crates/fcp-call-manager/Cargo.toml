@@ -11,12 +11,16 @@ description = "Combined SIP registrar and B2BUA call handler for the Ferrous Com
 default = ["tls", "storage-redis"]
 tls = ["fcp-sip/tls"]
 storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster", "fcp-presence/redis"]
+# A heap profile written at shutdown to `FCP_DHAT_FILE` (default
+# `dhat-heap.json`), for finding what a node keeps. Slow: never ship it.
+dhat-heap = ["dep:dhat"]
 
 [[bin]]
 name = "fcp-call-manager"
 path = "src/main.rs"
 
 [dependencies]
+dhat = { version = "0.3", optional = true }
 # FCP crates
 fcp-core = { path = "../fcp-core" }
 fcp-sip = { path = "../fcp-sip", features = ["ws"] }

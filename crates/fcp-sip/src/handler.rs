@@ -1215,6 +1215,25 @@ impl SipMessageHandler {
         &self.call_recorder
     }
 
+    /// What this handler keeps in memory for calls, so a node that grows
+    /// can say where (#344): dialogs, SIP Call-IDs remembered for tracing,
+    /// and the calls the call manager holds. Each falls back to about the
+    /// calls up once they end.
+    pub fn held(&self) -> HeldState {
+        // A UAC with a store of its own keeps its B-legs there.
+        let uac_dialogs = self
+            .uac
+            .as_ref()
+            .and_then(|uac| uac.inner().dialog_manager().cloned())
+            .filter(|store| !Arc::ptr_eq(store, &self.dialog_manager))
+            .map_or(0, |store| store.count());
+        HeldState {
+            dialogs: self.dialog_manager.count() + uac_dialogs,
+            sip_call_ids: self.sip_call_id_map.len(),
+            calls: self.call_manager.total_call_count(),
+        }
+    }
+
     /// Believe the caller a trusted edge names for its INVITEs
     /// (`docs/E911_BLOCK_2.md` §4, [`crate::emergency`]).
     /// The engine that runs the header manipulation rules a trunk names
@@ -3954,8 +3973,12 @@ impl SipMessageHandler {
 
         // Register A-leg SIP Call-ID → FCP CallId mapping for trace correlation
         if let Some(sip_cid) = sip_parse::header(request.headers(), "Call-ID") {
-            self.sip_call_id_map
-                .insert(sip_cid.as_str().to_string(), call_id.to_string());
+            remember_sip_call_id(
+                &self.sip_call_id_map,
+                &self.call_manager,
+                sip_cid.as_str(),
+                &call_id,
+            );
         }
 
         // Re-log the initial INVITE with the correct FCP CallId (the one logged in
@@ -8068,6 +8091,7 @@ impl SipMessageHandler {
         let header_rules = self.header_rules.clone();
         let flow_registry_clone = Arc::clone(&self.flow_registry);
         let sip_call_id_map_clone = Arc::clone(&self.sip_call_id_map);
+        let call_manager_for_ids = Arc::clone(&self.call_manager);
         let sip_trace_tx_clone = self.sip_trace_tx.clone();
         let local_addr_clone = self.local_addr.clone();
         let node_id_clone = self.node_id.clone();
@@ -8209,8 +8233,12 @@ impl SipMessageHandler {
                 // Register B-leg SIP Call-ID → FCP CallId mapping for trace correlation
                 let b_leg_invite = call.invite_request().await;
                 if let Some(b_leg_cid) = sip_parse::header(b_leg_invite.headers(), "Call-ID") {
-                    sip_call_id_map_clone
-                        .insert(b_leg_cid.as_str().to_string(), call_id_clone.to_string());
+                    remember_sip_call_id(
+                        &sip_call_id_map_clone,
+                        &call_manager_for_ids,
+                        b_leg_cid.as_str(),
+                        &call_id_clone,
+                    );
                 }
 
                 // Log outbound B-leg INVITE for SIP trace
@@ -9942,8 +9970,12 @@ impl SipMessageHandler {
                 Ok(Ok(call)) => {
                     let b_leg_invite = call.invite_request().await;
                     if let Some(b_leg_cid) = sip_parse::header(b_leg_invite.headers(), "Call-ID") {
-                        self.sip_call_id_map
-                            .insert(b_leg_cid.as_str().to_string(), call_id.to_string());
+                        remember_sip_call_id(
+                            &self.sip_call_id_map,
+                            &self.call_manager,
+                            b_leg_cid.as_str(),
+                            &call_id,
+                        );
                     }
                     return Some((attempt.target, Arc::new(call)));
                 }
@@ -20513,6 +20545,35 @@ fn rtp_stats_from(stats: &fcp_media::MediaSessionStats) -> fcp_cdr::RtpStats {
         packets_lost: stats.packets_lost,
         jitter_ms: (stats.jitter_ms > 0.0).then_some(stats.jitter_ms),
     }
+}
+
+/// [`SipMessageHandler::held`]: counts of what the handler keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldState {
+    pub dialogs: usize,
+    pub sip_call_ids: usize,
+    pub calls: usize,
+}
+
+/// Remember which call a SIP Call-ID belongs to, for tracing. Nothing
+/// takes an entry out when its call ends, so the map is swept of ended
+/// calls once it holds more than twice the calls up (two legs each) and a
+/// margin: it stays the size of what the node carries, not of every call
+/// it ever carried (#344).
+fn remember_sip_call_id(
+    map: &dashmap::DashMap<String, String>,
+    call_manager: &fcp_b2bua_core::CallManager,
+    sip_call_id: &str,
+    call_id: &fcp_b2bua_core::CallId,
+) {
+    const MARGIN: usize = 64;
+    if map.len() > 2 * call_manager.total_call_count() + MARGIN {
+        map.retain(|_, call| {
+            call.parse::<fcp_b2bua_core::CallId>()
+                .is_ok_and(|id| call_manager.get_call(&id).is_some())
+        });
+    }
+    map.insert(sip_call_id.to_string(), call_id.to_string());
 }
 
 #[allow(clippy::too_many_arguments)]

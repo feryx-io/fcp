@@ -359,6 +359,7 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
     let call_stats = state.call_manager.stats();
     let admission_cfg = state.admission.config_snapshot();
     let refused = |reason| fcp_sbc_core::AdmissionCounters::global().refused_for(reason);
+    let media_sessions = state.media_manager.list_sessions().await.len();
 
     Json(serde_json::json!({
         "status": "healthy",
@@ -373,6 +374,17 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
         // What this node is carrying against what it allows
         // (docs/CAPACITY_AND_SURVIVABILITY.md §9). Zero is no limit.
         "draining": state.drain.is_draining(),
+        // What the node keeps for calls (#344): back to about the calls
+        // up once they end, so a count that keeps growing is a leak.
+        "held": state.sip_handler.as_ref().map(|handler| {
+            let held = handler.held();
+            serde_json::json!({
+                "dialogs": held.dialogs,
+                "sip_call_ids": held.sip_call_ids,
+                "calls": held.calls,
+                "media_sessions": media_sessions,
+            })
+        }),
         // Registration lookups since start, by reason
         // (docs/MULTI_REGION_FOLLOWUPS.md §2.1). A region away from the
         // primary pays a crossing for each.
@@ -1162,6 +1174,23 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
         &fcp_sbc_core::AdmissionCounters::global().prometheus(&format!("node=\"{node}\"")),
     );
     body.push_str(&admission_gauges(&state.admission, &node));
+    // What the node keeps for calls (#344).
+    if let Some(handler) = &state.sip_handler {
+        let held = handler.held();
+        body.push_str(
+            "# HELP fcp_node_held What the node keeps in memory for calls, by kind.\n\
+             # TYPE fcp_node_held gauge\n",
+        );
+        for (kind, n) in [
+            ("dialogs", held.dialogs),
+            ("sip_call_ids", held.sip_call_ids),
+            ("calls", held.calls),
+        ] {
+            body.push_str(&format!(
+                "fcp_node_held{{node=\"{node}\",kind=\"{kind}\"}} {n}\n"
+            ));
+        }
+    }
     // Call recordings by source and consent outcome
     // (docs/COMPLIANCE_FOLLOWUPS.md §9).
     body.push_str(

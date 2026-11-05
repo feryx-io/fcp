@@ -263,6 +263,8 @@ async fn run() -> Result<()> {
         .local_addr(&local_addr)?
         .via_advertised_addr(&local_addr)?
         .transaction_manager(Arc::clone(&transaction_manager_ref))
+        // The handler's dialogs, so a call's B-leg goes when the call does.
+        .dialog_manager(Arc::clone(&dialog_manager_ref))
         .resolver(resolver)
         .dispatcher(Arc::clone(&effective_dispatcher))
         .credential_provider(credential_provider)
