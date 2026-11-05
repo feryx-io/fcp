@@ -62,7 +62,29 @@ const OPEN_RECORDS_EVERY: Duration = Duration::from_secs(10);
 /// How often conference calls are checked for a node that has gone.
 const CONFERENCE_RESCUE_EVERY: Duration = Duration::from_secs(1);
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
+/// The heap profile, written when it is dropped: at the shutdown signal,
+/// while everything the node keeps is still there.
+#[cfg(feature = "dhat-heap")]
+static PROFILER: std::sync::Mutex<Option<dhat::Profiler>> = std::sync::Mutex::new(None);
+
+fn write_heap_profile() {
+    #[cfg(feature = "dhat-heap")]
+    drop(PROFILER.lock().map(|mut p| p.take()));
+}
+
 fn main() -> Result<()> {
+    #[cfg(feature = "dhat-heap")]
+    {
+        let profiler = dhat::Profiler::builder()
+            .file_name(std::env::var("FCP_DHAT_FILE").unwrap_or_else(|_| "dhat-heap.json".into()))
+            .trim_backtraces(Some(40))
+            .build();
+        *PROFILER.lock().expect("profiler lock") = Some(profiler);
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(WORKER_STACK_BYTES)
@@ -557,6 +579,7 @@ async fn run() -> Result<()> {
     let uac = create_uac(
         &config,
         Arc::clone(&transaction_manager_ref),
+        Arc::clone(&dialog_manager_ref),
         dispatcher,
         trunk_cred_provider,
     )
@@ -2421,6 +2444,7 @@ async fn run() -> Result<()> {
             }
             _ = sigterm.recv() => {
                 info!("Received SIGTERM, initiating graceful shutdown...");
+                write_heap_profile();
                 break;
             }
             _ = sighup.recv() => {
@@ -2711,6 +2735,7 @@ async fn create_transport_dispatcher(
 async fn create_uac(
     config: &CallManagerConfig,
     transaction_manager: Arc<TransactionManager>,
+    dialog_manager: Arc<DialogManager>,
     dispatcher: Arc<fcp_sip::transport::RealTransportDispatcher>,
     credential_provider: Option<Arc<TrunkCredentialProvider>>,
 ) -> Result<Arc<SipUserAgentClient>> {
@@ -2746,6 +2771,10 @@ async fn create_uac(
         .local_addr(&local_addr)?
         .via_advertised_addr(&local_addr)?
         .transaction_manager(transaction_manager)
+        // The handler's dialogs: a B-leg's dialog is then the one the
+        // handler removes when the call ends. A UAC with a store of its
+        // own kept every B-leg it ever placed (#344).
+        .dialog_manager(dialog_manager)
         .resolver(resolver)
         .dispatcher(dispatcher);
 

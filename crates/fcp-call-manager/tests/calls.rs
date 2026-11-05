@@ -847,6 +847,72 @@ async fn the_callee_can_hang_up() {
     stack.finish().await;
 }
 
+/// What a call leaves behind (#344): once calls have ended, whichever side
+/// hung up, the node holds no dialog, call or media session for them, and
+/// the Call-IDs it remembers for tracing stay within a margin rather than
+/// growing by two a call. Before the fix the B-legs' dialogs stayed in the
+/// UAC's own store and every Call-ID stayed in the map, for a day's soak
+/// about 1.2 KB a call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ended_calls_leave_nothing_behind() {
+    const CALLS: usize = 40;
+    // One source placing calls back to back, challenged each time.
+    let Some(stack) = Stack::start_with("[security]\nmax_invite_cps_per_source = 0\n", 40).await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+
+    for n in 0..CALLS {
+        let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+        let Some(incoming) = bob_phone.incoming(SOON).await else {
+            stack
+                .fail(&format!("call {n}: Bob's phone did not ring"), &alice_phone)
+                .await;
+        };
+        let bob_call = incoming.answer().await.unwrap();
+        alice_call.answered(SOON).await.unwrap();
+        if n % 2 == 0 {
+            alice_call.hangup().await.unwrap();
+            assert!(bob_call.ended(SOON).await, "call {n}: Bob's leg ends");
+        } else {
+            bob_call.hangup().await.unwrap();
+            assert!(alice_call.ended(SOON).await, "call {n}: Alice's leg ends");
+        }
+    }
+
+    let deadline = tokio::time::Instant::now() + SOON;
+    let held = loop {
+        let held = stack.get("/status").await["held"].clone();
+        let ended = held["dialogs"] == 0 && held["calls"] == 0 && held["media_sessions"] == 0;
+        if ended || tokio::time::Instant::now() > deadline {
+            break held;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!(held["dialogs"], 0, "{held}");
+    assert_eq!(held["calls"], 0, "{held}");
+    assert_eq!(held["media_sessions"], 0, "{held}");
+    // Swept once past twice the calls up and a margin of 64: never the 80
+    // two legs a call would leave.
+    let ids = held["sip_call_ids"].as_u64().unwrap();
+    assert!(ids <= 66, "{CALLS} ended calls left {ids} Call-IDs: {held}");
+
+    let metrics = http_get(&loopback(stack.http, "/metrics")).await.unwrap().1;
+    assert!(
+        metrics.contains("kind=\"dialogs\"} 0"),
+        "the gauge says what /status does"
+    );
+
+    stack.finish().await;
+}
+
 /// Phones behind NAT (`fcp_sip::nat`): each names, in its Contact and its
 /// SDP, an address it cannot be reached at — loopback, as Anvil did on D8 —
 /// and is seen at another. The callee is rung where it registered from,

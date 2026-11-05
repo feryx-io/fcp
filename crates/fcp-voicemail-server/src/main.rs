@@ -278,6 +278,7 @@ async fn main() -> Result<()> {
     let uac = create_uac(
         &config,
         Arc::clone(&transaction_manager_ref),
+        Arc::clone(&dialog_manager_ref),
         dispatcher,
         trunk_cred_provider,
     )
@@ -1170,6 +1171,7 @@ async fn create_transport_dispatcher(
 async fn create_uac(
     config: &VoicemailServerConfig,
     transaction_manager: Arc<TransactionManager>,
+    dialog_manager: Arc<DialogManager>,
     dispatcher: Arc<fcp_sip::transport::RealTransportDispatcher>,
     credential_provider: Option<Arc<TrunkCredentialProvider>>,
 ) -> Result<Arc<SipUserAgentClient>> {
@@ -1205,6 +1207,8 @@ async fn create_uac(
         .local_addr(&local_addr)?
         .via_advertised_addr(&local_addr)?
         .transaction_manager(transaction_manager)
+        // The handler's dialogs, so a call's B-leg goes when the call does.
+        .dialog_manager(dialog_manager)
         .resolver(resolver)
         .dispatcher(dispatcher);
 
