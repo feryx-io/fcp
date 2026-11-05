@@ -17373,7 +17373,7 @@ impl SipMessageHandler {
                         .await
                         .ok()
                         .flatten()
-                        .map(|u| u.display_name.unwrap_or(u.username)),
+                        .map(|u| u.shown_name().unwrap_or(u.username)),
                     _ => None,
                 };
                 let _ = self.call_manager.update_call(&call_id, |call| {
@@ -17460,7 +17460,7 @@ impl SipMessageHandler {
                         .await
                         .ok()
                         .flatten()
-                        .map(|u| u.display_name.unwrap_or(u.username)),
+                        .map(|u| u.shown_name().unwrap_or(u.username)),
                     _ => None,
                 };
                 // Apps asleep are woken by push rather than rung
@@ -17762,7 +17762,7 @@ impl SipMessageHandler {
             .await
             .ok()
             .flatten()
-            .map(|u| u.display_name.unwrap_or(u.username))
+            .map(|u| u.shown_name().unwrap_or(u.username))
             .unwrap_or_default();
         let caller_name = extract_from_display_name(request)
             .or_else(|| {

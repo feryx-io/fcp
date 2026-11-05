@@ -7009,6 +7009,16 @@ export interface components {
             email?: string;
             display_name?: string;
             /**
+             * @description The first name (#343); the well-known given-name claims and SAML
+             *     attributes are read when this one is missing.
+             */
+            first_name?: string;
+            /**
+             * @description The last name; the well-known family-name claims and SAML
+             *     attributes are read when this one is missing.
+             */
+            last_name?: string;
+            /**
              * @description A list of strings: the user's groups (Entra ID sends ids, Okta
              *     and Google Workspace names, when asked to).
              */
@@ -7456,6 +7466,13 @@ export interface components {
              *     the mailbox takes it.
              */
             flow_id?: string | null;
+            /**
+             * @description `standard`, `personalized` or `own`; unset is the default —
+             *     personalized when the user has a first and last name.
+             */
+            greeting_choice?: string | null;
+            /** @description `full_name` (the default), `display_name` or `recorded`. */
+            greeting_name?: string | null;
         };
         /** @description Create meeting request body. */
         CreateMeetingRequest: {
@@ -7731,7 +7748,10 @@ export interface components {
              *     provisioning as `${sip_password}` for vendors that cannot use HA1.
              */
             sip_provisioning_password?: string | null;
+            /** @description Left out with a first and last name, the user reads as the two. */
             display_name?: string | null;
+            first_name?: string | null;
+            last_name?: string | null;
             tenant_id?: components["schemas"]["TenantId"];
             enabled?: boolean;
             role?: string | null;
@@ -8866,6 +8886,23 @@ export interface components {
              *     mailbox itself.
              */
             flow_id?: string | null;
+            /**
+             * @description The greeting chosen: `standard`, `personalized` or `own`; `null` is
+             *     the default — personalized when the owner has a first and last
+             *     name, standard otherwise (#343).
+             */
+            greeting_choice?: string | null;
+            /**
+             * @description The name a personalized greeting says: `full_name`, `display_name`
+             *     or `recorded` (the mailbox's name greeting).
+             */
+            greeting_name: string;
+            /**
+             * @description What callers hear now: `standard`, `personalized` or `own`. A
+             *     personalized greeting not made (no name, no TTS) is heard as
+             *     standard, as is an own greeting never recorded.
+             */
+            greeting_heard: string;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -10324,6 +10361,23 @@ export interface components {
                  *     mailbox itself.
                  */
                 flow_id?: string | null;
+                /**
+                 * @description The greeting chosen: `standard`, `personalized` or `own`; `null` is
+                 *     the default — personalized when the owner has a first and last
+                 *     name, standard otherwise (#343).
+                 */
+                greeting_choice?: string | null;
+                /**
+                 * @description The name a personalized greeting says: `full_name`, `display_name`
+                 *     or `recorded` (the mailbox's name greeting).
+                 */
+                greeting_name: string;
+                /**
+                 * @description What callers hear now: `standard`, `personalized` or `own`. A
+                 *     personalized greeting not made (no name, no TTS) is heard as
+                 *     standard, as is an own greeting never recorded.
+                 */
+                greeting_heard: string;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -11535,7 +11589,13 @@ export interface components {
             data: {
                 id: string;
                 username: string;
+                /**
+                 * @description The name the user is shown by: their display name, else their
+                 *     first and last name (#343).
+                 */
                 display_name?: string | null;
+                first_name?: string | null;
+                last_name?: string | null;
                 tenant_id: string;
                 enabled: boolean;
                 role: string;
@@ -12075,7 +12135,13 @@ export interface components {
         /** @description Profile response (limited fields for end users). */
         ProfileResponse: {
             username: string;
+            /**
+             * @description The name the user is shown by: their display name, else their first
+             *     and last name.
+             */
             display_name?: string | null;
+            first_name?: string | null;
+            last_name?: string | null;
             email?: string | null;
             phone_number?: string | null;
             extension?: string | null;
@@ -13922,6 +13988,13 @@ export interface components {
              *     it, so the mailbox takes it again.
              */
             flow_id?: string | null;
+            /**
+             * @description `standard`, `personalized` or `own`; empty returns the mailbox to
+             *     the default. The personalized greeting is made before the answer.
+             */
+            greeting_choice?: string | null;
+            /** @description `full_name`, `display_name` or `recorded`. */
+            greeting_name?: string | null;
         };
         /**
          * @description Update meeting request body (all fields optional; `null` clears one
@@ -14066,7 +14139,18 @@ export interface components {
             note?: string | null;
         };
         UpdateProfileRequest: {
+            /**
+             * @description One that is only the first and last name is not kept, so the user
+             *     goes on reading as their names.
+             */
             display_name?: string | null;
+            /**
+             * @description An empty string clears it; refused (403) for a user the tenant's
+             *     SCIM provisioner keeps.
+             */
+            first_name?: string | null;
+            /** @description As `first_name`. */
+            last_name?: string | null;
             email?: string | null;
             phone_number?: string | null;
             timezone?: string | null;
@@ -14243,7 +14327,15 @@ export interface components {
              *     phones keep registering under their SIP name, which stays.
              */
             username?: string | null;
+            /**
+             * @description An empty string clears it; one that is only the first and last
+             *     name is not kept, so the user goes on reading as their names.
+             */
             display_name?: string | null;
+            /** @description An empty string clears it. */
+            first_name?: string | null;
+            /** @description An empty string clears it. */
+            last_name?: string | null;
             enabled?: boolean | null;
             role?: string | null;
             department_id?: string | null;
@@ -14273,6 +14365,10 @@ export interface components {
             email_notification?: boolean | null;
             email_address?: string | null;
             attach_audio?: boolean | null;
+            /** @description `standard`, `personalized` or `own`; empty returns to the default. */
+            greeting_choice?: string | null;
+            /** @description `full_name`, `display_name` or `recorded`. */
+            greeting_name?: string | null;
         };
         /** @description A change to a webhook; what is left out stays. */
         UpdateWebhookRequest: {
@@ -14372,7 +14468,13 @@ export interface components {
         UserResponse: {
             id: string;
             username: string;
+            /**
+             * @description The name the user is shown by: their display name, else their
+             *     first and last name (#343).
+             */
             display_name?: string | null;
+            first_name?: string | null;
+            last_name?: string | null;
             tenant_id: string;
             enabled: boolean;
             role: string;
@@ -14642,6 +14744,19 @@ export interface components {
             attach_audio: boolean;
             /** Format: int32 */
             retention_days?: number | null;
+            /**
+             * @description The greeting chosen: `standard`, `personalized` or `own`; `null` is
+             *     the default — personalized with a first and last name, standard
+             *     otherwise.
+             */
+            greeting_choice?: string | null;
+            /**
+             * @description The name a personalized greeting says: `full_name`, `display_name`
+             *     or `recorded`.
+             */
+            greeting_name: string;
+            /** @description What callers hear now: `standard`, `personalized` or `own`. */
+            greeting_heard: string;
         };
         /** @description Mailbox stats response. */
         "me.MailboxStatsResponse": {

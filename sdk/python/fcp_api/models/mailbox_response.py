@@ -37,6 +37,11 @@ class MailboxResponse:
             attach_audio (bool):
             include_transcription (bool):
             transcription_enabled (bool):
+            greeting_name (str): The name a personalized greeting says: `full_name`, `display_name`
+                or `recorded` (the mailbox's name greeting).
+            greeting_heard (str): What callers hear now: `standard`, `personalized` or `own`. A
+                personalized greeting not made (no name, no TTS) is heard as
+                standard, as is an own greeting never recorded.
             created_at (datetime.datetime):
             updated_at (datetime.datetime):
             line_binding_id (None | str | Unset):
@@ -44,6 +49,9 @@ class MailboxResponse:
             retention_days (int | None | Unset):
             flow_id (None | str | Unset): The flow that handles a call this mailbox would take, if not the
                 mailbox itself.
+            greeting_choice (None | str | Unset): The greeting chosen: `standard`, `personalized` or `own`; `null` is
+                the default — personalized when the owner has a first and last
+                name, standard otherwise (#343).
      """
 
     id: str
@@ -57,12 +65,15 @@ class MailboxResponse:
     attach_audio: bool
     include_transcription: bool
     transcription_enabled: bool
+    greeting_name: str
+    greeting_heard: str
     created_at: datetime.datetime
     updated_at: datetime.datetime
     line_binding_id: None | str | Unset = UNSET
     email_address: None | str | Unset = UNSET
     retention_days: int | None | Unset = UNSET
     flow_id: None | str | Unset = UNSET
+    greeting_choice: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -92,6 +103,10 @@ class MailboxResponse:
 
         transcription_enabled = self.transcription_enabled
 
+        greeting_name = self.greeting_name
+
+        greeting_heard = self.greeting_heard
+
         created_at = self.created_at.isoformat()
 
         updated_at = self.updated_at.isoformat()
@@ -120,6 +135,12 @@ class MailboxResponse:
         else:
             flow_id = self.flow_id
 
+        greeting_choice: None | str | Unset
+        if isinstance(self.greeting_choice, Unset):
+            greeting_choice = UNSET
+        else:
+            greeting_choice = self.greeting_choice
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -135,6 +156,8 @@ class MailboxResponse:
             "attach_audio": attach_audio,
             "include_transcription": include_transcription,
             "transcription_enabled": transcription_enabled,
+            "greeting_name": greeting_name,
+            "greeting_heard": greeting_heard,
             "created_at": created_at,
             "updated_at": updated_at,
         })
@@ -146,6 +169,8 @@ class MailboxResponse:
             field_dict["retention_days"] = retention_days
         if flow_id is not UNSET:
             field_dict["flow_id"] = flow_id
+        if greeting_choice is not UNSET:
+            field_dict["greeting_choice"] = greeting_choice
 
         return field_dict
 
@@ -175,6 +200,10 @@ class MailboxResponse:
         include_transcription = d.pop("include_transcription")
 
         transcription_enabled = d.pop("transcription_enabled")
+
+        greeting_name = d.pop("greeting_name")
+
+        greeting_heard = d.pop("greeting_heard")
 
         created_at = datetime.datetime.fromisoformat(d.pop("created_at"))
 
@@ -226,6 +255,16 @@ class MailboxResponse:
         flow_id = _parse_flow_id(d.pop("flow_id", UNSET))
 
 
+        def _parse_greeting_choice(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        greeting_choice = _parse_greeting_choice(d.pop("greeting_choice", UNSET))
+
+
         mailbox_response = cls(
             id=id,
             tenant_id=tenant_id,
@@ -238,12 +277,15 @@ class MailboxResponse:
             attach_audio=attach_audio,
             include_transcription=include_transcription,
             transcription_enabled=transcription_enabled,
+            greeting_name=greeting_name,
+            greeting_heard=greeting_heard,
             created_at=created_at,
             updated_at=updated_at,
             line_binding_id=line_binding_id,
             email_address=email_address,
             retention_days=retention_days,
             flow_id=flow_id,
+            greeting_choice=greeting_choice,
         )
 
 

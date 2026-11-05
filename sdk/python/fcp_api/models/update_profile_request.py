@@ -24,7 +24,11 @@ T = TypeVar("T", bound="UpdateProfileRequest")
 class UpdateProfileRequest:
     """ 
         Attributes:
-            display_name (None | str | Unset):
+            display_name (None | str | Unset): One that is only the first and last name is not kept, so the user
+                goes on reading as their names.
+            first_name (None | str | Unset): An empty string clears it; refused (403) for a user the tenant's
+                SCIM provisioner keeps.
+            last_name (None | str | Unset): As `first_name`.
             email (None | str | Unset):
             phone_number (None | str | Unset):
             timezone (None | str | Unset):
@@ -34,6 +38,8 @@ class UpdateProfileRequest:
      """
 
     display_name: None | str | Unset = UNSET
+    first_name: None | str | Unset = UNSET
+    last_name: None | str | Unset = UNSET
     email: None | str | Unset = UNSET
     phone_number: None | str | Unset = UNSET
     timezone: None | str | Unset = UNSET
@@ -51,6 +57,18 @@ class UpdateProfileRequest:
             display_name = UNSET
         else:
             display_name = self.display_name
+
+        first_name: None | str | Unset
+        if isinstance(self.first_name, Unset):
+            first_name = UNSET
+        else:
+            first_name = self.first_name
+
+        last_name: None | str | Unset
+        if isinstance(self.last_name, Unset):
+            last_name = UNSET
+        else:
+            last_name = self.last_name
 
         email: None | str | Unset
         if isinstance(self.email, Unset):
@@ -89,6 +107,10 @@ class UpdateProfileRequest:
         })
         if display_name is not UNSET:
             field_dict["display_name"] = display_name
+        if first_name is not UNSET:
+            field_dict["first_name"] = first_name
+        if last_name is not UNSET:
+            field_dict["last_name"] = last_name
         if email is not UNSET:
             field_dict["email"] = email
         if phone_number is not UNSET:
@@ -115,6 +137,26 @@ class UpdateProfileRequest:
             return cast(None | str | Unset, data)
 
         display_name = _parse_display_name(d.pop("display_name", UNSET))
+
+
+        def _parse_first_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        first_name = _parse_first_name(d.pop("first_name", UNSET))
+
+
+        def _parse_last_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        last_name = _parse_last_name(d.pop("last_name", UNSET))
 
 
         def _parse_email(data: object) -> None | str | Unset:
@@ -169,6 +211,8 @@ class UpdateProfileRequest:
 
         update_profile_request = cls(
             display_name=display_name,
+            first_name=first_name,
+            last_name=last_name,
             email=email,
             phone_number=phone_number,
             timezone=timezone,

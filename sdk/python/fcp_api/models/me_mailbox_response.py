@@ -32,8 +32,14 @@ class MeMailboxResponse:
             max_messages (int):
             email_notification (bool):
             attach_audio (bool):
+            greeting_name (str): The name a personalized greeting says: `full_name`, `display_name`
+                or `recorded`.
+            greeting_heard (str): What callers hear now: `standard`, `personalized` or `own`.
             email_address (None | str | Unset):
             retention_days (int | None | Unset):
+            greeting_choice (None | str | Unset): The greeting chosen: `standard`, `personalized` or `own`; `null` is
+                the default — personalized with a first and last name, standard
+                otherwise.
      """
 
     id: str
@@ -43,8 +49,11 @@ class MeMailboxResponse:
     max_messages: int
     email_notification: bool
     attach_audio: bool
+    greeting_name: str
+    greeting_heard: str
     email_address: None | str | Unset = UNSET
     retention_days: int | None | Unset = UNSET
+    greeting_choice: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -66,6 +75,10 @@ class MeMailboxResponse:
 
         attach_audio = self.attach_audio
 
+        greeting_name = self.greeting_name
+
+        greeting_heard = self.greeting_heard
+
         email_address: None | str | Unset
         if isinstance(self.email_address, Unset):
             email_address = UNSET
@@ -78,6 +91,12 @@ class MeMailboxResponse:
         else:
             retention_days = self.retention_days
 
+        greeting_choice: None | str | Unset
+        if isinstance(self.greeting_choice, Unset):
+            greeting_choice = UNSET
+        else:
+            greeting_choice = self.greeting_choice
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -89,11 +108,15 @@ class MeMailboxResponse:
             "max_messages": max_messages,
             "email_notification": email_notification,
             "attach_audio": attach_audio,
+            "greeting_name": greeting_name,
+            "greeting_heard": greeting_heard,
         })
         if email_address is not UNSET:
             field_dict["email_address"] = email_address
         if retention_days is not UNSET:
             field_dict["retention_days"] = retention_days
+        if greeting_choice is not UNSET:
+            field_dict["greeting_choice"] = greeting_choice
 
         return field_dict
 
@@ -116,6 +139,10 @@ class MeMailboxResponse:
 
         attach_audio = d.pop("attach_audio")
 
+        greeting_name = d.pop("greeting_name")
+
+        greeting_heard = d.pop("greeting_heard")
+
         def _parse_email_address(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -136,6 +163,16 @@ class MeMailboxResponse:
         retention_days = _parse_retention_days(d.pop("retention_days", UNSET))
 
 
+        def _parse_greeting_choice(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        greeting_choice = _parse_greeting_choice(d.pop("greeting_choice", UNSET))
+
+
         me_mailbox_response = cls(
             id=id,
             extension=extension,
@@ -144,8 +181,11 @@ class MeMailboxResponse:
             max_messages=max_messages,
             email_notification=email_notification,
             attach_audio=attach_audio,
+            greeting_name=greeting_name,
+            greeting_heard=greeting_heard,
             email_address=email_address,
             retention_days=retention_days,
+            greeting_choice=greeting_choice,
         )
 
 

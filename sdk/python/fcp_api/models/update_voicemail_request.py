@@ -28,12 +28,16 @@ class UpdateVoicemailRequest:
             email_notification (bool | None | Unset):
             email_address (None | str | Unset):
             attach_audio (bool | None | Unset):
+            greeting_choice (None | str | Unset): `standard`, `personalized` or `own`; empty returns to the default.
+            greeting_name (None | str | Unset): `full_name`, `display_name` or `recorded`.
      """
 
     pin: None | str | Unset = UNSET
     email_notification: bool | None | Unset = UNSET
     email_address: None | str | Unset = UNSET
     attach_audio: bool | None | Unset = UNSET
+    greeting_choice: None | str | Unset = UNSET
+    greeting_name: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -65,6 +69,18 @@ class UpdateVoicemailRequest:
         else:
             attach_audio = self.attach_audio
 
+        greeting_choice: None | str | Unset
+        if isinstance(self.greeting_choice, Unset):
+            greeting_choice = UNSET
+        else:
+            greeting_choice = self.greeting_choice
+
+        greeting_name: None | str | Unset
+        if isinstance(self.greeting_name, Unset):
+            greeting_name = UNSET
+        else:
+            greeting_name = self.greeting_name
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -78,6 +94,10 @@ class UpdateVoicemailRequest:
             field_dict["email_address"] = email_address
         if attach_audio is not UNSET:
             field_dict["attach_audio"] = attach_audio
+        if greeting_choice is not UNSET:
+            field_dict["greeting_choice"] = greeting_choice
+        if greeting_name is not UNSET:
+            field_dict["greeting_name"] = greeting_name
 
         return field_dict
 
@@ -126,11 +146,33 @@ class UpdateVoicemailRequest:
         attach_audio = _parse_attach_audio(d.pop("attach_audio", UNSET))
 
 
+        def _parse_greeting_choice(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        greeting_choice = _parse_greeting_choice(d.pop("greeting_choice", UNSET))
+
+
+        def _parse_greeting_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        greeting_name = _parse_greeting_name(d.pop("greeting_name", UNSET))
+
+
         update_voicemail_request = cls(
             pin=pin,
             email_notification=email_notification,
             email_address=email_address,
             attach_audio=attach_audio,
+            greeting_choice=greeting_choice,
+            greeting_name=greeting_name,
         )
 
 

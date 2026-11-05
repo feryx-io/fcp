@@ -698,3 +698,266 @@ async fn a_prompt_is_changed_and_spoken_again() {
     assert_eq!(theirs.status, StatusCode::NOT_FOUND, "{}", theirs.text);
     app.finish().await;
 }
+
+/// What the stand-in TTS has been asked to say, waited for: a renamed
+/// user's greeting is made in the background.
+async fn spoken(said: &Arc<std::sync::Mutex<Vec<String>>>, text: &str) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        if said.lock().unwrap().iter().any(|t| t == text) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    false
+}
+
+/// #343: a mailbox whose owner has a first and last name greets callers by
+/// them, spoken once and kept; it is spoken again when the name or the
+/// choice changes and not otherwise; standard and the owner's own greeting
+/// are choices; an owner without names is greeted by the standard
+/// greeting, and recording their own greeting makes it the one heard; a
+/// recorded name is spliced into the sentence.
+#[tokio::test]
+async fn a_mailbox_greets_callers_by_its_owners_name() {
+    let (url, said) = stand_in_tts().await;
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let app = app.with_tts(&url).await;
+    let sentence = |name: &str| {
+        format!("Sorry, {name} is not available. Please leave a message after the tone.")
+    };
+
+    let nina = app.create_user_with_role("nina", "end_user").await;
+    let named = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/nina",
+            Some(json!({ "first_name": "Nina", "last_name": "Park" })),
+        )
+        .await;
+    assert_eq!(named.status, StatusCode::OK, "{}", named.text);
+    assert_eq!(named.json["first_name"], "Nina");
+    assert_eq!(
+        named.json["display_name"], "Nina Park",
+        "reads as the names"
+    );
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/voicemail/mailboxes",
+            Some(json!({ "tenant_id": app.tenant_a, "user_id": nina, "pin": "4321" })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    assert_eq!(made.json["greeting_choice"], Value::Null);
+    assert_eq!(made.json["greeting_name"], "full_name");
+    assert_eq!(made.json["greeting_heard"], "personalized", "{}", made.text);
+    assert!(spoken(&said, &sentence("Nina Park")).await);
+    let mailbox = made.json["id"].as_str().unwrap().to_string();
+    let path = format!("/api/v1/voicemail/mailboxes/{mailbox}");
+    let audio = app
+        .admin(
+            Method::GET,
+            &format!("{path}/greetings/personalized/audio"),
+            None,
+        )
+        .await;
+    assert_eq!(audio.status, StatusCode::OK, "{}", audio.text);
+    assert_eq!(&audio.bytes[..4], b"RIFF");
+    // A personalized greeting is made, never uploaded.
+    let upload = app
+        .send_multipart(
+            ADMIN_TOKEN,
+            &format!("{path}/greetings"),
+            &[
+                ("greeting_type", None, b"personalized"),
+                ("audio", Some(("g.wav", "audio/wav")), &wav_bytes(800)),
+            ],
+        )
+        .await;
+    assert_eq!(upload.status, StatusCode::BAD_REQUEST, "{}", upload.text);
+
+    // Nothing the greeting says changed: not spoken again.
+    let asked = said.lock().unwrap().len();
+    let same = app
+        .admin(Method::PUT, &path, Some(json!({ "max_messages": 50 })))
+        .await;
+    assert_eq!(same.status, StatusCode::OK, "{}", same.text);
+    app.admin(
+        Method::PUT,
+        "/api/v1/users/nina",
+        Some(json!({ "job_title": "Engineer" })),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        said.lock().unwrap().len(),
+        asked,
+        "{:?}",
+        said.lock().unwrap()
+    );
+
+    // A new name, from wherever: spoken again.
+    app.admin(
+        Method::PUT,
+        "/api/v1/users/nina",
+        Some(json!({ "last_name": "Lee" })),
+    )
+    .await;
+    assert!(spoken(&said, &sentence("Nina Lee")).await);
+    // The display name, when the mailbox says it; one that is only the
+    // names is not kept.
+    let by_display = app
+        .admin(
+            Method::PUT,
+            &path,
+            Some(json!({ "greeting_name": "display_name" })),
+        )
+        .await;
+    assert_eq!(by_display.json["greeting_name"], "display_name");
+    let jwt = session(&app, "nina").await;
+    let profile = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/profile",
+            Some(json!({ "display_name": "Nina Lee" })),
+        )
+        .await;
+    assert_eq!(profile.status, StatusCode::OK, "{}", profile.text);
+    let stored =
+        fcp_core::CredentialStore::get_user_in_tenant(app.storage.as_ref(), "nina", &app.tenant_a)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(stored.display_name, None, "only the names: not kept");
+    app.send_as(
+        &jwt,
+        Method::PUT,
+        "/api/v1/me/profile",
+        Some(json!({ "display_name": "Captain Lee" })),
+    )
+    .await;
+    assert!(spoken(&said, &sentence("Captain Lee")).await);
+
+    // Standard: the personalized greeting goes.
+    let standard = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/voicemail",
+            Some(json!({ "greeting_choice": "standard" })),
+        )
+        .await;
+    assert_eq!(standard.status, StatusCode::OK, "{}", standard.text);
+    assert_eq!(standard.json["greeting_choice"], "standard");
+    assert_eq!(standard.json["greeting_heard"], "standard");
+    let greetings = app
+        .admin(Method::GET, &format!("{path}/greetings"), None)
+        .await;
+    assert!(
+        !greetings.text.contains("personalized"),
+        "{}",
+        greetings.text
+    );
+    let bad = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/voicemail",
+            Some(json!({ "greeting_choice": "jingle" })),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+
+    // A recorded name, spliced between the sentence's halves.
+    let name_wav = {
+        // A second of something said, at 8 kHz.
+        let mut wav = wav_bytes(8000);
+        for (i, chunk) in wav[44..].chunks_mut(2).enumerate() {
+            chunk.copy_from_slice(&(((i % 16) as i16 - 8) * 2000).to_le_bytes());
+        }
+        wav
+    };
+    let recorded = app
+        .send_multipart(
+            &jwt,
+            "/api/v1/me/voicemail/greetings",
+            &[
+                ("greeting_type", None, b"name"),
+                ("audio", Some(("name.wav", "audio/wav")), &name_wav),
+            ],
+        )
+        .await;
+    assert_eq!(recorded.status, StatusCode::CREATED, "{}", recorded.text);
+    let spliced = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/voicemail",
+            Some(json!({ "greeting_choice": "personalized", "greeting_name": "recorded" })),
+        )
+        .await;
+    assert_eq!(
+        spliced.json["greeting_heard"], "personalized",
+        "{}",
+        spliced.text
+    );
+    assert!(spoken(&said, "Sorry,").await);
+    assert!(
+        spoken(
+            &said,
+            "is not available. Please leave a message after the tone."
+        )
+        .await
+    );
+    let audio = app
+        .send_as(
+            &jwt,
+            Method::GET,
+            "/api/v1/me/voicemail/greetings/personalized/audio",
+            None,
+        )
+        .await;
+    assert_eq!(audio.status, StatusCode::OK, "{}", audio.text);
+    // Two halves of 800 samples, two gaps of 1000 and the name's second.
+    let samples = (audio.bytes.len() - 44) / 2;
+    assert_eq!(samples, 800 + 1000 + 8000 + 1000 + 800, "{samples}");
+
+    // An owner without names: the standard greeting, until they record
+    // their own, which is then what callers hear.
+    let omar = app.create_user_with_role("omar", "end_user").await;
+    let plain = app
+        .admin(
+            Method::POST,
+            "/api/v1/voicemail/mailboxes",
+            Some(json!({ "tenant_id": app.tenant_a, "user_id": omar, "pin": "4321" })),
+        )
+        .await;
+    assert_eq!(plain.json["greeting_heard"], "standard", "{}", plain.text);
+    assert!(!said.lock().unwrap().iter().any(|t| t.contains("omar")));
+    let omar_box = plain.json["id"].as_str().unwrap().to_string();
+    let own = app
+        .send_multipart(
+            ADMIN_TOKEN,
+            &format!("/api/v1/voicemail/mailboxes/{omar_box}/greetings"),
+            &[
+                ("greeting_type", None, b"unavailable"),
+                ("audio", Some(("g.wav", "audio/wav")), &wav_bytes(800)),
+            ],
+        )
+        .await;
+    assert_eq!(own.status, StatusCode::CREATED, "{}", own.text);
+    let after = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/voicemail/mailboxes/{omar_box}"),
+            None,
+        )
+        .await;
+    assert_eq!(after.json["greeting_choice"], "own", "{}", after.text);
+    assert_eq!(after.json["greeting_heard"], "own");
+    app.finish().await;
+}

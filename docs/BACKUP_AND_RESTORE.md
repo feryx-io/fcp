@@ -402,6 +402,31 @@ Changes that need something of a configuration the operator keeps:
   `_global`'s: a script that relied on that passes `service=_global`. A
   message deleted from the voicemail menu names the mailbox owner's
   username, not `phone:<mailbox>`.
+- **v0.25.515: names and greetings** (`docs/USERS.md` §7b,
+  `docs/VOICEMAIL.md`, #343).
+  - **Names.** Migration 138 adds a user's `first_name` and
+    `last_name`. SCIM's `name.givenName` and `name.familyName` and single
+    sign-on's `given_name` and `family_name` now fill them, where they
+    were folded into the display name. A display name that is only the
+    two is no longer kept.
+  - **Greetings.** Migration 138 adds a mailbox's `greeting_choice` and
+    `greeting_name`. A mailbox that had a greeting of its own is set to
+    `own`, so its callers hear what they did. Every other mailbox is on
+    the default: the greeting with the owner's name when they have a
+    first and last name, the standard greeting otherwise. A new mailbox
+    no longer gets an unavailable greeting spoken from its display name.
+  - **One greetings directory.** In the compose stack the admin now
+    mounts `voicemail-data` and writes greetings to
+    `/var/lib/fcp/voicemail/greetings`. Before this, the greetings it
+    made were in its own `/tmp`, and callers never heard them: upload
+    them again. A call manager from source sets `[media]
+    voicemail_greetings_dir` to the directory the admin and the voicemail
+    server use.
+  - **During the upgrade.** A node of the previous release that writes a
+    mailbox drops its personalized greeting row, since that release does
+    not know the type. The greeting is made again the next time the
+    mailbox or its owner's name changes. Until then callers hear the
+    standard greeting.
 
 ### 5.5 Proved
 

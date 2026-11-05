@@ -231,7 +231,7 @@ pub(crate) async fn device_context(
     c.sip_provisioning_password = c.sip_password.clone();
     if let Some(ref owner) = owner {
         c.owner_username = owner.username.clone();
-        c.owner_display_name = owner.display_name.clone().unwrap_or_default();
+        c.owner_display_name = owner.shown_name().unwrap_or_default();
         c.owner_email = owner.email.clone().unwrap_or_default();
         c.owner_user_id = owner.id.to_string();
     }
@@ -258,10 +258,7 @@ pub(crate) async fn device_context(
     };
     if let Some(user) = effective {
         c.effective_user_username = user.username.clone();
-        c.effective_user_display_name = user
-            .display_name
-            .clone()
-            .unwrap_or_else(|| user.username.clone());
+        c.effective_user_display_name = user.shown_name().unwrap_or_else(|| user.username.clone());
         c.effective_user_extension = user.extension.clone().unwrap_or_default();
         c.effective_user_id = user.id.to_string();
     }

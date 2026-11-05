@@ -1416,8 +1416,15 @@ async fn run() -> Result<()> {
                 .iter()
                 .map(std::path::PathBuf::from)
                 .collect(),
+            greetings_dir: config
+                .media
+                .voicemail_greetings_dir
+                .as_ref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| VoicemailConfig::default().greetings_dir),
             ..VoicemailConfig::default()
         };
+
         if let Err(e) = vm_config.validate() {
             warn!(error = %e, "voicemail recordings directory unusable: messages cannot be left here");
         }

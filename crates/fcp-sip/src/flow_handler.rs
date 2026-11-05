@@ -2503,6 +2503,234 @@ impl FlowCallHandler {
         .ok()
     }
 
+    /// Play a system prompt (its file, else speech) and take one digit,
+    /// the prompt cut short by it; empty on silence.
+    async fn prompt_choice(
+        &self,
+        mm: &Arc<fcp_media::MediaManager>,
+        cid: &fcp_core::CallId,
+        tenant: Option<&fcp_core::TenantId>,
+        prompt: &str,
+        text: &str,
+    ) -> String {
+        use fcp_media::CollectionResult;
+        let collector = mm.create_dtmf_collector(cid, 1, None);
+        let playback = self.start_prompt(mm, cid, tenant, prompt, text).await;
+        let result = collector.collect(std::time::Duration::from_secs(10)).await;
+        if let Some(playback) = playback {
+            let _ = mm.stop_playback(cid, playback).await;
+        }
+        match result {
+            CollectionResult::Complete(d) | CollectionResult::Timeout(d) => d,
+            CollectionResult::Cancelled => String::new(),
+        }
+    }
+
+    /// `*98`'s mailbox options (#343): record, hear and choose the greeting
+    /// callers hear, and record the name a personalized greeting says.
+    async fn mailbox_options(
+        &self,
+        mm: &Arc<fcp_media::MediaManager>,
+        cid: &fcp_core::CallId,
+        tenant: Option<&fcp_core::TenantId>,
+        voicemail: &Arc<VoicemailService>,
+        mailbox_id: &str,
+    ) {
+        use fcp_core::{GreetingChoice, GreetingType};
+        // At most this many choices with nothing understood.
+        for _ in 0..5 {
+            let Ok(Some(mut mailbox)) = voicemail.mailbox(mailbox_id).await else {
+                warn!(mailbox = %mailbox_id, "Mailbox gone during mailbox options");
+                return;
+            };
+            let owner = match &self.storage {
+                Some(storage) => {
+                    fcp_core::CredentialStore::get_user_by_id(storage.as_ref(), &mailbox.user_id)
+                        .await
+                        .ok()
+                        .flatten()
+                }
+                None => None,
+            };
+            let digit = self
+                .prompt_choice(
+                    mm,
+                    cid,
+                    tenant,
+                    "vm_mailbox_options",
+                    "Mailbox options. Press 1 to record your greeting. Press 2 to hear \
+                     your greeting. Press 3 to choose your greeting. Press 4 to record \
+                     your name. Press star for the main menu.",
+                )
+                .await;
+            match digit.as_str() {
+                "1" | "4" => {
+                    let (greeting_type, prompt, text, max_secs) = if digit == "1" {
+                        (
+                            GreetingType::Unavailable,
+                            "vm_record_greeting",
+                            "Record your greeting after the tone. Press pound when you are done.",
+                            120,
+                        )
+                    } else {
+                        (
+                            GreetingType::Name,
+                            "vm_record_name",
+                            "Say your name after the tone. Press pound when you are done.",
+                            10,
+                        )
+                    };
+                    let kept = self
+                        .record_and_keep(
+                            mm,
+                            cid,
+                            tenant,
+                            voicemail,
+                            &mut mailbox,
+                            greeting_type,
+                            (prompt, text),
+                            max_secs,
+                        )
+                        .await;
+                    if kept {
+                        if let Some(owner) = &owner {
+                            if let Err(e) =
+                                voicemail.refresh_personalized(&mut mailbox, owner).await
+                            {
+                                warn!(mailbox = %mailbox_id, error = %e, "The personalized greeting was not made");
+                            }
+                        }
+                    }
+                }
+                "2" => {
+                    if let Err(e) = voicemail.play_heard_greeting(cid, &mailbox).await {
+                        warn!(mailbox = %mailbox_id, error = %e, "The greeting could not be played");
+                    }
+                }
+                "3" => {
+                    let choice = self
+                        .prompt_choice(
+                            mm,
+                            cid,
+                            tenant,
+                            "vm_choose_greeting",
+                            "Press 1 for the standard greeting. Press 2 for a greeting with \
+                             your name. Press 3 for your own greeting.",
+                        )
+                        .await;
+                    let choice = match choice.as_str() {
+                        "1" => GreetingChoice::Standard,
+                        "2" => GreetingChoice::Personalized,
+                        "3" => GreetingChoice::Own,
+                        _ => continue,
+                    };
+                    mailbox.greeting_choice = Some(choice);
+                    mailbox.updated_at = std::time::SystemTime::now();
+                    if let Err(e) = voicemail.keep_mailbox(&mailbox).await {
+                        warn!(mailbox = %mailbox_id, error = %e, "The greeting choice was not stored");
+                        continue;
+                    }
+                    if let Some(owner) = &owner {
+                        if let Err(e) = voicemail.refresh_personalized(&mut mailbox, owner).await {
+                            warn!(mailbox = %mailbox_id, error = %e, "The personalized greeting was not made");
+                        }
+                    }
+                    info!(mailbox = %mailbox_id, choice = %choice, "Greeting chosen from the phone");
+                    let (prompt, text) = match choice {
+                        GreetingChoice::Own if mailbox.own_greeting(false).is_none() => (
+                            "vm_greeting_chosen_none_recorded",
+                            "Greeting changed. You have not recorded a greeting yet, so \
+                             callers hear the standard one until you do.",
+                        ),
+                        GreetingChoice::Personalized
+                            if mailbox.greeting(GreetingType::Personalized).is_none() =>
+                        {
+                            (
+                                "vm_greeting_chosen_no_name",
+                                "Greeting changed. Callers hear the standard greeting until \
+                                 your name is known.",
+                            )
+                        }
+                        _ => ("vm_greeting_chosen", "Greeting changed."),
+                    };
+                    self.say(mm, cid, tenant, prompt, text).await;
+                }
+                "*" => return,
+                _ => {}
+            }
+        }
+    }
+
+    /// Record a greeting, play it back and keep it on a 1, record again on
+    /// a 2: whether one was kept.
+    #[allow(clippy::too_many_arguments)]
+    async fn record_and_keep(
+        &self,
+        mm: &Arc<fcp_media::MediaManager>,
+        cid: &fcp_core::CallId,
+        tenant: Option<&fcp_core::TenantId>,
+        voicemail: &Arc<VoicemailService>,
+        mailbox: &mut fcp_core::VoicemailMailbox,
+        greeting_type: fcp_core::GreetingType,
+        (prompt, text): (&str, &str),
+        max_secs: u64,
+    ) -> bool {
+        for _ in 0..3 {
+            self.say(mm, cid, tenant, prompt, text).await;
+            let path = match voicemail
+                .record_greeting(cid, mailbox, greeting_type, max_secs)
+                .await
+            {
+                Ok(Some(path)) => path,
+                Ok(None) => {
+                    self.say(
+                        mm,
+                        cid,
+                        tenant,
+                        "vm_nothing_recorded",
+                        "Nothing was recorded.",
+                    )
+                    .await;
+                    continue;
+                }
+                Err(e) => {
+                    warn!(mailbox = %mailbox.id, error = %e, "Greeting recording failed");
+                    return false;
+                }
+            };
+            let _ = voicemail.play_greeting_file(cid, &path).await;
+            let answer = self
+                .prompt_choice(
+                    mm,
+                    cid,
+                    tenant,
+                    "vm_keep_recording",
+                    "Press 1 to keep it. Press 2 to record it again. Press star to cancel.",
+                )
+                .await;
+            match answer.as_str() {
+                "1" => {
+                    if let Err(e) = voicemail.keep_greeting(mailbox, greeting_type, path).await {
+                        warn!(mailbox = %mailbox.id, error = %e, "The recorded greeting was not stored");
+                        return false;
+                    }
+                    info!(mailbox = %mailbox.id, greeting_type = %greeting_type, "Greeting recorded from the phone");
+                    self.say(mm, cid, tenant, "vm_recording_saved", "Saved.")
+                        .await;
+                    return true;
+                }
+                "2" => {
+                    let _ = tokio::fs::remove_file(&path).await;
+                }
+                _ => {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
     /// Handle the VoicemailAccess flow node — full IVR state machine.
     ///
     /// Steps:
@@ -2896,6 +3124,17 @@ impl FlowCallHandler {
             let filter_status = match digit.as_str() {
                 "1" => MessageStatus::New,
                 "2" => MessageStatus::Saved,
+                "0" => {
+                    self.mailbox_options(
+                        &mm,
+                        &media_call_id,
+                        prompt_tenant.as_ref(),
+                        &voicemail_service,
+                        &target_mailbox,
+                    )
+                    .await;
+                    continue 'main_menu;
+                }
                 "*" => break 'main_menu,
                 _ => continue 'main_menu,
             };
@@ -4957,7 +5196,7 @@ fn main_menu_text(new_count: usize, saved_count: usize) -> String {
     if saved_count > 0 {
         text.push_str(" Press 2 for saved messages.");
     }
-    text.push_str(" Press star to exit.");
+    text.push_str(" Press 0 for mailbox options. Press star to exit.");
     text
 }
 
@@ -4967,21 +5206,22 @@ mod tests {
     fn the_menu_offers_only_what_there_is() {
         assert_eq!(
             super::main_menu_text(0, 0),
-            "You have no messages. Press star to exit."
+            "You have no messages. Press 0 for mailbox options. Press star to exit."
         );
         assert_eq!(
             super::main_menu_text(1, 0),
-            "You have 1 new message. Press 1 for new messages. Press star to exit."
+            "You have 1 new message. Press 1 for new messages. Press 0 for mailbox options. \
+             Press star to exit."
         );
         assert_eq!(
             super::main_menu_text(0, 2),
             "You have no new messages, and 2 saved messages. Press 2 for saved messages. \
-             Press star to exit."
+             Press 0 for mailbox options. Press star to exit."
         );
         assert_eq!(
             super::main_menu_text(3, 1),
             "You have 3 new messages and 1 saved message. Press 1 for new messages. \
-             Press 2 for saved messages. Press star to exit."
+             Press 2 for saved messages. Press 0 for mailbox options. Press star to exit."
         );
     }
 

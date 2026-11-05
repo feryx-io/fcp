@@ -22824,6 +22824,14 @@
           "display_name": {
             "type": "string"
           },
+          "first_name": {
+            "type": "string",
+            "description": "The first name (#343); the well-known given-name claims and SAML\nattributes are read when this one is missing."
+          },
+          "last_name": {
+            "type": "string",
+            "description": "The last name; the well-known family-name claims and SAML\nattributes are read when this one is missing."
+          },
           "groups": {
             "type": "string",
             "description": "A list of strings: the user's groups (Entra ID sends ids, Okta\nand Google Workspace names, when asked to)."
@@ -24171,6 +24179,20 @@
               "null"
             ],
             "description": "A flow of the tenant's to handle a call this mailbox would take —\nsay something, ring someone, a queue, or a message after all. Unset:\nthe mailbox takes it."
+          },
+          "greeting_choice": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`standard`, `personalized` or `own`; unset is the default —\npersonalized when the user has a first and last name."
+          },
+          "greeting_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`full_name` (the default), `display_name` or `recorded`."
           }
         }
       },
@@ -25255,6 +25277,19 @@
             "description": "Optional SIP password retained for device auto-provisioning templates.\n\nWhen set, this becomes the user's SIP digest password and is exposed by\nprovisioning as `${sip_password}` for vendors that cannot use HA1."
           },
           "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Left out with a first and last name, the user reads as the two."
+          },
+          "first_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_name": {
             "type": [
               "string",
               "null"
@@ -28617,6 +28652,8 @@
           "attach_audio",
           "include_transcription",
           "transcription_enabled",
+          "greeting_name",
+          "greeting_heard",
           "created_at",
           "updated_at"
         ],
@@ -28684,6 +28721,21 @@
               "null"
             ],
             "description": "The flow that handles a call this mailbox would take, if not the\nmailbox itself."
+          },
+          "greeting_choice": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The greeting chosen: `standard`, `personalized` or `own`; `null` is\nthe default — personalized when the owner has a first and last\nname, standard otherwise (#343)."
+          },
+          "greeting_name": {
+            "type": "string",
+            "description": "The name a personalized greeting says: `full_name`, `display_name`\nor `recorded` (the mailbox's name greeting)."
+          },
+          "greeting_heard": {
+            "type": "string",
+            "description": "What callers hear now: `standard`, `personalized` or `own`. A\npersonalized greeting not made (no name, no TTS) is heard as\nstandard, as is an own greeting never recorded."
           },
           "created_at": {
             "type": "string",
@@ -33091,6 +33143,8 @@
                 "attach_audio",
                 "include_transcription",
                 "transcription_enabled",
+                "greeting_name",
+                "greeting_heard",
                 "created_at",
                 "updated_at"
               ],
@@ -33158,6 +33212,21 @@
                     "null"
                   ],
                   "description": "The flow that handles a call this mailbox would take, if not the\nmailbox itself."
+                },
+                "greeting_choice": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The greeting chosen: `standard`, `personalized` or `own`; `null` is\nthe default — personalized when the owner has a first and last\nname, standard otherwise (#343)."
+                },
+                "greeting_name": {
+                  "type": "string",
+                  "description": "The name a personalized greeting says: `full_name`, `display_name`\nor `recorded` (the mailbox's name greeting)."
+                },
+                "greeting_heard": {
+                  "type": "string",
+                  "description": "What callers hear now: `standard`, `personalized` or `own`. A\npersonalized greeting not made (no name, no TTS) is heard as\nstandard, as is an own greeting never recorded."
                 },
                 "created_at": {
                   "type": "string",
@@ -37124,6 +37193,19 @@
                   "type": [
                     "string",
                     "null"
+                  ],
+                  "description": "The name the user is shown by: their display name, else their\nfirst and last name (#343)."
+                },
+                "first_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "last_name": {
+                  "type": [
+                    "string",
+                    "null"
                   ]
                 },
                 "tenant_id": {
@@ -38757,6 +38839,19 @@
             "type": "string"
           },
           "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name the user is shown by: their display name, else their first\nand last name."
+          },
+          "first_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_name": {
             "type": [
               "string",
               "null"
@@ -43784,6 +43879,20 @@
               "null"
             ],
             "description": "The flow that handles a call this mailbox would take; empty clears\nit, so the mailbox takes it again."
+          },
+          "greeting_choice": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`standard`, `personalized` or `own`; empty returns the mailbox to\nthe default. The personalized greeting is made before the answer."
+          },
+          "greeting_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`full_name`, `display_name` or `recorded`."
           }
         }
       },
@@ -44386,7 +44495,22 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "One that is only the first and last name is not kept, so the user\ngoes on reading as their names."
+          },
+          "first_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An empty string clears it; refused (403) for a user the tenant's\nSCIM provisioner keeps."
+          },
+          "last_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "As `first_name`."
           },
           "email": {
             "type": [
@@ -45203,7 +45327,22 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "An empty string clears it; one that is only the first and last\nname is not kept, so the user goes on reading as their names."
+          },
+          "first_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An empty string clears it."
+          },
+          "last_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An empty string clears it."
           },
           "enabled": {
             "type": [
@@ -45353,6 +45492,20 @@
               "boolean",
               "null"
             ]
+          },
+          "greeting_choice": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`standard`, `personalized` or `own`; empty returns to the default."
+          },
+          "greeting_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`full_name`, `display_name` or `recorded`."
           }
         }
       },
@@ -45694,6 +45847,19 @@
             "type": "string"
           },
           "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name the user is shown by: their display name, else their\nfirst and last name (#343)."
+          },
+          "first_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_name": {
             "type": [
               "string",
               "null"
@@ -46560,7 +46726,9 @@
           "max_message_duration",
           "max_messages",
           "email_notification",
-          "attach_audio"
+          "attach_audio",
+          "greeting_name",
+          "greeting_heard"
         ],
         "properties": {
           "id": {
@@ -46601,6 +46769,21 @@
             ],
             "format": "int32",
             "minimum": 0
+          },
+          "greeting_choice": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The greeting chosen: `standard`, `personalized` or `own`; `null` is\nthe default — personalized with a first and last name, standard\notherwise."
+          },
+          "greeting_name": {
+            "type": "string",
+            "description": "The name a personalized greeting says: `full_name`, `display_name`\nor `recorded`."
+          },
+          "greeting_heard": {
+            "type": "string",
+            "description": "What callers hear now: `standard`, `personalized` or `own`."
           }
         }
       },

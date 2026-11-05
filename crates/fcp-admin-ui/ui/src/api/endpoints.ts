@@ -1079,7 +1079,7 @@ export const me = {
       throw e
     }
   },
-  updateMailbox: (data: { pin?: string; email_notification?: boolean; email_address?: string; attach_audio?: boolean }) =>
+  updateMailbox: (data: import('@/types').UpdateMeVoicemailRequest) =>
     apiClient.put<MeMailbox>('/me/voicemail', data),
   getMailboxStats: () => apiClient.get<MeMailboxStats>('/me/voicemail/stats'),
   listMessages: () => apiClient.getAll<VoicemailMessage>('/me/voicemail/messages'),

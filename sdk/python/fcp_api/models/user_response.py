@@ -45,7 +45,10 @@ class UserResponse:
             media_preferences (MediaPreferences): Media preferences for a user account.
                 These settings control default behavior for calls to/from this user.
             directory_listed (bool): Listed in the tenant's directory for its users (`/me/directory`).
-            display_name (None | str | Unset):
+            display_name (None | str | Unset): The name the user is shown by: their display name, else their
+                first and last name (#343).
+            first_name (None | str | Unset):
+            last_name (None | str | Unset):
             department_id (None | str | Unset):
             email (None | str | Unset):
             password_last_reset (datetime.datetime | None | Unset):
@@ -80,6 +83,8 @@ class UserResponse:
     media_preferences: MediaPreferences
     directory_listed: bool
     display_name: None | str | Unset = UNSET
+    first_name: None | str | Unset = UNSET
+    last_name: None | str | Unset = UNSET
     department_id: None | str | Unset = UNSET
     email: None | str | Unset = UNSET
     password_last_reset: datetime.datetime | None | Unset = UNSET
@@ -138,6 +143,18 @@ class UserResponse:
             display_name = UNSET
         else:
             display_name = self.display_name
+
+        first_name: None | str | Unset
+        if isinstance(self.first_name, Unset):
+            first_name = UNSET
+        else:
+            first_name = self.first_name
+
+        last_name: None | str | Unset
+        if isinstance(self.last_name, Unset):
+            last_name = UNSET
+        else:
+            last_name = self.last_name
 
         department_id: None | str | Unset
         if isinstance(self.department_id, Unset):
@@ -259,6 +276,10 @@ class UserResponse:
         })
         if display_name is not UNSET:
             field_dict["display_name"] = display_name
+        if first_name is not UNSET:
+            field_dict["first_name"] = first_name
+        if last_name is not UNSET:
+            field_dict["last_name"] = last_name
         if department_id is not UNSET:
             field_dict["department_id"] = department_id
         if email is not UNSET:
@@ -345,6 +366,26 @@ class UserResponse:
             return cast(None | str | Unset, data)
 
         display_name = _parse_display_name(d.pop("display_name", UNSET))
+
+
+        def _parse_first_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        first_name = _parse_first_name(d.pop("first_name", UNSET))
+
+
+        def _parse_last_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        last_name = _parse_last_name(d.pop("last_name", UNSET))
 
 
         def _parse_department_id(data: object) -> None | str | Unset:
@@ -554,6 +595,8 @@ class UserResponse:
             media_preferences=media_preferences,
             directory_listed=directory_listed,
             display_name=display_name,
+            first_name=first_name,
+            last_name=last_name,
             department_id=department_id,
             email=email,
             password_last_reset=password_last_reset,

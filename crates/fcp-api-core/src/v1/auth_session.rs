@@ -344,7 +344,7 @@ pub(crate) fn access_token(
         username: Some(user.username.clone()),
         role: role_to_string(&user.role),
         tenant_id: user.tenant_id.to_string(),
-        display_name: user.display_name.clone(),
+        display_name: user.shown_name(),
         exp: iat + ttl as usize,
         iat,
         purpose: None,
@@ -473,7 +473,7 @@ pub(crate) fn auth_user(user: &fcp_core::User, role: String) -> AuthUserResponse
         username: user.username.clone(),
         role,
         tenant_id: user.tenant_id.to_string(),
-        display_name: user.display_name.clone(),
+        display_name: user.shown_name(),
     }
 }
 
@@ -1659,11 +1659,12 @@ impl axum::extract::FromRequestParts<ApiState> for Me {
         let user = principal.user;
         let mut roles = vec![user.role];
         roles.extend(principal.group_roles);
+        let display_name = user.shown_name();
         Ok(Me(Claims {
             sub: user.username,
             role: display_role(&roles),
             tenant_id: user.tenant_id.to_string(),
-            display_name: user.display_name,
+            display_name,
             exp: 0,
             iat: 0,
             user_id: Some(user.id.to_string()),

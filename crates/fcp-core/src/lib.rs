@@ -192,6 +192,6 @@ pub use crate::transport::{
 };
 pub use crate::trunk::{LinkEnd, Trunk, TrunkDirection, TrunkId, TrunkStats};
 pub use crate::voicemail::{
-    GreetingType, MessagePriority, MessageStatus, MwiNotifier, MwiStatus, VoicemailGreeting,
-    VoicemailMailbox, VoicemailMessage, VoicemailStats,
+    GreetingChoice, GreetingName, GreetingType, MessagePriority, MessageStatus, MwiNotifier,
+    MwiStatus, VoicemailGreeting, VoicemailMailbox, VoicemailMessage, VoicemailStats,
 };

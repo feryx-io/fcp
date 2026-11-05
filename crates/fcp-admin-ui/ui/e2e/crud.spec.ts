@@ -45,7 +45,9 @@ test('a user is made, changed and deleted', async ({ page, api }) => {
   const dialog = page.getByRole('dialog')
   await dialog.locator('#create-username').fill(name)
   await dialog.locator('#create-password').fill('Passw0rd!x-ui')
-  await dialog.locator('#create-display_name').fill('Ada Lovelace')
+  // No display name: she reads as her first and last (#343).
+  await dialog.locator('#create-first_name').fill('Ada')
+  await dialog.locator('#create-last_name').fill('Lovelace')
   await dialog.locator('#create-email').fill(`${name}@example.com`)
   // A deleted user keeps their extension through the grace period, so one
   // no earlier run held.
@@ -54,21 +56,73 @@ test('a user is made, changed and deleted', async ({ page, api }) => {
   await expect(dialog).toBeHidden()
   let made = await (await api.get(`/api/v1/users/${name}`)).json()
   expect(made.display_name).toBe('Ada Lovelace')
+  expect(made.first_name).toBe('Ada')
   expect(made.email).toBe(`${name}@example.com`)
 
+  // A new last name moves the name she reads as.
   await rowAction(page, name, 'Edit')
-  const edit = page.getByRole('dialog')
-  await edit.locator('#edit-display_name').fill('Ada King')
+  let edit = page.getByRole('dialog')
+  await expect(edit.locator('#edit-display_name')).toHaveValue('')
+  await edit.locator('#edit-last_name').fill('King')
   await edit.locator('#edit-email').fill('')
   await edit.getByRole('button', { name: 'Save Changes' }).click()
   await expect(edit).toBeHidden()
   made = await (await api.get(`/api/v1/users/${name}`)).json()
   expect(made.display_name).toBe('Ada King')
+  expect(made.last_name).toBe('King')
   expect(made.email ?? '').toBe('')
+
+  // A display name of her own.
+  await rowAction(page, name, 'Edit')
+  edit = page.getByRole('dialog')
+  await edit.locator('#edit-display_name').fill('Countess')
+  await edit.getByRole('button', { name: 'Save Changes' }).click()
+  await expect(edit).toBeHidden()
+  made = await (await api.get(`/api/v1/users/${name}`)).json()
+  expect(made.display_name).toBe('Countess')
 
   acceptConfirm(page)
   await rowAction(page, name, 'Delete')
   await expect.poll(async () => (await (await api.get(`/api/v1/users/${name}`)).json()).account_status).toBe('deprovisioned')
+})
+
+// #343: which greeting a mailbox's callers hear, chosen on the Voicemail
+// page; the default reads as the greeting with the name.
+test("a mailbox's greeting is chosen", async ({ page, api }) => {
+  const name = unique('ui-vm')
+  const last = unique('Hopper')
+  const user = await api.post('/api/v1/users', {
+    data: { username: name, password: 'Passw0rd!x-ui', first_name: 'Grace', last_name: last },
+  })
+  expect(user.status(), await user.text()).toBe(201)
+  const made = await user.json()
+  const mailbox = await api.post('/api/v1/voicemail/mailboxes', {
+    data: { tenant_id: made.tenant_id, user_id: made.id, pin: '4321' },
+  })
+  expect(mailbox.status(), await mailbox.text()).toBe(201)
+  const id = (await mailbox.json()).id
+
+  await page.goto('/admin/voicemail')
+  await settled(page)
+  await rowAction(page, `Grace ${last}`, 'Edit')
+  const edit = page.getByRole('dialog')
+  const choice = edit.getByLabel('Greeting callers hear')
+  await expect(choice).toHaveValue('')
+  await choice.selectOption('personalized')
+  await edit.getByLabel('The name it says').selectOption('display_name')
+  await edit.getByRole('button', { name: 'Save Changes' }).click()
+  await expect(edit).toBeHidden()
+  let read = await (await api.get(`/api/v1/voicemail/mailboxes/${id}`)).json()
+  expect(read.greeting_choice).toBe('personalized')
+  expect(read.greeting_name).toBe('display_name')
+
+  await rowAction(page, `Grace ${last}`, 'Edit')
+  await page.getByRole('dialog').getByLabel('Greeting callers hear').selectOption('standard')
+  await page.getByRole('dialog').getByRole('button', { name: 'Save Changes' }).click()
+  await expect(page.getByRole('dialog')).toBeHidden()
+  read = await (await api.get(`/api/v1/voicemail/mailboxes/${id}`)).json()
+  expect(read.greeting_choice).toBe('standard')
+  expect(read.greeting_heard).toBe('standard')
 })
 
 /** Every item of a paged list (`{data, next_cursor}`). */

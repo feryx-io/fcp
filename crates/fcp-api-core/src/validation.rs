@@ -92,6 +92,19 @@ pub fn validate_display_name(name: &Option<String>) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// A first or last name: one line.
+pub fn validate_person_name(field: &str, name: &Option<String>) -> Result<(), ApiError> {
+    if let Some(name) = name {
+        reject_crlf(field, name)?;
+        if name.chars().count() > 100 {
+            return Err(ApiError::BadRequest(format!(
+                "{field} must not exceed 100 characters"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Validates SIP Address of Record (AoR) format.
 ///
 /// # Validation Rules

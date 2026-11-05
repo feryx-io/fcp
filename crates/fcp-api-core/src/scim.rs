@@ -235,9 +235,15 @@ pub fn user_resource(user: &User) -> Value {
     if let Some(id) = &user.scim_external_id {
         r["externalId"] = json!(id);
     }
-    if let Some(name) = &user.display_name {
+    if let Some(name) = user.shown_name() {
         r["displayName"] = json!(name);
-        r["name"] = json!({ "formatted": name });
+        r["name"] = json!({ "formatted": user.full_name().unwrap_or(name) });
+    }
+    if let Some(given) = &user.first_name {
+        r["name"]["givenName"] = json!(given);
+    }
+    if let Some(family) = &user.last_name {
+        r["name"]["familyName"] = json!(family);
     }
     if let Some(email) = &user.email {
         r["emails"] = json!([{ "value": email, "type": "work", "primary": true }]);
@@ -312,6 +318,8 @@ struct Described {
     external_id: Option<String>,
     active: bool,
     display_name: Option<String>,
+    first_name: Option<String>,
+    last_name: Option<String>,
     email: Option<String>,
     phone: Option<String>,
     mobile: Option<String>,
@@ -333,16 +341,12 @@ fn describe(r: &Value) -> Result<Described, ScimError> {
     let username = str_of(r.get("userName"))
         .ok_or_else(|| ScimError::bad("invalidValue", "userName is required"))?;
     let name = r.get("name");
-    let display_name = str_of(r.get("displayName"))
-        .or_else(|| str_of(name.and_then(|n| n.get("formatted"))))
-        .or_else(|| {
-            let given = str_of(name.and_then(|n| n.get("givenName")));
-            let family = str_of(name.and_then(|n| n.get("familyName")));
-            match (given, family) {
-                (Some(g), Some(f)) => Some(format!("{g} {f}")),
-                (g, f) => g.or(f),
-            }
-        });
+    // The given and family names are FCP's first and last (#343); the
+    // display name, unset, reads as them.
+    let display_name =
+        str_of(r.get("displayName")).or_else(|| str_of(name.and_then(|n| n.get("formatted"))));
+    let first_name = str_of(name.and_then(|n| n.get("givenName")));
+    let last_name = str_of(name.and_then(|n| n.get("familyName")));
     let active = match r.get("active") {
         None | Some(Value::Null) => true,
         Some(v) => {
@@ -384,6 +388,8 @@ fn describe(r: &Value) -> Result<Described, ScimError> {
         external_id: str_of(r.get("externalId")),
         active,
         display_name,
+        first_name,
+        last_name,
         email: multi_value(r, "emails", None),
         phone: multi_value(r, "phoneNumbers", Some("work")),
         mobile: multi_value(r, "phoneNumbers", Some("mobile")),
@@ -398,6 +404,9 @@ fn describe(r: &Value) -> Result<Described, ScimError> {
 fn apply(user: &mut User, d: &Described) {
     user.scim_external_id = d.external_id.clone();
     user.display_name = d.display_name.clone();
+    user.first_name = d.first_name.clone();
+    user.last_name = d.last_name.clone();
+    crate::greeting::settle_display_name(user);
     user.email = d.email.clone();
     user.phone_number = d.phone.clone();
     user.mobile_number = d.mobile.clone();
@@ -442,6 +451,7 @@ async fn ensure_external_id_free(
 
 async fn announce_change(state: &ApiState, before: &User, after: &User) {
     crate::v1::users::status_changed(state, before, after).await;
+    crate::greeting::user_renamed(state, before, after);
     let _ = state
         .event_bus
         .publish(PlatformEvent::User(UserEvent::Updated {
@@ -968,11 +978,13 @@ fn set_path(doc: &mut Value, path: &str, value: Value, kind: &str) -> Result<(),
         if !parent_value.is_object() {
             *parent_value = json!({});
         }
-        // A part of the name changed: the formatted one is made again. FCP
-        // keeps one display name, so its parts are what it splits into at
-        // the first space, where the provisioner has not said them.
+        // A part of the name changed: the formatted one is made again, and
+        // a display name that was only the old parts goes with it. A user
+        // from before FCP kept the parts (#343) has them split from the
+        // display name at the first space.
         if parent == "name" && child != "formatted" {
             let name = parent_value.as_object_mut().expect("an object");
+            let mut derived = false;
             if !name.contains_key("givenName") && !name.contains_key("familyName") {
                 if let Some(formatted) = name.get("formatted").and_then(Value::as_str) {
                     let (given, family) = formatted
@@ -984,9 +996,20 @@ fn set_path(doc: &mut Value, path: &str, value: Value, kind: &str) -> Result<(),
                         name.insert("familyName".into(), json!(family));
                     }
                 }
+                derived = true;
             }
+            let part = |key: &str| {
+                name.get(key)
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let old_full = format!("{} {}", part("givenName"), part("familyName"));
             name.remove("formatted");
-            map.remove("displayName");
+            let shown = map.get("displayName").and_then(Value::as_str);
+            if derived || shown.is_some_and(|d| d.trim() == old_full.trim()) {
+                map.remove("displayName");
+            }
         }
         let parent_value = map.get_mut(parent).expect("just made");
         parent_value[child] = value;
@@ -1636,8 +1659,27 @@ mod tests {
         assert!(!described.active);
         assert_eq!(described.email.as_deref(), Some("jane.doe@acme.test"));
         assert_eq!(described.department, Some(Some("Sales".into())));
-        assert_eq!(described.display_name.as_deref(), Some("Jane Smith"));
+        // The parts are the first and last name; the display name that was
+        // only the old ones goes, so the user reads as the new (#343).
+        assert_eq!(described.first_name.as_deref(), Some("Jane"));
+        assert_eq!(described.last_name.as_deref(), Some("Smith"));
+        assert_eq!(described.display_name, None);
         assert_eq!(described.mobile.as_deref(), Some("+15550001"));
+    }
+
+    #[test]
+    fn a_display_name_of_its_own_outlives_a_change_of_name() {
+        let mut d = doc();
+        d["displayName"] = json!("JD");
+        d["name"] = json!({ "givenName": "Jane", "familyName": "Doe" });
+        apply_patch(
+            &mut d,
+            &patch(json!([{ "op": "Replace", "path": "name.familyName", "value": "Smith" }])),
+        )
+        .unwrap();
+        let described = describe(&d).unwrap();
+        assert_eq!(described.display_name.as_deref(), Some("JD"));
+        assert_eq!(described.last_name.as_deref(), Some("Smith"));
     }
 
     #[test]
@@ -1659,7 +1701,9 @@ mod tests {
         .unwrap();
         let described = describe(&d).unwrap();
         assert_eq!(described.username, "jane.doe");
-        assert_eq!(described.display_name.as_deref(), Some("Jane Doe"));
+        assert_eq!(described.first_name.as_deref(), Some("Jane"));
+        assert_eq!(described.last_name.as_deref(), Some("Doe"));
+        assert_eq!(described.display_name, None);
         // Removing a value.
         apply_patch(
             &mut d,

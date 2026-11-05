@@ -103,8 +103,15 @@ How a sign-in becomes a user:
   It is refused as `super_admin`. A tenant admin configures the provider,
   and a provider that could assert a super admin's email would make them
   one. Super admins sign in with a password.
-- **The claim names**: `preferred_username`, `email`, `name` and
-  `groups` by default, each changeable.
+- **First and last name.** These come from `given_name` and `family_name`.
+  When those are missing, the SAML attributes `…/claims/givenname` and
+  `…/claims/surname` (or `urn:oid:2.5.4.42` and `urn:oid:2.5.4.4`,
+  `givenName` and `sn`) are read. They name a user made just in time.
+  At every later sign-in they replace the user's names, unless the user
+  is SCIM's (`docs/USERS.md` §7b).
+- **The claim names**: `preferred_username`, `email`, `name`,
+  `given_name`, `family_name` and `groups` by default, each changeable
+  (`claims.first_name` and `claims.last_name` for the names).
 - **Disabled, locked or suspended users** are refused here as at the
   password.
 

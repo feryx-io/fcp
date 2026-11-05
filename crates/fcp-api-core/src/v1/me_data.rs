@@ -340,9 +340,10 @@ pub async fn list_directory(
         .iter()
         .filter(|u| u.may_use_services() && u.directory_listed)
     {
+        let shown = u.shown_name();
         let fields = [
             Some(u.username.as_str()),
-            u.display_name.as_deref(),
+            shown.as_deref(),
             u.email.as_deref(),
             u.extension.as_deref(),
         ];
@@ -368,7 +369,7 @@ pub async fn list_directory(
             kind: "user",
             user_id: Some(u.id.to_string()),
             username: Some(u.username.clone()),
-            display_name: u.display_name.clone(),
+            display_name: u.shown_name(),
             extension: u.extension.clone(),
             email: u.email.clone(),
             department: u.department.clone(),

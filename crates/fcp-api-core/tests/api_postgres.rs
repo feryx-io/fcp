@@ -1285,6 +1285,76 @@ async fn bearer_middleware_gates_the_api() {
 
 // ─── Users ───────────────────────────────────────────────────────────────
 
+/// #343: a user's first and last name, set by an administrator and by the
+/// user; with no display name of their own they read as the two, and a
+/// display name that is only the two is not kept.
+#[tokio::test]
+async fn a_user_has_a_first_and_last_name() {
+    let app = require_app!();
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({ "username": "ruth", "password": PASSWORD,
+                         "first_name": " Ruth ", "last_name": "Bader" })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    assert_eq!(made.json["first_name"], "Ruth", "trimmed: {}", made.text);
+    assert_eq!(made.json["display_name"], "Ruth Bader");
+
+    let own = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/ruth",
+            Some(json!({ "display_name": "RBG" })),
+        )
+        .await;
+    assert_eq!(own.json["display_name"], "RBG", "{}", own.text);
+    let cleared = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/ruth",
+            Some(json!({ "display_name": "", "last_name": "Ginsburg" })),
+        )
+        .await;
+    assert_eq!(
+        cleared.json["display_name"], "Ruth Ginsburg",
+        "{}",
+        cleared.text
+    );
+    let crlf = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/ruth",
+            Some(json!({ "first_name": "Ruth\r\nX-Evil: 1" })),
+        )
+        .await;
+    assert_eq!(crlf.status, StatusCode::BAD_REQUEST, "{}", crlf.text);
+
+    let jwt = session(&app, "ruth").await;
+    let profile = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/profile",
+            Some(json!({ "first_name": "Joan", "display_name": "Joan Ginsburg" })),
+        )
+        .await;
+    assert_eq!(profile.status, StatusCode::OK, "{}", profile.text);
+    assert_eq!(profile.json["first_name"], "Joan");
+    assert_eq!(profile.json["display_name"], "Joan Ginsburg");
+    let stored = fcp_core::CredentialStore::get_user_by_id(
+        app.storage.as_ref(),
+        &made.json["id"].as_str().unwrap().parse().unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(stored.display_name, None, "only the names: not kept");
+    app.finish().await;
+}
+
 #[tokio::test]
 async fn users_round_trip_and_duplicate_conflicts() {
     let app = require_app!();
@@ -11581,6 +11651,7 @@ async fn a_tenants_people_sign_in_through_its_identity_provider() {
     let jane = json!({
         "sub": "jane-1", "email": "jane@acme.test", "email_verified": true,
         "preferred_username": "jane@acme.test", "name": "Jane Doe", "groups": ["staff"],
+        "given_name": "Jane", "family_name": "Doe",
     });
     let landing = app.sso_landing(&idp, &provider, jane.clone()).await;
     let signed_in = app.sso_exchange(&landing).await;
@@ -11593,6 +11664,11 @@ async fn a_tenants_people_sign_in_through_its_identity_provider() {
         .send_as(&token, Method::GET, "/api/v1/auth/me", None)
         .await;
     assert_eq!(me.json["username"], "jane", "{}", me.text);
+    // Her names are the provider's given and family names (#343).
+    let made = app.admin(Method::GET, "/api/v1/users/jane", None).await;
+    assert_eq!(made.json["first_name"], "Jane", "{}", made.text);
+    assert_eq!(made.json["last_name"], "Doe");
+    assert_eq!(made.json["display_name"], "Jane Doe");
 
     // The one-time code is good once.
     let again = app.sso_exchange(&landing).await;
@@ -11603,6 +11679,7 @@ async fn a_tenants_people_sign_in_through_its_identity_provider() {
     let mut promoted = jane.clone();
     promoted["groups"] = json!(["staff", "fcp-admins"]);
     promoted["preferred_username"] = json!("jane.doe@acme.test");
+    promoted["family_name"] = json!("Smith");
     let landing = app.sso_landing(&idp, &provider, promoted).await;
     let signed_in = app.sso_exchange(&landing).await;
     assert_eq!(
@@ -11611,6 +11688,10 @@ async fn a_tenants_people_sign_in_through_its_identity_provider() {
         signed_in.text
     );
     assert_eq!(signed_in.json["user"]["role"], "tenant_admin");
+    // A name changed at the provider is changed here at the next sign-in.
+    let renamed = app.admin(Method::GET, "/api/v1/users/jane", None).await;
+    assert_eq!(renamed.json["last_name"], "Smith", "{}", renamed.text);
+    assert_eq!(renamed.json["display_name"], "Jane Smith");
 
     let identities = app
         .admin(Method::GET, "/api/v1/users/jane/identities", None)
@@ -14256,6 +14337,9 @@ async fn entra_id_provisions_updates_and_removes_a_user() {
     assert_eq!(fcp.json["role"], "end_user", "{}", fcp.text);
     assert_eq!(fcp.json["email"], "Test_User_fd0ea19b@testuser.com");
     assert_eq!(fcp.json["display_name"], "givenName familyName");
+    // The parts of the name are the first and last (#343).
+    assert_eq!(fcp.json["first_name"], "givenName");
+    assert_eq!(fcp.json["last_name"], "familyName");
 
     // Found by externalId; PATCHes in Entra ID's shape.
     let by_external = scim(
@@ -14288,6 +14372,13 @@ async fn entra_id_provisions_updates_and_removes_a_user() {
         patched.json["name"]["formatted"],
         "givenName updatedFamilyName"
     );
+    assert_eq!(patched.json["name"]["familyName"], "updatedFamilyName");
+    assert_eq!(patched.json["displayName"], "givenName updatedFamilyName");
+    let renamed = app
+        .admin(Method::GET, &format!("/api/v1/users/{user_name}"), None)
+        .await;
+    assert_eq!(renamed.json["last_name"], "updatedFamilyName");
+    assert_eq!(renamed.json["display_name"], "givenName updatedFamilyName");
     assert_eq!(
         patched.json["urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"]["department"],
         "Sales"

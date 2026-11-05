@@ -61,7 +61,8 @@ site refuses it, and its users arrive through its link.
 | `userName` | username; a change renames the user (`docs/USERS.md` §6) |
 | `externalId` | kept as the provisioner's id, unique in the tenant |
 | `active` | `false` suspends; `true` resumes (`docs/USERS.md` §2) |
-| `displayName`, else `name.formatted`, else `name.givenName` + `name.familyName` | display name |
+| `name.givenName` / `name.familyName` | first name / last name (`docs/USERS.md` §7b) |
+| `displayName`, else `name.formatted` | display name; one that is only the given and family name is not kept, so the user reads as them |
 | `emails` (primary, else `work`, else the first) | email |
 | `phoneNumbers` `work` / `mobile` | phone number / mobile number |
 | `title` | job title |

@@ -256,6 +256,35 @@ otherwise that answers 403. `GET /me/profile` and `/me/softphone` say both
 `directory_listed` and `may_change_directory_listing`. The column is
 `users.directory_listed` (migration 124), synced to sites with the user.
 
+## 7b. First and last name
+
+A user has a `first_name` and a `last_name` (#343, migration 138) beside
+their display name. They are set:
+
+- by an administrator, on `POST`/`PUT /api/v1/users` and the Users page;
+- by the user, on `PUT /me/profile` and the portal's Settings page. A user
+  the tenant's SCIM provisioner keeps is refused (403), because their name
+  is the directory's;
+- by SCIM, from `name.givenName` and `name.familyName` (`docs/SCIM.md` §3);
+- by single sign-on, from `given_name` and `family_name` or the SAML
+  equivalents, at the user's creation and at every sign-in that carries
+  them (`docs/SSO.md` §2).
+
+Names are trimmed, an empty string clears one, and each is at most 100
+characters on one line.
+
+**The display name stays, and reads as the names when unset.** Every
+answer that shows a user has `display_name` as they are shown: their own
+display name, else "first last", else whichever of the two they have. That
+holds on `/users`, `/me/profile`, the directory, provisioning's line
+labels, the routing engine and SIP's names for the user. A display name
+that is only the first and last name is not kept. Unset, it follows the
+names when they change. To give someone a name other than their own, set
+the display name to it.
+
+A change of name makes the user's personalized voicemail greeting again
+(`docs/VOICEMAIL.md`).
+
 ## 8. Who may give a role
 
 Making a user, changing their role, setting their password or SIP

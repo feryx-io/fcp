@@ -26,9 +26,18 @@ import type { User, CreateUserRequest, UpdateUserRequest, Location } from '@/typ
 import { TenantField, useEffectiveTenantId, useIsPlatformAdmin, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 import { CallingDialog } from '@/components/CallingDialog'
 
+/** The display name a user has of their own: empty when it only reads as
+ * their first and last name (#343), so editing the names moves it too. */
+function ownDisplayName(user: { display_name?: string | null; first_name?: string | null; last_name?: string | null }): string {
+  const names = [user.first_name, user.last_name].filter(Boolean).join(' ')
+  return user.display_name && user.display_name !== names ? user.display_name : ''
+}
+
 const createUserSchema = z.object({
   username: z.string().min(1, 'Username is required').max(64),
   password: z.string().min(8, 'Password must be at least 8 characters').max(128),
+  first_name: z.string().max(100).optional(),
+  last_name: z.string().max(100).optional(),
   display_name: z.string().optional(),
   email: z.string().email().optional().or(z.literal('')),
   role: z.string().optional(),
@@ -40,6 +49,8 @@ const createUserSchema = z.object({
 
 const editUserSchema = z.object({
   username: z.string().min(1, 'Username is required').optional(),
+  first_name: z.string().max(100).optional(),
+  last_name: z.string().max(100).optional(),
   display_name: z.string().optional(),
   email: z.string().email().optional().or(z.literal('')),
   role: z.string().optional(),
@@ -437,6 +448,8 @@ function CreateUserDialog({
     mutation.mutate({
       ...data,
       email: data.email || undefined,
+      first_name: data.first_name || undefined,
+      last_name: data.last_name || undefined,
       display_name: data.display_name || undefined,
       extension: data.extension || undefined,
       department: data.department || undefined,
@@ -463,9 +476,19 @@ function CreateUserDialog({
             <Input id="create-password" type="password" {...register('password')} />
             {errors.password && <p className="text-sm text-destructive">{errors.password.message}</p>}
           </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="create-first_name">First Name</Label>
+              <Input id="create-first_name" {...register('first_name')} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="create-last_name">Last Name</Label>
+              <Input id="create-last_name" {...register('last_name')} />
+            </div>
+          </div>
           <div className="space-y-2">
             <Label htmlFor="create-display_name">Display Name</Label>
-            <Input id="create-display_name" {...register('display_name')} />
+            <Input id="create-display_name" placeholder="First and last name" {...register('display_name')} />
           </div>
           <div className="space-y-2">
             <Label htmlFor="create-email">Email</Label>
@@ -553,7 +576,9 @@ function EditUserDialog({
     setLastUser(user.username)
     reset({
       username: user.username,
-      display_name: user.display_name || '',
+      first_name: user.first_name || '',
+      last_name: user.last_name || '',
+      display_name: ownDisplayName(user),
       email: user.email || '',
       role: user.role || '',
       extension: user.extension || '',
@@ -582,6 +607,8 @@ function EditUserDialog({
         username: data.username && data.username !== user.username ? data.username : undefined,
         // An emptied field is sent empty, which clears it.
         email: data.email ?? '',
+        first_name: data.first_name ?? '',
+        last_name: data.last_name ?? '',
         display_name: data.display_name ?? '',
         extension: data.extension ?? '',
         department: data.department ?? '',
@@ -608,9 +635,20 @@ function EditUserDialog({
               <span className="font-mono">{user?.sip_username}</span>.
             </p>
           </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-first_name">First Name</Label>
+              <Input id="edit-first_name" disabled={user?.scim_managed} {...register('first_name')} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-last_name">Last Name</Label>
+              <Input id="edit-last_name" disabled={user?.scim_managed} {...register('last_name')} />
+            </div>
+          </div>
           <div className="space-y-2">
             <Label htmlFor="edit-display_name">Display Name</Label>
-            <Input id="edit-display_name" {...register('display_name')} />
+            <Input id="edit-display_name" placeholder="First and last name" {...register('display_name')} />
+            <p className="text-xs text-muted-foreground">Left empty, they are shown by their first and last name.</p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="edit-email">Email</Label>

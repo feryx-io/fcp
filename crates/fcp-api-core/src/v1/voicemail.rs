@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::SystemTime;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Helper macro to get storage or return error.
 macro_rules! require_storage {
@@ -47,6 +47,17 @@ pub struct MailboxResponse {
     /// The flow that handles a call this mailbox would take, if not the
     /// mailbox itself.
     pub flow_id: Option<String>,
+    /// The greeting chosen: `standard`, `personalized` or `own`; `null` is
+    /// the default — personalized when the owner has a first and last
+    /// name, standard otherwise (#343).
+    pub greeting_choice: Option<String>,
+    /// The name a personalized greeting says: `full_name`, `display_name`
+    /// or `recorded` (the mailbox's name greeting).
+    pub greeting_name: String,
+    /// What callers hear now: `standard`, `personalized` or `own`. A
+    /// personalized greeting not made (no name, no TTS) is heard as
+    /// standard, as is an own greeting never recorded.
+    pub greeting_heard: String,
     #[serde(with = "crate::time::epoch_secs_f64")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: f64,
@@ -55,8 +66,57 @@ pub struct MailboxResponse {
     pub updated_at: f64,
 }
 
+/// What a mailbox's callers hear: `standard`, `personalized` or `own`.
+pub(crate) fn greeting_heard(mailbox: &VoicemailMailbox) -> &'static str {
+    match mailbox.get_greeting(false).map(|g| g.greeting_type) {
+        None => "standard",
+        Some(GreetingType::Personalized) => "personalized",
+        Some(_) => "own",
+    }
+}
+
+/// A greeting choice as the API takes it: empty is the default.
+pub(crate) fn parse_greeting_choice(
+    choice: Option<&str>,
+) -> Result<Option<fcp_core::GreetingChoice>, ApiError> {
+    match choice.map(str::trim).filter(|c| !c.is_empty()) {
+        None => Ok(None),
+        Some(c) => c.parse().map(Some).map_err(ApiError::BadRequest),
+    }
+}
+
+/// The name a personalized greeting says, as the API takes it.
+pub(crate) fn parse_greeting_name(name: &str) -> Result<fcp_core::GreetingName, ApiError> {
+    name.trim().parse().map_err(ApiError::BadRequest)
+}
+
+/// The name greeting recorded or removed: a personalized greeting that
+/// splices it in is made again.
+pub(crate) async fn name_changed(
+    state: &ApiState,
+    mailbox: VoicemailMailbox,
+    greeting_type: GreetingType,
+) -> Result<(), ApiError> {
+    if greeting_type == GreetingType::Name {
+        refresh_greeting(state, mailbox).await?;
+    }
+    Ok(())
+}
+
+/// The mailbox's personalized greeting made again for its owner, and the
+/// mailbox stored when that changed it.
+pub(crate) async fn refresh_greeting(
+    state: &ApiState,
+    mailbox: VoicemailMailbox,
+) -> Result<VoicemailMailbox, ApiError> {
+    Ok(crate::greeting::refresh_mailbox(state, &mailbox.id)
+        .await
+        .unwrap_or(mailbox))
+}
+
 impl From<VoicemailMailbox> for MailboxResponse {
     fn from(mailbox: VoicemailMailbox) -> Self {
+        let heard = greeting_heard(&mailbox).to_string();
         Self {
             id: mailbox.id,
             tenant_id: mailbox.tenant_id.to_string(),
@@ -72,6 +132,9 @@ impl From<VoicemailMailbox> for MailboxResponse {
             include_transcription: mailbox.include_transcription,
             transcription_enabled: mailbox.transcription_enabled,
             retention_days: mailbox.retention_days,
+            greeting_choice: mailbox.greeting_choice.map(|c| c.to_string()),
+            greeting_name: mailbox.greeting_name.to_string(),
+            greeting_heard: heard,
             flow_id: mailbox.flow_id,
             created_at: system_time_to_epoch_secs(mailbox.created_at),
             updated_at: system_time_to_epoch_secs(mailbox.updated_at),
@@ -142,6 +205,13 @@ pub struct CreateMailboxRequest {
     /// the mailbox takes it.
     #[serde(default)]
     pub flow_id: Option<String>,
+    /// `standard`, `personalized` or `own`; unset is the default —
+    /// personalized when the user has a first and last name.
+    #[serde(default)]
+    pub greeting_choice: Option<String>,
+    /// `full_name` (the default), `display_name` or `recorded`.
+    #[serde(default)]
+    pub greeting_name: Option<String>,
 }
 
 /// Update mailbox request.
@@ -161,6 +231,13 @@ pub struct UpdateMailboxRequest {
     /// The flow that handles a call this mailbox would take; empty clears
     /// it, so the mailbox takes it again.
     pub flow_id: Option<String>,
+    /// `standard`, `personalized` or `own`; empty returns the mailbox to
+    /// the default. The personalized greeting is made before the answer.
+    #[serde(default)]
+    pub greeting_choice: Option<String>,
+    /// `full_name`, `display_name` or `recorded`.
+    #[serde(default)]
+    pub greeting_name: Option<String>,
 }
 
 /// The flow a mailbox hands its calls to, checked to be the tenant's; an
@@ -432,11 +509,19 @@ pub async fn create_mailbox(
         mailbox.flow_id = mailbox_flow(&state, &tenant.0, flow_id).await?;
     }
     mailbox.max_messages = req.max_messages;
+    mailbox.greeting_choice = parse_greeting_choice(req.greeting_choice.as_deref())?;
+    if let Some(name) = &req.greeting_name {
+        mailbox.greeting_name = parse_greeting_name(name)?;
+    }
 
     storage
         .put_mailbox(mailbox.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    // The personalized greeting, made now so the first caller hears it.
+    let mailbox = crate::greeting::refresh_mailbox(&state, &mailbox.id)
+        .await
+        .unwrap_or(mailbox);
 
     info!(
         mailbox_id = %mailbox.id,
@@ -459,65 +544,6 @@ pub async fn create_mailbox(
             },
         ))
         .await;
-
-    // Generate TTS default greeting in the background so the API returns immediately
-    if let (Some(tts_service), Some(greetings_dir)) = (
-        state.tts_service.clone(),
-        state.voicemail_greetings_dir.clone(),
-    ) {
-        let storage = storage.clone();
-        let mailbox_id = mailbox.id.clone();
-        let display_name = user.display_name.unwrap_or(user.username).clone();
-
-        tokio::spawn(async move {
-            let greeting_text = format!(
-                "Sorry, {} is not available. Please record your message after the beep.",
-                display_name
-            );
-
-            match tts_service.synthesize(&greeting_text, None, None).await {
-                Ok(tts_path) => {
-                    if let Err(e) = tokio::fs::create_dir_all(&greetings_dir).await {
-                        warn!(error = %e, "Failed to create voicemail greetings directory");
-                        return;
-                    }
-                    let greeting_filename = format!("{}_unavailable.wav", mailbox_id);
-                    let greeting_path = greetings_dir.join(&greeting_filename);
-                    match tokio::fs::copy(&tts_path, &greeting_path).await {
-                        Ok(_) => {
-                            // Re-load mailbox, add greeting, and save
-                            match storage.get_mailbox(&mailbox_id).await {
-                                Ok(Some(mut mb)) => {
-                                    let greeting = VoicemailGreeting::new(
-                                        GreetingType::Unavailable,
-                                        greeting_path,
-                                    );
-                                    mb.add_greeting(greeting);
-                                    if let Err(e) = storage.put_mailbox(mb).await {
-                                        warn!(error = %e, mailbox_id = %mailbox_id, "Failed to save mailbox with TTS greeting");
-                                    } else {
-                                        info!(mailbox_id = %mailbox_id, "Generated TTS default greeting for mailbox");
-                                    }
-                                }
-                                Ok(None) => {
-                                    warn!(mailbox_id = %mailbox_id, "Mailbox deleted before TTS greeting could be saved");
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, mailbox_id = %mailbox_id, "Failed to reload mailbox for TTS greeting");
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!(error = %e, mailbox_id = %mailbox_id, "Failed to copy TTS greeting file");
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!(error = %e, mailbox_id = %mailbox_id, "Failed to generate TTS default greeting");
-                }
-            }
-        });
-    }
 
     Ok((StatusCode::CREATED, Json(MailboxResponse::from(mailbox))))
 }
@@ -602,6 +628,12 @@ pub async fn update_mailbox(
     if let Some(flow_id) = &req.flow_id {
         mailbox.flow_id = mailbox_flow(&state, &tenant.0, flow_id).await?;
     }
+    if let Some(choice) = &req.greeting_choice {
+        mailbox.greeting_choice = parse_greeting_choice(Some(choice))?;
+    }
+    if let Some(name) = &req.greeting_name {
+        mailbox.greeting_name = parse_greeting_name(name)?;
+    }
 
     mailbox.updated_at = SystemTime::now();
 
@@ -609,6 +641,7 @@ pub async fn update_mailbox(
         .put_mailbox(mailbox.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let mailbox = refresh_greeting(&state, mailbox).await?;
 
     info!(mailbox_id = %id, "Updated voicemail mailbox");
 
@@ -1094,12 +1127,13 @@ pub async fn upload_greeting(
 
     // Add greeting to mailbox and save
     let greeting = VoicemailGreeting::new(greeting_type, file_path);
-    mailbox.add_greeting(greeting.clone());
+    mailbox.take_recorded(greeting.clone());
 
     storage
-        .put_mailbox(mailbox)
+        .put_mailbox(mailbox.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    name_changed(&state, mailbox, greeting_type).await?;
 
     info!(
         mailbox_id = %id,
@@ -1160,9 +1194,10 @@ pub async fn delete_greeting(
     mailbox.updated_at = SystemTime::now();
 
     storage
-        .put_mailbox(mailbox)
+        .put_mailbox(mailbox.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    name_changed(&state, mailbox, greeting_type).await?;
 
     info!(
         mailbox_id = %id,
@@ -1253,7 +1288,11 @@ pub async fn download_greeting_audio(
     tenant: crate::auth::TenantContext,
     Path((id, greeting_type_str)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let greeting_type = parse_greeting_type(&greeting_type_str)?;
+    // The personalized greeting is heard here too, though never uploaded.
+    let greeting_type = match greeting_type_str.to_lowercase().as_str() {
+        "personalized" => GreetingType::Personalized,
+        other => parse_greeting_type(other)?,
+    };
 
     let mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 

@@ -1,6 +1,12 @@
 # fcp-admin in the compose stack. Secrets come from .env through the
 # FCP_ADMIN_* environment overrides; nothing secret is written here.
 
+# The voicemail server's volume (voicemail-data, mounted here): greetings
+# uploaded, spoken and personalized here are the ones callers hear, and
+# messages are played from it.
+voicemail_greetings_dir = "/var/lib/fcp/voicemail/greetings"
+voicemail_recordings_dir = "/var/lib/fcp/voicemail/recordings"
+
 [service]
 service_type = "admin"
 node_id = "admin-docker-01"
