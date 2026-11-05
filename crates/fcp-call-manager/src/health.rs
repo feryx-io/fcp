@@ -382,6 +382,7 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
                 "dialogs": held.dialogs,
                 "sip_call_ids": held.sip_call_ids,
                 "calls": held.calls,
+                "flows": held.flows,
                 "media_sessions": media_sessions,
             })
         }),
@@ -1185,6 +1186,7 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
             ("dialogs", held.dialogs),
             ("sip_call_ids", held.sip_call_ids),
             ("calls", held.calls),
+            ("flows", held.flows),
         ] {
             body.push_str(&format!(
                 "fcp_node_held{{node=\"{node}\",kind=\"{kind}\"}} {n}\n"

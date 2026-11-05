@@ -80,6 +80,11 @@ pub struct CallManager {
     /// teardown paths' (it may have moved to another call), and is not told.
     on_unanswered_media: std::sync::OnceLock<OnUnansweredMedia>,
 
+    /// Told of every call this manager ends or forgets, as `on_ended` is,
+    /// by the flows run on its calls: a flow is stopped when its call ends
+    /// (#337). Set once, after the manager is shared.
+    on_flow_call_ended: std::sync::OnceLock<OnEnded>,
+
     /// Told whenever the users a call counts against change
     /// (`docs/ENTERPRISE_CALLING.md` §3.4): what keeps each user's calls
     /// counted for call waiting.
@@ -110,6 +115,7 @@ impl CallManager {
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
             on_unanswered_media: std::sync::OnceLock::new(),
+            on_flow_call_ended: std::sync::OnceLock::new(),
             on_parties_changed: std::sync::OnceLock::new(),
             on_appearance_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
@@ -131,6 +137,7 @@ impl CallManager {
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
             on_unanswered_media: std::sync::OnceLock::new(),
+            on_flow_call_ended: std::sync::OnceLock::new(),
             on_parties_changed: std::sync::OnceLock::new(),
             on_appearance_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
@@ -189,6 +196,7 @@ impl CallManager {
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
             on_unanswered_media: std::sync::OnceLock::new(),
+            on_flow_call_ended: std::sync::OnceLock::new(),
             on_parties_changed: std::sync::OnceLock::new(),
             on_appearance_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
@@ -207,6 +215,7 @@ impl CallManager {
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
             on_unanswered_media: std::sync::OnceLock::new(),
+            on_flow_call_ended: std::sync::OnceLock::new(),
             on_parties_changed: std::sync::OnceLock::new(),
             on_appearance_changed: std::sync::OnceLock::new(),
             billing: None,
@@ -272,6 +281,12 @@ impl CallManager {
         self.on_ended = Some(on_ended);
     }
 
+    /// Set what stops a call's flow when the call ends or is forgotten:
+    /// once, after the manager is shared; the first setting stands.
+    pub fn set_on_flow_call_ended(&self, hook: OnEnded) {
+        let _ = self.on_flow_call_ended.set(hook);
+    }
+
     /// The region this node advertises; on every record it writes.
     pub fn set_region(&mut self, region: Option<String>) {
         self.region = region;
@@ -314,6 +329,9 @@ impl CallManager {
         }
         if let Some(on_ended) = &self.on_ended {
             on_ended(call_id);
+        }
+        if let Some(hook) = self.on_flow_call_ended.get() {
+            hook(call_id);
         }
     }
 
@@ -886,6 +904,9 @@ impl CallManager {
         }
         if let Some(on_ended) = &self.on_ended {
             on_ended(call_id);
+        }
+        if let Some(hook) = self.on_flow_call_ended.get() {
+            hook(call_id);
         }
 
         Ok(())

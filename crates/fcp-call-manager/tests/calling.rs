@@ -205,6 +205,28 @@ format = "compact"
         json["calls"].as_array().cloned().unwrap_or_default()
     }
 
+    /// What the node keeps for calls (`GET /status`'s `held`, #344).
+    async fn held(&self) -> serde_json::Value {
+        let (code, body) = fcp_testkit::smoke::http_get(&loopback(self.http, "/status"))
+            .await
+            .expect("GET /status");
+        assert_eq!(code, 200, "{body}");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("status JSON");
+        json["held"].clone()
+    }
+
+    /// Wait for `held[kind]` to be `n`; the last `held` either way.
+    async fn held_until(&self, kind: &str, n: u64) -> serde_json::Value {
+        let deadline = Instant::now() + SOON;
+        loop {
+            let held = self.held().await;
+            if held[kind] == n || Instant::now() > deadline {
+                return held;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Give up: print the service's logs and what `phone` saw, then panic.
     async fn fail(&self, why: &str, phone: &Phone) -> ! {
         let mut seen = Vec::new();
@@ -547,6 +569,69 @@ async fn voicemail_access_leaves_no_flow_behind() {
         "a stored voicemail access flow: {:?}",
         flows.iter().map(|f| &f.id).collect::<Vec<_>>()
     );
+    stack.finish().await;
+}
+
+/// A caller who hangs up on voicemail access stops its flow: it went on
+/// for a session that was gone and hung up 20 seconds later (#337).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hanging_up_on_voicemail_access_stops_its_flow() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack.mailbox(&alice, "+15125550114").await;
+    let alice_phone = stack.phone(&alice).await;
+    let call = alice_phone.call("*98").await.unwrap();
+    call.answered(SOON).await.expect("voicemail access answers");
+    let held = stack.held_until("flows", 1).await;
+    assert_eq!(
+        held["flows"], 1,
+        "the flow runs while the call is up: {held}"
+    );
+    call.hangup().await.unwrap();
+    let held = stack.held_until("flows", 0).await;
+    assert_eq!(held["flows"], 0, "the flow outlived its call: {held}");
+    assert_eq!(held["calls"], 0, "{held}");
+    stack.finish().await;
+}
+
+/// A caller who hangs up while a menu waits for a key stops the flow then,
+/// not at the menu's timeout (#337).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hanging_up_on_a_menu_stops_its_flow() {
+    let stack = stack_or_skip!();
+    let [(_, alice), _, _] = three_phones(&stack).await;
+    let menu = stack.seed.user("menu", "menu-pw", "1500").await;
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "slow-menu", "name": "Menu", "version": 1, "initial_node": "answer",
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "menu"},
+            "menu": {
+                "id": "menu", "name": "Menu", "type": "gather", "num_digits": 1,
+                "timeout": 30, "transitions": {}, "default": "done", "on_timeout": "done"
+            },
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .expect("seed flow");
+    stack
+        .calling(&menu, |s| {
+            s.forward_all = Some(CallTarget::Flow("slow-menu".into()))
+        })
+        .await;
+    let call = alice.call(&menu.extension).await.unwrap();
+    call.answered(SOON).await.expect("the menu answers");
+    let held = stack.held_until("flows", 1).await;
+    assert_eq!(
+        held["flows"], 1,
+        "the flow runs while the call is up: {held}"
+    );
+    call.hangup().await.unwrap();
+    let held = stack.held_until("flows", 0).await;
+    assert_eq!(held["flows"], 0, "the flow waited out its menu: {held}");
+    assert_eq!(held["calls"], 0, "{held}");
     stack.finish().await;
 }
 
