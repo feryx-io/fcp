@@ -37,10 +37,7 @@ pub struct ResolvedLine {
 }
 
 fn display(user: &User) -> String {
-    user.display_name
-        .clone()
-        .filter(|n| !n.trim().is_empty())
-        .unwrap_or_else(|| user.username.clone())
+    user.shown_name().unwrap_or_else(|| user.username.clone())
 }
 
 /// A user of the tenant named by username or by id.

@@ -744,6 +744,14 @@ async fn resolve_user(
     let email = claim_str(claims, &mapping.email);
     let username_claim = claim_str(claims, &mapping.username);
     let display_name = claim_str(claims, &mapping.display_name);
+    let name_part = |mapped: &str, known: &[&str]| {
+        std::iter::once(mapped)
+            .chain(known.iter().copied())
+            .find_map(|claim| claim_str(claims, claim))
+            .filter(|n| crate::validation::validate_person_name("name", &Some(n.clone())).is_ok())
+    };
+    let first_name = name_part(&mapping.first_name, fcp_core::identity::FIRST_NAME_CLAIMS);
+    let last_name = name_part(&mapping.last_name, fcp_core::identity::LAST_NAME_CLAIMS);
     let named = username_claim.clone().or_else(|| email.clone());
     let refuse = |reason: &'static str| Refusal(reason, named.clone());
     // Only the people the tenant meant: its Workspace domain, its
@@ -833,7 +841,7 @@ async fn resolve_user(
             } else {
                 mapped_role.unwrap_or(UserRole::EndUser)
             };
-            let user = crate::v1::users::user_without_password(
+            let mut user = crate::v1::users::user_without_password(
                 &state.realm,
                 provider.tenant_id,
                 &username,
@@ -842,6 +850,9 @@ async fn resolve_user(
                 role,
             )
             .map_err(|_| refuse("internal"))?;
+            user.first_name = first_name.clone();
+            user.last_name = last_name.clone();
+            crate::greeting::settle_display_name(&mut user);
             storage
                 .put_user(user.clone())
                 .await
@@ -886,6 +897,26 @@ async fn resolve_user(
                 .put_user(user.clone())
                 .await
                 .map_err(|_| refuse("internal"))?;
+        }
+    }
+    // The names are the provider's word, where it says them — at the
+    // cloud, and for a user SCIM does not keep (#343).
+    if !at_site && !user.scim_managed {
+        let before = user.clone();
+        if first_name.is_some() {
+            user.first_name = first_name.clone();
+        }
+        if last_name.is_some() {
+            user.last_name = last_name.clone();
+        }
+        if crate::greeting::names_changed(&before, &user) {
+            user.display_name = crate::greeting::settled_display_name(&user);
+            user.updated_at = now;
+            storage
+                .put_user(user.clone())
+                .await
+                .map_err(|_| refuse("internal"))?;
+            crate::greeting::user_renamed(state, &before, &user);
         }
     }
     // The tenant's groups that follow the provider's (docs/USERS.md §5):

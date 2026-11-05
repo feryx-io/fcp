@@ -51,7 +51,11 @@ pub(crate) async fn load_claims_user(
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ProfileResponse {
     pub username: String,
+    /// The name the user is shown by: their display name, else their first
+    /// and last name.
     pub display_name: Option<String>,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
     pub email: Option<String>,
     pub phone_number: Option<String>,
     pub extension: Option<String>,
@@ -89,8 +93,10 @@ fn profile_of(user: fcp_core::User, may_change_directory_listing: bool) -> Profi
         role: crate::v1::auth_session::role_to_string(&user.role),
         directory_listed: user.directory_listed,
         may_change_directory_listing,
+        display_name: user.shown_name(),
         username: user.username,
-        display_name: user.display_name,
+        first_name: user.first_name,
+        last_name: user.last_name,
         email: user.email,
         phone_number: user.phone_number,
         extension: user.extension,
@@ -126,7 +132,16 @@ pub async fn get_profile(
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateProfileRequest {
+    /// One that is only the first and last name is not kept, so the user
+    /// goes on reading as their names.
     pub display_name: Option<String>,
+    /// An empty string clears it; refused (403) for a user the tenant's
+    /// SCIM provisioner keeps.
+    #[serde(default)]
+    pub first_name: Option<String>,
+    /// As `first_name`.
+    #[serde(default)]
+    pub last_name: Option<String>,
     pub email: Option<String>,
     pub phone_number: Option<String>,
     pub timezone: Option<String>,
@@ -157,10 +172,29 @@ pub async fn update_profile(
     let storage = require_storage!(state);
 
     let mut user = load_claims_user(storage, &claims, &state).await?;
+    let before = user.clone();
+    crate::validation::validate_display_name(&body.display_name)?;
+    crate::validation::validate_person_name("first_name", &body.first_name)?;
+    crate::validation::validate_person_name("last_name", &body.last_name)?;
 
     if let Some(display_name) = body.display_name {
         user.display_name = Some(display_name);
     }
+    let named = |n: String| Some(n.trim().to_string()).filter(|n| !n.is_empty());
+    if let Some(first_name) = body.first_name {
+        user.first_name = named(first_name);
+    }
+    if let Some(last_name) = body.last_name {
+        user.last_name = named(last_name);
+    }
+    if user.scim_managed
+        && (user.first_name != before.first_name || user.last_name != before.last_name)
+    {
+        return Err(ApiError::Forbidden(
+            "Your name comes from your organization's directory".to_string(),
+        ));
+    }
+    crate::greeting::settle_display_name(&mut user);
     if let Some(email) = body.email {
         user.email = Some(email);
     }
@@ -193,6 +227,7 @@ pub async fn update_profile(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
+    crate::greeting::user_renamed(&state, &before, &user);
     info!(username = %claims.sub, "User updated own profile");
 
     Ok(Json(profile_of(user, may_change)))
@@ -288,6 +323,34 @@ pub struct MailboxResponse {
     pub email_address: Option<String>,
     pub attach_audio: bool,
     pub retention_days: Option<u32>,
+    /// The greeting chosen: `standard`, `personalized` or `own`; `null` is
+    /// the default — personalized with a first and last name, standard
+    /// otherwise.
+    pub greeting_choice: Option<String>,
+    /// The name a personalized greeting says: `full_name`, `display_name`
+    /// or `recorded`.
+    pub greeting_name: String,
+    /// What callers hear now: `standard`, `personalized` or `own`.
+    pub greeting_heard: String,
+}
+
+impl From<fcp_core::VoicemailMailbox> for MailboxResponse {
+    fn from(mailbox: fcp_core::VoicemailMailbox) -> Self {
+        Self {
+            greeting_choice: mailbox.greeting_choice.map(|c| c.to_string()),
+            greeting_name: mailbox.greeting_name.to_string(),
+            greeting_heard: crate::v1::voicemail::greeting_heard(&mailbox).to_string(),
+            id: mailbox.id,
+            extension: mailbox.extension,
+            enabled: mailbox.enabled,
+            max_message_duration: mailbox.max_message_duration,
+            max_messages: mailbox.max_messages,
+            email_notification: mailbox.email_notification,
+            email_address: mailbox.email_address,
+            attach_audio: mailbox.attach_audio,
+            retention_days: mailbox.retention_days,
+        }
+    }
 }
 
 /// GET /me/voicemail
@@ -313,17 +376,7 @@ pub async fn get_voicemail(
     )
     .await?;
 
-    Ok(Json(MailboxResponse {
-        id: mailbox.id,
-        extension: mailbox.extension,
-        enabled: mailbox.enabled,
-        max_message_duration: mailbox.max_message_duration,
-        max_messages: mailbox.max_messages,
-        email_notification: mailbox.email_notification,
-        email_address: mailbox.email_address,
-        attach_audio: mailbox.attach_audio,
-        retention_days: mailbox.retention_days,
-    }))
+    Ok(Json(MailboxResponse::from(mailbox)))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -332,6 +385,12 @@ pub struct UpdateVoicemailRequest {
     pub email_notification: Option<bool>,
     pub email_address: Option<String>,
     pub attach_audio: Option<bool>,
+    /// `standard`, `personalized` or `own`; empty returns to the default.
+    #[serde(default)]
+    pub greeting_choice: Option<String>,
+    /// `full_name`, `display_name` or `recorded`.
+    #[serde(default)]
+    pub greeting_name: Option<String>,
 }
 
 /// PUT /me/voicemail
@@ -371,26 +430,23 @@ pub async fn update_voicemail(
     if let Some(attach_audio) = body.attach_audio {
         mailbox.attach_audio = attach_audio;
     }
+    if let Some(choice) = &body.greeting_choice {
+        mailbox.greeting_choice = crate::v1::voicemail::parse_greeting_choice(Some(choice))?;
+    }
+    if let Some(name) = &body.greeting_name {
+        mailbox.greeting_name = crate::v1::voicemail::parse_greeting_name(name)?;
+    }
     mailbox.updated_at = SystemTime::now();
 
     storage
         .put_mailbox(mailbox.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let mailbox = crate::v1::voicemail::refresh_greeting(&state, mailbox).await?;
 
     info!(username = %claims.sub, "User updated own voicemail settings");
 
-    Ok(Json(MailboxResponse {
-        id: mailbox.id,
-        extension: mailbox.extension,
-        enabled: mailbox.enabled,
-        max_message_duration: mailbox.max_message_duration,
-        max_messages: mailbox.max_messages,
-        email_notification: mailbox.email_notification,
-        email_address: mailbox.email_address,
-        attach_audio: mailbox.attach_audio,
-        retention_days: mailbox.retention_days,
-    }))
+    Ok(Json(MailboxResponse::from(mailbox)))
 }
 
 /// Mailbox stats response.
@@ -862,12 +918,13 @@ pub async fn upload_voicemail_greeting(
         None => VoicemailGreeting::new(greeting_type, file_path),
     };
 
-    mailbox.add_greeting(greeting.clone());
+    mailbox.take_recorded(greeting.clone());
 
     storage
-        .put_mailbox(mailbox)
+        .put_mailbox(mailbox.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    crate::v1::voicemail::name_changed(&state, mailbox, greeting_type).await?;
 
     info!(username = %claims.sub, greeting_type = %greeting_type_str, "User uploaded voicemail greeting");
 
@@ -955,12 +1012,13 @@ pub async fn synthesize_voicemail_greeting(
         None => VoicemailGreeting::new(greeting_type, file_path),
     };
 
-    mailbox.add_greeting(greeting.clone());
+    mailbox.take_recorded(greeting.clone());
 
     storage
-        .put_mailbox(mailbox)
+        .put_mailbox(mailbox.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    crate::v1::voicemail::name_changed(&state, mailbox, greeting_type).await?;
 
     info!(
         username = %claims.sub,
@@ -1061,9 +1119,10 @@ pub async fn delete_voicemail_greeting(
     mailbox.updated_at = SystemTime::now();
 
     storage
-        .put_mailbox(mailbox)
+        .put_mailbox(mailbox.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    crate::v1::voicemail::name_changed(&state, mailbox, greeting_type).await?;
 
     info!(username = %claims.sub, greeting_type = %greeting_type_str, "User deleted voicemail greeting");
 
@@ -1154,7 +1213,11 @@ pub async fn download_voicemail_greeting_audio(
     )
     .await?;
 
-    let greeting_type = parse_greeting_type(&greeting_type_str)?;
+    // The personalized greeting is heard here too, though never uploaded.
+    let greeting_type = match greeting_type_str.to_lowercase().as_str() {
+        "personalized" => GreetingType::Personalized,
+        other => parse_greeting_type(other)?,
+    };
 
     let greeting = mailbox
         .greetings

@@ -37,6 +37,9 @@ class UpdateMailboxRequest:
             retention_days (int | None | Unset): Double Option: outer = field not provided, inner = null to clear.
             flow_id (None | str | Unset): The flow that handles a call this mailbox would take; empty clears
                 it, so the mailbox takes it again.
+            greeting_choice (None | str | Unset): `standard`, `personalized` or `own`; empty returns the mailbox to
+                the default. The personalized greeting is made before the answer.
+            greeting_name (None | str | Unset): `full_name`, `display_name` or `recorded`.
      """
 
     pin: None | str | Unset = UNSET
@@ -50,6 +53,8 @@ class UpdateMailboxRequest:
     transcription_enabled: bool | None | Unset = UNSET
     retention_days: int | None | Unset = UNSET
     flow_id: None | str | Unset = UNSET
+    greeting_choice: None | str | Unset = UNSET
+    greeting_name: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -123,6 +128,18 @@ class UpdateMailboxRequest:
         else:
             flow_id = self.flow_id
 
+        greeting_choice: None | str | Unset
+        if isinstance(self.greeting_choice, Unset):
+            greeting_choice = UNSET
+        else:
+            greeting_choice = self.greeting_choice
+
+        greeting_name: None | str | Unset
+        if isinstance(self.greeting_name, Unset):
+            greeting_name = UNSET
+        else:
+            greeting_name = self.greeting_name
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -150,6 +167,10 @@ class UpdateMailboxRequest:
             field_dict["retention_days"] = retention_days
         if flow_id is not UNSET:
             field_dict["flow_id"] = flow_id
+        if greeting_choice is not UNSET:
+            field_dict["greeting_choice"] = greeting_choice
+        if greeting_name is not UNSET:
+            field_dict["greeting_name"] = greeting_name
 
         return field_dict
 
@@ -268,6 +289,26 @@ class UpdateMailboxRequest:
         flow_id = _parse_flow_id(d.pop("flow_id", UNSET))
 
 
+        def _parse_greeting_choice(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        greeting_choice = _parse_greeting_choice(d.pop("greeting_choice", UNSET))
+
+
+        def _parse_greeting_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        greeting_name = _parse_greeting_name(d.pop("greeting_name", UNSET))
+
+
         update_mailbox_request = cls(
             pin=pin,
             enabled=enabled,
@@ -280,6 +321,8 @@ class UpdateMailboxRequest:
             transcription_enabled=transcription_enabled,
             retention_days=retention_days,
             flow_id=flow_id,
+            greeting_choice=greeting_choice,
+            greeting_name=greeting_name,
         )
 
 

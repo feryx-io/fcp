@@ -700,6 +700,13 @@ pub struct MediaSection {
     /// is read only from here or `recording_dir`.
     #[serde(default)]
     pub voicemail_recordings_dir: Option<String>,
+
+    /// Where the mailboxes' greetings are, shared with the admin and the
+    /// voicemail server: what a caller hears is played from here, and
+    /// greetings recorded from `*98` and personalized greetings are
+    /// written here (#343). Unset, `/var/fcp/voicemail/greetings`.
+    #[serde(default)]
+    pub voicemail_greetings_dir: Option<String>,
 }
 
 fn default_rtp_port_start() -> u16 {
@@ -744,6 +751,7 @@ impl Default for MediaSection {
             hold_music: true,
             recording_dir: default_recording_dir(),
             voicemail_recordings_dir: None,
+            voicemail_greetings_dir: None,
         }
     }
 }

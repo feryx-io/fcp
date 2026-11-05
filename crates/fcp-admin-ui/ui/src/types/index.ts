@@ -601,6 +601,7 @@ export type UpdateProfileRequest = S['UpdateProfileRequest']
 export type ChangePasswordRequest = S['ChangePasswordRequest']
 
 export type MeMailbox = S['me.MailboxResponse']
+export type UpdateMeVoicemailRequest = S['UpdateVoicemailRequest']
 
 export type MeMailboxStats = S['me.MailboxStatsResponse']
 

@@ -141,6 +141,9 @@ pub enum GreetingType {
     Name,
     /// Temporary greeting (overrides others when set)
     Temporary,
+    /// The greeting spoken with the owner's name (#343), made by TTS
+    /// whenever the name or the mailbox's choice changes.
+    Personalized,
 }
 
 impl std::fmt::Display for GreetingType {
@@ -150,6 +153,98 @@ impl std::fmt::Display for GreetingType {
             GreetingType::Busy => write!(f, "busy"),
             GreetingType::Name => write!(f, "name"),
             GreetingType::Temporary => write!(f, "temporary"),
+            GreetingType::Personalized => write!(f, "personalized"),
+        }
+    }
+}
+
+impl std::str::FromStr for GreetingType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "unavailable" => Ok(GreetingType::Unavailable),
+            "busy" => Ok(GreetingType::Busy),
+            "name" => Ok(GreetingType::Name),
+            "temporary" => Ok(GreetingType::Temporary),
+            "personalized" => Ok(GreetingType::Personalized),
+            other => Err(format!("unknown greeting type '{other}'")),
+        }
+    }
+}
+
+/// Which greeting a mailbox's callers hear (#343).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GreetingChoice {
+    /// The node's default greeting.
+    Standard,
+    /// "Sorry, {name} is not available…", spoken by TTS with the owner's
+    /// name and kept as the mailbox's `Personalized` greeting.
+    Personalized,
+    /// The greetings the owner recorded (busy, temporary, unavailable).
+    Own,
+}
+
+impl std::fmt::Display for GreetingChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            GreetingChoice::Standard => "standard",
+            GreetingChoice::Personalized => "personalized",
+            GreetingChoice::Own => "own",
+        })
+    }
+}
+
+impl std::str::FromStr for GreetingChoice {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "standard" => Ok(GreetingChoice::Standard),
+            "personalized" => Ok(GreetingChoice::Personalized),
+            "own" => Ok(GreetingChoice::Own),
+            other => Err(format!(
+                "unknown greeting choice '{other}' (standard, personalized or own)"
+            )),
+        }
+    }
+}
+
+/// The name a personalized greeting says (#343).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GreetingName {
+    /// The owner's first and last name.
+    #[default]
+    FullName,
+    /// The owner's display name.
+    DisplayName,
+    /// The mailbox's recorded name greeting, spliced into the sentence.
+    Recorded,
+}
+
+impl std::fmt::Display for GreetingName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            GreetingName::FullName => "full_name",
+            GreetingName::DisplayName => "display_name",
+            GreetingName::Recorded => "recorded",
+        })
+    }
+}
+
+impl std::str::FromStr for GreetingName {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "full_name" => Ok(GreetingName::FullName),
+            "display_name" => Ok(GreetingName::DisplayName),
+            "recorded" => Ok(GreetingName::Recorded),
+            other => Err(format!(
+                "unknown greeting name '{other}' (full_name, display_name or recorded)"
+            )),
         }
     }
 }
@@ -171,6 +266,12 @@ pub struct VoicemailGreeting {
 
     /// Expiration for temporary greetings
     pub expires_at: Option<SystemTime>,
+
+    /// What a personalized greeting was made from (the sentence, with the
+    /// name greeting's file and time when it is spliced in): it is made
+    /// again when this changes.
+    #[serde(default)]
+    pub made_from: Option<String>,
 }
 
 impl VoicemailGreeting {
@@ -182,6 +283,7 @@ impl VoicemailGreeting {
             is_active: true,
             created_at: SystemTime::now(),
             expires_at: None,
+            made_from: None,
         }
     }
 
@@ -197,6 +299,7 @@ impl VoicemailGreeting {
             is_active: true,
             created_at: SystemTime::now(),
             expires_at: Some(expires_at),
+            made_from: None,
         }
     }
 
@@ -266,6 +369,16 @@ pub struct VoicemailMailbox {
     #[serde(default)]
     pub flow_id: Option<String>,
 
+    /// Which greeting callers hear; `None` is the default — personalized
+    /// when the owner has a first and last name, standard otherwise
+    /// (`VoicemailMailbox::effective_choice`).
+    #[serde(default)]
+    pub greeting_choice: Option<GreetingChoice>,
+
+    /// The name a personalized greeting says.
+    #[serde(default)]
+    pub greeting_name: GreetingName,
+
     /// Greetings for this mailbox
     pub greetings: Vec<VoicemailGreeting>,
 
@@ -302,19 +415,52 @@ impl VoicemailMailbox {
             transcription_enabled: false,
             retention_days: None,
             flow_id: None,
+            greeting_choice: None,
+            greeting_name: GreetingName::default(),
             greetings: Vec::new(),
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
         }
     }
 
-    /// Gets the appropriate greeting for the given scenario.
+    /// The greeting choice in force, given whether the owner has a first
+    /// and last name: an unset choice is personalized with them and
+    /// standard without (#343).
+    pub fn effective_choice(&self, owner_has_full_name: bool) -> GreetingChoice {
+        self.greeting_choice.unwrap_or(if owner_has_full_name {
+            GreetingChoice::Personalized
+        } else {
+            GreetingChoice::Standard
+        })
+    }
+
+    /// The greeting a caller hears, by the mailbox's choice; `None` is the
+    /// node's default greeting. A personalized greeting not made (yet, or
+    /// for want of a name or TTS) is the default too; an unset choice
+    /// plays the personalized greeting when there is one, which is when
+    /// the owner has a first and last name.
+    pub fn get_greeting(&self, is_busy: bool) -> Option<&VoicemailGreeting> {
+        match self.greeting_choice {
+            Some(GreetingChoice::Standard) => None,
+            Some(GreetingChoice::Own) => self.own_greeting(is_busy),
+            Some(GreetingChoice::Personalized) | None => self.greeting(GreetingType::Personalized),
+        }
+    }
+
+    /// The mailbox's greeting of `greeting_type`, if it has one.
+    pub fn greeting(&self, greeting_type: GreetingType) -> Option<&VoicemailGreeting> {
+        self.greetings
+            .iter()
+            .find(|g| g.greeting_type == greeting_type)
+    }
+
+    /// The owner's recorded greeting for the scenario.
     ///
     /// Priority: busy greeting (if caller got busy) → alternate/temporary
     /// (if active and not expired) → standard/unavailable (if active).
     /// Busy greetings are always played when present and the caller is busy;
     /// they do not use the `is_active` flag.
-    pub fn get_greeting(&self, is_busy: bool) -> Option<&VoicemailGreeting> {
+    pub fn own_greeting(&self, is_busy: bool) -> Option<&VoicemailGreeting> {
         // Check for busy greeting first (always played if present, no is_active check)
         if is_busy {
             if let Some(greeting) = self
@@ -393,6 +539,22 @@ impl VoicemailMailbox {
         }
 
         self.updated_at = SystemTime::now();
+    }
+
+    /// A greeting the owner recorded, taken in place of the one of its
+    /// type. Under the default choice an own greeting (busy, temporary,
+    /// unavailable) is what callers hear from then on: recorded, it would
+    /// otherwise go unheard behind the personalized greeting.
+    pub fn take_recorded(&mut self, greeting: VoicemailGreeting) {
+        if self.greeting_choice.is_none()
+            && matches!(
+                greeting.greeting_type,
+                GreetingType::Unavailable | GreetingType::Busy | GreetingType::Temporary
+            )
+        {
+            self.greeting_choice = Some(GreetingChoice::Own);
+        }
+        self.add_greeting(greeting);
     }
 
     /// Adds a greeting to this mailbox.
@@ -557,6 +719,7 @@ mod tests {
             "1001".to_string(),
             "1234".to_string(),
         );
+        mailbox.greeting_choice = Some(GreetingChoice::Own);
 
         // Add unavailable greeting
         mailbox.add_greeting(VoicemailGreeting::new(
@@ -597,14 +760,17 @@ mod tests {
 
     // ---- Helpers ----
 
+    /// A mailbox playing its owner's own greetings.
     fn test_mailbox() -> VoicemailMailbox {
-        VoicemailMailbox::new(
+        let mut mailbox = VoicemailMailbox::new(
             TenantId::nil(),
             UserId::new(),
             LineBindingId::new(),
             "1001".to_string(),
             "1234".to_string(),
-        )
+        );
+        mailbox.greeting_choice = Some(GreetingChoice::Own);
+        mailbox
     }
 
     fn expired_greeting(greeting_type: GreetingType) -> VoicemailGreeting {
@@ -614,6 +780,7 @@ mod tests {
             is_active: true,
             created_at: SystemTime::now(),
             expires_at: Some(SystemTime::UNIX_EPOCH), // already expired
+            made_from: None,
         }
     }
 
@@ -779,6 +946,44 @@ mod tests {
     }
 
     // ---- get_greeting selection ----
+
+    #[test]
+    fn the_greeting_heard_follows_the_mailboxs_choice() {
+        let mut mailbox = test_mailbox();
+        mailbox.add_greeting(VoicemailGreeting::new(
+            GreetingType::Unavailable,
+            PathBuf::from("/tmp/own.wav"),
+        ));
+        mailbox.add_greeting(VoicemailGreeting::new(
+            GreetingType::Personalized,
+            PathBuf::from("/tmp/personalized.wav"),
+        ));
+        let heard = |m: &VoicemailMailbox| m.get_greeting(false).map(|g| g.greeting_type);
+
+        assert_eq!(heard(&mailbox), Some(GreetingType::Unavailable));
+        mailbox.greeting_choice = Some(GreetingChoice::Personalized);
+        assert_eq!(heard(&mailbox), Some(GreetingType::Personalized));
+        mailbox.greeting_choice = Some(GreetingChoice::Standard);
+        assert_eq!(heard(&mailbox), None, "standard is the node's default");
+        // Unset plays the personalized greeting when it was made, which is
+        // when the owner has a first and last name.
+        mailbox.greeting_choice = None;
+        assert_eq!(heard(&mailbox), Some(GreetingType::Personalized));
+        mailbox
+            .greetings
+            .retain(|g| g.greeting_type != GreetingType::Personalized);
+        assert_eq!(heard(&mailbox), None);
+    }
+
+    #[test]
+    fn an_unset_choice_is_personalized_only_with_a_full_name() {
+        let mut mailbox = test_mailbox();
+        mailbox.greeting_choice = None;
+        assert_eq!(mailbox.effective_choice(true), GreetingChoice::Personalized);
+        assert_eq!(mailbox.effective_choice(false), GreetingChoice::Standard);
+        mailbox.greeting_choice = Some(GreetingChoice::Own);
+        assert_eq!(mailbox.effective_choice(true), GreetingChoice::Own);
+    }
 
     #[test]
     fn test_get_greeting_no_greetings_returns_none() {

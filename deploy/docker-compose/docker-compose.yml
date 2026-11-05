@@ -103,6 +103,9 @@ services:
       - ./configs/fcp-admin.toml:/app/fcp-admin.toml:ro
       - fcp-certs:/var/lib/fcp/certs:ro
       - admin-data:/app/data
+      # The mailboxes' greetings and messages, shared with the voicemail
+      # server and the call manager.
+      - voicemail-data:/var/lib/fcp/voicemail
     environment:
       RUST_LOG: info
       FCP_ADMIN_LOG_FORMAT: pretty

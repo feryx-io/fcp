@@ -15,6 +15,7 @@ pub mod auth;
 pub mod e911_validator;
 pub mod error;
 pub mod firmware_files;
+pub(crate) mod greeting;
 pub mod managed;
 pub mod offboarding;
 pub mod oidc;

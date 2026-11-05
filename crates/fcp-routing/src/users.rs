@@ -43,6 +43,7 @@ pub fn username_of(caller: &str) -> &str {
 /// asked for, its role is its one role, its department its one group.
 fn engine_user(id: &str, user: fcp_core::User) -> User {
     let enabled = user.may_use_services();
+    let display_name = user.shown_name();
     let mut roles = HashSet::new();
     roles.insert(
         serde_json::to_value(user.role)
@@ -57,7 +58,7 @@ fn engine_user(id: &str, user: fcp_core::User) -> User {
     User {
         id: id.to_string(),
         tenant_id: user.tenant_id,
-        display_name: user.display_name,
+        display_name,
         roles,
         groups,
         endpoints: Vec::new(),
@@ -146,6 +147,8 @@ mod tests {
             sip_provisioning_password: None,
             display_name: Some(username.to_uppercase()),
             directory_listed: true,
+            first_name: None,
+            last_name: None,
             tenant_id: tenant,
             enabled: true,
             role,

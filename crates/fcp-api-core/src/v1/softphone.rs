@@ -236,7 +236,7 @@ pub async fn get_config(
     let body = SoftphoneConfig {
         account: SoftphoneAccount {
             aor: format!("sip:{}@{domain}", user.sip_name()),
-            display_name: user.display_name.clone(),
+            display_name: user.shown_name(),
             registrar: format!("sip:{domain}"),
             domain,
             outbound_proxy,

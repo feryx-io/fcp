@@ -7,6 +7,7 @@ import { z } from 'zod'
 import {
   Voicemail, Inbox, Trash2, Check, MoreHorizontal, ArrowUpDown, Plus, Pencil, Upload,
 } from 'lucide-react'
+import { GreetingChoiceFields } from '@/components/GreetingChoice'
 import { DataTable } from '@/components/DataTable'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -46,6 +47,8 @@ const editSchema = z.object({
   transcription_enabled: z.boolean().optional(),
   retention_days: z.union([z.coerce.number().min(1).max(365), z.null()]).optional(),
   flow_id: z.string().optional(),
+  greeting_choice: z.string().optional(),
+  greeting_name: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -415,6 +418,8 @@ export function VoicemailPage() {
       transcription_enabled: editItem.transcription_enabled,
       retention_days: editItem.retention_days,
       flow_id: editItem.flow_id ?? '',
+      greeting_choice: editItem.greeting_choice ?? '',
+      greeting_name: editItem.greeting_name,
     })
   }
 
@@ -432,6 +437,9 @@ export function VoicemailPage() {
       retention_days: data.retention_days,
       // Empty: the mailbox takes its calls itself.
       flow_id: data.flow_id ?? '',
+      // Empty: the default (with the name when there is one).
+      greeting_choice: data.greeting_choice ?? '',
+      greeting_name: data.greeting_name,
     }
     if (data.pin) payload.pin = data.pin
     updateMutation.mutate({ id: editItem.id, data: payload })
@@ -619,6 +627,16 @@ export function VoicemailPage() {
             </div>
             <div className="border-t pt-3 space-y-3">
               <Label className="text-xs text-muted-foreground uppercase tracking-wider">Greetings</Label>
+              <GreetingChoiceFields
+                id="e-greeting"
+                choice={editForm.watch('greeting_choice') ?? ''}
+                name={editForm.watch('greeting_name') ?? 'full_name'}
+                heard={editItem?.greeting_heard}
+                onChange={(choice, name) => {
+                  editForm.setValue('greeting_choice', choice)
+                  editForm.setValue('greeting_name', name)
+                }}
+              />
               {GREETING_TYPES.map(type_ => {
                 const existing = greetings.find(g => g.greeting_type === type_)
                 const showRadio = (type_ === 'unavailable' || type_ === 'temporary') && existing

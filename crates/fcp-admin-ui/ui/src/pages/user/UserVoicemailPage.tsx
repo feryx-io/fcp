@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { me } from '@/api/endpoints'
+import { GreetingChoiceFields } from '@/components/GreetingChoice'
 import type { VoicemailMessage, MeMailbox, GreetingResponse } from '@/types'
 
 // Kokoro-82M TTS voices
@@ -365,6 +366,58 @@ const GREETING_TYPES = [
   { id: 'temporary', label: 'Temporary', description: 'Overrides all greetings. Can have an expiration.' },
 ]
 
+/** Which greeting callers hear, and hearing the one with the name (#343). */
+function GreetingChoiceCard({ onPlay, playing }: { onPlay: (type: string) => void; playing: boolean }) {
+  const [mailbox, setMailbox] = useState<MeMailbox | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    me.getMailbox().then(setMailbox).catch(() => {})
+  }, [])
+
+  if (!mailbox) return null
+  const save = async (choice: string, name: string) => {
+    setSaving(true)
+    setError(null)
+    try {
+      setMailbox(await me.updateMailbox({ greeting_choice: choice, greeting_name: name }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The greeting was not changed')
+    } finally {
+      setSaving(false)
+    }
+  }
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">What callers hear</CardTitle>
+        <CardDescription>
+          The greeting with your name is spoken for you and made again when your name changes.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <fieldset disabled={saving}>
+          <GreetingChoiceFields
+            id="me-greeting"
+            choice={mailbox.greeting_choice ?? ''}
+            name={mailbox.greeting_name}
+            heard={mailbox.greeting_heard}
+            onChange={save}
+          />
+        </fieldset>
+        {mailbox.greeting_heard === 'personalized' && (
+          <Button variant="outline" size="sm" className="gap-1" onClick={() => onPlay('personalized')}>
+            {playing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+            Hear it
+          </Button>
+        )}
+        {error && <p className="text-sm text-destructive">{error}</p>}
+      </CardContent>
+    </Card>
+  )
+}
+
 function GreetingsTab() {
   const [greetings, setGreetings] = useState<GreetingResponse[]>([])
   const [loading, setLoading] = useState(true)
@@ -513,6 +566,7 @@ function GreetingsTab() {
   return (
     <div className="space-y-4">
       <audio ref={audioRef} onEnded={() => setPlayingType(null)} className="hidden" />
+      <GreetingChoiceCard onPlay={handlePlay} playing={playingType === 'personalized'} />
       <input ref={fileInputRef} type="file" accept="audio/*" className="hidden" onChange={handleFileSelected} />
 
       {GREETING_TYPES.map((gt) => {

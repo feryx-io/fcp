@@ -385,7 +385,7 @@ pub async fn list_members(
             Some(GroupMemberResponse {
                 user_id: user.id.to_string(),
                 username: user.username.clone(),
-                display_name: user.display_name.clone(),
+                display_name: user.shown_name(),
                 account_status: user.account_status.to_string(),
                 added_at: m.added_at,
             })

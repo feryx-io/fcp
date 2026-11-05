@@ -30,7 +30,11 @@ use std::str::FromStr;
 pub struct UserResponse {
     pub id: String,
     pub username: String,
+    /// The name the user is shown by: their display name, else their
+    /// first and last name (#343).
     pub display_name: Option<String>,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
     pub tenant_id: String,
     pub enabled: bool,
     pub role: String, // Role name (e.g., "super_admin", "telecom_admin")
@@ -91,8 +95,10 @@ impl From<User> for UserResponse {
         let sip_username = user.sip_name().to_string();
         Self {
             id: user.id.to_string(),
+            display_name: user.shown_name(),
             username: user.username,
-            display_name: user.display_name,
+            first_name: user.first_name,
+            last_name: user.last_name,
             tenant_id: user.tenant_id.to_string(),
             enabled: user.enabled,
             role: role_str,
@@ -140,7 +146,12 @@ pub struct CreateUserRequest {
     /// When set, this becomes the user's SIP digest password and is exposed by
     /// provisioning as `${sip_password}` for vendors that cannot use HA1.
     pub sip_provisioning_password: Option<String>,
+    /// Left out with a first and last name, the user reads as the two.
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub first_name: Option<String>,
+    #[serde(default)]
+    pub last_name: Option<String>,
     #[serde(default = "default_tenant_id")]
     pub tenant_id: fcp_core::TenantId,
     #[serde(default = "default_true")]
@@ -241,7 +252,15 @@ pub struct UpdateUserRequest {
     /// phones keep registering under their SIP name, which stays.
     #[serde(default)]
     pub username: Option<String>,
+    /// An empty string clears it; one that is only the first and last
+    /// name is not kept, so the user goes on reading as their names.
     pub display_name: Option<String>,
+    /// An empty string clears it.
+    #[serde(default)]
+    pub first_name: Option<String>,
+    /// An empty string clears it.
+    #[serde(default)]
+    pub last_name: Option<String>,
     pub enabled: Option<bool>,
     pub role: Option<String>,
     pub department_id: Option<String>,
@@ -426,6 +445,8 @@ pub async fn create_user(
     validation::validate_username(&req.username)?;
     refuse_id_shaped(&req.username)?;
     validation::validate_display_name(&req.display_name)?;
+    validation::validate_person_name("first_name", &req.first_name)?;
+    validation::validate_person_name("last_name", &req.last_name)?;
     if let Some(ref web_password) = req.password {
         validation::reject_crlf("password", web_password)?;
     }
@@ -526,6 +547,8 @@ pub async fn create_user(
         sip_ha1_hash: Some(sip_ha1_hash),
         sip_provisioning_password,
         display_name: req.display_name,
+        first_name: req.first_name.and_then(name_part),
+        last_name: req.last_name.and_then(name_part),
         directory_listed: req.directory_listed,
         tenant_id: tenant.0,
         enabled: req.enabled,
@@ -581,6 +604,7 @@ pub async fn create_user(
     if user.extension.as_deref() == Some("") {
         user.extension = None;
     }
+    crate::greeting::settle_display_name(&mut user);
     check_user_extension(
         storage,
         &user.tenant_id,
@@ -632,6 +656,11 @@ fn cleared(value: String) -> Option<String> {
     Some(value).filter(|v| !v.trim().is_empty())
 }
 
+/// A first or last name as given: trimmed, empty is none.
+fn name_part(value: String) -> Option<String> {
+    Some(value.trim().to_string()).filter(|v| !v.is_empty())
+}
+
 /// Update a user.
 ///
 /// PUT /api/v1/users/:username
@@ -657,6 +686,8 @@ pub async fn update_user(
     crate::auth::check_permission(&identity, Permission::UserUpdate, state.deployment_mode)?;
     validation::validate_username(&username)?;
     validation::validate_display_name(&req.display_name)?;
+    validation::validate_person_name("first_name", &req.first_name)?;
+    validation::validate_person_name("last_name", &req.last_name)?;
 
     // Get existing user
     let storage = require_storage!(state);
@@ -678,6 +709,13 @@ pub async fn update_user(
     if let Some(display_name) = req.display_name {
         user.display_name = cleared(display_name);
     }
+    if let Some(first_name) = req.first_name {
+        user.first_name = name_part(first_name);
+    }
+    if let Some(last_name) = req.last_name {
+        user.last_name = name_part(last_name);
+    }
+    crate::greeting::settle_display_name(&mut user);
     // `enabled` is the suspension, said the old way (one release).
     match req.enabled {
         Some(false) => user.account_status = AccountStatus::Suspended,
@@ -796,6 +834,7 @@ pub async fn update_user(
     // What the change of status does: signed out, phones dropped, and
     // the world told.
     status_changed(&state, &before, &user).await;
+    crate::greeting::user_renamed(&state, &before, &user);
 
     // Publish user updated event
     let _ = state
@@ -1616,6 +1655,8 @@ pub(crate) fn user_without_password(
         sip_provisioning_password: Some(sip_password),
         display_name,
         directory_listed: true,
+        first_name: None,
+        last_name: None,
         tenant_id,
         enabled: true,
         role,

@@ -83,6 +83,8 @@ export function UserSettingsPage() {
 
   // Profile form
   const [displayName, setDisplayName] = useState('')
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [timezone, setTimezone] = useState('')
@@ -121,7 +123,12 @@ export function UserSettingsPage() {
       try {
         const p = await me.getProfile()
         setProfile(p)
-        setDisplayName(p.display_name || '')
+        setFirstName(p.first_name || '')
+        setLastName(p.last_name || '')
+        // Only a display name of their own: one that reads as the names
+        // follows them (#343).
+        const names = [p.first_name, p.last_name].filter(Boolean).join(' ')
+        setDisplayName(p.display_name && p.display_name !== names ? p.display_name : '')
         setEmail(p.email || '')
         setPhone(p.phone_number || '')
         setTimezone(p.timezone)
@@ -232,7 +239,9 @@ export function UserSettingsPage() {
     setProfileMsg(null)
     try {
       const updated = await me.updateProfile({
-        display_name: displayName || undefined,
+        first_name: firstName,
+        last_name: lastName,
+        display_name: displayName,
         email: email || undefined,
         phone_number: phone || undefined,
         timezone: timezone || undefined,
@@ -418,8 +427,21 @@ export function UserSettingsPage() {
             )}
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
+                <Label htmlFor="firstName">First Name</Label>
+                <Input id="firstName" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="lastName">Last Name</Label>
+                <Input id="lastName" value={lastName} onChange={(e) => setLastName(e.target.value)} />
+              </div>
+              <div className="space-y-2">
                 <Label htmlFor="displayName">Display Name</Label>
-                <Input id="displayName" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+                <Input
+                  id="displayName"
+                  placeholder="Your first and last name"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>

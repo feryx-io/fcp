@@ -21,6 +21,8 @@ use fcp_core::{
 };
 use fcp_media::MediaManager;
 
+pub mod personalized;
+
 /// Configuration for the voicemail service.
 #[derive(Debug, Clone)]
 pub struct VoicemailConfig {
@@ -719,6 +721,139 @@ impl VoicemailService {
         self.storage.put_message(updated).await
     }
 
+    /// Record a greeting of `greeting_type` from the caller, after a tone,
+    /// until they press `#`, `max_secs` pass or they hang up (#343): the
+    /// file, in the mailbox's greetings directory, or `None` when nothing
+    /// was recorded. The mailbox is not changed — the caller hears it
+    /// back first and keeps it with `keep_greeting`.
+    pub async fn record_greeting(
+        &self,
+        call_id: &CallId,
+        mailbox: &VoicemailMailbox,
+        greeting_type: fcp_core::GreetingType,
+        max_secs: u64,
+    ) -> Result<Option<PathBuf>> {
+        validate_identifier(&mailbox.id, "mailbox_id")?;
+        let tenant_dir = mailbox.tenant_id.to_string();
+        validate_identifier(&tenant_dir, "tenant_id")?;
+        let name = format!("{greeting_type}-{}.wav", uuid::Uuid::new_v4().simple());
+        // Written by the media manager under its recording directory, then
+        // moved among the greetings.
+        let relative = PathBuf::from(&tenant_dir)
+            .join(&mailbox.id)
+            .join(format!("greeting-{name}"));
+        let recorded = self.config.recordings_dir.join(&relative);
+        validate_path_within_dir(&recorded, &self.config.recordings_dir)?;
+        if let Some(parent) = recorded.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .context("Failed to create the recording directory")?;
+        }
+        let tone = self
+            .media_manager
+            .play_tone(
+                call_id,
+                1000.0,
+                300,
+                0.5,
+                fcp_media::AudioTarget::ParticipantA,
+            )
+            .await
+            .context("Failed to start the tone")?;
+        let _ = self.media_manager.wait_playback_completion(tone).await;
+        let collector = self
+            .media_manager
+            .create_dtmf_collector(call_id, 1, Some('#'));
+        self.media_manager
+            .start_recording(call_id, relative.to_string_lossy().to_string())
+            .await
+            .context("Failed to start recording")?;
+        let started = std::time::Instant::now();
+        let _ = collector
+            .collect(std::time::Duration::from_secs(max_secs.max(1)))
+            .await;
+        if let Err(e) = self.media_manager.stop_recording(call_id).await {
+            debug!("stop_recording returned error (session may have ended): {e}");
+        }
+        if started.elapsed() < std::time::Duration::from_millis(500) {
+            let _ = tokio::fs::remove_file(&recorded).await;
+            return Ok(None);
+        }
+        if !recorded.exists() {
+            warn!(path = %recorded.display(), "Greeting recording produced no file");
+            return Ok(None);
+        }
+        let dir = self.config.greetings_dir.join(&mailbox.id);
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .context("Failed to create the mailbox's greetings directory")?;
+        let path = dir.join(name);
+        tokio::fs::copy(&recorded, &path)
+            .await
+            .context("Failed to move the recorded greeting")?;
+        let _ = tokio::fs::remove_file(&recorded).await;
+        Ok(Some(path))
+    }
+
+    /// Keep a greeting recorded by `record_greeting` on the mailbox, in
+    /// place of the one of its type, and store it.
+    pub async fn keep_greeting(
+        &self,
+        mailbox: &mut VoicemailMailbox,
+        greeting_type: fcp_core::GreetingType,
+        path: PathBuf,
+    ) -> Result<()> {
+        validate_path_within_dir(&path, &self.config.greetings_dir)?;
+        mailbox.take_recorded(fcp_core::VoicemailGreeting::new(greeting_type, path));
+        self.storage.put_mailbox(mailbox.clone()).await
+    }
+
+    /// Bring the mailbox's personalized greeting in line with its choice
+    /// and its owner's name, speaking it through this node's TTS, and
+    /// store the mailbox when that changed it.
+    pub async fn refresh_personalized(
+        &self,
+        mailbox: &mut VoicemailMailbox,
+        owner: &fcp_core::User,
+    ) -> Result<()> {
+        let tts = self.media_manager.tts_service().map(|t| t.as_ref());
+        if personalized::refresh(tts, &self.config.greetings_dir, mailbox, owner).await? {
+            let greeting = mailbox
+                .greeting(fcp_core::GreetingType::Personalized)
+                .cloned();
+            self.storage
+                .set_greeting(&mailbox.id, fcp_core::GreetingType::Personalized, greeting)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Play the greeting the mailbox's callers hear, to the end.
+    pub async fn play_heard_greeting(
+        &self,
+        call_id: &CallId,
+        mailbox: &VoicemailMailbox,
+    ) -> Result<()> {
+        self.play_greeting(call_id, mailbox, false).await
+    }
+
+    /// Play an audio file of the mailbox's — a greeting just recorded — to
+    /// the caller, to the end.
+    pub async fn play_greeting_file(&self, call_id: &CallId, path: &Path) -> Result<()> {
+        validate_path_within_dir(path, &self.config.greetings_dir)?;
+        self.play_audio(call_id, &path.to_path_buf()).await
+    }
+
+    /// Store the mailbox as it is (a greeting choice from the phone).
+    pub async fn keep_mailbox(&self, mailbox: &VoicemailMailbox) -> Result<()> {
+        self.storage.put_mailbox(mailbox.clone()).await
+    }
+
+    /// The mailbox, by id.
+    pub async fn mailbox(&self, mailbox_id: &str) -> Result<Option<VoicemailMailbox>> {
+        self.storage.get_mailbox(mailbox_id).await
+    }
+
     /// Plays a greeting for a mailbox.
     ///
     /// Selects the appropriate greeting based on the busy status and plays it to the caller.
@@ -734,6 +869,9 @@ impl VoicemailService {
         // Get appropriate greeting
         let greeting = mailbox.get_greeting(is_busy);
 
+        // A greeting whose file is not on this node (not made yet, or a
+        // node without the shared directory) is the default's.
+        let greeting = greeting.filter(|g| g.audio_path.exists());
         let audio_path = match greeting {
             Some(greeting) => {
                 // Custom greeting — validate it's within a safe directory

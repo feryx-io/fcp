@@ -62,6 +62,8 @@ recording_dir = "/app/data/recordings"
 # The voicemail server's messages (its voicemail-data volume, mounted here):
 # *98 on this node plays and deletes them.
 voicemail_recordings_dir = "/var/lib/fcp/voicemail/recordings"
+# The mailboxes' greetings, shared with the admin and the voicemail server.
+voicemail_greetings_dir = "/var/lib/fcp/voicemail/greetings"
 prompts_dir = "/app/data/prompts"
 tts_cache_dir = "/app/data/tts-cache"
 # Speech from the TTS server; FCP_CALL_MANAGER_TTS_REMOTE_TOKEN authenticates.

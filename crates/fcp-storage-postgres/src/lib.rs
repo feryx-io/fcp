@@ -919,7 +919,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed, first_name, last_name
              FROM users
              WHERE username = $1",
         )
@@ -949,7 +949,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed, first_name, last_name
              FROM users
              WHERE username = $1 AND tenant_id = $2",
         )
@@ -972,7 +972,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed, first_name, last_name
              FROM users
              WHERE username = $1
              ORDER BY tenant_id",
@@ -1002,7 +1002,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed, first_name, last_name
              FROM users
              WHERE tenant_id = $1 AND LOWER(email) = LOWER($2)",
         )
@@ -1025,7 +1025,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed, first_name, last_name
              FROM users
              WHERE id = $1",
         )
@@ -1083,9 +1083,9 @@ impl CredentialStore for PostgresStorage {
                 extension, department, job_title, location, location_id, language, timezone,
                 account_status, last_login, emergency_contact_json,
                 primary_phone_number_id, voicemail_box_id, profile_picture,
-                failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
+                failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed, first_name, last_name
              )
-	             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39)
+	             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41)
 	             ON CONFLICT(username, tenant_id) DO UPDATE SET
 	                 password_hash = EXCLUDED.password_hash,
 	                 digest_password = EXCLUDED.digest_password,
@@ -1121,7 +1121,9 @@ impl CredentialStore for PostgresStorage {
                  sip_username = EXCLUDED.sip_username,
                  scim_managed = EXCLUDED.scim_managed,
                  scim_external_id = EXCLUDED.scim_external_id,
-                 directory_listed = EXCLUDED.directory_listed",
+                 directory_listed = EXCLUDED.directory_listed,
+                 first_name = EXCLUDED.first_name,
+                 last_name = EXCLUDED.last_name",
         )
         .bind(&id)
         .bind(&user.username)
@@ -1162,6 +1164,8 @@ impl CredentialStore for PostgresStorage {
         .bind(user.scim_managed)
         .bind(&user.scim_external_id)
         .bind(user.directory_listed)
+        .bind(&user.first_name)
+        .bind(&user.last_name)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1226,7 +1230,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed, first_name, last_name
              FROM users
              WHERE tenant_id = $1
                AND ($2::TEXT IS NULL OR account_status = $2)
@@ -1342,7 +1346,7 @@ impl CredentialStore for PostgresStorage {
                     extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
-                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed
+                    failed_login_attempts, account_locked_until, deprovisioned_at, sip_username, scim_managed, scim_external_id, directory_listed, first_name, last_name
              FROM users
              ORDER BY username",
         )
@@ -3253,6 +3257,8 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         sip_provisioning_password: row.get("sip_provisioning_password"),
         display_name: row.get("display_name"),
         directory_listed: row.get("directory_listed"),
+        first_name: row.get("first_name"),
+        last_name: row.get("last_name"),
         tenant_id,
         role,
         department_id: row.get("department_id"),
@@ -7460,7 +7466,7 @@ impl PostgresStorage {
 
         // Fetch greetings for this mailbox
         let greeting_rows = sqlx::query(
-            "SELECT greeting_type, audio_path, is_active, created_at, expires_at
+            "SELECT greeting_type, audio_path, is_active, created_at, expires_at, made_from
              FROM voicemail_greetings WHERE mailbox_id = $1",
         )
         .bind(&id)
@@ -7470,12 +7476,8 @@ impl PostgresStorage {
         let mut greetings = Vec::new();
         for greeting_row in greeting_rows {
             let greeting_type_str: String = greeting_row.try_get("greeting_type")?;
-            let greeting_type = match greeting_type_str.as_str() {
-                "unavailable" => fcp_core::GreetingType::Unavailable,
-                "busy" => fcp_core::GreetingType::Busy,
-                "name" => fcp_core::GreetingType::Name,
-                "temporary" => fcp_core::GreetingType::Temporary,
-                _ => continue,
+            let Ok(greeting_type) = greeting_type_str.parse::<fcp_core::GreetingType>() else {
+                continue;
             };
 
             let audio_path: String = greeting_row.try_get("audio_path")?;
@@ -7489,6 +7491,7 @@ impl PostgresStorage {
                 is_active,
                 created_at: datetime_to_system_time(g_created_at),
                 expires_at: expires_at.map(datetime_to_system_time),
+                made_from: greeting_row.try_get("made_from")?,
             });
         }
 
@@ -7509,6 +7512,13 @@ impl PostgresStorage {
             transcription_enabled,
             retention_days: retention_days.map(|d| d as u32),
             flow_id: row.try_get("flow_id").unwrap_or(None),
+            greeting_choice: row
+                .try_get::<Option<String>, _>("greeting_choice")?
+                .and_then(|c| c.parse().ok()),
+            greeting_name: row
+                .try_get::<String, _>("greeting_name")?
+                .parse()
+                .unwrap_or_default(),
             greetings,
             created_at: datetime_to_system_time(created_at),
             updated_at: datetime_to_system_time(updated_at),
@@ -7575,7 +7585,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    retention_days, flow_id, created_at, updated_at
+                    retention_days, flow_id, greeting_choice, greeting_name, created_at, updated_at
              FROM voicemail_mailboxes WHERE id = $1",
         )
         .bind(id)
@@ -7599,7 +7609,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    retention_days, flow_id, created_at, updated_at
+                    retention_days, flow_id, greeting_choice, greeting_name, created_at, updated_at
              FROM voicemail_mailboxes WHERE line_binding_id = $1",
         )
         .bind(line_binding_id.to_string())
@@ -7623,7 +7633,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    retention_days, flow_id, created_at, updated_at
+                    retention_days, flow_id, greeting_choice, greeting_name, created_at, updated_at
              FROM voicemail_mailboxes WHERE user_id = $1",
         )
         .bind(user_id.to_string())
@@ -7648,7 +7658,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    retention_days, flow_id, created_at, updated_at
+                    retention_days, flow_id, greeting_choice, greeting_name, created_at, updated_at
              FROM voicemail_mailboxes WHERE tenant_id = $1 AND extension = $2",
         )
         .bind(tenant_id.to_string())
@@ -7673,7 +7683,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    retention_days, flow_id, created_at, updated_at
+                    retention_days, flow_id, greeting_choice, greeting_name, created_at, updated_at
              FROM voicemail_mailboxes WHERE tenant_id = $1 ORDER BY extension",
         )
         .bind(tenant_id.to_string())
@@ -7697,8 +7707,8 @@ impl VoicemailStore for PostgresStorage {
              (id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
               max_message_duration, max_messages, email_notification, email_address,
               attach_audio, include_transcription, transcription_enabled,
-              retention_days, created_at, updated_at, flow_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+              retention_days, created_at, updated_at, flow_id, greeting_choice, greeting_name)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
              ON CONFLICT (id) DO UPDATE SET
                  tenant_id = EXCLUDED.tenant_id,
                  user_id = EXCLUDED.user_id,
@@ -7715,6 +7725,8 @@ impl VoicemailStore for PostgresStorage {
                  transcription_enabled = EXCLUDED.transcription_enabled,
                  retention_days = EXCLUDED.retention_days,
                  flow_id = EXCLUDED.flow_id,
+                 greeting_choice = EXCLUDED.greeting_choice,
+                 greeting_name = EXCLUDED.greeting_name,
                  updated_at = EXCLUDED.updated_at",
         )
         .bind(&mailbox.id)
@@ -7735,6 +7747,8 @@ impl VoicemailStore for PostgresStorage {
         .bind(created_at)
         .bind(now)
         .bind(mailbox.flow_id.as_deref())
+        .bind(mailbox.greeting_choice.map(|c| c.to_string()))
+        .bind(mailbox.greeting_name.to_string())
         .execute(self.writes())
         .await?;
 
@@ -7751,8 +7765,8 @@ impl VoicemailStore for PostgresStorage {
 
             sqlx::query(
                 "INSERT INTO voicemail_greetings
-                 (mailbox_id, greeting_type, audio_path, is_active, created_at, expires_at)
-                 VALUES ($1, $2, $3, $4, $5, $6)",
+                 (mailbox_id, greeting_type, audio_path, is_active, created_at, expires_at, made_from)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
             )
             .bind(&mailbox.id)
             .bind(greeting.greeting_type.to_string())
@@ -7760,10 +7774,48 @@ impl VoicemailStore for PostgresStorage {
             .bind(greeting.is_active)
             .bind(greeting_created_at)
             .bind(expires_at)
+            .bind(greeting.made_from.as_deref())
             .execute(self.writes())
             .await?;
         }
 
+        Ok(())
+    }
+
+    async fn set_greeting(
+        &self,
+        mailbox_id: &str,
+        greeting_type: fcp_core::GreetingType,
+        greeting: Option<fcp_core::VoicemailGreeting>,
+    ) -> Result<()> {
+        let mut tx = self.writes().begin().await?;
+        sqlx::query("DELETE FROM voicemail_greetings WHERE mailbox_id = $1 AND greeting_type = $2")
+            .bind(mailbox_id)
+            .bind(greeting_type.to_string())
+            .execute(&mut *tx)
+            .await?;
+        if let Some(greeting) = greeting {
+            sqlx::query(
+                "INSERT INTO voicemail_greetings
+                 (mailbox_id, greeting_type, audio_path, is_active, created_at, expires_at, made_from)
+                 SELECT $1, $2, $3, $4, $5, $6, $7
+                  WHERE EXISTS (SELECT 1 FROM voicemail_mailboxes WHERE id = $1)",
+            )
+            .bind(mailbox_id)
+            .bind(greeting.greeting_type.to_string())
+            .bind(greeting.audio_path.to_string_lossy().as_ref())
+            .bind(greeting.is_active)
+            .bind(system_time_to_datetime(greeting.created_at))
+            .bind(greeting.expires_at.map(system_time_to_datetime))
+            .bind(greeting.made_from.as_deref())
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query("UPDATE voicemail_mailboxes SET updated_at = NOW() WHERE id = $1")
+            .bind(mailbox_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -7887,7 +7939,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    retention_days, created_at, updated_at, ship_seq
+                    retention_days, flow_id, greeting_choice, greeting_name, created_at, updated_at, ship_seq
              FROM voicemail_mailboxes
              WHERE ship_seq > $1 ORDER BY ship_seq LIMIT $2",
         )

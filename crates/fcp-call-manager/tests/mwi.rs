@@ -57,6 +57,7 @@ prompts_dir = "{dir}/prompts"
 tts_cache_dir = "{dir}/tts-cache"
 recording_dir = "{dir}/recordings"
 voicemail_recordings_dir = "{dir}/voicemail"
+voicemail_greetings_dir = "{dir}/greetings"
 
 [logging]
 level = "info"
@@ -411,6 +412,109 @@ async fn the_voicemail_menu_opens_the_callers_mailbox_and_puts_the_lamp_out() {
     if out.is_none() {
         let logs = service.kill().await;
         panic!("the lamp was not put out\n{logs}");
+    }
+    let _ = call.hangup().await;
+    service.stop().await;
+    db.drop_db().await;
+}
+
+/// `*98`'s mailbox options (#343): 0 from the menu, 4 records the caller's
+/// name after the tone — heard back, kept on a 1, a greeting of the
+/// mailbox's in the greetings directory — and 3 then 2 chooses the
+/// greeting with their name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_voicemail_menu_records_a_name_and_chooses_the_greeting() {
+    let (Some(db), Some(redis)) = (TestDatabase::create().await, private_redis_url()) else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL or FCP_TEST_REDIS_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (service, sip) = node(db.url(), &redis, dir.path()).await;
+
+    let bob = seed.user("bob", "Bob-pw-2026!", "1002").await;
+    let storage = seed.storage();
+    let row = storage
+        .get_user_in_tenant("bob", &seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let number = fcp_core::PhoneNumber::new("+15125550303".into(), seed.tenant_id).unwrap();
+    let binding = fcp_core::LineBinding::new(
+        number.id,
+        Some(row.id),
+        fcp_core::BindingType::User,
+        seed.tenant_id,
+    );
+    let mailbox = fcp_core::VoicemailMailbox::new(
+        seed.tenant_id,
+        row.id,
+        binding.id,
+        "bob".into(),
+        "5937".into(),
+    );
+    let mailbox_id = mailbox.id.to_string();
+    storage.put_phone_number(number).await.unwrap();
+    storage.put_line_binding(binding).await.unwrap();
+    storage.put_mailbox(mailbox).await.unwrap();
+
+    let phone = Phone::new(&bob.username, &bob.password, REALM, sip)
+        .await
+        .unwrap();
+    assert_eq!(phone.register().await.unwrap(), 200);
+    let call = phone.call("*98").await.unwrap();
+    call.answered(SOON).await.expect("voicemail access answers");
+    key(&call, "5937#").await;
+    key(&call, "0").await;
+    key(&call, "4").await;
+    // The tone, then the name, then pound.
+    if !call.media().heard(1000, Duration::from_secs(10)).await {
+        let logs = service.kill().await;
+        panic!("no tone before the recording\n{logs}");
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    call.media().play_tone(600.0, 1500);
+    tokio::time::sleep(Duration::from_millis(1700)).await;
+    call.media().send_dtmf('#');
+    // Heard back, then kept.
+    if !call.media().heard(600, Duration::from_secs(10)).await {
+        let logs = service.kill().await;
+        panic!("the name was not played back\n{logs}");
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    call.media().send_dtmf('1');
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let name = loop {
+        let mailbox = storage.get_mailbox(&mailbox_id).await.unwrap().unwrap();
+        if let Some(name) = mailbox.greeting(fcp_core::GreetingType::Name) {
+            break name.clone();
+        }
+        if tokio::time::Instant::now() > deadline {
+            let logs = service.kill().await;
+            panic!("the name was not kept\n{logs}");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert!(name
+        .audio_path
+        .starts_with(dir.path().join("greetings").join(&mailbox_id)));
+    assert!(name.audio_path.exists(), "{}", name.audio_path.display());
+
+    // The greeting with their name.
+    key(&call, "3").await;
+    key(&call, "2").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let mailbox = storage.get_mailbox(&mailbox_id).await.unwrap().unwrap();
+        if mailbox.greeting_choice == Some(fcp_core::GreetingChoice::Personalized) {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            let logs = service.kill().await;
+            panic!("the greeting was not chosen\n{logs}");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
     let _ = call.hangup().await;
     service.stop().await;

@@ -33,7 +33,10 @@ class ProfileResponse:
             directory_listed (bool): Listed in the tenant's directory for its users.
             may_change_directory_listing (bool): The tenant lets its users take themselves out of the directory, or
                 put themselves back (`directory_listed` on `PUT /me/profile`).
-            display_name (None | str | Unset):
+            display_name (None | str | Unset): The name the user is shown by: their display name, else their first
+                and last name.
+            first_name (None | str | Unset):
+            last_name (None | str | Unset):
             email (None | str | Unset):
             phone_number (None | str | Unset):
             extension (None | str | Unset):
@@ -50,6 +53,8 @@ class ProfileResponse:
     directory_listed: bool
     may_change_directory_listing: bool
     display_name: None | str | Unset = UNSET
+    first_name: None | str | Unset = UNSET
+    last_name: None | str | Unset = UNSET
     email: None | str | Unset = UNSET
     phone_number: None | str | Unset = UNSET
     extension: None | str | Unset = UNSET
@@ -82,6 +87,18 @@ class ProfileResponse:
             display_name = UNSET
         else:
             display_name = self.display_name
+
+        first_name: None | str | Unset
+        if isinstance(self.first_name, Unset):
+            first_name = UNSET
+        else:
+            first_name = self.first_name
+
+        last_name: None | str | Unset
+        if isinstance(self.last_name, Unset):
+            last_name = UNSET
+        else:
+            last_name = self.last_name
 
         email: None | str | Unset
         if isinstance(self.email, Unset):
@@ -133,6 +150,10 @@ class ProfileResponse:
         })
         if display_name is not UNSET:
             field_dict["display_name"] = display_name
+        if first_name is not UNSET:
+            field_dict["first_name"] = first_name
+        if last_name is not UNSET:
+            field_dict["last_name"] = last_name
         if email is not UNSET:
             field_dict["email"] = email
         if phone_number is not UNSET:
@@ -175,6 +196,26 @@ class ProfileResponse:
             return cast(None | str | Unset, data)
 
         display_name = _parse_display_name(d.pop("display_name", UNSET))
+
+
+        def _parse_first_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        first_name = _parse_first_name(d.pop("first_name", UNSET))
+
+
+        def _parse_last_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        last_name = _parse_last_name(d.pop("last_name", UNSET))
 
 
         def _parse_email(data: object) -> None | str | Unset:
@@ -246,6 +287,8 @@ class ProfileResponse:
             directory_listed=directory_listed,
             may_change_directory_listing=may_change_directory_listing,
             display_name=display_name,
+            first_name=first_name,
+            last_name=last_name,
             email=email,
             phone_number=phone_number,
             extension=extension,

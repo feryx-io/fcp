@@ -36,7 +36,9 @@ class CreateUserRequest:
 
                 When set, this becomes the user's SIP digest password and is exposed by
                 provisioning as `${sip_password}` for vendors that cannot use HA1.
-            display_name (None | str | Unset):
+            display_name (None | str | Unset): Left out with a first and last name, the user reads as the two.
+            first_name (None | str | Unset):
+            last_name (None | str | Unset):
             tenant_id (str | Unset): A TenantId: `tenant-<uuid>`, or the bare UUID
             enabled (bool | Unset):
             role (None | str | Unset):
@@ -64,6 +66,8 @@ class CreateUserRequest:
     password: None | str | Unset = UNSET
     sip_provisioning_password: None | str | Unset = UNSET
     display_name: None | str | Unset = UNSET
+    first_name: None | str | Unset = UNSET
+    last_name: None | str | Unset = UNSET
     tenant_id: str | Unset = UNSET
     enabled: bool | Unset = UNSET
     role: None | str | Unset = UNSET
@@ -111,6 +115,18 @@ class CreateUserRequest:
             display_name = UNSET
         else:
             display_name = self.display_name
+
+        first_name: None | str | Unset
+        if isinstance(self.first_name, Unset):
+            first_name = UNSET
+        else:
+            first_name = self.first_name
+
+        last_name: None | str | Unset
+        if isinstance(self.last_name, Unset):
+            last_name = UNSET
+        else:
+            last_name = self.last_name
 
         tenant_id = self.tenant_id
 
@@ -230,6 +246,10 @@ class CreateUserRequest:
             field_dict["sip_provisioning_password"] = sip_provisioning_password
         if display_name is not UNSET:
             field_dict["display_name"] = display_name
+        if first_name is not UNSET:
+            field_dict["first_name"] = first_name
+        if last_name is not UNSET:
+            field_dict["last_name"] = last_name
         if tenant_id is not UNSET:
             field_dict["tenant_id"] = tenant_id
         if enabled is not UNSET:
@@ -309,6 +329,26 @@ class CreateUserRequest:
             return cast(None | str | Unset, data)
 
         display_name = _parse_display_name(d.pop("display_name", UNSET))
+
+
+        def _parse_first_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        first_name = _parse_first_name(d.pop("first_name", UNSET))
+
+
+        def _parse_last_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        last_name = _parse_last_name(d.pop("last_name", UNSET))
 
 
         tenant_id = d.pop("tenant_id", UNSET)
@@ -492,6 +532,8 @@ class CreateUserRequest:
             password=password,
             sip_provisioning_password=sip_provisioning_password,
             display_name=display_name,
+            first_name=first_name,
+            last_name=last_name,
             tenant_id=tenant_id,
             enabled=enabled,
             role=role,

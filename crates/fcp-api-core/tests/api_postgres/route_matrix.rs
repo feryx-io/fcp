@@ -715,7 +715,8 @@ async fn seed_tenant_b(app: &App) -> Seeded {
     ids.insert("/presence", aor);
 
     // What would show B's data: its ids and names, not the platform's
-    // firmware image or the made-up names filling a parameter.
+    // firmware image or the made-up names filling a parameter — nor a
+    // parking slot's three digits, which any timestamp may contain.
     let mut secrets: BTreeSet<String> = ids
         .iter()
         .filter(|(k, _)| {
@@ -731,6 +732,7 @@ async fn seed_tenant_b(app: &App) -> Seeded {
                     | "/conferences/live/:room/video/spotlight"
                     | "/conferences/live/:room/participants"
                     | "/conferences/live/:room/participants/:pid/video"
+                    | "/parking/calls"
             )
         })
         .map(|(_, v)| v.clone())

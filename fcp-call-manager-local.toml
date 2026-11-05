@@ -30,6 +30,8 @@ api_token = "svc-local-secret"
 # 20000-21999: the other local services take 22000-36000 (docs/SINGLE-NODE-SETUP.md).
 rtp_port_start = 20000
 rtp_port_end = 21999
+# The voicemail server's and the admin's greetings, which callers hear.
+voicemail_greetings_dir = "/tmp/fcp/voicemail/greetings"
 tts_remote_url = "http://localhost:8093"
 tts_remote_token = "tts-local-secret"
 tts_voice = "af_heart"

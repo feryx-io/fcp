@@ -280,8 +280,17 @@ pub struct User {
     #[serde(default)]
     pub scim_external_id: Option<String>,
 
-    /// Display name (optional)
+    /// Display name (optional); unset, the user reads as their first and
+    /// last name (`User::shown_name`).
     pub display_name: Option<String>,
+
+    /// Given name (SCIM `name.givenName`, OIDC `given_name`).
+    #[serde(default)]
+    pub first_name: Option<String>,
+
+    /// Family name (SCIM `name.familyName`, OIDC `family_name`).
+    #[serde(default)]
+    pub last_name: Option<String>,
 
     /// Listed in the tenant's directory (`/me/directory`), as every user is
     /// unless an administrator, or the user where the tenant lets them,
@@ -572,6 +581,31 @@ impl User {
     /// lookup and every SIP address built for the user uses it.
     pub fn sip_name(&self) -> &str {
         self.sip_username.as_deref().unwrap_or(&self.username)
+    }
+
+    /// The user's first and last name, when they have both.
+    pub fn full_name(&self) -> Option<String> {
+        let first = self.first_name.as_deref().map(str::trim).unwrap_or("");
+        let last = self.last_name.as_deref().map(str::trim).unwrap_or("");
+        (!first.is_empty() && !last.is_empty()).then(|| format!("{first} {last}"))
+    }
+
+    /// The name the user is shown by: their display name, else their
+    /// first and last name, else whichever of the two they have (#343).
+    pub fn shown_name(&self) -> Option<String> {
+        if let Some(name) = self.display_name.as_deref().map(str::trim) {
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+        self.full_name().or_else(|| {
+            [&self.first_name, &self.last_name]
+                .into_iter()
+                .flatten()
+                .map(|n| n.trim())
+                .find(|n| !n.is_empty())
+                .map(str::to_string)
+        })
     }
 
     /// Whether the user is deleted and waiting for their purge.
@@ -2251,6 +2285,26 @@ pub trait VoicemailStore: Send + Sync {
 
     /// Create or update a mailbox
     async fn put_mailbox(&self, mailbox: crate::VoicemailMailbox) -> Result<()>;
+
+    /// Replace the mailbox's greeting of `greeting_type` alone — `None`
+    /// takes it off — leaving the rest of the mailbox as it is, so a
+    /// greeting made in the background never undoes a change made
+    /// meanwhile (#343).
+    async fn set_greeting(
+        &self,
+        mailbox_id: &str,
+        greeting_type: crate::GreetingType,
+        greeting: Option<crate::VoicemailGreeting>,
+    ) -> Result<()> {
+        let Some(mut mailbox) = self.get_mailbox(mailbox_id).await? else {
+            return Ok(());
+        };
+        mailbox
+            .greetings
+            .retain(|g| g.greeting_type != greeting_type);
+        mailbox.greetings.extend(greeting);
+        self.put_mailbox(mailbox).await
+    }
 
     /// Delete a mailbox
     async fn delete_mailbox(&self, id: &str) -> Result<()>;
@@ -5045,6 +5099,17 @@ impl VoicemailStore for DynStorage {
         self.voicemail_store.put_mailbox(mailbox).await
     }
 
+    async fn set_greeting(
+        &self,
+        mailbox_id: &str,
+        greeting_type: crate::GreetingType,
+        greeting: Option<crate::VoicemailGreeting>,
+    ) -> Result<()> {
+        self.voicemail_store
+            .set_greeting(mailbox_id, greeting_type, greeting)
+            .await
+    }
+
     async fn delete_mailbox(&self, id: &str) -> Result<()> {
         self.voicemail_store.delete_mailbox(id).await
     }
@@ -5724,6 +5789,8 @@ mod tests {
             sip_provisioning_password: None,
             display_name: Some("Alice".to_string()),
             directory_listed: true,
+            first_name: None,
+            last_name: None,
             tenant_id: crate::TenantId::nil(), // Default tenant for test
             enabled: true,
             role: crate::UserRole::EndUser,

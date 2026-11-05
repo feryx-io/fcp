@@ -188,6 +188,14 @@ pub struct ClaimMapping {
     pub email: String,
     #[serde(default = "default_name_claim")]
     pub display_name: String,
+    /// The first name (#343); the well-known given-name claims and SAML
+    /// attributes are read when this one is missing.
+    #[serde(default = "default_first_name_claim")]
+    pub first_name: String,
+    /// The last name; the well-known family-name claims and SAML
+    /// attributes are read when this one is missing.
+    #[serde(default = "default_last_name_claim")]
+    pub last_name: String,
     /// A list of strings: the user's groups (Entra ID sends ids, Okta
     /// and Google Workspace names, when asked to).
     #[serde(default = "default_groups_claim")]
@@ -203,6 +211,33 @@ fn default_email_claim() -> String {
 fn default_name_claim() -> String {
     "name".to_string()
 }
+fn default_first_name_claim() -> String {
+    "given_name".to_string()
+}
+fn default_last_name_claim() -> String {
+    "family_name".to_string()
+}
+
+/// Where else a provider says a first name: OIDC's claim, SAML's
+/// attribute by URI and by friendly name.
+pub const FIRST_NAME_CLAIMS: &[&str] = &[
+    "given_name",
+    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname",
+    "urn:oid:2.5.4.42",
+    "givenName",
+    "firstName",
+];
+
+/// Where else a provider says a last name.
+pub const LAST_NAME_CLAIMS: &[&str] = &[
+    "family_name",
+    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname",
+    "urn:oid:2.5.4.4",
+    "sn",
+    "surname",
+    "lastName",
+];
+
 fn default_groups_claim() -> String {
     "groups".to_string()
 }
@@ -213,6 +248,8 @@ impl Default for ClaimMapping {
             username: default_username_claim(),
             email: default_email_claim(),
             display_name: default_name_claim(),
+            first_name: default_first_name_claim(),
+            last_name: default_last_name_claim(),
             groups: default_groups_claim(),
         }
     }
