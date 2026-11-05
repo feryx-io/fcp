@@ -40,3 +40,39 @@ test("a tenant's administrator sees the platform's actions on their tenant, unna
   await expect(page.getByRole('row').filter({ hasText: 'static_token' })).toHaveCount(0)
   expect(troubles, JSON.stringify(troubles, null, 2)).toEqual([])
 })
+
+// #342: the log pages by cursor, takes an Until on deletions and exports
+// them, and shows a platform administrator the configuration's changes
+// across services; a tenant's administrator has no such tab.
+test('the audit log pages, exports deletions and shows configuration changes', async ({ page, api, troubles }) => {
+  const section = unique('ui-audit-section')
+  const put = await api.put(`/api/v1/config/media/${section}`, {
+    data: { value: { enabled: true }, updated_by: 'ui-audit' },
+  })
+  expect(put.ok(), await put.text()).toBeTruthy()
+
+  await signIn(page, admin())
+  await page.goto('/admin/audit')
+  await settled(page)
+  await expect(page.getByRole('columnheader', { name: 'Source IP' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Deletions', exact: true }).click()
+  await settled(page)
+  await expect(page.getByLabel('Until')).toBeVisible()
+  const download = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'CSV' }).click()
+  expect((await download).suggestedFilename()).toBe('deletion-log.csv')
+
+  await page.getByRole('button', { name: 'Config changes' }).click()
+  await settled(page)
+  await page.getByPlaceholder('auth').fill(section)
+  const row = page.getByRole('row').filter({ hasText: section })
+  await expect(row).toContainText('Media Server')
+  await expect(row).toContainText('ui-audit')
+  expect(troubles, JSON.stringify(troubles, null, 2)).toEqual([])
+
+  await signIn(page, tenantAdmin())
+  await page.goto('/admin/audit')
+  await settled(page)
+  await expect(page.getByRole('button', { name: 'Config changes' })).toHaveCount(0)
+})

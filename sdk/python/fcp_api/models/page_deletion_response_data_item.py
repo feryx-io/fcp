@@ -33,7 +33,9 @@ class PageDeletionResponseDataItem:
             deleted_at (datetime.datetime):
             tenant_id (None | str | Unset):
             detail (Any | Unset):
-            request_id (None | str | Unset):
+            request_id (None | str | Unset): The subject request the deletion served.
+            api_request_id (None | str | Unset): The API request that made it, as its audit row names it.
+            via (None | str | Unset): How the actor reached it: the phone a mailbox's owner called from.
      """
 
     id: int
@@ -45,6 +47,8 @@ class PageDeletionResponseDataItem:
     tenant_id: None | str | Unset = UNSET
     detail: Any | Unset = UNSET
     request_id: None | str | Unset = UNSET
+    api_request_id: None | str | Unset = UNSET
+    via: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -78,6 +82,18 @@ class PageDeletionResponseDataItem:
         else:
             request_id = self.request_id
 
+        api_request_id: None | str | Unset
+        if isinstance(self.api_request_id, Unset):
+            api_request_id = UNSET
+        else:
+            api_request_id = self.api_request_id
+
+        via: None | str | Unset
+        if isinstance(self.via, Unset):
+            via = UNSET
+        else:
+            via = self.via
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -95,6 +111,10 @@ class PageDeletionResponseDataItem:
             field_dict["detail"] = detail
         if request_id is not UNSET:
             field_dict["request_id"] = request_id
+        if api_request_id is not UNSET:
+            field_dict["api_request_id"] = api_request_id
+        if via is not UNSET:
+            field_dict["via"] = via
 
         return field_dict
 
@@ -140,6 +160,26 @@ class PageDeletionResponseDataItem:
         request_id = _parse_request_id(d.pop("request_id", UNSET))
 
 
+        def _parse_api_request_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        api_request_id = _parse_api_request_id(d.pop("api_request_id", UNSET))
+
+
+        def _parse_via(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        via = _parse_via(d.pop("via", UNSET))
+
+
         page_deletion_response_data_item = cls(
             id=id,
             class_=class_,
@@ -150,6 +190,8 @@ class PageDeletionResponseDataItem:
             tenant_id=tenant_id,
             detail=detail,
             request_id=request_id,
+            api_request_id=api_request_id,
+            via=via,
         )
 
 

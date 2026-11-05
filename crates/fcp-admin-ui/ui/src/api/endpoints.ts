@@ -842,16 +842,18 @@ function query(params?: object): string {
 }
 
 export const auditLog = {
-  // The newest `limit` entries (the log grows without bound: one page).
+  /** One page, newest first; `next_cursor` for the page after it. */
   list: (params?: AuditQueryParams) =>
-    apiClient.getPage<AuditEntry>(`/audit-log${query(params)}`).then((p) => p.data),
+    apiClient.getPage<AuditEntry>(`/audit-log${query(params)}`),
   /** Every entry the filters match, as a CSV or JSON Lines file: an object URL. */
-  exportUrl: (format: 'csv' | 'jsonl', params?: Omit<AuditQueryParams, 'limit'>) =>
+  exportUrl: (format: 'csv' | 'jsonl', params?: Omit<AuditQueryParams, 'limit' | 'cursor'>) =>
     apiClient.fetchBlobUrl(`/audit-log/export${query({ ...params, format })}`),
   deletions: (params?: DeletionQueryParams) =>
-    apiClient
-      .getPage<DeletionEntry>(`/compliance/deletions${query(params)}`)
-      .then((p) => p.data),
+    apiClient.getPage<DeletionEntry>(`/compliance/deletions${query(params)}`),
+  deletionsExportUrl: (
+    format: 'csv' | 'jsonl',
+    params?: Omit<DeletionQueryParams, 'limit' | 'cursor'>,
+  ) => apiClient.fetchBlobUrl(`/compliance/deletions/export${query({ ...params, format })}`),
 }
 
 // Emergency calling (E911), docs/E911.md
@@ -1026,6 +1028,9 @@ export const config = {
       .getPage<ConfigAuditEntry>(`/config/audit?${params.toString()}`)
       .then((p) => p.data)
   },
+  /** One page of the configuration's changes: every service's without `service`. */
+  auditPage: (params: { service?: string; section?: string; limit?: number; cursor?: string }) =>
+    apiClient.getPage<ConfigAuditEntry>(`/config/audit${query(params)}`),
 }
 
 // Self-service (end-user portal)

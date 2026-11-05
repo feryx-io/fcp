@@ -3059,7 +3059,7 @@ export interface paths {
         /**
          * `GET /audit-log/export`: every event the listing's filters match,
          *     newest first, streamed page by page as CSV or JSON Lines (D8, finding
-         *     36). Who may see what is the listing's.
+         *     36). Who may see what is the listing's; the export is itself audited.
          */
         get: operations["compliance_export_audit_log"];
         put?: never;
@@ -3084,6 +3084,27 @@ export interface paths {
          *     selected one.
          */
         get: operations["compliance_list_deletions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/compliance/deletions/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /compliance/deletions/export`: every deletion the listing's
+         *     filters match, newest first, as CSV or JSON Lines (#342). Who may see
+         *     what is the listing's; the export is itself audited.
+         */
+        get: operations["compliance_export_deletions"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4321,7 +4342,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /api/v1/config/audit -- audit log */
+        /**
+         * GET /api/v1/config/audit -- the configuration's changes, newest first:
+         *     one service's, or every service's without `service` (#342).
+         */
         get: operations["config_get_audit_log"];
         put?: never;
         post?: never;
@@ -6441,6 +6465,8 @@ export interface components {
             action: string;
             detail?: unknown;
             source_ip?: string | null;
+            /** @description The request's `X-Request-Id`; the deletions it made name it too. */
+            api_request_id?: string | null;
             /** Format: date-time */
             occurred_at: string;
         };
@@ -7794,7 +7820,12 @@ export interface components {
             detail?: unknown;
             cause: string;
             actor: string;
+            /** @description The subject request the deletion served. */
             request_id?: string | null;
+            /** @description The API request that made it, as its audit row names it. */
+            api_request_id?: string | null;
+            /** @description How the actor reached it: the phone a mailbox's owner called from. */
+            via?: string | null;
             /** Format: date-time */
             deleted_at: string;
         };
@@ -9308,6 +9339,8 @@ export interface components {
                 action: string;
                 detail?: unknown;
                 source_ip?: string | null;
+                /** @description The request's `X-Request-Id`; the deletions it made name it too. */
+                api_request_id?: string | null;
                 /** Format: date-time */
                 occurred_at: string;
             }[];
@@ -9596,7 +9629,12 @@ export interface components {
                 detail?: unknown;
                 cause: string;
                 actor: string;
+                /** @description The subject request the deletion served. */
                 request_id?: string | null;
+                /** @description The API request that made it, as its audit row names it. */
+                api_request_id?: string | null;
+                /** @description How the actor reached it: the phone a mailbox's owner called from. */
+                via?: string | null;
                 /** Format: date-time */
                 deleted_at: string;
             }[];
@@ -21155,6 +21193,11 @@ export interface operations {
                 /** @description Unix seconds: only events before it. */
                 until?: number;
                 /**
+                 * @description Only the request with this `X-Request-Id`: what a deletion's
+                 *     `api_request_id` names.
+                 */
+                api_request_id?: string;
+                /**
                  * @description A platform administrator's choice of rows: `all`, `platform` (the
                  *     platform's own actions, without a tenant) or a tenant's id. Without
                  *     it, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else
@@ -21201,6 +21244,11 @@ export interface operations {
                 /** @description Unix seconds: only events before it. */
                 until?: number;
                 /**
+                 * @description Only the request with this `X-Request-Id`: what a deletion's
+                 *     `api_request_id` names.
+                 */
+                api_request_id?: string;
+                /**
                  * @description A platform administrator's choice of rows: `all`, `platform` (the
                  *     platform's own actions, without a tenant) or a tenant's id. Without
                  *     it, the tenant picked (`x-fcp-tenant-id`), else all. Anyone else
@@ -21246,8 +21294,12 @@ export interface operations {
                 class?: string;
                 /** @description Unix seconds. */
                 since?: number;
+                /** @description Unix seconds: only deletions before it. */
+                until?: number;
                 /** @description What one subject request deleted. */
                 request_id?: string;
+                /** @description What one API request deleted: its audit row's `api_request_id`. */
+                api_request_id?: string;
                 limit?: number;
                 cursor?: string;
             };
@@ -21264,6 +21316,51 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_DeletionResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    compliance_export_deletions: {
+        parameters: {
+            query?: {
+                /**
+                 * @description `cdr`, `call_recording`, `conference_recording`, `voicemail`,
+                 *     `sip_trace`, `flow_trace`, `audit_event`, `orphan_file`.
+                 */
+                class?: string;
+                /** @description Unix seconds. */
+                since?: number;
+                /** @description Unix seconds: only deletions before it. */
+                until?: number;
+                /** @description What one subject request deleted. */
+                request_id?: string;
+                /** @description What one API request deleted: its audit row's `api_request_id`. */
+                api_request_id?: string;
+                /** @description `csv` (the default) or `jsonl`. */
+                format?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The deletions, streamed as CSV or JSON Lines */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
                 };
             };
             /** @description An error */
@@ -24407,7 +24504,9 @@ export interface operations {
     config_get_audit_log: {
         parameters: {
             query?: {
+                /** @description One service's changes; every service's without it. */
                 service?: string;
+                /** @description One section's changes. */
                 section?: string;
                 limit?: number;
                 cursor?: string;

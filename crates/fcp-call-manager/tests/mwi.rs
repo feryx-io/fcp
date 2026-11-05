@@ -375,6 +375,32 @@ async fn the_voicemail_menu_opens_the_callers_mailbox_and_puts_the_lamp_out() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    // The deletion log names the user whose PIN opened the mailbox, and
+    // the phone they called from (#342), not the mailbox.
+    let compliance =
+        fcp_storage_postgres::compliance::PostgresComplianceStore::new(storage.pool().clone());
+    let logged = fcp_core::compliance::ComplianceStore::list_deletions(
+        &compliance,
+        &fcp_core::compliance::DeletionQuery {
+            tenant_id: Some(seed.tenant_id),
+            class: Some("voicemail".into()),
+            limit: 10,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert_eq!(
+        (logged[0].cause.as_str(), logged[0].actor.as_str()),
+        ("manual", "alice"),
+        "{logged:?}"
+    );
+    let via = logged[0].via.as_deref().unwrap_or_default();
+    assert!(
+        via.starts_with("phone sip:alice@") && via.ends_with(&format!(", mailbox {mailbox_id}")),
+        "{via}"
+    );
     let mut out = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     while out.is_none() && tokio::time::Instant::now() < deadline {

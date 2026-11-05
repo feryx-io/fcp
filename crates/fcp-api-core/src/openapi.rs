@@ -228,6 +228,7 @@ use utoipa::{Modify, OpenApi};
         crate::v1::compliance::list_audit_log,
         crate::v1::compliance::export_audit_log,
         crate::v1::compliance::list_deletions,
+        crate::v1::compliance::export_deletions,
         crate::v1::compliance::list_holds,
         crate::v1::compliance::place_hold,
         crate::v1::compliance::get_hold,

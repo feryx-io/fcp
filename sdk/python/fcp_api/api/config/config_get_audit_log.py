@@ -86,7 +86,8 @@ def sync_detailed(
     cursor: str | Unset = UNSET,
 
 ) -> Response[ErrorResponse | PageAuditEntryResponse]:
-    """ GET /api/v1/config/audit -- audit log
+    """ GET /api/v1/config/audit -- the configuration's changes, newest first:
+    one service's, or every service's without `service` (#342).
 
     Args:
         service (str | Unset):
@@ -126,7 +127,8 @@ def sync(
     cursor: str | Unset = UNSET,
 
 ) -> ErrorResponse | PageAuditEntryResponse | None:
-    """ GET /api/v1/config/audit -- audit log
+    """ GET /api/v1/config/audit -- the configuration's changes, newest first:
+    one service's, or every service's without `service` (#342).
 
     Args:
         service (str | Unset):
@@ -161,7 +163,8 @@ async def asyncio_detailed(
     cursor: str | Unset = UNSET,
 
 ) -> Response[ErrorResponse | PageAuditEntryResponse]:
-    """ GET /api/v1/config/audit -- audit log
+    """ GET /api/v1/config/audit -- the configuration's changes, newest first:
+    one service's, or every service's without `service` (#342).
 
     Args:
         service (str | Unset):
@@ -201,7 +204,8 @@ async def asyncio(
     cursor: str | Unset = UNSET,
 
 ) -> ErrorResponse | PageAuditEntryResponse | None:
-    """ GET /api/v1/config/audit -- audit log
+    """ GET /api/v1/config/audit -- the configuration's changes, newest first:
+    one service's, or every service's without `service` (#342).
 
     Args:
         service (str | Unset):

@@ -20,6 +20,7 @@ def _get_kwargs(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     tenant: str | Unset = UNSET,
     format_: str | Unset = UNSET,
 
@@ -37,6 +38,8 @@ def _get_kwargs(
     params["since"] = since
 
     params["until"] = until
+
+    params["api_request_id"] = api_request_id
 
     params["tenant"] = tenant
 
@@ -86,19 +89,21 @@ def sync_detailed(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     tenant: str | Unset = UNSET,
     format_: str | Unset = UNSET,
 
 ) -> Response[ErrorResponse | str]:
     """ `GET /audit-log/export`: every event the listing's filters match,
     newest first, streamed page by page as CSV or JSON Lines (D8, finding
-    36). Who may see what is the listing's.
+    36). Who may see what is the listing's; the export is itself audited.
 
     Args:
         actor (str | Unset):
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        api_request_id (str | Unset):
         tenant (str | Unset):
         format_ (str | Unset):
 
@@ -116,6 +121,7 @@ def sync_detailed(
 action=action,
 since=since,
 until=until,
+api_request_id=api_request_id,
 tenant=tenant,
 format_=format_,
 
@@ -134,19 +140,21 @@ def sync(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     tenant: str | Unset = UNSET,
     format_: str | Unset = UNSET,
 
 ) -> ErrorResponse | str | None:
     """ `GET /audit-log/export`: every event the listing's filters match,
     newest first, streamed page by page as CSV or JSON Lines (D8, finding
-    36). Who may see what is the listing's.
+    36). Who may see what is the listing's; the export is itself audited.
 
     Args:
         actor (str | Unset):
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        api_request_id (str | Unset):
         tenant (str | Unset):
         format_ (str | Unset):
 
@@ -165,6 +173,7 @@ actor=actor,
 action=action,
 since=since,
 until=until,
+api_request_id=api_request_id,
 tenant=tenant,
 format_=format_,
 
@@ -177,19 +186,21 @@ async def asyncio_detailed(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     tenant: str | Unset = UNSET,
     format_: str | Unset = UNSET,
 
 ) -> Response[ErrorResponse | str]:
     """ `GET /audit-log/export`: every event the listing's filters match,
     newest first, streamed page by page as CSV or JSON Lines (D8, finding
-    36). Who may see what is the listing's.
+    36). Who may see what is the listing's; the export is itself audited.
 
     Args:
         actor (str | Unset):
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        api_request_id (str | Unset):
         tenant (str | Unset):
         format_ (str | Unset):
 
@@ -207,6 +218,7 @@ async def asyncio_detailed(
 action=action,
 since=since,
 until=until,
+api_request_id=api_request_id,
 tenant=tenant,
 format_=format_,
 
@@ -225,19 +237,21 @@ async def asyncio(
     action: str | Unset = UNSET,
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
+    api_request_id: str | Unset = UNSET,
     tenant: str | Unset = UNSET,
     format_: str | Unset = UNSET,
 
 ) -> ErrorResponse | str | None:
     """ `GET /audit-log/export`: every event the listing's filters match,
     newest first, streamed page by page as CSV or JSON Lines (D8, finding
-    36). Who may see what is the listing's.
+    36). Who may see what is the listing's; the export is itself audited.
 
     Args:
         actor (str | Unset):
         action (str | Unset):
         since (int | Unset):
         until (int | Unset):
+        api_request_id (str | Unset):
         tenant (str | Unset):
         format_ (str | Unset):
 
@@ -256,6 +270,7 @@ actor=actor,
 action=action,
 since=since,
 until=until,
+api_request_id=api_request_id,
 tenant=tenant,
 format_=format_,
 

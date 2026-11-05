@@ -235,7 +235,9 @@ async fn deletions_are_logged_attributed_and_their_files_reaped_within_their_ten
     let (number, mb) = mailbox(&db, a, "+14155550100").await;
     let heard = message(&db, &mb, file(&root.path().join("vm/heard.wav"), 1), 1).await;
     deleting_as(
-        Deleter::new(DeletionCause::Manual, "alice"),
+        Deleter::new(DeletionCause::Manual, "alice")
+            .in_api_request(Some("req-heard".into()))
+            .via("phone sip:alice@a.example"),
         db.pg.delete_message(&heard.id),
     )
     .await
@@ -268,7 +270,7 @@ async fn deletions_are_logged_attributed_and_their_files_reaped_within_their_ten
     assert!(db.pg.get_message(&recent.id).await.unwrap().is_some());
     // The mailbox goes, and with it the message.
     deleting_as(
-        Deleter::new(DeletionCause::Manual, "bob"),
+        Deleter::new(DeletionCause::Manual, "bob").in_api_request(Some("req-mailbox".into())),
         db.pg.delete_mailbox(&mb.id),
     )
     .await
@@ -288,6 +290,50 @@ async fn deletions_are_logged_attributed_and_their_files_reaped_within_their_ten
     assert_eq!(
         (by_item(&heard.id).cause, by_item(&heard.id).actor),
         ("manual".into(), "alice".into())
+    );
+    // The request that deleted it and how (#342), a cascade's included.
+    assert_eq!(
+        by_item(&heard.id).api_request_id.as_deref(),
+        Some("req-heard")
+    );
+    assert_eq!(
+        by_item(&heard.id).via.as_deref(),
+        Some("phone sip:alice@a.example")
+    );
+    assert_eq!(
+        by_item(&recent.id).api_request_id.as_deref(),
+        Some("req-mailbox")
+    );
+    assert_eq!(by_item(&recent.id).via, None);
+    assert_eq!(by_item(&old.id).api_request_id, None);
+    let of_request = |api_request_id: &str, until: Option<SystemTime>| {
+        let compliance = db.compliance.clone();
+        let api_request_id = api_request_id.to_string();
+        async move {
+            compliance
+                .list_deletions(&DeletionQuery {
+                    tenant_id: Some(a),
+                    api_request_id: Some(api_request_id),
+                    until,
+                    limit: 10,
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|r| r.item)
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(of_request("req-heard", None).await, vec![heard.id.clone()]);
+    assert!(
+        of_request(
+            "req-heard",
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+        )
+        .await
+        .is_empty(),
+        "until filters"
     );
     assert_eq!(by_item(&old.id).cause, "retention");
     assert_eq!(by_item(&unattributed.id).cause, "unattributed");

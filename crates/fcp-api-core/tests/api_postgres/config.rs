@@ -107,6 +107,14 @@ async fn the_services_configuration_is_the_platforms() {
     );
     assert_eq!(changes[1]["old_value"], Value::Null, "{}", audit.text);
     assert_eq!(changes[1]["changed_by"], "ops");
+    // Without a service: every service's changes (#342), these among them.
+    let every = app.admin(Method::GET, "/api/v1/config/audit", None).await;
+    assert_eq!(every.status, StatusCode::OK, "{}", every.text);
+    let every = every.json.as_array().unwrap();
+    assert!(
+        every.iter().filter(|c| c["service"] == "media").count() >= 2,
+        "{every:?}"
+    );
 
     // Checked, not saved.
     for (value, valid) in [

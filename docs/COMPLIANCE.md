@@ -81,15 +81,24 @@ Since the compliance foundations (`docs/COMPLIANCE_FOLLOWUPS.md` §4, §7):
   Retention never walks a directory, so one tenant's window cannot reach
   another tenant's files. Mount the recording hosts' directories on the
   admin host at the paths they write under.
-- **The deletion log** (`GET /api/v1/compliance/deletions?class=&since=&request_id=&limit=`)
+- **The deletion log** (`GET /api/v1/compliance/deletions?class=&since=&until=&request_id=&api_request_id=&limit=`)
   has an entry for every deleted recording and voicemail message, and one
   per tenant per statement for records, traces and audit events: what,
   when, the cause (`retention`, `manual`, `cascade`, `node_sweep`,
   `upkeep`, `erasure`, `tenant_deletion`, or `unattributed` for a delete
   nothing named), the actor (a username, an API token's id,
-  `static_token`, `fcp-admin:<node>`, a conference node,
-  `phone:<mailbox>`) and, for an erasure or a tenant's deletion, the
-  request. It is written by the database in the transaction that deletes.
+  `static_token`, `fcp-admin:<node>`, a conference node), `via` (how the
+  actor reached it: for a message deleted from the voicemail menu, the
+  phone they called from and the mailbox — the actor is then the user whose
+  PIN opened it, `phone:<mailbox>` only when the owner cannot be read),
+  `api_request_id` (the API request that deleted it — its audit row's
+  `api_request_id`, so `?api_request_id=` lists what one request deleted)
+  and, for an erasure or a tenant's deletion, the request (`request_id`).
+  It is written by the database in the transaction that deletes.
+  `GET /api/v1/compliance/deletions/export` takes the same filters and
+  streams every entry they match as CSV
+  (`id,deleted_at,tenant_id,class,item,cause,actor,via,request_id,api_request_id,detail`)
+  or JSON Lines (`format=jsonl`), as the audit log's export does.
 - **Platform upkeep**, hourly after the tenants' runs: SIP and flow traces
   are given the tenant of their call's stored record; each mailbox's own
   `retention_days` is applied; messages users deleted are purged after
@@ -422,7 +431,13 @@ API's refusal on that tab. The deletion log is on the **Audit Log** page.
 ## Admin audit log
 
 A middleware inside the API's auth layer records every request that is not
-a `GET`/`HEAD`/`OPTIONS`, plus every CDR export, as an audit event:
+a `GET`/`HEAD`/`OPTIONS` as an audit event, and the reads that take data
+away or hear a call's content: every export (`…/export`: records, the audit
+and deletion logs), a subject export's bundle, a device capture's file, a
+recording's download, a voicemail message or greeting's audio read by an
+administrator (`/voicemail/messages/:id` carries the transcription), and a
+call's SIP messages. A person's reads of their own (`/me/…`) are not
+audited.
 
 | Field | Meaning |
 |---|---|
@@ -433,11 +448,12 @@ a `GET`/`HEAD`/`OPTIONS`, plus every CDR export, as an audit event:
 | `path`, `method`, `status` | The concrete request and how it ended (a 401 on `/auth/login` is a failed login) |
 | `source_ip` | From `X-Forwarded-For` / `X-Real-IP` when a proxy sets them |
 | `detail` | For a `DELETE`, the route's parameters: `{"params": {"id": "…"}}` |
+| `api_request_id` | The request's `X-Request-Id` (the API's own, or the caller's), on every response too: the deletions the request made carry it (rows written before v0.25.514 have none) |
 
 Writes are asynchronous and best-effort; the response is never delayed or
 failed by the audit log.
 
-`GET /api/v1/audit-log?actor=&action=&since=&until=&tenant=&limit=` lists
+`GET /api/v1/audit-log?actor=&action=&since=&until=&api_request_id=&tenant=&limit=` lists
 events, newest first (`since` and `until` in Unix seconds, `until`
 exclusive). A tenant's administrator sees every row of their tenant,
 including what a platform administrator did to it: such an actor (the
@@ -446,8 +462,12 @@ administrator` (`actor_kind` `platform`) without their tenant or address,
 and `tenant` is ignored. A platform administrator sees everything as it is:
 `tenant=all`, `tenant=platform` (only the platform's own rows) or a tenant's
 id; without `tenant`, the tenant picked with `x-fcp-tenant-id`, else all. The
-Audit Log page shows them a Tenant column and a Rows filter. The older
-`GET /config/audit` (configuration-store change history) is unchanged.
+Audit Log page shows them a Tenant column and a Rows filter.
+
+`GET /config/audit?service=&section=` is the configuration store's change
+history (old and new value, who, which version), newest first, the last
+500: one service's, or every service's without `service` (before
+v0.25.514, `_global`'s).
 
 Retention runs per tenant, so the platform's own rows (no tenant) are not
 deleted by any tenant's `audit_retention_days`. A subject export or erasure
@@ -456,12 +476,18 @@ administrator's actions on it.
 
 `GET /api/v1/audit-log/export` takes the same filters and returns every
 event they match, newest first, streamed as it is read: `text/csv` with a
-header line (`id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail,actor_tenant_id`,
+header line (`id,occurred_at,tenant_id,actor,actor_kind,method,path,status,action,source_ip,detail,actor_tenant_id,api_request_id`,
 `occurred_at` in RFC 3339, `detail` as JSON), or JSON Lines with
 `format=jsonl`, one listing entry per line. It needs `audit_view`, as the
-listing does, and is itself audited. The Audit Log page's **CSV** and
-**JSON Lines** buttons export what its filters match, not just the page
-shown.
+listing does, and is itself audited.
+
+The **Audit Log** page (`/admin/audit`) has three tabs. **Requests** and
+**Deletions** each take their filters (Since and Until among them), page
+through the log by its cursor, and export what the filters match — not just
+the page shown — with **CSV** and **JSON Lines**. A request's entry links
+to what it deleted, and a deletion's to the request that made it. **Config
+changes**, for a platform administrator only, is `GET /config/audit` by
+service and section, each change with the value it replaced.
 
 ## CDR export
 

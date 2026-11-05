@@ -2737,12 +2737,23 @@ impl FlowCallHandler {
             }
         };
 
+        // The phone the call came from: what a deletion made from this menu
+        // was made through, beside who opened the mailbox (#342).
+        let mut phone = String::from("phone");
         let tenant_id = match self
             .call_manager
             .as_ref()
             .and_then(|call_manager| call_manager.get_call(&call_id))
         {
-            Some(call) => call.tenant_id,
+            Some(call) => {
+                if !call.a_leg.remote_uri.is_empty() {
+                    phone.push_str(&format!(" {}", call.a_leg.remote_uri));
+                }
+                if let Some(contact) = call.a_leg.contact {
+                    phone.push_str(&format!(" at {contact}"));
+                }
+                call.tenant_id
+            }
             None => {
                 warn!(call_id = %call_id, "Call missing during voicemail access PIN verification");
                 let mut context_guard = context.write().await;
@@ -2756,6 +2767,8 @@ impl FlowCallHandler {
 
         // 2. PIN authentication loop
         let mut authenticated = false;
+        // The user whose PIN opened the mailbox: its owner.
+        let mut opened_by: Option<String> = None;
         for attempt in 1..=max_pin_attempts {
             // Play PIN prompt with barge-in — user can start typing PIN immediately
             let pin_digits = play_and_collect(
@@ -2791,16 +2804,16 @@ impl FlowCallHandler {
                             .mailbox_owner(&tenant_id, &resolved_id)
                             .await,
                     ) {
-                        let suspended =
+                        let owner =
                             fcp_core::CredentialStore::get_user_by_id(storage.as_ref(), &owner)
                                 .await
                                 .ok()
-                                .flatten()
-                                .is_some_and(|u| u.is_suspended());
-                        if suspended {
+                                .flatten();
+                        if owner.as_ref().is_some_and(|u| u.is_suspended()) {
                             info!(call_id = %call_id, mailbox = %resolved_id, "The mailbox's owner is suspended");
                             break;
                         }
+                        opened_by = owner.map(|u| u.username);
                     }
                     // Update target_mailbox to the resolved mailbox ID for subsequent operations
                     target_mailbox = resolved_id;
@@ -2977,7 +2990,19 @@ impl FlowCallHandler {
                     }
                     "3" => {
                         // Delete message
-                        if let Err(e) = voicemail_service.delete_message(&msg.id).await {
+                        let deleter = fcp_core::compliance::Deleter::new(
+                            fcp_core::compliance::DeletionCause::Manual,
+                            opened_by
+                                .clone()
+                                .unwrap_or_else(|| format!("phone:{target_mailbox}")),
+                        )
+                        .via(format!("{phone}, mailbox {target_mailbox}"));
+                        if let Err(e) = fcp_core::compliance::deleting_as(
+                            deleter,
+                            voicemail_service.delete_message(&msg.id),
+                        )
+                        .await
+                        {
                             warn!(call_id = %call_id, error = %e, "Failed to delete message");
                         } else {
                             play_system_prompt(

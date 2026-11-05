@@ -39,6 +39,7 @@ class AuditEventResponse:
                 platform administrator.
             detail (Any | Unset):
             source_ip (None | str | Unset):
+            api_request_id (None | str | Unset): The request's `X-Request-Id`; the deletions it made name it too.
      """
 
     id: int
@@ -53,6 +54,7 @@ class AuditEventResponse:
     actor_tenant_id: None | str | Unset = UNSET
     detail: Any | Unset = UNSET
     source_ip: None | str | Unset = UNSET
+    api_request_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -96,6 +98,12 @@ class AuditEventResponse:
         else:
             source_ip = self.source_ip
 
+        api_request_id: None | str | Unset
+        if isinstance(self.api_request_id, Unset):
+            api_request_id = UNSET
+        else:
+            api_request_id = self.api_request_id
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -117,6 +125,8 @@ class AuditEventResponse:
             field_dict["detail"] = detail
         if source_ip is not UNSET:
             field_dict["source_ip"] = source_ip
+        if api_request_id is not UNSET:
+            field_dict["api_request_id"] = api_request_id
 
         return field_dict
 
@@ -176,6 +186,16 @@ class AuditEventResponse:
         source_ip = _parse_source_ip(d.pop("source_ip", UNSET))
 
 
+        def _parse_api_request_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        api_request_id = _parse_api_request_id(d.pop("api_request_id", UNSET))
+
+
         audit_event_response = cls(
             id=id,
             actor=actor,
@@ -189,6 +209,7 @@ class AuditEventResponse:
             actor_tenant_id=actor_tenant_id,
             detail=detail,
             source_ip=source_ip,
+            api_request_id=api_request_id,
         )
 
 

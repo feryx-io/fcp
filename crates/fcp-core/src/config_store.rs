@@ -117,10 +117,11 @@ pub trait ConfigStore: Send + Sync {
         seed: serde_json::Value,
     ) -> Result<()>;
 
-    /// Get audit log entries, optionally filtered by section.
+    /// Get audit log entries, newest first: one service's, or every
+    /// service's when `service` is `None`, optionally one section's.
     async fn get_audit_log(
         &self,
-        service: &str,
+        service: Option<&str>,
         tenant_id: &str,
         section: Option<&str>,
         limit: i64,
@@ -560,7 +561,7 @@ mod tests {
         }
         async fn get_audit_log(
             &self,
-            _: &str,
+            _: Option<&str>,
             _: &str,
             _: Option<&str>,
             _: i64,
