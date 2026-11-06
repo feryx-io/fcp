@@ -2705,12 +2705,25 @@ async fn every_list_pages_by_cursor() {
         .admin(Method::GET, "/api/v1/audit-log/export?format=jsonl", None)
         .await;
     assert_eq!(jsonl.status, StatusCode::OK, "{}", jsonl.text);
-    let first: serde_json::Value =
-        serde_json::from_str(jsonl.text.lines().next().expect("a line")).unwrap();
-    assert_eq!(
-        first["id"].as_i64(),
-        exported.first().copied(),
-        "newest first"
+    // An export is itself audited, its row written after the response: the
+    // CSV export's own row may or may not be in the JSON Lines one.
+    let rows: Vec<serde_json::Value> = jsonl
+        .text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let jsonl_ids: Vec<i64> = rows.iter().map(|r| r["id"].as_i64().unwrap()).collect();
+    let jsonl_times: Vec<_> = rows
+        .iter()
+        .map(|r| rfc3339_secs(&r["occurred_at"]))
+        .collect();
+    assert!(
+        jsonl_times.windows(2).all(|w| w[0] >= w[1]),
+        "newest first: {jsonl_times:?}"
+    );
+    assert!(
+        exported.iter().all(|id| jsonl_ids.contains(id)),
+        "every CSV row in the JSON Lines: {exported:?} vs {jsonl_ids:?}"
     );
     // The listing's filters: nothing before the epoch's first second.
     let none = app

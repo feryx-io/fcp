@@ -34,6 +34,7 @@ pub mod hold;
 pub mod hold_music;
 pub mod hoteling;
 pub mod ingress;
+pub mod lanes;
 pub mod link_peers;
 pub mod listener;
 pub mod metrics;

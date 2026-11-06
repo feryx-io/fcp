@@ -298,6 +298,24 @@ SCENARIOS = {
         + """  <recv response="200"/>
 """,
     ),
+    "uac_rung_then_answered": (
+        "A call answered at once (uas_answer's 180 and 200 back to back), "
+        "the caller requiring the ringing before the answer, as the callee "
+        "sent them: the node handles a call's messages in the order they "
+        "came (#313). Keys: user, domain, callee.",
+        UAC_INVITE
+        + """  <recv response="183" optional="true" next="rung"/>
+  <recv response="180"/>
+  <label id="rung"/>
+  <recv response="200" rrs="true"/>
+"""
+        + in_dialog("ACK", 2)
+        + """  <pause milliseconds="200"/>
+"""
+        + in_dialog("BYE", 3)
+        + """  <recv response="200"/>
+""",
+    ),
     "uas_answer": (
         "The callee: rings, answers, and is hung up on.",
         """  <recv request="INVITE" crlf="true"/>
