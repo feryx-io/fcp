@@ -2194,3 +2194,50 @@ async fn a_tenants_deletion_removes_every_row_and_then_the_tenant() {
     );
     db.finish().await;
 }
+
+/// A mailbox written while its greeting is stored: both replace the
+/// mailbox's greetings, and a greeting stored between the mailbox's delete
+/// and its insert made the insert a duplicate and the write a 500 (the
+/// admin API's mailbox PUT racing a renamed owner's personalized greeting,
+/// #343). Both lock the mailbox's row first now.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mailbox_written_while_its_greeting_is_stored_is_written() {
+    let db = require_db!();
+    let tenant = TenantId::new();
+    let (_, mut mb) = mailbox(&db, tenant, "+14155550142").await;
+    let greeting = VoicemailGreeting::new(GreetingType::Personalized, PathBuf::from("/g/p.wav"));
+    mb.add_greeting(greeting.clone());
+    db.pg.put_mailbox(mb.clone()).await.unwrap();
+
+    let writer = {
+        let (pg, mb) = (Arc::clone(&db.pg), mb.clone());
+        tokio::spawn(async move {
+            let mut failed = Vec::new();
+            for _ in 0..200 {
+                if let Err(e) = pg.put_mailbox(mb.clone()).await {
+                    failed.push(e.to_string());
+                }
+            }
+            failed
+        })
+    };
+    let greeter = {
+        let (pg, id) = (Arc::clone(&db.pg), mb.id.clone());
+        tokio::spawn(async move {
+            let mut failed = Vec::new();
+            for _ in 0..200 {
+                if let Err(e) = pg
+                    .set_greeting(&id, GreetingType::Personalized, Some(greeting.clone()))
+                    .await
+                {
+                    failed.push(e.to_string());
+                }
+            }
+            failed
+        })
+    };
+    let (written, greeted) = (writer.await.unwrap(), greeter.await.unwrap());
+    assert!(written.is_empty(), "put_mailbox failed: {written:?}");
+    assert!(greeted.is_empty(), "set_greeting failed: {greeted:?}");
+    db.finish().await;
+}

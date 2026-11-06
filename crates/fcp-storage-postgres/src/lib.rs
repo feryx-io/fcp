@@ -7702,6 +7702,11 @@ impl VoicemailStore for PostgresStorage {
         let now = Utc::now();
         let created_at = system_time_to_datetime(mailbox.created_at);
 
+        // One transaction, the mailbox's row locked by its upsert before
+        // its greetings are replaced: a greeting stored meanwhile
+        // (`set_greeting`, which locks the row first too) made the
+        // re-insert a duplicate, and the write failed.
+        let mut tx = self.writes().begin().await?;
         sqlx::query(
             "INSERT INTO voicemail_mailboxes
              (id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
@@ -7749,13 +7754,13 @@ impl VoicemailStore for PostgresStorage {
         .bind(mailbox.flow_id.as_deref())
         .bind(mailbox.greeting_choice.map(|c| c.to_string()))
         .bind(mailbox.greeting_name.to_string())
-        .execute(self.writes())
+        .execute(&mut *tx)
         .await?;
 
         // Delete existing greetings for this mailbox
         sqlx::query("DELETE FROM voicemail_greetings WHERE mailbox_id = $1")
             .bind(&mailbox.id)
-            .execute(self.writes())
+            .execute(&mut *tx)
             .await?;
 
         // Insert greetings
@@ -7775,9 +7780,10 @@ impl VoicemailStore for PostgresStorage {
             .bind(greeting_created_at)
             .bind(expires_at)
             .bind(greeting.made_from.as_deref())
-            .execute(self.writes())
+            .execute(&mut *tx)
             .await?;
         }
+        tx.commit().await?;
 
         Ok(())
     }
@@ -7789,6 +7795,12 @@ impl VoicemailStore for PostgresStorage {
         greeting: Option<fcp_core::VoicemailGreeting>,
     ) -> Result<()> {
         let mut tx = self.writes().begin().await?;
+        // The mailbox's row first, as `put_mailbox` locks it: the two
+        // replace greetings one after the other.
+        sqlx::query("UPDATE voicemail_mailboxes SET updated_at = NOW() WHERE id = $1")
+            .bind(mailbox_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM voicemail_greetings WHERE mailbox_id = $1 AND greeting_type = $2")
             .bind(mailbox_id)
             .bind(greeting_type.to_string())
@@ -7811,10 +7823,6 @@ impl VoicemailStore for PostgresStorage {
             .execute(&mut *tx)
             .await?;
         }
-        sqlx::query("UPDATE voicemail_mailboxes SET updated_at = NOW() WHERE id = $1")
-            .bind(mailbox_id)
-            .execute(&mut *tx)
-            .await?;
         tx.commit().await?;
         Ok(())
     }

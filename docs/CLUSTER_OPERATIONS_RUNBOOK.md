@@ -186,9 +186,9 @@ in the node's heartbeat, which the admin UI shows.
 **What a call manager keeps.** `/status` `held` and
 `fcp_node_held{node,kind}` count what the node keeps in memory for calls:
 `dialogs` (the handler's and its outbound legs'), `sip_call_ids` (SIP
-Call-IDs remembered for tracing), `calls` (calls in memory) and, on
-`/status`, `media_sessions`. Once calls end, dialogs, calls and media
-sessions fall back to the calls up and Call-IDs to within twice that and
+Call-IDs remembered for tracing), `calls` (calls in memory), `flows`
+(calls with a flow running) and, on `/status`, `media_sessions`. Once
+calls end, dialogs, calls, flows and media sessions fall back to the calls up and Call-IDs to within twice that and
 64. A count that keeps rising while calls come and go is a leak: alert
 on `fcp_node_held{kind="dialogs"}` well above
 `fcp_admission_concurrent_calls`. A node whose memory grows with nothing

@@ -816,6 +816,7 @@ async fn a_mailbox_greets_callers_by_its_owners_name() {
             Some(json!({ "greeting_name": "display_name" })),
         )
         .await;
+    assert_eq!(by_display.status, StatusCode::OK, "{}", by_display.text);
     assert_eq!(by_display.json["greeting_name"], "display_name");
     let jwt = session(&app, "nina").await;
     let profile = app

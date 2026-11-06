@@ -126,6 +126,11 @@ pub struct FlowCallHandler {
 
     /// Each call's live transcript (the Transcribe node), one task per leg.
     transcripts: Arc<DashMap<CallId, Vec<tokio::task::JoinHandle<()>>>>,
+
+    /// Woken whenever the call manager ends a call: a flow waiting for its
+    /// caller looks whether its call is the one gone. Nothing stopped a
+    /// flow whose caller hung up, and it went on asking for digits (#337).
+    calls_ended: Arc<tokio::sync::Notify>,
 }
 
 /// What a Gather heard, for its retries: a branch chosen, or nothing, or
@@ -222,6 +227,7 @@ impl FlowCallHandler {
             outbound_route_provider: None,
             gather_digits: Arc::new(DashMap::new()),
             transcripts: Arc::new(DashMap::new()),
+            calls_ended: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -233,8 +239,40 @@ impl FlowCallHandler {
 
     /// Set the call manager (for B2BUA operations).
     pub fn with_call_manager(mut self, call_manager: Arc<CallManager>) -> Self {
+        let calls_ended = Arc::clone(&self.calls_ended);
+        let transcripts = Arc::clone(&self.transcripts);
+        call_manager.set_on_flow_call_ended(Arc::new(move |call_id| {
+            if let Some((_, tasks)) = transcripts.remove(call_id) {
+                tasks.iter().for_each(|task| task.abort());
+            }
+            calls_ended.notify_waiters();
+        }));
         self.call_manager = Some(call_manager);
         self
+    }
+
+    /// Whether the call manager no longer has `call_id`. Without a call
+    /// manager, a call is never known to be gone.
+    fn call_is_gone(&self, call_id: &CallId) -> bool {
+        self.call_manager
+            .as_ref()
+            .is_some_and(|call_manager| call_manager.get_call(call_id).is_none())
+    }
+
+    /// Done when `call_id` has ended: what a wait for the caller races.
+    async fn call_gone(&self, call_id: &CallId) {
+        if self.call_manager.is_none() {
+            return std::future::pending().await;
+        }
+        loop {
+            let ended = self.calls_ended.notified();
+            tokio::pin!(ended);
+            ended.as_mut().enable();
+            if self.call_is_gone(call_id) {
+                return;
+            }
+            ended.await;
+        }
     }
 
     /// Set the transaction manager (for sending SIP requests).
@@ -3610,6 +3648,13 @@ impl FlowCallHandler {
     }
 
     pub async fn execute_next_node(&self, call_id: CallId) -> Result<()> {
+        // A flow whose call has ended goes no further: what a step does
+        // after the caller hangs up (a recording kept, a dialed leg ended)
+        // is that step's, and the next step has nobody to run for (#337).
+        if self.call_is_gone(&call_id) && self.contexts.contains_key(&call_id) {
+            info!(call_id = %call_id, "The call ended: its flow is stopped");
+            return self.stop_flow(call_id).await;
+        }
         let context_entry = self
             .contexts
             .get(&call_id)
@@ -4310,14 +4355,16 @@ impl FlowCallHandler {
                         .await;
                 }
 
-                let outcome = listening
+                let outcome = tokio::select! {
+                    outcome = listening
                     .wait(
                         &media_manager,
                         &gather_call_id,
                         std::time::Duration::from_secs(timeout_secs as u64),
                         playback_id,
-                    )
-                    .await;
+                    ) => outcome,
+                    () = self.call_gone(&call_id) => GatherOutcome::Cancelled,
+                };
                 drop(digit_slot);
                 // The key that finishes the input is not part of it: kept,
                 // "Enter some digits, then press pound" read the pound back
@@ -4377,6 +4424,11 @@ impl FlowCallHandler {
                     GatherOutcome::Cancelled => {
                         warn!(call_id = %call_id, "Gather cancelled");
                         // The call has likely ended: nothing more runs.
+                        drop(context_guard);
+                        if self.call_is_gone(&call_id) {
+                            info!(call_id = %call_id, "The call ended: its flow is stopped");
+                            return self.stop_flow(call_id).await;
+                        }
                         return Ok(());
                     }
                 };
@@ -4629,14 +4681,22 @@ impl FlowCallHandler {
 
                 drop(context_guard);
 
-                self.handle_voicemail_access(
-                    call_id,
-                    mailbox,
-                    max_pin_attempts,
-                    next,
-                    on_auth_failure,
-                )
-                .await?;
+                // All of it is for the caller: a greeting is kept only on
+                // their 1, so a hangup leaves nothing to finish (#337).
+                tokio::select! {
+                    biased;
+                    done = self.handle_voicemail_access(
+                        call_id,
+                        mailbox,
+                        max_pin_attempts,
+                        next,
+                        on_auth_failure,
+                    ) => done?,
+                    () = self.call_gone(&call_id) => {
+                        info!(call_id = %call_id, "The call ended: its flow is stopped");
+                        self.stop_flow(call_id).await?;
+                    }
+                }
             }
 
             FlowExecutionResult::WaitingForFork {
@@ -4764,6 +4824,11 @@ impl FlowCallHandler {
                 task.abort();
             }
         }
+    }
+
+    /// The calls with a flow running.
+    pub fn flow_count(&self) -> usize {
+        self.contexts.len()
     }
 
     /// Stop flow execution for a call.

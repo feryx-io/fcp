@@ -1231,6 +1231,10 @@ impl SipMessageHandler {
             dialogs: self.dialog_manager.count() + uac_dialogs,
             sip_call_ids: self.sip_call_id_map.len(),
             calls: self.call_manager.total_call_count(),
+            flows: self
+                .flow_handler
+                .as_ref()
+                .map_or(0, |flows| flows.flow_count()),
         }
     }
 
@@ -20553,6 +20557,7 @@ pub struct HeldState {
     pub dialogs: usize,
     pub sip_call_ids: usize,
     pub calls: usize,
+    pub flows: usize,
 }
 
 /// Remember which call a SIP Call-ID belongs to, for tracing. Nothing
