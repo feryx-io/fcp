@@ -786,6 +786,95 @@ SCENARIOS.update(
 """
             + UAS_IN_DIALOG_UNTIL_BYE,
         ),
+        "uac_requires_100rel": (
+            "A caller that requires 100rel (RFC 3262 §3): the node's 180 is "
+            "reliable (Require: 100rel, an RSeq) and sent again until the "
+            "caller PRACKs it, 1.2 s later; the PRACK is answered 200, then "
+            "the answer comes. Keys: user, domain, callee.",
+            uac_invite(extra="Require: 100rel\nSupported: 100rel")
+            + """  <recv response="180" rrs="true">
+    <action>
+      <ereg regexp="100rel" search_in="hdr" header="Require:" check_it="true" assign_to="require"/>
+      <ereg regexp="[0-9]+" search_in="hdr" header="RSeq:" check_it="true" assign_to="rseq"/>
+      <log message="require: [$require], rseq: [$rseq]"/>
+    </action>
+  </recv>
+  <pause milliseconds="1200"/>
+"""
+            + in_dialog("PRACK", 3, extra="RAck: [$rseq] 2 INVITE")
+            + """  <recv response="200">
+    <action>
+      <ereg regexp="PRACK" search_in="hdr" header="CSeq:" check_it="true" assign_to="pracked"/>
+      <log message="pracked: [$pracked]"/>
+    </action>
+  </recv>
+  <recv response="200" rrs="true"/>
+"""
+            + in_dialog("ACK", 2)
+            + """  <pause milliseconds="300"/>
+"""
+            + in_dialog("BYE", 4)
+            + """  <recv response="200"/>
+""",
+        ),
+        "uac_requires_100rel_early_media": (
+            "A caller that requires 100rel, to a callee with early media that "
+            "answers at once: the 183 with its session description is "
+            "reliable, and the answer is held until the caller PRACKs it "
+            "800 ms later (RFC 3262 §3); a 200 before the PRACK fails the "
+            "scenario. The PRACK lets the answer out, so its own 200 may "
+            "come before or after the INVITE's. Keys: user, domain, callee.",
+            uac_invite("invite2", extra="Require: 100rel\nSupported: 100rel")
+            + """  <recv response="180" optional="true" response_txn="invite2"/>
+  <recv response="183" rrs="true" response_txn="invite2">
+    <action>
+      <ereg regexp="[0-9]+" search_in="hdr" header="RSeq:" check_it="true" assign_to="rseq"/>
+      <ereg regexp="m=audio" search_in="body" check_it="true" assign_to="early"/>
+      <log message="early media: [$early], rseq: [$rseq]"/>
+    </action>
+  </recv>
+  <pause milliseconds="800"/>
+"""
+            + in_dialog("PRACK", 3, txn="prack", extra="RAck: [$rseq] 2 INVITE")
+            + """  <recv response="200" optional="true" rrs="true" response_txn="invite2" next="answered_first"/>
+  <recv response="200" response_txn="prack"/>
+  <recv response="200" rrs="true" response_txn="invite2" next="answered"/>
+  <label id="answered_first"/>
+  <recv response="200" response_txn="prack"/>
+  <label id="answered"/>
+"""
+            + in_dialog("ACK", 2, txn="invite2")
+            + """  <pause milliseconds="300"/>
+"""
+            + in_dialog("BYE", 4)
+            + """  <recv response="200"/>
+""",
+        ),
+        "uas_ring_then_answer": (
+            "The callee: rings for 2 s, answers, and is hung up on.",
+            UAS_RING
+            + """  <pause milliseconds="2000"/>
+"""
+            + reply(200, "OK", sdp=True)
+            + """  <recv request="ACK" crlf="true"/>
+  <recv request="BYE"/>
+"""
+            + reply(200, "OK", tag=False),
+        ),
+        "uas_early_media_then_answer": (
+            "The callee: early media (183 with a session description), "
+            "answers 100 ms later, and is hung up on.",
+            """  <recv request="INVITE" crlf="true"/>
+"""
+            + reply(183, "Session Progress", sdp=True)
+            + """  <pause milliseconds="100"/>
+"""
+            + reply(200, "OK", sdp=True)
+            + """  <recv request="ACK" crlf="true"/>
+  <recv request="BYE"/>
+"""
+            + reply(200, "OK", tag=False),
+        ),
         "uac_refer": (
             "A call answered, then the caller transfers the callee blind "
             "(REFER, RFC 3515) to [target]: accepted, the outcome NOTIFYed, "
@@ -1094,6 +1183,18 @@ FLOOD_INVITE = (
 """)
 )
 
+# A spoofed source's flood: it never ACKs its refusal, and stays to hear
+# whether the refusal is sent again (#315).
+FLOOD_INVITE_UNACKED = (
+    invite(1, False).replace(' retrans="500"', "")
+    + """  <recv response="100" optional="true"/>
+  <recv response="401" optional="true" next="refused"/>
+  <recv response="503"/>
+  <label id="refused"/>
+  <pause milliseconds="2000"/>
+"""
+)
+
 FLOOD_OPTIONS = """  <send>
     <![CDATA[
       OPTIONS sip:[domain] SIP/2.0
@@ -1135,6 +1236,13 @@ SCENARIOS.update(
             "challenged, refused (429, 503) or, past an SBC, refused busy by "
             "the callee, and ACKed. Keys: user, domain, callee.",
             FLOOD_INVITE,
+        ),
+        "flood_invite_unacked": (
+            "One INVITE with no credentials per call, as a spoofed source "
+            "sends it: challenged 401 or refused 503, never ACKed, and the "
+            "call kept 2 s to hear the refusal again if it is resent. Keys: "
+            "user, domain, callee.",
+            FLOOD_INVITE_UNACKED,
         ),
     }
 )

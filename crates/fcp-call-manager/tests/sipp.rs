@@ -713,6 +713,39 @@ async fn the_node_pracks_a_callee_that_rings_reliably() {
     }
 }
 
+/// A caller that requires 100rel (RFC 3262 §3, #310) gets every
+/// provisional but the 100 reliably: an RSeq and `Require: 100rel`, sent
+/// again until its PRACK, which is answered 200. Early media's answer is
+/// held until the 183 is PRACKed (the scenario fails on a 200 before it).
+#[tokio::test]
+async fn a_caller_requiring_100rel_gets_reliable_provisionals() {
+    let Some((sipp, stack)) = setup().await else {
+        return;
+    };
+    let (uac, uas) = stack
+        .call(&sipp, "uac_requires_100rel", "uas_ring_then_answer")
+        .await;
+    stack.both_passed(&uac, &uas, "ringing").await;
+    // The caller waits 1.2 s to PRACK: the 180 is sent again at 0.5 s.
+    let ringing = answered(&uac, 180);
+    assert!(
+        ringing >= 2,
+        "the reliable 180 was not sent again ({ringing}):\n{}",
+        uac.messages
+    );
+    stack.no_calls_up("ringing").await;
+
+    let (uac, uas) = stack
+        .call(
+            &sipp,
+            "uac_requires_100rel_early_media",
+            "uas_early_media_then_answer",
+        )
+        .await;
+    stack.both_passed(&uac, &uas, "early media").await;
+    stack.no_calls_up("early media").await;
+}
+
 /// A blind transfer by the caller (REFER, RFC 3515), carried out by the
 /// node: it dials carol back through itself, moves bob onto her, NOTIFYs
 /// alice and hangs her up. Carol hangs up later and bob is hung up too.
@@ -846,12 +879,18 @@ fn answered(out: &SippOutcome, code: u16) -> usize {
 /// `[security] max_invite_cps_per_source`) before any credential work,
 /// while phones at other addresses register and call as if nothing were
 /// happening. Nothing the floods sent rings anyone or stays up.
+///
+/// siphon-rs's own per-source limit (`[sip] max_messages_per_source`) is
+/// off: the INVITE flood and its ACKs are 400 messages a second, and at
+/// the default 200 it dropped some 155 INVITEs unanswered. The count of
+/// refusals passed only while each refusal was resent (#315).
 #[tokio::test]
 async fn a_flood_from_one_source_costs_that_source() {
     let Some(sipp) = Sipp::find() else {
         return;
     };
-    let Some(stack) = Stack::start_with(
+    let Some(stack) = Stack::start_configured(
+        "max_messages_per_source = 0",
         "\n[admission]\nmax_register_cps_per_source = 10\n\n[security]\nmax_invite_cps_per_source = 20\n",
     )
     .await
@@ -935,6 +974,51 @@ async fn a_flood_from_one_source_costs_that_source() {
         flood.errors
     );
     assert!(challenged > 0, "the limit refused every INVITE");
+    stack.no_calls_up("flood").await;
+}
+
+/// A refusal at the edge holds nothing (#315): an INVITE refused 503 by
+/// `[security] max_invite_cps_per_source`, or challenged 401, is answered
+/// once and forgotten. A flood from a spoofed source never ACKs, and a
+/// stateful answer was resent by Timer G until Timer H, about eleven times;
+/// here each call waits 2 s after its refusal and would hear it three
+/// times.
+#[tokio::test]
+async fn refusals_at_the_edge_are_sent_once() {
+    let Some(sipp) = Sipp::find() else {
+        return;
+    };
+    let Some(stack) = Stack::start_with("\n[security]\nmax_invite_cps_per_source = 20\n").await
+    else {
+        return;
+    };
+    let (alice, bob) = (&stack.alice, &stack.bob);
+    let flood = sipp
+        .start_at(
+            Ipv4Addr::LOCALHOST,
+            &scenario("flood_invite_unacked"),
+            Some(stack.sip),
+            &[
+                ("user", &alice.username),
+                ("domain", REALM),
+                ("callee", &bob.extension),
+            ],
+            &["-r", "100", "-m", "200", "-timeout", "20s"],
+        )
+        .wait(Duration::from_secs(30))
+        .await;
+    let (challenged, refused) = (answered(&flood, 401), answered(&flood, 503));
+    eprintln!("unACKed INVITE flood: {challenged} challenged, {refused} refused");
+    assert!(
+        refused > 100,
+        "200 INVITEs in 2 s, {refused} refused: {}",
+        flood.errors
+    );
+    assert!(challenged > 0, "the limit refused every INVITE");
+    assert!(
+        challenged + refused <= 200,
+        "200 INVITEs answered {challenged} + {refused} times: refusals were resent"
+    );
     stack.no_calls_up("flood").await;
 }
 
