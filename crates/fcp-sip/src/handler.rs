@@ -8859,7 +8859,11 @@ impl SipMessageHandler {
         let request_clone = request.clone();
         let call_manager_clone = self.call_manager.clone();
         let handler_clone = self.clone();
+        // Set once the relay is done with the ringing it was handed, so an
+        // answer right behind it waits its turn (#313).
+        let (relay_settled_tx, mut relay_settled) = tokio::sync::watch::channel(false);
         tokio::spawn(async move {
+            let _settled = SettleOnDrop(relay_settled_tx);
             if let Some(b_leg_provisional) = provisional_rx.recv().await {
                 let already_rebound = call_manager_clone
                     .get_call(&call_id_clone)
@@ -9308,6 +9312,23 @@ impl SipMessageHandler {
         if let (Some(target), Some(response), Some(handle)) =
             (winning_target, winning_response, winning_handle)
         {
+            // A leg that rang has its ringing on the relay task, which
+            // may not have sent it yet: the caller hears it first, as
+            // the callee sent it (#313). The transaction drops a
+            // provisional sent after the final.
+            if early_media_policy != fcp_b2bua_core::EarlyMediaPolicy::None
+                && !handle.get_early_dialogs().await.is_empty()
+            {
+                let settled = tokio::time::timeout(
+                    RINGING_BEFORE_ANSWER,
+                    relay_settled.wait_for(|settled| *settled),
+                )
+                .await;
+                if settled.is_err() {
+                    warn!(call_id = %call_id, "The callee's ringing was not relayed before its answer");
+                }
+            }
+
             let code = response.start_line().code();
             info!(
                 call_id = %call_id,
@@ -19589,6 +19610,18 @@ impl InboundMessageHandler for SipMessageHandler {
         }
 
         Ok(())
+    }
+}
+
+/// How long a fork's answer waits for the relay of its leg's ringing.
+const RINGING_BEFORE_ANSWER: Duration = Duration::from_secs(1);
+
+/// Marks a fork's provisional relay settled however its task ends.
+struct SettleOnDrop(tokio::sync::watch::Sender<bool>);
+
+impl Drop for SettleOnDrop {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
     }
 }
 
