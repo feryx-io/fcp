@@ -2846,7 +2846,10 @@ impl SipMessageHandler {
                             let _ = response
                                 .headers_mut()
                                 .push(SmolStr::new("Retry-After"), SmolStr::new("1"));
-                            handle.send_final(response).await;
+                            // Sent once, holding nothing: a flood from a
+                            // spoofed source never ACKs, and a stateful 503
+                            // went out about eleven times (#315).
+                            handle.send_final_stateless(response).await;
                             return Ok(());
                         }
                     }
@@ -3623,7 +3626,11 @@ impl SipMessageHandler {
                             self.create_simple_response(request, 500, "Internal Server Error")
                         }
                     };
-                    handle.send_final(response).await;
+                    // Statelessly, as the edge's 503 (#315): a caller that
+                    // never ACKs is not answered until Timer H, and one
+                    // whose 401 is lost resends its INVITE and is
+                    // challenged again.
+                    handle.send_final_stateless(response).await;
                     return Ok(());
                 }
             }
@@ -11466,14 +11473,20 @@ impl SipMessageHandler {
         Ok(self.build_in_dialog_response(request, &peer_resp))
     }
 
-    /// An in-dialog PRACK (RFC 3262). The node sends no provisional
-    /// reliably: a callee's reliable ones are PRACKed by the B-leg's own
-    /// INVITE transaction (siphon-rs) and relayed to the caller as ordinary
-    /// ones. So a PRACK acknowledges nothing the node sent: 481 (§3), and
-    /// the call is left as it is. Relaying it would PRACK the callee twice,
-    /// and its 481 to the second used to tear the dialog down.
+    /// A PRACK (RFC 3262). The node's provisionals to a caller are
+    /// reliable only when the caller's INVITE requires 100rel: the INVITE's
+    /// server transaction (siphon-rs) makes them so and resends them, and
+    /// the PRACK is matched to it by Call-ID and RAck and answered 200 here.
+    /// Anything else acknowledges nothing the node sent: 481 (§3), the call
+    /// left as it is. A callee's reliable provisionals are PRACKed by the
+    /// B-leg's own INVITE transaction, never relayed: relaying the caller's
+    /// PRACK would PRACK the callee twice, and its 481 to the second used to
+    /// tear the dialog down.
     async fn handle_prack(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
         debug!("Handling PRACK");
+        if self.transaction_manager.prack_received(request).await {
+            return Ok(self.create_simple_response(request, 200, "OK"));
+        }
         // No dialog at all is `NoSuchDialog`, answered 481 by the loop.
         self.lookup_call_for_in_dialog(request)?;
         Ok(self.create_simple_response(request, 481, "Call/Transaction Does Not Exist"))
@@ -12579,8 +12592,9 @@ impl SipMessageHandler {
 
         // Propagate capability/signaling headers. A reliable provisional
         // was PRACKed by the B-leg's own INVITE transaction and reaches the
-        // A-leg as an ordinary one: no RSeq, no `Require: 100rel`
-        // (`handle_prack`).
+        // A-leg as an ordinary one: no RSeq, no `Require: 100rel`. A caller
+        // that requires 100rel has it made reliable again by its own INVITE
+        // transaction, with an RSeq of the A-leg's (`handle_prack`).
         for name in [
             "Require",
             "Supported",
