@@ -396,6 +396,57 @@ async fn sipp_calls_sipp_answered_and_hung_up() {
     stack.no_calls_up("answered").await;
 }
 
+/// A callee's 180 and 200 sent back to back reach the caller in that
+/// order, over forty calls at eight a second (two INVITEs each, under the
+/// node's twenty a second per source). Each inbound packet used to
+/// be handled on a task of its own, and the 200 was sometimes taken first
+/// and the 180 dropped (#313).
+#[tokio::test]
+async fn a_callees_ringing_and_answer_reach_the_caller_in_order() {
+    let Some((sipp, stack)) = setup().await else {
+        return;
+    };
+    let (alice, bob) = (&stack.alice, &stack.bob);
+    let calls = "40";
+    let uas = sipp.start(
+        &scenario("uas_answer"),
+        None,
+        &[],
+        &["-m", calls, "-timeout", "60s"],
+    );
+    stack
+        .register(&sipp, &bob.username, &bob.password, uas.addr())
+        .await;
+    let uac = sipp
+        .start(
+            &scenario("uac_rung_then_answered"),
+            Some(stack.sip),
+            &[
+                ("user", &alice.username),
+                ("domain", REALM),
+                ("callee", &bob.extension),
+            ],
+            &[
+                "-au",
+                &alice.username,
+                "-ap",
+                &alice.password,
+                "-m",
+                calls,
+                "-r",
+                "8",
+                "-timeout",
+                "60s",
+            ],
+        )
+        .wait(Duration::from_secs(70))
+        .await;
+    let uas = uas.wait(Duration::from_secs(10)).await;
+    stack.passed(&uac, "caller").await;
+    stack.passed(&uas, "callee").await;
+    stack.no_calls_up("rung and answered").await;
+}
+
 #[tokio::test]
 async fn sipp_calls_sipp_refused_busy() {
     let Some((sipp, stack)) = setup().await else {

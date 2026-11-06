@@ -12,6 +12,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
 
+use crate::lanes::CallLanes;
+
 /// Configuration for transport listeners.
 #[derive(Debug, Clone)]
 pub struct ListenerConfig {
@@ -101,6 +103,10 @@ pub struct TransportListener {
     #[cfg(all(feature = "ws", feature = "tls"))]
     wss_task: Option<JoinHandle<()>>,
 
+    /// Each call's messages, handled in the order they arrived
+    /// (`crate::lanes`), whichever transport they came on.
+    lanes: CallLanes,
+
     /// Shutdown signal sender (broadcast to all listeners)
     shutdown_tx: Option<tokio::sync::broadcast::Sender<()>>,
 }
@@ -111,6 +117,7 @@ impl TransportListener {
         Self {
             config,
             handler,
+            lanes: CallLanes::default(),
             udp_task: None,
             tcp_task: None,
             #[cfg(feature = "tls")]
@@ -157,10 +164,13 @@ impl TransportListener {
             let socket = Arc::new(socket);
 
             let handler = Arc::clone(&self.handler);
+
+            let lanes = self.lanes.clone();
             let mut shutdown = shutdown_rx.resubscribe();
 
             let task = tokio::spawn(async move {
-                if let Err(e) = Self::run_udp_listener(socket, handler, &mut shutdown).await {
+                if let Err(e) = Self::run_udp_listener(socket, handler, lanes, &mut shutdown).await
+                {
                     error!("UDP listener error: {}", e);
                 }
             });
@@ -173,10 +183,14 @@ impl TransportListener {
             info!(%tcp_bind, "Starting TCP listener");
 
             let handler = Arc::clone(&self.handler);
+
+            let lanes = self.lanes.clone();
             let mut shutdown = shutdown_rx.resubscribe();
 
             let task = tokio::spawn(async move {
-                if let Err(e) = Self::run_tcp_listener(tcp_bind, handler, &mut shutdown).await {
+                if let Err(e) =
+                    Self::run_tcp_listener(tcp_bind, handler, lanes, &mut shutdown).await
+                {
                     error!("TCP listener error: {}", e);
                 }
             });
@@ -194,11 +208,14 @@ impl TransportListener {
                 let tls_config = self.load_server_config(cert_path, key_path, "TLS")?;
 
                 let handler = Arc::clone(&self.handler);
+
+                let lanes = self.lanes.clone();
                 let mut shutdown = shutdown_rx.resubscribe();
 
                 let task = tokio::spawn(async move {
                     if let Err(e) =
-                        Self::run_tls_listener(tls_bind, tls_config, handler, &mut shutdown).await
+                        Self::run_tls_listener(tls_bind, tls_config, handler, lanes, &mut shutdown)
+                            .await
                     {
                         error!("TLS listener error: {}", e);
                     }
@@ -216,10 +233,13 @@ impl TransportListener {
             info!(%ws_bind, "Starting WS listener");
 
             let handler = Arc::clone(&self.handler);
+
+            let lanes = self.lanes.clone();
             let mut shutdown = shutdown_rx.resubscribe();
 
             let task = tokio::spawn(async move {
-                if let Err(e) = Self::run_ws_listener(ws_bind, handler, &mut shutdown).await {
+                if let Err(e) = Self::run_ws_listener(ws_bind, handler, lanes, &mut shutdown).await
+                {
                     error!("WS listener error: {}", e);
                 }
             });
@@ -237,11 +257,14 @@ impl TransportListener {
                 let tls_config = self.load_server_config(cert_path, key_path, "WSS")?;
 
                 let handler = Arc::clone(&self.handler);
+
+                let lanes = self.lanes.clone();
                 let mut shutdown = shutdown_rx.resubscribe();
 
                 let task = tokio::spawn(async move {
                     if let Err(e) =
-                        Self::run_wss_listener(wss_bind, tls_config, handler, &mut shutdown).await
+                        Self::run_wss_listener(wss_bind, tls_config, handler, lanes, &mut shutdown)
+                            .await
                     {
                         error!("WSS listener error: {}", e);
                     }
@@ -260,6 +283,7 @@ impl TransportListener {
     async fn run_udp_listener(
         socket: Arc<UdpSocket>,
         handler: Arc<dyn InboundMessageHandler>,
+        lanes: CallLanes,
         shutdown: &mut tokio::sync::broadcast::Receiver<()>,
     ) -> Result<()> {
         let (tx, mut rx) = mpsc::channel::<sip_transport::InboundPacket>(1000);
@@ -283,25 +307,7 @@ impl TransportListener {
                         "Received inbound packet"
                     );
 
-                    // Convert sip_transport::TransportKind to sip_transaction::TransportKind
-                    let txn_transport = convert_transport_kind(packet.transport());
-
-                    // IMPORTANT: Spawn message handling in separate task to avoid blocking
-                    // This allows the listener to immediately process the next packet,
-                    // which is critical for B2BUA operation where responses must be
-                    // processed while waiting for B-leg responses
-                    let handler = Arc::clone(&handler);
-                    tokio::spawn(async move {
-                        if let Err(e) = handler.handle_inbound(
-                            txn_transport,
-                            packet.peer(),
-                            packet.payload().clone(),
-                            packet.stream().cloned(),
-                            packet.peer_identity().cloned(),
-                        ).await {
-                            error!("Failed to handle inbound message: {}", e);
-                        }
-                    });
+                    dispatch(&lanes, &handler, packet, "UDP");
                 }
                 _ = shutdown.recv() => {
                     info!("UDP listener shutting down");
@@ -317,6 +323,7 @@ impl TransportListener {
     async fn run_tcp_listener(
         bind_addr: SocketAddr,
         handler: Arc<dyn InboundMessageHandler>,
+        lanes: CallLanes,
         shutdown: &mut tokio::sync::broadcast::Receiver<()>,
     ) -> Result<()> {
         let (tx, mut rx) = mpsc::channel::<sip_transport::InboundPacket>(1000);
@@ -340,21 +347,7 @@ impl TransportListener {
                         "Received TCP packet"
                     );
 
-                    let txn_transport = convert_transport_kind(packet.transport());
-
-                    // IMPORTANT: Spawn message handling in separate task to avoid blocking
-                    let handler = Arc::clone(&handler);
-                    tokio::spawn(async move {
-                        if let Err(e) = handler.handle_inbound(
-                            txn_transport,
-                            packet.peer(),
-                            packet.payload().clone(),
-                            packet.stream().cloned(),
-                            packet.peer_identity().cloned(),
-                        ).await {
-                            error!("Failed to handle TCP message: {}", e);
-                        }
-                    });
+                    dispatch(&lanes, &handler, packet, "TCP");
                 }
                 _ = shutdown.recv() => {
                     info!("TCP listener shutting down");
@@ -400,6 +393,7 @@ impl TransportListener {
         bind_addr: SocketAddr,
         tls_config: Arc<tokio_rustls::rustls::ServerConfig>,
         handler: Arc<dyn InboundMessageHandler>,
+        lanes: CallLanes,
         shutdown: &mut tokio::sync::broadcast::Receiver<()>,
     ) -> Result<()> {
         let (tx, mut rx) = mpsc::channel::<sip_transport::InboundPacket>(1000);
@@ -423,17 +417,7 @@ impl TransportListener {
                         "Received TLS packet"
                     );
 
-                    let txn_transport = convert_transport_kind(packet.transport());
-
-                    if let Err(e) = handler.handle_inbound(
-                        txn_transport,
-                        packet.peer(),
-                        packet.payload().clone(),
-                        packet.stream().cloned(),
-                        packet.peer_identity().cloned(),
-                    ).await {
-                        error!("Failed to handle TLS message: {}", e);
-                    }
+                    dispatch(&lanes, &handler, packet, "TLS");
                 }
                 _ = shutdown.recv() => {
                     info!("TLS listener shutting down");
@@ -450,6 +434,7 @@ impl TransportListener {
     async fn run_ws_listener(
         bind_addr: SocketAddr,
         handler: Arc<dyn InboundMessageHandler>,
+        lanes: CallLanes,
         shutdown: &mut tokio::sync::broadcast::Receiver<()>,
     ) -> Result<()> {
         let (tx, mut rx) = mpsc::channel::<sip_transport::InboundPacket>(1000);
@@ -471,19 +456,7 @@ impl TransportListener {
                         "Received WS packet"
                     );
 
-                    let txn_transport = convert_transport_kind(packet.transport());
-                    let handler = Arc::clone(&handler);
-                    tokio::spawn(async move {
-                        if let Err(e) = handler.handle_inbound(
-                            txn_transport,
-                            packet.peer(),
-                            packet.payload().clone(),
-                            packet.stream().cloned(),
-                            packet.peer_identity().cloned(),
-                        ).await {
-                            error!("Failed to handle WS message: {}", e);
-                        }
-                    });
+                    dispatch(&lanes, &handler, packet, "WS");
                 }
                 _ = shutdown.recv() => {
                     info!("WS listener shutting down");
@@ -501,6 +474,7 @@ impl TransportListener {
         bind_addr: SocketAddr,
         tls_config: Arc<tokio_rustls::rustls::ServerConfig>,
         handler: Arc<dyn InboundMessageHandler>,
+        lanes: CallLanes,
         shutdown: &mut tokio::sync::broadcast::Receiver<()>,
     ) -> Result<()> {
         let (tx, mut rx) = mpsc::channel::<sip_transport::InboundPacket>(1000);
@@ -522,19 +496,7 @@ impl TransportListener {
                         "Received WSS packet"
                     );
 
-                    let txn_transport = convert_transport_kind(packet.transport());
-                    let handler = Arc::clone(&handler);
-                    tokio::spawn(async move {
-                        if let Err(e) = handler.handle_inbound(
-                            txn_transport,
-                            packet.peer(),
-                            packet.payload().clone(),
-                            packet.stream().cloned(),
-                            packet.peer_identity().cloned(),
-                        ).await {
-                            error!("Failed to handle WSS message: {}", e);
-                        }
-                    });
+                    dispatch(&lanes, &handler, packet, "WSS");
                 }
                 _ = shutdown.recv() => {
                     info!("WSS listener shutting down");
@@ -582,6 +544,35 @@ impl TransportListener {
     }
 }
 
+/// Hand a packet to the handler on a task of its own, after the message
+/// before it in its call (`crate::lanes`): the listener goes straight on to
+/// the next packet, which a B2BUA needs to take a B-leg's responses while a
+/// request waits on them.
+fn dispatch(
+    lanes: &CallLanes,
+    handler: &Arc<dyn InboundMessageHandler>,
+    packet: sip_transport::InboundPacket,
+    what: &'static str,
+) {
+    let transport = convert_transport_kind(packet.transport());
+    let handler = Arc::clone(handler);
+    let payload = packet.payload().clone();
+    lanes.dispatch(&payload.clone(), async move {
+        if let Err(e) = handler
+            .handle_inbound(
+                transport,
+                packet.peer(),
+                payload,
+                packet.stream().cloned(),
+                packet.peer_identity().cloned(),
+            )
+            .await
+        {
+            error!("Failed to handle {what} message: {}", e);
+        }
+    });
+}
+
 /// Convert sip_transport::TransportKind to sip_transaction::TransportKind.
 fn convert_transport_kind(
     transport: sip_transport::TransportKind,
@@ -597,5 +588,157 @@ fn convert_transport_kind(
         SipT::TlsSctp => TxnT::TlsSctp,
         SipT::Ws => TxnT::Ws,
         SipT::Wss => TxnT::Wss,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
+
+    /// Records each message's call and number as it is handled; the first
+    /// message of every call takes a while.
+    struct Recorder {
+        handled: Mutex<Vec<(String, u32)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl InboundMessageHandler for Recorder {
+        async fn handle_inbound(
+            &self,
+            _transport: sip_transaction::TransportKind,
+            _peer: SocketAddr,
+            payload: Bytes,
+            _stream: Option<mpsc::Sender<Bytes>>,
+            _peer_identity: Option<Arc<sip_transport::PeerIdentity>>,
+        ) -> Result<()> {
+            let text = String::from_utf8_lossy(&payload).to_string();
+            let call_id = crate::lanes::call_id_of(&payload).expect("a Call-ID");
+            let cseq: u32 = text
+                .lines()
+                .find_map(|line| line.strip_prefix("CSeq: "))
+                .and_then(|cseq| cseq.split(' ').next())
+                .and_then(|n| n.parse().ok())
+                .expect("a CSeq");
+            if cseq == 1 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            self.handled.lock().unwrap().push((call_id, cseq));
+            Ok(())
+        }
+    }
+
+    fn info(call: usize, cseq: u32) -> String {
+        format!(
+            "INFO sip:node@127.0.0.1 SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 127.0.0.1:5999;branch=z9hG4bK-{call}-{cseq}\r\n\
+             From: <sip:a@x>;tag=a{call}\r\n\
+             To: <sip:b@x>;tag=b{call}\r\n\
+             Call-ID: call-{call}@test\r\n\
+             CSeq: {cseq} INFO\r\n\
+             Max-Forwards: 70\r\n\
+             Content-Length: 0\r\n\r\n"
+        )
+    }
+
+    fn free_port() -> SocketAddr {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .expect("a free port")
+    }
+
+    fn config(udp_bind: Option<SocketAddr>, tcp_bind: Option<SocketAddr>) -> ListenerConfig {
+        ListenerConfig {
+            udp_bind,
+            tcp_bind,
+            #[cfg(feature = "tls")]
+            tls_bind: None,
+            #[cfg(feature = "tls")]
+            tls_cert: None,
+            #[cfg(feature = "tls")]
+            tls_key: None,
+            #[cfg(feature = "tls")]
+            tls_client_ca: None,
+            #[cfg(feature = "tls")]
+            tls_client_auth: None,
+            ws_bind: None,
+            wss_bind: None,
+        }
+    }
+
+    const CALLS: usize = 20;
+    const PER_CALL: u32 = 4;
+
+    /// Every call's messages were handled in the order they were sent,
+    /// though each call's first took longer than the rest (#313).
+    async fn handled_in_order(recorder: &Recorder) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while recorder.handled.lock().unwrap().len() < CALLS * PER_CALL as usize {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "handled {} of {} messages",
+                recorder.handled.lock().unwrap().len(),
+                CALLS * PER_CALL as usize
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let handled = recorder.handled.lock().unwrap();
+        for call in 0..CALLS {
+            let call_id = format!("call-{call}@test");
+            let order: Vec<u32> = handled
+                .iter()
+                .filter(|(id, _)| *id == call_id)
+                .map(|(_, cseq)| *cseq)
+                .collect();
+            assert_eq!(order, (1..=PER_CALL).collect::<Vec<_>>(), "{call_id}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_calls_messages_over_udp_are_handled_in_the_order_they_came() {
+        let bind = free_port();
+        let recorder = Arc::new(Recorder {
+            handled: Mutex::new(Vec::new()),
+        });
+        let mut listener = TransportListener::new(config(Some(bind), None), recorder.clone());
+        listener.start().await.expect("the listener starts");
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        for call in 0..CALLS {
+            for cseq in 1..=PER_CALL {
+                socket
+                    .send_to(info(call, cseq).as_bytes(), bind)
+                    .await
+                    .unwrap();
+            }
+        }
+        handled_in_order(&recorder).await;
+        listener.stop().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_calls_messages_over_tcp_are_handled_in_the_order_they_came() {
+        let bind = free_port();
+        let recorder = Arc::new(Recorder {
+            handled: Mutex::new(Vec::new()),
+        });
+        let mut listener = TransportListener::new(config(None, Some(bind)), recorder.clone());
+        listener.start().await.expect("the listener starts");
+        let mut stream = loop {
+            match tokio::net::TcpStream::connect(bind).await {
+                Ok(stream) => break stream,
+                Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
+        };
+        let mut all = String::new();
+        for call in 0..CALLS {
+            for cseq in 1..=PER_CALL {
+                all.push_str(&info(call, cseq));
+            }
+        }
+        stream.write_all(all.as_bytes()).await.unwrap();
+        handled_in_order(&recorder).await;
+        listener.stop().await.unwrap();
     }
 }

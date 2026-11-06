@@ -68,6 +68,9 @@ node_id = "e2e-call-manager"
 udp_bind = "127.0.0.1:{sip_port}"
 tcp_bind = "127.0.0.1:{sip_port}"
 local_ip = "127.0.0.1"
+# Every phone here is 127.0.0.1, one source to the per-source limit: forty
+# calls back to back went over it and lost a 200 (sipp.rs tests the limit).
+max_messages_per_source = 0
 
 [registrar]
 auth_enabled = true
@@ -877,7 +880,14 @@ async fn ended_calls_leave_nothing_behind() {
                 .await;
         };
         let bob_call = incoming.answer().await.unwrap();
-        alice_call.answered(SOON).await.unwrap();
+        if let Err(e) = alice_call.answered(SOON).await {
+            stack
+                .fail(
+                    &format!("call {n}: Alice's call was not answered: {e}"),
+                    &alice_phone,
+                )
+                .await;
+        }
         if n % 2 == 0 {
             alice_call.hangup().await.unwrap();
             assert!(bob_call.ended(SOON).await, "call {n}: Bob's leg ends");
