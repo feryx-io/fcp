@@ -185,7 +185,7 @@ self-benchmark exists, from measurement:
 max_cps = 0                        # 0 = unlimited
 max_concurrent_calls = 0
 max_concurrent_registrations = 0
-max_register_cps_per_source = 0
+max_register_cps_per_source = 50   # unset: 50; 0 = unlimited (#314)
 overload_action = "reject"         # reject | queue (queue is future)
 retry_after_secs = 5
 ```
@@ -355,6 +355,13 @@ node; the tenant page shows concurrent calls against the tenant's limit.
 
 - Every new `[admission]` key defaults to `0` — unlimited — so a node that is
   not reconfigured admits exactly what it admits today.
+  *Amended in v0.25.525 (#314):* `max_register_cps_per_source` is the
+  exception, 50 when unset. It bounds a flood, not a node's load: a refused
+  device is told to come back in `retry_after_secs`, a 50-phone office
+  booting behind one NAT registers within a few seconds, and the peers that
+  carry many devices (`[sip] trusted_sources`, `[e911] trusted_edges`,
+  trunks, cluster members) are exempt. A node whose only limit is this one
+  publishes no capacity (§7). `0` turns it off.
 - `[calls] max_concurrent_calls` set explicitly becomes a real limit, with a
   startup warning naming `[admission] max_concurrent_calls`. Left at its
   default, it caps nothing (§12 Q2).

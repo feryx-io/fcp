@@ -12,7 +12,7 @@
 use crate::emergency::TrustedEdges;
 use crate::trunk_ingress::InboundTrunks;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tracing::{info, warn};
 
 /// Messages a second one source may send when the configuration says
@@ -98,16 +98,34 @@ impl Exemptions {
         self.checks.iter().any(|check| check(ip))
     }
 
-    /// Make these the process's exemptions, replacing any before.
+    /// Make these the process's exemptions, replacing any before. They
+    /// exempt the same peers from the per-source REGISTER limit
+    /// ([`is_exempt`]).
     pub fn install(self) {
         if self.checks.is_empty() {
             sip_transport::set_ingress_rate_exemption(None);
+            *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = None;
             return;
         }
         info!(exempt = ?self.named, "Sources exempt from the per-source SIP limit");
         let this = Arc::new(self);
+        *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&this));
         sip_transport::set_ingress_rate_exemption(Some(Arc::new(move |ip| this.contains(ip))));
     }
+}
+
+/// The exemptions this process installed.
+static INSTALLED: RwLock<Option<Arc<Exemptions>>> = RwLock::new(None);
+
+/// Whether `ip` is one of this process's exempt peers: one that carries
+/// many parties' traffic by design, so a per-source limit is not one
+/// device's (`docs/DEEP_TESTING.md` #314).
+pub fn is_exempt(ip: IpAddr) -> bool {
+    INSTALLED
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|exempt| exempt.contains(ip))
 }
 
 /// An IPv4 peer on a dual-stack socket arrives mapped into IPv6.

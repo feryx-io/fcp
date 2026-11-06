@@ -451,7 +451,7 @@ mod tests {
             Ok(())
         }
         fn ended(&self, _call_id: &str) {}
-        fn admit_register(&self, _source: IpAddr, _aor: &str) -> Result<(), Refusal> {
+        fn admit_register(&self, _source: Option<IpAddr>, _aor: &str) -> Result<(), Refusal> {
             Ok(())
         }
         fn draining(&self) -> bool {

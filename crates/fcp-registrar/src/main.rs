@@ -174,7 +174,8 @@ async fn main() -> Result<()> {
     // 8b. What this node accepts, and how it leaves service
     // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5, §6). Every limit is
     // optional: a registrar that writes no `[admission]` section keeps
-    // none, as it always did.
+    // none but REGISTERs per source (#314), from which `[sip]
+    // trusted_sources` are exempt.
     let admission = Arc::new(fcp_sbc_core::AdmissionController::new(
         config.admission.resolve(),
     ));
