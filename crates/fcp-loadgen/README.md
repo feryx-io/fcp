@@ -45,7 +45,10 @@ fcp-soak --compose-dir deploy/docker-compose --minutes 240 --report soak.json
 ```
 
 The compose project's `.env` gives it the admin token, the Postgres
-password and the call manager's token. `.github/workflows/soak.yml` runs
+password and the call manager's token. Set `retain_hours = 1` under
+`[cdr]` in `configs/fcp-jobs.toml` first: the CDR stream keeps a day of
+records for replay, which a run of a day or less sees only grow (#345).
+The workflow does the same. `.github/workflows/soak.yml` runs
 it weekly against the nightly images. `tests/soak_stack.rs` runs the
 same soak against the binaries of this checkout (`FCP_SOAK_SECONDS`).
 

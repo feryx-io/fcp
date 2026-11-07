@@ -77,6 +77,11 @@ jobs:
           ip=$(hostname -I | awk '{print $1}')
           sed -i "s/^HOST_IP=.*/HOST_IP=$ip/; s/^FCP_IMAGE_TAG=.*/FCP_IMAGE_TAG=$IMAGE_TAG/" .env
           grep -E '^(HOST_IP|FCP_IMAGE_TAG)=' .env
+          # fcp-jobs keeps acknowledged CDRs in Redis for a day of replay
+          # (`[cdr] retain_hours`), so a run shorter than about four of
+          # those windows sees the stream only grow (#345). An hour here.
+          sed -i '/^\[cdr\]/a retain_hours = 1' configs/fcp-jobs.toml
+          grep -A2 '^\[cdr\]' configs/fcp-jobs.toml
           docker compose config --quiet
       - name: Pull and start the stack
         run: |

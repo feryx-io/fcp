@@ -211,6 +211,15 @@ replay window (`retain_hours`, default a day), so a record stays until it
 is stored. Stream length is a metric; a Redis outage leaves the records
 in the spool.
 
+The replay window is what the stream costs in Redis memory: every record
+of the last `retain_hours`, stored or not. The 24-hour soak
+(`docs/DEEP_TESTING.md` D6) kept 61,712 records in 69 MB, about 1.1 KB a
+record; a call is a record per leg, 1.7 a call in that run. A deployment
+writing a million records a day keeps about 1.1 GB at the default day,
+and 46 MB an hour of window. Size Redis's `maxmemory` for it, or shorten
+the window: replay is for a processor fault found within it, and the
+records are in Postgres either way.
+
 A node ships to the stream only with `[cdr] sink = "stream"`; `local` is
 the default even when the node has Redis. Nothing reads the stream
 unless an `fcp-jobs` runs with `[cdr] enabled = true`, and records a

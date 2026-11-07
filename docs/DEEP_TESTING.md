@@ -814,8 +814,9 @@ registrations; 183,600 API requests, none failed. The verdict failed on two
 growths. The call manager's memory rose linearly, 96.6 → 149.8 MB, about
 1.2 KB a call, with nothing it counts left over: a leak to find with a
 heap profile (#344). Redis rose 20 → 89 MB, all of it the CDR stream's
-24-hour replay window, which a 24-hour run cannot see level off (#345: the
-soak runs it at an hour; ~1.5 KB a record). And forge-rtp logged a warning
+24-hour replay window, which a 24-hour run cannot see level off (#345,
+v0.25.530: the soak runs it at an hour; 69 MB for the 61,712 records kept,
+~1.1 KB a record, sized in `CDR_PIPELINE.md` §4.2). And forge-rtp logged a warning
 for every refused latch packet — 44 million lines, a 6.7 GB log
 (forge-media #175).
 
