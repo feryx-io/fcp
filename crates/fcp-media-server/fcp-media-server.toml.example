@@ -36,8 +36,10 @@ prompts_dir = "/var/lib/fcp/media/prompts"
 # key = "/etc/fcp/tls/key.pem"
 
 [auth]
+# Required unless disable_auth = true: the server refuses to start without
+# a token. FCP_MEDIA_AUTH_TOKENS (comma-separated) wins over this list.
 # disable_auth = false
-# tokens = ["change-me-in-production"]
+tokens = ["change-me-in-production"]
 
 [ai]
 # allowed_endpoints = ["https://api.openai.com", "https://api.anthropic.com"]

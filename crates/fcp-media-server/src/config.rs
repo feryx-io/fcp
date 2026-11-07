@@ -245,29 +245,17 @@ pub struct TlsSection {
     pub key: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthSection {
     /// Disable API authentication (NOT recommended for production)
     #[serde(default)]
     pub disable_auth: bool,
 
-    /// Bearer tokens for API authentication
-    #[serde(default = "default_auth_tokens")]
+    /// Bearer tokens for API authentication. None by default: a server
+    /// with auth on and no token is refused at startup (#367).
+    #[serde(default)]
     pub tokens: Vec<String>,
-}
-
-fn default_auth_tokens() -> Vec<String> {
-    vec![uuid::Uuid::new_v4().to_string()]
-}
-
-impl Default for AuthSection {
-    fn default() -> Self {
-        Self {
-            disable_auth: false,
-            tokens: default_auth_tokens(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -519,7 +507,18 @@ mod tests {
         assert_eq!(config.media.rtp_port_start, 10000);
         assert_eq!(config.media.rtp_port_end, 20000);
         assert!(!config.auth.disable_auth);
-        assert_eq!(config.auth.tokens.len(), 1);
+        assert!(config.auth.tokens.is_empty());
+    }
+
+    /// #367: no token was made up at each start; with auth on and none
+    /// configured, the server is refused.
+    #[test]
+    fn auth_on_with_no_token_is_refused() {
+        let config: MediaServerConfig = fcp_core::config::parse_toml("[auth]\n").unwrap();
+        assert!(config.auth.tokens.is_empty());
+        let err = validate_config(&config).unwrap_err().to_string();
+        assert!(err.contains("no auth.tokens"), "{err}");
+        assert!(validate_config(&MediaServerConfig::default()).is_err());
     }
 
     #[test]
