@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 // Re-export from siphon-rs
 pub use sip_transport::pool::ConnectionPool;
@@ -44,6 +44,10 @@ pub struct RealTransportDispatcher {
     /// exactly as the TCP pool does.
     #[cfg(feature = "tls")]
     tls_pool: Arc<sip_transport::pool::TlsPool>,
+
+    /// Set when this host does not reach its advertised address: a message
+    /// to a peer on this host names the one the peer is at (#335).
+    sibling: std::sync::OnceLock<crate::sibling::SiblingRewrite>,
 }
 
 impl RealTransportDispatcher {
@@ -61,6 +65,7 @@ impl RealTransportDispatcher {
             tls_config: None,
             #[cfg(feature = "tls")]
             tls_pool: Arc::new(sip_transport::pool::TlsPool::new()),
+            sibling: std::sync::OnceLock::new(),
         }
     }
 
@@ -86,6 +91,7 @@ impl RealTransportDispatcher {
             tls_config: None,
             #[cfg(feature = "tls")]
             tls_pool: Arc::new(sip_transport::pool::TlsPool::new()),
+            sibling: std::sync::OnceLock::new(),
         }
     }
 
@@ -110,6 +116,23 @@ impl RealTransportDispatcher {
     pub fn with_tls_config(mut self, config: Arc<tokio_rustls::rustls::ClientConfig>) -> Self {
         self.tls_config = Some(config);
         self
+    }
+
+    /// This host does not reach `advertised`, the address its services
+    /// put in Contact and SDP (`crate::self_reach`): from now on a message
+    /// to a peer on this host names the address the peer is at instead
+    /// (`crate::sibling`). The first call wins.
+    pub fn advertise_to_siblings(&self, advertised: std::net::IpAddr) {
+        if self
+            .sibling
+            .set(crate::sibling::SiblingRewrite::new(advertised))
+            .is_ok()
+        {
+            info!(
+                %advertised,
+                "Services on this host are told this host's own address for it, not the advertised one"
+            );
+        }
     }
 
     /// Register an inbound packet sink for client-initiated TCP/TLS connections.
@@ -344,6 +367,17 @@ impl TransportDispatcher for RealTransportDispatcher {
 
         let peer = ctx.peer();
         let transport = ctx.transport();
+        let payload = match self.sibling.get() {
+            Some(sibling) => {
+                let bound = self
+                    .udp_socket
+                    .as_ref()
+                    .and_then(|s| s.local_addr().ok())
+                    .map(|a| a.ip());
+                sibling.apply(peer.ip(), bound, &payload).unwrap_or(payload)
+            }
+            None => payload,
+        };
 
         // Extract first line for logging (to identify message type)
         let first_line = payload

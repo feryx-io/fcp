@@ -114,10 +114,12 @@ async fn main() -> Result<()> {
     }
     init_tracing(&config);
     // On a cloud VM whose public address is NAT at the edge, services on
-    // this host cannot reach one another by it (`fcp_sip::self_reach`).
-    if let Some(ip) = config.media.public_ip.as_deref() {
-        fcp_sip::self_reach::warn_if_unreachable(ip, "fcp-voicemail-server").await;
-    }
+    // this host cannot reach one another by it (`fcp_sip::self_reach`);
+    // the dispatcher then gives them the local address (`fcp_sip::sibling`).
+    let unreachable_ip = match config.media.public_ip.as_deref() {
+        Some(ip) => fcp_sip::self_reach::warn_if_unreachable(ip, "fcp-voicemail-server").await,
+        None => None,
+    };
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -253,6 +255,9 @@ async fn main() -> Result<()> {
 
     // 7. Create transport dispatcher
     let dispatcher = create_transport_dispatcher(&config, Arc::clone(&tcp_pool)).await?;
+    if let Some(ip) = unreachable_ip {
+        dispatcher.advertise_to_siblings(ip);
+    }
 
     // 8. Create transaction manager with shared pool
     let transaction_manager = TransactionManager::new_with_pool(dispatcher.clone(), tcp_pool);
