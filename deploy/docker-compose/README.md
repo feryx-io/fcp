@@ -111,19 +111,24 @@ Not in this stack yet: clustering — one node of each
 `HOST_IP` is the address phones, carriers and browsers reach — on GCE,
 or AWS with an elastic IP, the VM's public address, which the provider
 maps at its edge: no interface holds it, and nothing the VM sends to it
-comes back. The services advertise it to one another too (Contact, SDP),
-so without a fix every request and every packet of media between two of
-them inside a call is lost: a caller's hang-up never reaches voicemail,
-which records until its limit. Put the address on the loopback, before
-Docker starts and at every boot:
+comes back. The services advertise it in Contact and SDP, so before
+v0.25.529 every request and every packet of media between two of them
+inside a call was lost: a caller's hang-up never reached voicemail, which
+recorded until its limit.
+
+Each SIP service now checks at startup whether its address comes back.
+When it does not, the service logs a warning and gives a peer on this
+host (another service, a phone on the host) the local address it reaches
+instead (#335); peers elsewhere still get `HOST_IP`. Anything else on the
+host that names `HOST_IP` — a URL in a configuration, a tool run on the
+VM — still gets nothing back. Putting the address on the loopback, before
+Docker starts and at every boot, mends that too and does no harm:
 
 ```bash
 sudo ip addr add "$HOST_IP/32" dev lo
 ```
 
-Each SIP service checks at startup and logs a warning naming this when
-its address does not reach the host. `deploy/gcp-d8` does it with a
-systemd unit.
+`deploy/gcp-d8` does it with a systemd unit.
 
 ## Certificates
 

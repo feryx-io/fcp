@@ -375,6 +375,13 @@ Changes that need something of a configuration the operator keeps:
   `consumer_name`; it is ignored. Separately, every binary that stores its
   sections now reads a key the file changed between its first start on a
   database and its second; before, the first start's value stood.
+- **v0.25.529: a host that does not reach its own advertised address
+  works without the loopback fix** (#335). A SIP service whose
+  `[media] public_ip` does not come back to the host (a cloud VM behind
+  a 1:1 NAT) now gives peers on the host the local address instead in
+  Contact, Record-Route and SDP; it logs that once at startup. Hosts that
+  reach their address, and peers elsewhere, see no change. The address
+  on the loopback can stay.
 - **v0.25.528: the media server's `[auth]` is the file's alone** (#367).
   With no `tokens` it no longer makes a random one at each start: a file
   with auth on and no token (and no `FCP_MEDIA_AUTH_TOKENS`) is refused,

@@ -4,8 +4,10 @@
 //! holds that address, and nothing sent to it from the host comes back.
 //! Every service on the host advertises it in Contact and SDP, so the
 //! requests one service sends another inside a call — a BYE to voicemail,
-//! a transfer, the media between them — are lost. The fix is the host's:
-//! the address on its loopback (`ip addr add <ip>/32 dev lo`).
+//! a transfer, the media between them — are lost. Since v0.25.529 a
+//! service that finds this tells a peer on this host the address the peer
+//! is at instead (`crate::sibling`, #335); the address on the loopback
+//! (`ip addr add <ip>/32 dev lo`) still mends it for anything else.
 
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
@@ -40,22 +42,22 @@ pub async fn reaches_this_host(ip: IpAddr, within: Duration) -> bool {
     )
 }
 
-/// [`reaches_this_host`], with a warning when it does not: what an
-/// operator needs to read before the first call between two services on
-/// this host is lost.
-pub async fn warn_if_unreachable(ip: &str, service: &str) {
-    let Ok(addr) = ip.parse::<IpAddr>() else {
-        return;
-    };
-    if !reaches_this_host(addr, Duration::from_secs(1)).await {
-        warn!(
-            public_ip = %addr,
-            service,
-            "This host does not reach its own advertised address: requests and media between \
-             services on it (a BYE to voicemail, a transfer) will be lost. On a cloud VM whose \
-             public address is NAT at the edge, put it on the loopback: ip addr add {addr}/32 dev lo"
-        );
+/// [`reaches_this_host`], with a warning when it does not. Returns the
+/// address when this host does not reach it, for
+/// [`crate::transport::RealTransportDispatcher::advertise_to_siblings`].
+pub async fn warn_if_unreachable(ip: &str, service: &str) -> Option<IpAddr> {
+    let addr = ip.parse::<IpAddr>().ok()?;
+    if reaches_this_host(addr, Duration::from_secs(1)).await {
+        return None;
     }
+    warn!(
+        public_ip = %addr,
+        service,
+        "This host does not reach its own advertised address. SIP services on it are told the \
+         local address for one another instead; for anything else on the host, put the address \
+         on the loopback: ip addr add {addr}/32 dev lo"
+    );
+    Some(addr)
 }
 
 #[cfg(test)]

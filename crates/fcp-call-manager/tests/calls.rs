@@ -53,6 +53,29 @@ impl Stack {
         extra: &str,
         rtp_ports: u16,
     ) -> Option<Self> {
+        Self::start_node(
+            r#"local_ip = "127.0.0.1""#,
+            registrar,
+            media,
+            extra,
+            rtp_ports,
+        )
+        .await
+    }
+
+    /// A node that advertises `public_ip` in Contact and SDP, as one on a
+    /// cloud VM does when it is told only its public address.
+    async fn start_advertising(public_ip: &str) -> Option<Self> {
+        Self::start_node("", "", &format!(r#"public_ip = "{public_ip}""#), "", 60).await
+    }
+
+    async fn start_node(
+        local_ip: &str,
+        registrar: &str,
+        media: &str,
+        extra: &str,
+        rtp_ports: u16,
+    ) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -67,7 +90,7 @@ node_id = "e2e-call-manager"
 [sip]
 udp_bind = "127.0.0.1:{sip_port}"
 tcp_bind = "127.0.0.1:{sip_port}"
-local_ip = "127.0.0.1"
+{local_ip}
 # Every phone here is 127.0.0.1, one source to the per-source limit: forty
 # calls back to back went over it and lost a 200 (sipp.rs tests the limit).
 max_messages_per_source = 0
@@ -189,14 +212,17 @@ format = "compact"
         panic!("{why}\nphone {} saw: {seen:#?}\n{logs}", phone.username);
     }
 
-    /// Stop the service (a clean exit is asserted) and drop the database.
-    async fn finish(mut self) {
-        if let Some(service) = self.service.lock().await.take() {
-            service.stop().await;
-        }
+    /// Stop the service (a clean exit is asserted) and drop the database;
+    /// the service's log.
+    async fn finish(mut self) -> String {
+        let log = match self.service.lock().await.take() {
+            Some(service) => service.stop().await,
+            None => String::new(),
+        };
         if let Some(db) = self.db.take() {
             db.drop_db().await;
         }
+        log
     }
 }
 
@@ -848,6 +874,66 @@ async fn the_callee_can_hang_up() {
     assert_eq!(cdr["hangup_party"], "Callee", "{cdr}");
 
     stack.finish().await;
+}
+
+/// #335: a node on a cloud VM whose public address is NAT at the edge
+/// advertises an address this host does not reach (TEST-NET-3 here). A
+/// phone on the same host was sent that address in Contact and SDP, so its
+/// media and its BYE were lost; it is now given the node's local address.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phone_on_the_nodes_host_is_given_an_address_it_reaches() {
+    if std::env::var("FCP_TEST_DATABASE_URL").is_err() {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping");
+        return;
+    }
+    let stack = Stack::start_advertising("203.0.113.7")
+        .await
+        .expect("the stack starts");
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+
+    alice_call.media().play_tone(440.0, 1500);
+    assert!(
+        bob_call.media().heard(440, SOON).await,
+        "Bob hears Alice (received {} packets)",
+        bob_call.media().packets_received()
+    );
+    bob_call.media().play_tone(880.0, 1500);
+    assert!(
+        alice_call.media().heard(880, SOON).await,
+        "Alice hears Bob (received {} packets)",
+        alice_call.media().packets_received()
+    );
+
+    // In-dialog requests go to the node's Contact.
+    assert_eq!(
+        alice_call.hangup().await.unwrap(),
+        200,
+        "Alice's BYE is answered"
+    );
+    assert!(
+        bob_phone
+            .expect(SOON, |e| matches!(e, PhoneEvent::Bye { .. }))
+            .await
+            .is_some(),
+        "Bob's phone gets BYE"
+    );
+    let log = stack.finish().await;
+    assert!(
+        log.contains("Services on this host are told this host's own address"),
+        "{log}"
+    );
 }
 
 /// What a call leaves behind (#344): once calls have ended, whichever side

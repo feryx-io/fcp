@@ -56,6 +56,7 @@ pub mod sca;
 pub mod self_reach;
 pub mod service;
 pub mod settings;
+pub mod sibling;
 pub mod supervision;
 pub mod transfer;
 pub mod transport;
