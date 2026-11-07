@@ -211,11 +211,12 @@ pub const SEEDED_BY: &str = "seed";
 /// key is settled three ways against the recorded seed: a key whose TOML
 /// value differs from the seed takes the TOML's value; any other key keeps
 /// the stored one, so an edit made through the API stands until the file
-/// changes that key. With no seed recorded, only keys the row lacks or holds
+/// changes that key. With no seed recorded, a row last written by the
+/// seeder is its own seed; for any other, only keys the row lacks or holds
 /// as null are taken from the TOML. The TOML is then recorded as the seed.
 ///
-/// Returns `None` when the section has no row; the caller seeds it, and
-/// the next boot, finding the row equal to the file, records the seed.
+/// Returns `None` when the section has no row; the caller seeds it with
+/// [`SEEDED_BY`], and the next boot records the seed.
 pub async fn reconcile_with_seed(
     store: &dyn ConfigStore,
     service: &str,
@@ -226,7 +227,14 @@ pub async fn reconcile_with_seed(
     let Some(mut entry) = store.get_config(service, section, tenant_id).await? else {
         return Ok(None);
     };
-    let seed = store.get_seed(service, section, tenant_id).await?;
+    let seed = match store.get_seed(service, section, tenant_id).await? {
+        Some(seed) => Some(seed),
+        // Stored by a first boot and not edited since: the row is the file
+        // it was taken from. Without this, a key the file changed before
+        // the second boot was never read (#341).
+        None if entry.updated_by.as_deref() == Some(SEEDED_BY) => Some(entry.value.clone()),
+        None => None,
+    };
     // A section the caller could not serialize says nothing about the file.
     if !toml_value.is_object() || seed.as_ref() == Some(toml_value) {
         return Ok(Some(entry));
@@ -626,6 +634,21 @@ mod tests {
         assert_eq!(boot(&store, toml.clone()).await, moved);
         assert_eq!(boot(&store, toml).await, moved);
         assert_eq!(version(&store), 3);
+    }
+
+    #[tokio::test]
+    async fn a_key_changed_before_the_second_boot_is_read() {
+        // A binary's first boot stores the row and records no seed.
+        let store = OneSection::default();
+        let first = json!({"bind": "127.0.0.1:1", "max": 100});
+        store
+            .set_config("vm", "vm", "_system", first, Some(SEEDED_BY))
+            .await
+            .unwrap();
+        let toml = json!({"bind": "127.0.0.1:2", "max": 100});
+        assert_eq!(boot(&store, toml.clone()).await, toml);
+        assert_eq!(boot(&store, toml.clone()).await, toml);
+        assert_eq!(version(&store), 2);
     }
 
     #[tokio::test]

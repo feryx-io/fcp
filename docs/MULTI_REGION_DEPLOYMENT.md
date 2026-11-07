@@ -121,6 +121,8 @@ group. If WebSocket clients need the whole stream, run one events server
 (or one group) for the deployment and point them all at it. An events
 server that dies with events in hand leaves them to the others in its
 group, which take them over after `[event_bus] claim_idle_secs` (60).
+Within the group each server reads as its `[service] node_id` (or
+`[event_bus] consumer_name`), so give every events server its own.
 
 **CDRs.** Call managers write `fcp:cdrs` on the shared Redis; run the
 `fcp-jobs` CDR processors anywhere, in one consumer group. Records are
