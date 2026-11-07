@@ -581,6 +581,7 @@ async fn run() -> Result<()> {
 
     // 11. Create UAC for outbound calls (B-leg)
     let dispatcher_for_flow = dispatcher.clone();
+    let dispatcher_for_trace = dispatcher.clone();
     let uac = create_uac(
         &config,
         Arc::clone(&transaction_manager_ref),
@@ -1673,7 +1674,7 @@ async fn run() -> Result<()> {
         Arc::clone(&dialog_manager_ref),
         local_uri,
         media_profile,
-        local_addr,
+        local_addr.clone(),
         config.media.rtp_port_start,
         registrar.as_ref().map(Arc::clone),
         routing_service.clone(), // routing service from config
@@ -1763,7 +1764,16 @@ async fn run() -> Result<()> {
     if sip_trace_store.is_some() {
         let (sip_trace_tx, mut sip_trace_rx) =
             tokio::sync::mpsc::channel::<fcp_core::SipTraceMessage>(2000);
-        handler.set_sip_trace_tx(sip_trace_tx);
+        // Recorded as it crosses the wire (`fcp_sip::wire_trace`), this node
+        // named by its advertised address and SIP port.
+        let sip_port = config
+            .sip
+            .udp_bind
+            .parse::<std::net::SocketAddr>()
+            .map(|a| a.port())
+            .unwrap_or(5060);
+        let wire_trace = handler.set_sip_trace_tx(sip_trace_tx, format!("{local_addr}:{sip_port}"));
+        dispatcher_for_trace.trace_to(wire_trace);
 
         let trace_store = sip_trace_store.clone().unwrap();
         let trace_event_bus = sip_trace_event_bus.clone();

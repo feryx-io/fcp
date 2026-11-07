@@ -936,6 +936,138 @@ async fn a_phone_on_the_nodes_host_is_given_an_address_it_reaches() {
     );
 }
 
+/// A call's SIP trace is what crossed the wire: every message the node sent
+/// and received, between two addresses that are each `ip:port`, so the
+/// admin's ladder has one column per party. Before, the node recorded at
+/// places of its own: a BYE it rebuilt with a branch no response matched,
+/// responses with no destination, the B-leg's INVITE "to" a URI, and none
+/// of the ACKs or replies to a BYE it sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_s_trace_is_what_crossed_the_wire() {
+    use fcp_core::SipTraceStore;
+    let stack = stack_or_skip!();
+    let (_alice, alice_phone, bob, bob_phone) = two_phones(&stack).await;
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let bob_call = bob_phone
+        .incoming(SOON)
+        .await
+        .expect("Bob's phone rings")
+        .answer()
+        .await
+        .unwrap();
+    alice_call.answered(SOON).await.unwrap();
+    assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    assert!(alice_call.ended(SOON).await);
+    let cdr = stack.cdrs(1, SOON).await.remove(0);
+
+    // The trace is written in batches, filed under the node's own id for
+    // the call, which the caller's Call-ID leads to.
+    let store = fcp_storage_postgres::sip_trace::PostgresSipTraceStore::new(
+        stack.seed.storage().pool().clone(),
+    );
+    let sip_call_id = cdr["sip_call_id"].as_str().unwrap().to_string();
+    let deadline = tokio::time::Instant::now() + SOON;
+    let trace = loop {
+        let a_leg = store
+            .get_sip_traces_by_sip_call_id(&sip_call_id)
+            .await
+            .unwrap();
+        let trace = match a_leg.first() {
+            Some(first) => store.get_sip_traces(&first.call_id).await.unwrap(),
+            None => Vec::new(),
+        };
+        let ended = trace
+            .iter()
+            .filter(|m| m.cseq.ends_with(" BYE") && m.method_or_status == "200")
+            .count();
+        if ended >= 2 || tokio::time::Instant::now() > deadline {
+            break trace;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let ladder: Vec<String> = trace
+        .iter()
+        .map(|m| {
+            format!(
+                "{} {} {} -> {} [{}]",
+                m.direction, m.method_or_status, m.source_addr, m.dest_addr, m.cseq
+            )
+        })
+        .collect();
+    let ladder = ladder.join("\n");
+
+    // Every message is between two addresses, and the node is always the same one.
+    let node = format!("{}", stack.sip);
+    for m in &trace {
+        for addr in [&m.source_addr, &m.dest_addr] {
+            assert!(addr.parse::<SocketAddr>().is_ok(), "{addr:?} in\n{ladder}");
+        }
+        let ours = if m.direction == "inbound" {
+            &m.dest_addr
+        } else {
+            &m.source_addr
+        };
+        assert_eq!(ours, &node, "\n{ladder}");
+    }
+    // Both legs, whole: the caller's INVITE (challenged, then sent again)
+    // and its ACKs, the B-leg's INVITE, each answer, the B-leg's ACK, the
+    // BYE and its 200, each once.
+    let count = |direction: &str, what: &str, cseq: &str| {
+        trace
+            .iter()
+            .filter(|m| {
+                m.direction == direction && m.method_or_status == what && m.cseq.ends_with(cseq)
+            })
+            .count()
+    };
+    assert_eq!(count("inbound", "INVITE", "INVITE"), 2, "\n{ladder}");
+    assert_eq!(count("outbound", "401", "INVITE"), 1, "\n{ladder}");
+    assert_eq!(count("outbound", "INVITE", "INVITE"), 1, "\n{ladder}");
+    assert_eq!(count("inbound", "200", "INVITE"), 1, "\n{ladder}");
+    assert_eq!(count("outbound", "200", "INVITE"), 1, "\n{ladder}");
+    assert_eq!(count("inbound", "ACK", "ACK"), 2, "\n{ladder}");
+    assert_eq!(
+        count("outbound", "ACK", "ACK"),
+        1,
+        "the B-leg's ACK\n{ladder}"
+    );
+    assert_eq!(count("inbound", "BYE", "BYE"), 1, "\n{ladder}");
+    assert_eq!(
+        count("outbound", "200", "BYE"),
+        1,
+        "the 200 to Bob's BYE\n{ladder}"
+    );
+    assert_eq!(count("outbound", "BYE", "BYE"), 1, "\n{ladder}");
+    assert_eq!(count("inbound", "200", "BYE"), 1, "\n{ladder}");
+    // The BYE the node sent is the one its 200 answers: the same branch.
+    let branch = |raw: &str| {
+        raw.lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("via:"))
+            .and_then(|via| via.split("branch=").nth(1))
+            .map(|b| b.split([';', ' ']).next().unwrap_or("").to_string())
+    };
+    let bye = trace
+        .iter()
+        .find(|m| m.direction == "outbound" && m.method_or_status == "BYE")
+        .unwrap();
+    let ok = trace
+        .iter()
+        .find(|m| {
+            m.direction == "inbound" && m.method_or_status == "200" && m.cseq.ends_with("BYE")
+        })
+        .unwrap();
+    assert_eq!(
+        branch(&bye.raw_message),
+        branch(&ok.raw_message),
+        "\n{ladder}"
+    );
+    assert!(
+        bye.timestamp <= ok.timestamp,
+        "the BYE before its answer\n{ladder}"
+    );
+    stack.finish().await;
+}
+
 /// What a call leaves behind (#344): once calls have ended, whichever side
 /// hung up, the node holds no dialog, call or media session for them, and
 /// the Call-IDs it remembers for tracing stay within a margin rather than

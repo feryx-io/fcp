@@ -78,17 +78,72 @@ const ARROW_Y_OFFSET = 14
 const NODE_HEIGHT = 28
 const HEADER_HEIGHT = 32
 
+/** Where a message went from and to, as the ladder's columns name them. */
+interface Endpoints {
+  src: string
+  dst: string
+}
+
+/** `sip:bob@192.0.2.9:61185;transport=udp` → `192.0.2.9:61185`. */
+function hostPort(addr: string): string {
+  let a = addr.trim().replace(/^<|>$/g, '')
+  a = a.replace(/^sips?:/i, '')
+  const at = a.lastIndexOf('@')
+  if (at >= 0) a = a.slice(at + 1)
+  return a.split(';')[0]
+}
+
+/** The Call-ID header of a raw message. */
+function callIdOf(raw: string): string {
+  const line = raw.split(/\r?\n/).find((l) => /^(call-id|i)\s*:/i.test(l))
+  return line ? line.slice(line.indexOf(':') + 1).trim() : ''
+}
+
+/**
+ * Each message's two ends. Traces recorded before v0.25.532 named some ends
+ * as a URI, the node without its port, or a response's destination not at
+ * all; those are read as the column they meant: a URI by its host and port,
+ * the node by its one `ip:port`, a response's missing end by whoever sent the
+ * request it answers (same Call-ID and CSeq).
+ */
+function traceEndpoints(messages: SipTraceMessage[]): Endpoints[] {
+  const locals = new Set<string>()
+  for (const msg of messages) {
+    locals.add(hostPort(msg.direction === 'inbound' ? msg.dest_addr : msg.source_addr))
+  }
+  // The node by its address with a port, when one is known.
+  const localByIp = new Map<string, string>()
+  for (const l of locals) {
+    const ip = l.replace(/:\d+$/, '')
+    if (l !== ip || !localByIp.has(ip)) localByIp.set(ip, l)
+  }
+  const local = (addr: string) => localByIp.get(addr.replace(/:\d+$/, '')) ?? addr
+
+  const requestFrom = new Map<string, string>()
+  return messages.map((msg) => {
+    let src = hostPort(msg.source_addr)
+    let dst = hostPort(msg.dest_addr)
+    if (msg.direction === 'inbound') dst = local(dst)
+    else src = local(src)
+    const key = `${callIdOf(msg.raw_message)} ${msg.cseq}`
+    const isResponse = /^\d{3}$/.test(msg.method_or_status)
+    if (!isResponse) requestFrom.set(key, src)
+    else if (!dst) dst = requestFrom.get(key) ?? ''
+    if (!src && isResponse) src = requestFrom.get(key) ?? ''
+    return { src, dst }
+  })
+}
+
 /**
  * Infer columns for the ladder diagram from the message set.
  * Supports multi-hop: each unique address becomes its own column.
  * Ordering: inbound-side peers (callers) → local addresses → outbound-side peers (callees).
  */
-function inferColumns(messages: SipTraceMessage[]): Column[] {
+function inferColumns(messages: SipTraceMessage[], ends: Endpoints[]): Column[] {
   const localSet = new Set<string>()
-  for (const msg of messages) {
-    if (msg.direction === 'inbound') localSet.add(msg.dest_addr)
-    else localSet.add(msg.source_addr)
-  }
+  messages.forEach((msg, i) => {
+    localSet.add(msg.direction === 'inbound' ? ends[i].dst : ends[i].src)
+  })
 
   const callers: string[] = []
   const callees: string[] = []
@@ -103,15 +158,15 @@ function inferColumns(messages: SipTraceMessage[]): Column[] {
     else callees.push(addr)
   }
 
-  for (const msg of messages) {
+  messages.forEach((msg, i) => {
     if (msg.direction === 'inbound') {
-      add(msg.source_addr, 'in')
-      add(msg.dest_addr, 'out')
+      add(ends[i].src, 'in')
+      add(ends[i].dst, 'out')
     } else {
-      add(msg.dest_addr, 'out')
-      add(msg.source_addr, 'in')
+      add(ends[i].dst, 'out')
+      add(ends[i].src, 'in')
     }
-  }
+  })
 
   const ordered = [...callers, ...locals, ...callees]
   return ordered.map((addr, i) => ({
@@ -120,9 +175,9 @@ function inferColumns(messages: SipTraceMessage[]): Column[] {
   }))
 }
 
-function getArrowXs(msg: SipTraceMessage, columns: Column[]): { fromX: number; toX: number } | null {
-  const sourceCol = columns.find((c) => c.addr === msg.source_addr)
-  const destCol = columns.find((c) => c.addr === msg.dest_addr)
+function getArrowXs(ends: Endpoints, columns: Column[]): { fromX: number; toX: number } | null {
+  const sourceCol = columns.find((c) => c.addr === ends.src)
+  const destCol = columns.find((c) => c.addr === ends.dst)
   if (!sourceCol || !destCol) return null
   return { fromX: sourceCol.x, toX: destCol.x }
 }
@@ -291,7 +346,8 @@ function SipLadderInner({ messages, live }: SipLadderProps) {
   const reactFlow = useReactFlow()
   const theme = useThemeStore((s) => s.theme)
 
-  const columns = useMemo(() => inferColumns(messages), [messages])
+  const ends = useMemo(() => traceEndpoints(messages), [messages])
+  const columns = useMemo(() => inferColumns(messages, ends), [messages, ends])
 
   const baseTime = messages.length > 0 ? Date.parse(messages[0].timestamp) : 0
   const formatRelTime = useCallback(
@@ -322,7 +378,7 @@ function SipLadderInner({ messages, live }: SipLadderProps) {
     })
 
     messages.forEach((msg, i) => {
-      const xs = getArrowXs(msg, columns)
+      const xs = getArrowXs(ends[i], columns)
       if (!xs) return
       result.push({
         id: `msg-${i}`,
@@ -344,7 +400,7 @@ function SipLadderInner({ messages, live }: SipLadderProps) {
     })
 
     return result
-  }, [messages, columns, selectedIdx, totalHeight, totalWidth, formatRelTime])
+  }, [messages, ends, columns, selectedIdx, totalHeight, totalWidth, formatRelTime])
 
   // Auto-pan to latest message when live
   useEffect(() => {
