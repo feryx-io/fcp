@@ -146,11 +146,14 @@ pub struct ProviderEntry {
     /// Logical name used to reference this provider (e.g. "kokoro", "openai-prod").
     pub name: String,
 
-    /// Provider type: "local", "kokoro", "openai", "google_cloud", "elevenlabs", etc.
+    /// Provider type: `piper`, `local`/`kokoro`, `openai`, `google_cloud`,
+    /// `elevenlabs`, `azure` or `aws_polly`.
     #[serde(rename = "type")]
     pub provider_type: String,
 
-    /// Local engine name (for type = "local" / "kokoro").
+    /// The engine: for `local`, the local engine (`kokoro`); for
+    /// `aws_polly`, Polly's (`neural` unless set, `standard`, `long-form`,
+    /// `generative`).
     #[serde(default)]
     pub engine: Option<String>,
 
@@ -158,13 +161,30 @@ pub struct ProviderEntry {
     #[serde(default)]
     pub python_path: Option<String>,
 
-    /// API key (for cloud providers).
+    /// API key (for cloud providers; for `azure`, the Speech resource's
+    /// key).
     #[serde(default)]
     pub api_key: Option<String>,
 
     /// Model name (for OpenAI, ElevenLabs).
     #[serde(default)]
     pub model: Option<String>,
+
+    /// The vendor's region (for `azure` and `aws_polly`).
+    #[serde(default)]
+    pub region: Option<String>,
+
+    /// AWS credentials (for `aws_polly`); both or neither. Unset, the
+    /// environment's or the machine's role are used.
+    #[serde(default)]
+    pub access_key_id: Option<String>,
+    #[serde(default)]
+    pub secret_access_key: Option<String>,
+
+    /// Another endpoint than the vendor's (for `elevenlabs`, `azure`,
+    /// `aws_polly`): a proxy, or a stand-in in tests.
+    #[serde(default)]
+    pub endpoint: Option<String>,
 
     /// GPU device for local models: "auto", "cuda", "cuda:0", "cuda:1", "cpu".
     #[serde(default = "default_device")]
@@ -374,6 +394,10 @@ mod tests {
                     binary: None,
                     voices_dir: None,
                     voice: None,
+                    region: None,
+                    access_key_id: None,
+                    secret_access_key: None,
+                    endpoint: None,
                 }],
             },
             stt: SttSection::default(),

@@ -5,7 +5,7 @@
 //! - Piper, the default local engine (`docs/SPEECH.md` §8)
 //! - Kokoro, local, in the `fcp-tts-full` image
 //! - OpenAI TTS
-//! - AWS Polly, Azure, ElevenLabs: placeholders until #339
+//! - AWS Polly, Azure and ElevenLabs over their vendors' APIs (#339)
 //!
 //! ## Architecture
 //!
@@ -494,8 +494,8 @@ fn default_language() -> String {
     "en-US".to_string()
 }
 
-/// TTS provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// TTS provider configuration. Its `Debug` leaves out every key.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TtsProviderConfig {
     /// Google Cloud Text-to-Speech
@@ -504,22 +504,35 @@ pub enum TtsProviderConfig {
         api_key: String,
     },
 
-    /// AWS Polly
+    /// Amazon Polly, signed with AWS Signature Version 4.
     AwsPolly {
-        /// AWS region
+        /// AWS region (`us-east-1`).
         region: String,
-        /// AWS access key ID
-        access_key_id: String,
-        /// AWS secret access key
-        secret_access_key: String,
+        /// Static credentials. Unset, they are read from
+        /// `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`,
+        /// else from the instance's role (EC2 instance metadata, IMDSv2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        access_key_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secret_access_key: Option<String>,
+        /// `neural` (the default), `standard`, `long-form` or `generative`.
+        #[serde(default = "default_polly_engine")]
+        engine: String,
+        /// Another endpoint than `https://polly.<region>.amazonaws.com`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        endpoint: Option<String>,
     },
 
-    /// Azure Cognitive Services TTS
+    /// Azure AI Speech (Cognitive Services) text to speech.
     Azure {
-        /// Subscription key
+        /// The Speech resource's key.
         subscription_key: String,
-        /// Azure region
+        /// The resource's region (`westeurope`).
         region: String,
+        /// Another endpoint than
+        /// `https://<region>.tts.speech.microsoft.com`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        endpoint: Option<String>,
     },
 
     /// OpenAI TTS (ChatGPT)
@@ -531,13 +544,17 @@ pub enum TtsProviderConfig {
         model: String,
     },
 
-    /// ElevenLabs
+    /// ElevenLabs.
+    #[serde(rename = "elevenlabs", alias = "eleven_labs")]
     ElevenLabs {
         /// API key
         api_key: String,
-        /// Model ID (optional)
+        /// Model ID; `eleven_flash_v2_5` when unset.
         #[serde(skip_serializing_if = "Option::is_none")]
         model_id: Option<String>,
+        /// Another endpoint than `https://api.elevenlabs.io`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        endpoint: Option<String>,
     },
 
     /// Kokoro, run by a Python worker (the `fcp-tts-full` image).
@@ -582,6 +599,92 @@ pub enum TtsProviderConfig {
 
 fn default_openai_model() -> String {
     "tts-1".to_string()
+}
+
+fn default_polly_engine() -> String {
+    "neural".to_string()
+}
+
+impl std::fmt::Debug for TtsProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const KEY: &str = "<redacted>";
+        match self {
+            Self::GoogleCloud { .. } => f
+                .debug_struct("GoogleCloud")
+                .field("api_key", &KEY)
+                .finish(),
+            Self::AwsPolly {
+                region,
+                access_key_id,
+                secret_access_key,
+                engine,
+                endpoint,
+            } => f
+                .debug_struct("AwsPolly")
+                .field("region", region)
+                .field("access_key_id", access_key_id)
+                .field(
+                    "secret_access_key",
+                    &secret_access_key.as_ref().map(|_| KEY),
+                )
+                .field("engine", engine)
+                .field("endpoint", endpoint)
+                .finish(),
+            Self::Azure {
+                region, endpoint, ..
+            } => f
+                .debug_struct("Azure")
+                .field("subscription_key", &KEY)
+                .field("region", region)
+                .field("endpoint", endpoint)
+                .finish(),
+            Self::OpenAi { model, .. } => f
+                .debug_struct("OpenAi")
+                .field("api_key", &KEY)
+                .field("model", model)
+                .finish(),
+            Self::ElevenLabs {
+                model_id, endpoint, ..
+            } => f
+                .debug_struct("ElevenLabs")
+                .field("api_key", &KEY)
+                .field("model_id", model_id)
+                .field("endpoint", endpoint)
+                .finish(),
+            Self::Local {
+                engine,
+                executable_path,
+                device,
+            } => f
+                .debug_struct("Local")
+                .field("engine", engine)
+                .field("executable_path", executable_path)
+                .field("device", device)
+                .finish(),
+            Self::Piper {
+                binary,
+                voices_dir,
+                voice,
+            } => f
+                .debug_struct("Piper")
+                .field("binary", binary)
+                .field("voices_dir", voices_dir)
+                .field("voice", voice)
+                .finish(),
+            Self::Remote {
+                url,
+                provider,
+                tenant_id,
+                ..
+            } => f
+                .debug_struct("Remote")
+                .field("url", url)
+                .field("auth_token", &KEY)
+                .field("provider", provider)
+                .field("tenant_id", tenant_id)
+                .finish(),
+        }
+    }
 }
 
 #[cfg(test)]

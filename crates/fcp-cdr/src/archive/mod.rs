@@ -13,7 +13,7 @@
 
 pub mod directory;
 pub mod s3;
-pub mod sigv4;
+pub use fcp_core::sigv4;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

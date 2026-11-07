@@ -32,9 +32,6 @@ use tracing::{debug, info, warn};
 /// How long one sentence may take before the voice's process is replaced.
 const SYNTHESIS_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The rate every provider returns.
-const OUTPUT_RATE: u32 = 8000;
-
 /// Piper with the voices in a directory.
 pub struct PiperTts {
     binary: PathBuf,
@@ -190,41 +187,9 @@ impl PiperTts {
     }
 }
 
-/// A WAV at any rate as 8 kHz mono 16-bit WAV.
+/// Piper's WAV as every provider's: 8 kHz mono.
 fn to_8k_wav(bytes: &[u8]) -> Result<Vec<u8>> {
-    let reader =
-        hound::WavReader::new(std::io::Cursor::new(bytes)).context("reading Piper's WAV")?;
-    let spec = reader.spec();
-    let channels = usize::from(spec.channels.max(1));
-    let samples: Vec<i16> = reader
-        .into_samples::<i16>()
-        .collect::<std::result::Result<_, _>>()
-        .context("reading Piper's samples")?;
-    let mono: Vec<i16> = samples
-        .chunks(channels)
-        .map(|c| (c.iter().map(|&s| i32::from(s)).sum::<i32>() / c.len() as i32) as i16)
-        .collect();
-    let pcm = if spec.sample_rate == OUTPUT_RATE {
-        mono
-    } else {
-        forge_resampler::resample_all(&mono, spec.sample_rate, OUTPUT_RATE, 1)
-            .map_err(|e| anyhow::anyhow!("resampling {} Hz: {e}", spec.sample_rate))?
-    };
-    let mut out = std::io::Cursor::new(Vec::new());
-    let mut writer = hound::WavWriter::new(
-        &mut out,
-        hound::WavSpec {
-            channels: 1,
-            sample_rate: OUTPUT_RATE,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        },
-    )?;
-    for s in pcm {
-        writer.write_sample(s)?;
-    }
-    writer.finalize()?;
-    Ok(out.into_inner())
+    super::wav_to_8k(bytes).context("Piper's WAV")
 }
 
 #[async_trait]

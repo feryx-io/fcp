@@ -1,6 +1,7 @@
-//! AWS Signature Version 4 for S3 requests, header-based, with the payload
-//! hash signed (`x-amz-content-sha256`): what an S3-compatible store needs
-//! to accept a PUT, and to verify the body it received is the body signed.
+//! AWS Signature Version 4, header-based, with the payload hash signed:
+//! what an S3-compatible store needs to accept a PUT and verify the body
+//! it received is the body signed (the CDR archive, firmware images), and
+//! what any other AWS API takes (Polly, `fcp_media::tts`).
 
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};

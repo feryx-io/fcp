@@ -36,6 +36,7 @@ pub mod sipp;
 pub mod smoke;
 pub mod stt;
 pub mod tls;
+pub mod tts;
 pub mod wav;
 
 pub use db::TestDatabase;

@@ -181,31 +181,6 @@ impl MediaConfig {
             reject_crlf("turn_server", turn)?;
         }
 
-        if let Some(tts) = &self.tts {
-            match &tts.provider {
-                crate::tts::TtsProviderConfig::GoogleCloud { .. }
-                | crate::tts::TtsProviderConfig::OpenAi { .. }
-                | crate::tts::TtsProviderConfig::Local { .. }
-                | crate::tts::TtsProviderConfig::Piper { .. }
-                | crate::tts::TtsProviderConfig::Remote { .. } => {}
-                crate::tts::TtsProviderConfig::AwsPolly { .. } => {
-                    return Err(Error::Config(
-                        "tts.provider.type = \"aws_polly\" is not implemented yet; use google_cloud, open_ai, or local".to_string(),
-                    ));
-                }
-                crate::tts::TtsProviderConfig::Azure { .. } => {
-                    return Err(Error::Config(
-                        "tts.provider.type = \"azure\" is not implemented yet; use google_cloud, open_ai, or local".to_string(),
-                    ));
-                }
-                crate::tts::TtsProviderConfig::ElevenLabs { .. } => {
-                    return Err(Error::Config(
-                        "tts.provider.type = \"elevenlabs\" is not implemented yet; use google_cloud, open_ai, or local".to_string(),
-                    ));
-                }
-            }
-        }
-
         Ok(())
     }
 }
@@ -287,24 +262,32 @@ mod tests {
         assert!(serde_json::from_str::<MediaConfig>(json).is_err());
     }
 
+    /// #339: the three that were placeholders, refused at startup, are
+    /// providers now.
     #[test]
-    fn test_stub_tts_provider_is_rejected() {
-        let config = MediaConfig {
-            tts: Some(crate::tts::TtsConfig {
-                provider: crate::tts::TtsProviderConfig::AwsPolly {
-                    region: "us-east-1".to_string(),
-                    access_key_id: "key".to_string(),
-                    secret_access_key: "secret".to_string(),
-                },
-                cache_dir: "/tmp/tts".into(),
-                cache_max_size_mb: 100,
-                default_language: "en-US".to_string(),
-                default_voice: None,
-            }),
-            ..Default::default()
+    fn every_tts_provider_is_accepted() {
+        let polly: crate::tts::TtsProviderConfig =
+            serde_json::from_str(r#"{"type":"aws_polly","region":"us-east-1"}"#).unwrap();
+        let azure = crate::tts::TtsProviderConfig::Azure {
+            subscription_key: "key".to_string(),
+            region: "westeurope".to_string(),
+            endpoint: None,
         };
-
-        assert!(config.validate().is_err());
+        let elevenlabs: crate::tts::TtsProviderConfig =
+            serde_json::from_str(r#"{"type":"elevenlabs","api_key":"key"}"#).unwrap();
+        for provider in [polly, azure, elevenlabs] {
+            let config = MediaConfig {
+                tts: Some(crate::tts::TtsConfig {
+                    provider,
+                    cache_dir: "/tmp/tts".into(),
+                    cache_max_size_mb: 100,
+                    default_language: "en-US".to_string(),
+                    default_voice: None,
+                }),
+                ..Default::default()
+            };
+            assert!(config.validate().is_ok());
+        }
     }
 
     #[test]
