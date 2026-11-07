@@ -841,6 +841,21 @@ few MB in all. `/status` `held` and `fcp_node_held` now count what the
 node keeps, and `calls.rs` `ended_calls_leave_nothing_behind` fails
 without the fix with 20 dialogs left over 40 calls.
 
+**What still grew (#372).** The weekly soak of 2026-11-07 failed on
+`fcp_node_held`, 701 → 2,278 over four hours, about one for every call
+into a room. The soak now keeps a gauge's `kind` label apart
+(`metric/<service>/fcp_node_held{kind="dialogs"}`), so a report names
+the kind. It was dialogs. The conference server rang under one To tag
+and answered under another, and the call manager's UAC (siphon-rs) puts
+the early dialog of every tagged provisional in the dialog store and
+takes none out: each join left its ringing dialog behind. A fork that
+rang and was cancelled left one too. The conference server now answers
+under the tag it rang with, and the call manager forgets a B-leg's early
+dialogs once its INVITE has its outcome, keeping only the one it was
+answered on. `rooms.rs` `room_calls_through_the_call_manager_leave_nothing_behind`
+(24 dialogs left over 24 joins without either fix) and `calls.rs`
+`rung_and_cancelled_legs_leave_no_dialog_behind` (6 over 6 calls).
+
 | Finding | Severity | Dealt with |
 |---|---|---|
 | A conference room was a number, not a tenant's number. The conference server keyed its live rooms — the mixer, the session index, recordings, DTMF handlers, the floor, speaker and content claims — by room number alone. Two tenants that both numbered a meeting 8801 shared one mix on a node, and a tenant's control request (mute, kick, lock, record, video) acted on whichever 8801 was live, since `control_tenant` preferred the live room's tenant to the one the admin API named. It went unseen because every SIP caller was the default tenant's: the call manager's leg into a room named no tenant, and the conference server, reached at an address, refused any other tenant's caller (403) once there was more than one tenant. The soak's tenant, made through the API, could not join a room at all. | S1 (two tenants' calls mixed; one tenant controlling another's room) | Fixed in v0.25.410. A live room is a `RoomKey` (tenant and number), and `RoomBridge` is the only way to the mixer's rooms, so a lookup by number alone does not compile. The call manager names the caller's tenant and user on its legs into a room, and the conference server believes them from a trusted edge (`resolve_tenant`). Every HTTP route that names a room takes the tenant from the header the admin API and the peers already send; `/conferences` lists each room with its tenant. `rooms.rs` `two_tenants_with_one_room_number_meet_apart`. |

@@ -1141,6 +1141,66 @@ async fn ended_calls_leave_nothing_behind() {
     stack.finish().await;
 }
 
+/// A call that rings two phones and is answered on one leaves no early
+/// dialog behind (#372). The node's UAC keeps an early dialog for each
+/// phone that rings; the one cancelled stayed in the dialog store for
+/// good — as did the ringing dialog of every join to the conference
+/// server, which rang under one To tag and answered under another.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rung_and_cancelled_legs_leave_no_dialog_behind() {
+    const CALLS: usize = 6;
+    let Some(stack) = Stack::start_with("[security]\nmax_invite_cps_per_source = 0\n", 40).await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let desk = stack.phone(&bob).await;
+    let mobile = stack.phone(&bob).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(desk.register().await.unwrap(), 200);
+    assert_eq!(mobile.register().await.unwrap(), 200);
+
+    for n in 0..CALLS {
+        let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+        let (on_desk, on_mobile) = tokio::join!(desk.incoming(SOON), mobile.incoming(SOON));
+        let (Some(on_desk), Some(on_mobile)) = (on_desk, on_mobile) else {
+            stack
+                .fail(
+                    &format!("call {n}: Bob's phones did not both ring"),
+                    &alice_phone,
+                )
+                .await;
+        };
+        // The desk answers; the mobile is cancelled.
+        let ringing = on_mobile.leave_ringing();
+        let bob_call = on_desk.answer().await.unwrap();
+        alice_call.answered(SOON).await.unwrap();
+        let _ = ringing.ended(SOON).await;
+        if n % 2 == 0 {
+            alice_call.hangup().await.unwrap();
+            assert!(bob_call.ended(SOON).await, "call {n}: Bob's leg ends");
+        } else {
+            bob_call.hangup().await.unwrap();
+            assert!(alice_call.ended(SOON).await, "call {n}: Alice's leg ends");
+        }
+    }
+
+    let deadline = tokio::time::Instant::now() + SOON;
+    let held = loop {
+        let held = stack.get("/status").await["held"].clone();
+        if (held["dialogs"] == 0 && held["calls"] == 0) || tokio::time::Instant::now() > deadline {
+            break held;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!(held["dialogs"], 0, "{CALLS} rung calls left: {held}");
+    assert_eq!(held["calls"], 0, "{held}");
+    stack.finish().await;
+}
+
 /// Phones behind NAT (`fcp_sip::nat`): each names, in its Contact and its
 /// SDP, an address it cannot be reached at — loopback, as Anvil did on D8 —
 /// and is seen at another. The callee is rung where it registered from,

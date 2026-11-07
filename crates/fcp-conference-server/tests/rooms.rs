@@ -21,6 +21,8 @@ const ROOM: &str = "8000";
 struct Stack {
     conference: tokio::sync::Mutex<Option<Service>>,
     call_manager: tokio::sync::Mutex<Option<Service>>,
+    /// The call manager's HTTP port, once it is started.
+    call_manager_http: std::sync::Mutex<Option<u16>>,
     db: Option<TestDatabase>,
     seed: Seed,
     /// The conference server's SIP address: where a phone dials a room.
@@ -94,6 +96,7 @@ format = "compact"
         Some(Self {
             conference: tokio::sync::Mutex::new(Some(service)),
             call_manager: tokio::sync::Mutex::new(None),
+            call_manager_http: std::sync::Mutex::new(None),
             db: Some(db),
             seed,
             sip: SocketAddr::from(([127, 0, 0, 1], sip_port)),
@@ -159,6 +162,7 @@ format = "compact"
         let service =
             Service::start("call-manager", bin, &config, &loopback(http, "/health")).await;
         *self.call_manager.lock().await = Some(service);
+        *self.call_manager_http.lock().unwrap() = Some(http);
         SocketAddr::from(([127, 0, 0, 1], sip_port))
     }
 
@@ -168,6 +172,17 @@ format = "compact"
         Phone::new(name, "x", REALM, self.sip)
             .await
             .expect("phone binds")
+    }
+
+    /// What the call manager keeps for calls (`/status` `held`, #344).
+    async fn call_manager_held(&self) -> serde_json::Value {
+        let http = self
+            .call_manager_http
+            .lock()
+            .unwrap()
+            .expect("call manager");
+        let (_, body) = http_get(&loopback(http, "/status")).await.expect("status");
+        serde_json::from_str::<serde_json::Value>(&body).expect("json")["held"].clone()
     }
 
     async fn get(&self, path: &str) -> (u16, serde_json::Value) {
@@ -922,5 +937,68 @@ async fn callers_are_answered_on_ports_the_node_could_bind() {
     assert_eq!(alice_call.hangup().await.unwrap(), 200);
     assert_eq!(bob_call.hangup().await.unwrap(), 200);
     stack.wait_participants(0).await;
+    stack.finish().await;
+}
+
+/// Calls into a room through the call manager leave nothing behind there
+/// once they end (#372): the soak's call manager kept about one more thing
+/// for every room call (`fcp_node_held`). Callers leave both ways — the
+/// caller hangs up, or the room is emptied and made again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn room_calls_through_the_call_manager_leave_nothing_behind() {
+    const ROUNDS: usize = 12;
+    let Some(stack) = Stack::start_trusting(r#"trusted_edges = ["127.0.0.1"]"#).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack.seed.meeting(ROOM, None, None).await;
+    stack
+        .seed
+        .execute("UPDATE conference_meetings SET permanent = false")
+        .await;
+    // Both phones share one source, placing calls back to back.
+    let cm = stack
+        .start_call_manager_with("[security]\nmax_invite_cps_per_source = 0\n")
+        .await;
+    let a = stack.seed.user("alice", "alice-pw", "1001").await;
+    let b = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice = Phone::new(&a.username, &a.password, REALM, cm)
+        .await
+        .unwrap();
+    let bob = Phone::new(&b.username, &b.password, REALM, cm)
+        .await
+        .unwrap();
+    assert_eq!(alice.register().await.unwrap(), 200);
+    assert_eq!(bob.register().await.unwrap(), 200);
+    for round in 0..ROUNDS {
+        let (alice_call, bob_call) = tokio::join!(alice.call(ROOM), bob.call(ROOM));
+        let (alice_call, bob_call) = (alice_call.unwrap(), bob_call.unwrap());
+        let (a_in, b_in) = tokio::join!(alice_call.answered(SOON), bob_call.answered(SOON));
+        if let Err(e) = a_in.and(b_in) {
+            stack
+                .fail(&format!("round {round}: not both put through: {e}"), &alice)
+                .await;
+        }
+        stack.wait_participants(2).await;
+        let _ = tokio::join!(alice_call.hangup(), bob_call.hangup());
+        stack.wait_participants(0).await;
+        // Within the conference server's ten INVITEs a second from one address.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    let deadline = tokio::time::Instant::now() + SOON;
+    let held = loop {
+        let held = stack.call_manager_held().await;
+        let ended = held["dialogs"] == 0 && held["calls"] == 0 && held["flows"] == 0;
+        if ended || tokio::time::Instant::now() > deadline {
+            break held;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    eprintln!("held after {ROUNDS} rounds: {held}");
+    assert_eq!(held["dialogs"], 0, "{held}");
+    assert_eq!(held["calls"], 0, "{held}");
+    assert_eq!(held["flows"], 0, "{held}");
+    assert_eq!(held["media_sessions"], 0, "{held}");
     stack.finish().await;
 }

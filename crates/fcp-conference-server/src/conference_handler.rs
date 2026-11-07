@@ -5900,6 +5900,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let local_sip_uri = self.parse_local_sip_uri();
         let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri.clone());
         let ringing = uas.create_ringing(request);
+        // The answer carries the To tag the ringing did (RFC 3261 §12.1.1):
+        // one dialog, not an early one under a tag the caller never hears
+        // again — the call manager kept that one for every join (#372).
+        let answered_request = request_with_to_of(request, &ringing);
         handle.send_provisional(ringing).await;
 
         // 6. Allocate RTP port pair, bound (and a second one for video)
@@ -6082,7 +6086,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // 8. Create 200 OK with SDP answer using UAS
         let (mut response, dialog) = uas
-            .accept_invite(request, Some(&sdp_answer))
+            .accept_invite(&answered_request, Some(&sdp_answer))
             .context("Failed to create 200 OK")?;
 
         // 8b. RFC 4028: Add Session-Expires and Min-SE headers if session timers are enabled
@@ -8686,6 +8690,19 @@ impl Drop for Joining {
     }
 }
 
+/// `request` with the To header of `response`, tag and all: what a 200 OK
+/// made from it answers under the tag a provisional already gave.
+fn request_with_to_of(
+    request: &sip_core::Request,
+    response: &sip_core::Response,
+) -> sip_core::Request {
+    let mut tagged = request.clone();
+    if let Some(to) = response.headers().get("To") {
+        let _ = tagged.headers_mut().set_or_push("To", to);
+    }
+    tagged
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8728,6 +8745,37 @@ mod tests {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty());
         assert_eq!(number3, Some("8001"));
+    }
+
+    /// A join is answered under the To tag its ringing gave (#372): two
+    /// tags made the caller's side keep an early dialog it never ended.
+    #[test]
+    fn a_join_is_answered_under_the_tag_it_rang_with() {
+        let raw = "INVITE sip:8000@127.0.0.1 SIP/2.0\r\n\
+                   Via: SIP/2.0/UDP 127.0.0.1:5070;branch=z9hG4bKjoin\r\n\
+                   From: <sip:alice@e2e.local>;tag=caller\r\n\
+                   To: <sip:8000@127.0.0.1>\r\n\
+                   Call-ID: join@127.0.0.1\r\n\
+                   CSeq: 1 INVITE\r\n\
+                   Contact: <sip:alice@127.0.0.1:5070>\r\n\
+                   Max-Forwards: 70\r\n\
+                   Content-Length: 0\r\n\r\n";
+        let request = sip_parse::parse_request(&bytes::Bytes::from(raw)).expect("parses");
+        let me = sip_core::SipUri::parse("sip:conference@127.0.0.1").unwrap();
+        let uas = UserAgentServer::new(me.clone(), me);
+        let tag = |r: &sip_core::Response| {
+            r.headers()
+                .get("To")
+                .and_then(|to| to.split(";tag=").nth(1))
+                .map(str::to_string)
+        };
+        let ringing = uas.create_ringing(&request);
+        let (ok, dialog) = uas
+            .accept_invite(&request_with_to_of(&request, &ringing), None)
+            .unwrap();
+        assert!(tag(&ringing).is_some());
+        assert_eq!(tag(&ok), tag(&ringing));
+        assert_eq!(Some(dialog.id().local_tag().to_string()), tag(&ringing));
     }
 
     #[test]
