@@ -181,6 +181,28 @@ impl TrunkHealthMonitor {
         (entry.status != was).then_some(was)
     }
 
+    /// Take another node's finding for `trunk` in place of a probe of this
+    /// node's own: a node that does not probe follows what the call
+    /// managers find (`trunk_follow`, #336). Returns what the status was
+    /// before, when this changed it.
+    pub fn follow(
+        &self,
+        trunk: &str,
+        status: TrunkHealthStatus,
+        consecutive_failures: u32,
+        hosts_down: &[String],
+    ) -> Option<TrunkHealthStatus> {
+        let key = self.key_of(trunk);
+        let mut entry = self.state.get_mut(&key)?;
+        let was = entry.status;
+        entry.status = status;
+        entry.consecutive_failures = consecutive_failures;
+        drop(entry);
+        self.hosts_down
+            .insert(key, hosts_down.iter().cloned().collect());
+        (status != was).then_some(was)
+    }
+
     /// Returns `true` if the trunk is healthy (not `Down` and not admin-disabled).
     pub fn is_healthy(&self, trunk: &str) -> bool {
         let key = self.key_of(trunk);

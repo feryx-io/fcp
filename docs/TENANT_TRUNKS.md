@@ -344,6 +344,18 @@ What follows from §§5 and 13 without a question:
 - Events: `trunk.registered` / `trunk.registration_failed` /
   `trunk.health_changed` carry the tenant.
 
+**Amended in v0.25.527 (#336): only call managers probe.** The
+conference, IVR and voicemail servers route their dial-outs by the same
+trunks, and each used to probe every one of them, so a carrier address got
+four OPTIONS per interval. A server that is not a call manager now reads
+the call managers' published views (`cluster:trunks:<node>` in the
+cluster's Redis, every 5 s) and takes each trunk's health from the best of
+them: a trunk one call manager can reach is reachable. A trunk no call
+manager has probed yet, or reports at all, keeps what it has. Such a
+server publishes no view of its own, so `/v1/trunks` shows the call
+managers'. Without a Redis it has no one to follow and probes as before
+(`fcp_sbc_core::watch_trunk_health`).
+
 ## 10. Migration
 
 Nothing moves on its own.

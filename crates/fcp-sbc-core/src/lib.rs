@@ -29,6 +29,7 @@ pub mod health_probes;
 pub mod lcr;
 pub mod trunk_auth;
 pub mod trunk_calls;
+pub mod trunk_follow;
 pub mod trunk_health;
 pub mod trunk_quality;
 pub mod trunk_refresh;
@@ -72,6 +73,7 @@ pub use health_probes::{run_health_probes, HealthAnnouncer};
 pub use hmr_engine::HeaderManipulationEngine;
 pub use trunk_auth::TrunkCredentialProvider;
 pub use trunk_calls::{TrunkCalls, TrunkCps};
+pub use trunk_follow::{follow_trunk_health, watch_trunk_health, TrunkViews};
 pub use trunk_health::TrunkHealthMonitor;
 pub use trunk_refresh::{
     refresh_routing_rules, refresh_trunks, spawn_routing_rule_refresh, spawn_trunk_refresh,

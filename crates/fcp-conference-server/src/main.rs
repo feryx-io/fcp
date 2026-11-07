@@ -724,8 +724,19 @@ async fn main() -> Result<()> {
         )
         .await;
 
-        // Probe every trunk the node routes by, the tenants' included
-        tokio::spawn(fcp_sbc_core::run_health_probes(
+        // Every trunk the node routes by, the tenants' included, has the
+        // health the call managers find, read from the cluster's Redis;
+        // without it, the node probes them itself (#336).
+        #[cfg(feature = "storage-redis")]
+        let trunk_views = redis_storage.as_ref().map(|redis| {
+            Arc::new(fcp_cluster::TrunkRegistry::new(
+                redis.clone(),
+                config.service.node_id.clone(),
+            )) as Arc<dyn fcp_sbc_core::TrunkViews>
+        });
+        #[cfg(not(feature = "storage-redis"))]
+        let trunk_views: Option<Arc<dyn fcp_sbc_core::TrunkViews>> = None;
+        fcp_sbc_core::watch_trunk_health(
             Arc::clone(&health),
             Arc::clone(&trunk_set),
             Arc::clone(&uac),
@@ -733,7 +744,8 @@ async fn main() -> Result<()> {
                 Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
                 config.service.node_id.clone(),
             ),
-        ));
+            trunk_views,
+        );
 
         // Keep the REGISTER bindings of every registering trunk this node
         // routes by — its own and the tenants' — one node to a trunk
