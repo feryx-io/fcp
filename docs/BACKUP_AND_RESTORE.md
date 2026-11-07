@@ -375,6 +375,14 @@ Changes that need something of a configuration the operator keeps:
   `consumer_name`; it is ignored. Separately, every binary that stores its
   sections now reads a key the file changed between its first start on a
   database and its second; before, the first start's value stood.
+- **v0.25.528: the media server's `[auth]` is the file's alone** (#367).
+  With no `tokens` it no longer makes a random one at each start: a file
+  with auth on and no token (and no `FCP_MEDIA_AUTH_TOKENS`) is refused,
+  as every other binary's is. Its `auth` section is no longer stored, and
+  the stored copy an earlier release wrote, tokens included, is deleted at
+  the first start. `config_audit_log` still holds those values
+  (`service = 'media'`, `section = 'auth'`); rotate the tokens if the
+  database's readers should not have had them.
 - **v0.25.453: an emergency test call (`933`) is answered by the call
   manager** (`docs/E911.md` "Test calls"), which reads back what a live
   call would carry and calls no carrier. Migration 120 gives every tenant

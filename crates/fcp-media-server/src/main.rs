@@ -198,10 +198,23 @@ async fn main() -> Result<()> {
 
     // 5b. Seed operational config sections into database (DB primary, TOML seed)
     // Bootstrap sections (service, http, logging, tls, storage) stay TOML-only.
+    // So does `[auth]`: a stored copy could disable auth on a public bind,
+    // and it would put the bearer tokens in the database (#367).
     if let Some(ref cs) = config_store {
         let cs = cs.as_ref();
         let svc = "media";
         let tid = "_system";
+
+        // Before v0.25.528 the section was stored, tokens and all, and
+        // never read back. Take it out.
+        match cs.delete_config(svc, "auth", tid).await {
+            Ok(true) => info!(
+                service = svc,
+                "Removed the stored auth section; the tokens are read from the file only"
+            ),
+            Ok(false) => {}
+            Err(e) => warn!(service = svc, error = %e, "Could not remove the stored auth section"),
+        }
 
         let sections: Vec<(&str, serde_json::Value)> = vec![
             (
@@ -211,10 +224,6 @@ async fn main() -> Result<()> {
             (
                 "recording",
                 serde_json::to_value(&config.recording).unwrap_or_default(),
-            ),
-            (
-                "auth",
-                serde_json::to_value(&config.auth).unwrap_or_default(),
             ),
             ("ai", serde_json::to_value(&config.ai).unwrap_or_default()),
             (
@@ -236,14 +245,6 @@ async fn main() -> Result<()> {
                             if let Ok(v) = serde_json::from_value(entry.value) {
                                 config.recording = v;
                             }
-                        }
-                        "auth" => {
-                            // SECURITY: Auth config stays TOML-only.
-                            // DB overrides could silently disable auth on public binds.
-                            info!(
-                                service = svc,
-                                section, "Skipping DB override for auth (TOML-only for security)"
-                            );
                         }
                         "ai" => {
                             if let Ok(v) = serde_json::from_value(entry.value) {
