@@ -95,7 +95,11 @@ async fn scrape(url: &str) -> BTreeMap<String, f64> {
     parse_prometheus(&body)
 }
 
-/// The value lines of a Prometheus exposition, summed per metric name.
+/// The value lines of a Prometheus exposition, summed per metric name —
+/// except that a series' `kind` label is kept apart, as
+/// `name{kind="dialogs"}`, so a gauge of what a node holds by kind
+/// (`fcp_node_held`) says which kind grew (#372). Every other label is
+/// summed away.
 pub fn parse_prometheus(body: &str) -> BTreeMap<String, f64> {
     let mut out: BTreeMap<String, f64> = BTreeMap::new();
     for line in body.lines() {
@@ -109,16 +113,28 @@ pub fn parse_prometheus(body: &str) -> BTreeMap<String, f64> {
             Some(x) => x,
             None => continue,
         };
-        let name = name_part
-            .split_once('{')
-            .map(|(n, _)| n)
-            .unwrap_or(name_part);
+        let (name, labels) = name_part.split_once('{').unwrap_or((name_part, ""));
         let Ok(value) = rest.split_whitespace().next().unwrap_or("").parse::<f64>() else {
             continue;
         };
-        *out.entry(name.to_string()).or_default() += value;
+        let key = match label(labels, "kind") {
+            Some(kind) => format!("{name}{{kind=\"{kind}\"}}"),
+            None => name.to_string(),
+        };
+        *out.entry(key).or_default() += value;
     }
     out
+}
+
+/// One label's value from a series' `a="x",b="y"}` (values here carry no
+/// quotes or commas of their own).
+fn label<'a>(labels: &'a str, wanted: &str) -> Option<&'a str> {
+    labels
+        .trim_end_matches('}')
+        .split(',')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(k, _)| k.trim() == wanted)
+        .map(|(_, v)| v.trim().trim_matches('"'))
 }
 
 /// A process's resident set size, from `/proc/<pid>/statm` (pages).
@@ -193,6 +209,24 @@ sip_transactions_total 1.5e2
         assert_eq!(m["fcp_active_calls"], 7.0);
         assert_eq!(m["sip_transactions_total"], 150.0);
         assert!(!m.contains_key("# HELP"), "comments are not series");
+    }
+
+    #[test]
+    fn a_kind_label_is_kept_apart_and_the_others_summed() {
+        let body = r#"
+fcp_node_held{node="a",kind="dialogs"} 4
+fcp_node_held{node="b",kind="dialogs"} 1
+fcp_node_held{node="a",kind="calls"} 2
+fcp_node_held{kind="flows",node="a"} 0
+"#;
+        let m = parse_prometheus(body);
+        assert_eq!(m["fcp_node_held{kind=\"dialogs\"}"], 5.0);
+        assert_eq!(m["fcp_node_held{kind=\"calls\"}"], 2.0);
+        assert_eq!(m["fcp_node_held{kind=\"flows\"}"], 0.0);
+        assert!(
+            !m.contains_key("fcp_node_held"),
+            "no summed total beside them"
+        );
     }
 
     #[test]

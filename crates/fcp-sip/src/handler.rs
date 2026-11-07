@@ -5303,6 +5303,29 @@ impl SipMessageHandler {
         .await
     }
 
+    /// Forget a B-leg's early dialogs once its INVITE has its outcome
+    /// (RFC 3261 §13.2.2.4): every one but the dialog it was answered on.
+    /// siphon-rs's UAC puts the early dialog of each tagged provisional in
+    /// the dialog store and takes none of them out, so a callee that rang
+    /// under one To tag and answered under another — the conference
+    /// server did, on every join — or a fork that rang and was cancelled
+    /// left a dialog behind for every call (#372). The confirmed dialog is
+    /// the call's, ended by its BYE.
+    async fn forget_early_dialogs(
+        dialog_manager: &DialogManager,
+        b_leg_handle: &crate::uac::OutboundCall,
+    ) {
+        let answered_on = {
+            let dialog = b_leg_handle.dialog.read().await;
+            (dialog.state() == sip_dialog::DialogStateType::Confirmed).then(|| dialog.id().clone())
+        };
+        for early in b_leg_handle.get_early_dialogs().await {
+            if Some(early.id()) != answered_on.as_ref() {
+                dialog_manager.remove(early.id());
+            }
+        }
+    }
+
     /// [`cancel_or_bye_fork_leg`](Self::cancel_or_bye_fork_leg) on its own,
     /// so a fork race can spawn it: cancelling a leg waits on that leg's
     /// CANCEL transaction, and a contact that is gone — a phone that
@@ -5350,6 +5373,7 @@ impl SipMessageHandler {
         let outcome =
             tokio::time::timeout(Duration::from_secs(32), b_leg_handle.invite_outcome()).await;
         let answered = matches!(outcome, Ok(sip_uac::InviteOutcome::Final(code)) if (200..300).contains(&code));
+        Self::forget_early_dialogs(&dialog_manager, &b_leg_handle).await;
         if !answered {
             if cancel_result.is_err() {
                 debug!(
@@ -9559,6 +9583,7 @@ impl SipMessageHandler {
                 let dialog_guard = handle.dialog.read().await;
                 Some(dialog_guard.clone())
             };
+            Self::forget_early_dialogs(&self.dialog_manager, &handle).await;
 
             debug!(
                 call_id = %call_id,
