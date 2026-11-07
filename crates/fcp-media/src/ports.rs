@@ -49,21 +49,31 @@ mod tests {
 
     #[tokio::test]
     async fn a_pair_held_by_another_socket_is_passed_over_and_given_back() {
-        // Fifty pairs (the pool's least), all but one held here.
-        let start = loop {
-            let port = 40000 + (rand::random::<u16>() % 5000) * 2;
-            if std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok() {
-                break port;
+        // Fifty pairs (the pool's least), all but the first held here. The
+        // range is shared with every test binding ports at once: one is
+        // used only when both ports of its first pair are free and every
+        // other port is held by this test, so the free pair is the one
+        // expected. A port held elsewhere let another pair through.
+        let (start, held) = loop {
+            let start = 40000 + (rand::random::<u16>() % 5000) * 2;
+            if ![start, start + 1]
+                .iter()
+                .all(|port| std::net::UdpSocket::bind(("0.0.0.0", *port)).is_ok())
+            {
+                continue;
+            }
+            let held: Vec<_> = (1..50)
+                .flat_map(|pair| [start + 2 * pair, start + 2 * pair + 1])
+                .filter_map(|port| std::net::UdpSocket::bind(("0.0.0.0", port)).ok())
+                .collect();
+            if held.len() == 98 {
+                break (start, held);
             }
         };
         let pool = PortPool::new(PortPoolConfig {
             min_port: start,
             max_port: start + 100,
         });
-        let held: Vec<_> = (1..50)
-            .flat_map(|pair| [start + 2 * pair, start + 2 * pair + 1])
-            .filter_map(|port| std::net::UdpSocket::bind(("0.0.0.0", port)).ok())
-            .collect();
         let (pair, _socket) = bound_port_pair(&pool).await.expect("the free pair");
         assert_eq!(pair.rtp_port, start);
         assert_eq!(
