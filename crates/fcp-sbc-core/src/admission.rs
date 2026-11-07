@@ -130,6 +130,15 @@ impl AdmissionConfig {
         }
     }
 
+    /// Whether this node limits what it carries — calls, calls a second,
+    /// registrations — and so has a capacity to publish. REGISTER rates
+    /// bound floods, not load.
+    pub fn caps_capacity(&self) -> bool {
+        self.max_cps != 0
+            || self.max_concurrent_calls != 0
+            || self.max_concurrent_registrations != 0
+    }
+
     /// Whether any limit here would ever refuse anything.
     pub fn caps_anything(&self) -> bool {
         self.max_cps != 0
@@ -949,7 +958,7 @@ impl NodeAdmission for AdmissionController {
         self.call_ended();
     }
 
-    fn admit_register(&self, source: IpAddr, aor: &str) -> Result<(), Refusal> {
+    fn admit_register(&self, source: Option<IpAddr>, aor: &str) -> Result<(), Refusal> {
         let cfg = self.config.read().unwrap();
         let (per_source, per_aor) = (
             cfg.max_register_cps_per_source,
@@ -958,11 +967,14 @@ impl NodeAdmission for AdmissionController {
         let max_registrations = cfg.max_concurrent_registrations as u64;
         drop(cfg);
 
-        if per_source != 0
-            && !self
-                .register_rate
-                .try_record(&format!("src:{source}"), per_source)
-        {
+        // An exempt peer carries many devices: no per-source limit is its.
+        let over_source = source.is_some_and(|source| {
+            per_source != 0
+                && !self
+                    .register_rate
+                    .try_record(&format!("src:{source}"), per_source)
+        });
+        if over_source {
             AdmissionCounters::global().note_refused(Refusal::RegisterRate, "");
             return Err(Refusal::RegisterRate);
         }
@@ -1675,26 +1687,75 @@ mod node_admission_tests {
         let one: IpAddr = "198.51.100.7".parse().unwrap();
         let two: IpAddr = "198.51.100.8".parse().unwrap();
 
-        assert!(ctrl.admit_register(one, "sip:alice@example.com").is_ok());
-        assert!(ctrl.admit_register(one, "sip:bob@example.com").is_ok());
+        assert!(ctrl
+            .admit_register(Some(one), "sip:alice@example.com")
+            .is_ok());
+        assert!(ctrl
+            .admit_register(Some(one), "sip:bob@example.com")
+            .is_ok());
         assert_eq!(
-            ctrl.admit_register(one, "sip:carol@example.com"),
+            ctrl.admit_register(Some(one), "sip:carol@example.com"),
             Err(Refusal::RegisterRate)
         );
         // Another address has its own bucket.
-        assert!(ctrl.admit_register(two, "sip:dave@example.com").is_ok());
+        assert!(ctrl
+            .admit_register(Some(two), "sip:dave@example.com")
+            .is_ok());
 
         // And one AOR across addresses: alice has one so far, two more fit.
         let ctrl = AdmissionController::new(AdmissionConfig {
             max_register_cps_per_aor: 2,
             ..AdmissionConfig::unlimited()
         });
-        assert!(ctrl.admit_register(one, "sip:alice@example.com").is_ok());
-        assert!(ctrl.admit_register(two, "SIP:Alice@example.com").is_ok());
+        assert!(ctrl
+            .admit_register(Some(one), "sip:alice@example.com")
+            .is_ok());
+        assert!(ctrl
+            .admit_register(Some(two), "SIP:Alice@example.com")
+            .is_ok());
         assert_eq!(
-            ctrl.admit_register(two, "sip:alice@example.com"),
+            ctrl.admit_register(Some(two), "sip:alice@example.com"),
             Err(Refusal::RegisterRate)
         );
+    }
+
+    /// A peer that carries many devices has no per-source limit, but each
+    /// AOR it carries keeps its own (#314).
+    #[test]
+    fn an_exempt_peer_is_limited_only_by_aor() {
+        let ctrl = AdmissionController::new(AdmissionConfig {
+            max_register_cps_per_source: 1,
+            max_register_cps_per_aor: 1,
+            ..AdmissionConfig::unlimited()
+        });
+        for user in ["alice", "bob", "carol"] {
+            assert!(ctrl
+                .admit_register(None, &format!("sip:{user}@example.com"))
+                .is_ok());
+        }
+        assert_eq!(
+            ctrl.admit_register(None, "sip:alice@example.com"),
+            Err(Refusal::RegisterRate)
+        );
+    }
+
+    /// REGISTERs per source are the one limit on when `[admission]` says
+    /// nothing; `0` turns it off (#314).
+    #[test]
+    fn registers_per_source_are_limited_by_default() {
+        let unset = AdmissionSection::default().resolve();
+        assert_eq!(
+            unset.max_register_cps_per_source,
+            DEFAULT_REGISTER_CPS_PER_SOURCE
+        );
+        assert!(!unset.caps_capacity(), "a flood bound is not a capacity");
+        let off = AdmissionSection {
+            max_register_cps_per_source: Some(0),
+            ..Default::default()
+        }
+        .resolve();
+        assert_eq!(off.max_register_cps_per_source, 0);
+        assert!(!off.caps_anything());
     }
 
     /// The registration limit is read from the count the store keeps,
@@ -1707,14 +1768,18 @@ mod node_admission_tests {
         });
         let source: IpAddr = "198.51.100.9".parse().unwrap();
         ctrl.set_registration_count(9);
-        assert!(ctrl.admit_register(source, "sip:alice@example.com").is_ok());
+        assert!(ctrl
+            .admit_register(Some(source), "sip:alice@example.com")
+            .is_ok());
         ctrl.set_registration_count(10);
         assert_eq!(
-            ctrl.admit_register(source, "sip:alice@example.com"),
+            ctrl.admit_register(Some(source), "sip:alice@example.com"),
             Err(Refusal::Registrations)
         );
         ctrl.set_registration_count(4);
-        assert!(ctrl.admit_register(source, "sip:alice@example.com").is_ok());
+        assert!(ctrl
+            .admit_register(Some(source), "sip:alice@example.com")
+            .is_ok());
     }
 
     /// Every refusal is counted under its own reason, and the admitted
@@ -1772,7 +1837,9 @@ mod drain_tests {
         assert_eq!(ctrl.drain_expiry_cap(), Some(60));
         // And the REGISTER itself is still answered: a device that is
         // moving needs somewhere to move from.
-        assert!(ctrl.admit_register(source, "sip:alice@example.com").is_ok());
+        assert!(ctrl
+            .admit_register(Some(source), "sip:alice@example.com")
+            .is_ok());
 
         // A deployment that would rather not shorten anything says zero.
         let ctrl = AdmissionController::new(AdmissionConfig {
@@ -1783,6 +1850,13 @@ mod drain_tests {
         assert_eq!(ctrl.drain_expiry_cap(), None);
     }
 }
+
+/// REGISTERs a second one source address may send when `[admission]` says
+/// nothing (#314): a 50-phone office behind one NAT, all booting at once,
+/// registers within a few seconds with its challenges, and a device
+/// refused is told to come back in `retry_after_secs`. A flood from one
+/// address stops here, before any credential work.
+pub const DEFAULT_REGISTER_CPS_PER_SOURCE: u32 = 50;
 
 /// The limits a node keeps (`docs/CAPACITY_AND_SURVIVABILITY.md` §4).
 ///
@@ -1801,7 +1875,10 @@ pub struct AdmissionSection {
     pub max_concurrent_registrations: Option<u32>,
     /// REGISTERs a second from one source address. A challenged
     /// registration is two REGISTERs, so a limit of `n` admits `n / 2`
-    /// registrations a second from one address.
+    /// registrations a second from one address. Unset is
+    /// [`DEFAULT_REGISTER_CPS_PER_SOURCE`], the one limit on by default
+    /// (#314); `0` is none. Peers that carry many devices (an SBC in
+    /// front, a site's link, another node) are exempt.
     pub max_register_cps_per_source: Option<u32>,
     /// REGISTERs a second for one AOR, across addresses.
     pub max_register_cps_per_aor: Option<u32>,
@@ -1815,13 +1892,15 @@ pub struct AdmissionSection {
 
 impl AdmissionSection {
     /// The controller's configuration: what this section says, and no
-    /// limit anywhere it says nothing.
+    /// limit anywhere it says nothing, but for REGISTERs per source.
     pub fn resolve(&self) -> AdmissionConfig {
         let mut cfg = AdmissionConfig::unlimited();
         cfg.max_cps = self.max_cps.unwrap_or(0);
         cfg.max_concurrent_calls = self.max_concurrent_calls.unwrap_or(0);
         cfg.max_concurrent_registrations = self.max_concurrent_registrations.unwrap_or(0);
-        cfg.max_register_cps_per_source = self.max_register_cps_per_source.unwrap_or(0);
+        cfg.max_register_cps_per_source = self
+            .max_register_cps_per_source
+            .unwrap_or(DEFAULT_REGISTER_CPS_PER_SOURCE);
         cfg.max_register_cps_per_aor = self.max_register_cps_per_aor.unwrap_or(0);
         if let Some(secs) = self.retry_after_secs {
             cfg.retry_after_secs = secs.clamp(1, 3600);

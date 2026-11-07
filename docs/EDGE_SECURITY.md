@@ -36,7 +36,9 @@ were checked and hold:
   peer under the private CA, anything else under the system roots with the
   ordinary name check.
 - **REGISTER floods are bounded** per source address and per AOR, and the
-  gate runs before any credential work (capacity phase 1).
+  gate runs before any credential work (capacity phase 1). *Corrected in
+  v0.25.525 (#314): only when an operator set the key; unset is now 50
+  REGISTERs a second per source, the peers that carry many devices exempt.*
 - **The parser is fuzzed**: request, response, URI, headers, Via,
   multipart, CPIM and a serialise round-trip
   (`external/siphon-rs/fuzz/fuzz_targets/`). *Corrected in phase 5b: the

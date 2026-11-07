@@ -1110,7 +1110,7 @@ async fn run() -> Result<()> {
         let call_mgr = Arc::clone(&call_manager);
         let admission = Arc::clone(&admission);
         let limits = config.admission();
-        let publishes_capacity = limits.caps_anything();
+        let publishes_capacity = limits.caps_capacity();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {

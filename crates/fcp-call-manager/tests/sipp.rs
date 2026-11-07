@@ -1063,6 +1063,63 @@ async fn trusted_sources_are_not_limited_per_source() {
     assert!(other < 1000, "the limit no longer applies: {other} of 1200");
 }
 
+/// A node that writes no `[admission]` still bounds a REGISTER flood from
+/// one address, at 50 a second (#314), and an address it trusts — an SBC,
+/// a site's link — is exempt, since it carries many devices. 400
+/// REGISTERs at 200 a second: most of the untrusted flood is refused 503,
+/// and every one of the trusted is challenged.
+///
+/// siphon-rs's own per-source limit is off, so what is counted is
+/// admission's.
+#[tokio::test]
+async fn registers_per_source_are_limited_by_default() {
+    let Some(sipp) = Sipp::find() else {
+        return;
+    };
+    let Some(stack) = Stack::start_configured(
+        "max_messages_per_source = 0\ntrusted_sources = [\"127.0.0.2/32\"]",
+        "",
+    )
+    .await
+    else {
+        return;
+    };
+    let alice = &stack.alice;
+    let mut answers = Vec::new();
+    for source in [Ipv4Addr::new(127, 0, 0, 3), Ipv4Addr::new(127, 0, 0, 2)] {
+        let flood = sipp
+            .start_at(
+                source,
+                &scenario("flood_register"),
+                Some(stack.sip),
+                &[("user", &alice.username), ("domain", REALM)],
+                &["-r", "200", "-m", "400", "-timeout", "20s"],
+            )
+            .wait(Duration::from_secs(30))
+            .await;
+        answers.push((answered(&flood, 401), answered(&flood, 503)));
+        // The next second's bucket is the next source's.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+    }
+    let [(challenged, refused), (trusted_challenged, trusted_refused)] = answers[..] else {
+        unreachable!()
+    };
+    eprintln!(
+        "REGISTER floods: untrusted {challenged} challenged, {refused} refused; \
+         trusted {trusted_challenged} challenged, {trusted_refused} refused"
+    );
+    assert!(
+        // Two seconds of flood touch three or four one-second windows.
+        refused >= 200 && challenged <= 200,
+        "50 a second by default: {challenged} challenged, {refused} refused"
+    );
+    assert_eq!(
+        (trusted_challenged, trusted_refused),
+        (400, 0),
+        "a trusted source is exempt"
+    );
+}
+
 /// `[sip] max_messages_per_source` is the node's to set: at 1,000 a second
 /// an address it does not trust gets 400 a second through.
 #[tokio::test]

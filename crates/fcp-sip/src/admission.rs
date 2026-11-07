@@ -80,8 +80,11 @@ pub trait NodeAdmission: Send + Sync {
     fn ended(&self, call_id: &str);
 
     /// A REGISTER arriving from `source` for `aor`, before any credential
-    /// work, so a flood cannot reach the store.
-    fn admit_register(&self, source: IpAddr, aor: &str) -> Result<(), Refusal>;
+    /// work, so a flood cannot reach the store. `source` is `None` for a
+    /// peer that carries many devices' registrations by design (an SBC, a
+    /// site's link, another node: [`crate::ingress::is_exempt`]), which no
+    /// per-source limit applies to; the per-AOR limit still does.
+    fn admit_register(&self, source: Option<IpAddr>, aor: &str) -> Result<(), Refusal>;
 
     /// What to put in `Retry-After` when refusing.
     fn retry_after_secs(&self) -> u64 {
@@ -138,6 +141,7 @@ pub fn register_gate(
     let Some(admission) = admission else {
         return RegisterGate::Pass;
     };
+    let source = (!crate::ingress::is_exempt(source)).then_some(source);
     if let Err(refusal) = admission.admit_register(source, aor) {
         return RegisterGate::Refuse {
             refusal,
@@ -363,7 +367,7 @@ mod register_expiry_tests {
                 Ok(())
             }
             fn ended(&self, _call_id: &str) {}
-            fn admit_register(&self, _source: IpAddr, _aor: &str) -> Result<(), Refusal> {
+            fn admit_register(&self, _source: Option<IpAddr>, _aor: &str) -> Result<(), Refusal> {
                 if self.refuse {
                     return Err(Refusal::RegisterRate);
                 }

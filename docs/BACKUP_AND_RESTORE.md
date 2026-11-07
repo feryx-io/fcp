@@ -355,6 +355,16 @@ Changes that need something of a configuration the operator keeps:
   named there is refused after the upgrade. `digest_uri_check = false`
   (`[registrar]` on the call manager and the standalone registrar, `[sip]`
   on the presence server) logs and accepts it as before.
+- **v0.25.525: REGISTERs per source are limited by default**
+  (`docs/CAPACITY_AND_SURVIVABILITY.md` §10, #314). A call manager or
+  registrar whose `[admission]` does not set `max_register_cps_per_source`
+  refuses a source's REGISTERs past 50 a second with `503` and
+  `Retry-After` (a challenged registration is two). Peers in
+  `[sip] trusted_sources` or `[e911] trusted_edges`, trunks and cluster
+  members are exempt. Before upgrading, make sure every SBC, load balancer
+  or site link that registers devices on their behalf is in one of those
+  lists; otherwise all its devices share its 50. `max_register_cps_per_source
+  = 0` keeps the old behaviour.
 - **v0.25.453: an emergency test call (`933`) is answered by the call
   manager** (`docs/E911.md` "Test calls"), which reads back what a live
   call would carry and calls no carrier. Migration 120 gives every tenant
