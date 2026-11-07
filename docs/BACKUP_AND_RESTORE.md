@@ -365,6 +365,16 @@ Changes that need something of a configuration the operator keeps:
   or site link that registers devices on their behalf is in one of those
   lists; otherwise all its devices share its 50. `max_register_cps_per_source
   = 0` keeps the old behaviour.
+- **v0.25.526: an events server's stream consumer is its node id**
+  (#341). `[event_bus] consumer_name` is read from the file only and is no
+  longer stored with the section; unset, the server reads the stream as its
+  `[service] node_id`, so it keeps the same consumer, and its pending
+  entries, across restarts. Two events servers in one consumer group must
+  have different node ids, or set different `consumer_name`s. A stored
+  `event_bus` row from an earlier release still holds a random
+  `consumer_name`; it is ignored. Separately, every binary that stores its
+  sections now reads a key the file changed between its first start on a
+  database and its second; before, the first start's value stood.
 - **v0.25.453: an emergency test call (`933`) is answered by the call
   manager** (`docs/E911.md` "Test calls"), which reads back what a live
   call would carry and calls no carrier. Migration 120 gives every tenant

@@ -75,7 +75,6 @@ region = "{region}"
 [event_bus]
 bus_type = "redis"
 redis_url = "{redis}"
-consumer_name = "{node_id}"
 
 [[event_bus.peer_regions]]
 region = "{peer_region}"

@@ -245,8 +245,15 @@ async fn main() -> Result<()> {
                             }
                         }
                         "event_bus" => {
-                            if let Ok(v) = serde_json::from_value(entry.value) {
+                            if let Ok(v) =
+                                serde_json::from_value::<config::EventBusConfig>(entry.value)
+                            {
+                                // The consumer is this instance's, from its
+                                // file; a row stored before v0.25.526 may
+                                // still carry another's (#341).
+                                let consumer_name = config.event_bus.consumer_name.take();
                                 config.event_bus = v;
+                                config.event_bus.consumer_name = consumer_name;
                             }
                         }
                         "limits" => {
@@ -538,7 +545,10 @@ async fn main() -> Result<()> {
                         redis_storage.clone(),
                         stream_key,
                         config.event_bus.consumer_group.clone(),
-                        config.event_bus.consumer_name.clone(),
+                        config
+                            .event_bus
+                            .consumer(&config.service.node_id)
+                            .to_string(),
                     );
 
                     // Ensure consumer group exists
@@ -602,7 +612,10 @@ async fn main() -> Result<()> {
                         let bridge = Arc::new(fcp_storage_redis::event_bus::EventBridge::new(
                             redis_storage.clone(),
                             local_region.clone(),
-                            config.event_bus.consumer_name.clone(),
+                            config
+                                .event_bus
+                                .consumer(&config.service.node_id)
+                                .to_string(),
                             peers,
                         ));
                         let _bridge_handles = bridge.spawn();

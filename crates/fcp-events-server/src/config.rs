@@ -539,9 +539,13 @@ pub struct EventBusConfig {
     #[serde(default = "default_consumer_group")]
     pub consumer_group: String,
 
-    /// Redis consumer name (unique per instance within a consumer group)
-    #[serde(default = "default_consumer_name")]
-    pub consumer_name: String,
+    /// This server's consumer within the group, unique per instance; the
+    /// node id when unset (`consumer`). It names one instance, so it is
+    /// read from the file only and never stored with the section: a value
+    /// stored once would be every server's sharing the database, and a
+    /// default made at each start rewrote the section at each start (#341).
+    #[serde(default, skip_serializing)]
+    pub consumer_name: Option<String>,
 
     /// An event handed to a consumer this long ago and not acknowledged
     /// is taken over by another, or by this server when it starts again:
@@ -554,6 +558,14 @@ pub struct EventBusConfig {
     /// `bus_type = "redis"`. Every region should list every other region.
     #[serde(default)]
     pub peer_regions: Vec<PeerRegionConfig>,
+}
+
+impl EventBusConfig {
+    /// The name this server reads the stream under: `consumer_name`, else
+    /// the node id, so a server keeps its pending entries across restarts.
+    pub fn consumer<'a>(&'a self, node_id: &'a str) -> &'a str {
+        self.consumer_name.as_deref().unwrap_or(node_id)
+    }
 }
 
 /// One peer region for the event bridge.
@@ -590,10 +602,6 @@ fn default_claim_idle_secs() -> u64 {
     60
 }
 
-fn default_consumer_name() -> String {
-    format!("consumer-{}", uuid::Uuid::new_v4())
-}
-
 impl Default for EventBusConfig {
     fn default() -> Self {
         Self {
@@ -602,7 +610,7 @@ impl Default for EventBusConfig {
             redis_url: None,
             redis_key_prefix: default_redis_key_prefix(),
             consumer_group: default_consumer_group(),
-            consumer_name: default_consumer_name(),
+            consumer_name: None,
             claim_idle_secs: default_claim_idle_secs(),
             peer_regions: Vec::new(),
         }
@@ -795,6 +803,31 @@ key_prefix = "fcp-ap:"
             Some("fcp-ap:")
         );
         assert!(EventsConfig::default().event_bus.peer_regions.is_empty());
+    }
+
+    #[test]
+    fn the_stored_event_bus_section_is_the_same_at_every_start() {
+        // #341: what is reconciled with the database must not change
+        // between two starts of the same file.
+        let a = serde_json::to_value(EventBusConfig::default()).unwrap();
+        let b = serde_json::to_value(EventBusConfig::default()).unwrap();
+        assert_eq!(a, b);
+        assert!(a.get("consumer_name").is_none(), "{a}");
+
+        let config: EventsConfig = toml::from_str(
+            r#"
+[service]
+node_id = "events-01"
+
+[event_bus]
+consumer_name = "worker-a"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.event_bus.consumer("events-01"), "worker-a");
+        let stored = serde_json::to_value(&config.event_bus).unwrap();
+        assert!(stored.get("consumer_name").is_none(), "{stored}");
+        assert_eq!(EventBusConfig::default().consumer("events-01"), "events-01");
     }
 
     #[test]
