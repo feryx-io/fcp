@@ -26,6 +26,9 @@ backoff_multiplier = 2.0
 
 [cdr]
 enabled = true
+# Stored records stay in the Redis stream this long for replay, about
+# 1.1 KB of Redis memory each (docs/CDR_PIPELINE.md §4.2).
+# retain_hours = 24
 # Overridden by FCP_JOBS_DATABASE_URL.
 database_url = "postgresql://fcp:change-me@postgres:5432/fcp"
 

@@ -70,7 +70,9 @@ Companion settings, so the nodes agree:
 - `[events] server_url` and `auth_token` on every producer, all
   pointing at the region's events server;
 - `[cdr] sink = "stream"` where `fcp-jobs` stores records for the
-  cluster;
+  cluster, with Redis sized for its `[cdr] retain_hours` replay window:
+  about 1.1 KB a record, so a million records a day is about 1.1 GB at
+  the default 24 hours (`docs/CDR_PIPELINE.md` §4.2);
 - `[registrar] cache_ttl_secs` (30) and `[events] use_redis` on the
   call manager, so a REGISTER on one node reaches the others' caches
   (`docs/MULTI_REGION_FOLLOWUPS.md`).
