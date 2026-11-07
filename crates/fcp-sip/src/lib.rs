@@ -64,6 +64,7 @@ pub mod trunk_egress;
 pub mod trunk_ingress;
 pub mod uac;
 pub mod user_calls;
+pub mod wire_trace;
 
 // Re-export shared config validation helper
 pub use config::validate_sip_binds;

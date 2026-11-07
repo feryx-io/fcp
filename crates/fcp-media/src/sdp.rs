@@ -1614,6 +1614,25 @@ pub fn rewrite_for_anchoring(
             continue;
         }
 
+        // The origin names the node, not the leg it came from: the other
+        // leg's address stays on its side. Its session id and version stay,
+        // so a re-offer still counts up.
+        if let Some(origin) = trimmed.strip_prefix("o=") {
+            let parts: Vec<&str> = origin.split_whitespace().collect();
+            if parts.len() == 6 && parts[3] == "IN" {
+                let addrtype = if server_ip.contains(':') {
+                    "IP6"
+                } else {
+                    "IP4"
+                };
+                result.push_str(&format!(
+                    "o={} {} {} IN {addrtype} {server_ip}\r\n",
+                    parts[0], parts[1], parts[2]
+                ));
+                continue;
+            }
+        }
+
         // Every connection line (session or media level) points at us.
         if trimmed.starts_with("c=IN IP") {
             let parts: Vec<&str> = trimmed.split_whitespace().collect();
@@ -2088,6 +2107,11 @@ a=rtpmap:101 telephone-event/8000
         // Check that connection address was replaced
         assert!(rewritten.contains("c=IN IP4 10.0.0.5"));
         assert!(!rewritten.contains("c=IN IP4 192.168.1.100"));
+
+        // The origin names the node, keeping the session's id and version;
+        // the caller's address appears nowhere.
+        assert!(rewritten.contains("o=- 123456 123456 IN IP4 10.0.0.5\r\n"));
+        assert!(!rewritten.contains("192.168.1.100"), "{rewritten}");
 
         // Check that media port was replaced
         assert!(rewritten.contains("m=audio 20000 RTP/AVP"));

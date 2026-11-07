@@ -48,6 +48,9 @@ pub struct RealTransportDispatcher {
     /// Set when this host does not reach its advertised address: a message
     /// to a peer on this host names the one the peer is at (#335).
     sibling: std::sync::OnceLock<crate::sibling::SiblingRewrite>,
+
+    /// Told of every message once it is sent (`crate::wire_trace`).
+    tap: std::sync::OnceLock<Arc<dyn crate::wire_trace::WireTap>>,
 }
 
 impl RealTransportDispatcher {
@@ -66,6 +69,7 @@ impl RealTransportDispatcher {
             #[cfg(feature = "tls")]
             tls_pool: Arc::new(sip_transport::pool::TlsPool::new()),
             sibling: std::sync::OnceLock::new(),
+            tap: std::sync::OnceLock::new(),
         }
     }
 
@@ -92,6 +96,7 @@ impl RealTransportDispatcher {
             #[cfg(feature = "tls")]
             tls_pool: Arc::new(sip_transport::pool::TlsPool::new()),
             sibling: std::sync::OnceLock::new(),
+            tap: std::sync::OnceLock::new(),
         }
     }
 
@@ -133,6 +138,12 @@ impl RealTransportDispatcher {
                 "Services on this host are told this host's own address for it, not the advertised one"
             );
         }
+    }
+
+    /// Tell `tap` of every message sent from now on, as it was sent. The
+    /// first call wins.
+    pub fn trace_to(&self, tap: Arc<dyn crate::wire_trace::WireTap>) {
+        let _ = self.tap.set(tap);
     }
 
     /// Register an inbound packet sink for client-initiated TCP/TLS connections.
@@ -360,24 +371,14 @@ pub fn ensure_crypto_provider() {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportDispatcher for RealTransportDispatcher {
-    async fn dispatch(&self, ctx: &TransportContext, payload: Bytes) -> Result<()> {
+impl RealTransportDispatcher {
+    /// Send `payload` as it is: on the stream it belongs to, else by its
+    /// transport.
+    async fn deliver(&self, ctx: &TransportContext, payload: Bytes) -> Result<()> {
         use sip_transaction::TransportKind as TxnTransportKind;
 
         let peer = ctx.peer();
         let transport = ctx.transport();
-        let payload = match self.sibling.get() {
-            Some(sibling) => {
-                let bound = self
-                    .udp_socket
-                    .as_ref()
-                    .and_then(|s| s.local_addr().ok())
-                    .map(|a| a.ip());
-                sibling.apply(peer.ip(), bound, &payload).unwrap_or(payload)
-            }
-            None => payload,
-        };
 
         // Extract first line for logging (to identify message type)
         let first_line = payload
@@ -507,6 +508,30 @@ impl TransportDispatcher for RealTransportDispatcher {
             }
         }
 
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl TransportDispatcher for RealTransportDispatcher {
+    async fn dispatch(&self, ctx: &TransportContext, payload: Bytes) -> Result<()> {
+        let peer = ctx.peer();
+        let payload = match self.sibling.get() {
+            Some(sibling) => {
+                let bound = self
+                    .udp_socket
+                    .as_ref()
+                    .and_then(|s| s.local_addr().ok())
+                    .map(|a| a.ip());
+                sibling.apply(peer.ip(), bound, &payload).unwrap_or(payload)
+            }
+            None => payload,
+        };
+        let tap = self.tap.get().map(|tap| (Arc::clone(tap), payload.clone()));
+        self.deliver(ctx, payload).await?;
+        if let Some((tap, payload)) = tap {
+            tap.sent(&format!("{:?}", ctx.transport()), peer, &payload);
+        }
         Ok(())
     }
 }

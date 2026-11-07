@@ -693,7 +693,7 @@ pub struct SipMessageHandler {
     flow_registry: Arc<crate::flow::FlowRegistry>,
 
     /// Channel for SIP message tracing (raw message capture to PostgreSQL).
-    sip_trace_tx: Option<mpsc::Sender<fcp_core::SipTraceMessage>>,
+    wire_trace: Option<Arc<crate::wire_trace::WireTrace>>,
 
     /// Map SIP Call-ID header values → FCP internal CallId for trace correlation.
     /// Populated at call creation (A-leg) and B-leg INVITE (B-leg).
@@ -1127,7 +1127,7 @@ impl SipMessageHandler {
             conference_node_selector: None,
             node_id,
             flow_registry: Arc::new(crate::flow::FlowRegistry::new()),
-            sip_trace_tx: None,
+            wire_trace: None,
             sip_call_id_map: Arc::new(dashmap::DashMap::new()),
             emergency_fallbacks: Arc::new(dashmap::DashMap::new()),
             early_cancels: Arc::new(dashmap::DashMap::new()),
@@ -1778,8 +1778,24 @@ impl SipMessageHandler {
     }
 
     /// Set the SIP trace channel for raw message capture to PostgreSQL.
-    pub fn set_sip_trace_tx(&mut self, tx: mpsc::Sender<fcp_core::SipTraceMessage>) {
-        self.sip_trace_tx = Some(tx);
+    ///
+    /// Every message is recorded as it crossed the wire
+    /// (`crate::wire_trace`): received here, sent by the dispatcher the
+    /// returned trace is given to (`RealTransportDispatcher::trace_to`).
+    /// `local` is this node's `ip:port` as the trace names it.
+    pub fn set_sip_trace_tx(
+        &mut self,
+        tx: mpsc::Sender<fcp_core::SipTraceMessage>,
+        local: String,
+    ) -> Arc<crate::wire_trace::WireTrace> {
+        let trace = Arc::new(crate::wire_trace::WireTrace::new(
+            tx,
+            Arc::clone(&self.sip_call_id_map),
+            local,
+            self.node_id.clone(),
+        ));
+        self.wire_trace = Some(Arc::clone(&trace));
+        trace
     }
 
     /// Extract DID (phone number) from a SIP URI.
@@ -3991,55 +4007,6 @@ impl SipMessageHandler {
                 &call_id,
             );
         }
-
-        // Re-log the initial INVITE with the correct FCP CallId (the one logged in
-        // handle_inbound used the SIP Call-ID because the call didn't exist yet)
-        let call_id_str = call_id.to_string();
-        let raw_invite_bytes = sip_parse::serialize_request(request);
-        let raw_invite = String::from_utf8_lossy(&raw_invite_bytes);
-        self.log_sip_message(
-            "inbound",
-            request.method().as_str(),
-            Some(&call_id_str),
-            None,
-            sip_parse::header(request.headers(), "CSeq").map(|s| s.as_str()),
-            Some(peer),
-            Some("tcp"),
-            Some(request.headers()),
-            Some(request.body()),
-            Some(&raw_invite),
-        );
-
-        // Log the outbound 100 Trying (reconstruct from request since `trying` was consumed)
-        let trying_raw = format!(
-            "SIP/2.0 100 Trying\r\n{}\r\nContent-Length: 0\r\n\r\n",
-            request
-                .headers()
-                .iter()
-                .filter(|h| {
-                    let n = h.name();
-                    n.eq_ignore_ascii_case("Via")
-                        || n.eq_ignore_ascii_case("From")
-                        || n.eq_ignore_ascii_case("To")
-                        || n.eq_ignore_ascii_case("Call-ID")
-                        || n.eq_ignore_ascii_case("CSeq")
-                })
-                .map(|h| format!("{}: {}", h.name(), h.value().trim()))
-                .collect::<Vec<_>>()
-                .join("\r\n")
-        );
-        self.log_sip_message(
-            "outbound",
-            "100",
-            Some(&call_id_str),
-            None,
-            sip_parse::header(request.headers(), "CSeq").map(|s| s.as_str()),
-            Some(peer),
-            Some("tcp"),
-            Some(request.headers()),
-            None,
-            Some(&trying_raw),
-        );
 
         // Extract caller/callee for logging (to avoid non-Send tracing issues)
         let caller_str = sip_parse::header(request.headers(), "From")
@@ -8103,10 +8070,6 @@ impl SipMessageHandler {
         let flow_registry_clone = Arc::clone(&self.flow_registry);
         let sip_call_id_map_clone = Arc::clone(&self.sip_call_id_map);
         let call_manager_for_ids = Arc::clone(&self.call_manager);
-        let sip_trace_tx_clone = self.sip_trace_tx.clone();
-        let local_addr_clone = self.local_addr.clone();
-        let node_id_clone = self.node_id.clone();
-
         debug!(
             call_id = %call_id_clone,
             target = %target_uri_clone,
@@ -8250,47 +8213,6 @@ impl SipMessageHandler {
                         b_leg_cid.as_str(),
                         &call_id_clone,
                     );
-                }
-
-                // Log outbound B-leg INVITE for SIP trace
-                if let Some(ref trace_tx) = sip_trace_tx_clone {
-                    let b_req = call.invite_request().await;
-                    let raw_bytes = sip_parse::serialize_request(&b_req);
-                    let raw_str = String::from_utf8_lossy(&raw_bytes);
-                    let from_uri = sip_parse::header(b_req.headers(), "From")
-                        .map(|s| s.as_str().to_string())
-                        .unwrap_or_default();
-                    let to_uri = sip_parse::header(b_req.headers(), "To")
-                        .map(|s| s.as_str().to_string())
-                        .unwrap_or_default();
-                    let sip_cid = sip_parse::header(b_req.headers(), "Call-ID")
-                        .map(|s| s.as_str().to_string())
-                        .unwrap_or_default();
-                    let cseq = sip_parse::header(b_req.headers(), "CSeq")
-                        .map(|s| s.as_str().to_string())
-                        .unwrap_or_default();
-                    let trace = fcp_core::SipTraceMessage {
-                        id: 0,
-                        call_id: call_id_clone.to_string(),
-                        sip_call_id: sip_cid,
-                        tenant_id: "_system".to_string(),
-                        timestamp: std::time::SystemTime::now(),
-                        direction: "outbound".to_string(),
-                        method_or_status: "INVITE".to_string(),
-                        cseq,
-                        from_uri,
-                        to_uri,
-                        source_addr: local_addr_clone.clone(),
-                        dest_addr: target_uri_clone.to_string(),
-                        transport: if flow_token_clone.is_some() {
-                            "tcp".to_string()
-                        } else {
-                            "udp".to_string()
-                        },
-                        raw_message: raw_str.to_string(),
-                        node_id: Some(node_id_clone.clone()),
-                    };
-                    let _ = trace_tx.try_send(trace);
                 }
 
                 info!(
@@ -8911,8 +8833,6 @@ impl SipMessageHandler {
 
                 // Log outbound provisional relay to A-leg
                 let code_str = code.to_string();
-                let raw_prov_bytes = sip_parse::serialize_response(&provisional);
-                let raw_prov = String::from_utf8_lossy(&raw_prov_bytes);
                 let cid_str = call_id_clone.to_string();
                 handler_clone.log_sip_message(
                     "outbound",
@@ -8924,7 +8844,6 @@ impl SipMessageHandler {
                     None,
                     Some(provisional.headers()),
                     Some(provisional.body()),
-                    Some(&raw_prov),
                 );
 
                 a_leg_handle_clone.send_provisional(provisional).await;
@@ -9669,8 +9588,6 @@ impl SipMessageHandler {
             }
 
             info!(call_id = %call_id, "Sending 200 OK to A-leg with media anchoring");
-            let raw_ok_bytes = sip_parse::serialize_response(&ok_response);
-            let raw_ok = String::from_utf8_lossy(&raw_ok_bytes);
             let cid_str = call_id.to_string();
             self.log_sip_message(
                 "outbound",
@@ -9682,7 +9599,6 @@ impl SipMessageHandler {
                 None,
                 Some(ok_response.headers()),
                 Some(ok_response.body()),
-                Some(&raw_ok),
             );
             a_leg_handle.send_final(ok_response).await;
 
@@ -10640,7 +10556,6 @@ impl SipMessageHandler {
             None,
             None,
             None,
-            None,
         );
         // The far leg reached down a flow — a site's link, a phone
         // registered over TLS — is re-invited down it; any other by its
@@ -11018,7 +10933,6 @@ impl SipMessageHandler {
             None,
             None,
             None,
-            None,
         );
         let (peer_resp, subscription) = match uac
             .send_subscribe(&mut target_dialog, event.as_str(), expires)
@@ -11159,7 +11073,6 @@ impl SipMessageHandler {
                 None,
                 None,
                 body.as_ref().map(|b| b.as_bytes()),
-                None,
             );
             if self.check_rate_limit(
                 "NOTIFY",
@@ -11250,7 +11163,6 @@ impl SipMessageHandler {
                 None,
                 None,
                 body.as_ref().map(|b| b.as_bytes()),
-                None,
             );
             if self.check_rate_limit(
                 "NOTIFY",
@@ -11398,7 +11310,6 @@ impl SipMessageHandler {
             Some(call.id.to_string().as_str()),
             Some(target_dialog.id()),
             cseq.as_ref().map(|v| v.as_str()),
-            None,
             None,
             None,
             None,
@@ -11617,7 +11528,6 @@ impl SipMessageHandler {
             None,
             None,
             None,
-            None,
         );
         let peer_resp = match uac
             .send_info(&mut target_dialog, content_type.as_str(), &body)
@@ -11802,7 +11712,6 @@ impl SipMessageHandler {
             Some(call.id.to_string().as_str()),
             Some(target_dialog.id()),
             cseq.as_ref().map(|v| v.as_str()),
-            None,
             None,
             None,
             None,
@@ -12210,7 +12119,6 @@ impl SipMessageHandler {
             None,
             Some(resp.headers()),
             Some(resp.body()),
-            None,
         );
         resp
     }
@@ -12245,9 +12153,6 @@ impl SipMessageHandler {
         let stm = Arc::clone(&self.session_timer_manager);
         let subscription_index = Arc::clone(&self.subscription_index);
         let flow_registry = Arc::clone(&self.flow_registry);
-        let sip_trace_tx = self.sip_trace_tx.clone();
-        let local_addr = self.local_addr.clone();
-        let node_id = self.node_id.clone();
         let recorder = Arc::clone(&self.call_recorder);
         let media_manager = self.media_manager.clone();
         tokio::spawn(async move {
@@ -12293,110 +12198,8 @@ impl SipMessageHandler {
                     }
                 };
                 match bye_result {
-                    Ok(ref bye_response) => {
+                    Ok(_) => {
                         debug!(call_id = %call_id, attempt = attempts, "Successfully sent BYE to peer leg");
-
-                        // Log outbound BYE and inbound 200 OK for SIP trace
-                        if let Some(ref trace_tx) = sip_trace_tx {
-                            let dest = dialog.remote_target().as_str().to_string();
-                            let sip_cid = dialog.id().call_id().to_string();
-                            let from_tag = dialog.id().local_tag();
-                            let to_tag = dialog.id().remote_tag();
-                            let from_uri = dialog.local_uri().as_str().to_string();
-                            let to_uri = dialog.remote_uri().as_str().to_string();
-                            let cid_str = call_id.to_string();
-                            let cseq = format!("{} BYE", dialog.local_cseq() + 1);
-                            let transport_str = if flow_token.is_some() { "TCP" } else { "UDP" };
-                            let branch = format!(
-                                "z9hG4bK{:x}",
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_nanos()
-                            );
-
-                            // Build Route headers from dialog route set
-                            let route_headers: String = dialog
-                                .route_set()
-                                .iter()
-                                .map(|r| format!("Route: <{}>\r\n", r.as_str()))
-                                .collect();
-
-                            // Construct BYE matching what the UAC actually sends
-                            let bye_raw = format!(
-                                "BYE {} SIP/2.0\r\n\
-                                 Via: SIP/2.0/{} {};branch={}\r\n\
-                                 {}\
-                                 Call-ID: {}\r\n\
-                                 From: <{}>;tag={}\r\n\
-                                 To: <{}>;tag={}\r\n\
-                                 CSeq: {}\r\n\
-                                 Max-Forwards: 70\r\n\
-                                 User-Agent: FCP/0.18.1\r\n\
-                                 Content-Length: 0\r\n\r\n",
-                                dest,
-                                transport_str,
-                                local_addr,
-                                branch,
-                                route_headers,
-                                sip_cid,
-                                from_uri,
-                                from_tag,
-                                to_uri,
-                                to_tag,
-                                cseq,
-                            );
-                            let bye_trace = fcp_core::SipTraceMessage {
-                                id: 0,
-                                call_id: cid_str.clone(),
-                                sip_call_id: sip_cid.clone(),
-                                tenant_id: "_system".to_string(),
-                                timestamp: std::time::SystemTime::now(),
-                                direction: "outbound".to_string(),
-                                method_or_status: "BYE".to_string(),
-                                cseq: cseq.clone(),
-                                from_uri: format!("<{}>;tag={}", from_uri, from_tag),
-                                to_uri: format!("<{}>;tag={}", to_uri, to_tag),
-                                source_addr: local_addr.clone(),
-                                dest_addr: dest.clone(),
-                                transport: transport_str.to_lowercase(),
-                                raw_message: bye_raw,
-                                node_id: Some(node_id.clone()),
-                            };
-                            let _ = trace_tx.try_send(bye_trace);
-
-                            // Log the 200 OK response to BYE
-                            let raw_200_bytes = sip_parse::serialize_response(bye_response);
-                            let raw_200 = String::from_utf8_lossy(&raw_200_bytes);
-                            let resp_trace = fcp_core::SipTraceMessage {
-                                id: 0,
-                                call_id: cid_str,
-                                sip_call_id: sip_cid,
-                                tenant_id: "_system".to_string(),
-                                timestamp: std::time::SystemTime::now(),
-                                direction: "inbound".to_string(),
-                                method_or_status: bye_response.code().to_string(),
-                                cseq: sip_parse::header(bye_response.headers(), "CSeq")
-                                    .map(|s| s.as_str().to_string())
-                                    .unwrap_or_default(),
-                                from_uri: sip_parse::header(bye_response.headers(), "From")
-                                    .map(|s| s.as_str().to_string())
-                                    .unwrap_or_default(),
-                                to_uri: sip_parse::header(bye_response.headers(), "To")
-                                    .map(|s| s.as_str().to_string())
-                                    .unwrap_or_default(),
-                                source_addr: dest,
-                                dest_addr: local_addr.clone(),
-                                transport: if flow_token.is_some() {
-                                    "tcp".to_string()
-                                } else {
-                                    "udp".to_string()
-                                },
-                                raw_message: raw_200.to_string(),
-                                node_id: Some(node_id.clone()),
-                            };
-                            let _ = trace_tx.try_send(resp_trace);
-                        }
 
                         stm.stop_timer(dialog.id());
                         dialog_manager.remove(dialog.id());
@@ -12744,7 +12547,6 @@ impl SipMessageHandler {
             None,
             Some(response.headers()),
             Some(response.body()),
-            None,
         );
 
         response
@@ -12870,7 +12672,6 @@ impl SipMessageHandler {
         transport: Option<&str>,
         headers: Option<&sip_core::Headers>,
         body: Option<&[u8]>,
-        raw_message: Option<&str>,
     ) {
         debug!(
             direction = direction,
@@ -12887,60 +12688,6 @@ impl SipMessageHandler {
             labels.push(("dialog_id", id.call_id()));
         }
         self.metrics.inc_counter("fcp_sip_message_total", &labels);
-
-        // Send to SIP trace channel for PostgreSQL storage
-        if let (Some(ref trace_tx), Some(cid)) = (&self.sip_trace_tx, call_id) {
-            let from_uri = headers
-                .and_then(|h| h.get("From"))
-                .map(|v| extract_uri_from_header(v).to_string())
-                .unwrap_or_default();
-            let to_uri = headers
-                .and_then(|h| h.get("To"))
-                .map(|v| extract_uri_from_header(v).to_string())
-                .unwrap_or_default();
-            let sip_call_id = headers
-                .and_then(|h| h.get("Call-ID"))
-                .map(|v| v.to_string())
-                .unwrap_or_default();
-
-            let (source_addr, dest_addr) = match direction {
-                "inbound" => (
-                    peer.map(|p| p.to_string()).unwrap_or_default(),
-                    self.local_addr.clone(),
-                ),
-                _ => (
-                    self.local_addr.clone(),
-                    peer.map(|p| p.to_string()).unwrap_or_default(),
-                ),
-            };
-
-            let trace = fcp_core::SipTraceMessage {
-                id: 0,
-                call_id: cid.to_string(),
-                sip_call_id,
-                tenant_id: "_system".to_string(),
-                timestamp: std::time::SystemTime::now(),
-                direction: direction.to_string(),
-                method_or_status: method_or_status.to_string(),
-                cseq: cseq.unwrap_or("").to_string(),
-                from_uri,
-                to_uri,
-                source_addr,
-                dest_addr,
-                transport: transport.unwrap_or("udp").to_string(),
-                raw_message: raw_message.unwrap_or("").to_string(),
-                node_id: Some(self.node_id.clone()),
-            };
-
-            if let Err(e) = trace_tx.try_send(trace) {
-                if matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_)) {
-                    tracing::warn!(
-                        call_id = %cid,
-                        "SIP trace channel full, dropping entry"
-                    );
-                }
-            }
-        }
 
         if let (Some(ref tx), Some(cid)) = (&self.transcript_tx, call_id) {
             let body_hash = if self.settings.transcript_capture_bodies {
@@ -19438,9 +19185,9 @@ impl InboundMessageHandler for SipMessageHandler {
             size = payload.len(),
             "Handling inbound SIP message"
         );
-
-        // Capture raw payload as string for SIP trace
-        let raw_payload_str = String::from_utf8_lossy(&payload);
+        if let Some(trace) = &self.wire_trace {
+            trace.received(&transport_str, peer, &payload);
+        }
 
         // Try parsing as request first, then response
         if let Some(mut req) = sip_parse::parse_request(&payload) {
@@ -19488,7 +19235,6 @@ impl InboundMessageHandler for SipMessageHandler {
                 }),
                 Some(req.headers()),
                 Some(req.body()),
-                Some(&raw_payload_str),
             );
             // Convert to string to avoid Send issues
             let method_str = req.method().as_str();
@@ -19594,7 +19340,6 @@ impl InboundMessageHandler for SipMessageHandler {
                 }),
                 Some(resp.headers()),
                 Some(resp.body()),
-                Some(&raw_payload_str),
             );
             debug!(
                 status = resp.start_line().code(),
@@ -20873,31 +20618,6 @@ fn extract_from_display_name(request: &sip_core::Request) -> Option<String> {
     }
 
     None
-}
-
-/// Extracts the bare URI string from a SIP header value.
-///
-/// This helper handles both formats:
-/// - Name-addr format: `"Display Name" <sip:user@host>;tag=xyz` → `sip:user@host`
-/// - Addr-spec format: `sip:user@host;tag=xyz` → `sip:user@host`
-///
-/// The function strips angle brackets, display names, and parameters (like ;tag=).
-///
-/// # Arguments
-/// * `header_value` - The raw header value (From, To, Contact, etc.)
-///
-/// # Returns
-/// The bare URI string without brackets or parameters
-fn extract_uri_from_header(header_value: &str) -> &str {
-    header_value
-        .split('<')
-        .nth(1)
-        .and_then(|s| s.split('>').next())
-        .or_else(|| {
-            // No angle brackets, extract URI before parameters
-            header_value.split(';').next()
-        })
-        .unwrap_or(header_value)
 }
 
 /// Inject RFC 4028 session timer headers into a 200 OK response.
