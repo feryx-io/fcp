@@ -33,6 +33,29 @@ pub async fn class_for(
     effective_class(&classes, settings.class_of_service_id.as_ref())
 }
 
+/// Whether a call may carry video (`docs/SOFTPHONE_VIDEO.md` §2.2): the
+/// tenant's `video.calls`, and the class of each of `users` — the caller
+/// and the callee, where they are the tenant's. A store that fails leaves
+/// video on, as a class leaves calls unrestricted.
+pub async fn video_allowed(storage: &DynStorage, tenant: &TenantId, users: &[UserId]) -> bool {
+    match storage.get_tenant(tenant).await {
+        Ok(Some(t)) if !t.video.calls => return false,
+        Ok(_) => {}
+        Err(e) => {
+            warn!(tenant_id = %tenant, error = %e, "Failed to read the tenant's video setting; video stays on")
+        }
+    }
+    for user in users {
+        if class_for(storage, tenant, user)
+            .await
+            .is_some_and(|class| !class.video)
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// The user part of a URI (`sip:`, `sips:`, `tel:`, or bare).
 pub fn uri_user(uri: &str) -> &str {
     let uri = uri.trim().trim_start_matches('<');

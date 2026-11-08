@@ -80,7 +80,7 @@ def sync_detailed(
         id (str):
         body (ClassOfServiceRequest): What a class is written as. `allowed` unset allows
             everything;
-            `max_calls` unset is two, `null` no limit.
+            `max_calls` unset is two, `null` no limit; `video` unset allows it.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -116,7 +116,7 @@ def sync(
         id (str):
         body (ClassOfServiceRequest): What a class is written as. `allowed` unset allows
             everything;
-            `max_calls` unset is two, `null` no limit.
+            `max_calls` unset is two, `null` no limit; `video` unset allows it.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -147,7 +147,7 @@ async def asyncio_detailed(
         id (str):
         body (ClassOfServiceRequest): What a class is written as. `allowed` unset allows
             everything;
-            `max_calls` unset is two, `null` no limit.
+            `max_calls` unset is two, `null` no limit; `video` unset allows it.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -183,7 +183,7 @@ async def asyncio(
         id (str):
         body (ClassOfServiceRequest): What a class is written as. `allowed` unset allows
             everything;
-            `max_calls` unset is two, `null` no limit.
+            `max_calls` unset is two, `null` no limit; `video` unset allows it.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

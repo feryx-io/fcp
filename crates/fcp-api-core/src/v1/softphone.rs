@@ -54,6 +54,30 @@ pub struct SoftphoneMedia {
     pub dtmf: String,
 }
 
+/// Video on the app (`docs/SOFTPHONE_VIDEO.md` §2.7): whether its calls
+/// may carry it, and what its camera may send.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SoftphoneVideo {
+    /// The tenant's `video.calls` and the user's class of service; off,
+    /// the app offers no video and shows no video button.
+    pub enabled: bool,
+    /// In order of preference, as SDP names them: what FCP's rooms take
+    /// first. A call relays whatever the two phones agree on.
+    pub codecs: Vec<String>,
+    /// The most the camera sends.
+    pub max_send: SoftphoneVideoSend,
+    /// The user may share their screen in a room they don't host.
+    pub content_share: bool,
+}
+
+/// The tenant's cap on what a phone's camera sends.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SoftphoneVideoSend {
+    /// The picture's height, in lines.
+    pub height: u32,
+    pub kbps: u32,
+}
+
 /// A line on the app (`docs/DEVICE_LINES.md`): an account it registers
 /// with its own credentials and takes calls on.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -108,6 +132,8 @@ pub struct SoftphoneConfig {
     /// Whether the app may capture calls, until when, and how large a
     /// capture may be (`docs/CALL_DIAGNOSTICS.md` §3).
     pub capture: crate::v1::device_captures::SoftphoneCapture,
+    /// Whether the app's calls may carry video, and what it may send.
+    pub video: SoftphoneVideo,
 }
 
 /// The app's session and device: what `/me/softphone` answers for.
@@ -229,10 +255,24 @@ pub async fn get_config(
             ring: l.ring,
         })
         .collect();
-    let may_rename_lines = storage
-        .get_tenant(&user.tenant_id)
-        .await?
-        .is_some_and(|t| t.lines.users_may_rename);
+    let tenant = storage.get_tenant(&user.tenant_id).await?;
+    let may_rename_lines = tenant.as_ref().is_some_and(|t| t.lines.users_may_rename);
+    let tenant_video = tenant.map(|t| t.video).unwrap_or_default();
+    let video = SoftphoneVideo {
+        enabled: tenant_video.calls
+            && fcp_sip::class_of_service::video_allowed(
+                storage,
+                &user.tenant_id,
+                std::slice::from_ref(&user.id),
+            )
+            .await,
+        codecs: vec!["H264".to_string(), "VP8".to_string()],
+        max_send: SoftphoneVideoSend {
+            height: tenant_video.max_send_height,
+            kbps: tenant_video.max_send_kbps,
+        },
+        content_share: tenant_video.content_share,
+    };
     let body = SoftphoneConfig {
         account: SoftphoneAccount {
             aor: format!("sip:{}@{domain}", user.sip_name()),
@@ -268,6 +308,7 @@ pub async fn get_config(
         lines,
         may_rename_lines,
         capture: crate::v1::device_captures::capture_permit(&state, &user, &device.id).await?,
+        video,
     };
     let json = serde_json::to_vec(&body).map_err(|e| ApiError::Internal(e.to_string()))?;
     let digest: String = Sha256::digest(&json)

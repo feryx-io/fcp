@@ -4471,3 +4471,270 @@ async fn the_nodes_own_legs_pass_invite_authentication() {
     assert!(carol_call.ended(SOON).await);
     stack.finish().await;
 }
+
+// ── Video through the call's features (`docs/SOFTPHONE_VIDEO.md` §2.2) ──
+
+use fcp_testkit::video::{VideoLeg, VideoMode};
+
+/// Both phones see each other's video now.
+async fn video_flows(a: &VideoLeg, b: &VideoLeg) -> Result<(), String> {
+    for (from, to, what) in [
+        (a, b, "the first to the second"),
+        (b, a, "the second to the first"),
+    ] {
+        let before = to.received();
+        // A pause or resume lands a moment after the SIP that made it.
+        let deadline = Instant::now() + SOON;
+        loop {
+            from.send(5).await.map_err(|e| e.to_string())?;
+            if to
+                .received_at_least(before + 5, Duration::from_millis(300))
+                .await
+            {
+                break;
+            }
+            if Instant::now() > deadline {
+                return Err(format!("no video from {what}: {} received", to.received()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Neither phone sees the other's video.
+async fn video_stopped(a: &VideoLeg, b: &VideoLeg) -> Result<(), String> {
+    let deadline = Instant::now() + SOON;
+    loop {
+        let (at_a, at_b) = (a.received(), b.received());
+        a.send(5).await.map_err(|e| e.to_string())?;
+        b.send(5).await.map_err(|e| e.to_string())?;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        if a.received() == at_a && b.received() == at_b {
+            return Ok(());
+        }
+        if Instant::now() > deadline {
+            return Err(format!(
+                "video still flows: {} and {} received",
+                a.received(),
+                b.received()
+            ));
+        }
+    }
+}
+
+/// A hold the node answers stops the video both ways, `inactive` in its
+/// answer; the resume brings it back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn video_stops_while_a_call_is_held_and_comes_back_with_it() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), _] = three_phones(&stack).await;
+    alice.enable_video(VideoMode::Plain);
+    bob_phone.enable_video(VideoMode::Plain);
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    let (alice_video, bob_video) = (alice_call.video().unwrap(), bob_call.video().unwrap());
+    if let Err(why) = video_flows(alice_video, bob_video).await {
+        stack.fail(&why, &alice).await;
+    }
+
+    let (code, answer) = bob_call.reinvite_answered("sendonly").await.unwrap();
+    assert_eq!(code, 200);
+    let video = answer
+        .split("m=")
+        .find(|s| s.starts_with("video"))
+        .unwrap_or_else(|| panic!("the answer to the hold has no video: {answer}"));
+    assert!(
+        !video.starts_with("video 0") && video.contains("a=inactive"),
+        "the hold's video, kept on the relay and inactive: {video}"
+    );
+    held_as(&stack, Some("a")).await;
+    if let Err(why) = video_stopped(alice_video, bob_video).await {
+        stack.fail(&format!("held: {why}"), &alice).await;
+    }
+
+    assert_eq!(bob_call.resume().await.unwrap(), 200);
+    held_as(&stack, None).await;
+    if let Err(why) = video_flows(alice_video, bob_video).await {
+        stack.fail(&format!("resumed: {why}"), &alice).await;
+    }
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// A blind transfer the node carries out offers the target the
+/// transferred party's video.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn video_follows_a_blind_transfer() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    for phone in [&alice, &bob_phone, &carol_phone] {
+        phone.enable_video(VideoMode::Plain);
+    }
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    let refer_to = format!("sip:{}@{}", carol.extension, stack.sip);
+    assert_eq!(bob_call.refer(&refer_to).await.unwrap(), 202);
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("Carol's phone did not ring for the transfer", &bob_phone)
+            .await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+    let carol_video = carol_call
+        .video()
+        .unwrap_or_else(|| panic!("Carol was offered no video"));
+    if let Err(why) = video_flows(alice_call.video().unwrap(), carol_video).await {
+        stack.fail(&why, &alice).await;
+    }
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// A call parked and taken from its orbit: the parked party's video
+/// stops, and reaches whoever retrieves it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn video_stops_while_parked_and_reaches_the_retriever() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (_carol, carol_phone)] = three_phones(&stack).await;
+    for phone in [&alice, &bob_phone, &carol_phone] {
+        phone.enable_video(VideoMode::Plain);
+    }
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    let (alice_video, bob_video) = (alice_call.video().unwrap(), bob_call.video().unwrap());
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    held_as(&stack, Some("a")).await;
+    if let Err(why) = video_stopped(alice_video, bob_video).await {
+        stack.fail(&format!("held: {why}"), &alice).await;
+    }
+    assert_eq!(
+        bob_call
+            .refer(&format!("sip:*70@{}", stack.sip))
+            .await
+            .unwrap(),
+        202
+    );
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+
+    let carol_call = carol_phone.call("*71701").await.unwrap();
+    if let Err(e) = carol_call.answered(SOON).await {
+        stack
+            .fail(&format!("the retrieve was not answered: {e}"), &carol_phone)
+            .await;
+    }
+    let carol_video = carol_call
+        .video()
+        .unwrap_or_else(|| panic!("Carol was answered no video"));
+    if let Err(why) = video_flows(alice_video, carol_video).await {
+        stack.fail(&format!("retrieved: {why}"), &alice).await;
+    }
+    carol_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// A call forwarded when nobody answers offers the forward's target the
+/// caller's video.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn video_follows_a_forward_on_no_answer() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    for phone in [&alice, &bob_phone, &carol_phone] {
+        phone.enable_video(VideoMode::Plain);
+    }
+    stack
+        .calling(&bob, |s| {
+            s.forward_no_answer = Some(CallTarget::Extension(carol.extension.clone()));
+            s.no_answer_secs = Some(5);
+        })
+        .await;
+    let call = alice.call(&bob.extension).await.unwrap();
+    let Some(at_bob) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice).await;
+    };
+    let _ringing = at_bob.leave_ringing();
+    let Some(at_carol) = carol_phone.incoming(RING_OUT).await else {
+        stack.fail("Carol's phone did not ring", &alice).await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    call.answered(SOON).await.expect("Alice reaches Carol");
+    let carol_video = carol_call
+        .video()
+        .unwrap_or_else(|| panic!("Carol was offered no video"));
+    if let Err(why) = video_flows(call.video().unwrap(), carol_video).await {
+        stack.fail(&why, &alice).await;
+    }
+    carol_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// Whether an SDP carries a live camera.
+fn has_live_video(sdp: &str) -> bool {
+    sdp.lines()
+        .any(|l| l.starts_with("m=video ") && !l.starts_with("m=video 0 "))
+}
+
+/// A call both phones would carry video on, and whether each was offered
+/// or answered it: the policy's answer.
+async fn video_offered(
+    stack: &Stack,
+    alice: &Phone,
+    bob: &SeededUser,
+    bob_phone: &Phone,
+) -> (bool, bool) {
+    alice.enable_video(VideoMode::Plain);
+    bob_phone.enable_video(VideoMode::Plain);
+    let call = alice.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", alice).await;
+    };
+    let to_bob = has_live_video(&String::from_utf8_lossy(incoming.body()));
+    let bob_call = incoming.answer().await.unwrap();
+    call.answered(SOON).await.expect("the call is answered");
+    let to_alice = has_live_video(&call.answer_sdp().unwrap_or_default());
+    bob_call.hangup().await.unwrap();
+    (to_bob, to_alice)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tenant_without_video_keeps_its_calls_to_audio() {
+    let stack = stack_or_skip!();
+    use fcp_core::storage::TenantStore;
+    let [(_, alice), (bob, bob_phone), _] = three_phones(&stack).await;
+    let storage = stack.seed.storage();
+    let mut tenant = storage
+        .get_tenant(&stack.seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    tenant.video.calls = false;
+    storage.put_tenant(tenant).await.unwrap();
+    let (to_bob, to_alice) = video_offered(&stack, &alice, &bob, &bob_phone).await;
+    assert!(!to_bob, "Bob was offered video");
+    assert!(!to_alice, "Alice was answered video");
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_class_without_video_keeps_its_users_calls_to_audio() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), _] = three_phones(&stack).await;
+    let mut audio_only = fcp_core::ClassOfService::new(stack.seed.tenant_id, "Audio only");
+    audio_only.video = false;
+    give_class(&stack, &bob, &audio_only).await;
+    // The callee's class: the caller's video goes nowhere.
+    let (to_bob, to_alice) = video_offered(&stack, &alice, &bob, &bob_phone).await;
+    assert!(!to_bob, "Bob was offered video");
+    assert!(!to_alice, "Alice was answered video");
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn video_is_on_unless_a_tenant_or_class_says_not() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), _] = three_phones(&stack).await;
+    let (to_bob, to_alice) = video_offered(&stack, &alice, &bob, &bob_phone).await;
+    assert!(
+        to_bob && to_alice,
+        "video was turned down: {to_bob} {to_alice}"
+    );
+    stack.finish().await;
+}

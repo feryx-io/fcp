@@ -1800,6 +1800,39 @@ fn split_sections(sdp: &str) -> (String, Vec<String>) {
     (head, sections)
 }
 
+/// `sdp` with each live video section's direction — the camera's and a
+/// shared screen's — set to `direction`, one added where a section had
+/// none. Audio and turned-down sections are left alone: the node answers
+/// a hold's video `inactive` while its audio answers as it always has.
+pub fn with_video_direction(sdp: &str, direction: &str) -> String {
+    let is_direction = |l: &str| {
+        matches!(
+            l.trim(),
+            "a=sendrecv" | "a=sendonly" | "a=recvonly" | "a=inactive"
+        )
+    };
+    let (head, sections) = split_sections(sdp);
+    let mut out = head;
+    for section in sections {
+        let mut lines = section.lines();
+        let m = lines.next().unwrap_or_default();
+        let live_video =
+            m.starts_with("m=video") && m.split_whitespace().nth(1).is_some_and(|p| p != "0");
+        if !live_video {
+            out.push_str(&section);
+            continue;
+        }
+        out.push_str(m);
+        out.push_str("\r\n");
+        for line in lines.filter(|l| !is_direction(l)) {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+        out.push_str(&format!("a={direction}\r\n"));
+    }
+    out
+}
+
 /// One section pointed at the node: its port, its connection line, and
 /// the node's key or none, the other leg's crypto dropped.
 fn anchor_section(
@@ -3496,6 +3529,29 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
             AnchorKeys::default(),
         );
         assert_eq!(spliced, own);
+    }
+
+    #[test]
+    fn a_holds_video_is_answered_inactive_and_nothing_else_moves() {
+        let sdp = "v=0\r\no=- 1 1 IN IP4 10.0.0.5\r\ns=-\r\nc=IN IP4 10.0.0.5\r\nt=0 0\r\n\
+             m=audio 20000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=recvonly\r\n\
+             m=video 20002 RTP/AVPF 97\r\na=rtpmap:97 H264/90000\r\na=sendrecv\r\n\
+             m=video 0 RTP/AVPF 97\r\na=content:slides\r\n";
+        let held = with_video_direction(sdp, "inactive");
+        let (_, sections) = split_sections(&held);
+        assert!(sections[0].contains("a=recvonly"), "audio keeps its own");
+        assert!(sections[1].ends_with("a=inactive\r\n"), "{held}");
+        assert!(!sections[1].contains("sendrecv"));
+        assert!(
+            !sections[2].contains("a=inactive"),
+            "a turned-down section stays as it was"
+        );
+        // A section with no direction is given one.
+        let bare = sdp.replace("a=sendrecv\r\n", "");
+        assert!(
+            split_sections(&with_video_direction(&bare, "inactive")).1[1]
+                .ends_with("a=inactive\r\n")
+        );
     }
 
     #[test]

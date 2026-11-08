@@ -486,6 +486,8 @@ from .softphone_config_feature_codes import SoftphoneConfigFeatureCodes
 from .softphone_line import SoftphoneLine
 from .softphone_media import SoftphoneMedia
 from .softphone_password import SoftphonePassword
+from .softphone_video import SoftphoneVideo
+from .softphone_video_send import SoftphoneVideoSend
 from .sso_exchange_request import SsoExchangeRequest
 from .start_recording_request import StartRecordingRequest
 from .status_response import StatusResponse
@@ -512,6 +514,7 @@ from .tenant_offboarding import TenantOffboarding
 from .tenant_provisioning import TenantProvisioning
 from .tenant_response import TenantResponse
 from .tenant_sign_in import TenantSignIn
+from .tenant_video import TenantVideo
 from .test_webhook_request import TestWebhookRequest
 from .time_window import TimeWindow
 from .totp_code_request import TotpCodeRequest
@@ -1073,6 +1076,8 @@ __all__ = (
     "SoftphoneLine",
     "SoftphoneMedia",
     "SoftphonePassword",
+    "SoftphoneVideo",
+    "SoftphoneVideoSend",
     "SsoExchangeRequest",
     "StartRecordingRequest",
     "StatusResponse",
@@ -1099,6 +1104,7 @@ __all__ = (
     "TenantProvisioning",
     "TenantResponse",
     "TenantSignIn",
+    "TenantVideo",
     "TestWebhookRequest",
     "TimeWindow",
     "TotpCodeRequest",

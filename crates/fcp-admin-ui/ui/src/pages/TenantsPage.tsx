@@ -61,6 +61,10 @@ const editSchema = z.object({
   capture_allowed: z.boolean().optional(),
   capture_max_mb: z.coerce.number().int().min(1).max(500).optional(),
   capture_keep_days: z.coerce.number().int().min(1).max(365).optional(),
+  video_calls: z.boolean().optional(),
+  video_max_send_height: z.coerce.number().int().min(180).max(2160).optional(),
+  video_max_send_kbps: z.coerce.number().int().min(64).max(8000).optional(),
+  video_content_share: z.boolean().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -254,6 +258,10 @@ export function TenantsPage() {
       capture_allowed: editItem.diagnostics?.capture_allowed ?? false,
       capture_max_mb: editItem.diagnostics?.capture_max_mb ?? 50,
       capture_keep_days: editItem.diagnostics?.capture_keep_days ?? 30,
+      video_calls: editItem.video?.calls ?? true,
+      video_max_send_height: editItem.video?.max_send_height ?? 720,
+      video_max_send_kbps: editItem.video?.max_send_kbps ?? 1500,
+      video_content_share: editItem.video?.content_share ?? true,
     })
   }
 
@@ -291,6 +299,10 @@ export function TenantsPage() {
       capture_allowed,
       capture_max_mb,
       capture_keep_days,
+      video_calls,
+      video_max_send_height,
+      video_max_send_kbps,
+      video_content_share,
       ...rest
     } = data
     updateMutation.mutate({
@@ -326,6 +338,12 @@ export function TenantsPage() {
           capture_allowed: capture_allowed ?? false,
           capture_max_mb: capture_max_mb ?? 50,
           capture_keep_days: capture_keep_days ?? 30,
+        },
+        video: {
+          calls: video_calls ?? true,
+          max_send_height: video_max_send_height ?? 720,
+          max_send_kbps: video_max_send_kbps ?? 1500,
+          content_share: video_content_share ?? true,
         },
         offboarding: {
           grace_days: grace_days ?? 30,
@@ -753,6 +771,44 @@ export function TenantsPage() {
                     <Input id="e-capture_keep_days" type="number" min={1} max={365} {...editForm.register('capture_keep_days')} />
                   </div>
                 </div>
+              )}
+            </div>
+            <div className="space-y-3 rounded-md border p-3">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5 pr-4">
+                  <Label htmlFor="e-video_calls">Video calls</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Calls may carry video, relayed by the node as it is sent. A class of service can still take it
+                    from its users. Off, every call is audio alone.
+                  </p>
+                </div>
+                <Switch
+                  id="e-video_calls"
+                  checked={editForm.watch('video_calls') ?? true}
+                  onCheckedChange={(v) => editForm.setValue('video_calls', v)}
+                />
+              </div>
+              {editForm.watch('video_calls') !== false && (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label htmlFor="e-video_max_send_height">Largest picture sent (lines)</Label>
+                      <Input id="e-video_max_send_height" type="number" min={180} max={2160} {...editForm.register('video_max_send_height')} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="e-video_max_send_kbps">Most sent (kb/s)</Label>
+                      <Input id="e-video_max_send_kbps" type="number" min={64} max={8000} {...editForm.register('video_max_send_kbps')} />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="e-video_content_share">People may share their screen in rooms they don&rsquo;t host</Label>
+                    <Switch
+                      id="e-video_content_share"
+                      checked={editForm.watch('video_content_share') ?? true}
+                      onCheckedChange={(v) => editForm.setValue('video_content_share', v)}
+                    />
+                  </div>
+                </>
               )}
             </div>
             <div className="flex justify-end gap-2">

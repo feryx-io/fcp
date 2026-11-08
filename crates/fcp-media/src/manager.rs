@@ -183,7 +183,13 @@ impl MediaManager {
         let secure = video_secure;
         let mut video_key = None;
         let mut content_key = None;
-        for stream in crate::sdp::active_streams(sdp) {
+        // A call that may not carry video offers none.
+        let carried = if session.video_allowed() {
+            crate::sdp::active_streams(sdp)
+        } else {
+            Vec::new()
+        };
+        for stream in carried.iter().copied() {
             let Some(relay) = self.video_relay(&session, stream).await else {
                 continue;
             };
@@ -196,7 +202,6 @@ impl MediaManager {
         let mut ports = session.anchor_ports(leg);
         // A stream this offer does not carry stays off, whatever the call
         // opened for it before.
-        let carried = crate::sdp::active_streams(sdp);
         if !carried.contains(&crate::sdp::VideoStream::Camera) {
             ports.video = None;
         }
@@ -302,6 +307,25 @@ impl MediaManager {
                 content: content_key.as_ref(),
             },
         ))
+    }
+
+    /// Let the call carry video, or not (`docs/SOFTPHONE_VIDEO.md` §2.2):
+    /// decided before its first offer, and every offer after follows it.
+    pub async fn set_video_allowed(&self, call_id: &CallId, allowed: bool) -> Result<()> {
+        self.backend
+            .get_session(call_id)
+            .await?
+            .set_video_allowed(allowed);
+        Ok(())
+    }
+
+    /// Stop relaying the call's video both ways (a leg held), or go on.
+    pub async fn set_video_paused(&self, call_id: &CallId, paused: bool) -> Result<()> {
+        let session = self.backend.get_session(call_id).await?;
+        for relay in session.video_relays() {
+            relay.set_paused(paused);
+        }
+        Ok(())
     }
 
     /// The call's relay for `stream`, opened if it has none. `None` when

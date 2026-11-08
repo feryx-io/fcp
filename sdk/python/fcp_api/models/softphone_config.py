@@ -17,6 +17,7 @@ if TYPE_CHECKING:
   from ..models.softphone_config_feature_codes import SoftphoneConfigFeatureCodes
   from ..models.softphone_line import SoftphoneLine
   from ..models.softphone_media import SoftphoneMedia
+  from ..models.softphone_video import SoftphoneVideo
 
 
 
@@ -46,6 +47,8 @@ class SoftphoneConfig:
                 release.
             may_rename_lines (bool): Whether the user may name their lines (the tenant's choice).
             capture (SoftphoneCapture): Whether the app may capture (`capture` on `/me/softphone`).
+            video (SoftphoneVideo): Video on the app (`docs/SOFTPHONE_VIDEO.md` §2.7): whether its calls
+                may carry it, and what its camera may send.
             extension (None | str | Unset):
             api_url (None | str | Unset): Where this admin is, for the app's API calls.
      """
@@ -61,6 +64,7 @@ class SoftphoneConfig:
     lines: list[SoftphoneLine]
     may_rename_lines: bool
     capture: SoftphoneCapture
+    video: SoftphoneVideo
     extension: None | str | Unset = UNSET
     api_url: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -75,6 +79,7 @@ class SoftphoneConfig:
         from ..models.softphone_config_feature_codes import SoftphoneConfigFeatureCodes # noqa: PLC0415
         from ..models.softphone_line import SoftphoneLine # noqa: PLC0415
         from ..models.softphone_media import SoftphoneMedia # noqa: PLC0415
+        from ..models.softphone_video import SoftphoneVideo # noqa: PLC0415
         account = self.account.to_dict()
 
         media = self.media.to_dict()
@@ -101,6 +106,8 @@ class SoftphoneConfig:
         may_rename_lines = self.may_rename_lines
 
         capture = self.capture.to_dict()
+
+        video = self.video.to_dict()
 
         extension: None | str | Unset
         if isinstance(self.extension, Unset):
@@ -129,6 +136,7 @@ class SoftphoneConfig:
             "lines": lines,
             "may_rename_lines": may_rename_lines,
             "capture": capture,
+            "video": video,
         })
         if extension is not UNSET:
             field_dict["extension"] = extension
@@ -146,6 +154,7 @@ class SoftphoneConfig:
         from ..models.softphone_config_feature_codes import SoftphoneConfigFeatureCodes # noqa: PLC0415
         from ..models.softphone_line import SoftphoneLine # noqa: PLC0415
         from ..models.softphone_media import SoftphoneMedia # noqa: PLC0415
+        from ..models.softphone_video import SoftphoneVideo # noqa: PLC0415
         d = dict(src_dict)
         account = SoftphoneAccount.from_dict(d.pop("account"))
 
@@ -189,6 +198,11 @@ class SoftphoneConfig:
 
 
 
+        video = SoftphoneVideo.from_dict(d.pop("video"))
+
+
+
+
         def _parse_extension(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -221,6 +235,7 @@ class SoftphoneConfig:
             lines=lines,
             may_rename_lines=may_rename_lines,
             capture=capture,
+            video=video,
             extension=extension,
             api_url=api_url,
         )

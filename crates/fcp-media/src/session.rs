@@ -42,6 +42,9 @@ pub struct MediaSession {
     /// screen's, opened when an SDP first carries them
     /// (`docs/SOFTPHONE_VIDEO.md` §2.2).
     video: parking_lot::Mutex<Vec<std::sync::Arc<crate::video_relay::VideoRelay>>>,
+    /// Whether the call may carry video at all: the tenant's and the
+    /// parties' classes of service say (`docs/SOFTPHONE_VIDEO.md` §2.2).
+    video_allowed: std::sync::atomic::AtomicBool,
 }
 
 impl MediaSession {
@@ -65,6 +68,7 @@ impl MediaSession {
             stats: RwLock::new(MediaSessionStats::default()),
             legs,
             video: parking_lot::Mutex::new(Vec::new()),
+            video_allowed: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -109,6 +113,19 @@ impl MediaSession {
             .iter()
             .find(|r| r.stream() == stream)
             .cloned()
+    }
+
+    /// Whether the call may carry video; until told otherwise, it may.
+    pub fn video_allowed(&self) -> bool {
+        self.video_allowed
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Let the call carry video, or not: an offer made after a no has its
+    /// video turned down.
+    pub fn set_video_allowed(&self, allowed: bool) {
+        self.video_allowed
+            .store(allowed, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Every video relay the call has opened.

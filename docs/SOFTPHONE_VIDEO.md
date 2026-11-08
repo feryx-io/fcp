@@ -370,11 +370,32 @@ In two parts:
 
   `fcp_testkit::video::VideoLeg` and `Phone::enable_video` back the `calls.rs`
   `video_*` tests.
-- **F1b**: the rest:
-  - hold, music, park, transfer and retrieve;
-  - find-me, forwarding on no answer, and the flow redirect;
-  - the policy;
-  - `/me/softphone`.
+- **F1b, done (v0.25.541).** The rest:
+  - **Hold, music and park.** A hold the node answers keeps the holder's
+    video on the relay, answered `inactive` (`with_video_direction`). Every
+    change of a call's held leg pauses the relay or resumes it
+    (`MediaManager::set_video_paused`, from the hold hook), so a held or
+    parked party sees nothing and a resume brings the video back.
+  - **Transfer and retrieve.** A node-run transfer offers its target the
+    transferred party's video on the referrer's relay, and a party taken
+    off hold is re-offered its own. A retrieve or `Replaces` answers the
+    taker with the party's video. A flow redirect is a transfer, so it is
+    covered: a flow answers audio alone, so video stops while it has the
+    call.
+  - **Find-me and forwarding on no answer** offer each target the caller's
+    video, as the first callee was.
+  - **The policy.** The tenant's `video` (`calls`, `max_send_height`,
+    `max_send_kbps`, `content_share`; migration 139) and a class's `video`
+    flag. Before the call's first offer the node asks whether the call may
+    carry video: the tenant, then the caller's and the callee's classes. The
+    answer is kept on the media session (`MediaSession::set_video_allowed`),
+    and every later offer follows it, so a call that may not carry video
+    has its video at port 0.
+  - **`/me/softphone`'s `video`**: `enabled`, `codecs` (H.264, then VP8),
+    `max_send` and `content_share`.
+  - The admin UI's tenant and class-of-service pages show the settings.
+  - The `calling.rs` `video_*` tests and `api_postgres.rs`
+    `the_softphone_is_told_whether_its_calls_carry_video` prove it.
 
 ### A1: video in the core (anvil)
 

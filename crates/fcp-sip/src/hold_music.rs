@@ -56,7 +56,6 @@ impl HoldMusic {
                 debug!(call_id = %call_id, error = %e, "Hold music already gone");
             }
         }
-        let Some(leg) = held else { return };
         let Some(call_manager) = self.call_manager.upgrade() else {
             return;
         };
@@ -67,6 +66,17 @@ impl HoldMusic {
             debug!(call_id = %call_id, "Held, but the media is not here: no music");
             return;
         };
+        // The held party sees nothing while it is held, and the video goes
+        // on with the call (`docs/SOFTPHONE_VIDEO.md` §2.2): as the call is
+        // now, whichever change this was.
+        if let Err(e) = self
+            .media
+            .set_video_paused(&session, call.held.is_some())
+            .await
+        {
+            debug!(call_id = %call_id, error = %e, "No video to pause or resume");
+        }
+        let Some(leg) = held else { return };
         let Some(music) = self.music_for(&call, leg).await else {
             info!(call_id = %call_id, "Held in silence: the holder chose no music");
             return;

@@ -38,6 +38,8 @@ pub struct ClassOfServiceResponse {
     pub allowed: Vec<DestinationClass>,
     pub max_calls: Option<u32>,
     pub caller_id: CallerIdPolicy,
+    /// Its users' calls may carry video.
+    pub video: bool,
     pub is_default: bool,
     #[serde(with = "crate::time::epoch_secs")]
     #[schema(value_type = String, format = DateTime)]
@@ -58,13 +60,14 @@ impl From<ClassOfService> for ClassOfServiceResponse {
             allowed: c.allowed,
             max_calls: c.max_calls,
             caller_id: c.caller_id,
+            video: c.video,
             is_default: c.is_default,
         }
     }
 }
 
 /// What a class is written as. `allowed` unset allows everything;
-/// `max_calls` unset is two, `null` no limit.
+/// `max_calls` unset is two, `null` no limit; `video` unset allows it.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ClassOfServiceRequest {
     pub name: String,
@@ -74,8 +77,14 @@ pub struct ClassOfServiceRequest {
     pub max_calls: Option<Option<u32>>,
     #[serde(default)]
     pub caller_id: CallerIdPolicy,
+    #[serde(default = "video_by_default")]
+    pub video: bool,
     #[serde(default)]
     pub is_default: bool,
+}
+
+fn video_by_default() -> bool {
+    true
 }
 
 /// A field given, `null` included: absent is `None`, `null` `Some(None)`.
@@ -100,6 +109,7 @@ impl ClassOfServiceRequest {
             Some(max) => max,
         };
         class.caller_id = self.caller_id;
+        class.video = self.video;
         class.is_default = self.is_default;
     }
 }
