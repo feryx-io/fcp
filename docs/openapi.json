@@ -22841,7 +22841,7 @@
       },
       "ClassOfServiceRequest": {
         "type": "object",
-        "description": "What a class is written as. `allowed` unset allows everything;\n`max_calls` unset is two, `null` no limit.",
+        "description": "What a class is written as. `allowed` unset allows everything;\n`max_calls` unset is two, `null` no limit; `video` unset allows it.",
         "required": [
           "name"
         ],
@@ -22869,6 +22869,9 @@
           "caller_id": {
             "$ref": "#/components/schemas/CallerIdPolicy"
           },
+          "video": {
+            "type": "boolean"
+          },
           "is_default": {
             "type": "boolean"
           }
@@ -22882,6 +22885,7 @@
           "name",
           "allowed",
           "caller_id",
+          "video",
           "is_default",
           "updated_at"
         ],
@@ -22911,6 +22915,10 @@
           },
           "caller_id": {
             "$ref": "#/components/schemas/CallerIdPolicy"
+          },
+          "video": {
+            "type": "boolean",
+            "description": "Its users' calls may carry video."
           },
           "is_default": {
             "type": "boolean"
@@ -24945,6 +24953,17 @@
               {
                 "$ref": "#/components/schemas/TenantDiagnostics",
                 "description": "Captures from its people's apps; unset, none may be taken."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "video": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantVideo",
+                "description": "Video on its calls; unset, calls carry it."
               },
               {
                 "type": "null"
@@ -30738,6 +30757,7 @@
                 "name",
                 "allowed",
                 "caller_id",
+                "video",
                 "is_default",
                 "updated_at"
               ],
@@ -30767,6 +30787,10 @@
                 },
                 "caller_id": {
                   "$ref": "#/components/schemas/CallerIdPolicy"
+                },
+                "video": {
+                  "type": "boolean",
+                  "description": "Its users' calls may carry video."
                 },
                 "is_default": {
                   "type": "boolean"
@@ -36562,6 +36586,7 @@
                 "directory",
                 "lines",
                 "diagnostics",
+                "video",
                 "provisioning"
               ],
               "properties": {
@@ -36684,6 +36709,10 @@
                 "diagnostics": {
                   "$ref": "#/components/schemas/TenantDiagnostics",
                   "description": "Whether its people's apps may capture calls, and how captures are\nkept."
+                },
+                "video": {
+                  "$ref": "#/components/schemas/TenantVideo",
+                  "description": "Whether its people's calls may carry video, and what a phone may\nsend (`docs/SOFTPHONE_VIDEO.md` §2.7)."
                 },
                 "provisioning": {
                   "$ref": "#/components/schemas/TenantProvisioning",
@@ -41519,7 +41548,8 @@
           "may_change_directory_listing",
           "lines",
           "may_rename_lines",
-          "capture"
+          "capture",
+          "video"
         ],
         "properties": {
           "account": {
@@ -41584,6 +41614,10 @@
           "capture": {
             "$ref": "#/components/schemas/SoftphoneCapture",
             "description": "Whether the app may capture calls, until when, and how large a\ncapture may be (`docs/CALL_DIAGNOSTICS.md` §3)."
+          },
+          "video": {
+            "$ref": "#/components/schemas/SoftphoneVideo",
+            "description": "Whether the app's calls may carry video, and what it may send."
           }
         }
       },
@@ -41690,6 +41724,58 @@
           },
           "realm": {
             "type": "string"
+          }
+        }
+      },
+      "SoftphoneVideo": {
+        "type": "object",
+        "description": "Video on the app (`docs/SOFTPHONE_VIDEO.md` §2.7): whether its calls\nmay carry it, and what its camera may send.",
+        "required": [
+          "enabled",
+          "codecs",
+          "max_send",
+          "content_share"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "The tenant's `video.calls` and the user's class of service; off,\nthe app offers no video and shows no video button."
+          },
+          "codecs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "In order of preference, as SDP names them: what FCP's rooms take\nfirst. A call relays whatever the two phones agree on."
+          },
+          "max_send": {
+            "$ref": "#/components/schemas/SoftphoneVideoSend",
+            "description": "The most the camera sends."
+          },
+          "content_share": {
+            "type": "boolean",
+            "description": "The user may share their screen in a room they don't host."
+          }
+        }
+      },
+      "SoftphoneVideoSend": {
+        "type": "object",
+        "description": "The tenant's cap on what a phone's camera sends.",
+        "required": [
+          "height",
+          "kbps"
+        ],
+        "properties": {
+          "height": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The picture's height, in lines.",
+            "minimum": 0
+          },
+          "kbps": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       },
@@ -42278,6 +42364,7 @@
           "directory",
           "lines",
           "diagnostics",
+          "video",
           "provisioning"
         ],
         "properties": {
@@ -42401,6 +42488,10 @@
             "$ref": "#/components/schemas/TenantDiagnostics",
             "description": "Whether its people's apps may capture calls, and how captures are\nkept."
           },
+          "video": {
+            "$ref": "#/components/schemas/TenantVideo",
+            "description": "Whether its people's calls may carry video, and what a phone may\nsend (`docs/SOFTPHONE_VIDEO.md` §2.7)."
+          },
           "provisioning": {
             "$ref": "#/components/schemas/TenantProvisioning",
             "description": "How the tenant's phones fetch their configuration\n(`docs/PROVISIONING.md` §3)."
@@ -42431,6 +42522,32 @@
             "format": "int32",
             "description": "How many days an app session (the softphone's) lasts after its last\nrefresh (`docs/SOFTPHONE.md` §2.3); absent, 90.",
             "minimum": 0
+          }
+        }
+      },
+      "TenantVideo": {
+        "type": "object",
+        "description": "A tenant's word on video: calls carry it unless the tenant, or a\nparty's class of service, says not.",
+        "properties": {
+          "calls": {
+            "type": "boolean",
+            "description": "Calls may carry video; on unless a tenant turns it off."
+          },
+          "max_send_height": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The tallest picture a phone's camera sends, in lines (180 to 2160).",
+            "minimum": 0
+          },
+          "max_send_kbps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The most a phone's camera sends, in kb/s (64 to 8000).",
+            "minimum": 0
+          },
+          "content_share": {
+            "type": "boolean",
+            "description": "A user may share their screen in a room they don't host."
           }
         }
       },
@@ -45044,6 +45161,17 @@
               {
                 "$ref": "#/components/schemas/TenantDiagnostics",
                 "description": "Replaces its word on captures."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "video": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantVideo",
+                "description": "Replaces its word on video."
               },
               {
                 "type": "null"

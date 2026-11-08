@@ -105,6 +105,9 @@ pub struct TenantResponse {
     /// Whether its people's apps may capture calls, and how captures are
     /// kept.
     pub diagnostics: fcp_core::tenant::TenantDiagnostics,
+    /// Whether its people's calls may carry video, and what a phone may
+    /// send (`docs/SOFTPHONE_VIDEO.md` §2.7).
+    pub video: fcp_core::tenant::TenantVideo,
     /// How the tenant's phones fetch their configuration
     /// (`docs/PROVISIONING.md` §3).
     pub provisioning: fcp_core::provisioning::TenantProvisioning,
@@ -149,6 +152,7 @@ impl From<Tenant> for TenantResponse {
             directory: tenant.directory,
             lines: tenant.lines,
             diagnostics: tenant.diagnostics,
+            video: tenant.video,
         }
     }
 }
@@ -200,6 +204,9 @@ pub struct CreateTenantRequest {
     /// Captures from its people's apps; unset, none may be taken.
     #[serde(default)]
     pub diagnostics: Option<fcp_core::tenant::TenantDiagnostics>,
+    /// Video on its calls; unset, calls carry it.
+    #[serde(default)]
+    pub video: Option<fcp_core::tenant::TenantVideo>,
     /// How the tenant's phones fetch their configuration.
     #[serde(default)]
     pub provisioning: Option<fcp_core::provisioning::TenantProvisioning>,
@@ -244,6 +251,9 @@ pub struct UpdateTenantRequest {
     /// Replaces its word on captures.
     #[serde(default)]
     pub diagnostics: Option<fcp_core::tenant::TenantDiagnostics>,
+    /// Replaces its word on video.
+    #[serde(default)]
+    pub video: Option<fcp_core::tenant::TenantVideo>,
     /// Replaces how the tenant's phones fetch their configuration.
     pub provisioning: Option<fcp_core::provisioning::TenantProvisioning>,
 }
@@ -581,6 +591,7 @@ pub async fn create_tenant(
         directory: req.directory.clone().unwrap_or_default(),
         lines: req.lines.clone().unwrap_or_default(),
         diagnostics: checked_diagnostics(req.diagnostics.clone().unwrap_or_default())?,
+        video: checked_video(req.video.clone().unwrap_or_default())?,
         provisioning: req
             .provisioning
             .clone()
@@ -748,6 +759,9 @@ pub async fn update_tenant(
     if let Some(diagnostics) = req.diagnostics {
         tenant.diagnostics = checked_diagnostics(diagnostics)?;
     }
+    if let Some(video) = req.video {
+        tenant.video = checked_video(video)?;
+    }
 
     if let Some(provisioning) = req.provisioning {
         tenant.provisioning = provisioning
@@ -907,6 +921,28 @@ pub async fn get_tenant_deletion(
         .find(|r| r.kind == SubjectRequestKind::TenantDeletion)
         .map(|r| Json(super::compliance::SubjectRequestResponse::from(r)))
         .ok_or_else(|| ApiError::NotFound(format!("Tenant {id} has no deletion request")))
+}
+
+/// A tenant's video settings, within their bounds.
+fn checked_video(
+    v: fcp_core::tenant::TenantVideo,
+) -> Result<fcp_core::tenant::TenantVideo, ApiError> {
+    use fcp_core::tenant::{VIDEO_SEND_HEIGHTS, VIDEO_SEND_KBPS};
+    if !VIDEO_SEND_HEIGHTS.contains(&v.max_send_height) {
+        return Err(ApiError::BadRequest(format!(
+            "video.max_send_height is from {} to {}",
+            VIDEO_SEND_HEIGHTS.start(),
+            VIDEO_SEND_HEIGHTS.end()
+        )));
+    }
+    if !VIDEO_SEND_KBPS.contains(&v.max_send_kbps) {
+        return Err(ApiError::BadRequest(format!(
+            "video.max_send_kbps is from {} to {}",
+            VIDEO_SEND_KBPS.start(),
+            VIDEO_SEND_KBPS.end()
+        )));
+    }
+    Ok(v)
 }
 
 /// A tenant's capture settings, within their bounds.

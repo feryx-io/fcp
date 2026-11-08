@@ -20,6 +20,7 @@ if TYPE_CHECKING:
   from ..models.tenant_offboarding import TenantOffboarding
   from ..models.tenant_provisioning import TenantProvisioning
   from ..models.tenant_sign_in import TenantSignIn
+  from ..models.tenant_video import TenantVideo
 
 
 
@@ -52,6 +53,8 @@ class PageTenantResponseDataItem:
             lines (TenantLines): What a tenant's people may do with the lines on their devices.
             diagnostics (TenantDiagnostics): A tenant's word on captures from its people's apps: off unless it turns
                 them on, and then only for a user or device an administrator allows.
+            video (TenantVideo): A tenant's word on video: calls carry it unless the tenant, or a
+                party's class of service, says not.
             provisioning (TenantProvisioning): A tenant's provisioning settings (`docs/PROVISIONING.md` §3).
             description (None | str | Unset):
             contact_email (None | str | Unset):
@@ -78,6 +81,7 @@ class PageTenantResponseDataItem:
     directory: TenantDirectory
     lines: TenantLines
     diagnostics: TenantDiagnostics
+    video: TenantVideo
     provisioning: TenantProvisioning
     description: None | str | Unset = UNSET
     contact_email: None | str | Unset = UNSET
@@ -102,6 +106,7 @@ class PageTenantResponseDataItem:
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
         from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
+        from ..models.tenant_video import TenantVideo # noqa: PLC0415
         id = self.id
 
         name = self.name
@@ -133,6 +138,8 @@ class PageTenantResponseDataItem:
         lines = self.lines.to_dict()
 
         diagnostics = self.diagnostics.to_dict()
+
+        video = self.video.to_dict()
 
         provisioning = self.provisioning.to_dict()
 
@@ -210,6 +217,7 @@ class PageTenantResponseDataItem:
             "directory": directory,
             "lines": lines,
             "diagnostics": diagnostics,
+            "video": video,
             "provisioning": provisioning,
         })
         if description is not UNSET:
@@ -244,6 +252,7 @@ class PageTenantResponseDataItem:
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
         from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
+        from ..models.tenant_video import TenantVideo # noqa: PLC0415
         d = dict(src_dict)
         id = d.pop("id")
 
@@ -295,6 +304,11 @@ class PageTenantResponseDataItem:
 
 
         diagnostics = TenantDiagnostics.from_dict(d.pop("diagnostics"))
+
+
+
+
+        video = TenantVideo.from_dict(d.pop("video"))
 
 
 
@@ -419,6 +433,7 @@ class PageTenantResponseDataItem:
             directory=directory,
             lines=lines,
             diagnostics=diagnostics,
+            video=video,
             provisioning=provisioning,
             description=description,
             contact_email=contact_email,

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
   from ..models.tenant_offboarding import TenantOffboarding
   from ..models.tenant_provisioning import TenantProvisioning
   from ..models.tenant_sign_in import TenantSignIn
+  from ..models.tenant_video import TenantVideo
 
 
 
@@ -56,6 +57,7 @@ class UpdateTenantRequest:
             directory (None | TenantDirectory | Unset):
             lines (None | TenantLines | Unset):
             diagnostics (None | TenantDiagnostics | Unset):
+            video (None | TenantVideo | Unset):
             provisioning (None | TenantProvisioning | Unset):
      """
 
@@ -79,6 +81,7 @@ class UpdateTenantRequest:
     directory: None | TenantDirectory | Unset = UNSET
     lines: None | TenantLines | Unset = UNSET
     diagnostics: None | TenantDiagnostics | Unset = UNSET
+    video: None | TenantVideo | Unset = UNSET
     provisioning: None | TenantProvisioning | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -94,6 +97,7 @@ class UpdateTenantRequest:
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
         from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
+        from ..models.tenant_video import TenantVideo # noqa: PLC0415
         name: None | str | Unset
         if isinstance(self.name, Unset):
             name = UNSET
@@ -236,6 +240,14 @@ class UpdateTenantRequest:
         else:
             diagnostics = self.diagnostics
 
+        video: dict[str, Any] | None | Unset
+        if isinstance(self.video, Unset):
+            video = UNSET
+        elif isinstance(self.video, TenantVideo):
+            video = self.video.to_dict()
+        else:
+            video = self.video
+
         provisioning: dict[str, Any] | None | Unset
         if isinstance(self.provisioning, Unset):
             provisioning = UNSET
@@ -289,6 +301,8 @@ class UpdateTenantRequest:
             field_dict["lines"] = lines
         if diagnostics is not UNSET:
             field_dict["diagnostics"] = diagnostics
+        if video is not UNSET:
+            field_dict["video"] = video
         if provisioning is not UNSET:
             field_dict["provisioning"] = provisioning
 
@@ -305,6 +319,7 @@ class UpdateTenantRequest:
         from ..models.tenant_offboarding import TenantOffboarding # noqa: PLC0415
         from ..models.tenant_provisioning import TenantProvisioning # noqa: PLC0415
         from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
+        from ..models.tenant_video import TenantVideo # noqa: PLC0415
         d = dict(src_dict)
         def _parse_name(data: object) -> None | str | Unset:
             if data is None:
@@ -592,6 +607,26 @@ class UpdateTenantRequest:
         diagnostics = _parse_diagnostics(d.pop("diagnostics", UNSET))
 
 
+        def _parse_video(data: object) -> None | TenantVideo | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                video_type_0 = TenantVideo.from_dict(data)
+
+
+
+                return video_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TenantVideo | Unset, data)
+
+        video = _parse_video(d.pop("video", UNSET))
+
+
         def _parse_provisioning(data: object) -> None | TenantProvisioning | Unset:
             if data is None:
                 return data
@@ -633,6 +668,7 @@ class UpdateTenantRequest:
             directory=directory,
             lines=lines,
             diagnostics=diagnostics,
+            video=video,
             provisioning=provisioning,
         )
 

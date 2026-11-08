@@ -359,6 +359,10 @@ pub struct ClassOfService {
     pub max_calls: Option<u32>,
     #[serde(default)]
     pub caller_id: CallerIdPolicy,
+    /// Its users' calls may carry video (`docs/SOFTPHONE_VIDEO.md` §2.2);
+    /// a class that says not keeps every call they are on to audio.
+    #[serde(default = "default_video")]
+    pub video: bool,
     /// The class of a user who has none of their own.
     #[serde(default)]
     pub is_default: bool,
@@ -366,6 +370,10 @@ pub struct ClassOfService {
     pub created_at: SystemTime,
     #[serde(default = "SystemTime::now")]
     pub updated_at: SystemTime,
+}
+
+fn default_video() -> bool {
+    true
 }
 
 impl ClassOfService {
@@ -379,6 +387,7 @@ impl ClassOfService {
             allowed: DestinationClass::ALL.to_vec(),
             max_calls: Some(DEFAULT_MAX_CALLS),
             caller_id: CallerIdPolicy::Line,
+            video: true,
             is_default: false,
             created_at: now,
             updated_at: now,

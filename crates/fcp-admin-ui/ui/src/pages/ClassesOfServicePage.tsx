@@ -34,6 +34,7 @@ const emptyRequest = (): ClassOfServiceRequest => ({
   allowed: ['internal', 'emergency', 'toll_free', 'national'],
   max_calls: 2,
   caller_id: 'line',
+  video: true,
   is_default: false,
 })
 
@@ -124,7 +125,10 @@ export function ClassesOfServicePage() {
                     {c.allowed.filter((a) => a !== 'emergency').map((a) => DESTINATION_LABELS[a]).join(', ') || 'Emergency only'}
                   </TableCell>
                   <TableCell className="text-sm">{c.max_calls ?? 'No limit'}</TableCell>
-                  <TableCell className="text-sm">{c.caller_id === 'withheld' ? 'Withheld' : 'Line'}</TableCell>
+                  <TableCell className="text-sm">
+                    {c.caller_id === 'withheld' ? 'Withheld' : 'Line'}
+                    {!c.video && <Badge variant="outline" className="ml-2">No video</Badge>}
+                  </TableCell>
                   <TableCell className="text-right">
                     <Button
                       variant="ghost"
@@ -138,6 +142,7 @@ export function ClassesOfServicePage() {
                             allowed: c.allowed,
                             max_calls: c.max_calls,
                             caller_id: c.caller_id,
+                            video: c.video,
                             is_default: c.is_default,
                           },
                         })
@@ -232,6 +237,13 @@ export function ClassesOfServicePage() {
                     <option value="withheld">Withheld</option>
                   </select>
                 </div>
+              </div>
+              <div className="flex items-center justify-between rounded-md border p-3">
+                <div className="pr-4">
+                  <Label>Video</Label>
+                  <p className="text-xs text-muted-foreground">Calls its users are on may carry video; off, they are audio alone.</p>
+                </div>
+                <Switch aria-label="Video" checked={req.video ?? true} onCheckedChange={(v) => update({ video: v })} />
               </div>
               <div className="flex items-center justify-between rounded-md border p-3">
                 <div className="pr-4">

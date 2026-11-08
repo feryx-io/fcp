@@ -246,16 +246,35 @@ impl TransferRun {
         };
 
         // The offer: the transferred party's media (the node's own when
-        // anchored), sending both ways whatever hold it is in.
+        // anchored, its video on the relay), sending both ways whatever
+        // hold it is in.
         let offer = crate::hold::with_direction(
-            &match rtp_ports {
-                Some((target_port, _)) => fcp_media::rewrite_sdp_for_anchoring(
-                    &party_sdp,
-                    &self.local_addr,
-                    target_port,
-                    None,
-                ),
-                None => party_sdp.clone(),
+            &match (&anchored, rtp_ports) {
+                (Some((session_id, media_manager)), Some((target_port, _))) => {
+                    match media_manager
+                        .anchored_offer(
+                            session_id,
+                            crate::handler::media_leg(self.referrer),
+                            &party_sdp,
+                            &self.local_addr,
+                            None,
+                            false,
+                        )
+                        .await
+                    {
+                        Ok(sdp) => sdp,
+                        Err(e) => {
+                            warn!(call_id = %self.call_id, error = %e, "The transfer target is offered audio alone");
+                            fcp_media::rewrite_sdp_for_anchoring(
+                                &party_sdp,
+                                &self.local_addr,
+                                target_port,
+                                None,
+                            )
+                        }
+                    }
+                }
+                _ => party_sdp.clone(),
             },
             "sendrecv",
         );
@@ -344,6 +363,13 @@ impl TransferRun {
                     let _ = self.uac.bye(&new_dialog).await;
                     return Err((500, "Server Internal Error", format!("media session: {e}")));
                 }
+                let _ = media_manager
+                    .video_answered(
+                        session_id,
+                        crate::handler::media_leg(self.referrer),
+                        &answer,
+                    )
+                    .await;
                 // Held by the referrer: taken off hold, by the node — an
                 // encrypted party offered its own leg's key.
                 if call.held == Some(party) {
@@ -360,16 +386,31 @@ impl TransferRun {
                             LegSide::B => self.b_leg_keys.get(&call.id).map(|o| o.sdp.clone()),
                         }
                     };
-                    let resume = crate::hold::with_direction(
-                        &fcp_media::rewrite_sdp_for_anchoring(
+                    let resume = match media_manager
+                        .anchored_offer(
+                            session_id,
+                            crate::handler::media_leg(party),
+                            &party_sdp,
+                            &self.local_addr,
+                            party_srtp.as_ref(),
+                            party_srtp.is_some(),
+                        )
+                        .await
+                    {
+                        Ok(sdp) => sdp,
+                        Err(_) => fcp_media::rewrite_sdp_for_anchoring(
                             &party_sdp,
                             &self.local_addr,
                             port,
                             party_srtp.as_ref(),
                         ),
-                        "sendrecv",
-                    );
-                    self.reinvite(&mut party_dialog, &resume).await;
+                    };
+                    let resume = crate::hold::with_direction(&resume, "sendrecv");
+                    if let Some(Some(answered)) = self.reinvite(&mut party_dialog, &resume).await {
+                        let _ = media_manager
+                            .video_answered(session_id, crate::handler::media_leg(party), &answered)
+                            .await;
+                    }
                 }
             }
             _ => {

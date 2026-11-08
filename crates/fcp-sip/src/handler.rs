@@ -7497,6 +7497,8 @@ impl SipMessageHandler {
             if let (Some(media_session_id), Some(media_manager)) =
                 (media_session_id, &self.media_manager)
             {
+                self.decide_video(&call_id, &media_session_id, media_manager)
+                    .await;
                 // Get media session to extract leg B's RTP port
                 match media_manager.get_session(&media_session_id).await {
                     Ok(session) => {
@@ -10964,6 +10966,37 @@ impl SipMessageHandler {
         Ok(self.build_in_dialog_response(request, &peer_resp))
     }
 
+    /// Whether the call may carry video, told to its media session before
+    /// its first offer: the tenant's word and its parties' classes of
+    /// service (`docs/SOFTPHONE_VIDEO.md` §2.2). Every offer after follows
+    /// it.
+    async fn decide_video(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        media_session_id: &fcp_core::CallId,
+        media_manager: &fcp_media::MediaManager,
+    ) {
+        let (Some(storage), Some(call)) = (&self.storage, self.call_manager.get_call(call_id))
+        else {
+            return;
+        };
+        let users: Vec<fcp_core::UserId> = [call.caller_user_id, call.callee_user_id]
+            .into_iter()
+            .flatten()
+            .collect();
+        let allowed =
+            crate::class_of_service::video_allowed(storage, &call.tenant_id, &users).await;
+        if !allowed {
+            info!(call_id = %call_id, "The call may not carry video; it is audio alone");
+        }
+        if let Err(e) = media_manager
+            .set_video_allowed(media_session_id, allowed)
+            .await
+        {
+            debug!(call_id = %call_id, error = %e, "No media session to tell about video");
+        }
+    }
+
     /// Answer a hold, or the resume of one, from the node: the holder's
     /// media side follows its offer if it moved, the answer is the node's
     /// (`recvonly` to a hold), and the held leg is marked — which starts or
@@ -11038,6 +11071,34 @@ impl SipMessageHandler {
         };
         let answer =
             fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, port, srtp.as_ref());
+        // The holder's video stays on the relay, answered `inactive` while
+        // it holds — the hold hook pauses the relay — and as the far phone
+        // answered it when it resumes (`docs/SOFTPHONE_VIDEO.md` §2.2).
+        let far_sdp = match sender {
+            fcp_b2bua_core::LegSide::A => call.b_leg.as_ref().and_then(|b| b.sdp.clone()),
+            fcp_b2bua_core::LegSide::B => call.a_leg.sdp.clone(),
+        };
+        let answer = match far_sdp {
+            Some(far_sdp) => match media_manager
+                .anchored_answer(
+                    &session_id,
+                    media_leg(sender),
+                    offer,
+                    answer.clone(),
+                    &far_sdp,
+                    &self.local_addr,
+                )
+                .await
+            {
+                Ok(spliced) if holds => fcp_media::with_video_direction(&spliced, "inactive"),
+                Ok(spliced) => spliced,
+                Err(e) => {
+                    warn!(call_id = %call.id, error = %e, "The holder's video was turned down");
+                    answer
+                }
+            },
+            None => answer,
+        };
         store_leg_sdp(
             &self.call_manager,
             &call.id,
@@ -14814,17 +14875,39 @@ impl SipMessageHandler {
                     self.leg_srtp(&call.id, party, &session).await
                 };
                 if held {
-                    let resume = crate::hold::with_direction(
-                        &fcp_media::rewrite_sdp_for_anchoring(
+                    // Its video re-offered on the relay, keyed as its audio.
+                    let resume = match media_manager
+                        .anchored_offer(
+                            &session_id,
+                            media_leg(party),
                             &party_sdp,
                             &self.local_addr,
-                            party_port,
                             party_srtp.as_ref(),
-                        ),
-                        "sendrecv",
-                    );
+                            party_srtp.is_some(),
+                        )
+                        .await
+                    {
+                        Ok(sdp) => sdp,
+                        Err(e) => {
+                            warn!(call_id = %call.id, error = %e, "The party's video was not re-offered");
+                            fcp_media::rewrite_sdp_for_anchoring(
+                                &party_sdp,
+                                &self.local_addr,
+                                party_port,
+                                party_srtp.as_ref(),
+                            )
+                        }
+                    };
+                    let resume = crate::hold::with_direction(&resume, "sendrecv");
                     match uac.send_reinvite(&mut party_dialog, Some(&resume)).await {
-                        Ok(r) if r.start_line().is_success() => {}
+                        Ok(r) if r.start_line().is_success() => {
+                            let answered = String::from_utf8_lossy(r.body()).to_string();
+                            if !answered.is_empty() {
+                                let _ = media_manager
+                                    .video_answered(&session_id, media_leg(party), &answered)
+                                    .await;
+                            }
+                        }
                         Ok(r) => {
                             warn!(call_id = %call.id, status = r.start_line().code(), "The party refused to come off hold")
                         }
@@ -14833,15 +14916,31 @@ impl SipMessageHandler {
                         }
                     }
                 }
-                (
-                    fcp_media::construct_answer_for_a_leg(
+                let own = fcp_media::construct_answer_for_a_leg(
+                    &offer,
+                    &self.local_addr,
+                    port,
+                    taker_srtp.as_ref(),
+                );
+                // The taker sees the party's video on the relay.
+                let answer = match media_manager
+                    .anchored_answer(
+                        &session_id,
+                        media_leg(side),
                         &offer,
+                        own.clone(),
+                        &party_sdp,
                         &self.local_addr,
-                        port,
-                        taker_srtp.as_ref(),
-                    ),
-                    party_sdp,
-                )
+                    )
+                    .await
+                {
+                    Ok(answer) => answer,
+                    Err(e) => {
+                        warn!(call_id = %call.id, error = %e, "The taker's video was turned down");
+                        own
+                    }
+                };
+                (answer, party_sdp)
             }
             None => {
                 let to_party = crate::hold::with_direction(&offer, "sendrecv");
@@ -16940,15 +17039,28 @@ impl SipMessageHandler {
                 &self.media_manager,
                 &original,
             ) {
-                (true, Some(session), Some(media), Some(sdp)) => {
-                    match media.get_session(&session).await {
-                        Ok(session) => Some(fcp_media::rewrite_sdp_for_anchoring(
+                (true, Some(session_id), Some(media), Some(sdp)) => {
+                    match media
+                        .anchored_offer(
+                            &session_id,
+                            fcp_media::backend::Leg::B,
                             sdp,
                             &self.local_addr,
-                            session.ports_for(fcp_media::backend::Leg::B).0,
                             None,
-                        )),
-                        Err(_) => None,
+                            false,
+                        )
+                        .await
+                    {
+                        Ok(offer) => Some(offer),
+                        Err(_) => match media.get_session(&session_id).await {
+                            Ok(session) => Some(fcp_media::rewrite_sdp_for_anchoring(
+                                sdp,
+                                &self.local_addr,
+                                session.ports_for(fcp_media::backend::Leg::B).0,
+                                None,
+                            )),
+                            Err(_) => None,
+                        },
                     }
                 }
                 _ => None,
@@ -18279,12 +18391,26 @@ impl SipMessageHandler {
                         Ok(session) => {
                             let (rtp_port, _rtcp_port) =
                                 session.ports_for(fcp_media::backend::Leg::B);
-                            let rewritten = fcp_media::rewrite_sdp_for_anchoring(
-                                &original_sdp,
-                                &self.local_addr,
-                                rtp_port,
-                                None,
-                            );
+                            // The caller's video relayed to the forward's
+                            // target, as to the first callee.
+                            let rewritten = media_manager
+                                .anchored_offer(
+                                    &media_session_id,
+                                    fcp_media::backend::Leg::B,
+                                    &original_sdp,
+                                    &self.local_addr,
+                                    None,
+                                    false,
+                                )
+                                .await
+                                .unwrap_or_else(|_| {
+                                    fcp_media::rewrite_sdp_for_anchoring(
+                                        &original_sdp,
+                                        &self.local_addr,
+                                        rtp_port,
+                                        None,
+                                    )
+                                });
                             info!(
                                 call_id = %call_id,
                                 server_ip = %self.local_addr,

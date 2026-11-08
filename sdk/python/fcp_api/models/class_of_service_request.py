@@ -25,13 +25,14 @@ T = TypeVar("T", bound="ClassOfServiceRequest")
 @_attrs_define
 class ClassOfServiceRequest:
     """ What a class is written as. `allowed` unset allows everything;
-    `max_calls` unset is two, `null` no limit.
+    `max_calls` unset is two, `null` no limit; `video` unset allows it.
 
         Attributes:
             name (str):
             allowed (list[DestinationClass] | None | Unset):
             max_calls (int | None | Unset):
             caller_id (CallerIdPolicy | Unset): How a user's caller ID leaves on a trunk.
+            video (bool | Unset):
             is_default (bool | Unset):
      """
 
@@ -39,6 +40,7 @@ class ClassOfServiceRequest:
     allowed: list[DestinationClass] | None | Unset = UNSET
     max_calls: int | None | Unset = UNSET
     caller_id: CallerIdPolicy | Unset = UNSET
+    video: bool | Unset = UNSET
     is_default: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -73,6 +75,8 @@ class ClassOfServiceRequest:
             caller_id = self.caller_id.value
 
 
+        video = self.video
+
         is_default = self.is_default
 
 
@@ -87,6 +91,8 @@ class ClassOfServiceRequest:
             field_dict["max_calls"] = max_calls
         if caller_id is not UNSET:
             field_dict["caller_id"] = caller_id
+        if video is not UNSET:
+            field_dict["video"] = video
         if is_default is not UNSET:
             field_dict["is_default"] = is_default
 
@@ -144,6 +150,8 @@ class ClassOfServiceRequest:
 
 
 
+        video = d.pop("video", UNSET)
+
         is_default = d.pop("is_default", UNSET)
 
         class_of_service_request = cls(
@@ -151,6 +159,7 @@ class ClassOfServiceRequest:
             allowed=allowed,
             max_calls=max_calls,
             caller_id=caller_id,
+            video=video,
             is_default=is_default,
         )
 

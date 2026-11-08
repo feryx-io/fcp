@@ -7026,7 +7026,7 @@ export interface components {
         };
         /**
          * @description What a class is written as. `allowed` unset allows everything;
-         *     `max_calls` unset is two, `null` no limit.
+         *     `max_calls` unset is two, `null` no limit; `video` unset allows it.
          */
         ClassOfServiceRequest: {
             name: string;
@@ -7034,6 +7034,7 @@ export interface components {
             /** Format: int32 */
             max_calls?: number | null;
             caller_id?: components["schemas"]["CallerIdPolicy"];
+            video?: boolean;
             is_default?: boolean;
         };
         ClassOfServiceResponse: {
@@ -7044,6 +7045,8 @@ export interface components {
             /** Format: int32 */
             max_calls?: number | null;
             caller_id: components["schemas"]["CallerIdPolicy"];
+            /** @description Its users' calls may carry video. */
+            video: boolean;
             is_default: boolean;
             /** Format: date-time */
             updated_at: string;
@@ -7653,6 +7656,7 @@ export interface components {
             directory?: components["schemas"]["TenantDirectory"] | null;
             lines?: components["schemas"]["TenantLines"] | null;
             diagnostics?: components["schemas"]["TenantDiagnostics"] | null;
+            video?: components["schemas"]["TenantVideo"] | null;
             provisioning?: components["schemas"]["TenantProvisioning"] | null;
         };
         /** @description Credit or adjustment request. */
@@ -9597,6 +9601,8 @@ export interface components {
                 /** Format: int32 */
                 max_calls?: number | null;
                 caller_id: components["schemas"]["CallerIdPolicy"];
+                /** @description Its users' calls may carry video. */
+                video: boolean;
                 is_default: boolean;
                 /** Format: date-time */
                 updated_at: string;
@@ -11430,6 +11436,11 @@ export interface components {
                  */
                 diagnostics: components["schemas"]["TenantDiagnostics"];
                 /**
+                 * @description Whether its people's calls may carry video, and what a phone may
+                 *     send (`docs/SOFTPHONE_VIDEO.md` §2.7).
+                 */
+                video: components["schemas"]["TenantVideo"];
+                /**
                  * @description How the tenant's phones fetch their configuration
                  *     (`docs/PROVISIONING.md` §3).
                  */
@@ -13145,6 +13156,8 @@ export interface components {
              *     capture may be (`docs/CALL_DIAGNOSTICS.md` §3).
              */
             capture: components["schemas"]["SoftphoneCapture"];
+            /** @description Whether the app's calls may carry video, and what it may send. */
+            video: components["schemas"]["SoftphoneVideo"];
         };
         /**
          * @description A line on the app (`docs/DEVICE_LINES.md`): an account it registers
@@ -13191,6 +13204,36 @@ export interface components {
             /** @description Shown here once. */
             sip_password: string;
             realm: string;
+        };
+        /**
+         * @description Video on the app (`docs/SOFTPHONE_VIDEO.md` §2.7): whether its calls
+         *     may carry it, and what its camera may send.
+         */
+        SoftphoneVideo: {
+            /**
+             * @description The tenant's `video.calls` and the user's class of service; off,
+             *     the app offers no video and shows no video button.
+             */
+            enabled: boolean;
+            /**
+             * @description In order of preference, as SDP names them: what FCP's rooms take
+             *     first. A call relays whatever the two phones agree on.
+             */
+            codecs: string[];
+            /** @description The most the camera sends. */
+            max_send: components["schemas"]["SoftphoneVideoSend"];
+            /** @description The user may share their screen in a room they don't host. */
+            content_share: boolean;
+        };
+        /** @description The tenant's cap on what a phone's camera sends. */
+        SoftphoneVideoSend: {
+            /**
+             * Format: int32
+             * @description The picture's height, in lines.
+             */
+            height: number;
+            /** Format: int32 */
+            kbps: number;
         };
         /** @description The one-time code the login page was handed. */
         SsoExchangeRequest: {
@@ -13479,6 +13522,11 @@ export interface components {
              */
             diagnostics: components["schemas"]["TenantDiagnostics"];
             /**
+             * @description Whether its people's calls may carry video, and what a phone may
+             *     send (`docs/SOFTPHONE_VIDEO.md` §2.7).
+             */
+            video: components["schemas"]["TenantVideo"];
+            /**
              * @description How the tenant's phones fetch their configuration
              *     (`docs/PROVISIONING.md` §3).
              */
@@ -13502,6 +13550,26 @@ export interface components {
              *     refresh (`docs/SOFTPHONE.md` §2.3); absent, 90.
              */
             app_session_days?: number | null;
+        };
+        /**
+         * @description A tenant's word on video: calls carry it unless the tenant, or a
+         *     party's class of service, says not.
+         */
+        TenantVideo: {
+            /** @description Calls may carry video; on unless a tenant turns it off. */
+            calls?: boolean;
+            /**
+             * Format: int32
+             * @description The tallest picture a phone's camera sends, in lines (180 to 2160).
+             */
+            max_send_height?: number;
+            /**
+             * Format: int32
+             * @description The most a phone's camera sends, in kb/s (64 to 8000).
+             */
+            max_send_kbps?: number;
+            /** @description A user may share their screen in a room they don't host. */
+            content_share?: boolean;
         };
         /** @description A test delivery. */
         TestWebhookRequest: {
@@ -14266,6 +14334,7 @@ export interface components {
             directory?: components["schemas"]["TenantDirectory"] | null;
             lines?: components["schemas"]["TenantLines"] | null;
             diagnostics?: components["schemas"]["TenantDiagnostics"] | null;
+            video?: components["schemas"]["TenantVideo"] | null;
             provisioning?: components["schemas"]["TenantProvisioning"] | null;
         };
         /** @description Update trunk request. */

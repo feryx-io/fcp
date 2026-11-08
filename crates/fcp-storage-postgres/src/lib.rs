@@ -1592,7 +1592,7 @@ const TENANT_SELECT_COLS: &str = "id, name, description, status, contact_email, 
     max_users, max_phone_numbers, max_concurrent_calls, billing_id,
     created_at, updated_at, trial_expires_at, metadata, sip_domains,
     platform_trunk_fallback, calling_json, login_domains, sign_in_json, offboarding_json,
-    provisioning_json, directory_json, lines_json, diagnostics_json";
+    provisioning_json, directory_json, lines_json, diagnostics_json, video_json";
 
 #[async_trait]
 impl TenantStore for PostgresStorage {
@@ -1714,9 +1714,10 @@ impl TenantStore for PostgresStorage {
                 max_users, max_phone_numbers, max_concurrent_calls, billing_id,
                 created_at, updated_at, trial_expires_at, metadata, sip_domains,
                 platform_trunk_fallback, data, calling_json, login_domains, sign_in_json,
-                offboarding_json, provisioning_json, directory_json, lines_json, diagnostics_json
+                offboarding_json, provisioning_json, directory_json, lines_json, diagnostics_json,
+                video_json
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17, $18, $19, $20, $21, $22, $23, $24)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17, $18, $19, $20, $21, $22, $23, $24, $25)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
@@ -1739,7 +1740,8 @@ impl TenantStore for PostgresStorage {
                  provisioning_json = EXCLUDED.provisioning_json,
                  directory_json = EXCLUDED.directory_json,
                  lines_json = EXCLUDED.lines_json,
-                 diagnostics_json = EXCLUDED.diagnostics_json",
+                 diagnostics_json = EXCLUDED.diagnostics_json,
+                 video_json = EXCLUDED.video_json",
         )
         .bind(&id)
         .bind(&tenant.name)
@@ -1765,6 +1767,7 @@ impl TenantStore for PostgresStorage {
         .bind(serde_json::to_value(&tenant.directory)?)
         .bind(serde_json::to_value(&tenant.lines)?)
         .bind(serde_json::to_value(&tenant.diagnostics)?)
+        .bind(serde_json::to_value(&tenant.video)?)
         .execute(self.writes())
         .await?;
 
@@ -1840,6 +1843,7 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
         lines: serde_json::from_value(row.get("lines_json")).context("a tenant's lines")?,
         diagnostics: serde_json::from_value(row.get("diagnostics_json"))
             .context("a tenant's diagnostics")?,
+        video: serde_json::from_value(row.get("video_json")).context("a tenant's video")?,
     })
 }
 

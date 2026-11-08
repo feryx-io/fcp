@@ -18596,3 +18596,106 @@ mod contacts;
 
 #[path = "api_postgres/presence.rs"]
 mod presence;
+
+/// `/me/softphone` tells the app whether its calls may carry video and
+/// what it may send: the tenant's word, then the user's class
+/// (`docs/SOFTPHONE_VIDEO.md` §2.7).
+#[tokio::test]
+async fn the_softphone_is_told_whether_its_calls_carry_video() {
+    let app = require_app!();
+    app.create_user_with_role("bob", "end_user").await;
+    let web = app.login("bob", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let signed_in = app
+        .send_as(
+            &web,
+            Method::POST,
+            "/api/v1/auth/app/sessions",
+            Some(json!({ "client_name": "Bob's laptop", "install_id": "bob-laptop" })),
+        )
+        .await;
+    assert_eq!(signed_in.status, StatusCode::CREATED, "{}", signed_in.text);
+    let access = signed_in.json["access_token"].as_str().unwrap().to_string();
+    let video = || {
+        let (app, access) = (&app, &access);
+        async move {
+            let config = app
+                .send_as(access, Method::GET, "/api/v1/me/softphone", None)
+                .await;
+            assert_eq!(config.status, StatusCode::OK, "{}", config.text);
+            config.json["video"].clone()
+        }
+    };
+
+    // On by default, with the tenant's caps.
+    let told = video().await;
+    assert_eq!(told["enabled"], true, "{told}");
+    assert_eq!(told["codecs"], json!(["H264", "VP8"]));
+    assert_eq!(told["max_send"], json!({ "height": 720, "kbps": 1500 }));
+    assert_eq!(told["content_share"], true);
+
+    // The tenant's caps, checked; then video off for the tenant.
+    let tenant = format!("/api/v1/tenants/{}", app.tenant_a);
+    for bad in [
+        json!({ "video": { "max_send_height": 100 } }),
+        json!({ "video": { "max_send_kbps": 9000 } }),
+    ] {
+        let res = app.admin(Method::PUT, &tenant, Some(bad.clone())).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{bad}: {}", res.text);
+    }
+    let capped = app
+        .admin(
+            Method::PUT,
+            &tenant,
+            Some(
+                json!({ "video": { "max_send_height": 360, "max_send_kbps": 600,
+                                    "content_share": false } }),
+            ),
+        )
+        .await;
+    assert_eq!(capped.status, StatusCode::OK, "{}", capped.text);
+    assert_eq!(capped.json["video"]["calls"], true, "unset is on");
+    let told = video().await;
+    assert_eq!(told["max_send"], json!({ "height": 360, "kbps": 600 }));
+    assert_eq!(told["content_share"], false);
+    let off = app
+        .admin(
+            Method::PUT,
+            &tenant,
+            Some(json!({ "video": { "calls": false } })),
+        )
+        .await;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.text);
+    assert_eq!(video().await["enabled"], false);
+    let on = app
+        .admin(
+            Method::PUT,
+            &tenant,
+            Some(json!({ "video": { "calls": true } })),
+        )
+        .await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.text);
+    assert_eq!(video().await["enabled"], true);
+
+    // A class without video takes it from its users.
+    let class = app
+        .admin(
+            Method::POST,
+            "/api/v1/classes-of-service",
+            Some(json!({ "name": "Audio only", "video": false, "is_default": true })),
+        )
+        .await;
+    assert_eq!(class.status, StatusCode::CREATED, "{}", class.text);
+    assert_eq!(class.json["video"], false);
+    assert_eq!(video().await["enabled"], false);
+    let other = app
+        .admin(
+            Method::POST,
+            "/api/v1/classes-of-service",
+            Some(json!({ "name": "Everything" })),
+        )
+        .await;
+    assert_eq!(other.json["video"], true, "unset allows it: {}", other.text);
+}

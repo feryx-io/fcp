@@ -32,6 +32,7 @@ class PageClassOfServiceResponseDataItem:
             name (str):
             allowed (list[DestinationClass]):
             caller_id (CallerIdPolicy): How a user's caller ID leaves on a trunk.
+            video (bool): Its users' calls may carry video.
             is_default (bool):
             updated_at (datetime.datetime):
             max_calls (int | None | Unset):
@@ -42,6 +43,7 @@ class PageClassOfServiceResponseDataItem:
     name: str
     allowed: list[DestinationClass]
     caller_id: CallerIdPolicy
+    video: bool
     is_default: bool
     updated_at: datetime.datetime
     max_calls: int | None | Unset = UNSET
@@ -67,6 +69,8 @@ class PageClassOfServiceResponseDataItem:
 
         caller_id = self.caller_id.value
 
+        video = self.video
+
         is_default = self.is_default
 
         updated_at = self.updated_at.isoformat()
@@ -86,6 +90,7 @@ class PageClassOfServiceResponseDataItem:
             "name": name,
             "allowed": allowed,
             "caller_id": caller_id,
+            "video": video,
             "is_default": is_default,
             "updated_at": updated_at,
         })
@@ -120,6 +125,8 @@ class PageClassOfServiceResponseDataItem:
 
 
 
+        video = d.pop("video")
+
         is_default = d.pop("is_default")
 
         updated_at = datetime.datetime.fromisoformat(d.pop("updated_at"))
@@ -143,6 +150,7 @@ class PageClassOfServiceResponseDataItem:
             name=name,
             allowed=allowed,
             caller_id=caller_id,
+            video=video,
             is_default=is_default,
             updated_at=updated_at,
             max_calls=max_calls,

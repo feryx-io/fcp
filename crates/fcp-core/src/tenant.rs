@@ -173,6 +173,57 @@ pub struct Tenant {
     /// kept (`docs/CALL_DIAGNOSTICS.md` §3).
     #[serde(default)]
     pub diagnostics: TenantDiagnostics,
+    /// Whether its people's calls may carry video, and what an app may
+    /// send (`docs/SOFTPHONE_VIDEO.md` §2.2, §2.7).
+    #[serde(default)]
+    pub video: TenantVideo,
+}
+
+/// A tenant's word on video: calls carry it unless the tenant, or a
+/// party's class of service, says not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TenantVideo {
+    /// Calls may carry video; on unless a tenant turns it off.
+    #[serde(default = "default_true")]
+    pub calls: bool,
+    /// The tallest picture a phone's camera sends, in lines (180 to 2160).
+    #[serde(default = "default_video_max_send_height")]
+    pub max_send_height: u32,
+    /// The most a phone's camera sends, in kb/s (64 to 8000).
+    #[serde(default = "default_video_max_send_kbps")]
+    pub max_send_kbps: u32,
+    /// A user may share their screen in a room they don't host.
+    #[serde(default = "default_true")]
+    pub content_share: bool,
+}
+
+pub const DEFAULT_VIDEO_MAX_SEND_HEIGHT: u32 = 720;
+pub const VIDEO_SEND_HEIGHTS: std::ops::RangeInclusive<u32> = 180..=2160;
+pub const DEFAULT_VIDEO_MAX_SEND_KBPS: u32 = 1500;
+pub const VIDEO_SEND_KBPS: std::ops::RangeInclusive<u32> = 64..=8000;
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_video_max_send_height() -> u32 {
+    DEFAULT_VIDEO_MAX_SEND_HEIGHT
+}
+
+fn default_video_max_send_kbps() -> u32 {
+    DEFAULT_VIDEO_MAX_SEND_KBPS
+}
+
+impl Default for TenantVideo {
+    fn default() -> Self {
+        Self {
+            calls: true,
+            max_send_height: DEFAULT_VIDEO_MAX_SEND_HEIGHT,
+            max_send_kbps: DEFAULT_VIDEO_MAX_SEND_KBPS,
+            content_share: true,
+        }
+    }
 }
 
 /// A tenant's word on captures from its people's apps: off unless it turns
@@ -515,6 +566,7 @@ impl Tenant {
             directory: TenantDirectory::default(),
             lines: TenantLines::default(),
             diagnostics: TenantDiagnostics::default(),
+            video: TenantVideo::default(),
         }
     }
 
