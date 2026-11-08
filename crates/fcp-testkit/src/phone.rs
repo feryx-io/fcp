@@ -115,9 +115,16 @@ struct CallState {
     answer: Mutex<Option<String>>,
     /// The 2xx that answered this phone's INVITE, for its headers.
     answer_response: Mutex<Option<Response>>,
+    /// The call's video, when the phone has it on and the call carries it.
+    video: Option<Arc<crate::video::VideoLeg>>,
 }
 
 impl CallState {
+    /// This phone's SDP for the call: its audio, and its video section.
+    fn sdp(&self, direction: &str) -> String {
+        with_video(self.media.sdp(direction), self.video.as_deref(), direction)
+    }
+
     /// The call is over, by either side: its phase says so and its media
     /// leg stops sending, as a phone's does.
     fn end(&self) {
@@ -166,6 +173,9 @@ struct Inner {
     /// The codec it offers first and, offered it, answers with
     /// ([`Phone::prefer_codec`]).
     codec: std::sync::Mutex<crate::media::Codec>,
+    /// Whether it offers and answers video, and how keyed
+    /// ([`Phone::enable_video`]).
+    video: std::sync::Mutex<Option<crate::video::VideoMode>>,
     /// Every REGISTER this phone has been sent, in order — a carrier's
     /// registrar, for a test that asks who registered and as whom.
     registrations: std::sync::Mutex<Vec<SeenRegistration>>,
@@ -236,7 +246,18 @@ impl Inner {
         let codec = *self.codec.lock().unwrap();
         let media =
             Arc::new(MediaLeg::open_preferring(self.media_ip, self.advertised, codec).await?);
-        let offer = edit(media.sdp("sendrecv"));
+        let video_mode = *self.video.lock().unwrap();
+        let video = match video_mode {
+            Some(mode) => Some(Arc::new(
+                crate::video::VideoLeg::open(self.media_ip, self.advertised, mode).await?,
+            )),
+            None => None,
+        };
+        let offer = edit(with_video(
+            media.sdp("sendrecv"),
+            video.as_deref(),
+            "sendrecv",
+        ));
         let options = match multipart {
             Some(mut body) => {
                 // The SDP first, then whatever the caller added.
@@ -288,6 +309,7 @@ impl Inner {
             timings: Mutex::new(CallTimings::default()),
             answer: Mutex::new(None),
             answer_response: Mutex::new(None),
+            video,
         });
         self.calls.insert(call_id.clone(), Arc::clone(&state));
 
@@ -359,6 +381,11 @@ impl Inner {
                     *st.answer_response.lock().unwrap() = Some(resp.clone());
                     if let Err(e) = st.media.set_remote(&answer).await {
                         warn!(error = %e, "answer SDP unusable");
+                    }
+                    if let Some(video) = &st.video {
+                        if let Err(e) = video.set_remote(&answer) {
+                            warn!(error = %e, "answer's video unusable");
+                        }
                     }
                     // A far end that answers and hangs up at once can have
                     // its BYE handled while this waited for the ACK: the
@@ -589,6 +616,21 @@ fn transport_kind(kind: sip_transaction::TransportKind) -> sip_transport::Transp
 }
 
 /// `sdp` offering SDES-SRTP: its audio `RTP/SAVP`, with `crypto`.
+/// `sdp` with `video`'s section appended, when the call has video.
+fn with_video(sdp: String, video: Option<&crate::video::VideoLeg>, direction: &str) -> String {
+    match video {
+        Some(video) => {
+            let mut sdp = sdp;
+            if !sdp.ends_with("\r\n") {
+                sdp.push_str("\r\n");
+            }
+            sdp.push_str(&video.section(direction));
+            sdp
+        }
+        None => sdp,
+    }
+}
+
 fn offering_srtp(sdp: String, crypto: &str) -> String {
     let sdp = sdp.replacen(" RTP/AVP ", " RTP/SAVP ", 1);
     format!("{sdp}a=crypto:{crypto}\r\n")
@@ -634,6 +676,13 @@ impl Phone {
     /// the node transcode between them.
     pub fn prefer_codec(&self, codec: crate::media::Codec) {
         *self.inner.codec.lock().unwrap() = codec;
+    }
+
+    /// Offer video on calls this phone places, and answer it on calls it
+    /// takes: one camera section, keyed as `mode` says
+    /// ([`crate::video::VideoLeg`]).
+    pub fn enable_video(&self, mode: crate::video::VideoMode) {
+        *self.inner.video.lock().unwrap() = Some(mode);
     }
 
     /// A phone behind NAT: bound at `bind`, it names `advertised` in its
@@ -848,6 +897,7 @@ impl Phone {
             media_ip: local_addr.ip(),
             advertised: advertised.unwrap_or(local_addr.ip()),
             codec: std::sync::Mutex::new(crate::media::Codec::Pcmu),
+            video: std::sync::Mutex::new(None),
         });
 
         let handler: Arc<dyn UasRequestHandler> = Arc::new(Handler(Arc::clone(&inner)));
@@ -1248,6 +1298,12 @@ impl Call {
         &self.state.media
     }
 
+    /// The call's video, when the phone has video on and the call
+    /// carries it ([`Phone::enable_video`]).
+    pub fn video(&self) -> Option<&crate::video::VideoLeg> {
+        self.state.video.as_deref()
+    }
+
     /// The SDP the far end answered this phone's offer with.
     pub fn answer_sdp(&self) -> Option<String> {
         self.state.answer.lock().unwrap().clone()
@@ -1391,7 +1447,7 @@ impl Call {
 
     /// As [`Call::reinvite`], with the SDP the far end answered with.
     pub async fn reinvite_answered(&self, direction: &str) -> Result<(u16, String)> {
-        self.reinvite_with(self.state.media.sdp(direction)).await
+        self.reinvite_with(self.state.sdp(direction)).await
     }
 
     /// As [`Call::reinvite_answered`], offering `first` before the codec
@@ -1429,6 +1485,9 @@ impl Call {
         let answer = String::from_utf8_lossy(resp.body()).to_string();
         if (200..300).contains(&code) && !answer.is_empty() {
             let _ = self.state.media.set_remote(&answer).await;
+            if let Some(video) = &self.state.video {
+                let _ = video.set_remote(&answer);
+            }
         }
         Ok((code, answer))
     }
@@ -1657,8 +1716,11 @@ impl UasRequestHandler for Handler {
             if let Some(call) = self.0.calls.get(&call_id).map(|e| e.value().clone()) {
                 if !offer.is_empty() {
                     let _ = call.media.set_remote(&offer).await;
+                    if let Some(video) = &call.video {
+                        let _ = video.set_remote(&offer);
+                    }
                 }
-                let sdp = call.media.sdp("sendrecv");
+                let sdp = call.sdp("sendrecv");
                 let mut response = uas
                     .helper()
                     .lock()
@@ -1694,7 +1756,24 @@ impl UasRequestHandler for Handler {
                 warn!(error = %e, "offer SDP unusable");
             }
         }
-        let answer_sdp = media.sdp("sendrecv");
+        // Video answered when the phone has it on and the offer carries a
+        // live camera section.
+        let video_mode = *self.0.video.lock().unwrap();
+        let video = match video_mode {
+            Some(mode)
+                if fcp_media::sdp::stream_endpoint(&offer, fcp_media::VideoStream::Camera)
+                    .is_some() =>
+            {
+                let leg =
+                    crate::video::VideoLeg::open(self.0.media_ip, self.0.advertised, mode).await?;
+                if let Err(e) = leg.set_remote(&offer) {
+                    warn!(error = %e, "offer's video unusable");
+                }
+                Some(Arc::new(leg))
+            }
+            _ => None,
+        };
+        let answer_sdp = with_video(media.sdp("sendrecv"), video.as_deref(), "sendrecv");
         let (mut ok, dialog) = uas
             .helper()
             .lock()
@@ -1719,6 +1798,7 @@ impl UasRequestHandler for Handler {
             timings: Mutex::new(CallTimings::default()),
             answer: Mutex::new(None),
             answer_response: Mutex::new(None),
+            video,
         });
         self.0.calls.insert(call_id.clone(), Arc::clone(&state));
         let call = Call {

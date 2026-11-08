@@ -162,6 +162,174 @@ impl MediaManager {
         self.backend.release_leg(call_id, leg).await
     }
 
+    /// The offer the node sends `leg` of an anchored call, made from `sdp`
+    /// (what the other leg offered): audio on `leg`'s port with
+    /// `audio_srtp`, and each video stream `sdp` carries relayed on a port
+    /// of `leg`'s, opened now if the call had none for it
+    /// (`docs/SOFTPHONE_VIDEO.md` §2.2), keyed by the node when
+    /// `video_secure` — a leg whose audio the node keys. Video the node
+    /// cannot relay — no port left — is turned down, and the call goes on
+    /// without it.
+    pub async fn anchored_offer(
+        &self,
+        call_id: &CallId,
+        leg: crate::backend::Leg,
+        sdp: &str,
+        server_ip: &str,
+        audio_srtp: Option<&crate::sdp::SrtpSdpContext>,
+        video_secure: bool,
+    ) -> Result<String> {
+        let session = self.backend.get_session(call_id).await?;
+        let secure = video_secure;
+        let mut video_key = None;
+        let mut content_key = None;
+        for stream in crate::sdp::active_streams(sdp) {
+            let Some(relay) = self.video_relay(&session, stream).await else {
+                continue;
+            };
+            let key = relay.offer_key(leg, secure)?;
+            match stream {
+                crate::sdp::VideoStream::Camera => video_key = key,
+                crate::sdp::VideoStream::Content => content_key = key,
+            }
+        }
+        let mut ports = session.anchor_ports(leg);
+        // A stream this offer does not carry stays off, whatever the call
+        // opened for it before.
+        let carried = crate::sdp::active_streams(sdp);
+        if !carried.contains(&crate::sdp::VideoStream::Camera) {
+            ports.video = None;
+        }
+        if !carried.contains(&crate::sdp::VideoStream::Content) {
+            ports.content = None;
+        }
+        Ok(crate::sdp::rewrite_for_anchoring(
+            sdp,
+            server_ip,
+            ports,
+            crate::sdp::AnchorKeys {
+                audio: audio_srtp,
+                video: video_key.as_ref(),
+                content: content_key.as_ref(),
+            },
+        ))
+    }
+
+    /// `sdp`, an offer the node makes `leg`, with its video keyed by the
+    /// node: what a leg it keys itself — a softphone over TLS — is
+    /// offered, as its audio is (`fcp_media::with_sdes`).
+    pub async fn secure_video_offer(
+        &self,
+        call_id: &CallId,
+        leg: crate::backend::Leg,
+        sdp: &str,
+    ) -> Result<String> {
+        let session = self.backend.get_session(call_id).await?;
+        let mut video_key = None;
+        let mut content_key = None;
+        for relay in session.video_relays() {
+            let key = relay.offer_key(leg, true)?;
+            match relay.stream() {
+                crate::sdp::VideoStream::Camera => video_key = key,
+                crate::sdp::VideoStream::Content => content_key = key,
+            }
+        }
+        Ok(crate::sdp::with_video_sdes(
+            sdp,
+            crate::sdp::AnchorKeys {
+                audio: None,
+                video: video_key.as_ref(),
+                content: content_key.as_ref(),
+            },
+        ))
+    }
+
+    /// `leg` of an anchored call answered the node's offer with `answer`:
+    /// where its video goes, and its keys.
+    pub async fn video_answered(
+        &self,
+        call_id: &CallId,
+        leg: crate::backend::Leg,
+        answer: &str,
+    ) -> Result<()> {
+        let session = self.backend.get_session(call_id).await?;
+        let latched = self.backend.latched(call_id, leg);
+        for relay in session.video_relays() {
+            relay.set_peer(leg, answer, latched);
+            relay.answered(leg, answer);
+        }
+        Ok(())
+    }
+
+    /// The node's answer to `leg`'s `offer` on an anchored call: `answer`
+    /// (the node's own, which turns video down) with each video section
+    /// the other leg accepted in `other_answer` relayed on `leg`'s ports,
+    /// keyed as `leg` offered. `leg`'s video peers come from its offer.
+    pub async fn anchored_answer(
+        &self,
+        call_id: &CallId,
+        leg: crate::backend::Leg,
+        offer: &str,
+        answer: String,
+        other_answer: &str,
+        server_ip: &str,
+    ) -> Result<String> {
+        let session = self.backend.get_session(call_id).await?;
+        let latched = self.backend.latched(call_id, leg);
+        let mut video_key = None;
+        let mut content_key = None;
+        let accepted = crate::sdp::active_streams(other_answer);
+        for relay in session.video_relays() {
+            relay.set_peer(leg, offer, latched);
+            if !accepted.contains(&relay.stream()) {
+                continue;
+            }
+            let key = relay.answer_key(leg, offer)?;
+            match relay.stream() {
+                crate::sdp::VideoStream::Camera => video_key = key,
+                crate::sdp::VideoStream::Content => content_key = key,
+            }
+        }
+        Ok(crate::sdp::splice_relayed_video(
+            &answer,
+            other_answer,
+            offer,
+            server_ip,
+            session.anchor_ports(leg),
+            crate::sdp::AnchorKeys {
+                audio: None,
+                video: video_key.as_ref(),
+                content: content_key.as_ref(),
+            },
+        ))
+    }
+
+    /// The call's relay for `stream`, opened if it has none. `None` when
+    /// no port pair could be had: the stream is turned down.
+    async fn video_relay(
+        &self,
+        session: &MediaSession,
+        stream: crate::sdp::VideoStream,
+    ) -> Option<Arc<crate::video_relay::VideoRelay>> {
+        if let Some(relay) = session.video_relay(stream) {
+            return Some(relay);
+        }
+        let pool = self.backend.port_pool()?;
+        match crate::video_relay::VideoRelay::open(stream, pool).await {
+            Ok(relay) => {
+                let kept = session.add_video_relay(Arc::clone(&relay));
+                if !Arc::ptr_eq(&kept, &relay) {
+                    relay.close().await;
+                }
+                Some(kept)
+            }
+            Err(e) => {
+                tracing::warn!(call_id = %session.call_id(), ?stream, error = %e, "No ports to relay video; it is turned down");
+                None
+            }
+        }
+    }
+
     /// Put call on hold (send silence/comfort noise)
     pub async fn hold_session(&self, call_id: &CallId) -> Result<()> {
         self.backend.hold_session(call_id).await
