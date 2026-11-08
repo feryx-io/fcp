@@ -224,11 +224,37 @@ Kokoro, needs PyTorch and was left off (`docs/DEEP_TESTING.md` Q-D8a).
 - **Kokoro** (`type = "local"`, `engine = "kokoro"`) is in the
   `fcp-tts-full` image only (`FCP_TTS=tts-full` in compose), with the
   local Whisper recogniser.
-- **OpenAI** and **Google Cloud** voices are providers with a key, in
-  either image. Azure, Polly and ElevenLabs are placeholders, refused
-  at start, until #339.
+- **OpenAI**, **Google Cloud**, **ElevenLabs**, **Azure** and **Amazon
+  Polly** are providers over their vendors' APIs, in either image
+  (ElevenLabs, Azure and Polly since v0.25.536, #339). Each returns
+  8 kHz mono WAV like Piper: ElevenLabs' 16 kHz PCM and Polly's PCM are
+  resampled or wrapped, and Azure is asked for 8 kHz.
+
+  | `type` | Keys | A voice is | With no voice |
+  |---|---|---|---|
+  | `elevenlabs` | `api_key`; `model` (`eleven_flash_v2_5` unless set) | an id, or a name in the account | Rachel |
+  | `azure` | `api_key` (the Speech resource's key), `region` | a short name, `en-GB-SoniaNeural` | the first neural voice of the language |
+  | `aws_polly` | `region`; `access_key_id` and `secret_access_key`, or neither; `engine` (`neural` unless set) | an id, `Amy` | the first voice of the language for the engine |
+
+  ElevenLabs' v2.5 models are told the request's language; the others
+  choose it from the text. Polly with no keys signs with
+  `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`, else
+  the machine's role: a container's credentials endpoint (ECS, EKS) or
+  the EC2 instance metadata service over IMDSv2, kept until five minutes
+  before they expire. Every key may be `${NAME}` from the environment
+  and is masked by `--check-config`; none is logged. `endpoint` sends a
+  provider somewhere other than its vendor (a proxy, a test's stand-in).
+  `/v1/voices?provider=<name>&language=<tag>` lists the vendor's voices.
 
 `default_provider` names the engine used when a request names none.
+
+The cloud providers are tested through the server against the testkit's
+stand-ins for their vendors (`fcp_testkit::tts`; `fcp-tts-server/tests/
+engines.rs`), which check the key, the output format and Polly's
+signature, and against the real services when `FCP_TEST_ELEVENLABS_API_KEY`,
+`FCP_TEST_AZURE_SPEECH_KEY` with `FCP_TEST_AZURE_SPEECH_REGION`, or
+`FCP_TEST_POLLY_REGION` (with credentials in the environment or the
+machine's role) are set.
 
 The stack's default greeting (`deploy/docker-compose/audio/
 default-greeting.wav`, played by a mailbox with no greeting of its own)

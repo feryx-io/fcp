@@ -301,6 +301,23 @@ fn build_provider_config(
         "google_cloud" => Ok(fcp_media::tts::TtsProviderConfig::GoogleCloud {
             api_key: require_non_empty(&entry.api_key, "api_key", entry)?,
         }),
+        "elevenlabs" => Ok(fcp_media::tts::TtsProviderConfig::ElevenLabs {
+            api_key: require_non_empty(&entry.api_key, "api_key", entry)?,
+            model_id: entry.model.clone(),
+            endpoint: entry.endpoint.clone(),
+        }),
+        "azure" => Ok(fcp_media::tts::TtsProviderConfig::Azure {
+            subscription_key: require_non_empty(&entry.api_key, "api_key", entry)?,
+            region: require_non_empty(&entry.region, "region", entry)?,
+            endpoint: entry.endpoint.clone(),
+        }),
+        "aws_polly" => Ok(fcp_media::tts::TtsProviderConfig::AwsPolly {
+            region: require_non_empty(&entry.region, "region", entry)?,
+            access_key_id: entry.access_key_id.clone(),
+            secret_access_key: entry.secret_access_key.clone(),
+            engine: entry.engine.clone().unwrap_or_else(|| "neural".to_string()),
+            endpoint: entry.endpoint.clone(),
+        }),
         other => anyhow::bail!("unsupported provider type '{}'", other),
     }
 }
@@ -473,6 +490,10 @@ mod tests {
             binary: None,
             voices_dir: None,
             voice: None,
+            region: None,
+            access_key_id: None,
+            secret_access_key: None,
+            endpoint: None,
         }
     }
 
