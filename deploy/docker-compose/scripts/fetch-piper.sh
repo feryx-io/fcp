@@ -8,15 +8,18 @@ set -eu
 PIPER_DIR=$1 VOICES_DIR=$2
 RELEASE=https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz
 VOICE=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ljspeech/medium/en_US-ljspeech-medium
+# GitHub and Hugging Face answer a 5xx now and then; a nightly image
+# build should not fail on one.
+fetch() { curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "$@"; }
 
-curl -fsSL -o /tmp/piper.tgz "$RELEASE"
+fetch -o /tmp/piper.tgz "$RELEASE"
 echo "a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992  /tmp/piper.tgz" | sha256sum -c -
 mkdir -p "$PIPER_DIR" "$VOICES_DIR"
 tar xzf /tmp/piper.tgz -C "$PIPER_DIR" --strip-components=1
 rm /tmp/piper.tgz
 
-curl -fsSL -o "$VOICES_DIR/en_US-ljspeech-medium.onnx" "$VOICE.onnx"
-curl -fsSL -o "$VOICES_DIR/en_US-ljspeech-medium.onnx.json" "$VOICE.onnx.json"
+fetch -o "$VOICES_DIR/en_US-ljspeech-medium.onnx" "$VOICE.onnx"
+fetch -o "$VOICES_DIR/en_US-ljspeech-medium.onnx.json" "$VOICE.onnx.json"
 cd "$VOICES_DIR"
 sha256sum -c - <<SUMS
 6f52a751e2349abe7a76735eb09dc1875298c77ea2342ffd2fef79ff81b87f22  en_US-ljspeech-medium.onnx
