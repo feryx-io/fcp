@@ -471,8 +471,9 @@ API, which has the same bus. It carries:
   NATs. Strict NATs and mobile networks come with the mobile project.
 - **A UI.** Anvil's roadmap puts the UI last (Flutter recommended). This
   project ends with a CLI and a C interface that a UI can be built on.
-- **Video, conferencing inside the app, recording.** Anvil's non-goals;
-  conferences are joined by dialing in or through the WebRTC join page.
+- **Video, conferencing inside the app, recording.** Anvil's non-goals here;
+  conferences are joined by dialing in or through the WebRTC join page. Video
+  calls and Anvil in video rooms are designed in `docs/SOFTPHONE_VIDEO.md`.
 - **A browser softphone.** The WebRTC gateway places outbound calls and
   joins conferences, but it neither registers nor rings a browser. That is
   a separate project.
@@ -592,6 +593,6 @@ What it found wrong in FCP was fixed in FCP:
 - the events document (v0.25.365);
 - a caller's SRTP key handed to the callee (v0.25.366).
 
-Not done here (§5): ICE, video. Mobile push is `docs/PUSH.md`; the UI is
+Not done here (§5): ICE, video (`docs/SOFTPHONE_VIDEO.md`). Mobile push is `docs/PUSH.md`; the UI is
 Anvil's app (its `docs/APP.md`).
 
