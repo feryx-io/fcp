@@ -35,7 +35,9 @@ const DIALOG_METHODS: &[&str] = &[
 
 /// Where the dispatcher reports what it sent.
 pub trait WireTap: Send + Sync {
-    fn sent(&self, transport: &str, peer: SocketAddr, payload: &[u8]);
+    /// `payload` went to `peer`; `at` is when its send began, so an answer
+    /// that comes back before the send call returns still files after it.
+    fn sent(&self, transport: &str, peer: SocketAddr, payload: &[u8], at: SystemTime);
 }
 
 pub struct WireTrace {
@@ -64,10 +66,17 @@ impl WireTrace {
     }
 
     pub fn received(&self, transport: &str, peer: SocketAddr, payload: &[u8]) {
-        self.record("inbound", transport, peer, payload);
+        self.record("inbound", transport, peer, payload, SystemTime::now());
     }
 
-    fn record(&self, direction: &str, transport: &str, peer: SocketAddr, payload: &[u8]) {
+    fn record(
+        &self,
+        direction: &str,
+        transport: &str,
+        peer: SocketAddr,
+        payload: &[u8],
+        at: SystemTime,
+    ) {
         let Some(message) = Parsed::of(payload) else {
             return;
         };
@@ -80,7 +89,7 @@ impl WireTrace {
             call_id: String::new(),
             sip_call_id: message.call_id.clone(),
             tenant_id: "_system".to_string(),
-            timestamp: SystemTime::now(),
+            timestamp: at,
             direction: direction.to_string(),
             method_or_status: message.method_or_status,
             cseq: message.cseq,
@@ -128,8 +137,8 @@ impl WireTrace {
 }
 
 impl WireTap for WireTrace {
-    fn sent(&self, transport: &str, peer: SocketAddr, payload: &[u8]) {
-        self.record("outbound", transport, peer, payload);
+    fn sent(&self, transport: &str, peer: SocketAddr, payload: &[u8], at: SystemTime) {
+        self.record("outbound", transport, peer, payload, at);
     }
 }
 
@@ -223,12 +232,31 @@ mod tests {
         (trace, calls, rx)
     }
 
+    /// The far end's answer can be read before the send of what it answers
+    /// returns: the request is still the earlier, by when its send began.
+    #[test]
+    fn an_answer_read_before_its_request_s_send_returned_files_after_it() {
+        let (trace, calls, mut rx) = trace();
+        calls.insert("c1".into(), "call-1".into());
+        let peer: SocketAddr = "192.0.2.9:61185".parse().unwrap();
+        let began = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(2));
+        let ok =
+            "SIP/2.0 200 OK\r\ni: c1\r\nCSeq: 1 INVITE\r\nt: <sip:bob@192.0.2.9>;tag=b\r\n\r\n";
+        trace.received("UDP", peer, ok.as_bytes());
+        trace.sent("UDP", peer, invite("c1").as_bytes(), began);
+        let answer = rx.try_recv().unwrap();
+        let request = rx.try_recv().unwrap();
+        assert_eq!(request.method_or_status, "INVITE");
+        assert!(request.timestamp < answer.timestamp);
+    }
+
     #[test]
     fn a_message_is_recorded_as_sent_with_both_addresses() {
         let (trace, calls, mut rx) = trace();
         calls.insert("c1".into(), "call-1".into());
         let peer: SocketAddr = "192.0.2.9:61185".parse().unwrap();
-        trace.sent("UDP", peer, invite("c1").as_bytes());
+        trace.sent("UDP", peer, invite("c1").as_bytes(), SystemTime::now());
         let row = rx.try_recv().unwrap();
         assert_eq!(row.call_id, "call-1");
         assert_eq!(row.direction, "outbound");
@@ -254,7 +282,7 @@ mod tests {
     fn a_b_leg_s_invite_waits_for_its_call_and_keeps_its_place() {
         let (trace, calls, mut rx) = trace();
         let peer: SocketAddr = "192.0.2.9:61185".parse().unwrap();
-        trace.sent("UDP", peer, invite("b-leg").as_bytes());
+        trace.sent("UDP", peer, invite("b-leg").as_bytes(), SystemTime::now());
         assert!(
             rx.try_recv().is_err(),
             "held: the Call-ID is not mapped yet"

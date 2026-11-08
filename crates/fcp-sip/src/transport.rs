@@ -527,10 +527,18 @@ impl TransportDispatcher for RealTransportDispatcher {
             }
             None => payload,
         };
-        let tap = self.tap.get().map(|tap| (Arc::clone(tap), payload.clone()));
+        // Timed as it leaves, filed once it has: the far end's answer can
+        // be read before this send returns, and must not file before it.
+        let tap = self.tap.get().map(|tap| {
+            (
+                Arc::clone(tap),
+                payload.clone(),
+                std::time::SystemTime::now(),
+            )
+        });
         self.deliver(ctx, payload).await?;
-        if let Some((tap, payload)) = tap {
-            tap.sent(&format!("{:?}", ctx.transport()), peer, &payload);
+        if let Some((tap, payload, at)) = tap {
+            tap.sent(&format!("{:?}", ctx.transport()), peer, &payload, at);
         }
         Ok(())
     }
