@@ -849,6 +849,69 @@ impl SrtpSdpContext {
     }
 }
 
+/// An anchored offer's video made secure: the camera's and a shared
+/// screen's sections, when `keys` has one for them, `RTP/SAVP(F)` with the
+/// node's key, any other key in them dropped. Audio is [`with_sdes`]'s.
+pub fn with_video_sdes(sdp: &str, keys: AnchorKeys<'_>) -> String {
+    let kinds = classify_sections(sdp);
+    let (head, sections) = split_sections(sdp);
+    if sections.len() != kinds.len() {
+        return sdp.to_string();
+    }
+    let (mut camera_seen, mut content_seen) = (false, false);
+    let mut out = head;
+    for (section, kind) in sections.iter().zip(kinds) {
+        let key = match kind {
+            SectionKind::Camera if !camera_seen => {
+                camera_seen = true;
+                keys.video
+            }
+            SectionKind::Content if !content_seen => {
+                content_seen = true;
+                keys.content
+            }
+            _ => None,
+        };
+        let port = section
+            .lines()
+            .next()
+            .and_then(|m| m.split_whitespace().nth(1))
+            .and_then(|p| p.parse::<u16>().ok());
+        match (key, port) {
+            (Some(key), Some(port)) if port != 0 => {
+                let mut keyed = String::new();
+                for line in section.lines() {
+                    let trimmed = line.trim();
+                    if let Some(rest) = trimmed.strip_prefix("m=") {
+                        let parts: Vec<&str> = rest.split_whitespace().collect();
+                        keyed.push_str(&format!(
+                            "m={} {} {}",
+                            parts[0],
+                            parts[1],
+                            secure_protocol(parts.get(2).copied().unwrap_or("RTP/AVP"))
+                        ));
+                        for part in parts.iter().skip(3) {
+                            keyed.push(' ');
+                            keyed.push_str(part);
+                        }
+                        keyed.push_str("\r\n");
+                        keyed.push_str(&format!("a=crypto:{}\r\n", key.crypto_value()));
+                        continue;
+                    }
+                    if trimmed.starts_with("a=crypto:") {
+                        continue;
+                    }
+                    keyed.push_str(trimmed);
+                    keyed.push_str("\r\n");
+                }
+                out.push_str(&keyed);
+            }
+            _ => out.push_str(section),
+        }
+    }
+    out
+}
+
 /// An anchored offer made secure: the first audio section `RTP/SAVP` with
 /// `srtp`'s key, any other key in it dropped. What a leg the node keys
 /// itself — a softphone registered over TLS — is offered.
@@ -1525,20 +1588,40 @@ fn plain_protocol(protocol: &str) -> String {
     }
 }
 
+/// The node's SDES keys for the sections of an SDP it sends a leg, one
+/// per section: `None` sends that section plain.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AnchorKeys<'a> {
+    pub audio: Option<&'a SrtpSdpContext>,
+    pub video: Option<&'a SrtpSdpContext>,
+    pub content: Option<&'a SrtpSdpContext>,
+}
+
+impl<'a> AnchorKeys<'a> {
+    /// Audio's key alone.
+    pub fn audio(audio: Option<&'a SrtpSdpContext>) -> Self {
+        Self {
+            audio,
+            ..Self::default()
+        }
+    }
+}
+
 /// Rewrite an SDP so every section points at the server: every `c=` line
-/// becomes `server_ip`; the first audio section takes `ports.audio` (and
-/// `RTP/SAVP` plus our `a=crypto` when `srtp` is given, else `RTP/AVP` —
-/// existing crypto lines stripped either way, so one leg's key never
-/// reaches the other); the camera's video section takes `ports.video` and a
-/// shared screen's `ports.content`, each disabled with port 0 when its
-/// port is `None`; a second section of any kind, and every other section,
-/// is disabled — one port carries one stream. A disabled section keeps
-/// its formats and attributes, as RFC 3264 requires.
+/// becomes `server_ip`; the first audio section takes `ports.audio`, the
+/// camera's video section `ports.video` and a shared screen's
+/// `ports.content`, a video section disabled with port 0 when its port is
+/// `None`. Each section the node carries is secure with the node's own key
+/// for it from `keys` (`RTP/SAVP` and an `a=crypto`), or plain; the other
+/// leg's crypto lines are dropped from every section, so one leg's key
+/// never reaches the other. A second section of any kind, and every other
+/// section, is disabled — one port carries one stream. A disabled section
+/// keeps its formats and attributes, as RFC 3264 requires.
 pub fn rewrite_for_anchoring(
     original_sdp: &str,
     server_ip: &str,
     ports: AnchorPorts,
-    srtp: Option<&SrtpSdpContext>,
+    keys: AnchorKeys<'_>,
 ) -> String {
     let kinds = classify_sections(original_sdp);
     let mut result = String::new();
@@ -1546,8 +1629,6 @@ pub fn rewrite_for_anchoring(
     let mut audio_seen = false;
     let mut camera_seen = false;
     let mut content_seen = false;
-    let mut in_anchored_audio = false;
-    let mut crypto_injected = false;
 
     for line in original_sdp.lines() {
         let trimmed = line.trim();
@@ -1561,34 +1642,28 @@ pub fn rewrite_for_anchoring(
                     .copied()
                     .unwrap_or(SectionKind::Other);
                 section_index += 1;
-                let (port, protocol) = match section {
+                // The node terminates each leg's media: a section it
+                // carries is secure with its key, or plain — never the
+                // other leg's profile and key passed through.
+                let carried = match section {
                     SectionKind::Audio if !audio_seen => {
                         audio_seen = true;
-                        in_anchored_audio = true;
-                        // The node terminates each leg's media: the section is
-                        // secure with our key, or plain — never the other
-                        // leg's profile and key passed through.
-                        let protocol = if srtp.is_some() {
-                            secure_protocol(parts[2])
-                        } else {
-                            plain_protocol(parts[2])
-                        };
-                        (ports.audio.to_string(), protocol)
+                        Some((ports.audio, keys.audio))
                     }
                     SectionKind::Camera if !camera_seen && ports.video.is_some() => {
                         camera_seen = true;
-                        in_anchored_audio = false;
-                        (ports.video.unwrap_or(0).to_string(), parts[2].to_string())
+                        ports.video.map(|p| (p, keys.video))
                     }
                     SectionKind::Content if !content_seen && ports.content.is_some() => {
                         content_seen = true;
-                        in_anchored_audio = false;
-                        (ports.content.unwrap_or(0).to_string(), parts[2].to_string())
+                        ports.content.map(|p| (p, keys.content))
                     }
-                    _ => {
-                        in_anchored_audio = false;
-                        ("0".to_string(), parts[2].to_string())
-                    }
+                    _ => None,
+                };
+                let (port, protocol, key) = match carried {
+                    Some((port, Some(key))) => (port, secure_protocol(parts[2]), Some(key)),
+                    Some((port, None)) => (port, plain_protocol(parts[2]), None),
+                    None => (0, parts[2].to_string(), None),
                 };
                 result.push_str(&format!("m={kind} {port} {protocol}"));
                 for part in &parts[3..] {
@@ -1596,13 +1671,8 @@ pub fn rewrite_for_anchoring(
                     result.push_str(part);
                 }
                 result.push_str("\r\n");
-                if in_anchored_audio {
-                    if let Some(ctx) = srtp {
-                        if !crypto_injected {
-                            result.push_str(&format!("a=crypto:{}\r\n", ctx.crypto_value()));
-                            crypto_injected = true;
-                        }
-                    }
+                if let Some(key) = key {
+                    result.push_str(&format!("a=crypto:{}\r\n", key.crypto_value()));
                 }
                 continue;
             }
@@ -1610,7 +1680,7 @@ pub fn rewrite_for_anchoring(
 
         // The other leg's key never crosses the node: ours replaces it, or
         // the section goes without.
-        if in_anchored_audio && trimmed.starts_with("a=crypto:") {
+        if trimmed.starts_with("a=crypto:") {
             continue;
         }
 
@@ -1674,8 +1744,162 @@ pub fn rewrite_sdp_for_anchoring(
             video: None,
             content: None,
         },
-        srtp,
+        AnchorKeys::audio(srtp),
     )
+}
+
+// ── Relayed video ───────────────────────────────────────────────────────
+
+/// Each video stream an SDP carries live: a section with a port.
+pub fn active_streams(sdp_body: &str) -> Vec<VideoStream> {
+    [VideoStream::Camera, VideoStream::Content]
+        .into_iter()
+        .filter(|s| stream_endpoint(sdp_body, *s).is_some())
+        .collect()
+}
+
+/// The RTP address of a live video stream's section.
+pub fn stream_endpoint(sdp_body: &str, stream: VideoStream) -> Option<SocketAddr> {
+    match stream {
+        VideoStream::Camera => remote_video_endpoint(sdp_body),
+        VideoStream::Content => remote_content_endpoint(sdp_body),
+    }
+}
+
+/// The SDES crypto lines of a video stream's section.
+pub fn stream_sdes_crypto(sdp_body: &str, stream: VideoStream) -> Vec<SdesCryptoLine> {
+    parse_stream_sdes_crypto(sdp_body, stream)
+}
+
+/// Whether a live video stream's section puts RTCP on its RTP port
+/// (`a=rtcp-mux`, RFC 5761).
+pub fn stream_rtcp_mux(sdp_body: &str, stream: VideoStream) -> bool {
+    let Ok(sdp) = SessionDescription::parse(sdp_body) else {
+        return false;
+    };
+    active_video_section(&sdp, stream).is_some_and(|m| {
+        m.attributes
+            .iter()
+            .any(|a| matches!(a, Attribute::Property(p) if p == "rtcp-mux"))
+    })
+}
+
+/// An SDP cut at its `m=` lines: the session part, then each section's
+/// lines, every line ended with CRLF.
+fn split_sections(sdp: &str) -> (String, Vec<String>) {
+    let mut head = String::new();
+    let mut sections: Vec<String> = Vec::new();
+    for line in sdp.lines() {
+        if line.trim_start().starts_with("m=") {
+            sections.push(String::new());
+        }
+        let out = sections.last_mut().unwrap_or(&mut head);
+        out.push_str(line.trim_end_matches('\r'));
+        out.push_str("\r\n");
+    }
+    (head, sections)
+}
+
+/// One section pointed at the node: its port, its connection line, and
+/// the node's key or none, the other leg's crypto dropped.
+fn anchor_section(
+    section: &str,
+    server_ip: &str,
+    port: u16,
+    key: Option<&SrtpSdpContext>,
+) -> String {
+    let mut out = String::with_capacity(section.len() + 96);
+    for line in section.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("m=") {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if parts.len() >= 3 {
+                let protocol = match key {
+                    Some(_) => secure_protocol(parts[2]),
+                    None => plain_protocol(parts[2]),
+                };
+                out.push_str(&format!("m={} {port} {protocol}", parts[0]));
+                for part in &parts[3..] {
+                    out.push(' ');
+                    out.push_str(part);
+                }
+                out.push_str("\r\n");
+                if let Some(key) = key {
+                    out.push_str(&format!("a=crypto:{}\r\n", key.crypto_value()));
+                }
+                continue;
+            }
+        }
+        if trimmed.starts_with("a=crypto:") {
+            continue;
+        }
+        if trimmed.starts_with("c=IN IP") {
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 3 {
+                out.push_str(&format!("c=IN {} {}\r\n", parts[1], server_ip));
+                continue;
+            }
+        }
+        out.push_str(trimmed);
+        out.push_str("\r\n");
+    }
+    out
+}
+
+/// The node's answer to a leg's `offer`, with the video it relays: each
+/// video section of `answer` (the node's own, which turns video down) is
+/// replaced by the other leg's answer to the same section, pointed at the
+/// node on `ports` with `keys` — the other phone's codec, format
+/// parameters, feedback and direction, as it chose them. A section the
+/// other leg turned down, or one without a relay port, stays turned down.
+///
+/// The other leg was offered this leg's offer, section for section, so
+/// the sections line up by position; if they do not, `answer` is returned
+/// as it is and the call goes on without video.
+pub fn splice_relayed_video(
+    answer: &str,
+    other_answer: &str,
+    offer: &str,
+    server_ip: &str,
+    ports: AnchorPorts,
+    keys: AnchorKeys<'_>,
+) -> String {
+    let kinds = classify_sections(offer);
+    let (head, mut sections) = split_sections(answer);
+    let (_, others) = split_sections(other_answer);
+    if sections.len() != kinds.len() || others.len() != kinds.len() {
+        return answer.to_string();
+    }
+    let (mut camera_seen, mut content_seen) = (false, false);
+    for (i, kind) in kinds.iter().enumerate() {
+        let relayed = match kind {
+            SectionKind::Camera if !camera_seen => {
+                camera_seen = true;
+                ports.video.map(|p| (p, keys.video))
+            }
+            SectionKind::Content if !content_seen => {
+                content_seen = true;
+                ports.content.map(|p| (p, keys.content))
+            }
+            _ => None,
+        };
+        let Some((port, key)) = relayed else {
+            continue;
+        };
+        let live = others[i]
+            .lines()
+            .next()
+            .and_then(|m| m.split_whitespace().nth(1))
+            .is_some_and(|p| p != "0");
+        if live {
+            sections[i] = anchor_section(&others[i], server_ip, port, key);
+        }
+    }
+    let mut out = head;
+    for section in sections {
+        out.push_str(&section);
+    }
+    out
 }
 
 // ── Codec filtering ─────────────────────────────────────────────────────
@@ -3175,10 +3399,103 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
                 video: Some(20002),
                 content: None,
             },
-            None,
+            AnchorKeys::default(),
         );
         let m = sections(&rewritten);
         assert_eq!(m[1], "m=video 20002 RTP/AVPF 96 97");
+    }
+
+    #[test]
+    fn a_relayed_video_section_is_keyed_with_the_nodes_own_key() {
+        let offer = AV_OFFER.replace(
+            "a=rtcp-fb:* ccm fir\r\n",
+            "a=rtcp-fb:* ccm fir\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:theirs\r\n",
+        );
+        let ours = SrtpSdpContext {
+            local_key_b64: "inline:ours".into(),
+            suite: "AES_CM_128_HMAC_SHA1_80".into(),
+            tag: 1,
+        };
+        let ports = AnchorPorts {
+            audio: 20000,
+            video: Some(20002),
+            content: None,
+        };
+        let keyed = rewrite_for_anchoring(
+            &offer,
+            "10.0.0.5",
+            ports,
+            AnchorKeys {
+                audio: None,
+                video: Some(&ours),
+                content: None,
+            },
+        );
+        assert_eq!(sections(&keyed)[1], "m=video 20002 RTP/SAVPF 96 97");
+        assert!(keyed.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:ours"));
+        assert!(
+            !keyed.contains("inline:theirs"),
+            "the other leg's key stays on its side"
+        );
+
+        // A plain leg is offered plain video, the other leg's key dropped.
+        let plain = rewrite_for_anchoring(&offer, "10.0.0.5", ports, AnchorKeys::default());
+        assert_eq!(sections(&plain)[1], "m=video 20002 RTP/AVPF 96 97");
+        assert!(!plain.contains("a=crypto"), "{plain}");
+    }
+
+    #[test]
+    fn the_callers_answer_takes_the_callees_video_on_the_nodes_port() {
+        // The node's own answer to the caller turns video down; the
+        // callee chose H.264 at a lower level.
+        let own = construct_answer_for_a_leg(AV_OFFER, "10.0.0.5", 20000, None);
+        let callee = "v=0\r\no=- 9 9 IN IP4 172.16.0.9\r\ns=-\r\nc=IN IP4 172.16.0.9\r\nt=0 0\r\n\
+             m=audio 6000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n\
+             m=video 6002 RTP/SAVPF 97\r\na=rtpmap:97 H264/90000\r\n\
+             a=fmtp:97 profile-level-id=42e00d;packetization-mode=1\r\n\
+             a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:callee\r\n\
+             a=rtcp-fb:97 nack pli\r\na=sendrecv\r\n";
+        let spliced = splice_relayed_video(
+            &own,
+            callee,
+            AV_OFFER,
+            "10.0.0.5",
+            AnchorPorts {
+                audio: 20000,
+                video: Some(20002),
+                content: None,
+            },
+            AnchorKeys::default(),
+        );
+        let m = sections(&spliced);
+        assert_eq!(m[0], sections(&own)[0], "audio is the node's own answer");
+        assert_eq!(m[1], "m=video 20002 RTP/AVPF 97");
+        assert!(
+            spliced.contains("profile-level-id=42e00d"),
+            "the callee's parameters"
+        );
+        assert!(spliced.contains("a=rtcp-fb:97 nack pli"));
+        assert!(
+            !spliced.contains("172.16.0.9"),
+            "the callee's address stays on its side"
+        );
+        assert!(!spliced.contains("inline:callee"));
+
+        // A callee that turned video down leaves it down.
+        let declined = callee.replace("m=video 6002", "m=video 0");
+        let spliced = splice_relayed_video(
+            &own,
+            &declined,
+            AV_OFFER,
+            "10.0.0.5",
+            AnchorPorts {
+                audio: 20000,
+                video: Some(20002),
+                content: None,
+            },
+            AnchorKeys::default(),
+        );
+        assert_eq!(spliced, own);
     }
 
     #[test]

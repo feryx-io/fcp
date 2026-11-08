@@ -1906,6 +1906,33 @@ impl SipMessageHandler {
         fcp_media::with_sdes(&sdp, &offer)
     }
 
+    /// As [`Self::secure_device_offer`] for the offer's video: each relayed
+    /// video section keyed with the node's key for the B leg
+    /// (`docs/SOFTPHONE_VIDEO.md` §2.2).
+    async fn secure_device_video(&self, call_id: &fcp_b2bua_core::CallId, sdp: String) -> String {
+        let Some(call) = self.call_manager.get_call(call_id) else {
+            return sdp;
+        };
+        let (Some(media_session_id), Some(media_manager)) =
+            (call.media_session_id, self.media_manager.as_ref())
+        else {
+            return sdp;
+        };
+        if !call.media_anchored || !call.route_trunks.is_empty() {
+            return sdp;
+        }
+        match media_manager
+            .secure_video_offer(&media_session_id, fcp_media::backend::Leg::B, &sdp)
+            .await
+        {
+            Ok(keyed) => keyed,
+            Err(e) => {
+                warn!(call_id = %call_id, error = %e, "Could not key a TLS device's video");
+                sdp
+            }
+        }
+    }
+
     /// The SRTP this node offered on the call's B-leg, taken out of the map
     /// now that the answer is here, and kept as the leg's key for later
     /// answers (a hold, a re-INVITE) while the call lasts.
@@ -7477,12 +7504,31 @@ impl SipMessageHandler {
 
                         // Rewrite SDP to point to server's RTP endpoint, and
                         // offer the trunk's SRTP on it when it wants any.
-                        let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
-                            original_sdp,
-                            &self.local_addr,
-                            rtp_port,
-                            srtp_offer.as_ref().map(|o| &o.sdp),
-                        );
+                        // The caller's video is relayed on the B leg's own
+                        // ports, keyed as its audio is
+                        // (`docs/SOFTPHONE_VIDEO.md` §2.2).
+                        let rewritten_sdp = match media_manager
+                            .anchored_offer(
+                                &media_session_id,
+                                fcp_media::backend::Leg::B,
+                                original_sdp,
+                                &self.local_addr,
+                                srtp_offer.as_ref().map(|o| &o.sdp),
+                                srtp_offer.is_some(),
+                            )
+                            .await
+                        {
+                            Ok(sdp) => sdp,
+                            Err(e) => {
+                                warn!(call_id = %call_id, error = %e, "Video could not be relayed; offering audio alone");
+                                fcp_media::rewrite_sdp_for_anchoring(
+                                    original_sdp,
+                                    &self.local_addr,
+                                    rtp_port,
+                                    srtp_offer.as_ref().map(|o| &o.sdp),
+                                )
+                            }
+                        };
 
                         info!(
                             call_id = %call_id,
@@ -8163,7 +8209,10 @@ impl SipMessageHandler {
         // same key for every such device, kept for the answer like a
         // trunk's. Every other leg is offered what it was.
         let a_leg_sdp_clone = match (&flow_token_clone, a_leg_sdp_clone) {
-            (Some(_), Some(sdp)) => Some(self.secure_device_offer(&call_id_clone, sdp)),
+            (Some(_), Some(sdp)) => {
+                let sdp = self.secure_device_offer(&call_id_clone, sdp);
+                Some(self.secure_device_video(&call_id_clone, sdp).await)
+            }
             (_, sdp) => sdp,
         };
         let invite_options = |sdp: Option<&str>| sip_uac::InviteOptions {
@@ -8501,6 +8550,13 @@ impl SipMessageHandler {
                             "Failed to set B-leg media endpoint"
                         );
                     }
+                    // Where the callee's video goes, and its keys.
+                    if let Err(e) = media_manager
+                        .video_answered(media_session_id, fcp_media::backend::Leg::B, original_sdp)
+                        .await
+                    {
+                        warn!(call_id = %call_id, error = %e, "Could not relay the callee's video");
+                    }
                     self.arrange_trunk_dtmf(&call_id, original_sdp).await;
                 }
             }
@@ -8553,6 +8609,26 @@ impl SipMessageHandler {
                                             rtp_port,
                                             a_leg_srtp.as_ref(),
                                         );
+                                        // The callee's video, relayed on the
+                                        // caller's ports and keyed as the
+                                        // caller offered.
+                                        let constructed_sdp = match media_manager
+                                            .anchored_answer(
+                                                &media_session_id,
+                                                fcp_media::backend::Leg::A,
+                                                &a_leg_offer,
+                                                constructed_sdp.clone(),
+                                                original_sdp,
+                                                &self.local_addr,
+                                            )
+                                            .await
+                                        {
+                                            Ok(sdp) => sdp,
+                                            Err(e) => {
+                                                warn!(call_id = %call_id, error = %e, "Could not relay video to the caller");
+                                                constructed_sdp
+                                            }
+                                        };
                                         info!(
                                             call_id = %call_id,
                                             a_leg_codec = %preferred.encoding_name,
@@ -9383,6 +9459,12 @@ impl SipMessageHandler {
                             "Failed to set B-leg media endpoint in parallel fork"
                         );
                     }
+                    if let Err(e) = media_manager
+                        .video_answered(media_session_id, fcp_media::backend::Leg::B, original_sdp)
+                        .await
+                    {
+                        warn!(call_id = %call_id, error = %e, "Could not relay the callee's video");
+                    }
                     // A callee behind NAT answers from where it was rung.
                     if let Some(rung) = crate::nat::uri_address(&target.to_string())
                         .filter(|rung| crate::nat::learns_media_address(original_sdp, *rung))
@@ -9442,6 +9524,26 @@ impl SipMessageHandler {
                                             rtp_port,
                                             a_leg_srtp.as_ref(),
                                         );
+                                        // The callee's video, relayed on the
+                                        // caller's ports and keyed as the
+                                        // caller offered.
+                                        let constructed_sdp = match media_manager
+                                            .anchored_answer(
+                                                &media_session_id,
+                                                fcp_media::backend::Leg::A,
+                                                &a_leg_offer,
+                                                constructed_sdp.clone(),
+                                                original_sdp,
+                                                &self.local_addr,
+                                            )
+                                            .await
+                                        {
+                                            Ok(sdp) => sdp,
+                                            Err(e) => {
+                                                warn!(call_id = %call_id, error = %e, "Could not relay video to the caller");
+                                                constructed_sdp
+                                            }
+                                        };
                                         info!(
                                             call_id = %call_id,
                                             a_leg_codec = %preferred.encoding_name,
@@ -10540,14 +10642,32 @@ impl SipMessageHandler {
                 match media_manager.get_session(media_session_id).await {
                     Ok(session) => {
                         // Forwarded to the other leg, told its own port.
-                        let (rtp_port, _rtcp_port) = session
-                            .ports_for(media_leg(fcp_b2bua_core::LegSide::of(is_a_leg).other()));
-                        let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
-                            body_str,
-                            &self.local_addr,
-                            rtp_port,
-                            None,
-                        );
+                        let far = fcp_b2bua_core::LegSide::of(is_a_leg).other();
+                        let (rtp_port, _rtcp_port) = session.ports_for(media_leg(far));
+                        // Its video relayed, keyed if the node keys that leg.
+                        let video_secure = self.leg_srtp(&call.id, far, &session).await.is_some();
+                        let rewritten_sdp = match media_manager
+                            .anchored_offer(
+                                media_session_id,
+                                media_leg(far),
+                                body_str,
+                                &self.local_addr,
+                                None,
+                                video_secure,
+                            )
+                            .await
+                        {
+                            Ok(sdp) => sdp,
+                            Err(e) => {
+                                warn!(call_id = %call.id, error = %e, "Video could not be relayed; re-offering audio alone");
+                                fcp_media::rewrite_sdp_for_anchoring(
+                                    body_str,
+                                    &self.local_addr,
+                                    rtp_port,
+                                    None,
+                                )
+                            }
+                        };
 
                         info!(
                             call_id = %call.id,
@@ -10714,12 +10834,43 @@ impl SipMessageHandler {
                                 Some(offer)
                                     if !fcp_media::sdp::parse_sdp_codecs(offer).is_empty() =>
                                 {
-                                    fcp_media::construct_answer_for_a_leg(
+                                    let own = fcp_media::construct_answer_for_a_leg(
                                         offer,
                                         &self.local_addr,
                                         rtp_port,
                                         a_leg_srtp.as_ref(),
-                                    )
+                                    );
+                                    // The far phone's video: where it goes
+                                    // and its keys, then relayed back to the
+                                    // sender as the far phone answered it.
+                                    let sender = fcp_b2bua_core::LegSide::of(is_a_leg);
+                                    if let Err(e) = media_manager
+                                        .video_answered(
+                                            media_session_id,
+                                            media_leg(sender.other()),
+                                            &response_sdp,
+                                        )
+                                        .await
+                                    {
+                                        warn!(call_id = %call.id, error = %e, "Could not relay the far phone's video");
+                                    }
+                                    match media_manager
+                                        .anchored_answer(
+                                            media_session_id,
+                                            media_leg(sender),
+                                            offer,
+                                            own.clone(),
+                                            &response_sdp,
+                                            &self.local_addr,
+                                        )
+                                        .await
+                                    {
+                                        Ok(sdp) => sdp,
+                                        Err(e) => {
+                                            warn!(call_id = %call.id, error = %e, "Could not relay video back to the sender");
+                                            own
+                                        }
+                                    }
                                 }
                                 _ => fcp_media::rewrite_sdp_for_anchoring(
                                     &response_sdp,

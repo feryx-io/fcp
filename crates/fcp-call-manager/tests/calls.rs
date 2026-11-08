@@ -3380,3 +3380,257 @@ async fn an_encrypted_caller_is_answered_encrypted_and_keeps_its_key() {
     assert!(bob_call.ended(SOON).await);
     stack.finish().await;
 }
+
+// ── Video through an anchored call (`docs/SOFTPHONE_VIDEO.md` §2.2) ──
+
+use fcp_testkit::video::VideoMode;
+
+/// The `m=video` line of an SDP.
+fn video_line(sdp: &str) -> Option<String> {
+    sdp.lines()
+        .find(|l| l.starts_with("m=video"))
+        .map(str::to_string)
+}
+
+/// Alice calls Bob with video on both phones, each keyed as given, and
+/// Bob answers: both calls.
+async fn video_call(
+    stack: &Stack,
+    alice_phone: &Phone,
+    alice_mode: Option<VideoMode>,
+    bob_mode: Option<VideoMode>,
+) -> (fcp_testkit::Call, fcp_testkit::Call, String) {
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let bob_phone = stack.phone(&bob).await;
+    if let Some(mode) = alice_mode {
+        alice_phone.enable_video(mode);
+    }
+    if let Some(mode) = bob_mode {
+        bob_phone.enable_video(mode);
+    }
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", alice_phone).await;
+    };
+    let bob_offer = String::from_utf8_lossy(incoming.body()).to_string();
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+    // The phones hang up with the test; Bob's is kept alive with his call.
+    std::mem::forget(bob_phone);
+    (alice_call, bob_call, bob_offer)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn video_is_relayed_through_an_anchored_call() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    let (alice_call, bob_call, bob_offer) = video_call(
+        &stack,
+        &alice_phone,
+        Some(VideoMode::Plain),
+        Some(VideoMode::Plain),
+    )
+    .await;
+
+    // Each phone is told the node's address and a video port of its own
+    // leg's, never the other phone's.
+    let to_bob = video_line(&bob_offer).expect("Bob is offered video");
+    let to_alice = video_line(&alice_call.answer_sdp().unwrap()).expect("Alice is answered video");
+    let (alice_video, bob_video) = (alice_call.video().unwrap(), bob_call.video().unwrap());
+    assert!(!to_bob.starts_with("m=video 0"), "{to_bob}");
+    assert!(!to_alice.starts_with("m=video 0"), "{to_alice}");
+    assert_ne!(to_bob, to_alice, "each leg its own port");
+    // Neither phone is sent to the other: both send to the node.
+    let (to_node_a, to_node_b) = (alice_video.remote().unwrap(), bob_video.remote().unwrap());
+    assert_ne!(
+        to_node_a.port(),
+        bob_video.port(),
+        "Alice is not told Bob's port"
+    );
+    assert_ne!(
+        to_node_b.port(),
+        alice_video.port(),
+        "Bob is not told Alice's port"
+    );
+    assert_ne!(to_node_a.port(), to_node_b.port(), "each leg its own port");
+
+    alice_video.send(30).await.unwrap();
+    if !bob_video.received_at_least(30, SOON).await {
+        stack
+            .fail(
+                &format!(
+                    "Bob got {} of Alice's 30 video packets",
+                    bob_video.received()
+                ),
+                &alice_phone,
+            )
+            .await;
+    }
+    bob_video.send(30).await.unwrap();
+    assert!(
+        alice_video.received_at_least(30, SOON).await,
+        "Alice got {} of Bob's 30 video packets",
+        alice_video.received()
+    );
+    // A keyframe request reaches the sender.
+    bob_video.send_pli().await.unwrap();
+    assert!(
+        alice_video.pli_received(SOON).await,
+        "Alice never saw Bob's PLI"
+    );
+
+    alice_call.hangup().await.unwrap();
+    assert!(bob_call.ended(SOON).await);
+    stack.finish().await;
+}
+
+/// An encrypted caller's video is decrypted and sent on plain to a plain
+/// callee, and back: each leg keyed by the node on its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn video_is_keyed_on_each_leg_on_its_own() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    let (alice_call, bob_call, bob_offer) = video_call(
+        &stack,
+        &alice_phone,
+        Some(VideoMode::Srtp),
+        Some(VideoMode::Plain),
+    )
+    .await;
+
+    let answer = alice_call.answer_sdp().unwrap();
+    assert!(
+        video_line(&answer).unwrap().contains("RTP/SAVPF"),
+        "{answer}"
+    );
+    let to_bob = video_line(&bob_offer).unwrap();
+    assert!(to_bob.contains("RTP/AVPF"), "{to_bob}");
+    assert!(
+        !bob_offer.contains("a=crypto"),
+        "Alice's key stays on her leg: {bob_offer}"
+    );
+    let (alice_video, bob_video) = (alice_call.video().unwrap(), bob_call.video().unwrap());
+    assert!(alice_video.keyed(), "Alice and the node agreed a key");
+
+    alice_video.send(20).await.unwrap();
+    assert!(
+        bob_video.received_at_least(20, SOON).await,
+        "Bob got {} of Alice's encrypted video, decrypted",
+        bob_video.received()
+    );
+    bob_video.send(20).await.unwrap();
+    assert!(
+        alice_video.received_at_least(20, SOON).await,
+        "Alice got {} of Bob's video, encrypted for her",
+        alice_video.received()
+    );
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// A callee without video answers audio alone, and the caller is told so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_callee_without_video_leaves_the_call_audio_only() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    let (alice_call, bob_call, _) =
+        video_call(&stack, &alice_phone, Some(VideoMode::Plain), None).await;
+
+    let answer = alice_call.answer_sdp().unwrap();
+    assert!(
+        video_line(&answer).unwrap().starts_with("m=video 0"),
+        "Alice's video is turned down: {answer}"
+    );
+    assert!(bob_call.video().is_none());
+    // Audio is untouched.
+    bob_call.media().play_tone(660.0, 2000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Bob"
+    );
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// A re-INVITE forwarded to the far phone keeps the call's video.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn video_goes_on_after_a_reinvite() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    let (alice_call, bob_call, _) = video_call(
+        &stack,
+        &alice_phone,
+        Some(VideoMode::Plain),
+        Some(VideoMode::Plain),
+    )
+    .await;
+    let (alice_video, bob_video) = (alice_call.video().unwrap(), bob_call.video().unwrap());
+
+    assert_eq!(alice_call.reinvite("sendrecv").await.unwrap(), 200);
+    alice_video.send(20).await.unwrap();
+    assert!(
+        bob_video.received_at_least(20, SOON).await,
+        "Bob got {} of Alice's video after her re-INVITE",
+        bob_video.received()
+    );
+    bob_video.send(20).await.unwrap();
+    assert!(
+        alice_video.received_at_least(20, SOON).await,
+        "Alice got {} of Bob's video after her re-INVITE",
+        alice_video.received()
+    );
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+/// A caller behind NAT names an address it cannot be reached at; its video
+/// goes where its packets come from, as its audio does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn video_reaches_a_caller_behind_nat() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    // Bound at 127.0.0.2, naming 127.0.0.1.
+    let alice_phone = Phone::behind_nat(
+        "127.0.0.2:0",
+        "127.0.0.1".parse().unwrap(),
+        &alice.username,
+        &alice.password,
+        REALM,
+        stack.sip,
+    )
+    .await
+    .unwrap();
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    let (alice_call, bob_call, _) = video_call(
+        &stack,
+        &alice_phone,
+        Some(VideoMode::Plain),
+        Some(VideoMode::Plain),
+    )
+    .await;
+    let (alice_video, bob_video) = (alice_call.video().unwrap(), bob_call.video().unwrap());
+
+    alice_video.send(20).await.unwrap();
+    assert!(
+        bob_video.received_at_least(20, SOON).await,
+        "Bob got {} of Alice's video",
+        bob_video.received()
+    );
+    bob_video.send(20).await.unwrap();
+    assert!(
+        alice_video.received_at_least(20, SOON).await,
+        "Alice, behind NAT, got {} of Bob's video",
+        alice_video.received()
+    );
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}

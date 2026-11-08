@@ -368,6 +368,12 @@ pub trait MediaBackend: Send + Sync {
         None
     }
 
+    /// The address `leg`'s media is learned from rather than read off its
+    /// SDP (a peer behind NAT), when it is.
+    fn latched(&self, _call_id: &CallId, _leg: Leg) -> Option<IpAddr> {
+        None
+    }
+
     /// Get backend type name (for logging/metrics)
     fn backend_name(&self) -> &'static str;
 
@@ -903,6 +909,9 @@ pub mod embedded {
             let mut p = participant.write().await;
             p.remote_addr = None;
             p.latch_allowed_ips = Some(std::iter::once(source).collect());
+            for relay in session_info.fcp_session.video_relays() {
+                relay.latch(leg, source);
+            }
             info!(?call_id, ?leg, %source, "Leg's RTP address will be learned from its first packet");
             Ok(())
         }
@@ -947,6 +956,9 @@ pub mod embedded {
             // hears from it, now as the other leg. The leg it left gets the
             // other port, for whoever is told it next.
             session.swap_leg_sockets();
+            for relay in session_info.fcp_session.video_relays() {
+                relay.move_peer(from, to);
+            }
             info!(
                 ?call_id,
                 ?from,
@@ -977,6 +989,9 @@ pub mod embedded {
                 p.latch_allowed_ips = Some(HashSet::new());
             }
             *srtp.lock().await = forge_rtp::srtp::SrtpContext::new();
+            for relay in session_info.fcp_session.video_relays() {
+                relay.release(leg);
+            }
             info!(?call_id, ?leg, "Leg has no peer");
             Ok(())
         }
@@ -1390,6 +1405,9 @@ pub mod embedded {
             debug!(?call_id, "Terminating media session");
 
             if let Some((_, session_info)) = self.sessions.remove(call_id) {
+                // The call's video relays end with it.
+                session_info.fcp_session.close_video().await;
+
                 // Stop all active playbacks for this session (closes file handles)
                 let forge_call_id = &session_info.forge_call_id;
                 if let Err(e) = self
@@ -2154,6 +2172,10 @@ pub mod embedded {
 
         fn port_pool(&self) -> Option<Arc<forge_rtp::PortPool>> {
             Some(self.session_manager.port_pool())
+        }
+
+        fn latched(&self, call_id: &CallId, leg: Leg) -> Option<IpAddr> {
+            self.sessions.get(call_id).and_then(|s| s.latched(leg))
         }
 
         fn backend_name(&self) -> &'static str {

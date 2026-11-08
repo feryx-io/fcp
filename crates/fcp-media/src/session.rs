@@ -37,6 +37,11 @@ pub struct MediaSession {
     /// The session's socket pair per leg, live: a swap (a phone moved
     /// between legs) is seen at once.
     legs: forge_engine::LegSockets,
+
+    /// The call's relayed video sections, the camera's and a shared
+    /// screen's, opened when an SDP first carries them
+    /// (`docs/SOFTPHONE_VIDEO.md` §2.2).
+    video: parking_lot::Mutex<Vec<std::sync::Arc<crate::video_relay::VideoRelay>>>,
 }
 
 impl MediaSession {
@@ -59,6 +64,7 @@ impl MediaSession {
             negotiated_codecs: RwLock::new(Vec::new()),
             stats: RwLock::new(MediaSessionStats::default()),
             legs,
+            video: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -91,6 +97,56 @@ impl MediaSession {
         };
         let ports = self.legs.ports_for(label);
         (ports.rtp_port, ports.rtcp_port)
+    }
+
+    /// The relay for one video stream, when the call has opened one.
+    pub fn video_relay(
+        &self,
+        stream: crate::sdp::VideoStream,
+    ) -> Option<std::sync::Arc<crate::video_relay::VideoRelay>> {
+        self.video
+            .lock()
+            .iter()
+            .find(|r| r.stream() == stream)
+            .cloned()
+    }
+
+    /// Every video relay the call has opened.
+    pub fn video_relays(&self) -> Vec<std::sync::Arc<crate::video_relay::VideoRelay>> {
+        self.video.lock().clone()
+    }
+
+    /// Keep a relay the call has opened. One per stream: a second for the
+    /// same stream is closed by the caller instead.
+    pub(crate) fn add_video_relay(
+        &self,
+        relay: std::sync::Arc<crate::video_relay::VideoRelay>,
+    ) -> std::sync::Arc<crate::video_relay::VideoRelay> {
+        let mut video = self.video.lock();
+        if let Some(existing) = video.iter().find(|r| r.stream() == relay.stream()) {
+            return existing.clone();
+        }
+        video.push(relay.clone());
+        relay
+    }
+
+    /// The ports an SDP to `leg` names: audio's, and each relayed video
+    /// stream's.
+    pub fn anchor_ports(&self, leg: crate::backend::Leg) -> crate::sdp::AnchorPorts {
+        let port = |stream| self.video_relay(stream).map(|r| r.port(leg));
+        crate::sdp::AnchorPorts {
+            audio: self.ports_for(leg).0,
+            video: port(crate::sdp::VideoStream::Camera),
+            content: port(crate::sdp::VideoStream::Content),
+        }
+    }
+
+    /// Stop every video relay and give its ports back: the call is over.
+    pub async fn close_video(&self) {
+        let relays = std::mem::take(&mut *self.video.lock());
+        for relay in relays {
+            relay.close().await;
+        }
     }
 
     /// Get current state

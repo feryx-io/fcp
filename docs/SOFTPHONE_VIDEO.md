@@ -354,6 +354,28 @@ Each phase is one PR in its repository, as before.
 - `/me/softphone`'s `video` block.
 - The testkit phone's video; the `calls.rs` tests.
 
+In two parts:
+- **F1a, done (v0.25.539).** `fcp_media::VideoRelay`:
+  - a bound socket pair per leg per video section;
+  - SDES per leg, with the other leg's key never crossing;
+  - RTCP passed through, with RTCP on the RTP port told apart;
+  - latching, and a stranger refused.
+
+  The SDP side is `AnchorKeys`, `splice_relayed_video` and `with_video_sdes`, with
+  `MediaManager::{anchored_offer, video_answered, anchored_answer,
+  secure_video_offer}`. They are used for:
+  - the B-leg offer, and a TLS callee's;
+  - the callee's answer, serial and forked;
+  - re-INVITEs both ways.
+
+  `fcp_testkit::video::VideoLeg` and `Phone::enable_video` back the `calls.rs`
+  `video_*` tests.
+- **F1b**: the rest:
+  - hold, music, park, transfer and retrieve;
+  - find-me, forwarding on no answer, and the flow redirect;
+  - the policy;
+  - `/me/softphone`.
+
 ### A1: video in the core (anvil)
 
 - `VideoHost`, the SDP, sending and receiving, NACK, RTX and PLI.
