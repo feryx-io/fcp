@@ -4,5 +4,9 @@
 [advisories]
 # rsa 0.9.10 (RUSTSEC-2023-0071): No fix available. Only pulled in transitively
 # by sqlx-mysql which we don't use (we use PostgreSQL only). Not compiled.
-ignore = ["RUSTSEC-2023-0071"]
+# libsqlite3-sys 0.30.1 (RUSTSEC-2026-0459, SQLite CVE-2026-119375): fixed in
+# 0.39, which sqlx 0.8 cannot take. In Cargo.lock only through sqlx-sqlite,
+# which no crate enables (PostgreSQL only); `cargo tree -i libsqlite3-sys
+# --target all` prints nothing. Not compiled.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0459"]
 informational_warnings = ["unmaintained", "unsound"]
