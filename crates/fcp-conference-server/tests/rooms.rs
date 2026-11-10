@@ -601,6 +601,113 @@ async fn mute_by_dtmf_and_by_api_and_a_kick() {
     stack.finish().await;
 }
 
+/// The next roster NOTIFY in subscription `call_id`: its state and body.
+async fn roster(phone: &Phone, call_id: &str) -> (String, String) {
+    match phone
+        .expect(SOON, |e| {
+            matches!(e, PhoneEvent::Notify { call_id: c, event, .. }
+                if c == call_id && event == "conference")
+        })
+        .await
+    {
+        Some(PhoneEvent::Notify { state, body, .. }) => (state.unwrap_or_default(), body),
+        _ => panic!("no roster NOTIFY in {call_id}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_roster_is_told_whole_then_by_what_changes_and_only_to_a_participant() {
+    let stack = stack_or_skip!();
+    stack.seed.meeting(ROOM, None, None).await;
+    let alice = stack.phone("alice").await;
+    let bob = stack.phone("bob").await;
+    let carol = stack.phone("carol").await;
+    let alice_call = join(&stack, &alice).await;
+    let bob_call = join(&stack, &bob).await;
+    stack.wait_participants(2).await;
+    let bob_id = stack.participant_named("bob").await;
+
+    // Someone not in the room is refused, as is one naming a call that
+    // is not theirs.
+    let stranger = carol
+        .subscribe(ROOM, "conference", 600, None)
+        .await
+        .unwrap();
+    assert_eq!(stranger.code, 403, "a stranger");
+    let forged = carol
+        .subscribe_with(
+            ROOM,
+            "conference",
+            600,
+            None,
+            vec![(
+                "Target-Dialog".into(),
+                format!("{};local-tag=x;remote-tag=y", alice_call.call_id()),
+            )],
+        )
+        .await
+        .unwrap();
+    assert_eq!(forged.code, 403, "a call named with the wrong tags");
+
+    // Alice, naming her call: everyone, by name, version 1.
+    let target = alice_call.target_dialog().await.unwrap();
+    let mut sub = alice
+        .subscribe_with(
+            ROOM,
+            "conference",
+            600,
+            None,
+            vec![("Target-Dialog".into(), target)],
+        )
+        .await
+        .unwrap();
+    assert_eq!(sub.code, 200);
+    let (state, first) = roster(&alice, &sub.call_id).await;
+    assert!(state.starts_with("active;expires="), "{state}");
+    assert!(first.contains("state=\"full\" version=\"1\""), "{first}");
+    assert!(first.contains("<user-count>2</user-count>"), "{first}");
+    assert!(
+        first.contains("<display-text>alice</display-text>"),
+        "{first}"
+    );
+    assert!(
+        first.contains("<display-text>bob</display-text>"),
+        "{first}"
+    );
+
+    // Bob mutes himself: version 2 tells of Bob alone, heard no more.
+    bob_call.media().send_dtmf('*');
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    bob_call.media().send_dtmf('6');
+    let (_, muted) = roster(&alice, &sub.call_id).await;
+    assert!(muted.contains("state=\"partial\" version=\"2\""), "{muted}");
+    assert!(muted.contains(&format!("sip:{bob_id}@")), "{muted}");
+    assert!(
+        muted.contains("<type>audio</type><status>recvonly</status>"),
+        "{muted}"
+    );
+    assert!(
+        !muted.contains("<display-text>alice</display-text>"),
+        "{muted}"
+    );
+
+    // Bob leaves: version 3 deletes him.
+    assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    let (_, left) = roster(&alice, &sub.call_id).await;
+    assert!(left.contains("version=\"3\""), "{left}");
+    assert!(left.contains(&format!("sip:{bob_id}@")), "{left}");
+    assert!(left.contains("state=\"deleted\"/>"), "{left}");
+    assert!(left.contains("<user-count>1</user-count>"), "{left}");
+
+    // Alice ends it.
+    assert_eq!(alice.resubscribe(&mut sub, 0, None).await.unwrap(), 200);
+    let (state, _) = roster(&alice, &sub.call_id).await;
+    assert!(state.starts_with("terminated"), "{state}");
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_caller_does_not_choose_the_name_the_room_sees() {
     // `docs/EDGE_SECURITY.md` §2.3. The room took its participant's name

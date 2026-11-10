@@ -287,6 +287,8 @@ pub struct ConferenceCallHandler {
     invite_rate: DashMap<std::net::IpAddr, (u32, Instant)>,
     /// RFC 4575 conference event subscribers: call_id → ConferenceSubscription
     conference_subscriptions: DashMap<String, ConferenceSubscription>,
+    /// Wakes the roster loop (`start_rosters`) on a room event.
+    roster_kick: Arc<tokio::sync::Notify>,
     /// Cached parsed SipUri from local_uri (parsed once at construction, never panics at runtime)
     local_sip_uri: SipUri,
     /// This node's admission, when the binary gave it one: its drain
@@ -395,14 +397,50 @@ enum RecordingWriter {
 }
 
 /// Tracks an active RFC 4575 conference event subscription.
+/// An RFC 4575 subscription to a room's roster (`roster.rs`), granted to a
+/// participant for as long as they are in the room.
 struct ConferenceSubscription {
     /// The room this subscription is for
     key: RoomKey,
-    /// Contact URI of the subscriber (for sending NOTIFY)
-    contact_uri: SipUri,
+    /// Where its NOTIFYs go.
+    dialog: SubscriptionDialog,
+    /// The participant's call it was granted for: it ends when they leave.
+    participant_call: String,
     /// When the subscription expires
     expires_at: Instant,
+    /// The last version sent (0 before the first).
+    version: u32,
+    /// The roster the last NOTIFY told: the next is what changed since
+    /// (none: the whole roster).
+    sent: Option<crate::roster::Roster>,
 }
+
+/// The dialog a roster subscription's NOTIFYs go in.
+enum SubscriptionDialog {
+    /// The participant's own call (a SUBSCRIBE inside its INVITE dialog).
+    Call,
+    /// A dialog of its own.
+    Own(Box<OwnDialog>),
+}
+
+/// A subscription's own dialog, from its SUBSCRIBE.
+struct OwnDialog {
+    call_id: String,
+    their_tag: String,
+    our_tag: String,
+    /// The subscriber's `From` without its tag: our NOTIFYs' `To`.
+    subscriber: String,
+    /// The room as the SUBSCRIBE addressed it: our NOTIFYs' `From`.
+    resource: String,
+    contact: SipUri,
+    cseq: u32,
+}
+
+/// The longest roster subscription granted, and the length of one that
+/// asks for none.
+const ROSTER_MAX_EXPIRES: u64 = 3600;
+/// How often the rosters are compared with what subscribers were told.
+const ROSTER_EVERY: Duration = Duration::from_millis(500);
 
 /// Tracks an answered conference call that is still collecting a room PIN.
 struct PendingPinAuth {
@@ -792,6 +830,7 @@ impl ConferenceCallHandler {
             ai_config: RwLock::new(ai_config),
             invite_rate: DashMap::new(),
             conference_subscriptions: DashMap::new(),
+            roster_kick: Arc::new(tokio::sync::Notify::new()),
             local_sip_uri,
             admission: std::sync::RwLock::new(None),
             trunk_srtp: std::sync::atomic::AtomicBool::new(true),
@@ -3504,72 +3543,16 @@ impl ConferenceCallHandler {
 
         let platform_event = PlatformEvent::Conference(event);
 
-        // Notify RFC 4575 subscribers for this room
-        if let (Some(room), Some(tenant)) = (room_number, platform_event.tenant_id()) {
-            self.notify_conference_subscribers(&RoomKey::new(*tenant, room));
+        // RFC 4575 subscribers hear of it at once rather than at the next
+        // look.
+        if room_number.is_some() {
+            self.roster_kick.notify_one();
         }
 
         let event_bus = Arc::clone(&self.event_bus);
         tokio::spawn(async move {
             if let Err(e) = event_bus.publish(platform_event).await {
                 warn!(error = %e, "Failed to publish conference event");
-            }
-        });
-    }
-
-    /// Send NOTIFY to all RFC 4575 subscribers for a given room.
-    fn notify_conference_subscribers(&self, key: &RoomKey) {
-        let room_number = key.room.as_str();
-        // Collect active subscribers for this room (and prune expired ones)
-        let now = Instant::now();
-        let mut expired = Vec::new();
-        let mut targets: Vec<SipUri> = Vec::new();
-
-        for entry in self.conference_subscriptions.iter() {
-            if entry.value().key == *key {
-                if entry.value().expires_at <= now {
-                    expired.push(entry.key().clone());
-                } else {
-                    targets.push(entry.value().contact_uri.clone());
-                }
-            }
-        }
-
-        // Remove expired subscriptions
-        for call_id in expired {
-            self.conference_subscriptions.remove(&call_id);
-        }
-
-        if targets.is_empty() {
-            return;
-        }
-
-        // Build conference state XML
-        let state_xml = if let Ok(room) = self.bridge.get_room(key) {
-            build_conference_state_xml(room_number, &room)
-        } else {
-            // Room was destroyed, send empty state
-            format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-                 <conference-info xmlns=\"urn:ietf:params:xml:ns:conference-info\"\n  \
-                   entity=\"sip:{}@conference\" state=\"full\" version=\"1\">\n  \
-                   <users count=\"0\"/>\n\
-                 </conference-info>\n",
-                room_number,
-            )
-        };
-
-        let uac = Arc::clone(&self.uac);
-        tokio::spawn(async move {
-            for target_uri in targets {
-                let _ = uac
-                    .send_unsolicited_notify(
-                        &target_uri,
-                        "conference",
-                        "application/conference-info+xml",
-                        &state_xml,
-                    )
-                    .await;
             }
         });
     }
@@ -8010,6 +7993,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         Ok(response)
     }
 
+    /// Answer a `conference` SUBSCRIBE (RFC 4575): from a participant of the
+    /// room, inside their call or naming it in `Target-Dialog` (RFC 4538);
+    /// anyone else is refused. The whole roster comes at once, then what
+    /// changes, until the subscription lapses, ends, or they leave.
     async fn handle_subscribe(
         &self,
         request: &sip_core::Request,
@@ -8031,79 +8018,79 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let event_header = sip_parse::header(request.headers(), "Event")
             .ok_or_else(|| anyhow::anyhow!("No Event header in SUBSCRIBE"))?;
         if !event_header.as_str().starts_with("conference") {
-            anyhow::bail!("Not a conference event SUBSCRIBE");
+            let response = UserAgentServer::create_response(request, 489, "Bad Event");
+            handle.send_final(response).await;
+            return Ok(());
+        }
+
+        let call_id = extract_call_id(request);
+        let expires_secs: u64 = sip_parse::header(request.headers(), "Expires")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(ROSTER_MAX_EXPIRES)
+            .min(ROSTER_MAX_EXPIRES);
+
+        // A refresh or an end of one we hold.
+        if self.conference_subscriptions.contains_key(&call_id) {
+            let our_tag = self.subscription_tag(&call_id);
+            let mut response = UserAgentServer::create_response(request, 200, "OK");
+            set_to_tag(&mut response, our_tag.as_deref());
+            let _ = response
+                .headers_mut()
+                .push("Expires", expires_secs.to_string());
+            handle.send_final(response).await;
+            if let Some(mut sub) = self.conference_subscriptions.get_mut(&call_id) {
+                sub.expires_at = Instant::now() + Duration::from_secs(expires_secs);
+                // Every SUBSCRIBE is answered with a NOTIFY (RFC 6665
+                // §4.2.1): the whole roster again.
+                sub.sent = None;
+            }
+            let key = self
+                .conference_subscriptions
+                .get(&call_id)
+                .map(|s| s.key.clone());
+            if let Some(key) = key {
+                self.update_rosters(&key);
+            }
+            info!(call_id = %call_id, expires = expires_secs, "Conference subscription refreshed");
+            return Ok(());
         }
 
         // Extract room number from Request-URI
         let room_number = extract_room_number(request)
             .ok_or_else(|| anyhow::anyhow!("Cannot extract room number from SUBSCRIBE URI"))?;
 
-        // Verify room exists (either active or configured)
-        // A subscriber in the room is in its tenant's room; anyone else
-        // is placed by the request.
-        let tenant_id = match self.sessions.get(&extract_call_id(request)) {
-            Some(session) => session.tenant_id,
-            None => self.resolve_tenant(request, None).await?,
+        // The participant asking: this call, or the one `Target-Dialog`
+        // names, in this room.
+        let target = sip_parse::header(request.headers(), "Target-Dialog")
+            .and_then(|v| parse_target_dialog(v.as_str()));
+        let (participant_call, within) = if self.sessions.contains_key(&call_id) {
+            (call_id.clone(), true)
+        } else if let Some((target_call, their_tag, our_tag)) = target {
+            let names_it = self.sessions.get(&target_call).is_some_and(|s| {
+                let id = s.dialog.id();
+                id.remote_tag() == their_tag && id.local_tag() == our_tag
+            });
+            if !names_it {
+                return self
+                    .refuse_subscribe(request, handle, &room_number, &call_id)
+                    .await;
+            }
+            (target_call, false)
+        } else {
+            return self
+                .refuse_subscribe(request, handle, &room_number, &call_id)
+                .await;
         };
-        let key = RoomKey::new(tenant_id, room_number.clone());
-        let room_active = self.bridge.get_room(&key).is_ok();
-        let meeting_exists = self.lookup_meeting(&key.tenant, &key.room).await?.is_some();
-        if !room_active && !meeting_exists {
-            let response = UserAgentServer::create_response(request, 404, "Conference Not Found");
-            handle.send_final(response).await;
-            return Ok(());
-        }
-
-        // Authorization: subscriber must be an active participant in this room.
-        // This prevents arbitrary SIP endpoints from subscribing to conference state.
-        let call_id_sub = extract_call_id(request);
-        let is_participant = self
+        let Some(key) = self
             .sessions
-            .iter()
-            .any(|entry| entry.value().room_key() == key);
-        // Also allow if the subscriber's Call-ID matches an existing session
-        let is_session = self.sessions.contains_key(&call_id_sub);
-        if !is_participant && !is_session {
-            warn!(
-                room = %room_number,
-                call_id = %call_id_sub,
-                "SUBSCRIBE rejected: subscriber is not a conference participant"
-            );
-            let response = UserAgentServer::create_response(request, 403, "Forbidden");
-            handle.send_final(response).await;
-            return Ok(());
-        }
-
-        // Parse Expires header (default 3600)
-        let expires_secs: u64 = sip_parse::header(request.headers(), "Expires")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3600);
-
-        let call_id = extract_call_id(request);
-
-        // If Expires=0, this is an unsubscribe
-        if expires_secs == 0 {
-            self.conference_subscriptions.remove(&call_id);
-            info!(call_id = %call_id, room = %room_number, "Conference subscription terminated");
-            let mut response = UserAgentServer::create_response(request, 200, "OK");
-            let _ = response.headers_mut().push("Expires", "0");
-            handle.send_final(response).await;
-            return Ok(());
-        }
-
-        // Extract subscriber Contact URI for NOTIFY delivery
-        let contact_uri = sip_parse::header(request.headers(), "Contact")
-            .and_then(|c| {
-                let s = c.as_str();
-                // Strip angle brackets if present
-                let uri_str = if let Some(inner) = s.strip_prefix('<') {
-                    inner.split('>').next().unwrap_or(s)
-                } else {
-                    s.split(';').next().unwrap_or(s)
-                };
-                SipUri::parse(uri_str).ok()
-            })
-            .unwrap_or_else(|| self.parse_local_sip_uri());
+            .get(&participant_call)
+            .map(|s| s.room_key())
+            .filter(|k| k.room == room_number)
+        else {
+            return self
+                .refuse_subscribe(request, handle, &room_number, &call_id)
+                .await;
+        };
 
         // Prune expired subscriptions and cap total to prevent unbounded growth
         const MAX_SUBSCRIPTIONS: usize = 10_000;
@@ -8123,45 +8110,66 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
         }
 
-        // Create/refresh subscription
-        self.conference_subscriptions.insert(
-            call_id.clone(),
-            ConferenceSubscription {
-                key: key.clone(),
-                contact_uri: contact_uri.clone(),
-                expires_at: Instant::now() + Duration::from_secs(expires_secs),
-            },
-        );
-
-        info!(
-            call_id = %call_id,
-            room = %room_number,
-            expires = expires_secs,
-            "Conference event subscription created"
-        );
-
-        // Send 200 OK with Expires
+        let dialog = if within {
+            SubscriptionDialog::Call
+        } else {
+            let from = sip_parse::header(request.headers(), "From")
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let to = sip_parse::header(request.headers(), "To")
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let Some(contact) = sip_parse::header(request.headers(), "Contact")
+                .and_then(|c| contact_uri(c.as_str()))
+            else {
+                let response = UserAgentServer::create_response(request, 400, "Bad Request");
+                handle.send_final(response).await;
+                return Ok(());
+            };
+            SubscriptionDialog::Own(Box::new(OwnDialog {
+                call_id: call_id.clone(),
+                their_tag: tag_of(&from).unwrap_or_default(),
+                our_tag: uuid::Uuid::new_v4().simple().to_string(),
+                subscriber: without_tag(&from),
+                resource: without_tag(&to),
+                contact,
+                cseq: 0,
+            }))
+        };
+        let our_tag = match &dialog {
+            SubscriptionDialog::Own(d) => Some(d.our_tag.clone()),
+            SubscriptionDialog::Call => self
+                .sessions
+                .get(&call_id)
+                .map(|s| s.dialog.id().local_tag().to_string()),
+        };
         let mut response = UserAgentServer::create_response(request, 200, "OK");
+        set_to_tag(&mut response, our_tag.as_deref());
         let _ = response
             .headers_mut()
             .push("Expires", expires_secs.to_string());
         handle.send_final(response).await;
 
-        // Send initial NOTIFY with current conference state
-        if room_active {
-            if let Ok(room) = self.bridge.get_room(&key) {
-                let state_xml = build_conference_state_xml(&room_number, &room);
-                let _ = self
-                    .uac
-                    .send_unsolicited_notify(
-                        &contact_uri,
-                        "conference",
-                        "application/conference-info+xml",
-                        &state_xml,
-                    )
-                    .await;
-            }
-        }
+        self.conference_subscriptions.insert(
+            call_id.clone(),
+            ConferenceSubscription {
+                key: key.clone(),
+                dialog,
+                participant_call,
+                // A fetch (`Expires: 0`) is told the roster once, then over.
+                expires_at: Instant::now() + Duration::from_secs(expires_secs),
+                version: 0,
+                sent: None,
+            },
+        );
+        info!(
+            call_id = %call_id,
+            room = %room_number,
+            expires = expires_secs,
+            within_call = within,
+            "Conference event subscription created"
+        );
+        self.update_rosters(&key);
 
         self.handler_latency.record(
             &self.handler_latency.subscribe_count,
@@ -8318,57 +8326,415 @@ fn truncate_for_filename(s: &str, max_len: usize) -> &str {
     &s[..end]
 }
 
-/// XML-escape a string for safe embedding in XML attributes and text nodes.
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(ch),
+/// Roster subscriptions (RFC 4575), apart from the SIP handler's trait.
+impl ConferenceCallHandler {
+    /// A SUBSCRIBE from someone not in the room, or naming no call of
+    /// theirs in it: 403.
+    async fn refuse_subscribe(
+        &self,
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+        room_number: &str,
+        call_id: &str,
+    ) -> Result<()> {
+        warn!(
+            room = %room_number,
+            call_id = %call_id,
+            "SUBSCRIBE refused: not a participant of the room"
+        );
+        let response = UserAgentServer::create_response(request, 403, "Forbidden");
+        handle.send_final(response).await;
+        Ok(())
+    }
+
+    /// Our tag in a subscription's dialog.
+    fn subscription_tag(&self, call_id: &str) -> Option<String> {
+        let sub = self.conference_subscriptions.get(call_id)?;
+        match &sub.dialog {
+            SubscriptionDialog::Own(d) => Some(d.our_tag.clone()),
+            SubscriptionDialog::Call => self
+                .sessions
+                .get(&sub.participant_call)
+                .map(|s| s.dialog.id().local_tag().to_string()),
         }
     }
-    out
+
+    /// Look at the rosters every [`ROSTER_EVERY`], and at once when a
+    /// room event wakes it: a mute, a speaker or a camera changes without
+    /// one, so what subscribers were told is compared with the room.
+    pub fn start_rosters(self: &Arc<Self>) {
+        let me = Arc::downgrade(self);
+        let kick = Arc::clone(&self.roster_kick);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(ROSTER_EVERY) => {}
+                    _ = kick.notified() => {
+                        // Events come in bursts (a join is several): one
+                        // NOTIFY for the lot.
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+                let Some(me) = me.upgrade() else {
+                    return;
+                };
+                let keys: std::collections::HashSet<RoomKey> = me
+                    .conference_subscriptions
+                    .iter()
+                    .map(|s| s.key.clone())
+                    .collect();
+                for key in keys {
+                    me.update_rosters(&key);
+                }
+            }
+        });
+    }
+
+    /// Bring each subscriber to `key`'s roster up to date: the next
+    /// version, the whole roster first and then what changed. A
+    /// subscription that lapsed, whose participant left, or whose room is
+    /// over, is ended.
+    fn update_rosters(&self, key: &RoomKey) {
+        let roster = self.roster_of(key);
+        let domain = self.local_sip_uri.host().to_string();
+        let names = crate::roster::Names {
+            room: &key.room,
+            domain: &domain,
+        };
+        let now = Instant::now();
+        let ids: Vec<String> = self
+            .conference_subscriptions
+            .iter()
+            .filter(|s| s.key == *key)
+            .map(|s| s.key().clone())
+            .collect();
+        for id in ids {
+            let Some(mut sub) = self.conference_subscriptions.get_mut(&id) else {
+                continue;
+            };
+            let here = self.sessions.contains_key(&sub.participant_call);
+            let version = sub.version + 1;
+            let (state, body, end) = match &roster {
+                None => (
+                    "terminated;reason=noresource".to_string(),
+                    Some(crate::roster::ended(&names, version)),
+                    true,
+                ),
+                Some(_) if !here => ("terminated;reason=deactivated".to_string(), None, true),
+                Some(roster) => {
+                    let body = match &sub.sent {
+                        None => Some(crate::roster::full(&names, version, roster)),
+                        Some(before) => crate::roster::partial(&names, version, before, roster),
+                    };
+                    let lapsed = sub.expires_at <= now;
+                    match (body, lapsed) {
+                        (Some(body), _) => {
+                            sub.version = version;
+                            sub.sent = Some(roster.clone());
+                            let state = if lapsed {
+                                "terminated;reason=timeout".to_string()
+                            } else {
+                                format!(
+                                    "active;expires={}",
+                                    sub.expires_at.saturating_duration_since(now).as_secs()
+                                )
+                            };
+                            (state, Some(body), lapsed)
+                        }
+                        (None, true) => ("terminated;reason=timeout".to_string(), None, true),
+                        (None, false) => continue,
+                    }
+                }
+            };
+            let request = match &mut sub.dialog {
+                SubscriptionDialog::Own(d) => {
+                    d.cseq += 1;
+                    Some(own_notify(d, d.cseq, &state, body.as_deref()))
+                }
+                SubscriptionDialog::Call => None,
+            };
+            let participant_call = sub.participant_call.clone();
+            drop(sub);
+            if end {
+                self.conference_subscriptions.remove(&id);
+            }
+            match request {
+                Some(Ok((request, contact))) => {
+                    let uac = Arc::clone(&self.uac);
+                    tokio::spawn(async move {
+                        match uac
+                            .inner()
+                            .send_request(request, sip_uac::integrated::RequestTarget::Uri(contact))
+                            .await
+                        {
+                            Ok(r) if r.start_line().is_success() => {}
+                            Ok(r) => {
+                                debug!(code = r.start_line().code(), "conference NOTIFY refused")
+                            }
+                            Err(e) => debug!(error = %e, "conference NOTIFY not delivered"),
+                        }
+                    });
+                }
+                Some(Err(e)) => warn!(error = %e, "conference NOTIFY could not be built"),
+                // Inside the participant's call, while there is one.
+                None if here => {
+                    if let Some(me) = self.me() {
+                        tokio::spawn(async move {
+                            me.send_call_notify(participant_call, state, body).await
+                        });
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// A roster NOTIFY inside a participant's call.
+    async fn send_call_notify(
+        self: Arc<Self>,
+        call_id: String,
+        state: String,
+        body: Option<String>,
+    ) {
+        let Some(mut dialog) = self.sessions.get(&call_id).map(|s| s.dialog.clone()) else {
+            return;
+        };
+        let request = match call_notify(&dialog, &state, body.as_deref()) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(error = %e, "conference NOTIFY could not be built");
+                return;
+            }
+        };
+        match self
+            .uac
+            .inner()
+            .send_in_dialog_non_invite(&mut dialog, request)
+            .await
+        {
+            Ok(resp) => {
+                if let Some(mut s) = self.sessions.get_mut(&call_id) {
+                    s.dialog = dialog;
+                }
+                if !resp.start_line().is_success() {
+                    debug!(call_id = %call_id, code = resp.start_line().code(), "conference NOTIFY refused");
+                }
+            }
+            Err(e) => debug!(call_id = %call_id, error = %e, "conference NOTIFY failed"),
+        }
+    }
+
+    /// A room's roster now: each caller here by name, with their audio,
+    /// camera, speaking and presenting; `None` when the room is gone.
+    /// Callers on a peer node are not listed (their node has them).
+    fn roster_of(&self, key: &RoomKey) -> Option<crate::roster::Roster> {
+        let room = self.bridge.get_room(key).ok()?;
+        let video = room.video();
+        let speaker = video.as_ref().and_then(|v| v.active_speaker());
+        let presenter = video.as_ref().and_then(|v| v.content_holder());
+        let meta: std::collections::HashMap<String, forge_mixer::ParticipantMetadata> = room
+            .get_all_participant_metadata()
+            .into_iter()
+            .map(|m| (m.id.clone(), m))
+            .collect();
+        let mut roster = crate::roster::Roster::default();
+        let calls = self
+            .room_sessions
+            .get(key)
+            .map(|ids| ids.clone())
+            .unwrap_or_default();
+        for call_id in calls {
+            let Some(s) = self.sessions.get(&call_id) else {
+                continue;
+            };
+            if s.trunk_peer.is_some() {
+                continue;
+            }
+            let id = s.participant_id.clone();
+            let m = meta.get(&id);
+            let audio = match m.map(|m| m.state) {
+                Some(forge_mixer::ParticipantState::Muted) => crate::roster::Audio::Muted,
+                Some(forge_mixer::ParticipantState::OnHold) => crate::roster::Audio::Held,
+                _ => crate::roster::Audio::Sending,
+            };
+            let camera = video
+                .as_ref()
+                .map(|v| v.participant(&id).map_or("off", |i| i.state.name()));
+            let speaking = match &video {
+                Some(_) => speaker.as_deref() == Some(id.as_str()),
+                None => m.is_some_and(|m| m.is_speaking),
+            };
+            roster.members.insert(
+                id.clone(),
+                crate::roster::Member {
+                    name: s
+                        .display_name
+                        .clone()
+                        .or_else(|| s.caller_id.clone())
+                        .unwrap_or_else(|| id.clone()),
+                    host: s.is_host,
+                    audio,
+                    video: camera,
+                    speaking,
+                    presenting: presenter.as_deref() == Some(id.as_str()),
+                    joined_at: s.joined_at,
+                },
+            );
+        }
+        Some(roster)
+    }
 }
 
-/// Build a minimal RFC 4575 conference-info XML document for a room.
-fn build_conference_state_xml(
-    room_number: &str,
-    room: &forge_conference::ConferenceRoom,
-) -> String {
-    let participants = room.participants();
-    let safe_room = xml_escape(room_number);
-    let mut users_xml = String::new();
-    // Cap XML output to prevent excessive memory usage with very large rooms
-    let max_users_in_xml: usize = 1000;
-    for pid in participants.iter().take(max_users_in_xml) {
-        let safe_pid = xml_escape(pid);
-        users_xml.push_str(&format!(
-            "    <user entity=\"sip:{}@conference\">\n      <display-text>{}</display-text>\n      <endpoint entity=\"sip:{}@conference\">\n        <status>connected</status>\n      </endpoint>\n    </user>\n",
-            safe_pid, safe_pid, safe_pid,
-        ));
-    }
-    if participants.len() > max_users_in_xml {
-        users_xml.push_str("    <!-- additional participants truncated -->\n");
-    }
+/// A header's `tag` parameter.
+fn tag_of(value: &str) -> Option<String> {
+    value
+        .split(';')
+        .skip(1)
+        .find_map(|p| p.trim().strip_prefix("tag="))
+        .map(str::to_string)
+}
 
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <conference-info xmlns=\"urn:ietf:params:xml:ns:conference-info\"\n  \
-           entity=\"sip:{}@conference\" state=\"full\" version=\"1\">\n  \
-           <conference-description>\n    <display-text>Conference {}</display-text>\n  \
-           </conference-description>\n  \
-           <users count=\"{}\">\n{}\
-           </users>\n\
-         </conference-info>\n",
-        safe_room,
-        safe_room,
-        participants.len(),
-        users_xml,
+/// A `From` or `To` without its tag.
+fn without_tag(value: &str) -> String {
+    value
+        .split(';')
+        .filter(|p| !p.trim().starts_with("tag="))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+/// `Target-Dialog` (RFC 4538): the call, the sender's tag and ours.
+fn parse_target_dialog(value: &str) -> Option<(String, String, String)> {
+    let mut parts = value.split(';').map(str::trim);
+    let call_id = parts.next().filter(|c| !c.is_empty())?.to_string();
+    let (mut local, mut remote) = (None, None);
+    for p in parts {
+        if let Some(v) = p.strip_prefix("local-tag=") {
+            local = Some(v.to_string());
+        } else if let Some(v) = p.strip_prefix("remote-tag=") {
+            remote = Some(v.to_string());
+        }
+    }
+    Some((call_id, local?, remote?))
+}
+
+/// A Contact header's URI.
+fn contact_uri(value: &str) -> Option<SipUri> {
+    let uri = match value.find('<') {
+        Some(at) => value[at + 1..].split('>').next()?,
+        None => value.split(';').next()?,
+    };
+    SipUri::parse(uri.trim()).ok()
+}
+
+/// Our tag on a response's `To`, where it has none.
+fn set_to_tag(response: &mut sip_core::Response, tag: Option<&str>) {
+    let Some(tag) = tag else {
+        return;
+    };
+    let Some(to) = sip_parse::header(response.headers(), "To").map(|v| v.to_string()) else {
+        return;
+    };
+    if to.contains(";tag=") {
+        return;
+    }
+    let headers = response.headers_mut();
+    headers.remove("To");
+    let _ = headers.push("To", format!("{to};tag={tag}"));
+}
+
+/// The headers every roster NOTIFY carries, after its dialog's.
+fn roster_headers(
+    push: &mut dyn FnMut(&str, String) -> Result<()>,
+    state: &str,
+    body: Option<&str>,
+) -> Result<()> {
+    push("Event", "conference".into())?;
+    push("Subscription-State", state.to_string())?;
+    let body = body.unwrap_or_default();
+    if !body.is_empty() {
+        push("Content-Type", "application/conference-info+xml".into())?;
+    }
+    push("Content-Length", body.len().to_string())
+}
+
+/// A roster NOTIFY in a subscription's own dialog, and where it goes.
+fn own_notify(
+    d: &OwnDialog,
+    cseq: u32,
+    state: &str,
+    body: Option<&str>,
+) -> Result<(sip_core::Request, SipUri)> {
+    let mut headers = Headers::new();
+    let mut push = |name: &str, value: String| -> Result<()> {
+        headers
+            .push(name, value)
+            .map_err(|e| anyhow::anyhow!("{name}: {e}"))
+    };
+    push(
+        "Via",
+        format!(
+            "SIP/2.0/UDP placeholder;branch=z9hG4bK{}",
+            uuid::Uuid::new_v4().simple()
+        ),
+    )?;
+    push("Max-Forwards", "70".into())?;
+    push("From", format!("{};tag={}", d.resource, d.our_tag))?;
+    push(
+        "To",
+        if d.their_tag.is_empty() {
+            d.subscriber.clone()
+        } else {
+            format!("{};tag={}", d.subscriber, d.their_tag)
+        },
+    )?;
+    push("Call-ID", d.call_id.clone())?;
+    push("CSeq", format!("{cseq} NOTIFY"))?;
+    roster_headers(&mut push, state, body)?;
+    let request = sip_core::Request::new(
+        sip_core::RequestLine::new(sip_core::Method::Notify, d.contact.clone()),
+        headers,
+        bytes::Bytes::from(body.unwrap_or_default().to_string()),
     )
+    .map_err(|e| anyhow::anyhow!("NOTIFY: {e}"))?;
+    Ok((request, d.contact.clone()))
+}
+
+/// A roster NOTIFY inside a participant's call (its CSeq and route are the
+/// dialog's, set as it is sent).
+fn call_notify(dialog: &Dialog, state: &str, body: Option<&str>) -> Result<sip_core::Request> {
+    let mut headers = Headers::new();
+    let mut push = |name: &str, value: String| -> Result<()> {
+        headers
+            .push(name, value)
+            .map_err(|e| anyhow::anyhow!("{name}: {e}"))
+    };
+    push(
+        "Via",
+        format!(
+            "SIP/2.0/UDP placeholder;branch=z9hG4bK{}",
+            uuid::Uuid::new_v4().simple()
+        ),
+    )?;
+    push("Max-Forwards", "70".into())?;
+    let id = dialog.id();
+    push(
+        "From",
+        format!("<{}>;tag={}", dialog.local_uri().as_str(), id.local_tag()),
+    )?;
+    push(
+        "To",
+        format!("<{}>;tag={}", dialog.remote_uri().as_str(), id.remote_tag()),
+    )?;
+    push("Call-ID", id.call_id().to_string())?;
+    push("CSeq", "1 NOTIFY".into())?;
+    roster_headers(&mut push, state, body)?;
+    sip_core::Request::new(
+        sip_core::RequestLine::new(sip_core::Method::Notify, dialog.remote_target().clone()),
+        headers,
+        bytes::Bytes::from(body.unwrap_or_default().to_string()),
+    )
+    .map_err(|e| anyhow::anyhow!("NOTIFY: {e}"))
 }
 
 /// Extract the room number from a SIP Request-URI user part.
