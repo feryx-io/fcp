@@ -528,6 +528,8 @@ pub struct PhoneSubscription {
     pub cseq: u32,
     /// The last final response's status.
     pub code: u16,
+    /// Headers every SUBSCRIBE of it carries (`Target-Dialog`).
+    pub headers: Vec<(String, String)>,
 }
 
 /// A SIP phone on loopback.
@@ -1102,6 +1104,21 @@ impl Phone {
         expires: u32,
         call_info: Option<&str>,
     ) -> Result<PhoneSubscription> {
+        self.subscribe_with(target, event, expires, call_info, Vec::new())
+            .await
+    }
+
+    /// [`subscribe`](Self::subscribe) with `headers` on every SUBSCRIBE of
+    /// it: a `Target-Dialog` naming the call it is for (RFC 4538), as a
+    /// conference roster subscription is.
+    pub async fn subscribe_with(
+        &self,
+        target: &str,
+        event: &str,
+        expires: u32,
+        call_info: Option<&str>,
+        headers: Vec<(String, String)>,
+    ) -> Result<PhoneSubscription> {
         let target = if target.starts_with("sip:") || target.starts_with("sips:") {
             target.to_string()
         } else {
@@ -1115,6 +1132,7 @@ impl Phone {
             to_tag: None,
             cseq: 0,
             code: 0,
+            headers,
         };
         sub.code = self.send_subscribe(&mut sub, expires, call_info).await?;
         Ok(sub)
@@ -1180,6 +1198,9 @@ impl Phone {
         push("Expires", expires.to_string())?;
         if let Some(value) = call_info {
             push("Call-Info", value.to_string())?;
+        }
+        for (name, value) in &sub.headers {
+            push(name, value.clone())?;
         }
         push("Content-Length", "0".into())?;
         let request = Request::new(
@@ -1490,6 +1511,19 @@ impl Call {
             }
         }
         Ok((code, answer))
+    }
+
+    /// This call's dialog as a `Target-Dialog` value (RFC 4538): what a
+    /// request outside it names it by, from this phone's side.
+    pub async fn target_dialog(&self) -> Result<String> {
+        let dialog = self.dialog().await?;
+        let id = dialog.id();
+        Ok(format!(
+            "{};local-tag={};remote-tag={}",
+            id.call_id(),
+            id.local_tag(),
+            id.remote_tag()
+        ))
     }
 
     /// This call's dialog as a `Replaces` value (RFC 3891): what another

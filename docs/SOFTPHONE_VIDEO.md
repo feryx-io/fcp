@@ -422,8 +422,31 @@ In two parts:
 
 ### F2: rooms for a SIP client (fcp)
 
+F2 is split in two PRs: F2a, the roster, and F2b, the rest.
+
 - RFC 4575 NOTIFYs with names, media, mute, speaker and presenter; full then partial,
-  versioned.
+  versioned. **F2a, done (v0.25.542):**
+  - The conference server's roster (`fcp-conference-server/src/roster.rs`) lists each
+    caller on the node. Each entry has the caller's name, a host or participant role,
+    when they joined, and their audio media: `sendrecv`, `recvonly` while muted, or
+    `inactive` on hold.
+  - Each entry also has the video media with the camera's state as
+    `fcp:camera`, the content media while they present, and
+    `fcp:speaking` and `fcp:presenting`. These are in FCP's namespace,
+    `urn:fcp:params:xml:ns:conference-info`.
+  - The first NOTIFY is `state="full"`. Each one after it is `state="partial"` and
+    carries only the users that changed (a user who left is `state="deleted"`). The
+    `version` rises by one each time and keeps rising across a refresh.
+  - The rosters are compared with what each subscriber was last told every 500 ms,
+    and at once on a room event, so a mute or a speaker change is caught without an
+    event of its own.
+  - A participant subscribes inside their call, or out of it naming the call in
+    `Target-Dialog` (RFC 4538). Anyone else gets 403. Before this, anyone could
+    subscribe to a room that had a participant.
+  - NOTIFYs go in the subscription's dialog, with `Subscription-State`. The
+    subscription ends with `terminated` when it lapses, when its participant leaves,
+    or when the room ends (`noresource`).
+  - Callers on a peer node are not listed yet; each node lists its own.
 - `X-FCP-Join` carried through the B2BUA to the conference node.
 - The content INFO to SIP endpoints that support it.
 - `/me/conferences/live/{room}/…` for hosts.

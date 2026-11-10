@@ -40,6 +40,7 @@ mod drain;
 mod health;
 mod migration;
 mod rooms;
+mod roster;
 mod storage;
 mod trunks;
 mod video_bridge;
@@ -1181,6 +1182,8 @@ async fn main() -> Result<()> {
     // The handler's own Arc, for the tasks it spawns (see
     // `ConferenceCallHandler::set_self_ref`).
     conference_handler.set_self_ref();
+    // RFC 4575 subscribers kept up to date with their rooms.
+    conference_handler.start_rosters();
     // Participant migration off this node when it drains (phase 5):
     // tickets are signed under the cluster secret, so without one the
     // drain hangs callers up as before.
