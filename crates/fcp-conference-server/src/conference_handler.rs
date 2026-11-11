@@ -3943,6 +3943,13 @@ impl ConferenceCallHandler {
         content: Option<VideoAnswer<'_>>,
         bfcp: Option<fcp_media::BfcpAnswer<'_>>,
     ) -> fcp_media::Answer {
+        // The audio is answered in the codec the room runs, not the
+        // offer's first ([`answerable_offer`]).
+        let narrowed = {
+            let conf = self.conference_config.read();
+            answerable_offer(offer, conf.allowed_codecs.as_deref())
+        };
+        let offer = narrowed.as_str();
         match construct_answer(
             offer,
             &AnswerOptions {
@@ -8163,6 +8170,18 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             return Ok(());
         }
 
+        // Asked inside a call that is still joining — answered, its
+        // session not yet stored, as a client subscribing on the answer
+        // finds it: the session is waited for a moment, not refused 403
+        // (a client takes a 403 as final and never has the roster).
+        let deadline = Instant::now() + JOINING_GRACE;
+        while !self.sessions.contains_key(&call_id)
+            && self.joining.contains_key(&call_id)
+            && Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
         // The room: inside a call, the call's own (the Request-URI is then
         // this node's Contact, which names none); outside one, the
         // Request-URI's.
@@ -8968,6 +8987,19 @@ fn parse_remote_rtp_addr(sdp: &str) -> Option<SocketAddr> {
 ///
 /// If `allowed` is `Some`, only codecs in that list are considered.
 /// Returns (codec_name, payload_type, frame_size_in_samples).
+/// The offer with its audio narrowed to what a room can run (allowed and
+/// G.711 or G.722), so that the answer — built from the offer's first
+/// audio codec — names the codec [`pick_codec`] chose. An offer led by
+/// Opus was answered "Opus" while the bridge ran G.711, and the caller
+/// sent and expected Opus.
+fn answerable_offer(offer: &str, allowed: Option<&[String]>) -> String {
+    let runnable: Vec<&str> = ["PCMU", "PCMA", "G722"]
+        .into_iter()
+        .filter(|c| allowed.is_none_or(|a| a.iter().any(|x| x.eq_ignore_ascii_case(c))))
+        .collect();
+    fcp_media::sdp::filter_sdp_codecs(offer, &runnable)
+}
+
 fn pick_codec(
     codecs: &[fcp_media::SdpCodecInfo],
     allowed: Option<&[String]>,
@@ -9137,6 +9169,9 @@ impl FloorNotifier for ConferenceCallHandler {
 
 /// A call answered and not yet a session (`ConferenceCallHandler::joining`),
 /// for as long as the join runs: cleared however it ends.
+/// How long a request in a call that is joining waits for its session.
+const JOINING_GRACE: Duration = Duration::from_secs(2);
+
 struct Joining {
     map: Arc<DashMap<String, bool>>,
     call_id: String,
@@ -9214,6 +9249,34 @@ fn content_change(sends: bool, share_again: bool) -> ContentChange {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_offer_led_by_opus_is_answered_in_the_codec_the_room_runs() {
+        let offer = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\n\
+                     m=audio 4000 RTP/AVP 111 0 8 101\r\na=rtpmap:111 opus/48000/2\r\n\
+                     a=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n\
+                     a=rtpmap:101 telephone-event/8000\r\n\
+                     m=video 4002 RTP/AVPF 97\r\na=rtpmap:97 VP8/90000\r\n";
+        let narrowed = answerable_offer(offer, None);
+        let codecs = parse_sdp_codecs(&narrowed);
+        let (chosen, pt, _) = pick_codec(&parse_sdp_codecs(offer), None).unwrap();
+        // The answer's first codec is the one the bridge runs.
+        assert_eq!(
+            codecs.first().map(|c| c.encoding_name.as_str()),
+            Some(chosen.as_str())
+        );
+        assert_eq!(codecs.first().map(|c| c.payload_type), Some(pt));
+        assert!(narrowed.contains("telephone-event"), "{narrowed}");
+        assert!(narrowed.contains("m=video 4002 RTP/AVPF 97"), "{narrowed}");
+        // The allowed list narrows it further.
+        let only_pcma = answerable_offer(offer, Some(&["PCMA".to_string()]));
+        assert_eq!(
+            parse_sdp_codecs(&only_pcma)
+                .first()
+                .map(|c| c.encoding_name.clone()),
+            Some("PCMA".into())
+        );
+    }
 
     #[test]
     fn a_shared_screens_direction_moves_the_floor() {
