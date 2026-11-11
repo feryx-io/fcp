@@ -7444,6 +7444,17 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         Ok(())
     }
 
+    fn holds_dialog(&self, request: &sip_core::Request) -> bool {
+        let Some(req) = sip_dialog::DialogId::from_request(request) else {
+            return false;
+        };
+        // Ours is the request's To tag, theirs its From tag.
+        self.sessions.get(req.call_id()).is_some_and(|s| {
+            let ours = s.dialog.id();
+            ours.local_tag() == req.remote_tag() && ours.remote_tag() == req.local_tag()
+        })
+    }
+
     async fn handle_reinvite(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
         let reinvite_start = Instant::now();
         let call_id = extract_call_id(request);

@@ -2840,8 +2840,15 @@ impl SipMessageHandler {
         self.serving.get_or_init(|| self.clone());
         match request.method() {
             Method::Invite => {
-                // If this is an in-dialog re-INVITE, handle separately
-                if self.dialog_manager.find_by_request(request).is_some()
+                // If this is an in-dialog re-INVITE, handle separately: a
+                // dialog of the node's, a B2BUA leg's, or a room
+                // participant's (the room holds those itself).
+                let in_room = self
+                    .conference_handler
+                    .as_ref()
+                    .is_some_and(|c| c.holds_dialog(request));
+                if in_room
+                    || self.dialog_manager.find_by_request(request).is_some()
                     || self.is_b_leg_reinvite(request)
                 {
                     // Check conference handler first — conference participants

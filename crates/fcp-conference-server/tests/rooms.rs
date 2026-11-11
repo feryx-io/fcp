@@ -403,6 +403,46 @@ async fn two_phones_in_a_room_hear_each_other_and_leave() {
     stack.finish().await;
 }
 
+/// A participant holds and resumes by re-INVITE, in the room. The room
+/// keeps its participants' dialogs itself, so the node took a re-INVITE in
+/// one for a request in no dialog and answered 481 (`DEEP_TESTING.md`
+/// D2c's refusal): hold, adding video and sharing a screen all failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_participant_holds_and_resumes_by_re_invite() {
+    let stack = stack_or_skip!();
+    stack.seed.meeting(ROOM, None, None).await;
+    let alice = stack.phone("alice").await;
+    let bob = stack.phone("bob").await;
+    let alice_call = join(&stack, &alice).await;
+    let bob_call = join(&stack, &bob).await;
+    stack.wait_participants(2).await;
+
+    assert_eq!(
+        alice_call
+            .reinvite("sendonly")
+            .await
+            .expect("the hold is answered"),
+        200,
+        "a re-INVITE in the room's dialog"
+    );
+    assert_eq!(
+        alice_call
+            .reinvite("sendrecv")
+            .await
+            .expect("the resume is answered"),
+        200
+    );
+    // Still in the room, and heard.
+    stack.wait_participants(2).await;
+    alice_call.media().play_tone(440.0, 1500);
+    assert!(bob_call.media().heard(440, SOON).await, "Bob hears Alice");
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    stack.wait_participants(0).await;
+    stack.finish().await;
+}
+
 /// A caller who hangs up the moment they are answered leaves nobody in
 /// the room. The node answers before the participant is a session (the
 /// welcome message plays in between); a BYE then found nothing, was
