@@ -41,7 +41,7 @@ rtp_port_end = 20999
 codecs = ["PCMU", "PCMA", "G722"]
 
 [conference]
-# Audio only in the base image; the GPU overlay adds video.
+# Video in VP8 and H.264 on the CPU; the GPU overlay moves it to a device.
 sample_rate = 8000
 frame_size = 160
 enable_vad = true
