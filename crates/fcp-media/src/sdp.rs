@@ -761,6 +761,9 @@ pub struct VideoOffer {
     pub label: Option<String>,
     /// Which stream the section carries.
     pub stream: VideoStream,
+    /// The peer offers to send on it (`sendrecv` or `sendonly`): for a
+    /// shared screen, that it is sharing or about to.
+    pub sends: bool,
 }
 
 /// The video sections of an offer a conference cares about (RFC 4796):
@@ -796,6 +799,7 @@ fn video_offer_of(
         crypto: !crypto_of_section(m).is_empty(),
         label: forge_sdp::label(m).map(str::to_string),
         stream,
+        sends: matches!(forge_sdp::direction_of(m), "sendrecv" | "sendonly"),
     }
 }
 
