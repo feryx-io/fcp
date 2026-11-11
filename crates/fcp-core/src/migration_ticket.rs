@@ -64,8 +64,9 @@ pub struct MigrationTicket {
     /// The participant's video was on (not disabled by a host).
     #[serde(default = "yes")]
     pub video: bool,
-    /// Came through the WebRTC gateway (admitted by a join token), so the
-    /// new node speaks the gateway's floor `INFO`.
+    /// Told the content floor by `INFO`: came through the WebRTC gateway
+    /// (admitted by a join token) or asked with `Recv-Info: fcp-content`,
+    /// so the new node tells it too.
     #[serde(default)]
     pub token_join: bool,
     /// The draining node's id.

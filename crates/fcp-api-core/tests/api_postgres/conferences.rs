@@ -404,3 +404,163 @@ async fn a_hosts_screen_share_controls_reach_the_conference_server() {
     assert_eq!(seen.lock().unwrap().len(), 2, "nothing more reached it");
     app.finish().await;
 }
+
+/// A host controls their room from their app (`docs/SOFTPHONE_VIDEO.md`
+/// §2.6): the meeting's owner, or whoever shows a host token for that
+/// room; a guest's token, a host token for another room, or none is 403.
+#[tokio::test]
+async fn a_host_controls_their_room_from_their_own_session() {
+    let (url, seen) = mock_conference_server().await;
+    let Some(app) = App::with_conference_server(&url).await else {
+        return;
+    };
+    let app = app.with_join_secret();
+    app.create_user_with_role("olga", "end_user").await;
+    app.create_user_with_role("pete", "end_user").await;
+    let room = new_meeting(&app, app.tenant_a, "8402", json!({ "owner_id": "olga" })).await;
+    let other = new_meeting(&app, app.tenant_a, "8403", json!({ "owner_id": "olga" })).await;
+    let olga = session(&app, "olga").await;
+    let pete = session(&app, "pete").await;
+
+    let base = "/api/v1/me/conferences/live/8402";
+    let controls: Vec<(Method, String, Option<Value>, &str, &str)> = vec![
+        (
+            Method::GET,
+            base.to_string(),
+            None,
+            "GET",
+            "/conferences/8402",
+        ),
+        (
+            Method::PUT,
+            format!("{base}/video/layout"),
+            Some(json!({ "layout": "grid" })),
+            "PUT",
+            "/conferences/8402/video/layout",
+        ),
+        (
+            Method::POST,
+            format!("{base}/video/pin/p1"),
+            None,
+            "POST",
+            "/conferences/8402/video/pin/p1",
+        ),
+        (
+            Method::DELETE,
+            format!("{base}/video/pin"),
+            None,
+            "DELETE",
+            "/conferences/8402/video/pin",
+        ),
+        (
+            Method::POST,
+            format!("{base}/video/spotlight/p1"),
+            None,
+            "POST",
+            "/conferences/8402/video/spotlight/p1",
+        ),
+        (
+            Method::DELETE,
+            format!("{base}/video/spotlight"),
+            None,
+            "DELETE",
+            "/conferences/8402/video/spotlight",
+        ),
+        (
+            Method::POST,
+            format!("{base}/participants/p1/mute"),
+            None,
+            "POST",
+            "/conferences/8402/mute/p1",
+        ),
+        (
+            Method::POST,
+            format!("{base}/participants/p1/unmute"),
+            None,
+            "POST",
+            "/conferences/8402/unmute/p1",
+        ),
+        (
+            Method::POST,
+            format!("{base}/participants/p1/video/off"),
+            None,
+            "POST",
+            "/conferences/8402/participants/p1/video/off",
+        ),
+        (
+            Method::DELETE,
+            format!("{base}/participants/p1"),
+            None,
+            "POST",
+            "/conferences/8402/kick/p1",
+        ),
+        (
+            Method::POST,
+            format!("{base}/video/content/stop"),
+            None,
+            "POST",
+            "/conferences/8402/video/content/stop",
+        ),
+    ];
+    for (method, path, body, up_method, up_path) in &controls {
+        let res = app.send_as(&olga, method.clone(), path, body.clone()).await;
+        assert_eq!(res.status, StatusCode::OK, "{method} {path}: {}", res.text);
+        assert_eq!(res.json["path"], *up_path, "{method} {path}");
+        let last = seen.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(last.method, *up_method, "{method} {path}");
+        assert_eq!(
+            last.tenant.as_deref(),
+            Some(app.tenant_a.to_string().as_str())
+        );
+    }
+    let reached = seen.lock().unwrap().len();
+    assert_eq!(reached, controls.len());
+
+    // Olga's tokens for her rooms, shown by Pete.
+    let mint = |id: String, role: &'static str| {
+        let app = &app;
+        let olga = olga.clone();
+        async move {
+            let res = app
+                .send_as(
+                    &olga,
+                    Method::POST,
+                    &format!("/api/v1/me/conferences/{id}/join-tokens"),
+                    Some(json!({ "role": role })),
+                )
+                .await;
+            assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+            res.json["token"].as_str().unwrap().to_string()
+        }
+    };
+    let host = mint(room.clone(), "host").await;
+    let guest = mint(room.clone(), "guest").await;
+    let elsewhere = mint(other.clone(), "host").await;
+    let mute = format!("{base}/participants/p2/mute");
+    let bearer = format!("Bearer {pete}");
+    for (token, expected) in [
+        (None, StatusCode::FORBIDDEN),
+        (Some(guest.as_str()), StatusCode::FORBIDDEN),
+        (Some(elsewhere.as_str()), StatusCode::FORBIDDEN),
+        (Some("not-a-token"), StatusCode::FORBIDDEN),
+        (Some(host.as_str()), StatusCode::OK),
+    ] {
+        let mut headers = vec![(AUTH_HEADER, bearer.as_str())];
+        if let Some(token) = token {
+            headers.push(("x-fcp-join", token));
+        }
+        let res = app.send(Method::POST, &mute, &headers, None).await;
+        assert_eq!(res.status, expected, "{token:?}: {}", res.text);
+    }
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        reached + 1,
+        "only the host token's reached it"
+    );
+    // A room in no meeting of the tenant is not found.
+    let none = app
+        .send_as(&olga, Method::GET, "/api/v1/me/conferences/live/8999", None)
+        .await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND, "{}", none.text);
+    app.finish().await;
+}

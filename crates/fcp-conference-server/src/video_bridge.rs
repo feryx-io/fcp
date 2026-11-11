@@ -623,7 +623,7 @@ pub struct VideoEventSink {
 
 /// The media type of the SIP `INFO` that carries a [`FloorNotice`] to a
 /// browser's gateway session.
-pub const CONTENT_INFO_TYPE: &str = "application/vnd.fcp.content+json";
+pub use fcp_core::CONTENT_INFO_TYPE;
 
 /// What the room's content floor just did, for the participants that
 /// can hear it (§15.6, 7c). The conference server sends one to every

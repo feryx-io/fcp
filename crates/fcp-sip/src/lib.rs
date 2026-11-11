@@ -18,6 +18,7 @@ pub use fcp_b2bua_core::body;
 pub mod call_control;
 pub mod conference;
 pub mod conference_migration;
+pub mod conference_relay;
 pub mod config;
 pub mod device_lines;
 pub mod device_sync;

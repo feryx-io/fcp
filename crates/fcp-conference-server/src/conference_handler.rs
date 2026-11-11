@@ -148,6 +148,10 @@ pub struct ParticipantSession {
     /// Admitted by a join token (`X-FCP-Join`): a browser through the
     /// WebRTC gateway, which understands the floor `INFO` (§15.6, 7c).
     pub joined_by_token: bool,
+    /// Told the content floor by INFO (`application/vnd.fcp.content+json`):
+    /// joined by a token, or the INVITE said `Recv-Info: fcp-content`, as
+    /// a SIP client in a room does (`docs/SOFTPHONE_VIDEO.md` §2.6).
+    pub floor_notices: bool,
     /// The BFCP ids the answer gave a room system that offered floor
     /// control (§15.6, 7e).
     pub bfcp: Option<BfcpAssignment>,
@@ -1119,7 +1123,7 @@ impl ConferenceCallHandler {
                     .is_some_and(|m| m.state == forge_mixer::ParticipantState::Muted),
                 gain: meta.as_ref().map(|m| m.gain).unwrap_or(1.0),
                 video: video_on,
-                token_join: s.joined_by_token,
+                token_join: s.floor_notices,
                 from_node: self.node_id.clone(),
                 expires_at: MigrationTicket::expiry_from_now(),
                 nonce: MigrationTicket::new_nonce(),
@@ -1479,6 +1483,7 @@ impl ConferenceCallHandler {
                 json["caller_id"] = serde_json::json!(cid);
             }
             json["is_dial_out"] = serde_json::json!(session.is_dial_out);
+            json["floor_notices"] = serde_json::json!(session.floor_notices);
             let silence = session.stats.silence_frames.load(Ordering::Relaxed);
             json["stats"] = serde_json::json!({
                 "packets_received": session.stats.packets_received.load(Ordering::Relaxed),
@@ -2182,9 +2187,30 @@ impl ConferenceCallHandler {
         };
         let mut body = serde_json::to_value(&notice).unwrap_or_default();
         body["mine"] = serde_json::json!(mine);
+        // The info package (RFC 6086) a SIP client asked for, which a
+        // browser's gateway ignores.
+        let request = match fcp_sip::conference_relay::in_dialog_request(
+            &dialog,
+            sip_core::Method::Info,
+            &[
+                (
+                    "Info-Package".to_string(),
+                    fcp_core::CONTENT_INFO_PACKAGE.to_string(),
+                ),
+                ("Content-Type".to_string(), CONTENT_INFO_TYPE.to_string()),
+            ],
+            body.to_string().as_bytes(),
+        ) {
+            Ok(request) => request,
+            Err(e) => {
+                warn!(call_id = %call_id, error = %e, "floor INFO could not be built");
+                return;
+            }
+        };
         match self
             .uac
-            .send_info(&mut dialog, CONTENT_INFO_TYPE, &body.to_string())
+            .inner()
+            .send_in_dialog_non_invite(&mut dialog, request)
             .await
         {
             Ok(resp) if (200..300).contains(&resp.start_line().code()) => {
@@ -3112,6 +3138,7 @@ impl ConferenceCallHandler {
                 video: None,
                 content: None,
                 joined_by_token: false,
+                floor_notices: false,
                 bfcp: None,
                 record: LegRecord::own(
                     format!("conference:{room_number}"),
@@ -5420,6 +5447,7 @@ impl ConferenceCallHandler {
                 video,
                 content,
                 joined_by_token: false,
+                floor_notices: false,
                 bfcp: None,
                 record: LegRecord::own(
                     format!("trunk:{}", leg.peer_node),
@@ -5751,6 +5779,25 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
             None => None,
         };
+
+        // A token is for one room: dialed at another, the call was placed
+        // by that one, and admitting it here would put the caller where
+        // nobody placed them (`docs/SOFTPHONE_VIDEO.md` §2.6).
+        if let (Some(token), Some(dialed)) = (&join, extract_room_number(request)) {
+            if token.room_number != dialed {
+                warn!(%peer, token_room = %token.room_number, %dialed, "Join token for another room");
+                let reject =
+                    UserAgentServer::create_response(request, 403, "Join Token For Another Room");
+                handle.send_final(reject).await;
+                return Ok(());
+            }
+        }
+        // Who is told the floor by INFO: a browser (a token), a SIP client
+        // that asked (`Recv-Info`), or one that was before it moved here.
+        let recv_info: Vec<&str> = request.headers().get_all("Recv-Info").collect();
+        let floor_notices = join.is_some()
+            || fcp_core::recv_info_has(&recv_info, fcp_core::CONTENT_INFO_PACKAGE)
+            || migrate.as_ref().is_some_and(|t| t.token_join);
 
         // 1. Extract room number (the ticket's or the token's, when there is one)
         let room_number = match (&migrate, &join) {
@@ -7057,6 +7104,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     content: pending_content.take(),
                     joined_by_token: join.is_some()
                         || migrate.as_ref().is_some_and(|t| t.token_join),
+                    floor_notices,
                     bfcp: bfcp_assignment.clone(),
                     record: LegRecord::from_request(request, None),
                 },
@@ -7368,6 +7416,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 video,
                 content,
                 joined_by_token: join.is_some(),
+                floor_notices,
                 bfcp: bfcp_assignment.clone(),
                 record: LegRecord::from_request(
                     request,
@@ -8055,9 +8104,15 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             return Ok(());
         }
 
-        // Extract room number from Request-URI
-        let room_number = extract_room_number(request)
-            .ok_or_else(|| anyhow::anyhow!("Cannot extract room number from SUBSCRIBE URI"))?;
+        // The room: inside a call, the call's own (the Request-URI is then
+        // this node's Contact, which names none); outside one, the
+        // Request-URI's.
+        let within_room = self.sessions.get(&call_id).map(|s| s.room_number.clone());
+        let Some(room_number) = within_room.or_else(|| extract_room_number(request)) else {
+            let response = UserAgentServer::create_response(request, 404, "Not Found");
+            handle.send_final(response).await;
+            return Ok(());
+        };
 
         // The participant asking: this call, or the one `Target-Dialog`
         // names, in this room.
@@ -9007,7 +9062,7 @@ impl FloorNotifier for ConferenceCallHandler {
             .map(|ids| {
                 ids.iter()
                     .filter_map(|id| self.sessions.get(id))
-                    .filter(|s| s.joined_by_token)
+                    .filter(|s| s.floor_notices)
                     .map(|s| (s.call_id.clone(), s.participant_id == notice.participant_id))
                     .filter(|(_, mine)| *mine || !only_theirs)
                     .collect()
