@@ -294,6 +294,11 @@ skipped.
   today. Anvil learns it was given, refused or revoked from the INFO the gateway
   already gets (`application/vnd.fcp.content+json`); FCP sends it to a SIP
   endpoint that says it supports it (F2). BFCP is not needed (§7 Q6).
+  Stopping is a re-INVITE turning the section `recvonly`: the room releases
+  the floor at once rather than after `content_idle_secs`, and the section
+  turned sending again is a new share, which gives back the right a host's
+  stop took if the meeting still allows the participant to share (v0.25.547;
+  not for a BFCP endpoint, whose floor is BFCP's).
 - **A host's controls**: layout, pin, spotlight, mute a participant, stop their
   video, remove them, stop a share. They are on new `/me/conferences/live/{room}/…`
   routes, under the app session, for a participant whose join made them a host

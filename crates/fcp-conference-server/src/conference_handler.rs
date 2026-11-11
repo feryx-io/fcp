@@ -145,6 +145,12 @@ pub struct ParticipantSession {
     /// room's content source and content channel), when the caller's
     /// offer carried an `a=content:slides` section (§15.6).
     pub content: Option<VideoLeg>,
+    /// The shared screen's section was last offered sending (`sendrecv`
+    /// or `sendonly`). A presenter's offer that stops sending releases
+    /// the floor; one that starts again after a stop is a new share, and
+    /// gives back the right a host's stop took. Starts `true`: a first
+    /// share needs nothing given back.
+    pub content_sends: bool,
     /// Admitted by a join token (`X-FCP-Join`): a browser through the
     /// WebRTC gateway, which understands the floor `INFO` (§15.6, 7c).
     pub joined_by_token: bool,
@@ -3137,6 +3143,7 @@ impl ConferenceCallHandler {
                 last_refreshed: Instant::now(),
                 video: None,
                 content: None,
+                content_sends: true,
                 joined_by_token: false,
                 floor_notices: false,
                 bfcp: None,
@@ -5446,6 +5453,7 @@ impl ConferenceCallHandler {
                 last_refreshed: Instant::now(),
                 video,
                 content,
+                content_sends: true,
                 joined_by_token: false,
                 floor_notices: false,
                 bfcp: None,
@@ -7102,6 +7110,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     last_refreshed: Instant::now(),
                     video: pending_video.take(),
                     content: pending_content.take(),
+                    content_sends: true,
                     joined_by_token: join.is_some()
                         || migrate.as_ref().is_some_and(|t| t.token_join),
                     floor_notices,
@@ -7415,6 +7424,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 last_refreshed: Instant::now(),
                 video,
                 content,
+                content_sends: true,
                 joined_by_token: join.is_some(),
                 floor_notices,
                 bfcp: bfcp_assignment.clone(),
@@ -7442,7 +7452,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // Look up session — if not found, return Err so caller falls through
         // to the B2BUA. A snapshot: the map is not held across the async
         // work below (a video leg added mid-call needs ports and a socket).
-        let (remote_ip, room_number, tenant_id, has_video, has_content, is_host) = {
+        let (remote_ip, room_number, tenant_id, has_video, has_content, content_sent, is_host) = {
             let session = self
                 .sessions
                 .get(&call_id)
@@ -7453,6 +7463,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 session.tenant_id,
                 session.video.is_some(),
                 session.content.is_some(),
+                session.content_sends,
                 session.is_host,
             )
         };
@@ -7484,6 +7495,18 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 .await
         } else {
             None
+        };
+        // The shared screen offered sending again after the presenter
+        // stopped (§15.6): a new share, which may undo a host's stop if the
+        // meeting still lets this participant share.
+        let content_sends = offered_content.as_ref().is_some_and(|c| c.sends);
+        let share_again = if has_content && starts_sharing(content_sent, content_sends) {
+            match self.lookup_meeting(&key.tenant, &key.room).await {
+                Ok(Some(meeting)) => video_bridge::may_share(&meeting.video_content_share, is_host),
+                _ => false,
+            }
+        } else {
+            false
         };
 
         let mut session = self
@@ -7714,6 +7737,30 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 crypto.first().filter(|_| conf.enable_srtp),
             );
             content_codec = vec![leg.negotiated.codec];
+            // The presenter stopped sending: the floor is free at once,
+            // not after the idle timeout. A new share gets its right back.
+            // BFCP's floor is its own (7e).
+            let room_video = self
+                .bridge
+                .get_room(&key)
+                .ok()
+                .and_then(|r| r.video())
+                .filter(|_| session.bfcp.is_none());
+            if let Some(video) = room_video {
+                match content_change(content_sends, share_again) {
+                    ContentChange::Stopped => {
+                        if video.release_content(&session.participant_id) {
+                            info!(call_id = %call_id, "re-INVITE: the presenter stopped sharing; floor released");
+                        }
+                    }
+                    ContentChange::SharesAgain => {
+                        video.set_participant_content_enabled(&session.participant_id, true);
+                        debug!(call_id = %call_id, "re-INVITE: sharing again");
+                    }
+                    ContentChange::Unchanged => {}
+                }
+            }
+            session.content_sends = content_sends;
         } else if let Some((leg, policy)) = new_content {
             let started = match self.bridge.get_room(&key) {
                 Ok(room) => self.start_video_leg(
@@ -7739,6 +7786,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 content_codec = vec![leg.negotiated.codec];
                 content_srtp_sdp = leg.srtp_sdp.clone();
                 session.content = Some(leg);
+                session.content_sends = content_sends;
             }
         }
 
@@ -9124,9 +9172,51 @@ fn request_with_to_of(
     tagged
 }
 
+/// What a re-INVITE's shared-screen section does to a presenter's floor
+/// (§15.6): sending stopped, sending started again after a stop and
+/// allowed, or nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContentChange {
+    /// The section no longer sends: the floor, if theirs, is released.
+    Stopped,
+    /// A new share after a stop, which the meeting allows: the right to
+    /// share a host's stop took is given back.
+    SharesAgain,
+    Unchanged,
+}
+
+/// The section was offered not sending and now sends: a new share.
+fn starts_sharing(sent: bool, sends: bool) -> bool {
+    sends && !sent
+}
+
+/// `sends`: the section is offered sending now; `share_again`: it starts
+/// sending after a stop ([`starts_sharing`]) and the meeting allows it.
+fn content_change(sends: bool, share_again: bool) -> ContentChange {
+    match (sends, share_again) {
+        (false, _) => ContentChange::Stopped,
+        (true, true) => ContentChange::SharesAgain,
+        (true, false) => ContentChange::Unchanged,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shared_screens_direction_moves_the_floor() {
+        // recvonly or inactive: released, whatever came before.
+        assert_eq!(content_change(false, false), ContentChange::Stopped);
+        // Sending again after a stop, allowed: the right back.
+        assert!(starts_sharing(false, true));
+        assert_eq!(content_change(true, true), ContentChange::SharesAgain);
+        // Still sending (a session refresh): a host's stop stands.
+        assert!(!starts_sharing(true, true));
+        assert_eq!(content_change(true, false), ContentChange::Unchanged);
+        // Not allowed to share again: nothing given back.
+        assert_eq!(content_change(true, false), ContentChange::Unchanged);
+    }
 
     #[test]
     fn test_extract_room_number() {
