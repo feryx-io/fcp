@@ -46,7 +46,12 @@ pub enum PhoneEvent {
     /// A REFER, accepted with 202.
     Refer { call_id: String, refer_to: String },
     /// An INFO with this body, answered 200.
-    Info { call_id: String, body: String },
+    Info {
+        call_id: String,
+        body: String,
+        /// Its `Info-Package` (RFC 6086), when it names one.
+        package: Option<String>,
+    },
     /// A NOTIFY with this body, answered 200.
     Notify {
         call_id: String,
@@ -59,6 +64,16 @@ pub enum PhoneEvent {
         /// The `Subscription-State` header: `active;expires=…`,
         /// `terminated;reason=…`.
         state: Option<String>,
+    },
+    /// A SUBSCRIBE, answered 200 with its own `Expires`.
+    Subscribe {
+        call_id: String,
+        /// The `Event` header.
+        event: String,
+        /// The `Expires` header.
+        expires: Option<u32>,
+        /// The `Accept` header.
+        accept: Option<String>,
     },
 }
 
@@ -74,7 +89,8 @@ impl PhoneEvent {
             | PhoneEvent::ReInvite { call_id, .. }
             | PhoneEvent::Refer { call_id, .. }
             | PhoneEvent::Info { call_id, .. }
-            | PhoneEvent::Notify { call_id, .. } => call_id,
+            | PhoneEvent::Notify { call_id, .. }
+            | PhoneEvent::Subscribe { call_id, .. } => call_id,
         }
     }
 }
@@ -1526,6 +1542,75 @@ impl Call {
         ))
     }
 
+    /// SUBSCRIBE to `event` inside this call (RFC 6665 §4.5.2), as a phone
+    /// in a room asks for its roster; the status. NOTIFYs come in the
+    /// call's dialog, as [`PhoneEvent::Notify`] with this call's id.
+    /// `expires` 0 ends the subscription.
+    pub async fn subscribe_in_call(&self, event: &str, expires: u32) -> Result<u16> {
+        self.send_in_call(
+            sip_core::Method::Subscribe,
+            &[
+                ("Event", event),
+                ("Expires", &expires.to_string()),
+                ("Accept", "application/conference-info+xml"),
+            ],
+            b"",
+        )
+        .await
+    }
+
+    /// A request inside this call with `headers` and `body`, as a server
+    /// sends a NOTIFY or an INFO in a dialog it holds; the status.
+    pub async fn send_in_call(
+        &self,
+        method: sip_core::Method,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> Result<u16> {
+        let mut dialog = self.dialog().await?;
+        let id = dialog.id().clone();
+        let mut h = sip_core::Headers::new();
+        let mut push = |name: &str, value: String| -> Result<()> {
+            h.push(name, value).map_err(|e| anyhow!("{name}: {e}"))
+        };
+        push(
+            "Via",
+            format!(
+                "SIP/2.0/UDP placeholder;branch=z9hG4bK{}",
+                uuid::Uuid::new_v4().simple()
+            ),
+        )?;
+        push("Max-Forwards", "70".into())?;
+        push(
+            "From",
+            format!("<{}>;tag={}", dialog.local_uri().as_str(), id.local_tag()),
+        )?;
+        push(
+            "To",
+            format!("<{}>;tag={}", dialog.remote_uri().as_str(), id.remote_tag()),
+        )?;
+        push("Call-ID", id.call_id().to_string())?;
+        push("CSeq", format!("1 {}", method.as_str()))?;
+        for (name, value) in headers {
+            push(name, value.to_string())?;
+        }
+        push("Content-Length", body.len().to_string())?;
+        let request = Request::new(
+            sip_core::RequestLine::new(method.clone(), dialog.remote_target().clone()),
+            h,
+            bytes::Bytes::copy_from_slice(body),
+        )
+        .map_err(|e| anyhow!("{}: {e}", method.as_str()))?;
+        let resp = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.uac().send_in_dialog_non_invite(&mut dialog, request),
+        )
+        .await
+        .with_context(|| format!("{} timed out", method.as_str()))??;
+        *self.state.dialog.write().await = Some(dialog);
+        Ok(resp.start_line().code())
+    }
+
     /// This call's dialog as a `Replaces` value (RFC 3891): what another
     /// INVITE, or a Refer-To, names it by.
     pub async fn replaces(&self) -> Result<String> {
@@ -1720,7 +1805,15 @@ impl Handler {
 impl UasRequestHandler for Handler {
     fn supported_methods(&self) -> &'static [&'static str] {
         &[
-            "INVITE", "ACK", "BYE", "CANCEL", "OPTIONS", "REFER", "INFO", "NOTIFY",
+            "INVITE",
+            "ACK",
+            "BYE",
+            "CANCEL",
+            "OPTIONS",
+            "REFER",
+            "INFO",
+            "NOTIFY",
+            "SUBSCRIBE",
         ]
     }
 
@@ -1957,9 +2050,11 @@ impl UasRequestHandler for Handler {
         let call_id = sip_parse::header(request.headers(), "Call-ID")
             .map(|v| v.to_string())
             .unwrap_or_default();
+        let package = sip_parse::header(request.headers(), "Info-Package").map(|v| v.to_string());
         self.0.emit(PhoneEvent::Info {
             call_id,
             body: String::from_utf8_lossy(request.body()).to_string(),
+            package,
         });
         Ok(())
     }
@@ -2028,6 +2123,32 @@ impl UasRequestHandler for Handler {
                 .push(seen);
         }
         handle.send_final(response).await;
+        Ok(())
+    }
+
+    /// A SUBSCRIBE, in a call or out of one: accepted for as long as it
+    /// asked, so a test standing in for a server sees what reached it.
+    async fn on_subscribe(
+        &self,
+        request: &Request,
+        handle: ServerTransactionHandle,
+    ) -> anyhow::Result<()> {
+        let header = |name: &str| sip_parse::header(request.headers(), name).map(|v| v.to_string());
+        let expires = header("Expires").and_then(|v| v.trim().parse::<u32>().ok());
+        let mut response = UserAgentServer::create_response(request, 200, "OK");
+        if let Some(expires) = expires {
+            let _ = response.headers_mut().push(
+                smol_str::SmolStr::new("Expires"),
+                smol_str::SmolStr::new(expires.to_string()),
+            );
+        }
+        handle.send_final(response).await;
+        self.0.emit(PhoneEvent::Subscribe {
+            call_id: header("Call-ID").unwrap_or_default(),
+            event: header("Event").unwrap_or_default(),
+            expires,
+            accept: header("Accept"),
+        });
         Ok(())
     }
 

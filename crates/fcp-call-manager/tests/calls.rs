@@ -3634,3 +3634,186 @@ async fn video_reaches_a_caller_behind_nat() {
     alice_call.hangup().await.unwrap();
     stack.finish().await;
 }
+
+/// A phone in a room through the call manager (`docs/SOFTPHONE_VIDEO.md`
+/// §2.6, F2b), against a stand-in conference node: the INVITE takes the
+/// join link's token and `Recv-Info: fcp-content` to the room; a roster
+/// SUBSCRIBE in the phone's call reaches the room in the room's call, and
+/// the room's NOTIFYs (larger than the general relay's limit) and floor
+/// INFO come back in the phone's, with their state, type and package. A
+/// token for another room is not passed on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rooms_roster_and_floor_cross_the_call_manager_in_the_call() {
+    let room_port = free_port();
+    let extra =
+        format!("[b2bua]\nconference_server_uri = \"sip:conference@127.0.0.1:{room_port}\"\n");
+    let Some(stack) = Stack::start_with(&extra, 40).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack.seed.meeting("8000", None, None).await;
+    let room = Phone::bound_to(
+        &format!("127.0.0.1:{room_port}"),
+        "conference",
+        "x",
+        REALM,
+        stack.sip,
+    )
+    .await
+    .expect("the stand-in room binds");
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+
+    let token = |room: &str| {
+        fcp_core::JoinToken::new(
+            stack.seed.tenant_id,
+            room,
+            "Alice",
+            fcp_core::JoinRole::Host,
+            Duration::from_secs(600),
+        )
+        .mint(b"join-s3cret")
+    };
+    let mine = token("8000");
+    let alice_call = alice_phone
+        .call_with_headers(
+            "8000",
+            &[("X-FCP-Join", &mine), ("Recv-Info", "fcp-content, other")],
+        )
+        .await
+        .unwrap();
+    let Some(incoming) = room.incoming(SOON).await else {
+        stack
+            .fail("the call manager did not ring the room", &alice_phone)
+            .await;
+    };
+    assert_eq!(
+        incoming.header("X-FCP-Join").as_deref(),
+        Some(mine.as_str())
+    );
+    assert_eq!(incoming.header("Recv-Info").as_deref(), Some("fcp-content"));
+    let room_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+
+    // The roster asked for in Alice's call reaches the room in its own.
+    assert_eq!(
+        alice_call
+            .subscribe_in_call("conference", 600)
+            .await
+            .unwrap(),
+        200
+    );
+    let Some(PhoneEvent::Subscribe {
+        call_id,
+        event,
+        expires,
+        accept,
+    }) = room
+        .expect(SOON, |e| matches!(e, PhoneEvent::Subscribe { .. }))
+        .await
+    else {
+        panic!("the room got no SUBSCRIBE");
+    };
+    assert_eq!(call_id, room_call.call_id(), "in the room's call");
+    assert_eq!(event, "conference");
+    assert_eq!(expires, Some(600));
+    assert_eq!(accept.as_deref(), Some("application/conference-info+xml"));
+
+    // A full roster, larger than a phone's NOTIFY may be.
+    let users: String = (0..60)
+        .map(|n| format!("<user entity=\"sip:p{n}@room\" state=\"full\"><display-text>Person {n}</display-text></user>\n"))
+        .collect();
+    let full = format!(
+        "<conference-info xmlns=\"urn:ietf:params:xml:ns:conference-info\" state=\"full\" version=\"1\"><users>\n{users}</users></conference-info>\n"
+    );
+    assert!(full.len() > 4096);
+    let notify = |state: &'static str, body: String| {
+        let room_call = &room_call;
+        async move {
+            room_call
+                .send_in_call(
+                    sip_core::Method::Notify,
+                    &[
+                        ("Event", "conference"),
+                        ("Subscription-State", state),
+                        ("Content-Type", "application/conference-info+xml"),
+                    ],
+                    body.as_bytes(),
+                )
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(notify("active;expires=600", full.clone()).await, 200);
+    let Some(PhoneEvent::Notify { state, body, .. }) = alice_phone
+        .expect(
+            SOON,
+            |e| matches!(e, PhoneEvent::Notify { call_id, .. } if call_id == alice_call.call_id()),
+        )
+        .await
+    else {
+        panic!("Alice got no roster");
+    };
+    assert_eq!(state.as_deref(), Some("active;expires=600"));
+    assert_eq!(body, full);
+
+    // The floor changes hands: Alice is told, with the package.
+    let floor = r#"{"floor":"granted","participant_id":"p7","presenter":"Person 7","reason":null,"mine":false}"#;
+    assert_eq!(
+        room_call
+            .send_in_call(
+                sip_core::Method::Info,
+                &[
+                    ("Info-Package", "fcp-content"),
+                    ("Content-Type", "application/vnd.fcp.content+json"),
+                ],
+                floor.as_bytes(),
+            )
+            .await
+            .unwrap(),
+        200
+    );
+    let Some(PhoneEvent::Info { body, package, .. }) = alice_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::Info { .. }))
+        .await
+    else {
+        panic!("Alice was not told the floor");
+    };
+    assert_eq!(body, floor);
+    assert_eq!(package.as_deref(), Some("fcp-content"));
+
+    // The room ends the subscription: Alice hears that it ended.
+    assert_eq!(
+        notify("terminated;reason=noresource", String::new()).await,
+        200
+    );
+    let Some(PhoneEvent::Notify { state, .. }) = alice_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::Notify { .. }))
+        .await
+    else {
+        panic!("Alice was not told the roster ended");
+    };
+    assert_eq!(state.as_deref(), Some("terminated;reason=noresource"));
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(room_call.ended(SOON).await);
+
+    // A token for another room is the caller's, not the room's.
+    let elsewhere = token("8001");
+    let again = alice_phone
+        .call_with_headers("8000", &[("X-FCP-Join", &elsewhere)])
+        .await
+        .unwrap();
+    let Some(incoming) = room.incoming(SOON).await else {
+        stack
+            .fail("the room was not rung again", &alice_phone)
+            .await;
+    };
+    assert_eq!(incoming.header("X-FCP-Join"), None);
+    assert_eq!(incoming.header("Recv-Info"), None);
+    let room_call = incoming.answer().await.unwrap();
+    again.answered(SOON).await.unwrap();
+    assert_eq!(again.hangup().await.unwrap(), 200);
+    assert!(room_call.ended(SOON).await);
+    stack.finish().await;
+}

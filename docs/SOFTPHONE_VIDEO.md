@@ -447,10 +447,44 @@ F2 is split in two PRs: F2a, the roster, and F2b, the rest.
     subscription ends with `terminated` when it lapses, when its participant leaves,
     or when the room ends (`noresource`).
   - Callers on a peer node are not listed yet; each node lists its own.
-- `X-FCP-Join` carried through the B2BUA to the conference node.
-- The content INFO to SIP endpoints that support it.
-- `/me/conferences/live/{room}/…` for hosts.
-- `rooms.rs` tests through the call manager.
+- The rest, **F2b, done (v0.25.544, siphon-rs v2026.11.10):**
+  - **Joining by link through the call manager.** A phone's INVITE to a room
+    carries `X-FCP-Join` on to the conference node when the token is for the
+    room the call was routed to, in the caller's tenant; a token for another
+    room or tenant is dropped and the caller joins as they would without
+    one. The conference node also refuses (403) a token whose room is not
+    the dialed one.
+  - **The floor's notices to a SIP client.** A participant whose INVITE says
+    `Recv-Info: fcp-content` (RFC 6086) is sent the floor INFO a browser
+    gets: `application/vnd.fcp.content+json`, now with
+    `Info-Package: fcp-content`. The call manager carries `Recv-Info` to the
+    room. Which participants are told is `floor_notices` on a participant's
+    detail, and moves with a participant migrated off a draining node.
+  - **The roster in the call, through the call manager.** A `conference`
+    SUBSCRIBE in the phone's call is sent in the room's call (with `Event`,
+    `Expires` and `Accept`), and the room's NOTIFYs and floor INFOs come back
+    in the phone's (with `Event`, `Subscription-State`, `Content-Type` and
+    `Info-Package`, up to 1 MiB), down the phone's TLS connection when it has
+    one (siphon-rs `send_in_dialog_non_invite_via_flow`). The call manager's
+    general relay is not used for these: it opened a new subscription to the
+    far leg's contact, called every NOTIFY `active`, and took only the INFO
+    types it was configured for. The conference node now takes the room of
+    a SUBSCRIBE inside a call from the call, since its Request-URI is then
+    the node's Contact. A SUBSCRIBE from outside the call naming it in
+    `Target-Dialog` works at the conference node directly, not through the
+    call manager.
+  - **A host's controls from the app**: `/me/conferences/live/{room}` (the
+    room as it is), `…/video/layout`, `…/video/pin[/{pid}]`,
+    `…/video/spotlight[/{pid}]`, `…/participants/{pid}/mute`, `…/unmute`,
+    `…/video/{on|off}`, `DELETE …/participants/{pid}` (remove) and
+    `…/video/content/stop`, under the user's own session. The user owns the
+    meeting, or shows a host join token for that room in `X-FCP-Join` while
+    it is valid; anyone else gets 403. They are forwarded to the conference
+    server as the administrator's live controls are.
+  - Tests: `rooms.rs` joins by link through the call manager and follows the
+    roster in the call; `calls.rs` checks every header and body that crosses
+    the call manager against a stand-in room; the API suite checks each host
+    route and who may use it.
 
 ### A4: Anvil in a room (anvil)
 

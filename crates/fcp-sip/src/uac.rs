@@ -277,6 +277,20 @@ impl SipUserAgentClient {
             .await
     }
 
+    /// Send a request built for `dialog` in it down an RFC 5626 flow (a
+    /// phone registered over TLS), as [`Self::bye_via_flow`] sends a BYE.
+    pub async fn send_in_dialog_via_flow(
+        &self,
+        dialog: &mut Dialog,
+        request: sip_core::Request,
+        flow_stream: tokio::sync::mpsc::Sender<bytes::Bytes>,
+        peer_addr: std::net::SocketAddr,
+    ) -> Result<sip_core::Response> {
+        self.inner
+            .send_in_dialog_non_invite_via_flow(dialog, request, Flow::new(flow_stream, peer_addr))
+            .await
+    }
+
     /// Send a BYE that says why the platform, rather than a party, ended
     /// the call: an RFC 3326 `Reason`
     /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).

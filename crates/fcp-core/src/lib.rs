@@ -135,6 +135,24 @@ pub const CALLER_SITE_HEADER: &str = "X-FCP-Caller-Site";
 /// call reached it from the edge (`docs/E911_BLOCK_2.md` §6.2). Believed
 /// only from `[e911] trusted_edges`, and never forwarded further.
 pub const CLIENT_ADDRESS_HEADER: &str = "X-FCP-Client-Address";
+/// The info package (RFC 6086) a conference room's content floor is told
+/// in: a participant's INVITE that says `Recv-Info: fcp-content` is sent an
+/// INFO of [`CONTENT_INFO_TYPE`] each time the floor changes hands
+/// (`docs/SOFTPHONE_VIDEO.md` §2.6), as a browser through the gateway is.
+pub const CONTENT_INFO_PACKAGE: &str = "fcp-content";
+/// The body of a [`CONTENT_INFO_PACKAGE`] INFO: JSON naming what the floor
+/// did, whom it concerns and the presenter.
+pub const CONTENT_INFO_TYPE: &str = "application/vnd.fcp.content+json";
+
+/// Whether an INVITE's `Recv-Info` headers name `package` (RFC 6086 §5.2.2:
+/// a comma-separated list, the header repeatable).
+pub fn recv_info_has(headers: &[&str], package: &str) -> bool {
+    headers
+        .iter()
+        .flat_map(|h| h.split(','))
+        .any(|p| p.trim().eq_ignore_ascii_case(package))
+}
+
 pub use crate::class_of_service::{
     CallerIdPolicy, ClassOfService, ClassOfServiceStore, DestinationClass, DestinationOverride,
 };

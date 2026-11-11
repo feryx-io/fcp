@@ -474,6 +474,17 @@ use utoipa::{Modify, OpenApi};
         crate::v1::conferences_live::stop_content,
         crate::v1::conferences_live::set_content_layout,
         crate::v1::conferences_live::dial_out,
+        crate::v1::me_conferences_live::room,
+        crate::v1::me_conferences_live::set_layout,
+        crate::v1::me_conferences_live::pin,
+        crate::v1::me_conferences_live::unpin,
+        crate::v1::me_conferences_live::spotlight,
+        crate::v1::me_conferences_live::unspotlight,
+        crate::v1::me_conferences_live::remove,
+        crate::v1::me_conferences_live::mute,
+        crate::v1::me_conferences_live::unmute,
+        crate::v1::me_conferences_live::participant_video,
+        crate::v1::me_conferences_live::stop_content,
     )
 )]
 pub struct ApiDoc;

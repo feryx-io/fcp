@@ -50,6 +50,12 @@ impl Stack {
 
     /// As [`Stack::start_trusting`], with `pairs` RTP port pairs.
     async fn start_with(edges: &str, pairs: u16) -> Option<Self> {
+        Self::start_conference(edges, pairs, "").await
+    }
+
+    /// As [`Stack::start_with`], with `conference` added to the
+    /// `[conference]` section.
+    async fn start_conference(edges: &str, pairs: u16, conference: &str) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -82,6 +88,7 @@ rtp_port_end = {rtp_end}
 recordings_dir = "{dir}/recordings"
 announcements_dir = "{dir}/announcements"
 pin_timeout_secs = 5
+{conference}
 
 [logging]
 level = "info"
@@ -705,6 +712,134 @@ async fn the_roster_is_told_whole_then_by_what_changes_and_only_to_a_participant
     assert!(state.starts_with("terminated"), "{state}");
 
     assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    stack.finish().await;
+}
+
+/// A phone through the call manager (`docs/SOFTPHONE_VIDEO.md` §2.6, F2b)
+/// joins by a host link, without a PIN, and asks for the floor's notices;
+/// it follows the roster in its own call, the call manager carrying the
+/// SUBSCRIBE into the room's call and the NOTIFYs back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phone_through_the_call_manager_joins_by_link_and_follows_the_roster() {
+    let Some(stack) = Stack::start_conference(
+        r#"trusted_edges = ["127.0.0.1"]"#,
+        60,
+        "join_secret = \"join-s3cret\"",
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack.seed.meeting(ROOM, None, None).await;
+    let cm = stack.start_call_manager().await;
+    let alice_user = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.phone("bob").await;
+    let bob_call = join(&stack, &bob).await;
+    let alice = Phone::new(&alice_user.username, &alice_user.password, REALM, cm)
+        .await
+        .unwrap();
+    assert_eq!(alice.register().await.unwrap(), 200);
+
+    let token = fcp_core::JoinToken::new(
+        stack.seed.tenant_id,
+        ROOM,
+        "Alice Host",
+        fcp_core::JoinRole::Host,
+        Duration::from_secs(600),
+    )
+    .mint(b"join-s3cret");
+    let alice_call = alice
+        .call_with_headers(
+            ROOM,
+            &[("X-FCP-Join", &token), ("Recv-Info", "fcp-content")],
+        )
+        .await
+        .unwrap();
+    if let Err(e) = alice_call.answered(Duration::from_secs(10)).await {
+        stack
+            .fail(&format!("Alice's link did not admit her: {e}"), &alice)
+            .await;
+    }
+    stack.wait_participants(2).await;
+    let alice_id = stack.participant_named("Alice Host").await;
+    let bob_id = stack.participant_named("bob").await;
+    let seen = stack.participant(&alice_id).await;
+    assert_eq!(seen["is_host"], true, "the link's role: {seen}");
+    assert_eq!(seen["floor_notices"], true, "{seen}");
+    assert_eq!(stack.participant(&bob_id).await["floor_notices"], false);
+
+    // The roster, in Alice's call.
+    assert_eq!(
+        alice_call
+            .subscribe_in_call("conference", 600)
+            .await
+            .unwrap(),
+        200
+    );
+    let (state, first) = roster(&alice, alice_call.call_id()).await;
+    assert!(state.starts_with("active;expires="), "{state}");
+    assert!(first.contains("state=\"full\" version=\"1\""), "{first}");
+    assert!(first.contains("<user-count>2</user-count>"), "{first}");
+    assert!(
+        first.contains("<display-text>Alice Host</display-text>"),
+        "{first}"
+    );
+    assert!(
+        first.contains("<roles><entry>host</entry></roles>"),
+        "{first}"
+    );
+
+    // Bob mutes himself: version 2 tells of Bob alone.
+    bob_call.media().send_dtmf('*');
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    bob_call.media().send_dtmf('6');
+    let (_, muted) = roster(&alice, alice_call.call_id()).await;
+    assert!(muted.contains("state=\"partial\" version=\"2\""), "{muted}");
+    assert!(muted.contains(&format!("sip:{bob_id}@")), "{muted}");
+    assert!(
+        muted.contains("<type>audio</type><status>recvonly</status>"),
+        "{muted}"
+    );
+
+    // Alice ends it.
+    assert_eq!(
+        alice_call.subscribe_in_call("conference", 0).await.unwrap(),
+        200
+    );
+    let (state, _) = roster(&alice, alice_call.call_id()).await;
+    assert!(state.starts_with("terminated"), "{state}");
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    stack.wait_participants(0).await;
+    stack.finish().await;
+}
+
+/// A join token is for its own room: dialed at another, it is refused
+/// rather than admitting the caller somewhere nobody placed them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_join_token_dialed_at_another_room_is_refused() {
+    let Some(stack) = Stack::start_conference("", 60, "join_secret = \"join-s3cret\"").await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack.seed.meeting(ROOM, None, None).await;
+    stack.seed.meeting("8001", None, None).await;
+    let token = fcp_core::JoinToken::new(
+        stack.seed.tenant_id,
+        "8001",
+        "Mallory",
+        fcp_core::JoinRole::Host,
+        Duration::from_secs(600),
+    )
+    .mint(b"join-s3cret");
+    let mallory = stack.phone("mallory").await;
+    let call = mallory
+        .call_with_headers(ROOM, &[("X-FCP-Join", &token)])
+        .await
+        .unwrap();
+    assert_eq!(call.failed(SOON).await, Some(403));
     stack.finish().await;
 }
 

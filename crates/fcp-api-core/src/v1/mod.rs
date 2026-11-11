@@ -33,6 +33,7 @@ pub mod join_tokens;
 pub mod lcr_routes;
 pub mod line_bindings;
 pub mod locations;
+pub mod me_conferences_live;
 pub mod me_contacts;
 pub mod me_data;
 pub mod me_events;
@@ -297,6 +298,48 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/me/conferences/:id/dial-out",
             post(self_service::dial_out_my_conference),
+        )
+        // A host's controls of their room (`docs/SOFTPHONE_VIDEO.md` §2.6)
+        .route("/me/conferences/live/:room", get(me_conferences_live::room))
+        .route(
+            "/me/conferences/live/:room/video/layout",
+            put(me_conferences_live::set_layout),
+        )
+        .route(
+            "/me/conferences/live/:room/video/pin/:pid",
+            post(me_conferences_live::pin),
+        )
+        .route(
+            "/me/conferences/live/:room/video/pin",
+            delete(me_conferences_live::unpin),
+        )
+        .route(
+            "/me/conferences/live/:room/video/spotlight/:pid",
+            post(me_conferences_live::spotlight),
+        )
+        .route(
+            "/me/conferences/live/:room/video/spotlight",
+            delete(me_conferences_live::unspotlight),
+        )
+        .route(
+            "/me/conferences/live/:room/participants/:pid",
+            delete(me_conferences_live::remove),
+        )
+        .route(
+            "/me/conferences/live/:room/participants/:pid/mute",
+            post(me_conferences_live::mute),
+        )
+        .route(
+            "/me/conferences/live/:room/participants/:pid/unmute",
+            post(me_conferences_live::unmute),
+        )
+        .route(
+            "/me/conferences/live/:room/participants/:pid/video/:state",
+            post(me_conferences_live::participant_video),
+        )
+        .route(
+            "/me/conferences/live/:room/video/content/stop",
+            post(me_conferences_live::stop_content),
         )
         .route(
             "/me/conferences/:id/join-tokens",

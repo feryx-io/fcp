@@ -2175,7 +2175,7 @@ pub struct UpdateMyConferenceRequest {
 }
 
 /// Resolve the tenant ID from JWT claims, falling back to the default tenant.
-fn resolve_tenant_from_claims(
+pub(crate) fn resolve_tenant_from_claims(
     claims: &crate::v1::auth_session::Claims,
     state: &ApiState,
 ) -> fcp_core::TenantId {

@@ -54,7 +54,7 @@ fn valid_segment(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'@' | b'+'))
 }
 
-fn check_segment(id: &str, what: &str) -> Result<(), ApiError> {
+pub(crate) fn check_segment(id: &str, what: &str) -> Result<(), ApiError> {
     if valid_segment(id) {
         Ok(())
     } else {
@@ -63,7 +63,7 @@ fn check_segment(id: &str, what: &str) -> Result<(), ApiError> {
 }
 
 /// The meeting behind a room number in the caller's tenant, or 404.
-async fn scoped_meeting(
+pub(crate) async fn scoped_meeting(
     state: &ApiState,
     tenant: &TenantId,
     room: &str,

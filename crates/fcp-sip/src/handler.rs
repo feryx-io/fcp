@@ -2952,6 +2952,11 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
             }
             Method::Info => {
+                // A room's floor notice, to the phone in it.
+                if let Some(response) = self.relay_conference_request(request).await {
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
                 // Check conference handler first
                 if let Some(ref conf) = self.conference_handler {
                     if let Ok(resp) = conf.handle_info(request) {
@@ -2974,6 +2979,11 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
             }
             Method::Subscribe => {
+                // A phone in a room asking for its roster, in its call.
+                if let Some(response) = self.relay_conference_request(request).await {
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
                 // Message waiting (RFC 3842), in or out of dialog.
                 if let Some(subs) = &self.mwi_subscriptions {
                     if crate::mwi_subscriptions::MwiSubscriptions::handles_event(request) {
@@ -3043,6 +3053,11 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
             }
             Method::Notify => {
+                // A room's roster, to the phone that asked for it.
+                if let Some(response) = self.relay_conference_request(request).await {
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
                 // A conference node's own sessions first: the outcome of a
                 // REFER it sent (phase 5 migration).
                 if let Some(ref conf) = self.conference_handler {
@@ -7731,6 +7746,12 @@ impl SipMessageHandler {
                         SmolStr::new(fcp_core::CALLER_USER_HEADER),
                         SmolStr::new(caller),
                     );
+                }
+                // A join link's token, and the floor notices the phone
+                // takes, go on to the room (`docs/SOFTPHONE_VIDEO.md`
+                // §2.6).
+                for (name, value) in crate::conference_relay::join_headers(request, &call) {
+                    let _ = headers.push(SmolStr::new(name), SmolStr::new(value));
                 }
                 Some(headers)
             }
@@ -13261,6 +13282,109 @@ impl SipMessageHandler {
             .insert(sub.id().clone(), Instant::now());
         let _ = self.subscription_manager.insert(sub.clone());
         let _ = self.subscription_index.insert(key, sub.id().clone());
+    }
+
+    /// A conference call's roster SUBSCRIBE (from the phone), roster NOTIFY
+    /// or floor INFO (from the room), sent on in the other leg's dialog
+    /// ([`crate::conference_relay`]); `None` when `request` is not one.
+    async fn relay_conference_request(
+        &self,
+        request: &sip_core::Request,
+    ) -> Option<sip_core::Response> {
+        use crate::conference_relay as relay;
+        let wanted = match request.method() {
+            Method::Subscribe | Method::Notify => relay::is_roster(request),
+            Method::Info => relay::is_floor_info(request),
+            _ => false,
+        };
+        if !wanted {
+            return None;
+        }
+        let (call, is_a_leg) = self.lookup_call_for_in_dialog(request).ok()?;
+        call.conference_room.as_ref()?;
+        // The phone subscribes; the room notifies and tells the floor.
+        if (request.method() == &Method::Subscribe) != is_a_leg {
+            return None;
+        }
+        Some(self.relay_conference(request, &call, is_a_leg).await)
+    }
+
+    async fn relay_conference(
+        &self,
+        request: &sip_core::Request,
+        call: &fcp_b2bua_core::Call,
+        is_a_leg: bool,
+    ) -> sip_core::Response {
+        use crate::conference_relay as relay;
+        if request.body().len() > relay::MAX_ROSTER_BYTES {
+            return self.create_simple_response(request, 413, "Request Entity Too Large");
+        }
+        let Some(uac) = self.uac.as_ref() else {
+            return self.create_simple_response(request, 500, "No UAC Configured");
+        };
+        let Ok(target) = self.get_opposite_dialog(call, is_a_leg) else {
+            return self.create_simple_response(request, 481, "Call/Transaction Does Not Exist");
+        };
+        let mut target = target.clone();
+        let _guard = self.acquire_mid_dialog_lock(target.id()).await;
+        let names = match request.method() {
+            Method::Subscribe => relay::SUBSCRIBE_HEADERS,
+            Method::Notify => relay::NOTIFY_HEADERS,
+            _ => relay::INFO_HEADERS,
+        };
+        let headers = relay::carried(request, names);
+        let out = match relay::in_dialog_request(
+            &target,
+            request.method().clone(),
+            &headers,
+            request.body(),
+        ) {
+            Ok(out) => out,
+            Err(e) => {
+                warn!(call_id = %call.id, error = %e, "A conference request could not be built");
+                return self.create_simple_response(request, 500, "Server Internal Error");
+            }
+        };
+        // The far leg reached down a flow (a phone registered over TLS) is
+        // sent to down it, as a re-INVITE is.
+        let flow = if is_a_leg {
+            call.b_leg.as_ref().and_then(|b| b.flow_token.clone())
+        } else {
+            call.a_leg.flow_token.clone()
+        }
+        .and_then(|token| self.flow_registry.lookup(&token));
+        let sent = match flow {
+            Some(flow) => {
+                uac.send_in_dialog_via_flow(&mut target, out, flow.stream, flow.peer_addr)
+                    .await
+            }
+            None => {
+                uac.inner()
+                    .send_in_dialog_non_invite(&mut target, out)
+                    .await
+            }
+        };
+        let peer = match sent {
+            Ok(peer) => peer,
+            Err(e) => {
+                debug!(
+                    call_id = %call.id,
+                    method = %request.method().as_str(),
+                    error = %e,
+                    "A conference request went unanswered"
+                );
+                return self.create_simple_response(request, 408, "Request Timeout");
+            }
+        };
+        self.persist_updated_dialog(&call.id, !is_a_leg, target);
+        let code = peer.start_line().code();
+        let mut response = self.create_simple_response(request, code, peer.start_line().reason());
+        if let Some(expires) = peer.headers().get_smol("Expires") {
+            let _ = response
+                .headers_mut()
+                .push(SmolStr::new("Expires"), expires.clone());
+        }
+        response
     }
 
     /// Remember that a call's B-leg is a conference node hosting `room`.
