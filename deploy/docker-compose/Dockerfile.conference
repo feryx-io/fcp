@@ -1,10 +1,20 @@
 # Multi-stage build for fcp-conference-server
-FROM rust:1.98 as builder
+#
+# Rooms carry video in VP8 (the system libvpx) and H.264 (OpenH264, built
+# from source): the codecs a browser through the gateway and a softphone
+# send (docs/SOFTPHONE_VIDEO.md §2.6). The builder is trixie, as the
+# runtime is, so the libvpx linked is the one installed.
+FROM rust:1.98-trixie AS builder
 
-# Install build dependencies
+# Install build dependencies (clang for libvpx's bindings, nasm for
+# OpenH264's assembly)
 RUN apt-get update && apt-get install -y \
     cmake \
     pkg-config \
+    clang \
+    libclang-dev \
+    nasm \
+    libvpx-dev \
     libssl-dev \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -17,7 +27,7 @@ COPY crates ./crates
 COPY external ./external
 
 # Build fcp-conference in release mode
-RUN cargo build --release -p fcp-conference-server
+RUN cargo build --release -p fcp-conference-server --features video-vpx,video-openh264
 
 # Runtime stage
 FROM debian:trixie-slim
@@ -26,6 +36,7 @@ FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
+    libvpx9 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
