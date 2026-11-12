@@ -2840,8 +2840,15 @@ impl SipMessageHandler {
         self.serving.get_or_init(|| self.clone());
         match request.method() {
             Method::Invite => {
-                // If this is an in-dialog re-INVITE, handle separately
-                if self.dialog_manager.find_by_request(request).is_some()
+                // If this is an in-dialog re-INVITE, handle separately: a
+                // dialog of the node's, a B2BUA leg's, or a room
+                // participant's (the room holds those itself).
+                let in_room = self
+                    .conference_handler
+                    .as_ref()
+                    .is_some_and(|c| c.holds_dialog(request));
+                if in_room
+                    || self.dialog_manager.find_by_request(request).is_some()
                     || self.is_b_leg_reinvite(request)
                 {
                     // Check conference handler first — conference participants
@@ -10691,6 +10698,13 @@ impl SipMessageHandler {
                                 )
                             }
                         };
+
+                        // The far leg may be on another codec than the
+                        // sender (the node transcodes between them): it is
+                        // offered G.711 too, as the first INVITE offered it
+                        // (`docs/DEEP_TESTING.md` D2d), or a re-INVITE in
+                        // the sender's codec alone is refused 488 there.
+                        let rewritten_sdp = with_transcodable_g711(&rewritten_sdp);
 
                         info!(
                             call_id = %call.id,
@@ -21557,6 +21571,25 @@ impl ConferenceMigration {
     }
 }
 
+/// An anchored offer to the other leg, G.711 added when the sender's first
+/// audio codec is one the node transcodes: that leg may have agreed on
+/// G.711 while the sender is on Opus, and an offer of the sender's codec
+/// alone would leave it nothing to take.
+fn with_transcodable_g711(sdp: &str) -> String {
+    let transcodable = fcp_media::sdp::parse_sdp_codecs(sdp)
+        .first()
+        .is_some_and(|c| {
+            ["PCMU", "PCMA", "opus", "L16"]
+                .iter()
+                .any(|t| c.encoding_name.eq_ignore_ascii_case(t))
+        });
+    if transcodable {
+        fcp_media::sdp::ensure_audio_codecs(sdp, &["PCMU", "PCMA"])
+    } else {
+        sdp.to_string()
+    }
+}
+
 #[cfg(test)]
 #[allow(unused_must_use)]
 mod tests {
@@ -21591,6 +21624,31 @@ mod tests {
         }
     }
     use super::*;
+
+    #[test]
+    fn a_forwarded_re_invite_in_opus_is_offered_g711_too() {
+        let opus = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\n\
+                    m=audio 4000 RTP/AVP 111 101\r\na=rtpmap:111 opus/48000/2\r\n\
+                    a=rtpmap:101 telephone-event/8000\r\n\
+                    m=video 4002 RTP/AVPF 97\r\na=rtpmap:97 VP8/90000\r\na=content:slides\r\n";
+        let offered = with_transcodable_g711(opus);
+        let names: Vec<String> = fcp_media::sdp::parse_sdp_codecs(&offered)
+            .into_iter()
+            .map(|c| c.encoding_name)
+            .collect();
+        assert_eq!(names, ["opus", "PCMU", "PCMA"], "{offered}");
+        // The video section is untouched.
+        assert!(
+            offered.contains("m=video 4002 RTP/AVPF 97\r\n"),
+            "{offered}"
+        );
+        assert!(offered.contains("a=content:slides"), "{offered}");
+        // A codec the node does not transcode is offered as it was.
+        let g729 = opus
+            .replace("111 101", "18 101")
+            .replace("a=rtpmap:111 opus/48000/2", "a=rtpmap:18 G729/8000");
+        assert_eq!(with_transcodable_g711(&g729), g729);
+    }
     use crate::registrar::FcpRegistrar;
 
     /// The node answers a caller's session timer with the caller's interval

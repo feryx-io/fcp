@@ -39,6 +39,14 @@ pub trait ConferenceHandler: Send + Sync {
         peer_identity: Option<std::sync::Arc<sip_transport::PeerIdentity>>,
     ) -> Result<()>;
 
+    /// Whether `request` is in one of the room's dialogs: a participant's
+    /// re-INVITE. The room keeps its participants' dialogs itself, not in
+    /// the node's dialog manager, so an INVITE in one would otherwise be
+    /// taken for a request in no dialog and refused 481.
+    fn holds_dialog(&self, _request: &sip_core::Request) -> bool {
+        false
+    }
+
     /// Handle a mid-dialog re-INVITE for a conference participant.
     ///
     /// Processes codec changes, hold/resume, and IP address updates.
