@@ -586,6 +586,9 @@ pub struct SipMessageHandler {
     flow_relays: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, FlowRelays>>,
     /// Edges whose caller headers are believed (`[e911] trusted_edges`).
     trusted_edges: crate::emergency::TrustedEdges,
+    /// What an emergency call reads, kept from each REGISTER, so one is
+    /// placed while the store is away (#326).
+    emergency_memory: Option<Arc<crate::emergency_memory::EmergencyMemory>>,
     /// What reaches this node's SIP port, and what a flood of it costs
     /// (`docs/EDGE_SECURITY.md` §2.4). Absent leaves the handler as it was
     /// before there was a guard: whatever arrives is parsed.
@@ -1092,6 +1095,7 @@ impl SipMessageHandler {
             node_sip_address: None,
             flow_relays: Arc::new(dashmap::DashMap::new()),
             trusted_edges: Default::default(),
+            emergency_memory: None,
             edge_guard: None,
             store_up: None,
             store_writable: None,
@@ -1340,6 +1344,47 @@ impl SipMessageHandler {
         self.store_answers() && self.store_writable.as_ref().is_none_or(|w| w())
     }
 
+    /// A REGISTER while the store is away (#326): still a 503, since
+    /// nothing can be stored, but a caller this node remembers is
+    /// challenged, and proving the password they registered with keeps
+    /// their binding here, so an emergency call from them is placed for as
+    /// long as they keep registering.
+    async fn register_remembered(
+        &self,
+        memory: &Arc<crate::emergency_memory::EmergencyMemory>,
+        request: &sip_core::Request,
+        peer: SocketAddr,
+    ) -> sip_core::Response {
+        let (Some(registrar), Some(aor)) = (
+            &self.registrar,
+            crate::registrar::extract_aor_from_request(request),
+        ) else {
+            return self.store_unavailable(request);
+        };
+        if memory.registered_tenant(&aor, peer.ip()).is_none() {
+            return self.store_unavailable(request);
+        }
+        let remembered = {
+            let memory = Arc::clone(memory);
+            let aor = aor.clone();
+            move |user: &str| memory.ha1_for_aor(&aor, user)
+        };
+        if registrar
+            .register_proves_remembered(request, &remembered)
+            .await
+            .is_some()
+        {
+            let secs = crate::emergency_memory::granted_secs(request.headers()).unwrap_or(3600);
+            memory.renewed_offline(&aor, peer.ip(), secs);
+            return self.store_unavailable(request);
+        }
+        // Never stale: a wrong password must not be retried without asking.
+        match registrar.invite_challenge(request, false) {
+            Ok(challenge) => challenge,
+            Err(_) => self.store_unavailable(request),
+        }
+    }
+
     /// The 503 for a request the store is needed for while it is away:
     /// the phone tries again, here or at another node, in a few seconds.
     fn store_unavailable(&self, request: &sip_core::Request) -> sip_core::Response {
@@ -1358,6 +1403,26 @@ impl SipMessageHandler {
             SmolStr::new(STORE_RETRY_AFTER_SECS.to_string()),
         );
         response
+    }
+
+    /// Keep what an emergency call reads from each REGISTER, so one is
+    /// placed while the store is away (#326).
+    pub fn with_emergency_memory(
+        mut self,
+        memory: Arc<crate::emergency_memory::EmergencyMemory>,
+    ) -> Self {
+        self.emergency_memory = Some(memory);
+        self
+    }
+
+    /// The emergency memory, while the store is away: `None` when it
+    /// answers, or when this node keeps none.
+    fn offline_memory(&self) -> Option<&Arc<crate::emergency_memory::EmergencyMemory>> {
+        if self.store_answers() {
+            None
+        } else {
+            self.emergency_memory.as_ref()
+        }
     }
 
     pub fn with_trusted_edges(mut self, edges: crate::emergency::TrustedEdges) -> Self {
@@ -2904,10 +2969,19 @@ impl SipMessageHandler {
                         }
                     }
 
+                    // With the store away, an emergency call is placed from
+                    // what this node remembers (#326); any other is refused.
                     if !self.store_answers() {
-                        info!(peer = %peer, "Refusing a call: the store does not answer");
-                        handle.send_final(self.store_unavailable(request)).await;
-                        return Ok(());
+                        let dialed = crate::emergency::destination_of(request);
+                        let emergency = self
+                            .offline_memory()
+                            .is_some_and(|m| m.may_be_emergency(&dialed));
+                        if !emergency {
+                            info!(peer = %peer, "Refusing a call: the store does not answer");
+                            handle.send_final(self.store_unavailable(request)).await;
+                            return Ok(());
+                        }
+                        warn!(peer = %peer, dialed = %dialed, "An emergency call with the store away");
                     }
 
                     // Spawn INVITE handling in separate task to avoid blocking server transaction
@@ -3097,7 +3171,10 @@ impl SipMessageHandler {
                 // be taken, and one already under way when it went is
                 // answered within the deadline (`docs/DEEP_TESTING.md` D5).
                 let response = if !self.store_writes() {
-                    self.store_unavailable(request)
+                    match self.offline_memory() {
+                        Some(memory) => self.register_remembered(memory, request, peer).await,
+                        None => self.store_unavailable(request),
+                    }
                 } else {
                     match tokio::time::timeout(
                         REGISTER_DEADLINE,
@@ -3112,6 +3189,23 @@ impl SipMessageHandler {
                         }
                     }
                 };
+                // What an emergency call from this phone would read is
+                // kept, for when the store is away (#326).
+                if let (200, Some(memory), Some(storage), Some(registrar), Some(aor)) = (
+                    response.code(),
+                    &self.emergency_memory,
+                    &self.storage,
+                    &self.registrar,
+                    crate::registrar::extract_aor_from_request(request),
+                ) {
+                    memory.registered(
+                        Arc::clone(storage),
+                        Arc::clone(registrar),
+                        &aor,
+                        peer.ip(),
+                        crate::emergency_memory::granted_secs(response.headers()).unwrap_or(0),
+                    );
+                }
                 handle.send_final(response).await;
             }
             _ => {
@@ -3373,6 +3467,10 @@ impl SipMessageHandler {
         .strip(request);
         let request = unclaimed.as_ref().unwrap_or(request);
 
+        // The store is away: only an emergency call from a caller this node
+        // remembers goes on, and nothing below reads the store (#326).
+        let offline = self.offline_memory().cloned();
+
         // Resolve the tenant for this INVITE using the tiered strategy:
         //   1. Hostname domain → tenants.sip_domains allowlist
         //   2. Hostname domain → legacy tenant-name fallback (with warning)
@@ -3431,11 +3529,19 @@ impl SipMessageHandler {
         // (`docs/TENANT_TRUNKS.md` §7), before the domain is looked at.
         let registered_tenant = if own_leg_tenant.is_some() {
             own_leg_tenant
+        } else if let (Some(memory), None) = (&offline, &edge_caller) {
+            crate::registrar::from_aor(request)
+                .and_then(|aor| memory.registered_tenant(&aor, peer.ip()))
         } else if edge_caller.is_none() {
             self.registered_caller_tenant(request, peer.ip()).await
         } else {
             None
         };
+        if offline.is_some() && edge_caller.is_none() && registered_tenant.is_none() {
+            info!(source = %peer, "Refusing an emergency call with the store away: its caller did not register here");
+            handle.send_final(self.store_unavailable(request)).await;
+            return Ok(());
+        }
         let is_registered_device = registered_tenant.is_some();
         let inbound = if edge_caller.is_none() && !is_registered_device {
             self.inbound_trunk(request, peer).await
@@ -3618,8 +3724,15 @@ impl SipMessageHandler {
             || own_leg_tenant.is_some()
             || crate::own_leg::proves(request)
             || self.trusted_edges.contains(peer_ip);
-        let invite_auth = match (&self.registrar, is_trusted_edge) {
-            (Some(registrar), false) => registrar.authenticate_invite(request).await,
+        let invite_auth = match (&self.registrar, is_trusted_edge, &offline) {
+            (Some(registrar), false, Some(memory)) => {
+                let memory = Arc::clone(memory);
+                let tenant = tenant_id;
+                registrar
+                    .authenticate_invite_remembered(request, &move |user| memory.ha1(&tenant, user))
+                    .await
+            }
+            (Some(registrar), false, None) => registrar.authenticate_invite(request).await,
             _ => crate::registrar::InviteAuth::NotRequired,
         };
         match invite_auth {
@@ -3666,9 +3779,10 @@ impl SipMessageHandler {
                 return Ok(());
             }
             crate::registrar::InviteAuth::Challenge { stale } => {
-                if self
-                    .invite_on_trunk(&tenant_id, peer_ip, inbound_trunk.is_some())
-                    .await
+                if offline.is_none()
+                    && self
+                        .invite_on_trunk(&tenant_id, peer_ip, inbound_trunk.is_some())
+                        .await
                 {
                     debug!(source = %peer, tenant_id = %tenant_id, "INVITE admitted via trunk");
                 } else {
@@ -3738,9 +3852,35 @@ impl SipMessageHandler {
         // detected before any admission control: no routing policy or rule
         // applies to them, they are never rejected for balance, and they
         // carry the caller's dispatchable location.
-        let emergency = self
-            .detect_emergency(&tenant_id, request, peer, edge_caller.as_ref())
-            .await;
+        let emergency = match &offline {
+            Some(memory) => {
+                let (username, aor) = self.emergency_caller(request, edge_caller.as_ref());
+                let detected = memory
+                    .detect(
+                        &tenant_id,
+                        &crate::emergency::destination_of(request),
+                        username.as_deref(),
+                        aor.as_deref(),
+                        Some(
+                            self.trusted_edges
+                                .client_address(request, peer.ip())
+                                .unwrap_or(peer.ip()),
+                        ),
+                        crate::emergency::supplied_location(request).as_ref(),
+                    )
+                    .filter(|em| em.kind == fcp_core::e911::EmergencyKind::Live);
+                if detected.is_none() {
+                    info!(tenant_id = %tenant_id, "Refusing a call with the store away: not an emergency call");
+                    handle.send_final(self.store_unavailable(request)).await;
+                    return Ok(());
+                }
+                detected
+            }
+            None => {
+                self.detect_emergency(&tenant_id, request, peer, edge_caller.as_ref())
+                    .await
+            }
+        };
         if let Some(em) = &emergency {
             info!(
                 tenant_id = %tenant_id,
@@ -4075,6 +4215,21 @@ impl SipMessageHandler {
 
         // Evaluate media anchoring decision
         self.evaluate_media_anchoring(request, &call_id).await;
+
+        // With the store away an emergency call goes straight to its
+        // routes: every feature between here and there reads the store
+        // (#326).
+        if offline.is_some() && emergency.is_some() {
+            if let Some(uac) = &self.uac {
+                return Box::pin(self.forward_invite_to_b_leg(
+                    request,
+                    handle,
+                    call_id,
+                    uac.clone(),
+                ))
+                .await;
+            }
+        }
 
         // The user placing the call, if one of the tenant's is: the call
         // counts against them while it is up (`docs/ENTERPRISE_CALLING.md`
@@ -4659,7 +4814,10 @@ impl SipMessageHandler {
         // The caller's preferences, and whether the call is to be recorded
         // without anyone asking: it must be anchored for that, and records
         // once it is answered (docs/COMPLIANCE_FOLLOWUPS.md §8.1).
-        let user_prefs = if let Some(ref registrar) = self.registrar {
+        // With the store away (an emergency call, #326) nothing is read:
+        // the defaults, and no recording nobody asked for.
+        let offline = !self.store_answers();
+        let user_prefs = if let (Some(registrar), false) = (&self.registrar, offline) {
             let from_aor = sip_parse::header(request.headers(), "From")
                 .and_then(|from| crate::presence::extract_aor(from.as_str()));
 
@@ -4671,9 +4829,12 @@ impl SipMessageHandler {
         } else {
             fcp_core::MediaPreferences::default()
         };
-        let auto_recording = self
-            .automatic_recording(request, call_id, &user_prefs)
-            .await;
+        let auto_recording = if offline {
+            None
+        } else {
+            self.automatic_recording(request, call_id, &user_prefs)
+                .await
+        };
         if let Some(source) = auto_recording {
             info!(call_id = %call_id, source = source.as_str(), "Call to be recorded once answered");
             let _ = self
@@ -11015,6 +11176,11 @@ impl SipMessageHandler {
         else {
             return;
         };
+        // With the store away (an emergency call, #326) nothing is read:
+        // the call carries what its offer does.
+        if !self.store_answers() {
+            return;
+        }
         let users: Vec<fcp_core::UserId> = [call.caller_user_id, call.callee_user_id]
             .into_iter()
             .flatten()
@@ -12225,17 +12391,7 @@ impl SipMessageHandler {
         peer: SocketAddr,
         edge_caller: Option<&crate::emergency::EdgeCaller>,
     ) -> Option<fcp_b2bua_core::EmergencyCallInfo> {
-        let destination = sip_parse::header(request.headers(), "To")
-            .map(|to| {
-                let to = to.as_str();
-                to.split('<')
-                    .nth(1)
-                    .and_then(|s| s.split('>').next())
-                    .unwrap_or(to)
-                    .trim()
-                    .to_string()
-            })
-            .unwrap_or_default();
+        let destination = crate::emergency::destination_of(request);
         let (username, aor) = self.emergency_caller(request, edge_caller);
         // Where the caller is: what a trusted edge vouched for, else the
         // INVITE's own source (§6.2); and the location the device sent, if
@@ -12325,7 +12481,15 @@ impl SipMessageHandler {
             caller_username,
             info,
         );
-        crate::emergency::announce(&self.call_manager, call_id, record).await;
+        match self.offline_memory() {
+            Some(memory) => crate::emergency::announce_with(
+                &self.call_manager,
+                call_id,
+                record,
+                &memory.config(&tenant_id),
+            ),
+            None => crate::emergency::announce(&self.call_manager, call_id, record).await,
+        }
     }
 
     fn create_simple_response(

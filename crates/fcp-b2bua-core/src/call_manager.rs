@@ -9,6 +9,10 @@ use fcp_events::{CallEvent, EventPublisher, PlatformEvent};
 use std::sync::Arc;
 use tracing::{debug, info};
 
+/// How long an emergency call's record is kept on the node for a store
+/// that does not take it: an outage's length, within reason (#326).
+const EMERGENCY_RECORD_KEPT: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
 /// What a [`CallManager`] tells of each call it ends or forgets.
 pub type OnEnded = Arc<dyn Fn(&CallId) + Send + Sync>;
 
@@ -413,13 +417,29 @@ impl CallManager {
         };
         let (tx, rx) = tokio::sync::watch::channel(None);
         self.emergency_records.insert(call_id, rx);
+        // Kept until the store takes it: an emergency call placed while
+        // the store is away is recorded when it is back (#326).
         tokio::spawn(async move {
-            match store.insert_emergency_call(&record).await {
-                Ok(id) => {
-                    let _ = tx.send(Some(id));
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, call_id = %record.call_id, "Failed to write emergency call record");
+            let started = std::time::Instant::now();
+            let mut wait = std::time::Duration::from_millis(500);
+            loop {
+                match store.insert_emergency_call(&record).await {
+                    Ok(id) => {
+                        if started.elapsed() > std::time::Duration::from_secs(1) {
+                            info!(call_id = %record.call_id, "Emergency call record written once the store was back");
+                        }
+                        let _ = tx.send(Some(id));
+                        return;
+                    }
+                    Err(e) if started.elapsed() < EMERGENCY_RECORD_KEPT => {
+                        tracing::warn!(error = %e, call_id = %record.call_id, retry_in = ?wait, "Emergency call record not written yet; kept until the store takes it");
+                        tokio::time::sleep(wait).await;
+                        wait = (wait * 2).min(std::time::Duration::from_secs(10));
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, call_id = %record.call_id, "Failed to write emergency call record");
+                        return;
+                    }
                 }
             }
         });
@@ -534,7 +554,7 @@ impl CallManager {
             // The insert may still be on its way; a failed one drops its
             // sender and there is nothing to complete.
             let id = match tokio::time::timeout(
-                std::time::Duration::from_secs(30),
+                EMERGENCY_RECORD_KEPT,
                 written.wait_for(Option::is_some),
             )
             .await
@@ -545,8 +565,15 @@ impl CallManager {
                     return;
                 }
             };
-            if let Err(e) = store.complete_emergency_call(id, &completion).await {
-                tracing::error!(error = %e, call_id = %call_id, "Failed to complete emergency call record");
+            let started = std::time::Instant::now();
+            let mut wait = std::time::Duration::from_millis(500);
+            while let Err(e) = store.complete_emergency_call(id, &completion).await {
+                if started.elapsed() >= EMERGENCY_RECORD_KEPT {
+                    tracing::error!(error = %e, call_id = %call_id, "Failed to complete emergency call record");
+                    return;
+                }
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(std::time::Duration::from_secs(10));
             }
         });
     }

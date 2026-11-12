@@ -632,17 +632,7 @@ pub async fn resolve_for_user(
     } = caller_records(storage, user, caller.prefer_device_aor).await;
     let device = device.as_ref();
 
-    // A location the device sent is used only from a device this tenant
-    // trusts to send one (§6.3, §12.3).
-    let supplied = caller.supplied.filter(|_| {
-        device.is_some_and(|d| {
-            d.e911_trust_location.unwrap_or_else(|| {
-                caller
-                    .config
-                    .is_some_and(|c| c.trust_device_locations.contains(&d.device_type))
-            })
-        })
-    });
+    let supplied = trusted_supplied(&caller, device);
 
     // Where the caller was seen: what the call itself said, else where
     // their device last registered from (§6.2).
@@ -695,6 +685,141 @@ pub async fn resolve_for_user(
         client_address,
         declared: declared.as_ref(),
     })
+}
+
+/// A location the device sent, used only from a device this tenant trusts
+/// to send one (§6.3, §12.3).
+fn trusted_supplied<'a>(
+    caller: &CallerContext<'a>,
+    device: Option<&Device>,
+) -> Option<&'a E911Address> {
+    caller.supplied.filter(|_| {
+        device.is_some_and(|d| {
+            d.e911_trust_location.unwrap_or_else(|| {
+                caller
+                    .config
+                    .is_some_and(|c| c.trust_device_locations.contains(&d.device_type))
+            })
+        })
+    })
+}
+
+/// What places a caller, as the store held it when it was read: kept by a
+/// node so that an emergency call is placed while the store is away
+/// (#326). [`CallerPlacement::resolve`] applies the rules
+/// [`resolve_for_user`] does, to what was kept.
+#[derive(Debug, Clone, Default)]
+pub struct CallerPlacement {
+    pub device: Option<Device>,
+    pub device_site: Option<SiteLocation>,
+    pub user_site: Option<SiteLocation>,
+    pub phone_number: Option<PhoneNumber>,
+    /// Kept whether or not it is current; judged when it is used.
+    pub declared: Option<DeclaredLocation>,
+}
+
+/// A tenant's networks, each with the site it places a caller at.
+pub type PlacedNetworks = Vec<(EmergencyNetwork, SiteLocation)>;
+
+/// A user's [`CallerPlacement`], read from the store now.
+pub async fn caller_placement(
+    storage: &crate::DynStorage,
+    user: &crate::storage::User,
+    prefer_device_aor: Option<&str>,
+) -> CallerPlacement {
+    let CallerRecords {
+        device,
+        device_site,
+        user_site,
+        phone_number,
+    } = caller_records(storage, user, prefer_device_aor).await;
+    let declared = match storage.emergency_store() {
+        Some(store) => store
+            .get_declared_location(&user.tenant_id, &user.id)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    CallerPlacement {
+        device,
+        device_site,
+        user_site,
+        phone_number,
+        declared,
+    }
+}
+
+/// A tenant's networks with their sites, read from the store now; a
+/// network whose site cannot be read is left out, as it places nobody.
+pub async fn placed_networks(storage: &crate::DynStorage, tenant_id: &TenantId) -> PlacedNetworks {
+    use crate::storage::SiteLocationStore;
+
+    let Some(store) = storage.emergency_store() else {
+        return Vec::new();
+    };
+    let networks = store
+        .list_emergency_networks(tenant_id)
+        .await
+        .unwrap_or_default();
+    let mut placed = Vec::with_capacity(networks.len());
+    for network in networks {
+        if let Ok(Some(site)) = storage.get_location(&network.location_id).await {
+            placed.push((network, site));
+        }
+    }
+    placed
+}
+
+impl CallerPlacement {
+    /// The caller's dispatchable location from what was kept, by the rules
+    /// of [`resolve_for_user`]. Where the caller was seen is only what the
+    /// call says (`caller.client_address`): the store that knows where
+    /// their device last registered is away.
+    pub fn resolve(
+        &self,
+        networks: &[(EmergencyNetwork, SiteLocation)],
+        caller: CallerContext<'_>,
+        now: SystemTime,
+    ) -> Option<DispatchableLocation> {
+        let device = self.device.as_ref();
+        let supplied = trusted_supplied(&caller, device);
+        let client_address = caller.client_address;
+        let matched = client_address.and_then(|address| {
+            let only: Vec<EmergencyNetwork> = networks.iter().map(|(n, _)| n.clone()).collect();
+            let network = match_network(&only, address, device.map(|d| d.device_type))?;
+            networks.iter().find(|(n, _)| n.id == network.id)
+        });
+        let declared = self.declared.as_ref().filter(|d| d.is_current(now));
+        resolve_dispatchable_location(&LocationInputs {
+            device,
+            device_site: self.device_site.as_ref(),
+            user_site: self.user_site.as_ref(),
+            phone_number: self.phone_number.as_ref(),
+            supplied,
+            network: matched.map(|(n, s)| (n, s)),
+            client_address,
+            declared,
+        })
+    }
+
+    /// The callback number of a caller [`resolve`](Self::resolve) did not
+    /// place, as [`callback_for_user`] chooses it.
+    pub fn callback(&self) -> Option<String> {
+        callback_number(
+            None,
+            &LocationInputs {
+                device: self.device.as_ref(),
+                device_site: self.device_site.as_ref(),
+                user_site: self.user_site.as_ref(),
+                phone_number: self.phone_number.as_ref(),
+                supplied: None,
+                network: None,
+                client_address: None,
+                declared: None,
+            },
+        )
+    }
 }
 
 /// The callback number of a caller with no dispatchable location: their
@@ -1928,6 +2053,82 @@ mod tests {
         let mut n = EmergencyNetwork::new(TenantId::nil(), cidr.parse().unwrap(), site.id);
         n.applies_to = applies_to;
         n
+    }
+
+    #[test]
+    fn a_kept_placement_resolves_as_the_store_would() {
+        let office = site("HQ", Some("1 State St"), Some("+15185550001"));
+        let branch = site("Branch", Some("9 Elm St"), Some("+15185550009"));
+        let mut device = Device::new("phone".into(), DeviceType::Softphone, TenantId::nil());
+        device.location_id = Some(office.id);
+        let placement = CallerPlacement {
+            device: Some(device),
+            device_site: Some(office.clone()),
+            ..Default::default()
+        };
+        let networks = vec![(
+            network("10.1.2.0/24", &branch, NetworkApplies::Nomadic),
+            branch.clone(),
+        )];
+        let now = SystemTime::now();
+
+        // Off every network: the device's site.
+        let at_desk = placement
+            .resolve(
+                &networks,
+                CallerContext {
+                    client_address: Some("192.0.2.7".parse().unwrap()),
+                    ..Default::default()
+                },
+                now,
+            )
+            .expect("placed");
+        assert_eq!(at_desk.source, LocationSource::DeviceLocation);
+        assert_eq!(at_desk.callback_number.as_deref(), Some("+15185550001"));
+
+        // On the branch's network, which was kept with its site.
+        let away = placement
+            .resolve(
+                &networks,
+                CallerContext {
+                    client_address: Some("10.1.2.9".parse().unwrap()),
+                    ..Default::default()
+                },
+                now,
+            )
+            .expect("placed");
+        assert_eq!(away.source, LocationSource::Network);
+        assert_eq!(away.callback_number.as_deref(), Some("+15185550009"));
+
+        // A declared location kept past its time is not used.
+        let user = UserId::new();
+        let declared = CallerPlacement {
+            declared: Some(DeclaredLocation {
+                user_id: user,
+                tenant_id: TenantId::nil(),
+                address: addr("5 Lark St"),
+                declared_at: now - Duration::from_secs(7200),
+                expires_at: now - Duration::from_secs(60),
+            }),
+            ..Default::default()
+        };
+        assert!(declared
+            .resolve(&[], CallerContext::default(), now)
+            .is_none());
+
+        // Nobody known: placed by the network alone, or not at all.
+        let nobody = CallerPlacement::default();
+        assert!(nobody
+            .resolve(
+                &networks,
+                CallerContext {
+                    client_address: Some("10.1.2.9".parse().unwrap()),
+                    ..Default::default()
+                },
+                now,
+            )
+            .is_some_and(|l| l.source == LocationSource::Network));
+        assert!(nobody.callback().is_none());
     }
 
     #[test]

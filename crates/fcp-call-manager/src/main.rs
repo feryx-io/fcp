@@ -1711,6 +1711,9 @@ async fn run() -> Result<()> {
     .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
         &config.e911.trusted_edges,
     )?)
+    // An emergency call is placed while the database is away, from what
+    // each REGISTER left here (#326).
+    .with_emergency_memory(fcp_sip::emergency_memory::EmergencyMemory::new())
     // What reaches this node's SIP port (`docs/EDGE_SECURITY.md` §2.4).
     // The edges trusted above carry other people's calls, so the
     // per-source call rate is not theirs to spend.

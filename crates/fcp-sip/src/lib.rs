@@ -25,6 +25,7 @@ pub mod device_sync;
 pub mod drain;
 pub mod edge;
 pub mod emergency;
+pub mod emergency_memory;
 pub mod executive;
 pub mod exports;
 pub mod flow;
