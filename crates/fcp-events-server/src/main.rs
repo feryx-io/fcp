@@ -541,8 +541,18 @@ async fn main() -> Result<()> {
             match fcp_storage_redis::RedisStorage::new(redis_config).await {
                 Ok(redis_storage) => {
                     let stream_key = format!("{}event_stream", config.event_bus.redis_key_prefix);
+                    // The reader blocks (`XREADGROUP … BLOCK`): on the
+                    // shared, multiplexed connection every `/ingest` write
+                    // would wait behind it (#378).
+                    let reading = match redis_storage.detached().await {
+                        Ok(detached) => detached,
+                        Err(e) => {
+                            warn!(error = %e, "No separate Redis connection for the stream reader; sharing one");
+                            redis_storage.clone()
+                        }
+                    };
                     let consumer = fcp_storage_redis::event_bus::RedisStreamConsumer::new(
-                        redis_storage.clone(),
+                        reading,
                         stream_key,
                         config.event_bus.consumer_group.clone(),
                         config

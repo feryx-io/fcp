@@ -98,8 +98,16 @@ pub struct Link {
     stores: Option<SiteStores>,
     /// The sync, once enrolled and the stores are known.
     sync: Mutex<Option<Arc<Syncer>>>,
-    /// The site's Redis, for its registrations and its event stream.
+    /// The site's Redis, for what the heartbeat reads: registrations,
+    /// services, parked calls, nodes.
     redis: Option<fcp_storage_redis::RedisStorage>,
+    /// The same Redis on a connection of its own, for the event stream.
+    /// Its reader blocks (`XREADGROUP … BLOCK`), and on the shared,
+    /// multiplexed connection every heartbeat read waited behind it: two
+    /// seconds each, a heartbeat built in six, and the link's `cloud`
+    /// check saying no heartbeat was answered while the cloud kept
+    /// receiving them (#378).
+    events_redis: Option<fcp_storage_redis::RedisStorage>,
     ship: Mutex<Option<Arc<crate::ship::Shipper>>>,
     events: Mutex<Option<Arc<crate::events::EventForwarder>>>,
     requests: Mutex<Option<Arc<crate::requests::Requester>>>,
@@ -130,6 +138,15 @@ impl Link {
                 .context("connecting to the site's Redis")?,
             ),
             None => None,
+        };
+        let events_redis = match (&redis, config.site.forward_events) {
+            (Some(redis), true) => Some(
+                redis
+                    .detached()
+                    .await
+                    .context("connecting to the site's Redis for its events")?,
+            ),
+            _ => None,
         };
         let reader = redis.clone().map(|storage| {
             fcp_cluster::ClusterReader::new(storage, config.site.heartbeat_ttl_secs)
@@ -166,6 +183,7 @@ impl Link {
             stores,
             sync: Mutex::new(None),
             redis,
+            events_redis,
             ship: Mutex::new(None),
             events: Mutex::new(None),
             requests: Mutex::new(None),
@@ -269,7 +287,7 @@ impl Link {
             }
         }
         // Events: with a site Redis.
-        if let (Some(redis), true) = (&self.redis, self.config.site.forward_events) {
+        if let Some(redis) = &self.events_redis {
             let mut slot = self.events.lock().unwrap_or_else(|e| e.into_inner());
             if slot.is_none() {
                 match self.client(true) {
