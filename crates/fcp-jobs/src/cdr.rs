@@ -162,8 +162,14 @@ impl CdrRole {
                 .with_events(events),
         );
 
+        // The reader blocks (`XREADGROUP … BLOCK`): on the shared,
+        // multiplexed connection the events published beside it would wait
+        // behind every read (#378).
         let source = Arc::new(RedisCdrStream::new(
-            redis,
+            redis
+                .detached()
+                .await
+                .context("a Redis connection for the CDR stream")?,
             config.service.node_id.clone(),
             Duration::from_secs(cdr.retain_hours * 3600),
         ));

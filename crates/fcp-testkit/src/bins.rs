@@ -58,13 +58,23 @@ pub fn path(name: &str, package: &str) -> PathBuf {
 }
 
 /// The profile directory the running test executable belongs to:
-/// `target/<profile>`, one up from `deps`.
+/// `target/<profile>`. Cargo before 1.100 put test executables in
+/// `target/<profile>/deps`; 1.100 puts them in
+/// `target/<profile>/build/<package>/<hash>/out`. The profile directory is
+/// the nearest ancestor whose parent holds cargo's `CACHEDIR.TAG`; failing
+/// that (an unusual layout), one up from `deps` as before.
 fn target_dir() -> PathBuf {
     let exe = std::env::current_exe().expect("current_exe");
-    let deps = exe.parent().expect("test executable has a directory");
-    if deps.file_name().is_some_and(|n| n == "deps") {
-        deps.parent().expect("deps has a parent").to_path_buf()
+    let dir = exe.parent().expect("test executable has a directory");
+    if let Some(profile) = dir
+        .ancestors()
+        .find(|a| a.parent().is_some_and(|p| p.join("CACHEDIR.TAG").is_file()))
+    {
+        return profile.to_path_buf();
+    }
+    if dir.file_name().is_some_and(|n| n == "deps") {
+        dir.parent().expect("deps has a parent").to_path_buf()
     } else {
-        deps.to_path_buf()
+        dir.to_path_buf()
     }
 }
