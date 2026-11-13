@@ -10,6 +10,7 @@
 
 use fcp_core::e911::{EmergencyCallRecord, EmergencyKind};
 use fcp_core::storage::{LineBindingStore, PhoneNumberStore};
+use fcp_testkit::cut::CutLink;
 use fcp_testkit::media::allocate_port_pair;
 use fcp_testkit::seed::SeededUser;
 use fcp_testkit::smoke::{http_get, loopback};
@@ -28,6 +29,8 @@ const BRANCH_ELIN: &str = "+15185550222";
 struct Stack {
     service: Option<Service>,
     db: Option<TestDatabase>,
+    /// The node's way to its database, when the test takes it away.
+    link: Option<CutLink>,
     seed: Seed,
     sip: SocketAddr,
     http: u16,
@@ -130,7 +133,29 @@ impl Stack {
         ingest: Option<&str>,
         tts: Option<&str>,
     ) -> Option<Self> {
+        Self::start_full(carriers, trusted_edges, ingest, tts, false).await
+    }
+
+    /// As [`Stack::start`], the node reaching its database through a
+    /// [`CutLink`] the test can take away.
+    async fn start_cut(carriers: &[&Carrier]) -> Option<Self> {
+        Self::start_full(carriers, &[], None, None, true).await
+    }
+
+    async fn start_full(
+        carriers: &[&Carrier],
+        trusted_edges: &[&str],
+        ingest: Option<&str>,
+        tts: Option<&str>,
+        cut: bool,
+    ) -> Option<Self> {
         let db = TestDatabase::create().await?;
+        let (link, node_db) = if cut {
+            let (link, url) = CutLink::for_url(db.url()).await;
+            (Some(link), url)
+        } else {
+            (None, db.url().to_string())
+        };
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
         let http = free_port();
@@ -157,7 +182,7 @@ auth_enabled = true
 realm = "{REALM}"
 
 [storage]
-database_url = "{db}"
+database_url = "{node_db}"
 
 [cdr]
 spool_dir = "{dir}/cdr-spool"
@@ -193,7 +218,6 @@ trusted_edges = [{edges}]
 {events}
 {trunks}
 "#,
-            db = db.url(),
             rtp_end = rtp_start + 60,
             dir = dir.path().display(),
             tts = match tts {
@@ -211,6 +235,7 @@ trusted_edges = [{edges}]
         Some(Self {
             service: Some(service),
             db: Some(db),
+            link,
             seed,
             sip: SocketAddr::from(([127, 0, 0, 1], sip_port)),
             http,
@@ -2128,5 +2153,130 @@ format = "compact"
     );
 
     events.stop().await;
+    stack.finish().await;
+}
+
+/// The database goes silent with Alice registered (#326): her 911 call
+/// still reaches the emergency trunk as her site's ELIN, from what the node
+/// kept at her REGISTER, while an ordinary call and a caller who never
+/// registered here are refused 503 at once. The record is written, and
+/// completed, once the database is back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_911_call_goes_out_with_the_database_silent() {
+    a_911_call_goes_out_with_the_database_away(false).await;
+}
+
+/// As [`a_911_call_goes_out_with_the_database_silent`], with the
+/// database's connections refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_911_call_goes_out_with_the_database_refused() {
+    a_911_call_goes_out_with_the_database_away(true).await;
+}
+
+async fn a_911_call_goes_out_with_the_database_away(refused: bool) {
+    let carrier = Carrier::new("psap-primary", 1).await;
+    let mut stack = match Stack::start_cut(&[&carrier]).await {
+        Some(s) => s,
+        None => {
+            eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+            return;
+        }
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    stack.seed.site_for("alice", ALICE_ELIN).await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = Phone::new(&bob.username, &bob.password, REALM, stack.sip)
+        .await
+        .expect("phone binds");
+    // What her REGISTER left is read on its own task.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let link = stack.link.as_ref().expect("a link");
+    if refused {
+        link.cut();
+    } else {
+        link.silence();
+    }
+    // Once the node's probe sees it (`/ready` 503).
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let (code, _) = http_get(&loopback(stack.http, "/ready"))
+            .await
+            .expect("GET /ready");
+        if code == 503 {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            stack.fail("the node never saw the database go").await;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    let ordinary = alice_phone.call("1002").await.unwrap();
+    let refused = ordinary.failed(SOON).await;
+    if refused != Some(503) {
+        stack
+            .fail(&format!(
+                "an ordinary call with the database away: {refused:?}"
+            ))
+            .await;
+    }
+
+    let started = std::time::Instant::now();
+    let call = alice_phone.call("911").await.unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!(
+            "with the database away the emergency trunk never rang; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let took = started.elapsed();
+    if took >= Duration::from_secs(3) {
+        stack.fail(&format!("the trunk rang after {took:?}")).await;
+    }
+    assert!(
+        incoming.from.contains(ALICE_ELIN),
+        "From: {}",
+        incoming.from
+    );
+    assert_eq!(
+        incoming.header("P-Asserted-Identity").as_deref(),
+        Some(format!("<sip:{ALICE_ELIN}@{REALM}>").as_str())
+    );
+    assert_eq!(incoming.header("Priority").as_deref(), Some("emergency"));
+    let carrier_call = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(carrier_call.ended(SOON).await, "the carrier's leg ends");
+
+    // Bob never registered here: nobody to believe.
+    let unknown = bob_phone.call("911").await.unwrap();
+    let refused = unknown.failed(SOON).await;
+    if refused != Some(503) {
+        stack
+            .fail(&format!(
+                "an unregistered caller's 911 with the database away: {refused:?}"
+            ))
+            .await;
+    }
+
+    stack.link.as_ref().expect("a link").restore().await;
+    let records = stack
+        .seed
+        .emergency_calls(1, Duration::from_secs(40), |r| r.ended_at.is_some())
+        .await;
+    let live = ended(&records, "911");
+    assert_eq!(live.kind, EmergencyKind::Live);
+    assert_eq!(live.callback_number.as_deref(), Some(ALICE_ELIN));
+    assert_eq!(live.caller_username.as_deref(), Some("alice"));
+    assert_eq!(live.trunk_name.as_deref(), Some("psap-primary"));
+    assert_eq!(live.outcome, "answered", "{live:#?}");
+    assert!(
+        live.location.is_some(),
+        "placed at her site from what the node kept"
+    );
     stack.finish().await;
 }

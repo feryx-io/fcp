@@ -575,6 +575,41 @@ pub fn placement_record(
 
 /// Publish `call.emergency` for a call just placed and write its record;
 /// the call manager completes the record when the call ends.
+/// Who an INVITE is to, from its `To`: what an emergency call is
+/// classified by.
+pub fn destination_of(request: &sip_core::Request) -> String {
+    sip_parse::header(request.headers(), "To")
+        .map(|to| {
+            let to = to.as_str();
+            to.split('<')
+                .nth(1)
+                .and_then(|s| s.split('>').next())
+                .unwrap_or(to)
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// [`announce`] with the store away (#326): the tenant's contacts from the
+/// configuration this node kept, a site's own not known; the record is
+/// written when the store is back.
+pub fn announce_with(
+    call_manager: &fcp_b2bua_core::CallManager,
+    call_id: fcp_b2bua_core::CallId,
+    record: EmergencyCallRecord,
+    config: &EmergencyConfig,
+) {
+    let notify_contacts = fcp_core::e911::notify::contacts_for_site(&config.contacts, None)
+        .iter()
+        .map(|c| c.display_target())
+        .collect();
+    if let Some(call) = call_manager.get_call(&call_id) {
+        call_manager.publish_emergency(&call, notify_contacts);
+    }
+    call_manager.record_emergency(call_id, record);
+}
+
 pub async fn announce(
     call_manager: &fcp_b2bua_core::CallManager,
     call_id: fcp_b2bua_core::CallId,
