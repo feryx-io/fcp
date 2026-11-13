@@ -40,6 +40,9 @@ pub enum AuthOutcome {
     WrongUri { username: String, signed: String },
 }
 
+/// A user's HA1 as a node kept it, by username (#326).
+pub type RememberedHa1 = dyn Fn(&str) -> Option<String> + Send + Sync;
+
 #[async_trait]
 pub trait Ha1CredentialStore: Send + Sync {
     async fn fetch(
@@ -212,6 +215,26 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
     /// and its nonce-count must not walk backwards
     /// (`docs/EDGE_SECURITY.md` §2.7).
     pub async fn authenticate(&self, request: &Request) -> AuthOutcome {
+        self.authenticate_from(request, None).await
+    }
+
+    /// As [`authenticate`](Self::authenticate), with the HA1 of the user
+    /// named taken from `remembered` rather than the store: what this node
+    /// kept while the store answered, for an emergency call placed while it
+    /// is away (#326). The nonce and its count are checked as ever.
+    pub async fn authenticate_remembered(
+        &self,
+        request: &Request,
+        remembered: &RememberedHa1,
+    ) -> AuthOutcome {
+        self.authenticate_from(request, Some(remembered)).await
+    }
+
+    async fn authenticate_from(
+        &self,
+        request: &Request,
+        remembered: Option<&RememberedHa1>,
+    ) -> AuthOutcome {
         let Some(auth_header) = request
             .headers()
             .get_smol("Authorization")
@@ -244,7 +267,12 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
         }
 
         // The "password" in credentials is actually the pre-computed HA1 hash.
-        let Some(creds) = self.store.fetch(username, realm.as_str(), request).await else {
+        let creds = match remembered {
+            Some(remembered) => remembered(username)
+                .map(|ha1| sip_auth::Credentials::new(username, ha1, realm.as_str())),
+            None => self.store.fetch(username, realm.as_str(), request).await,
+        };
+        let Some(creds) = creds else {
             debug!(username = %username, "Refusing credentials: no such user");
             return AuthOutcome::Failed;
         };

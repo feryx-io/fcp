@@ -280,8 +280,10 @@ to a synced object there is refused with the cloud's address.
   `fcp_database_outages_total`, and the log says `The database does
   not answer` and `The database answers again`. The records of calls
   that end meanwhile wait in the spool and are written when it is back.
-  Nothing needs a restart. An emergency call is refused like any other
-  call while the store is away (#326).
+  Nothing needs a restart. An emergency call from a phone that
+  registered at this node goes through all the same, from what the node
+  kept at its REGISTER, and its record is written when the database is
+  back (`docs/E911.md` "With the database away").
 - **The primary fails over to a standby.** Promotion is the database's
   job (Patroni, a managed database); give the nodes an address that
   moves with it (a VIP, a DNS name, a pooler). From the primary's death

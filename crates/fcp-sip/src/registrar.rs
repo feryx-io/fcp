@@ -19,7 +19,7 @@ use tracing::{debug, info, warn};
 use crate::auth::{Ha1Authenticator, Ha1CredentialStore};
 use crate::registration_cache::{Lookup, RegistrationCache};
 
-fn extract_aor_from_request(request: &Request) -> Option<String> {
+pub(crate) fn extract_aor_from_request(request: &Request) -> Option<String> {
     let to_header = request.headers().get_smol("To")?;
     let to = sip_parse::parse_to_header(to_header)?;
     Some(
@@ -231,7 +231,7 @@ pub enum InviteAuth {
 
 /// The address of record a request's `From` names — who it says placed
 /// the request.
-fn from_aor(request: &Request) -> Option<String> {
+pub(crate) fn from_aor(request: &Request) -> Option<String> {
     let from = request.headers().get_smol("From")?;
     let from = sip_parse::parse_from_header(from)?;
     Some(
@@ -248,7 +248,7 @@ pub(crate) fn from_user(request: &Request) -> Option<String> {
 
 /// Two addresses are the same device address; an IPv4 peer on a
 /// dual-stack socket arrives mapped into IPv6.
-fn same_address(a: std::net::IpAddr, b: std::net::IpAddr) -> bool {
+pub(crate) fn same_address(a: std::net::IpAddr, b: std::net::IpAddr) -> bool {
     fn unmap(ip: std::net::IpAddr) -> std::net::IpAddr {
         match ip {
             std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map(std::net::IpAddr::V4).unwrap_or(ip),
@@ -1104,6 +1104,59 @@ impl FcpRegistrar {
                     },
                 }
             }
+        }
+    }
+
+    /// As [`authenticate_invite`](Self::authenticate_invite), while the
+    /// store is away: the caller's HA1 is what this node kept (`remembered`,
+    /// #326), and the `From` must be the user the credentials are, since
+    /// who else a user may act as is in the store.
+    pub async fn authenticate_invite_remembered(
+        &self,
+        request: &Request,
+        remembered: &crate::auth::RememberedHa1,
+    ) -> InviteAuth {
+        if !self.invite_auth_required() {
+            return InviteAuth::NotRequired;
+        }
+        let Some(authenticator) = self.authenticator.as_ref() else {
+            return InviteAuth::NotRequired;
+        };
+        match authenticator
+            .authenticate_remembered(request, remembered)
+            .await
+        {
+            crate::auth::AuthOutcome::Failed => InviteAuth::Challenge { stale: false },
+            crate::auth::AuthOutcome::Stale => InviteAuth::Challenge { stale: true },
+            crate::auth::AuthOutcome::WrongUri { username, signed } => {
+                InviteAuth::WrongUri { username, signed }
+            }
+            crate::auth::AuthOutcome::Authenticated { username } => match from_user(request) {
+                Some(claimed) if !claimed.eq_ignore_ascii_case(&username) => {
+                    InviteAuth::WrongUser {
+                        authenticated: username,
+                        claimed,
+                    }
+                }
+                _ => InviteAuth::Admitted { username },
+            },
+        }
+    }
+
+    /// Who a REGISTER proves to be against what this node kept, while the
+    /// store is away (#326); `None` when it proves nothing.
+    pub async fn register_proves_remembered(
+        &self,
+        request: &Request,
+        remembered: &crate::auth::RememberedHa1,
+    ) -> Option<String> {
+        let authenticator = self.authenticator.as_ref()?;
+        match authenticator
+            .authenticate_remembered(request, remembered)
+            .await
+        {
+            crate::auth::AuthOutcome::Authenticated { username } => Some(username),
+            _ => None,
         }
     }
 
@@ -2120,6 +2173,19 @@ impl FcpRegistrar {
         .await?;
 
         self.get_registration_rows_impl(&tenant_id, aor).await
+    }
+
+    /// The tenant an address of record registers in, as a REGISTER for
+    /// it is resolved; no registration is read.
+    pub async fn tenant_of_aor(&self, aor: &str) -> Result<TenantId> {
+        resolve_tenant_for_inputs(
+            self.tenant_store.as_ref(),
+            self.credential_store.as_ref(),
+            self.default_tenant_id,
+            Some(aor),
+            None,
+        )
+        .await
     }
 
     /// An AOR's live registrations in a tenant, as stored.
