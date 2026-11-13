@@ -982,6 +982,10 @@ pub struct VideoAnswer<'a> {
     pub codecs: &'a [VideoCodec],
     /// SRTP for the video section (its own key); `None` answers plain RTP.
     pub srtp: Option<&'a SrtpSdpContext>,
+    /// How many simulcast streams to take from an offer that sends
+    /// several (RFC 8853), in the offer's order; 0 takes none, and the
+    /// sender then sends one.
+    pub simulcast: usize,
 }
 
 /// Everything an answer needs besides the offer.
@@ -1015,6 +1019,9 @@ pub struct NegotiatedVideo {
     pub remote_crypto: Option<String>,
     /// The section's `a=label`, repeated in the answer (RFC 4574).
     pub label: Option<String>,
+    /// The simulcast streams the answer took, when the offer sent several
+    /// and the answer asked for them.
+    pub simulcast: Option<forge_sdp::SimulcastLayers>,
 }
 
 /// An answer and what it agreed.
@@ -1113,6 +1120,7 @@ fn choose_allowed_video_codec(
 /// Answer an offered video section, or reject it when no allowed codec is
 /// shared.
 fn video_answer_section(
+    offer: &SessionDescription,
     m: &MediaDescription,
     v: &VideoAnswer<'_>,
     remote: Option<SocketAddr>,
@@ -1121,6 +1129,22 @@ fn video_answer_section(
         return (reject_section(m), None);
     };
     let mut sec = answer_video(m, &ci, v.rtp_port, "sendrecv");
+    // Simulcast taken: the streams the offer sends, received (RFC 8853
+    // §5.3), under the offer's rid extension. The rids are answered
+    // without the offer's restrictions: a `pt=` naming a payload type
+    // this answer dropped would be wrong, and none narrows what we take.
+    let simulcast = (v.simulcast >= 2)
+        .then(|| forge_sdp::simulcast_layers(offer, m, forge_sdp::RidDirection::Send, v.simulcast))
+        .flatten()
+        .map(|mut layers| {
+            for rid in &mut layers.rids {
+                rid.restrictions = Default::default();
+            }
+            layers
+        });
+    if let Some(layers) = &simulcast {
+        forge_sdp::write_simulcast(&mut sec, forge_sdp::RidDirection::Recv, layers);
+    }
     sec.protocol = answer_protocol(&m.protocol, v.srtp.is_some());
     if let Some(ctx) = v.srtp {
         sec.attributes
@@ -1146,6 +1170,7 @@ fn video_answer_section(
             .first()
             .map(|c| format!("{} {} {}", c.tag, c.suite, c.key_params)),
         label: forge_sdp::label(m).map(str::to_string),
+        simulcast,
     };
     (sec, Some(negotiated))
 }
@@ -1367,7 +1392,8 @@ pub fn answer_sections(
                 content_done = true;
                 match content {
                     Some(c) => {
-                        let (sec, neg) = video_answer_section(m, c, section_endpoint(offer, m));
+                        let (sec, neg) =
+                            video_answer_section(offer, m, c, section_endpoint(offer, m));
                         negotiated.content = neg;
                         sec
                     }
@@ -1378,7 +1404,8 @@ pub fn answer_sections(
                 camera_done = true;
                 match video {
                     Some(v) => {
-                        let (sec, neg) = video_answer_section(m, v, section_endpoint(offer, m));
+                        let (sec, neg) =
+                            video_answer_section(offer, m, v, section_endpoint(offer, m));
                         negotiated.video = neg;
                         sec
                     }
@@ -3099,6 +3126,7 @@ mod section_tests {
                 rtp_port: 20002,
                 codecs: &codecs,
                 srtp: None,
+                simulcast: 0,
             }),
             content: None,
             bfcp: None,
@@ -3140,6 +3168,7 @@ mod section_tests {
                 rtp_port: 20002,
                 codecs: &codecs,
                 srtp: None,
+                simulcast: 0,
             }),
             content: None,
             bfcp: None,
@@ -3196,6 +3225,7 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
                 rtp_port: 20002,
                 codecs: &codecs,
                 srtp: Some(&video_ctx),
+                simulcast: 0,
             }),
             content: None,
             bfcp: None,
@@ -3252,11 +3282,13 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
                     rtp_port: 20002,
                     codecs: &codecs,
                     srtp: None,
+                    simulcast: 0,
                 }),
                 content: Some(VideoAnswer {
                     rtp_port: 20004,
                     codecs: &codecs,
                     srtp: None,
+                    simulcast: 0,
                 }),
                 bfcp: Some(BfcpAnswer {
                     port: 5060,
@@ -3321,11 +3353,13 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
                     rtp_port: 20002,
                     codecs: &codecs,
                     srtp: None,
+                    simulcast: 0,
                 }),
                 content: Some(VideoAnswer {
                     rtp_port: 20004,
                     codecs: &codecs,
                     srtp: None,
+                    simulcast: 0,
                 }),
                 bfcp: Some(BfcpAnswer {
                     port: 5060,
@@ -3356,11 +3390,13 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
                 rtp_port: 20002,
                 codecs: &codecs,
                 srtp: None,
+                simulcast: 0,
             }),
             content: Some(VideoAnswer {
                 rtp_port: 20004,
                 codecs: &codecs,
                 srtp: None,
+                simulcast: 0,
             }),
             bfcp,
         };
@@ -3449,6 +3485,97 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
         );
         let m = sections(&rewritten);
         assert_eq!(m[1], "m=video 20002 RTP/AVPF 96 97");
+    }
+
+    /// AV_OFFER's camera sending three simulcast streams (RFC 8853), the
+    /// rid extension at session level.
+    fn simulcast_offer() -> String {
+        AV_OFFER
+            .replace(
+                "t=0 0\r\n",
+                "t=0 0\r\na=extmap:3 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\n",
+            )
+            .replace(
+                "a=rtcp-fb:* ccm fir\r\n",
+                "a=rtcp-fb:* ccm fir\r\na=rid:f send pt=96,97;max-height=720\r\n\
+                 a=rid:h send\r\na=rid:q send\r\na=simulcast:send f;h;~q\r\n",
+            )
+    }
+
+    fn simulcast_answer(simulcast: usize) -> Answer {
+        let codecs = [VideoCodec::H264];
+        construct_answer(
+            &simulcast_offer(),
+            &AnswerOptions {
+                server_ip: "10.0.0.5",
+                audio_rtp_port: 20000,
+                audio_srtp: None,
+                video: Some(VideoAnswer {
+                    rtp_port: 20002,
+                    codecs: &codecs,
+                    srtp: None,
+                    simulcast,
+                }),
+                content: None,
+                bfcp: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_camera_s_simulcast_is_taken_when_the_answer_asks_for_it() {
+        let answer = simulcast_answer(3);
+        let video = &answer.sdp[answer.sdp.find("m=video").unwrap()..];
+        assert!(
+            video.contains("a=extmap:3 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\n"),
+            "{video}"
+        );
+        // Received, in the offer's order, the pause kept, and none of the
+        // offer's restrictions (its pt=96 names a format we did not take).
+        assert!(video.contains("a=rid:f recv\r\n"), "{video}");
+        assert!(video.contains("a=rid:h recv\r\n"), "{video}");
+        assert!(video.contains("a=rid:q recv\r\n"), "{video}");
+        assert!(video.contains("a=simulcast:recv f;h;~q\r\n"), "{video}");
+        assert!(!video.contains("max-height"), "{video}");
+        let layers = answer.video.unwrap().simulcast.expect("simulcast taken");
+        let rids: Vec<&str> = layers.rids.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(rids, ["f", "h", "q"]);
+        assert_eq!(layers.paused, [false, false, true]);
+        assert_eq!(layers.rid_extension, Some(3));
+    }
+
+    #[test]
+    fn simulcast_is_capped_and_left_alone_when_not_asked_for() {
+        let two = simulcast_answer(2);
+        assert!(two.sdp.contains("a=simulcast:recv f;h\r\n"), "{}", two.sdp);
+        assert_eq!(two.video.unwrap().simulcast.unwrap().rids.len(), 2);
+
+        let none = simulcast_answer(0);
+        assert!(!none.sdp.contains("a=rid"), "{}", none.sdp);
+        assert!(!none.sdp.contains("a=simulcast"), "{}", none.sdp);
+        assert!(none.video.unwrap().simulcast.is_none());
+    }
+
+    #[test]
+    fn anchoring_carries_simulcast_across_the_node() {
+        let rewritten = rewrite_for_anchoring(
+            &simulcast_offer(),
+            "10.0.0.5",
+            AnchorPorts {
+                audio: 20000,
+                video: Some(20002),
+                content: None,
+            },
+            AnchorKeys::default(),
+        );
+        for line in [
+            "a=extmap:3 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\n",
+            "a=rid:f send pt=96,97;max-height=720\r\n",
+            "a=simulcast:send f;h;~q\r\n",
+        ] {
+            assert!(rewritten.contains(line), "{line} in {rewritten}");
+        }
     }
 
     #[test]

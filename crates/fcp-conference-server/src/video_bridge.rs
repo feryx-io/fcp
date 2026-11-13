@@ -17,7 +17,7 @@ use fcp_core::{Meeting, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
 use fcp_media::{video_codec_to_forge, NegotiatedVideo, SrtpSdpContext};
 use forge_conference::video::{
-    ContentEvent, ContentGate, ContentInfo, ContentLayout, OutputScope, PassthroughMode,
+    ContentEvent, ContentGate, ContentInfo, ContentLayout, OutputScope, PassthroughMode, Simulcast,
     StreamKind, SubscribeRequest, VideoBackend, VideoRoom, VideoRoomEvent, VideoRoomSettings,
     VideoSubscription, View,
 };
@@ -111,6 +111,25 @@ fn source_json(json: &mut serde_json::Value, src: &forge_conference::video::Vide
     json["decode_errors"] = serde_json::json!(src.decode_errors);
     json["nacks_sent"] = serde_json::json!(src.nacks_sent);
     json["plis_sent"] = serde_json::json!(src.plis_sent);
+    // A simulcast sender's layers: which one the room decodes, and what
+    // each is sending (`docs/FORWARDING_ROOMS.md` §2.4).
+    if src.layers.len() > 1 {
+        json["layers"] = serde_json::Value::Array(
+            src.layers
+                .iter()
+                .map(|l| {
+                    serde_json::json!({
+                        "rid": l.rid,
+                        "ssrc": l.ssrc,
+                        "resolution": l.resolution.to_string(),
+                        "bitrate_kbps": l.bitrate_kbps,
+                        "live": l.live,
+                        "decoding": l.decoding,
+                    })
+                })
+                .collect(),
+        );
+    }
 }
 
 /// The egress side of a channel: the flavor, the rung, the counters.
@@ -708,7 +727,20 @@ pub fn attach_video(
     // The sender's own fmtp travels with the source: forwarding its
     // stream to somebody else depends on it (§5.6).
     let profile = leg.negotiated.fmtp.clone().unwrap_or_default();
-    if let Err(e) = video.add_source(participant_id, leg.negotiated.codec, &profile) {
+    // A camera sending simulcast is a layer per rid, of which the room
+    // decodes the smallest that fills its tile (`docs/FORWARDING_ROOMS.md`
+    // §2.4).
+    let simulcast = leg.negotiated.simulcast.as_ref().map(|layers| Simulcast {
+        rids: layers.rids.iter().map(|r| r.id.to_string()).collect(),
+        rid_extension: layers.rid_extension,
+    });
+    if let Err(e) = video.add_source_layered(
+        participant_id,
+        StreamKind::Camera,
+        leg.negotiated.codec,
+        &profile,
+        simulcast.as_ref(),
+    ) {
         warn!(participant = %participant_id, error = %e, "could not add video source");
         return None;
     }
@@ -1647,6 +1679,7 @@ mod tests {
             fir: true,
             nack: false,
             remote_crypto: None,
+            simulcast: None,
         };
         let pli = RtcpPacket::PayloadFeedback(PsFeedback::pli(1, 2));
         let mut seq = 0;
@@ -1774,6 +1807,218 @@ mod tests {
         panic!("no frame {what} in time");
     }
 
+    /// One layer of a simulcast camera: solid raw frames of one size and
+    /// shade under `ssrc`, the rid in the header extension on the first
+    /// frames' packets, as a simulcast sender names its streams.
+    fn send_layer(
+        phone: Arc<RtpSocketPair>,
+        size: (u32, u32),
+        luma: u8,
+        ssrc: u32,
+        rid: &'static str,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let (width, height) = size;
+            let mut enc: Box<dyn VideoEncoder> = raw_registry()
+                .encoder(
+                    &EncoderSettings {
+                        codec: forge_core::VideoCodec::VP8,
+                        resolution: Resolution::new(width, height),
+                        fps: 15,
+                        bitrate_kbps: 300,
+                        keyframe_interval: 30,
+                        profile: String::new(),
+                        content: Default::default(),
+                    },
+                    &MediaDevice::Host,
+                )
+                .unwrap();
+            let mut seq = 1u16;
+            for i in 0u32.. {
+                let f = HostFrame::solid(width, height, luma, 128, 128).with_pts(i * 6000);
+                for c in enc.encode(&VideoFrame::Host(f), false).unwrap() {
+                    let payloads = packetize(forge_core::VideoCodec::VP8, &c, 1200).unwrap();
+                    let n = payloads.len();
+                    for (k, p) in payloads.into_iter().enumerate() {
+                        let mut pkt = RtpPacket::build(97, seq, c.timestamp, ssrc, p, k + 1 == n);
+                        if i < 3 {
+                            pkt.header.version_flags |= 0x10;
+                            pkt.extension =
+                                Some(forge_rtp::RtpExtension::one_byte(&[(4, rid.as_bytes())]));
+                        }
+                        seq = seq.wrapping_add(1);
+                        if phone.send_rtp(&pkt).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(33)).await;
+            }
+        })
+    }
+
+    /// A camera that negotiated simulcast is a source with a layer per rid
+    /// (`docs/FORWARDING_ROOMS.md` §2.4): both layers bound to their SSRCs
+    /// from the rid on their first packets, only one decoded, and the
+    /// composite drawn from it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_simulcast_camera_is_drawn_from_one_of_its_layers() {
+        let room = Arc::new(
+            ConferenceRoom::new(
+                "1000",
+                AudioFormat::pcm_mono(),
+                160,
+                forge_mixer::MixerOptions::default(),
+            )
+            .unwrap(),
+        );
+        room.add_participant("alice", true).unwrap();
+        room.add_participant("bob", false).unwrap();
+        let backend = VideoBackend::raw();
+        let (settings, _) = plan_video(
+            &{
+                let mut m = meeting(true);
+                m.video_layout = "grid".into();
+                m.video_max_resolution = "180p".into();
+                m.video_codecs = vec![VideoCodec::Vp8];
+                m.video_passthrough = "off".into();
+                m
+            },
+            &usable_codecs(&backend, false),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        let sink = VideoEventSink {
+            event_bus: Arc::new(InMemoryEventBus::new()) as Arc<dyn EventPublisher>,
+            tenant_id: TenantId::new(),
+            room_number: "1000".into(),
+            node_id: "conf-a".into(),
+            pumps: Arc::new(dashmap::DashMap::new()),
+            content_gate: None,
+            floor: None,
+        };
+        let lo = |p: u16| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), p);
+        let (alice_server, bob_server, alice_phone, bob_phone) =
+            (free_pair(), free_pair(), free_pair(), free_pair());
+        let alice_srv = socket_pair(alice_server).await;
+        let bob_srv = socket_pair(bob_server).await;
+        let alice_ph = socket_pair(alice_phone).await;
+        let bob_ph = socket_pair(bob_phone).await;
+        for (srv, phone) in [(&alice_srv, alice_phone), (&bob_srv, bob_phone)] {
+            srv.set_remote_endpoint(RemoteEndpoint {
+                rtp_addr: lo(phone),
+                rtcp_addr: Some(lo(phone + 1)),
+            })
+            .await;
+        }
+        alice_ph
+            .set_remote_endpoint(RemoteEndpoint {
+                rtp_addr: lo(alice_server),
+                rtcp_addr: Some(lo(alice_server + 1)),
+            })
+            .await;
+
+        // What answering Alice's simulcast offer agreed, as the handler
+        // answers a participant's camera.
+        let answer = fcp_media::construct_answer(
+            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n\
+             m=audio 4000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n\
+             m=video 4002 RTP/AVP 97\r\na=rtpmap:97 VP8/90000\r\n\
+             a=extmap:4 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\n\
+             a=rid:l send\r\na=rid:h send\r\na=simulcast:send l;h\r\n",
+            &fcp_media::AnswerOptions {
+                server_ip: "127.0.0.1",
+                audio_rtp_port: 5000,
+                audio_srtp: None,
+                video: Some(fcp_media::VideoAnswer {
+                    rtp_port: alice_server,
+                    codecs: &[forge_core::VideoCodec::VP8],
+                    srtp: None,
+                    simulcast: 3,
+                }),
+                content: None,
+                bfcp: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            answer.sdp.contains("a=simulcast:recv l;h"),
+            "{}",
+            answer.sdp
+        );
+        let layers = answer.video.and_then(|v| v.simulcast);
+        assert!(layers.is_some());
+        let plain = NegotiatedVideo {
+            label: None,
+            codec: forge_core::VideoCodec::VP8,
+            payload_type: 97,
+            fmtp: None,
+            remote: None,
+            pli: true,
+            fir: false,
+            nack: true,
+            remote_crypto: None,
+            simulcast: None,
+        };
+        let mut tasks = Vec::new();
+        for (pid, srv, pair, simulcast) in [
+            ("alice", &alice_srv, alice_server, layers),
+            ("bob", &bob_srv, bob_server, None),
+        ] {
+            let leg = VideoLeg {
+                kind: StreamKind::Camera,
+                port_pair: PortPair::new(pair).unwrap(),
+                socket: Arc::clone(srv),
+                srtp_context: None,
+                srtp_sdp: None,
+                negotiated: NegotiatedVideo {
+                    simulcast,
+                    ..plain.clone()
+                },
+                settings: settings.clone(),
+                stats: Arc::new(VideoLegStats::default()),
+                bridge_handle: None,
+            };
+            let fut = attach_video(&room, &backend, pid, Some(pid), &leg, sink.clone()).unwrap();
+            tasks.push(tokio::spawn(fut));
+        }
+
+        // The large layer bright, the small one dark. The small one is
+        // listed first, so the room starts on it; once it has measured both
+        // it ranks them by bitrate (the raw codec has no header to read a
+        // size from) and moves up to the large one for Alice's tile.
+        let high = send_layer(Arc::clone(&alice_ph), (160, 90), 200, 0x1111, "h");
+        let low = send_layer(Arc::clone(&alice_ph), (80, 46), 40, 0x2222, "l");
+        // A 2×1 grid at 320×180: Alice's tile on the left.
+        frame_matching(&bob_ph, "drawn from the large layer", |f| {
+            f.luma(80, 90) == 200
+        })
+        .await;
+
+        let info = room.video().unwrap().participant("alice").unwrap();
+        let src = info.source.expect("alice sends");
+        let bound: Vec<(Option<&str>, u32, bool)> = src
+            .layers
+            .iter()
+            .map(|l| (l.rid.as_deref(), l.ssrc, l.decoding))
+            .collect();
+        assert_eq!(
+            bound,
+            [(Some("l"), 0x2222, false), (Some("h"), 0x1111, true)]
+        );
+        let mut json = serde_json::json!({});
+        source_json(&mut json, &src);
+        assert_eq!(json["layers"][0]["rid"], "l");
+        assert_eq!(json["layers"][1]["decoding"], true);
+        assert_eq!(json["layers"][1]["ssrc"], 0x1111);
+
+        high.abort();
+        low.abort();
+        for t in tasks {
+            t.abort();
+        }
+    }
+
     /// A shared screen through real sockets (§15.6): Alice's screen takes
     /// the floor; Bob's one-section phone gets the presentation; Carol's
     /// two-section phone gets people on one section and the slides —
@@ -1884,6 +2129,7 @@ mod tests {
             fir: false,
             nack: true,
             remote_crypto: None,
+            simulcast: None,
         };
         // Content legs are attached before camera legs, as the handler
         // does, so a two-section phone's main section is the cameras.
@@ -2297,6 +2543,7 @@ mod tests {
             fir: false,
             nack: true,
             remote_crypto: None,
+            simulcast: None,
         };
         let mut legs = Vec::new();
         for (pid, srv, pair) in [
@@ -2728,6 +2975,7 @@ mod tests {
                 fir: false,
                 nack: true,
                 remote_crypto: None,
+                simulcast: None,
             },
             settings: settings.clone(),
             stats: Arc::new(VideoLegStats::default()),
@@ -2848,6 +3096,7 @@ mod tests {
             fir: false,
             nack: true,
             remote_crypto: None,
+            simulcast: None,
         };
         let leg = |socket: &Arc<RtpSocketPair>, port: u16| VideoLeg {
             kind: StreamKind::Content,

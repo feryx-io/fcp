@@ -328,6 +328,25 @@ Each phase is one PR in its repository.
   - FCP: the conference server answers simulcast, and the gateway passes a
     browser's layers through.
   - Useful alone: browsers and Anvil cost less to mix.
+
+  In two parts:
+  - **R1a, done (v0.25.555, forge-media v2026.11.13).** SIP senders.
+    - forge-sdp: `simulcast_layers` and `write_simulcast`.
+    - forge-rtp: `RtpPacket::stream_id`, and `keyframe_dimensions` reading
+      H.264's SPS and VP8's key frame header.
+    - forge-conference: `add_source_layered`. Each layer is bound to its SSRC by
+      the rid on its first packets, and only the smallest layer that fills the
+      tallest tile is decoded. A move up is at once, a move down after two
+      seconds, and a stopped layer is left at once. Heights come from
+      keyframes; where none can be read, the layer with the highest bitrate
+      stands for the tallest.
+    - The conference server takes up to three layers on a participant's camera
+      (`SIMULCAST_LAYERS`), and reports `layers` in its video JSON.
+    - The call manager's anchoring already carries the lines across the node.
+  - **R1b**: forge-webrtc's rid and simulcast negotiation, and the gateway and the
+    join page passing a browser's layers through. It is a part of its own
+    because a browser has to send simulcast as the answerer: the gateway
+    offers.
 - **R2: forwarding in the room** (forge-media).
   - Forwarding subscriptions: a stable SSRC per (viewer, source), and a cache per
     stream.
@@ -397,7 +416,7 @@ The order is R1, R2, R3, then A6 and R4 in either order, then R7 and R5.
 
 ## 8. Questions
 
-Each has a recommendation.
+Each has a recommendation; all twelve were agreed on 2026-11-13.
 
 1. **Forward beside mixing, per subscriber, or a room that only forwards?**
    *Recommendation:* beside mixing. Meetings get `video_mode`: `mix` or `auto`. The
