@@ -413,17 +413,23 @@ In two parts:
 - Anvil-to-Anvil and against-FCP tests.
 - `ARCHITECTURE.md`'s non-goal rewritten.
 
+**Done** (anvil #72–#74, v0.2.36–40).
+
 ### A2: desktop video (anvil)
 
 - `anvil-video` for macOS, Windows and Linux.
 - Flutter textures.
 - The call screen, self-view, camera picker and video toggle.
 
+**Done** (anvil #75–#80, v0.2.41–54): Linux, then VideoToolbox on macOS, then Windows.
+
 ### A3: mobile video (anvil)
 
 - iOS and Android hosts.
 - CallKit and `ConnectionService` video.
 - Background camera handling, picture-in-picture and permissions.
+
+**Done** (anvil #81–#85, v0.2.55–67).
 
 ### F2: rooms for a SIP client (fcp)
 
@@ -499,10 +505,29 @@ F2 is split in two PRs: F2a, the roster, and F2b, the rest.
 - A host's controls.
 - The against-FCP room test.
 
+**Done** (anvil #86–#91, v0.2.68–80; FCP #388–#390, v0.25.546–549):
+- **A4a** (#86): joining by number or link (`X-FCP-Join`, `Recv-Info: fcp-content`),
+  the roster subscription in the call, floor INFOs, a host's controls through
+  `anvil-fcp`, and `two_anvils_meet_in_a_room_on_fcp`.
+- **A4b** (#87): the room panel, the shared screen shown large, the Meetings sheet
+  and `fcp://join/<token>` links.
+- **A4c**: `share_screen` by re-INVITE, with the floor taken by sending (#88). Desktop
+  capture comes from the X server and a test pattern (#89), then the Wayland portal
+  and PipeWire, ScreenCaptureKit and DXGI Desktop Duplication (#91). The app's Share
+  button is #90. FCP's side is a `recvonly` re-INVITE that frees the floor at once
+  (#389). It also fixes a room's re-INVITE, its codec and a roster SUBSCRIBE made
+  while joining (#390).
+- The macOS and Windows capture is type-checked but has not been run on either
+  system. It needs a hand test there.
+
 ### A5: mobile screen share (anvil)
 
 - iOS: a ReplayKit broadcast extension.
 - Android: MediaProjection.
+
+**Done** (anvil #92 and #93, v0.2.81–82, released as v0.2.82 on 2026-11-12).
+
+All phases are done (2026-11-12): F1, F2 and A1–A5.
 
 The phases run in order, with one exception: A1 can start alongside F1, because
 Anvil-to-Anvil needs no FCP. A2 and A3 can run in parallel.
