@@ -378,10 +378,7 @@ async fn conference_server(db_url: &str, dir: &std::path::Path) -> (Service, Soc
 }
 
 /// [`conference_server`], and the port of its HTTP API.
-async fn conference_server_http(
-    db_url: &str,
-    dir: &std::path::Path,
-) -> (Service, SocketAddr, u16) {
+async fn conference_server_http(db_url: &str, dir: &std::path::Path) -> (Service, SocketAddr, u16) {
     let sip = free_port();
     let http = free_port();
     let rtp_start = allocate_port_pair().rtp_port;

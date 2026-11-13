@@ -154,7 +154,8 @@ impl Seed {
                 m.insert(k.clone(), v.clone());
             }
         }
-        let meeting: Meeting = serde_json::from_value(meeting).expect("meeting fixture deserializes");
+        let meeting: Meeting =
+            serde_json::from_value(meeting).expect("meeting fixture deserializes");
         self.storage
             .put_meeting(meeting)
             .await

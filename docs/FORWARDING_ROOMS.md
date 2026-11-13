@@ -343,10 +343,20 @@ Each phase is one PR in its repository.
     - The conference server takes up to three layers on a participant's camera
       (`SIMULCAST_LAYERS`), and reports `layers` in its video JSON.
     - The call manager's anchoring already carries the lines across the node.
-  - **R1b**: forge-webrtc's rid and simulcast negotiation, and the gateway and the
-    join page passing a browser's layers through. It is a part of its own
-    because a browser has to send simulcast as the answerer: the gateway
-    offers.
+  - **R1b, done (v0.25.556, forge-media v2026.11.13.1).** Browsers.
+    - forge-webrtc 0.9.0 asks for simulcast on the camera's section
+      (`VideoConfig::simulcast`, the rid extension as id 2). It also takes
+      simulcast from a remote that offers it.
+    - The gateway asks a browser for `h`, `m` and `l`. It offers the room
+      what the browser agreed, under the browser's extension id
+      (`VideoOfferSection::simulcast`), so the packets cross unchanged.
+      Feedback naming one of the browser's streams is sent to that stream.
+    - The join page sizes the encodings at 1, 2 and 4 times down.
+    - Chromium agrees as the answerer. It sends two layers for a 640×480
+      camera, because it limits layers by input size. The room bound each
+      layer and read its size from H.264 keyframes in
+      `a_browser_s_camera_reaches_the_room_as_simulcast`, which runs where
+      Playwright is installed. Firefox and Safari have not been tried.
 - **R2: forwarding in the room** (forge-media).
   - Forwarding subscriptions: a stable SSRC per (viewer, source), and a cache per
     stream.

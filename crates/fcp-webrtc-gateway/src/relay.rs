@@ -688,7 +688,9 @@ mod tests {
         let pli = RtcpPacket::PayloadFeedback(PsFeedback::pli(99, 11));
         assert_eq!(feedback_target(&pli, 12, &streams), 11);
         match rewrite_feedback(&pli, 7, feedback_target(&pli, 12, &streams)) {
-            Some(RtcpPacket::PayloadFeedback(fb)) => assert_eq!((fb.sender_ssrc, fb.media_ssrc), (7, 11)),
+            Some(RtcpPacket::PayloadFeedback(fb)) => {
+                assert_eq!((fb.sender_ssrc, fb.media_ssrc), (7, 11))
+            }
             other => panic!("{other:?}"),
         }
         // One the browser never sent with goes to its latest stream, as
