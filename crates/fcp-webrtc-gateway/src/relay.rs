@@ -226,6 +226,20 @@ pub fn rewrite_feedback(packet: &RtcpPacket, sender: u32, media: u32) -> Option<
     }
 }
 
+/// The SSRC feedback from the SIP side is about, as the browser knows
+/// it: the one it names when that is one of the browser's own streams (a
+/// simulcast layer), else `fallback`, the stream the browser sends.
+pub fn feedback_target(packet: &RtcpPacket, fallback: u32, streams: &[u32]) -> u32 {
+    packet
+        .feedback_media_ssrc()
+        .filter(|ssrc| streams.contains(ssrc))
+        .unwrap_or(fallback)
+}
+
+/// The most SSRCs a browser's camera is expected to send with: a stream
+/// per simulcast layer, and one more after a restart.
+const MAX_CAMERA_STREAMS: usize = 8;
+
 async fn protect(
     srtp: &Option<Arc<Mutex<SrtpContext>>>,
     plain: &[u8],
@@ -302,6 +316,9 @@ pub async fn run_relay(
     // What each side sends each video section with, learned from the
     // first packet each way, so feedback can be re-addressed.
     let mut browser_video_ssrc: Option<u32> = None;
+    // Every SSRC the browser's camera has sent with: one, or a stream per
+    // simulcast layer, which reach the SIP side under their own SSRCs.
+    let mut browser_video_ssrcs: Vec<u32> = Vec::new();
     let mut sip_video_ssrc: Option<u32> = None;
     let our_video_ssrc = browser.video.as_ref().map(|(v, _)| v.ssrc());
     let mut browser_content_ssrc: Option<u32> = None;
@@ -363,6 +380,12 @@ pub async fn run_relay(
                             continue;
                         };
                         browser_video_ssrc = Some(pkt.header.ssrc);
+                        let ssrc = pkt.header.ssrc;
+                        if !browser_video_ssrcs.contains(&ssrc)
+                            && browser_video_ssrcs.len() < MAX_CAMERA_STREAMS
+                        {
+                            browser_video_ssrcs.push(ssrc);
+                        }
                         video_to_sip(video, &pkt, &stats, &stats.video_to_sip, "video").await;
                     }
                     PeerEvent::ContentRtp(pkt) => {
@@ -452,7 +475,7 @@ pub async fn run_relay(
                 };
                 let (Some(video), Some((sender, _)), Some(media), Some(ours)) =
                     (&sip.video, &browser.video, browser_video_ssrc, our_video_ssrc) else { continue };
-                feedback_to_browser(video, sender, ours, media, raw, &stats).await;
+                feedback_to_browser(video, sender, ours, media, &browser_video_ssrcs, raw, &stats).await;
             }
 
             received = recv_rtp_on(&sip.content) => {
@@ -473,7 +496,7 @@ pub async fn run_relay(
                 };
                 let (Some(content), Some((sender, _)), Some(media), Some(ours)) =
                     (&sip.content, &browser.content, browser_content_ssrc, our_content_ssrc) else { continue };
-                feedback_to_browser(content, sender, ours, media, raw, &stats).await;
+                feedback_to_browser(content, sender, ours, media, &[], raw, &stats).await;
             }
         }
     }
@@ -587,12 +610,16 @@ async fn feedback_to_sip(leg: &SipVideoLeg, rewritten: &[RtcpPacket], stats: &Re
 
 /// A SIP section's feedback to the browser, re-addressed: from `ours`
 /// (the SSRC the browser knows the section by) about `media` (what the
-/// browser sends it with).
+/// browser sends it with), unless it names one of `streams` — a
+/// simulcast layer the browser sends under its own SSRC, which the far
+/// side knows it by, and which is what it means.
+#[allow(clippy::too_many_arguments)]
 async fn feedback_to_browser(
     leg: &SipVideoLeg,
     sender: &VideoSender,
     ours: u32,
     media: u32,
+    streams: &[u32],
     raw: Bytes,
     stats: &RelayStats,
 ) {
@@ -601,7 +628,7 @@ async fn feedback_to_browser(
     };
     let rewritten: Vec<RtcpPacket> = RtcpPacket::parse_compound(&plain)
         .iter()
-        .filter_map(|p| rewrite_feedback(p, ours, media))
+        .filter_map(|p| rewrite_feedback(p, ours, feedback_target(p, media, streams)))
         .collect();
     if rewritten.is_empty() {
         return;
@@ -651,6 +678,24 @@ mod tests {
         assert!(back.header.marker());
         assert_eq!({ back.header.sequence_number }, 7);
         assert_eq!({ back.header.ssrc }, 0x1234);
+    }
+
+    #[test]
+    fn feedback_about_a_simulcast_layer_keeps_its_ssrc() {
+        // The browser sends layers under 10, 11 and 12; the room asks for a
+        // keyframe on 11, the one it is switching to.
+        let streams = [10, 11, 12];
+        let pli = RtcpPacket::PayloadFeedback(PsFeedback::pli(99, 11));
+        assert_eq!(feedback_target(&pli, 12, &streams), 11);
+        match rewrite_feedback(&pli, 7, feedback_target(&pli, 12, &streams)) {
+            Some(RtcpPacket::PayloadFeedback(fb)) => assert_eq!((fb.sender_ssrc, fb.media_ssrc), (7, 11)),
+            other => panic!("{other:?}"),
+        }
+        // One the browser never sent with goes to its latest stream, as
+        // before there were layers.
+        let stranger = RtcpPacket::PayloadFeedback(PsFeedback::pli(99, 55));
+        assert_eq!(feedback_target(&stranger, 12, &streams), 12);
+        assert_eq!(feedback_target(&pli, 12, &[]), 12);
     }
 
     #[test]

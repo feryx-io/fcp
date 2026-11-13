@@ -528,6 +528,11 @@ pub struct VideoOfferSection<'a> {
     pub feedback: bool,
     /// `a=crypto` for the section; `None` offers plain RTP.
     pub srtp: Option<&'a SrtpSdpContext>,
+    /// Simulcast this section sends (RFC 8853): `a=rid:<id> send` per
+    /// stream, `a=simulcast:send …` and the rid header extension under
+    /// the layers' id. The gateway passes on what a browser agreed to send
+    /// it, under the browser's own id, so the packets cross unchanged.
+    pub simulcast: Option<&'a forge_sdp::SimulcastLayers>,
 }
 
 /// The `a=label` an offered content section carries (RFC 4574), by which
@@ -635,6 +640,9 @@ pub fn construct_offer(opts: &OfferOptions<'_>) -> Result<String> {
         if stream == VideoStream::Content {
             forge_sdp::set_content(&mut video, &[forge_sdp::Content::Slides]);
             forge_sdp::set_label(&mut video, CONTENT_LABEL);
+        }
+        if let Some(layers) = v.simulcast {
+            forge_sdp::write_simulcast(&mut video, forge_sdp::RidDirection::Send, layers);
         }
         video = video.add_property("sendrecv").map_err(sdp_err)?;
         sections.push(video);
@@ -2255,6 +2263,7 @@ mod tests {
                 ),
                 feedback: true,
                 srtp: Some(&video_key.sdp),
+                simulcast: None,
             }),
             content: None,
         })

@@ -194,8 +194,31 @@
     }
     const answer = await conn.createAnswer();
     await conn.setLocalDescription(answer);
+    await sizeSimulcast(conn);
     await call('POST', `/v1/rooms/${id}/answer`, { sdp_answer: answer.sdp }, token, base);
     return { pc: conn, contentSender: sender };
+  }
+
+  // The gateway asks for the camera as simulcast: three encodings named
+  // h, m and l. A browser that agreed made them, but leaves their sizes to
+  // us: full, half and a quarter, so the room can decode the one its tile
+  // needs (docs/FORWARDING_ROOMS.md §2.7). A browser that did not agree
+  // has one encoding, and nothing is changed.
+  const SIMULCAST_SCALE = { h: 1, m: 2, l: 4 };
+  async function sizeSimulcast(conn) {
+    const camera = conn.getTransceivers().find((t) => t.mid === '1');
+    if (!camera || !camera.sender.track) return;
+    const params = camera.sender.getParameters();
+    if (!params.encodings || params.encodings.length < 2) return;
+    for (const e of params.encodings) {
+      if (e.rid in SIMULCAST_SCALE) e.scaleResolutionDownBy = SIMULCAST_SCALE[e.rid];
+    }
+    try {
+      await camera.sender.setParameters(params);
+      log(`camera sent as ${params.encodings.length} simulcast layers`);
+    } catch (e) {
+      log(`simulcast sizes refused: ${e.message}`);
+    }
   }
 
   // This gateway is leaving service and has said so in the session's
