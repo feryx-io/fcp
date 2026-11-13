@@ -448,6 +448,12 @@ struct OwnDialog {
 
 /// The longest roster subscription granted, and the length of one that
 /// asks for none.
+/// How many simulcast streams a participant's camera may send the room
+/// (`docs/FORWARDING_ROOMS.md` §2.4). The room decodes one, the smallest
+/// that fills its tile. A leg's layers are fixed when it starts: a
+/// re-INVITE answers the same rids and keeps the source as it is.
+const SIMULCAST_LAYERS: usize = 3;
+
 const ROSTER_MAX_EXPIRES: u64 = 3600;
 /// How often the rosters are compared with what subscribers were told.
 const ROSTER_EVERY: Duration = Duration::from_millis(500);
@@ -4170,6 +4176,11 @@ impl ConferenceCallHandler {
             rtp_port: pair.rtp_port,
             codecs: &codecs,
             srtp: srtp_sdp.as_ref(),
+            simulcast: if kind == StreamKind::Camera {
+                SIMULCAST_LAYERS
+            } else {
+                0
+            },
         };
         let probe = match kind {
             StreamKind::Camera => {
@@ -4992,6 +5003,7 @@ impl ConferenceCallHandler {
                 fir: section.feedback,
                 nack: section.feedback,
                 remote_crypto: None,
+                simulcast: None,
             },
             settings: plan.settings.clone(),
             stats: Arc::new(VideoLegStats::default()),
@@ -5185,11 +5197,13 @@ impl ConferenceCallHandler {
                     rtp_port: pair.rtp_port,
                     codecs: &trunk_codecs,
                     srtp: video_answer_srtp.as_ref().map(|(_, sdp)| sdp),
+                    simulcast: 0,
                 }),
                 content_pair.map(|cp| VideoAnswer {
                     rtp_port: cp.rtp_port,
                     codecs: &trunk_codecs,
                     srtp: content_answer_srtp.as_ref().map(|(_, sdp)| sdp),
+                    simulcast: 0,
                 }),
                 None,
             ),
@@ -6089,11 +6103,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 rtp_port: vp.rtp_port,
                 codecs: &video_codecs,
                 srtp: video_srtp_sdp.as_ref(),
+                simulcast: SIMULCAST_LAYERS,
             }),
             content_pair.map(|cp| VideoAnswer {
                 rtp_port: cp.rtp_port,
                 codecs: &video_codecs,
                 srtp: content_srtp_sdp.as_ref(),
+                simulcast: 0,
             }),
             bfcp_answer,
         );
@@ -7825,11 +7841,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 rtp_port: leg.port_pair.rtp_port,
                 codecs: &video_codec,
                 srtp: video_srtp_sdp.as_ref(),
+                simulcast: SIMULCAST_LAYERS,
             }),
             session.content.as_ref().map(|leg| VideoAnswer {
                 rtp_port: leg.port_pair.rtp_port,
                 codecs: &content_codec,
                 srtp: content_srtp_sdp.as_ref(),
+                simulcast: 0,
             }),
             bfcp_answer,
         );
@@ -7984,11 +8002,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         rtp_port: leg.port_pair.rtp_port,
                         codecs: &video_codec,
                         srtp: None,
+                        simulcast: SIMULCAST_LAYERS,
                     }),
                     session.content.as_ref().map(|leg| VideoAnswer {
                         rtp_port: leg.port_pair.rtp_port,
                         codecs: &content_codec,
                         srtp: None,
+                        simulcast: 0,
                     }),
                     bfcp_answer,
                 )
