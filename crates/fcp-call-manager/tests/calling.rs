@@ -1019,17 +1019,27 @@ async fn the_caller_transfers_the_callee() {
     );
     assert!(alice_call.ended(SOON).await, "Alice's leg was not dropped");
 
-    // Bob, on his own call still, hears Carol, and she him.
+    // Bob, on his own call still, hears Carol, and she him. A failure
+    // names what arrived and leaves the node's log (#355: Carol once
+    // heard nothing on CI, and the bare assert said no more).
     carol_call.media().play_tone(660.0, 3000);
-    assert!(
-        bob_call.media().heard(660, SOON).await,
-        "Bob does not hear Carol"
-    );
+    if !bob_call.media().heard(660, SOON).await {
+        let why = format!(
+            "Bob does not hear Carol ({} packets, {} frames of the tone)",
+            bob_call.media().packets_received(),
+            bob_call.media().tone_frames(660),
+        );
+        stack.fail(&why, &alice).await;
+    }
     bob_call.media().play_tone(440.0, 3000);
-    assert!(
-        carol_call.media().heard(440, SOON).await,
-        "Carol does not hear Bob"
-    );
+    if !carol_call.media().heard(440, SOON).await {
+        let why = format!(
+            "Carol does not hear Bob ({} packets, {} frames of the tone)",
+            carol_call.media().packets_received(),
+            carol_call.media().tone_frames(440),
+        );
+        stack.fail(&why, &alice).await;
+    }
     bob_call.hangup().await.unwrap();
     assert!(
         carol_call.ended(SOON).await,
