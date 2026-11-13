@@ -402,11 +402,7 @@ impl RateLimiter {
             total_bytes = total_bytes.saturating_add(*b);
         }
 
-        if total_bytes.saturating_add(bytes) > self.max_bytes {
-            return false;
-        }
-
-        true
+        total_bytes.saturating_add(bytes) <= self.max_bytes
     }
 
     /// Record a request (consumes the limit).
