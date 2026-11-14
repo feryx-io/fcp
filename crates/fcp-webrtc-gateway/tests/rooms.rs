@@ -41,7 +41,7 @@ impl Gateway {
     /// conference server) or, with `cluster_redis`, through cluster
     /// placement.
     async fn start(conference: SocketAddr, cluster_redis: Option<&str>) -> Self {
-        Self::start_as("e2e-webrtc-gw", None, 0, conference, cluster_redis).await
+        Self::start_as("e2e-webrtc-gw", None, 0, conference, cluster_redis, false).await
     }
 
     /// The same, under a node id of its own and advertising where a
@@ -53,6 +53,7 @@ impl Gateway {
         drain_wait_secs: u64,
         conference: SocketAddr,
         cluster_redis: Option<&str>,
+        public_join: bool,
     ) -> Self {
         let sip = free_port();
         let http = free_port();
@@ -77,6 +78,8 @@ drain_wait_secs = {drain_wait_secs}
 
 [http]
 bind_address = "127.0.0.1:{http}"
+public_join = {public_join}
+serve_join_page = {public_join}
 {public_url}
 
 [auth]
@@ -370,6 +373,12 @@ fn join_token(seed: &Seed, name: &str) -> String {
 
 /// A single conference server with the join secret, for the gateway.
 async fn conference_server(db_url: &str, dir: &std::path::Path) -> (Service, SocketAddr) {
+    let (service, sip, _) = conference_server_http(db_url, dir).await;
+    (service, sip)
+}
+
+/// [`conference_server`], and the port of its HTTP API.
+async fn conference_server_http(db_url: &str, dir: &std::path::Path) -> (Service, SocketAddr, u16) {
     let sip = free_port();
     let http = free_port();
     let rtp_start = allocate_port_pair().rtp_port;
@@ -411,7 +420,7 @@ format = "compact"
     );
     let bin = bins::path("fcp-conference", "fcp-conference-server");
     let service = Service::start("conference", bin, &config, &loopback(http, "/health")).await;
-    (service, SocketAddr::from(([127, 0, 0, 1], sip)))
+    (service, SocketAddr::from(([127, 0, 0, 1], sip)), http)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -641,6 +650,7 @@ async fn a_draining_gateway_hands_its_browsers_to_another() {
         30,
         cluster.nodes[0].sip,
         Some(&cluster.redis_url),
+        false,
     )
     .await;
     let mut staying = Gateway::start_as(
@@ -649,6 +659,7 @@ async fn a_draining_gateway_hands_its_browsers_to_another() {
         0,
         cluster.nodes[0].sip,
         Some(&cluster.redis_url),
+        false,
     )
     .await;
     // Long enough for each gateway's heartbeat to reach the other.
@@ -765,4 +776,164 @@ async fn store_the_stream(db_url: &str, redis_url: &str) -> fcp_cdr::Consumer {
         Arc::new(fcp_cdr::Processor::new(store, None)),
         fcp_cdr::ConsumerConfig::default(),
     )
+}
+
+/// Drives the gateway's join page in Chromium through Playwright, with a
+/// fake camera: `PW` is the Playwright package, `URL` the page. It prints
+/// the page's log as it goes and leaves when its stdin closes.
+const JOIN_IN_CHROMIUM: &str = r#"
+const { chromium } = require(process.env.PW);
+(async () => {
+  const browser = await chromium.launch({
+    args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+  });
+  const page = await browser.newPage();
+  page.on('console', (m) => console.log('page:', m.text()));
+  await page.goto(process.env.URL);
+  const seen = new Set();
+  const tick = setInterval(async () => {
+    try {
+      const lines = (await page.textContent('#log') || '').split('\n').filter((l) => l.trim());
+      for (const l of lines) if (!seen.has(l)) { seen.add(l); console.log('log:', l); }
+    } catch (_) {}
+  }, 500);
+  process.stdin.resume();
+  process.stdin.on('end', async () => { clearInterval(tick); await browser.close(); process.exit(0); });
+})().catch((e) => { console.error(e); process.exit(1); });
+"#;
+
+/// A real browser's camera reaches the room as simulcast
+/// (`docs/FORWARDING_ROOMS.md` §2.7, R1b): the gateway asks Chromium for
+/// three encodings, the join page sizes them, the gateway passes them on
+/// under the browser's rid extension, and the room binds each to its SSRC
+/// and reads its size from its VP8 keyframes. Runs only where
+/// `FCP_TEST_PLAYWRIGHT` names a Playwright package (and `FCP_TEST_NODE`
+/// a node, else `node`), the conference server is built with
+/// `--features video-vpx,video-openh264`, and the database is set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_s_camera_reaches_the_room_as_simulcast() {
+    let Ok(playwright) = std::env::var("FCP_TEST_PLAYWRIGHT") else {
+        eprintln!("skipped: FCP_TEST_PLAYWRIGHT is not set");
+        return;
+    };
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    seed.meeting_with(
+        ROOM,
+        serde_json::json!({
+            "video_enabled": true,
+            "video_codecs": ["H264", "VP8"],
+            "video_layout": "grid",
+            "video_passthrough": "off",
+        }),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (conference, conf_sip, conf_http) = conference_server_http(db.url(), dir.path()).await;
+    let mut gw = Gateway::start_as("e2e-webrtc-gw", None, 0, conf_sip, None, true).await;
+
+    let script = dir.path().join("join.js");
+    std::fs::write(&script, JOIN_IN_CHROMIUM).unwrap();
+    let url = format!(
+        "http://127.0.0.1:{}/join?room={ROOM}&name=web&video=true&autojoin=true&token={}",
+        gw.http,
+        join_token(&seed, "web"),
+    );
+    let mut chromium = tokio::process::Command::new(
+        std::env::var("FCP_TEST_NODE").unwrap_or_else(|_| "node".into()),
+    )
+    .arg(&script)
+    .env("PW", &playwright)
+    .env("URL", &url)
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .kill_on_drop(true)
+    .spawn()
+    .expect("node runs");
+
+    // The room's own report of the browser's camera.
+    let scenario = async {
+        let deadline = tokio::time::Instant::now() + A_WHILE;
+        let mut last = serde_json::Value::Null;
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let tenant = seed.tenant_id.to_string();
+            let Ok((200, body)) = http_request(
+                "GET",
+                &loopback(conf_http, &format!("/conferences/{ROOM}/stats")),
+                &[("x-fcp-tenant-id", &tenant)],
+                None,
+            )
+            .await
+            else {
+                continue;
+            };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) else {
+                continue;
+            };
+            let layers = json["participants"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find_map(|p| p["video"]["layers"].as_array().cloned());
+            last = json;
+            let Some(layers) = layers else { continue };
+            let bound: Vec<&serde_json::Value> = layers
+                .iter()
+                .filter(|l| l["ssrc"].as_u64().unwrap_or(0) != 0 && l["live"] == true)
+                .collect();
+            // Read from VP8 keyframes, not guessed.
+            let sized = bound
+                .iter()
+                .filter(|l| l["resolution"].as_str().is_some_and(|r| r != "0x0"))
+                .count();
+            if layers.len() == 3 && bound.len() >= 2 && sized >= 2 {
+                let rids: Vec<&str> = layers.iter().filter_map(|l| l["rid"].as_str()).collect();
+                if rids != ["h", "m", "l"] {
+                    return Err(format!("the room's layers are {rids:?}"));
+                }
+                // The tallest live layer is the one decoded: the room's
+                // single tile is taller than any of them.
+                let height = |l: &serde_json::Value| -> u32 {
+                    l["resolution"]
+                        .as_str()
+                        .and_then(|r| r.split('x').nth(1))
+                        .and_then(|h| h.parse().ok())
+                        .unwrap_or(0)
+                };
+                let tallest = bound.iter().max_by_key(|l| height(l)).unwrap();
+                if tallest["decoding"] != true {
+                    return Err(format!("the tallest live layer is not decoded: {layers:?}"));
+                }
+                return Ok(layers);
+            }
+        }
+        Err(format!("no simulcast reached the room: {last}"))
+    }
+    .await;
+    drop(chromium.stdin.take());
+    let out = tokio::time::timeout(SOON, chromium.wait_with_output()).await;
+    match scenario {
+        Ok(layers) => eprintln!("the room's layers: {layers:#?}"),
+        Err(why) => {
+            let page = match out {
+                Ok(Ok(o)) => format!(
+                    "{}\n{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                ),
+                _ => "chromium did not stop".to_string(),
+            };
+            let logs = gw.logs().await;
+            let conf = conference.kill().await;
+            panic!("{why}\n--- page\n{page}\n--- gateway\n{logs}\n--- conference\n{conf}");
+        }
+    }
+    gw.service.take().unwrap().stop().await;
+    conference.stop().await;
+    db.drop_db().await;
 }

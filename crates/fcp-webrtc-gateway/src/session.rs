@@ -257,6 +257,10 @@ pub struct ContentSummary {
 /// sending.
 const SENDING_WINDOW: Duration = Duration::from_secs(3);
 
+/// The simulcast streams asked of a browser's camera, largest first; the
+/// join page scales them 1, 2 and 4 times down.
+pub const BROWSER_SIMULCAST: [&str; 3] = ["h", "m", "l"];
+
 /// A join request body.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct JoinRequest {
@@ -890,6 +894,11 @@ impl SessionManager {
             video: video.then(|| VideoConfig {
                 direction: Direction::SendRecv,
                 content,
+                // The camera's simulcast, passed on to the room, which
+                // decodes the layer its tile needs
+                // (`docs/FORWARDING_ROOMS.md` §2.7). The join page sizes
+                // the encodings: `h` full, `m` half, `l` a quarter.
+                simulcast: BROWSER_SIMULCAST.iter().map(|r| r.to_string()).collect(),
                 ..VideoConfig::default()
             }),
             transport: TransportConfig {
@@ -1387,6 +1396,8 @@ impl SessionManager {
                 fmtp: o.negotiated.fmtp.as_deref(),
                 feedback: true,
                 srtp: o.srtp.as_ref().map(|s| &s.sdp),
+                // The browser's layers, sent on as they are (§2.7).
+                simulcast: o.negotiated.simulcast.as_ref(),
             }
         }
         let video_section = offered_video.as_ref().map(section_of);

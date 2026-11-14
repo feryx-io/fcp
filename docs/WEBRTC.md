@@ -56,6 +56,31 @@ A meeting whose conference node rejects video (no native codec compiled
 in, no budget) joins audio-only: the browser's video section stays
 negotiated but idle, and the session reports `video: null`.
 
+### The camera as simulcast
+
+The gateway's offer asks for the camera as three simulcast streams
+(`a=rid:h recv`, `a=rid:m recv`, `a=rid:l recv`, `a=simulcast:recv h;m;l`
+and the RFC 8852 rid header extension). A browser that agrees sends one
+encoding per rid. The join page sizes them: `h` full, `m` half and `l` a
+quarter. The browser may send fewer than it agreed to; Chromium sends two
+for a 640×480 camera.
+
+The gateway passes the streams on to the conference server as they
+arrive, each under its own SSRC. Its offer to the room names the same
+rids and uses the browser's own id for the extension, so the packets
+cross unchanged. The room decodes only the stream its tile needs
+(`docs/FORWARDING_ROOMS.md` §2.4). When the room asks for a keyframe from
+one of the streams, the gateway sends that request on to the stream it
+names. A browser that does not agree sends one encoding, as before.
+
+`fcp-webrtc-gateway/tests/rooms.rs`
+`a_browser_s_camera_reaches_the_room_as_simulcast` drives the join page in
+Chromium. It runs when:
+
+- `FCP_TEST_PLAYWRIGHT` names a Playwright package;
+- `FCP_TEST_NODE` names a node (else `node` is used);
+- the conference server is built with `video-vpx,video-openh264`.
+
 ## Sharing a screen
 
 Both legs carry the screen as a second video section from the start, so
@@ -332,8 +357,8 @@ old session once the new one is connected.
 
 - Recording, cascaded video and the WebRTC gateway's video on trunks:
   phase 5.
-- transport-cc, RTX, FEC, simulcast (header extensions arrived with
-  screen share: only `sdes:mid` is read).
+- transport-cc, RTX and FEC. Header extensions arrived with screen share:
+  `sdes:mid` is read, and the rid extension is passed on to the room.
 - A screen shared from a browser with no camera: the screen section is
   offered only beside a camera section.
 - Re-offering the browser to drop an idle video section when the

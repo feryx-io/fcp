@@ -131,6 +131,37 @@ impl Seed {
             .await
     }
 
+    /// As [`Seed::meeting`], with no PINs and the meeting's other fields
+    /// set from `fields` (`{"video_enabled": true, "video_codecs": ["VP8"]}`).
+    pub async fn meeting_with(&self, room: &str, fields: serde_json::Value) {
+        let mut meeting = serde_json::json!({
+            "id": MeetingId::new(),
+            "tenant_id": self.tenant_id,
+            "room_number": room,
+            "name": format!("Room {room}"),
+            "require_guest_pin": false,
+            "max_participants": 10,
+            "wait_for_moderator": false,
+            "enabled": true,
+            "auto_record": false,
+            "default_locked": false,
+            "permanent": true,
+            "created_at": SystemTime::now(),
+            "updated_at": SystemTime::now(),
+        });
+        if let (Some(m), Some(extra)) = (meeting.as_object_mut(), fields.as_object()) {
+            for (k, v) in extra {
+                m.insert(k.clone(), v.clone());
+            }
+        }
+        let meeting: Meeting =
+            serde_json::from_value(meeting).expect("meeting fixture deserializes");
+        self.storage
+            .put_meeting(meeting)
+            .await
+            .expect("seed meeting");
+    }
+
     /// As [`Seed::meeting`], in `tenant`'s numbering.
     pub async fn meeting_in(
         &self,
