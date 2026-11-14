@@ -7703,6 +7703,8 @@ export interface components {
             video_passthrough?: string;
             video_content_share?: string;
             video_content_layout?: string;
+            /** @description `mix` (the default) or `auto`. */
+            video_mode?: string;
         };
         CreateNetworkRequest: {
             /** @description A range (`10.1.2.0/24`) or a single address. */
@@ -9185,6 +9187,11 @@ export interface components {
              *     `content_only`.
              */
             video_content_layout: string;
+            /**
+             * @description Who is sent the composite: `mix` (everyone) or `auto` (a client
+             *     that asks for each person's own stream gets them instead).
+             */
+            video_mode: string;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -10635,6 +10642,11 @@ export interface components {
                  *     `content_only`.
                  */
                 video_content_layout: string;
+                /**
+                 * @description Who is sent the composite: `mix` (everyone) or `auto` (a client
+                 *     that asks for each person's own stream gets them instead).
+                 */
+                video_mode: string;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -14292,6 +14304,7 @@ export interface components {
             video_passthrough?: string | null;
             video_content_share?: string | null;
             video_content_layout?: string | null;
+            video_mode?: string | null;
         };
         /** @description Update message request. */
         UpdateMessageRequest: {

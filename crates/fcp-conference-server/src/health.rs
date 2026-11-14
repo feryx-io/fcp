@@ -724,6 +724,8 @@ struct CreateMeetingRequest {
     video_content_share: String,
     #[serde(default = "fcp_core::meeting::default_video_content_layout")]
     video_content_layout: String,
+    #[serde(default = "fcp_core::meeting::default_video_mode")]
+    video_mode: String,
 }
 
 fn default_true() -> bool {
@@ -867,6 +869,7 @@ async fn create_meeting_handler(
         video_passthrough: payload.video_passthrough,
         video_content_share: payload.video_content_share,
         video_content_layout: payload.video_content_layout,
+        video_mode: payload.video_mode,
         created_at: now,
         updated_at: now,
     };
@@ -971,6 +974,7 @@ struct UpdateMeetingRequest {
     video_codecs: Option<Vec<fcp_core::VideoCodec>>,
     video_content_share: Option<String>,
     video_content_layout: Option<String>,
+    video_mode: Option<String>,
 }
 
 async fn update_meeting_handler(
@@ -1134,6 +1138,10 @@ async fn update_meeting_handler(
     if let Some(v) = payload.video_content_layout {
         meeting.video_content_layout = v;
         changed_fields.push("video_content_layout".to_string());
+    }
+    if let Some(v) = payload.video_mode {
+        meeting.video_mode = v;
+        changed_fields.push("video_mode".to_string());
     }
     if let Err(msg) = meeting.validate_video_settings() {
         return (

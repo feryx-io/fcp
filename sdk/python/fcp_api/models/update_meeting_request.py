@@ -58,6 +58,7 @@ class UpdateMeetingRequest:
             video_passthrough (None | str | Unset):
             video_content_share (None | str | Unset):
             video_content_layout (None | str | Unset):
+            video_mode (None | str | Unset):
      """
 
     name: None | str | Unset = UNSET
@@ -91,6 +92,7 @@ class UpdateMeetingRequest:
     video_passthrough: None | str | Unset = UNSET
     video_content_share: None | str | Unset = UNSET
     video_content_layout: None | str | Unset = UNSET
+    video_mode: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -291,6 +293,12 @@ class UpdateMeetingRequest:
         else:
             video_content_layout = self.video_content_layout
 
+        video_mode: None | str | Unset
+        if isinstance(self.video_mode, Unset):
+            video_mode = UNSET
+        else:
+            video_mode = self.video_mode
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -358,6 +366,8 @@ class UpdateMeetingRequest:
             field_dict["video_content_share"] = video_content_share
         if video_content_layout is not UNSET:
             field_dict["video_content_layout"] = video_content_layout
+        if video_mode is not UNSET:
+            field_dict["video_mode"] = video_mode
 
         return field_dict
 
@@ -691,6 +701,16 @@ class UpdateMeetingRequest:
         video_content_layout = _parse_video_content_layout(d.pop("video_content_layout", UNSET))
 
 
+        def _parse_video_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        video_mode = _parse_video_mode(d.pop("video_mode", UNSET))
+
+
         update_meeting_request = cls(
             name=name,
             guest_pin=guest_pin,
@@ -723,6 +743,7 @@ class UpdateMeetingRequest:
             video_passthrough=video_passthrough,
             video_content_share=video_content_share,
             video_content_layout=video_content_layout,
+            video_mode=video_mode,
         )
 
 

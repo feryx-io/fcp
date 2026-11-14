@@ -57,6 +57,7 @@ const createSchema = z.object({
   video_fps: z.coerce.number().int().min(1, 'Must be 1–30').max(30, 'Must be 1–30').optional(),
   video_exclude_self: z.boolean().optional(),
   video_passthrough: z.enum(['off', 'auto', 'on']).optional(),
+  video_mode: z.enum(['mix', 'auto']).optional(),
   video_content_share: z.enum(['off', 'hosts', 'anyone']).optional(),
   video_content_layout: z.enum(['presentation', 'content_only']).optional(),
   video_codecs: z.array(z.string()).optional(),
@@ -90,6 +91,7 @@ const editSchema = z.object({
   video_fps: z.coerce.number().int().min(1, 'Must be 1–30').max(30, 'Must be 1–30').optional(),
   video_exclude_self: z.boolean().optional(),
   video_passthrough: z.enum(['off', 'auto', 'on']).optional(),
+  video_mode: z.enum(['mix', 'auto']).optional(),
   video_content_share: z.enum(['off', 'hosts', 'anyone']).optional(),
   video_content_layout: z.enum(['presentation', 'content_only']).optional(),
   video_codecs: z.array(z.string()).optional(),
@@ -465,7 +467,7 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
     resolver: zodResolver(createSchema),
     defaultValues: {
       enabled: true, require_guest_pin: false, wait_for_moderator: false, auto_record: false, default_locked: false, permanent: false, max_participants: 0,
-      video_enabled: false, video_layout: 'grid', video_max_participants: 16, video_max_resolution: '720p', video_fps: 15, video_exclude_self: false, video_passthrough: 'auto', video_content_share: 'anyone', video_content_layout: 'presentation', video_codecs: DEFAULT_VIDEO_CODECS,
+      video_enabled: false, video_layout: 'grid', video_max_participants: 16, video_max_resolution: '720p', video_fps: 15, video_exclude_self: false, video_passthrough: 'auto', video_mode: 'mix', video_content_share: 'anyone', video_content_layout: 'presentation', video_codecs: DEFAULT_VIDEO_CODECS,
     },
   })
 
@@ -500,6 +502,7 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
       video_fps: data.video_fps,
       video_exclude_self: data.video_exclude_self,
       video_passthrough: data.video_passthrough,
+      video_mode: data.video_mode,
       video_content_share: data.video_content_share,
       video_content_layout: data.video_content_layout,
       video_codecs: data.video_codecs as VideoCodecName[] | undefined,
@@ -680,6 +683,23 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
                   sharper and lower latency, but with no name banner or speaking border.
                 </p>
               </div>
+              <div>
+                <Label className="text-xs">Each Person&apos;s Own Stream</Label>
+                <Select
+                  value={watch('video_mode') ?? 'mix'}
+                  onValueChange={(v) => setValue('video_mode', v as 'mix' | 'auto')}
+                >
+                  <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="mix">Off — everyone gets the composed picture</SelectItem>
+                    <SelectItem value="auto">For apps that ask — they draw their own layout</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  An app that asks is sent each participant&apos;s own camera and lays out the
+                  room itself; phones, room systems and recordings still get the composed picture.
+                </p>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label className="text-xs">Screen Sharing</Label>
@@ -767,6 +787,7 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
       video_fps: item.video_fps ?? 15,
       video_exclude_self: item.video_exclude_self ?? false,
       video_passthrough: (item.video_passthrough as 'off' | 'auto' | 'on') ?? 'auto',
+      video_mode: (item.video_mode as 'mix' | 'auto') ?? 'mix',
       video_content_share: (item.video_content_share as 'off' | 'hosts' | 'anyone') ?? 'anyone',
       video_content_layout: (item.video_content_layout as 'presentation' | 'content_only') ?? 'presentation',
       video_codecs: item.video_codecs ?? DEFAULT_VIDEO_CODECS,
@@ -802,6 +823,7 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
     if (data.video_fps !== undefined) update.video_fps = data.video_fps
     if (data.video_exclude_self !== undefined) update.video_exclude_self = data.video_exclude_self
     if (data.video_passthrough !== undefined) update.video_passthrough = data.video_passthrough
+    if (data.video_mode !== undefined) update.video_mode = data.video_mode
     if (data.video_content_share !== undefined) update.video_content_share = data.video_content_share
     if (data.video_content_layout !== undefined) update.video_content_layout = data.video_content_layout
     if (data.video_codecs !== undefined) update.video_codecs = data.video_codecs as VideoCodecName[]
@@ -969,6 +991,23 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
                 <p className="text-xs text-muted-foreground mt-1">
                   Sends a viewer the speaker&apos;s own stream instead of a composed one:
                   sharper and lower latency, but with no name banner or speaking border.
+                </p>
+              </div>
+              <div>
+                <Label className="text-xs">Each Person&apos;s Own Stream</Label>
+                <Select
+                  value={watch('video_mode') ?? 'mix'}
+                  onValueChange={(v) => setValue('video_mode', v as 'mix' | 'auto')}
+                >
+                  <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="mix">Off — everyone gets the composed picture</SelectItem>
+                    <SelectItem value="auto">For apps that ask — they draw their own layout</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  An app that asks is sent each participant&apos;s own camera and lays out the
+                  room itself; phones, room systems and recordings still get the composed picture.
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-4">

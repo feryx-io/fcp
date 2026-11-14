@@ -7,6 +7,13 @@
 //! What RFC 4575 has no element for — speaking, presenting, the camera's
 //! state — is in FCP's own namespace ([`FCP_NS`]), which a reader that does
 //! not know it skips (RFC 4575 §5).
+//!
+//! A participant sent each person's own stream (`docs/FORWARDING_ROOMS.md`
+//! §2.2) is told whose each SSRC is: a member's `<media id="video">` carries
+//! the `<src-id>` that subscriber receives them on, `fcp:paused` when the
+//! stream is held back, and the member the speaker stream shows has a
+//! `<media id="speaker">` with that stream's `<src-id>`. Every subscriber's
+//! roster is its own, since NOTIFYs are sent per subscription.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -52,13 +59,67 @@ pub(crate) struct Member {
     pub video: Option<&'static str>,
     pub speaking: bool,
     pub presenting: bool,
+    /// A host's spotlight is on them: a client drawing its own layout
+    /// honours it as the composite does.
+    pub spotlight: bool,
+    /// The stream the subscriber receives them on, when the subscriber
+    /// forwards.
+    pub stream: Option<StreamOf>,
+    /// The subscriber's speaker stream shows them, under this SSRC.
+    pub speaker_stream: Option<u32>,
     pub joined_at: SystemTime,
+}
+
+/// A member's stream, as one forwarding subscriber receives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StreamOf {
+    pub ssrc: u32,
+    pub paused: bool,
 }
 
 /// A room's roster: its members by participant id.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Roster {
     pub members: BTreeMap<String, Member>,
+}
+
+/// One of a forwarding subscriber's streams, for [`Roster::for_viewer`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ViewerStream {
+    pub ssrc: u32,
+    /// The participant the stream was asked for; `None` for the speaker
+    /// stream.
+    pub asked_for: Option<String>,
+    /// Whom it shows now.
+    pub showing: Option<String>,
+    pub paused: bool,
+}
+
+impl Roster {
+    /// This roster as a forwarding subscriber is told it: each member with
+    /// the stream the subscriber receives them on.
+    pub(crate) fn for_viewer(&self, streams: &[ViewerStream]) -> Roster {
+        let mut out = self.clone();
+        for s in streams {
+            match &s.asked_for {
+                Some(id) => {
+                    if let Some(m) = out.members.get_mut(id) {
+                        m.stream = Some(StreamOf {
+                            ssrc: s.ssrc,
+                            paused: s.paused,
+                        });
+                    }
+                }
+                None if !s.paused => {
+                    if let Some(m) = s.showing.as_ref().and_then(|id| out.members.get_mut(id)) {
+                        m.speaker_stream = Some(s.ssrc);
+                    }
+                }
+                None => {}
+            }
+        }
+        out
+    }
 }
 
 /// Where a roster's entities live: `sip:<id>@<domain>`.
@@ -174,9 +235,24 @@ fn user(out: &mut String, names: &Names, id: &str, member: Option<&Member>) {
         } else {
             "recvonly"
         };
+        let src = m
+            .stream
+            .map(|s| format!("<src-id>{}</src-id>", s.ssrc))
+            .unwrap_or_default();
+        let paused = if m.stream.is_some_and(|s| s.paused) {
+            "<fcp:paused>true</fcp:paused>"
+        } else {
+            ""
+        };
         let _ = writeln!(
             out,
-            "        <media id=\"video\"><type>video</type><status>{status}</status><fcp:camera>{video}</fcp:camera></media>"
+            "        <media id=\"video\"><type>video</type>{src}<status>{status}</status><fcp:camera>{video}</fcp:camera>{paused}</media>"
+        );
+    }
+    if let Some(ssrc) = m.speaker_stream {
+        let _ = writeln!(
+            out,
+            "        <media id=\"speaker\"><type>video</type><label>speaker</label><src-id>{ssrc}</src-id><status>sendonly</status></media>"
         );
     }
     if m.presenting {
@@ -191,6 +267,9 @@ fn user(out: &mut String, names: &Names, id: &str, member: Option<&Member>) {
         "        <fcp:presenting>{}</fcp:presenting>",
         m.presenting
     );
+    if m.spotlight {
+        let _ = writeln!(out, "        <fcp:spotlight>true</fcp:spotlight>");
+    }
     let _ = writeln!(out, "      </endpoint>\n    </user>");
 }
 
@@ -227,6 +306,9 @@ mod tests {
             video: Some("on"),
             speaking: false,
             presenting: false,
+            spotlight: false,
+            stream: None,
+            speaker_stream: None,
             joined_at: UNIX_EPOCH + Duration::from_secs(1_794_000_000),
         }
     }
@@ -294,6 +376,89 @@ mod tests {
         );
         assert!(doc.contains("<user-count>2</user-count>"), "{doc}");
         assert_eq!(partial(&NAMES, 5, &now, &now), None, "nothing changed");
+    }
+
+    #[test]
+    fn a_forwarding_subscriber_is_told_whose_each_stream_is() {
+        let mut ann = member("Ann");
+        ann.stream = Some(StreamOf {
+            ssrc: 1111,
+            paused: false,
+        });
+        ann.speaker_stream = Some(3333);
+        ann.spotlight = true;
+        let mut bob = member("Bob");
+        bob.stream = Some(StreamOf {
+            ssrc: 2222,
+            paused: true,
+        });
+        let doc = full(&NAMES, 1, &roster(&[("p1", ann.clone()), ("p2", bob)]));
+        let (ann_doc, bob_doc) = doc.split_at(doc.find("sip:p2@").unwrap());
+        assert!(
+            ann_doc.contains(
+                "<media id=\"video\"><type>video</type><src-id>1111</src-id><status>sendrecv</status>"
+            ),
+            "{ann_doc}"
+        );
+        assert!(
+            ann_doc.contains("<media id=\"speaker\"><type>video</type><label>speaker</label><src-id>3333</src-id>"),
+            "{ann_doc}"
+        );
+        assert!(ann_doc.contains("<fcp:spotlight>true</fcp:spotlight>"));
+        assert!(!ann_doc.contains("fcp:paused"));
+        assert!(
+            bob_doc.contains("<src-id>2222</src-id>")
+                && bob_doc.contains("<fcp:paused>true</fcp:paused>"),
+            "{bob_doc}"
+        );
+        assert!(!bob_doc.contains("speaker\""), "{bob_doc}");
+
+        // The speaker stream moving on is an update to both.
+        let mut moved = ann;
+        moved.speaker_stream = None;
+        let before = roster(&[("p1", member("x"))]);
+        let now = roster(&[("p1", moved)]);
+        let doc = partial(&NAMES, 2, &before, &now).unwrap();
+        assert!(!doc.contains("speaker\""), "{doc}");
+    }
+
+    #[test]
+    fn a_viewers_streams_are_laid_on_the_rooms_roster() {
+        let room = roster(&[("p1", member("Ann")), ("p2", member("Bob"))]);
+        let mine = room.for_viewer(&[
+            ViewerStream {
+                ssrc: 7,
+                asked_for: None,
+                showing: Some("p2".into()),
+                paused: false,
+            },
+            ViewerStream {
+                ssrc: 8,
+                asked_for: Some("p1".into()),
+                showing: Some("p1".into()),
+                paused: true,
+            },
+            ViewerStream {
+                ssrc: 9,
+                asked_for: Some("gone".into()),
+                showing: None,
+                paused: true,
+            },
+        ]);
+        assert_eq!(
+            mine.members["p1"].stream,
+            Some(StreamOf {
+                ssrc: 8,
+                paused: true
+            })
+        );
+        assert_eq!(mine.members["p2"].speaker_stream, Some(7));
+        assert_eq!(mine.members["p2"].stream, None, "not asked for by name");
+        assert_eq!(mine.members.len(), 2);
+        assert_eq!(
+            room.members["p1"].stream, None,
+            "the room's own is left alone"
+        );
     }
 
     #[test]

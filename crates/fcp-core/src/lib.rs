@@ -75,6 +75,7 @@ pub mod totp;
 pub mod transport;
 pub mod trunk;
 pub mod trunk_report;
+pub mod video_view;
 pub mod voicemail;
 
 // Re-export commonly used types
@@ -143,6 +144,16 @@ pub const CONTENT_INFO_PACKAGE: &str = "fcp-content";
 /// The body of a [`CONTENT_INFO_PACKAGE`] INFO: JSON naming what the floor
 /// did, whom it concerns and the presenter.
 pub const CONTENT_INFO_TYPE: &str = "application/vnd.fcp.content+json";
+
+/// The info package (RFC 6086) a participant of a forwarding room asks for
+/// streams in (`docs/FORWARDING_ROOMS.md` §2.3). An INVITE that says
+/// `Recv-Info: fcp-view` takes each person's own stream where the meeting's
+/// `video_mode` is `auto`; the room's answer says `Recv-Info: fcp-view`
+/// when it is, and the participant then sends an INFO of
+/// [`VIEW_INFO_TYPE`] ([`video_view::View`]) each time its layout changes.
+pub const VIEW_INFO_PACKAGE: &str = "fcp-view";
+/// The body of a [`VIEW_INFO_PACKAGE`] INFO.
+pub const VIEW_INFO_TYPE: &str = "application/vnd.fcp.view+json";
 
 /// Whether an INVITE's `Recv-Info` headers name `package` (RFC 6086 §5.2.2:
 /// a comma-separated list, the header repeatable).

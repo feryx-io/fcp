@@ -2,8 +2,12 @@
 //! packets and counts what arrives (`docs/SOFTPHONE_VIDEO.md` §4).
 //!
 //! Nothing here is a codec. A packet is an RTP header with payload type
-//! 96 (H.264 in the SDP) and a payload naming its sequence number, which
-//! is all a relay that copies packets can be held to. RTCP is a PLI
+//! 96 (H.264 in the SDP, or VP8) and a payload naming its sequence number,
+//! which is all a relay that copies packets can be held to. A frame sent by
+//! [`VideoLeg::send_frames`] starts with the payload descriptor of its codec,
+//! a keyframe's or not, which is all a room that forwards it without
+//! decoding reads (`docs/FORWARDING_ROOMS.md`). What arrives is counted by
+//! SSRC, for a room that sends several streams in the section. RTCP is a PLI
 //! (RFC 4585 §6.3.1) sent on request and counted on receipt. With SDES
 //! the section is keyed as a phone keys it: its own key in an offer, or
 //! its own under the offer's tag in an answer.
@@ -23,6 +27,14 @@ pub const VIDEO_PT: u8 = 96;
 
 /// The SSRC this phone's video is sent with.
 const SSRC: u32 = 0x5644_4f30;
+
+/// What the section says it sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VideoCodec {
+    #[default]
+    H264,
+    Vp8,
+}
 
 /// How a phone keys its video.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +60,9 @@ pub struct VideoLeg {
     advertised: IpAddr,
     mode: VideoMode,
     keys: Arc<Mutex<Keys>>,
+    codec: VideoCodec,
+    /// Packets received, by SSRC.
+    by_ssrc: Arc<Mutex<std::collections::HashMap<u32, u64>>>,
     /// The `a=crypto` this phone puts in its section, once it has a key.
     crypto: Mutex<Option<SrtpSdpContext>>,
     remote: Mutex<Option<SocketAddr>>,
@@ -60,6 +75,16 @@ pub struct VideoLeg {
 impl VideoLeg {
     /// A video section bound on `bind`, its SDP naming `advertised`.
     pub async fn open(bind: IpAddr, advertised: IpAddr, mode: VideoMode) -> Result<Self> {
+        Self::open_as(bind, advertised, mode, VideoCodec::H264).await
+    }
+
+    /// [`open`](Self::open), saying it sends `codec`.
+    pub async fn open_as(
+        bind: IpAddr,
+        advertised: IpAddr,
+        mode: VideoMode,
+        codec: VideoCodec,
+    ) -> Result<Self> {
         let pair = crate::media::allocate_port_pair_at(bind);
         let rtp = Arc::new(UdpSocket::bind((bind, pair.rtp_port)).await?);
         let rtcp = Arc::new(UdpSocket::bind((bind, pair.rtp_port + 1)).await?);
@@ -73,18 +98,21 @@ impl VideoLeg {
         };
         let received = Arc::new(AtomicU64::new(0));
         let plis = Arc::new(AtomicU64::new(0));
+        let by_ssrc = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let tasks = vec![
             tokio::spawn(read(
                 Arc::clone(&rtp),
                 Arc::clone(&keys),
                 Arc::clone(&received),
                 Arc::clone(&plis),
+                Arc::clone(&by_ssrc),
             )),
             tokio::spawn(read(
                 Arc::clone(&rtcp),
                 Arc::clone(&keys),
                 Arc::clone(&received),
                 Arc::clone(&plis),
+                Arc::clone(&by_ssrc),
             )),
         ];
         Ok(Self {
@@ -94,6 +122,8 @@ impl VideoLeg {
             advertised,
             mode,
             keys,
+            codec,
+            by_ssrc,
             crypto: Mutex::new(crypto),
             remote: Mutex::new(None),
             received,
@@ -109,11 +139,18 @@ impl VideoLeg {
             VideoMode::Plain => "RTP/AVPF",
             VideoMode::Srtp => "RTP/SAVPF",
         };
+        let codec = match self.codec {
+            VideoCodec::H264 => format!(
+                "a=rtpmap:{pt} H264/90000\r\n\
+                 a=fmtp:{pt} profile-level-id=42e01f;packetization-mode=1\r\n",
+                pt = VIDEO_PT
+            ),
+            VideoCodec::Vp8 => format!("a=rtpmap:{VIDEO_PT} VP8/90000\r\n"),
+        };
         let mut s = format!(
             "m=video {port} {profile} {pt}\r\n\
              c=IN IP4 {ip}\r\n\
-             a=rtpmap:{pt} H264/90000\r\n\
-             a=fmtp:{pt} profile-level-id=42e01f;packetization-mode=1\r\n\
+             {codec}\
              a=rtcp-fb:{pt} nack\r\n\
              a=rtcp-fb:{pt} nack pli\r\n\
              a=rtcp-fb:{pt} ccm fir\r\n\
@@ -188,6 +225,38 @@ impl VideoLeg {
             self.rtp.send_to(&out, to).await?;
         }
         Ok(())
+    }
+
+    /// Send `n` frames of one packet each, numbered on from the last, every
+    /// `keyframe_every`-th a keyframe (the first always is): the payload
+    /// starts as the codec's does, so a room that forwards without
+    /// decoding can tell where pictures start.
+    pub async fn send_frames(&self, n: u16, keyframe_every: u16) -> Result<()> {
+        let to = self.remote().context("no far end for video")?;
+        for i in 0..n {
+            let seq = self.seq.fetch_add(1, Ordering::Relaxed) as u16;
+            let key = i % keyframe_every.max(1) == 0;
+            let mut packet = vec![0x80, 0x80 | VIDEO_PT];
+            packet.extend_from_slice(&seq.to_be_bytes());
+            packet.extend_from_slice(&(u32::from(seq) * 3000).to_be_bytes());
+            packet.extend_from_slice(&SSRC.to_be_bytes());
+            match self.codec {
+                // An IDR slice, or a P slice.
+                VideoCodec::H264 => packet.push(if key { 0x65 } else { 0x41 }),
+                // The start of partition 0, then the payload header's P bit.
+                VideoCodec::Vp8 => packet.extend_from_slice(&[0x10, if key { 0x00 } else { 0x01 }]),
+            }
+            packet.extend_from_slice(b"fcp-video");
+            packet.extend_from_slice(&seq.to_be_bytes());
+            let out = self.protect(&packet, false)?;
+            self.rtp.send_to(&out, to).await?;
+        }
+        Ok(())
+    }
+
+    /// Packets of this harness's received, by the SSRC they came under.
+    pub fn received_by_ssrc(&self) -> std::collections::HashMap<u32, u64> {
+        self.by_ssrc.lock().unwrap().clone()
     }
 
     /// Ask the far end for a keyframe.
@@ -265,6 +334,7 @@ async fn read(
     keys: Arc<Mutex<Keys>>,
     received: Arc<AtomicU64>,
     plis: Arc<AtomicU64>,
+    by_ssrc: Arc<Mutex<std::collections::HashMap<u32, u64>>>,
 ) {
     let mut buf = vec![0u8; 2048];
     loop {
@@ -294,9 +364,13 @@ async fn read(
             }
         } else if plain.len() > 12
             && plain[1] & 0x7f == VIDEO_PT
-            && plain[12..].starts_with(b"fcp-video")
+            // After the header: the payload as sent, behind its codec's
+            // first bytes when it was sent as frames.
+            && (0..=2).any(|at| plain[12 + at.min(plain.len() - 12)..].starts_with(b"fcp-video"))
         {
             received.fetch_add(1, Ordering::Relaxed);
+            let ssrc = u32::from_be_bytes([plain[8], plain[9], plain[10], plain[11]]);
+            *by_ssrc.lock().unwrap().entry(ssrc).or_default() += 1;
         }
     }
 }

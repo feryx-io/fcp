@@ -158,6 +158,11 @@ pub struct ParticipantSession {
     /// joined by a token, or the INVITE said `Recv-Info: fcp-content`, as
     /// a SIP client in a room does (`docs/SOFTPHONE_VIDEO.md` §2.6).
     pub floor_notices: bool,
+    /// Sent each person's own stream on the camera section rather than the
+    /// composite (`docs/FORWARDING_ROOMS.md` §2.1): the INVITE said
+    /// `Recv-Info: fcp-view` and the meeting's `video_mode` is `auto`. Its
+    /// `fcp-view` INFOs say which streams.
+    pub view_streams: bool,
     /// The BFCP ids the answer gave a room system that offered floor
     /// control (§15.6, 7e).
     pub bfcp: Option<BfcpAssignment>,
@@ -1496,6 +1501,7 @@ impl ConferenceCallHandler {
             }
             json["is_dial_out"] = serde_json::json!(session.is_dial_out);
             json["floor_notices"] = serde_json::json!(session.floor_notices);
+            json["view_streams"] = serde_json::json!(session.view_streams);
             let silence = session.stats.silence_frames.load(Ordering::Relaxed);
             json["stats"] = serde_json::json!({
                 "packets_received": session.stats.packets_received.load(Ordering::Relaxed),
@@ -3152,6 +3158,7 @@ impl ConferenceCallHandler {
                 content_sends: true,
                 joined_by_token: false,
                 floor_notices: false,
+                view_streams: false,
                 bfcp: None,
                 record: LegRecord::own(
                     format!("conference:{room_number}"),
@@ -4228,6 +4235,7 @@ impl ConferenceCallHandler {
                 negotiated,
                 settings,
                 stats: Arc::new(VideoLegStats::default()),
+                forward: false,
                 bridge_handle: None,
             },
             meeting.video_content_share,
@@ -5009,6 +5017,7 @@ impl ConferenceCallHandler {
             },
             settings: plan.settings.clone(),
             stats: Arc::new(VideoLegStats::default()),
+            forward: false,
             bridge_handle: None,
         }))
     }
@@ -5375,6 +5384,7 @@ impl ConferenceCallHandler {
             negotiated,
             settings,
             stats: Arc::new(VideoLegStats::default()),
+            forward: false,
             bridge_handle: None,
         })
     }
@@ -5479,6 +5489,7 @@ impl ConferenceCallHandler {
                 content_sends: true,
                 joined_by_token: false,
                 floor_notices: false,
+                view_streams: false,
                 bfcp: None,
                 record: LegRecord::own(
                     format!("trunk:{}", leg.peer_node),
@@ -5851,6 +5862,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .lookup_meeting(&key.tenant, &key.room)
             .await?
             .context("Meeting not found")?;
+        // Each person's own stream for a client that takes them, in a
+        // meeting that forwards (`docs/FORWARDING_ROOMS.md` §2.1).
+        let view_streams = meeting.video_mode == "auto"
+            && fcp_core::recv_info_has(&recv_info, fcp_core::VIEW_INFO_PACKAGE);
 
         if !meeting.enabled {
             let reject = UserAgentServer::create_response(request, 403, "Conference Disabled");
@@ -6151,6 +6166,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let (mut response, dialog) = uas
             .accept_invite(&answered_request, Some(&sdp_answer))
             .context("Failed to create 200 OK")?;
+        // The room takes the participant's views (RFC 6086 §5.2.2): what
+        // tells them it is forwarding to them.
+        if view_streams {
+            let _ = response
+                .headers_mut()
+                .push("Recv-Info", fcp_core::VIEW_INFO_PACKAGE);
+        }
 
         // 8b. RFC 4028: Add Session-Expires and Min-SE headers if session timers are enabled
         if conf.session_expires_secs > 0 {
@@ -6290,6 +6312,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     negotiated,
                     settings: settings.clone(),
                     stats: Arc::new(VideoLegStats::default()),
+                    forward: false,
                     bridge_handle: None,
                 })
             }
@@ -6304,6 +6327,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     payload_type = negotiated.payload_type,
                     video_port = vp.rtp_port,
                     srtp = video_srtp_context.is_some(),
+                    forwarding = view_streams,
                     "Video negotiated"
                 );
                 Some(VideoLeg {
@@ -6315,6 +6339,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     negotiated,
                     settings: settings.clone(),
                     stats: Arc::new(VideoLegStats::default()),
+                    forward: view_streams,
                     bridge_handle: None,
                 })
             }
@@ -7139,6 +7164,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     joined_by_token: join.is_some()
                         || migrate.as_ref().is_some_and(|t| t.token_join),
                     floor_notices,
+                    view_streams,
                     bfcp: bfcp_assignment.clone(),
                     record: LegRecord::from_request(request, None),
                 },
@@ -7452,6 +7478,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 content_sends: true,
                 joined_by_token: join.is_some(),
                 floor_notices,
+                view_streams,
                 bfcp: bfcp_assignment.clone(),
                 record: LegRecord::from_request(
                     request,
@@ -7728,7 +7755,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 crypto.first().filter(|_| conf.enable_srtp),
             );
             video_codec = vec![leg.negotiated.codec];
-        } else if let Some((leg, policy)) = new_video {
+        } else if let Some((mut leg, policy)) = new_video {
+            // Added later, it is sent what the call was agreed to be sent.
+            leg.forward = session.view_streams;
             let started = match self.bridge.get_room(&key) {
                 Ok(room) => self.start_video_leg(
                     &room,
@@ -8089,6 +8118,20 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .sessions
             .get(&call_id)
             .ok_or_else(|| anyhow::anyhow!("No conference session for call_id: {}", call_id))?;
+
+        // A forwarding participant's view (`docs/FORWARDING_ROOMS.md` §2.3).
+        let package = sip_parse::header(request.headers(), "Info-Package").map(|v| {
+            v.as_str()
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        });
+        if package.as_deref() == Some(fcp_core::VIEW_INFO_PACKAGE) {
+            let (code, reason) = self.take_view(&session, body);
+            return Ok(UserAgentServer::create_response(request, code, reason));
+        }
 
         // Parse DTMF from application/dtmf-relay body
         if !body.is_empty() {
@@ -8550,7 +8593,8 @@ impl ConferenceCallHandler {
     /// subscription that lapsed, whose participant left, or whose room is
     /// over, is ended.
     fn update_rosters(&self, key: &RoomKey) {
-        let roster = self.roster_of(key);
+        let room_roster = self.roster_of(key);
+        let video = self.bridge.get_room(key).ok().and_then(|r| r.video());
         let domain = self.local_sip_uri.host().to_string();
         let names = crate::roster::Names {
             room: &key.room,
@@ -8567,7 +8611,19 @@ impl ConferenceCallHandler {
             let Some(mut sub) = self.conference_subscriptions.get_mut(&id) else {
                 continue;
             };
-            let here = self.sessions.contains_key(&sub.participant_call);
+            let viewer = self
+                .sessions
+                .get(&sub.participant_call)
+                .map(|s| s.participant_id.clone());
+            let here = viewer.is_some();
+            // A forwarding participant is told whose each of their
+            // streams is (`docs/FORWARDING_ROOMS.md` §2.2).
+            let roster = match (&room_roster, &video, &viewer) {
+                (Some(r), Some(v), Some(pid)) if v.is_forwarding(pid) => {
+                    Some(r.for_viewer(&viewer_streams(&v.forwarded_streams(pid))))
+                }
+                (r, _, _) => r.clone(),
+            };
             let version = sub.version + 1;
             let (state, body, end) = match &roster {
                 None => (
@@ -8679,6 +8735,40 @@ impl ConferenceCallHandler {
         }
     }
 
+    /// A participant's `fcp-view` INFO: what they ask to be sent, handed to
+    /// the room, whose roster then says what was granted. 469 when the call
+    /// was not agreed to take streams (RFC 6086 §4.2.2), 400 for a body
+    /// that cannot mean anything.
+    fn take_view(&self, session: &ParticipantSession, body: &[u8]) -> (u16, &'static str) {
+        if !session.view_streams {
+            return (469, "Bad Info Package");
+        }
+        let view = match fcp_core::video_view::View::parse(body) {
+            Ok(v) => v,
+            Err(e) => {
+                debug!(participant = %session.participant_id, error = %e, "fcp-view INFO refused");
+                return (400, "Bad View");
+            }
+        };
+        let Some(video) = self
+            .bridge
+            .get_room(&session.room_key())
+            .ok()
+            .and_then(|r| r.video())
+        else {
+            return (481, "No Video In The Room");
+        };
+        match video.set_view(&session.participant_id, video_bridge::view_request(&view)) {
+            Ok(()) => {
+                debug!(participant = %session.participant_id,
+                       streams = ?view.streams.as_ref().map(Vec::len), "view taken");
+                (200, "OK")
+            }
+            // The camera section is not up yet, or has gone.
+            Err(_) => (481, "Not Forwarding"),
+        }
+    }
+
     /// A room's roster now: each caller here by name, with their audio,
     /// camera, speaking and presenting; `None` when the room is gone.
     /// Callers on a peer node are not listed (their node has them).
@@ -8687,6 +8777,7 @@ impl ConferenceCallHandler {
         let video = room.video();
         let speaker = video.as_ref().and_then(|v| v.active_speaker());
         let presenter = video.as_ref().and_then(|v| v.content_holder());
+        let spotlight = video.as_ref().and_then(|v| v.status().spotlight);
         let meta: std::collections::HashMap<String, forge_mixer::ParticipantMetadata> = room
             .get_all_participant_metadata()
             .into_iter()
@@ -8732,12 +8823,33 @@ impl ConferenceCallHandler {
                     video: camera,
                     speaking,
                     presenting: presenter.as_deref() == Some(id.as_str()),
+                    spotlight: spotlight.as_deref() == Some(id.as_str()),
+                    stream: None,
+                    speaker_stream: None,
                     joined_at: s.joined_at,
                 },
             );
         }
         Some(roster)
     }
+}
+
+/// A forwarding participant's streams as its roster needs them.
+fn viewer_streams(
+    streams: &[forge_conference::video::ForwardedStreamInfo],
+) -> Vec<crate::roster::ViewerStream> {
+    streams
+        .iter()
+        .map(|s| crate::roster::ViewerStream {
+            ssrc: s.ssrc,
+            asked_for: match &s.target {
+                forge_conference::video::StreamTarget::Participant(p) => Some(p.clone()),
+                forge_conference::video::StreamTarget::Speaker => None,
+            },
+            showing: s.participant.clone(),
+            paused: s.paused,
+        })
+        .collect()
 }
 
 /// A header's `tag` parameter.

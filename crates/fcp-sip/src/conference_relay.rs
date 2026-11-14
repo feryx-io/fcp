@@ -12,7 +12,11 @@
 //!   dialog, and the room's NOTIFYs back in the phone's, with their
 //!   `Subscription-State`, type and body as they are (RFC 4575, RFC 6665);
 //! - the room's floor INFO (`application/vnd.fcp.content+json`) is sent on
-//!   to the phone.
+//!   to the phone;
+//! - in a forwarding room (`docs/FORWARDING_ROOMS.md` §2.3) the INVITE's
+//!   `Recv-Info: fcp-view` goes on to the room, the room's answer saying it
+//!   back goes on to the phone, and the phone's view INFO
+//!   (`application/vnd.fcp.view+json`) goes on to the room.
 //!
 //! The node's general in-dialog relay is not used for these: it opens a new
 //! subscription to the far leg's contact rather than sending in the dialog,
@@ -35,7 +39,8 @@ pub(crate) const SUBSCRIBE_HEADERS: &[&str] = &["Event", "Expires", "Accept"];
 /// The headers a roster NOTIFY takes from the room to the phone.
 pub(crate) const NOTIFY_HEADERS: &[&str] = &["Event", "Subscription-State", "Content-Type"];
 
-/// The headers a floor INFO takes from the room to the phone.
+/// The headers a floor INFO takes from the room to the phone, and a view
+/// INFO from the phone to the room.
 pub(crate) const INFO_HEADERS: &[&str] = &["Info-Package", "Content-Type"];
 
 /// What the room is told of a phone's INVITE beyond what every conference
@@ -64,8 +69,10 @@ pub(crate) fn join_headers(
         }
     }
     let recv: Vec<&str> = request.headers().get_all("Recv-Info").collect();
-    if fcp_core::recv_info_has(&recv, fcp_core::CONTENT_INFO_PACKAGE) {
-        headers.push(("Recv-Info", fcp_core::CONTENT_INFO_PACKAGE.to_string()));
+    for package in [fcp_core::CONTENT_INFO_PACKAGE, fcp_core::VIEW_INFO_PACKAGE] {
+        if fcp_core::recv_info_has(&recv, package) {
+            headers.push(("Recv-Info", package.to_string()));
+        }
     }
     headers
 }
@@ -86,6 +93,15 @@ pub(crate) fn is_floor_info(request: &Request) -> bool {
         t.split(';')
             .next()
             .is_some_and(|t| t.trim().eq_ignore_ascii_case(fcp_core::CONTENT_INFO_TYPE))
+    })
+}
+
+/// An INFO carrying a phone's view of a forwarding room.
+pub(crate) fn is_view_info(request: &Request) -> bool {
+    request.headers().get("Content-Type").is_some_and(|t| {
+        t.split(';')
+            .next()
+            .is_some_and(|t| t.trim().eq_ignore_ascii_case(fcp_core::VIEW_INFO_TYPE))
     })
 }
 
@@ -176,6 +192,12 @@ mod tests {
         )));
         assert!(!is_floor_info(&request(
             "Content-Type: application/dtmf-relay\r\n"
+        )));
+        assert!(is_view_info(&request(
+            "Content-Type: application/vnd.fcp.view+json\r\n"
+        )));
+        assert!(!is_view_info(&request(
+            "Content-Type: application/vnd.fcp.content+json\r\n"
         )));
     }
 

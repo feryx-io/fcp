@@ -3635,6 +3635,99 @@ async fn video_reaches_a_caller_behind_nat() {
     stack.finish().await;
 }
 
+/// A phone in a forwarding room through the call manager
+/// (`docs/FORWARDING_ROOMS.md` §2.3, R3b), against a stand-in conference
+/// node: the phone's `Recv-Info: fcp-view` reaches the room beside
+/// `fcp-content`, the room's answer saying `Recv-Info: fcp-view` reaches the
+/// phone, and the phone's view INFO reaches the room in the room's call, with
+/// its package, type and body. A view INFO from the room's side is not sent
+/// to the phone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phones_views_cross_the_call_manager_to_a_forwarding_room() {
+    let room_port = free_port();
+    let extra =
+        format!("[b2bua]\nconference_server_uri = \"sip:conference@127.0.0.1:{room_port}\"\n");
+    let Some(stack) = Stack::start_with(&extra, 40).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack.seed.meeting("8000", None, None).await;
+    let room = Phone::bound_to(
+        &format!("127.0.0.1:{room_port}"),
+        "conference",
+        "x",
+        REALM,
+        stack.sip,
+    )
+    .await
+    .expect("the stand-in room binds");
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+
+    let alice_call = alice_phone
+        .call_with_headers("8000", &[("Recv-Info", "fcp-content, fcp-view")])
+        .await
+        .unwrap();
+    let Some(incoming) = room.incoming(SOON).await else {
+        stack
+            .fail("the call manager did not ring the room", &alice_phone)
+            .await;
+    };
+    let told: Vec<String> = incoming.headers_named("Recv-Info");
+    assert!(
+        fcp_core::recv_info_has(
+            &told.iter().map(String::as_str).collect::<Vec<_>>(),
+            fcp_core::VIEW_INFO_PACKAGE
+        ),
+        "{told:?}"
+    );
+    let room_call = incoming
+        .answer_with_headers(&[("Recv-Info", "fcp-view")])
+        .await
+        .unwrap();
+    alice_call.answered(SOON).await.unwrap();
+    assert_eq!(
+        alice_call.answer_header("Recv-Info").as_deref(),
+        Some("fcp-view"),
+        "the phone is told the room forwards"
+    );
+
+    let view = r#"{"streams":[{"speaker":true,"max_height":720}]}"#;
+    assert_eq!(
+        alice_call
+            .send_in_call(
+                sip_core::Method::Info,
+                &[
+                    ("Info-Package", fcp_core::VIEW_INFO_PACKAGE),
+                    ("Content-Type", fcp_core::VIEW_INFO_TYPE),
+                ],
+                view.as_bytes(),
+            )
+            .await
+            .unwrap(),
+        200
+    );
+    let Some(PhoneEvent::Info {
+        call_id,
+        body,
+        package,
+        ..
+    }) = room
+        .expect(SOON, |e| matches!(e, PhoneEvent::Info { .. }))
+        .await
+    else {
+        panic!("the room got no view");
+    };
+    assert_eq!(call_id, room_call.call_id(), "in the room's call");
+    assert_eq!(body, view);
+    assert_eq!(package.as_deref(), Some(fcp_core::VIEW_INFO_PACKAGE));
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(room_call.ended(SOON).await);
+    stack.finish().await;
+}
+
 /// A phone in a room through the call manager (`docs/SOFTPHONE_VIDEO.md`
 /// §2.6, F2b), against a stand-in conference node: the INVITE takes the
 /// join link's token and `Recv-Info: fcp-content` to the room; a roster
