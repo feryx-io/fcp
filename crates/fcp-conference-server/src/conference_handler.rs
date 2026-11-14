@@ -3904,7 +3904,10 @@ impl ConferenceCallHandler {
             max_channels,
             wait_for_moderator: Some(meeting.wait_for_moderator),
             min_users: None,
-            min_recording_participants: if meeting.auto_record { Some(1) } else { None },
+            // 0 turns automatic recording off. `None` would take
+            // forge-conference's default of one participant and record
+            // every room from its first caller, whatever the meeting says.
+            min_recording_participants: Some(usize::from(meeting.auto_record)),
             join_sound: if meeting.play_entry_tone {
                 resolve_sound(&meeting.join_sound, &conf.join_sound)
             } else {
