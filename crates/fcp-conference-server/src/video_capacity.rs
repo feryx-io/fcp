@@ -1912,10 +1912,10 @@ mod tests {
         assert_eq!(budgets[1].device, "host");
         // A VP8 join spends the host on its encode and the device on the rest.
         let settings = VideoRoomSettings::default();
-        let vp8 = capacity.join_cost(&settings, &[VideoCodec::VP8], None);
+        let vp8 = capacity.join_cost(&settings, &[VideoCodec::VP8], None, false);
         assert!(vp8.on(&MediaDevice::Host) > 0);
         assert!(vp8.on(&device) > 0);
-        let h264 = capacity.join_cost(&settings, &[VideoCodec::H264], None);
+        let h264 = capacity.join_cost(&settings, &[VideoCodec::H264], None, false);
         assert_eq!(h264.on(&MediaDevice::Host), 0);
         eprintln!("join costs: VP8 {vp8}; H.264 {h264}");
         assert!(capacity.try_reserve(&h264));
