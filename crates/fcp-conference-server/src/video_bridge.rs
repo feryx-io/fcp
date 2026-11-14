@@ -17,9 +17,10 @@ use fcp_core::{Meeting, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
 use fcp_media::{video_codec_to_forge, NegotiatedVideo, SrtpSdpContext};
 use forge_conference::video::{
-    ContentEvent, ContentGate, ContentInfo, ContentLayout, OutputScope, PassthroughMode, Simulcast,
-    StreamKind, SubscribeRequest, VideoBackend, VideoRoom, VideoRoomEvent, VideoRoomSettings,
-    VideoSubscription, View,
+    ContentEvent, ContentGate, ContentInfo, ContentLayout, ForwardRequest, OutputScope,
+    PassthroughMode, Simulcast, StreamKind, StreamTarget, StreamWant, SubscribeRequest,
+    VideoBackend, VideoRoom, VideoRoomEvent, VideoRoomSettings, VideoSubscription, View,
+    ViewRequest,
 };
 use forge_conference::ConferenceRoom;
 use forge_rtp::rtcp::{PsFeedback, RtcpPacket};
@@ -55,6 +56,10 @@ pub struct VideoLeg {
     pub negotiated: NegotiatedVideo,
     pub settings: VideoRoomSettings,
     pub stats: Arc<VideoLegStats>,
+    /// A camera leg that takes each person's own stream rather than the
+    /// composite (`docs/FORWARDING_ROOMS.md` §2.1): the participant asked
+    /// (`Recv-Info: fcp-view`) and the meeting's `video_mode` is `auto`.
+    pub forward: bool,
     /// The bridge task, when it runs on its own. A participant admitted
     /// after waiting for a moderator runs it joined with the audio
     /// bridge, whose handle covers both.
@@ -74,6 +79,7 @@ impl VideoLeg {
             negotiated: self.negotiated.clone(),
             settings: self.settings.clone(),
             stats: Arc::clone(&self.stats),
+            forward: self.forward,
             bridge_handle: None,
         }
     }
@@ -748,6 +754,36 @@ pub fn attach_video(
     // it is known here — gets people on this section and the slides on
     // the other; a caller with one section gets the composite, which
     // follows a share into the presentation (§15.6).
+    // A forwarding participant is sent each person's own stream, all in
+    // this one section, as the room's allocator picks them
+    // (`docs/FORWARDING_ROOMS.md` §2.2).
+    if leg.forward {
+        let fwd = match video.forward(
+            participant_id,
+            ForwardRequest {
+                codec: leg.negotiated.codec,
+                profile: leg.negotiated.fmtp.clone().unwrap_or_default(),
+                payload_type: leg.negotiated.payload_type,
+            },
+        ) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(participant = %participant_id, error = %e, "could not forward room video");
+                video.remove_source(participant_id);
+                return None;
+            }
+        };
+        return Some(run_video_bridge(
+            video,
+            participant_id.to_string(),
+            StreamKind::Camera,
+            Arc::clone(&leg.socket),
+            leg.srtp_context.clone(),
+            Outbound::Streams(fwd.packets),
+            leg.negotiated.clone(),
+            Arc::clone(&leg.stats),
+        ));
+    }
     let view = video
         .has_subscriber_kind(participant_id, StreamKind::Content)
         .then_some(forge_conference::video::View::Cameras);
@@ -780,7 +816,7 @@ pub fn attach_video(
         StreamKind::Camera,
         Arc::clone(&leg.socket),
         leg.srtp_context.clone(),
-        sub,
+        sub.into(),
         leg.negotiated.clone(),
         Arc::clone(&leg.stats),
     ))
@@ -848,7 +884,7 @@ pub fn attach_content(
         StreamKind::Content,
         Arc::clone(&leg.socket),
         leg.srtp_context.clone(),
-        sub,
+        sub.into(),
         leg.negotiated.clone(),
         Arc::clone(&leg.stats),
     ))
@@ -911,7 +947,7 @@ pub fn attach_trunk_video(
         StreamKind::Camera,
         Arc::clone(&leg.socket),
         leg.srtp_context.clone(),
-        sub,
+        sub.into(),
         leg.negotiated.clone(),
         Arc::clone(&leg.stats),
     ))
@@ -967,7 +1003,7 @@ pub fn attach_trunk_content(
         StreamKind::Content,
         Arc::clone(&leg.socket),
         leg.srtp_context.clone(),
-        sub,
+        sub.into(),
         leg.negotiated.clone(),
         Arc::clone(&leg.stats),
     ))
@@ -1177,6 +1213,16 @@ fn conference_event(
                 _ => None,
             }
         }
+        // What a forwarding participant is sent: their roster says, from
+        // the room as it stands, at its next update.
+        VideoRoomEvent::Streams {
+            participant_id,
+            streams,
+        } => {
+            debug!(room = %sink.room_number, participant = %participant_id,
+                   streams = streams.len(), "forwarded streams changed");
+            None
+        }
         VideoRoomEvent::LayoutChanged {
             layout,
             pinned,
@@ -1210,10 +1256,14 @@ pub async fn run_video_bridge(
     kind: StreamKind,
     socket: Arc<RtpSocketPair>,
     srtp_context: Option<Arc<RwLock<SrtpContext>>>,
-    mut sub: VideoSubscription,
+    outbound: Outbound,
     negotiated: NegotiatedVideo,
     stats: Arc<VideoLegStats>,
 ) {
+    let (ssrc, mut packets) = match outbound {
+        Outbound::Composite(sub) => (Some(sub.ssrc), sub.packets),
+        Outbound::Streams(packets) => (None, packets),
+    };
     let span = info_span!(
         "video_bridge",
         participant = %participant_id,
@@ -1228,7 +1278,8 @@ pub async fn run_video_bridge(
             pli = negotiated.pli,
             fir = negotiated.fir,
             nack = negotiated.nack,
-            ssrc = sub.ssrc,
+            ssrc = ?ssrc,
+            forwarding = ssrc.is_none(),
             "Video bridge started"
         );
         let mut fir_seq: u8 = 0;
@@ -1297,7 +1348,7 @@ pub async fn run_video_bridge(
                 }
 
                 // Outbound: the composite for this participant.
-                next = sub.packets.recv() => {
+                next = packets.recv() => {
                     let Some(bytes) = next else {
                         debug!("video subscription closed; bridge stopping");
                         break;
@@ -1338,6 +1389,39 @@ pub async fn run_video_bridge(
     }
     .instrument(span)
     .await
+}
+
+/// The room's form of a participant's `fcp-view` INFO.
+pub fn view_request(view: &fcp_core::video_view::View) -> ViewRequest {
+    ViewRequest {
+        streams: view.streams.as_ref().map(|streams| {
+            streams
+                .iter()
+                .map(|s| StreamWant {
+                    target: match &s.participant {
+                        Some(p) => StreamTarget::Participant(p.clone()),
+                        None => StreamTarget::Speaker,
+                    },
+                    max_height: s.max_height,
+                    priority: s.priority,
+                })
+                .collect()
+        }),
+        max_streams: view.max_streams,
+    }
+}
+
+/// What a video leg sends: the composite under its one SSRC, or a
+/// forwarding participant's streams (`docs/FORWARDING_ROOMS.md` §2.2).
+pub enum Outbound {
+    Composite(VideoSubscription),
+    Streams(tokio::sync::mpsc::Receiver<Bytes>),
+}
+
+impl From<VideoSubscription> for Outbound {
+    fn from(sub: VideoSubscription) -> Self {
+        Outbound::Composite(sub)
+    }
 }
 
 /// Only send what the peer negotiated: a PLI to a peer that offered FIR
@@ -1500,6 +1584,7 @@ mod tests {
             video_passthrough: fcp_core::meeting::default_video_passthrough(),
             video_content_share: "anyone".to_string(),
             video_content_layout: "presentation".to_string(),
+            video_mode: fcp_core::meeting::default_video_mode(),
             created_at: now,
             updated_at: now,
         }
@@ -1977,6 +2062,7 @@ mod tests {
                 },
                 settings: settings.clone(),
                 stats: Arc::new(VideoLegStats::default()),
+                forward: false,
                 bridge_handle: None,
             };
             let fut = attach_video(&room, &backend, pid, Some(pid), &leg, sink.clone()).unwrap();
@@ -2144,6 +2230,7 @@ mod tests {
                 negotiated: negotiated.clone(),
                 settings: settings.clone(),
                 stats: Arc::new(VideoLegStats::default()),
+                forward: false,
                 bridge_handle: None,
             };
             let fut: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> = match w.kind {
@@ -2559,6 +2646,7 @@ mod tests {
                 negotiated: negotiated.clone(),
                 settings: settings.clone(),
                 stats: Arc::new(VideoLegStats::default()),
+                forward: false,
                 bridge_handle: None,
             };
             let fut = attach_video(&room, &backend, pid, Some(pid), &leg, sink.clone()).unwrap();
@@ -2979,6 +3067,7 @@ mod tests {
             },
             settings: settings.clone(),
             stats: Arc::new(VideoLegStats::default()),
+            forward: false,
             bridge_handle: None,
         };
 
@@ -3107,6 +3196,7 @@ mod tests {
             negotiated: negotiated.clone(),
             settings: settings.clone(),
             stats: Arc::new(VideoLegStats::default()),
+            forward: false,
             bridge_handle: None,
         };
         // A socket pair pointed at another.

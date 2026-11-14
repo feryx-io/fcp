@@ -58,6 +58,7 @@ class CreateMeetingRequest:
             video_passthrough (str | Unset):
             video_content_share (str | Unset):
             video_content_layout (str | Unset):
+            video_mode (str | Unset): `mix` (the default) or `auto`.
      """
 
     room_number: str
@@ -92,6 +93,7 @@ class CreateMeetingRequest:
     video_passthrough: str | Unset = UNSET
     video_content_share: str | Unset = UNSET
     video_content_layout: str | Unset = UNSET
+    video_mode: str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -214,6 +216,8 @@ class CreateMeetingRequest:
 
         video_content_layout = self.video_content_layout
 
+        video_mode = self.video_mode
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -281,6 +285,8 @@ class CreateMeetingRequest:
             field_dict["video_content_share"] = video_content_share
         if video_content_layout is not UNSET:
             field_dict["video_content_layout"] = video_content_layout
+        if video_mode is not UNSET:
+            field_dict["video_mode"] = video_mode
 
         return field_dict
 
@@ -451,6 +457,8 @@ class CreateMeetingRequest:
 
         video_content_layout = d.pop("video_content_layout", UNSET)
 
+        video_mode = d.pop("video_mode", UNSET)
+
         create_meeting_request = cls(
             room_number=room_number,
             name=name,
@@ -484,6 +492,7 @@ class CreateMeetingRequest:
             video_passthrough=video_passthrough,
             video_content_share=video_content_share,
             video_content_layout=video_content_layout,
+            video_mode=video_mode,
         )
 
 

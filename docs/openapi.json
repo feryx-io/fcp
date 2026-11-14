@@ -24843,6 +24843,10 @@
           },
           "video_content_layout": {
             "type": "string"
+          },
+          "video_mode": {
+            "type": "string",
+            "description": "`mix` (the default) or `auto`."
           }
         }
       },
@@ -29365,6 +29369,7 @@
           "video_passthrough",
           "video_content_share",
           "video_content_layout",
+          "video_mode",
           "created_at",
           "updated_at"
         ],
@@ -29514,6 +29519,10 @@
           "video_content_layout": {
             "type": "string",
             "description": "How the composite shows a shared screen: `presentation` or\n`content_only`."
+          },
+          "video_mode": {
+            "type": "string",
+            "description": "Who is sent the composite: `mix` (everyone) or `auto` (a client\nthat asks for each person's own stream gets them instead)."
           },
           "created_at": {
             "type": "string",
@@ -33812,6 +33821,7 @@
                 "video_passthrough",
                 "video_content_share",
                 "video_content_layout",
+                "video_mode",
                 "created_at",
                 "updated_at"
               ],
@@ -33961,6 +33971,10 @@
                 "video_content_layout": {
                   "type": "string",
                   "description": "How the composite shows a shared screen: `presentation` or\n`content_only`."
+                },
+                "video_mode": {
+                  "type": "string",
+                  "description": "Who is sent the composite: `mix` (everyone) or `auto` (a client\nthat asks for each person's own stream gets them instead)."
                 },
                 "created_at": {
                   "type": "string",
@@ -44701,6 +44715,12 @@
             ]
           },
           "video_content_layout": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "video_mode": {
             "type": [
               "string",
               "null"

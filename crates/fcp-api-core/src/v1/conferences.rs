@@ -10,7 +10,7 @@ use axum::{
 use fcp_core::meeting::{
     default_video_codecs, default_video_content_layout, default_video_content_share,
     default_video_fps, default_video_layout, default_video_max_participants,
-    default_video_max_resolution, default_video_passthrough,
+    default_video_max_resolution, default_video_mode, default_video_passthrough,
 };
 use fcp_core::storage::ConferenceStore;
 use fcp_core::CredentialStore;
@@ -80,6 +80,9 @@ pub struct MeetingResponse {
     /// How the composite shows a shared screen: `presentation` or
     /// `content_only`.
     pub video_content_layout: String,
+    /// Who is sent the composite: `mix` (everyone) or `auto` (a client
+    /// that asks for each person's own stream gets them instead).
+    pub video_mode: String,
     #[serde(with = "crate::time::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
@@ -125,6 +128,7 @@ impl From<Meeting> for MeetingResponse {
             video_passthrough: m.video_passthrough,
             video_content_share: m.video_content_share,
             video_content_layout: m.video_content_layout,
+            video_mode: m.video_mode,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -196,6 +200,9 @@ pub struct CreateMeetingRequest {
     pub video_content_share: String,
     #[serde(default = "default_video_content_layout")]
     pub video_content_layout: String,
+    /// `mix` (the default) or `auto`.
+    #[serde(default = "default_video_mode")]
+    pub video_mode: String,
 }
 
 fn default_true() -> bool {
@@ -317,6 +324,7 @@ pub struct UpdateMeetingRequest {
     pub video_passthrough: Option<String>,
     pub video_content_share: Option<String>,
     pub video_content_layout: Option<String>,
+    pub video_mode: Option<String>,
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
@@ -424,6 +432,7 @@ pub async fn create_meeting(
         video_passthrough: req.video_passthrough,
         video_content_share: req.video_content_share,
         video_content_layout: req.video_content_layout,
+        video_mode: req.video_mode,
         created_at: now,
         updated_at: now,
     };
@@ -604,6 +613,9 @@ pub async fn update_meeting(
     }
     if let Some(v) = req.video_content_layout {
         meeting.video_content_layout = v;
+    }
+    if let Some(v) = req.video_mode {
+        meeting.video_mode = v;
     }
     if let Some(v) = req.video_codecs {
         meeting.video_codecs = v;

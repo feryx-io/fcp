@@ -165,8 +165,11 @@ layout changes:
 - **`priority`** says which streams are kept first when bandwidth is short.
 - **A participant left out** is not sent.
 
-The answer is 200 with what was granted. The roster's `<src-id>` follows in a
-partial NOTIFY. Without an INFO, a forwarding subscriber gets the speaker at 720p
+The answer is 200 once the room has taken the view; what was granted follows in a
+partial NOTIFY, whose `<src-id>`s say which SSRC is whose (the grant is worked out
+on the room's next tick, so the roster rather than the 200 carries it). A view
+that cannot mean anything is 400; an INFO from a call that was not agreed to take
+streams is 469 Bad Info Package (RFC 6086 §4.2.2). Without an INFO, a forwarding subscriber gets the speaker at 720p
 and up to eight others at 180p, ordered by who spoke last. So a client that never
 sends a view still sees people.
 
@@ -366,7 +369,42 @@ Each phase is one PR in its repository.
   - Stripping the sender's header extensions.
   - The SSRC-to-viewers map at ingress.
   - Composition only while needed.
-- **R3: forwarding rooms on SIP** (FCP).
+
+  **Done (forge-media v2026.11.13.2, forge-conference 0.16.0, forge-rtp 0.7.3).**
+  - `VideoRoom::forward` makes a participant's camera section a viewer;
+    `set_view` takes its `ViewRequest`; `VideoRoomEvent::Streams` and
+    `forwarded_streams` say what it is sent.
+  - The allocator is `video::forward::allocate`, a pure function. A step up
+    waits three seconds; a step down or a pause is at once.
+  - Ingress offers a packet to the streams carrying its *source*, not a map by
+    layer SSRC: a stream is on both people while a speaker switch waits for its
+    keyframe, and a sender that changes its SSRC needs no re-mapping.
+  - Rooms decode nothing while there is no composite subscriber and no
+    recording; a camera is `on` while its packets arrive.
+- **R3: forwarding rooms on SIP** (FCP). In two parts.
+  - **R3a, done (v0.25.558).** The conference server.
+    - `video_mode` on meetings (`mix`, the default, or `auto`; migration 140,
+      the API, the conference server's own meeting routes, the admin UI).
+    - A camera leg forwards when its INVITE said `Recv-Info: fcp-view` and the
+      meeting is `auto`; the 200 OK then says `Recv-Info: fcp-view`. A camera
+      section added by a later re-INVITE is sent what the call agreed.
+    - The `fcp-view` INFO (`fcp_core::video_view::View`) goes to the room's
+      `set_view`: 200, 400 for a view that means nothing, 469 from a call that
+      did not ask.
+    - Each subscriber's roster is the room's with its own streams laid on: a
+      member's `<media id="video">` carries `<src-id>` and `fcp:paused`; the
+      member the speaker stream shows has a `<media id="speaker">` with that
+      stream's `<src-id>`; a host's spotlight is `fcp:spotlight`.
+    - The test kit's video leg sends VP8 or H.264 frames that read as keyframes
+      or not, and counts what arrives by SSRC.
+      `a_caller_that_asks_is_forwarded_each_persons_stream_and_told_whose_it_is`
+      runs the conference server with three forwarding phones and one that is
+      not.
+  - **R3b.** The call manager carrying `fcp-view` (the `Recv-Info` and the
+    INFO) in the call as it carries `fcp-content`, proved for several SSRCs and
+    the rid extension; the egress budget and placement; the measurements.
+
+  As designed:
   - `video_mode` on meetings (migration, API, admin UI).
   - `Recv-Info: fcp-view` and the INFO; the roster's `<src-id>`, `fcp:paused` and
     `fcp:spotlight`.

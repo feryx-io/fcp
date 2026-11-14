@@ -52,6 +52,8 @@ class MeetingResponse:
             video_content_share (str): Who may share a screen: `off`, `hosts` or `anyone` (§15.6).
             video_content_layout (str): How the composite shows a shared screen: `presentation` or
                 `content_only`.
+            video_mode (str): Who is sent the composite: `mix` (everyone) or `auto` (a client
+                that asks for each person's own stream gets them instead).
             created_at (datetime.datetime):
             updated_at (datetime.datetime):
             guest_pin (None | str | Unset):
@@ -90,6 +92,7 @@ class MeetingResponse:
     video_passthrough: str
     video_content_share: str
     video_content_layout: str
+    video_mode: str
     created_at: datetime.datetime
     updated_at: datetime.datetime
     guest_pin: None | str | Unset = UNSET
@@ -160,6 +163,8 @@ class MeetingResponse:
         video_content_share = self.video_content_share
 
         video_content_layout = self.video_content_layout
+
+        video_mode = self.video_mode
 
         created_at = self.created_at.isoformat()
 
@@ -258,6 +263,7 @@ class MeetingResponse:
             "video_passthrough": video_passthrough,
             "video_content_share": video_content_share,
             "video_content_layout": video_content_layout,
+            "video_mode": video_mode,
             "created_at": created_at,
             "updated_at": updated_at,
         })
@@ -344,6 +350,8 @@ class MeetingResponse:
         video_content_share = d.pop("video_content_share")
 
         video_content_layout = d.pop("video_content_layout")
+
+        video_mode = d.pop("video_mode")
 
         created_at = datetime.datetime.fromisoformat(d.pop("created_at"))
 
@@ -489,6 +497,7 @@ class MeetingResponse:
             video_passthrough=video_passthrough,
             video_content_share=video_content_share,
             video_content_layout=video_content_layout,
+            video_mode=video_mode,
             created_at=created_at,
             updated_at=updated_at,
             guest_pin=guest_pin,

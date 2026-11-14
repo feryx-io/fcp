@@ -45,6 +45,15 @@ pub fn default_video_passthrough() -> String {
     "auto".to_string()
 }
 
+/// Who is sent the composite (`video_mode`, `docs/FORWARDING_ROOMS.md`
+/// §2.1): `mix`, everyone; `auto`, everyone but a client that asks for
+/// each person's own stream (`Recv-Info: fcp-view`).
+pub const VIDEO_MODES: [&str; 2] = ["mix", "auto"];
+
+pub fn default_video_mode() -> String {
+    "mix".to_string()
+}
+
 /// Who may share a screen (`video_content_share`, §15.6): nobody, hosts
 /// only, or anyone.
 pub const VIDEO_CONTENT_SHARE_MODES: [&str; 3] = ["off", "hosts", "anyone"];
@@ -272,6 +281,13 @@ pub struct Meeting {
     #[serde(default = "default_video_content_layout")]
     pub video_content_layout: String,
 
+    /// Who is sent the composite (`docs/FORWARDING_ROOMS.md` §2.1): `mix`
+    /// (everyone, the default) or `auto` (a client that asks for streams
+    /// with `Recv-Info: fcp-view` is sent each person's own; everyone
+    /// else the composite).
+    #[serde(default = "default_video_mode")]
+    pub video_mode: String,
+
     /// Creation timestamp
     pub created_at: SystemTime,
 
@@ -282,6 +298,12 @@ pub struct Meeting {
 impl Meeting {
     /// Validate this meeting's video settings; see [`validate_video_settings`].
     pub fn validate_video_settings(&self) -> Result<(), String> {
+        if !VIDEO_MODES.contains(&self.video_mode.as_str()) {
+            return Err(format!(
+                "video_mode must be one of {}",
+                VIDEO_MODES.join(", ")
+            ));
+        }
         validate_video_settings(
             &self.video_layout,
             self.video_max_participants,
@@ -336,6 +358,7 @@ mod tests {
             video_passthrough: default_video_passthrough(),
             video_content_share: default_video_content_share(),
             video_content_layout: default_video_content_layout(),
+            video_mode: default_video_mode(),
             video_codecs: vec![VideoCodec::Vp8, VideoCodec::H264, VideoCodec::Av1],
             created_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
             updated_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
@@ -393,7 +416,19 @@ mod tests {
         assert_eq!(parsed.video_fps, 15);
         assert!(!parsed.video_exclude_self);
         assert_eq!(parsed.video_codecs, vec![VideoCodec::H264, VideoCodec::Vp8]);
+        assert_eq!(
+            parsed.video_mode, "mix",
+            "a meeting forwards only when told"
+        );
         parsed.validate_video_settings().unwrap();
+        let mut forwarding = parsed.clone();
+        forwarding.video_mode = "auto".into();
+        forwarding.validate_video_settings().unwrap();
+        forwarding.video_mode = "sfu".into();
+        assert!(forwarding
+            .validate_video_settings()
+            .unwrap_err()
+            .contains("video_mode"));
     }
 
     #[test]

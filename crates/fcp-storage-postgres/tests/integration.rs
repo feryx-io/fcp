@@ -2074,6 +2074,7 @@ async fn meetings_round_trip_video_settings() {
         back.video_codecs,
         vec![fcp_core::VideoCodec::H264, fcp_core::VideoCodec::Vp8]
     );
+    assert_eq!(back.video_mode, "mix");
 
     // Non-default values survive the upsert and every read path.
     let mut m = meeting(a.id, "2001", "2222");
@@ -2083,6 +2084,7 @@ async fn meetings_round_trip_video_settings() {
     m.video_max_resolution = "1080p".to_string();
     m.video_fps = 30;
     m.video_exclude_self = true;
+    m.video_mode = "auto".to_string();
     m.video_codecs = vec![
         fcp_core::VideoCodec::Av1,
         fcp_core::VideoCodec::Vp9,
@@ -2101,6 +2103,7 @@ async fn meetings_round_trip_video_settings() {
         assert_eq!(back.video_max_resolution, "1080p");
         assert_eq!(back.video_fps, 24);
         assert!(back.video_exclude_self);
+        assert_eq!(back.video_mode, "auto");
         assert_eq!(
             back.video_codecs,
             vec![

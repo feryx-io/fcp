@@ -192,6 +192,8 @@ struct Inner {
     /// Whether it offers and answers video, and how keyed
     /// ([`Phone::enable_video`]).
     video: std::sync::Mutex<Option<crate::video::VideoMode>>,
+    /// What its video section says it sends ([`Phone::set_video_codec`]).
+    video_codec: std::sync::Mutex<crate::video::VideoCodec>,
     /// Every REGISTER this phone has been sent, in order — a carrier's
     /// registrar, for a test that asks who registered and as whom.
     registrations: std::sync::Mutex<Vec<SeenRegistration>>,
@@ -263,9 +265,11 @@ impl Inner {
         let media =
             Arc::new(MediaLeg::open_preferring(self.media_ip, self.advertised, codec).await?);
         let video_mode = *self.video.lock().unwrap();
+        let video_codec = *self.video_codec.lock().unwrap();
         let video = match video_mode {
             Some(mode) => Some(Arc::new(
-                crate::video::VideoLeg::open(self.media_ip, self.advertised, mode).await?,
+                crate::video::VideoLeg::open_as(self.media_ip, self.advertised, mode, video_codec)
+                    .await?,
             )),
             None => None,
         };
@@ -703,6 +707,11 @@ impl Phone {
         *self.inner.video.lock().unwrap() = Some(mode);
     }
 
+    /// The codec its video section names (H.264 unless told).
+    pub fn set_video_codec(&self, codec: crate::video::VideoCodec) {
+        *self.inner.video_codec.lock().unwrap() = codec;
+    }
+
     /// A phone behind NAT: bound at `bind`, it names `advertised` in its
     /// Contact and SDP, an address it cannot be reached at — what a phone
     /// naming its LAN address, or loopback, does from behind a router.
@@ -916,6 +925,7 @@ impl Phone {
             advertised: advertised.unwrap_or(local_addr.ip()),
             codec: std::sync::Mutex::new(crate::media::Codec::Pcmu),
             video: std::sync::Mutex::new(None),
+            video_codec: std::sync::Mutex::new(crate::video::VideoCodec::H264),
         });
 
         let handler: Arc<dyn UasRequestHandler> = Arc::new(Handler(Arc::clone(&inner)));
@@ -1891,8 +1901,14 @@ impl UasRequestHandler for Handler {
                 if fcp_media::sdp::stream_endpoint(&offer, fcp_media::VideoStream::Camera)
                     .is_some() =>
             {
-                let leg =
-                    crate::video::VideoLeg::open(self.0.media_ip, self.0.advertised, mode).await?;
+                let codec = *self.0.video_codec.lock().unwrap();
+                let leg = crate::video::VideoLeg::open_as(
+                    self.0.media_ip,
+                    self.0.advertised,
+                    mode,
+                    codec,
+                )
+                .await?;
                 if let Err(e) = leg.set_remote(&offer) {
                     warn!(error = %e, "offer's video unusable");
                 }

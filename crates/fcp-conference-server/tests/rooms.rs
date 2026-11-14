@@ -1284,3 +1284,205 @@ async fn room_calls_through_the_call_manager_leave_nothing_behind() {
     assert_eq!(held["media_sessions"], 0, "{held}");
     stack.finish().await;
 }
+
+/// Dial the room asking for each person's own stream
+/// (`docs/FORWARDING_ROOMS.md` §2.3), with VP8 video.
+async fn join_forwarding(stack: &Stack, phone: &Phone, ask: bool) -> fcp_testkit::Call {
+    phone.enable_video(fcp_testkit::video::VideoMode::Plain);
+    phone.set_video_codec(fcp_testkit::video::VideoCodec::Vp8);
+    let headers: &[(&str, &str)] = if ask {
+        &[("Recv-Info", "fcp-content, fcp-view")]
+    } else {
+        &[]
+    };
+    let call = phone
+        .call_with_headers(ROOM, headers)
+        .await
+        .expect("INVITE sent");
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(&format!("{} was not admitted: {e}", phone.username), phone)
+            .await;
+    }
+    call
+}
+
+/// Send frames from `senders` until `done` holds of what `viewer` has
+/// received, or fail after a while saying `what`.
+async fn pump_until(
+    senders: &[&fcp_testkit::Call],
+    viewer: &fcp_testkit::Call,
+    what: &str,
+    done: impl Fn(&std::collections::HashMap<u32, u64>) -> bool,
+) -> std::collections::HashMap<u32, u64> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let got = viewer
+            .video()
+            .expect("the viewer has video")
+            .received_by_ssrc();
+        if done(&got) {
+            return got;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never: {what}; received {got:?}"
+        );
+        for s in senders {
+            s.video()
+                .expect("a sender has video")
+                .send_frames(1, 10)
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    }
+}
+
+/// The SSRC a roster says its subscriber receives `pid` on.
+fn src_id_of(roster: &str, pid: &str) -> Option<u32> {
+    let user = &roster[roster.find(&format!("sip:{pid}@"))?..];
+    let user = &user[..user.find("</user>")?];
+    let video = &user[user.find("<media id=\"video\">")?..];
+    let video = &video[..video.find("</media>")?];
+    let at = video.find("<src-id>")? + "<src-id>".len();
+    video[at..at + video[at..].find('<')?].parse().ok()
+}
+
+/// A forwarding room over SIP (`docs/FORWARDING_ROOMS.md`, R3): a caller
+/// that says `Recv-Info: fcp-view` in a meeting whose `video_mode` is `auto`
+/// is told so in the answer and sent each person's own stream, under an
+/// SSRC its roster names; its `fcp-view` INFO changes what it is sent. A
+/// caller that did not ask gets the composite, and its INFO is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_that_asks_is_forwarded_each_persons_stream_and_told_whose_it_is() {
+    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({
+                "video_enabled": true,
+                "video_codecs": ["VP8"],
+                "video_mode": "auto",
+            }),
+        )
+        .await;
+    let alice = stack.phone("alice").await;
+    let carol = stack.phone("carol").await;
+    let bob = stack.phone("bob").await;
+    let alice_call = join_forwarding(&stack, &alice, true).await;
+    let carol_call = join_forwarding(&stack, &carol, true).await;
+    let bob_call = join_forwarding(&stack, &bob, true).await;
+    stack.wait_participants(3).await;
+    let alice_id = stack.participant_named("alice").await;
+    let carol_id = stack.participant_named("carol").await;
+    let bob_id = stack.participant_named("bob").await;
+    assert_eq!(
+        stack.participant(&bob_id).await["view_streams"],
+        serde_json::json!(true),
+        "the room forwards to Bob"
+    );
+
+    // The default view: the speaker, then everyone else — three streams.
+    let got = pump_until(
+        &[&alice_call, &carol_call],
+        &bob_call,
+        "three streams for Bob",
+        |got| got.len() >= 3 && got.values().all(|n| *n >= 3),
+    )
+    .await;
+
+    // Bob's roster says whose each SSRC is.
+    assert_eq!(
+        bob_call.subscribe_in_call("conference", 600).await.unwrap(),
+        200
+    );
+    let (_, full) = roster(&bob, bob_call.call_id()).await;
+    let alice_ssrc = src_id_of(&full, &alice_id).expect("Alice's stream named");
+    let carol_ssrc = src_id_of(&full, &carol_id).expect("Carol's stream named");
+    assert!(got.contains_key(&alice_ssrc), "{full}\n{got:?}");
+    assert!(got.contains_key(&carol_ssrc), "{full}\n{got:?}");
+    assert!(full.contains("<media id=\"speaker\">"), "{full}");
+    assert_eq!(src_id_of(&full, &bob_id), None, "not his own");
+
+    // Bob asks for Carol alone: Alice's stream stops.
+    let view = format!(r#"{{"streams":[{{"participant":"{carol_id}","max_height":360}}]}}"#);
+    let info = |body: String| {
+        let call = &bob_call;
+        async move {
+            call.send_in_call(
+                sip_core::Method::Info,
+                &[
+                    ("Info-Package", fcp_core::VIEW_INFO_PACKAGE),
+                    ("Content-Type", fcp_core::VIEW_INFO_TYPE),
+                ],
+                body.as_bytes(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(info(view).await, 200);
+    assert_eq!(
+        info("{\"streams\":[{}]}".into()).await,
+        400,
+        "a view that means nothing"
+    );
+    // Give the room a tick, then count afresh.
+    pump_until(&[&alice_call, &carol_call], &bob_call, "a tick", |_| true).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let before = bob_call.video().unwrap().received_by_ssrc();
+    let after = pump_until(
+        &[&alice_call, &carol_call],
+        &bob_call,
+        "Carol's stream going on",
+        |got| {
+            got.get(&carol_ssrc).copied().unwrap_or(0)
+                >= before.get(&carol_ssrc).copied().unwrap_or(0) + 10
+        },
+    )
+    .await;
+    for (ssrc, n) in &after {
+        if *ssrc != carol_ssrc {
+            assert_eq!(
+                Some(n),
+                before.get(ssrc),
+                "only Carol's stream goes on: {before:?} then {after:?}"
+            );
+        }
+    }
+
+    // A caller that did not ask is sent the composite and cannot send a view.
+    let dave = stack.phone("dave").await;
+    let dave_call = join_forwarding(&stack, &dave, false).await;
+    stack.wait_participants(4).await;
+    let dave_id = stack.participant_named("dave").await;
+    assert_eq!(
+        stack.participant(&dave_id).await["view_streams"],
+        serde_json::json!(false)
+    );
+    assert_eq!(
+        dave_call
+            .send_in_call(
+                sip_core::Method::Info,
+                &[
+                    ("Info-Package", fcp_core::VIEW_INFO_PACKAGE),
+                    ("Content-Type", fcp_core::VIEW_INFO_TYPE),
+                ],
+                b"{}",
+            )
+            .await
+            .unwrap(),
+        469
+    );
+
+    for call in [&alice_call, &carol_call, &bob_call, &dave_call] {
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
+    stack.finish().await;
+}

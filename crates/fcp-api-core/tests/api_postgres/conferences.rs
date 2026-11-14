@@ -108,7 +108,8 @@ async fn a_meeting_is_managed_by_id_in_its_tenant() {
             &path,
             Some(
                 json!({ "name": "Board", "guest_pin": null, "max_participants": 12,
-                         "video_enabled": true, "video_layout": "active_speaker" }),
+                         "video_enabled": true, "video_layout": "active_speaker",
+                         "video_mode": "auto" }),
             ),
         )
         .await;
@@ -117,6 +118,17 @@ async fn a_meeting_is_managed_by_id_in_its_tenant() {
     assert_eq!(changed.json["guest_pin"], Value::Null, "{}", changed.text);
     assert_eq!(changed.json["host_pin"], "9876", "untouched");
     assert_eq!(changed.json["max_participants"], 12);
+    assert_eq!(changed.json["video_mode"], "auto", "{}", changed.text);
+    assert_eq!(got.json["video_mode"], "mix", "the default");
+    let bad_mode = app
+        .admin(Method::PATCH, &path, Some(json!({ "video_mode": "sfu" })))
+        .await;
+    assert_eq!(
+        bad_mode.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        bad_mode.text
+    );
     let bad_video = app
         .admin(
             Method::PATCH,
