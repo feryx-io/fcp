@@ -1486,3 +1486,127 @@ async fn a_caller_that_asks_is_forwarded_each_persons_stream_and_told_whose_it_i
     }
     stack.finish().await;
 }
+
+/// A forwarding room reached through the call manager
+/// (`docs/FORWARDING_ROOMS.md` R3b): Bob's `Recv-Info: fcp-view` reaches the
+/// room and its answer reaches Bob; his anchored video section carries every
+/// stream the room sends him, each under its own SSRC as his roster —
+/// subscribed in his call — names them; and his view INFO reaches the room.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forwarding_room_is_reached_through_the_call_manager() {
+    let Some(stack) = Stack::start_conference(
+        r#"trusted_edges = ["127.0.0.1"]"#,
+        60,
+        "video_native_codecs_only = false",
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({
+                "video_enabled": true,
+                "video_codecs": ["VP8"],
+                "video_mode": "auto",
+            }),
+        )
+        .await;
+    let cm = stack.start_call_manager().await;
+    let alice = stack.phone("alice").await;
+    let carol = stack.phone("carol").await;
+    let alice_call = join_forwarding(&stack, &alice, true).await;
+    let carol_call = join_forwarding(&stack, &carol, true).await;
+    let bob_user = stack.seed.user("bob", "bob-pw", "1002").await;
+    let bob = Phone::new(&bob_user.username, &bob_user.password, REALM, cm)
+        .await
+        .unwrap();
+    assert_eq!(bob.register().await.unwrap(), 200);
+    bob.enable_video(fcp_testkit::video::VideoMode::Plain);
+    bob.set_video_codec(fcp_testkit::video::VideoCodec::Vp8);
+    let bob_call = bob
+        .call_with_headers(ROOM, &[("Recv-Info", "fcp-content, fcp-view")])
+        .await
+        .unwrap();
+    if let Err(e) = bob_call.answered(Duration::from_secs(10)).await {
+        stack
+            .fail(&format!("Bob was not admitted: {e}"), &bob)
+            .await;
+    }
+    assert_eq!(
+        bob_call.answer_header("Recv-Info").as_deref(),
+        Some("fcp-view"),
+        "the room's answer reached Bob"
+    );
+    stack.wait_participants(3).await;
+    let alice_id = stack.participant_named("alice").await;
+    let carol_id = stack.participant_named("carol").await;
+    let bob_id = stack.participant_named("bob").await;
+    assert_eq!(
+        stack.participant(&bob_id).await["view_streams"],
+        serde_json::json!(true)
+    );
+
+    // Three streams across the call manager's relay, each its own SSRC.
+    let got = pump_until(
+        &[&alice_call, &carol_call],
+        &bob_call,
+        "three streams through the call manager",
+        |got| got.len() >= 3 && got.values().all(|n| *n >= 3),
+    )
+    .await;
+    assert_eq!(
+        bob_call.subscribe_in_call("conference", 600).await.unwrap(),
+        200
+    );
+    let (_, full) = roster(&bob, bob_call.call_id()).await;
+    let alice_ssrc = src_id_of(&full, &alice_id).expect("Alice's stream named");
+    let carol_ssrc = src_id_of(&full, &carol_id).expect("Carol's stream named");
+    assert!(
+        got.contains_key(&alice_ssrc) && got.contains_key(&carol_ssrc),
+        "{got:?}\n{full}"
+    );
+
+    // His view crosses the call manager: Carol alone from now on.
+    let view = format!(r#"{{"streams":[{{"participant":"{carol_id}"}}]}}"#);
+    assert_eq!(
+        bob_call
+            .send_in_call(
+                sip_core::Method::Info,
+                &[
+                    ("Info-Package", fcp_core::VIEW_INFO_PACKAGE),
+                    ("Content-Type", fcp_core::VIEW_INFO_TYPE),
+                ],
+                view.as_bytes(),
+            )
+            .await
+            .unwrap(),
+        200
+    );
+    pump_until(&[&alice_call, &carol_call], &bob_call, "a tick", |_| true).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let before = bob_call.video().unwrap().received_by_ssrc();
+    let after = pump_until(
+        &[&alice_call, &carol_call],
+        &bob_call,
+        "Carol's stream going on",
+        |got| {
+            got.get(&carol_ssrc).copied().unwrap_or(0)
+                >= before.get(&carol_ssrc).copied().unwrap_or(0) + 10
+        },
+    )
+    .await;
+    assert_eq!(
+        after.get(&alice_ssrc),
+        before.get(&alice_ssrc),
+        "Alice's stream stopped: {before:?} then {after:?}"
+    );
+
+    for call in [&alice_call, &carol_call, &bob_call] {
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
+    stack.finish().await;
+}

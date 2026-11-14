@@ -382,7 +382,8 @@ Each phase is one PR in its repository.
   - Rooms decode nothing while there is no composite subscriber and no
     recording; a camera is `on` while its packets arrive.
 - **R3: forwarding rooms on SIP** (FCP). In two parts.
-  - **R3a, done (v0.25.558).** The conference server.
+  - **R3a, done (v0.25.558–559).** The conference server, and the call
+    manager carrying `fcp-view`.
     - `video_mode` on meetings (`mix`, the default, or `auto`; migration 140,
       the API, the conference server's own meeting routes, the admin UI).
     - A camera leg forwards when its INVITE said `Recv-Info: fcp-view` and the
@@ -400,9 +401,18 @@ Each phase is one PR in its repository.
       `a_caller_that_asks_is_forwarded_each_persons_stream_and_told_whose_it_is`
       runs the conference server with three forwarding phones and one that is
       not.
-  - **R3b.** The call manager carrying `fcp-view` (the `Recv-Info` and the
-    INFO) in the call as it carries `fcp-content`, proved for several SSRCs and
-    the rid extension; the egress budget and placement; the measurements.
+    - The call manager carries `Recv-Info: fcp-view` to the room, the room's
+      answer saying it back to the phone (`carry_room_views`), and the phone's
+      view INFO to the room in the room's call (`conference_relay::is_view_info`).
+      `a_phones_views_cross_the_call_manager_to_a_forwarding_room` proves the
+      signalling against a stand-in room;
+      `a_forwarding_room_is_reached_through_the_call_manager` proves three
+      SSRCs through the anchored video relay, the roster and the view.
+  - **R3b.** The egress budget (`video_egress_mbps`) in `room_cost` and
+    admission, and placement by it; a room that composes nothing charged no
+    decodes; the measurements with `fcp-loadgen`; the remaining `rooms.rs`
+    cases (a layer move on one SSRC from a three-rid sender, a REMB cut pausing
+    a stream, a recording still composing).
 
   As designed:
   - `video_mode` on meetings (migration, API, admin UI).

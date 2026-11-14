@@ -5163,6 +5163,29 @@ impl SipMessageHandler {
         }
     }
 
+    /// A room that forwards to the phone says so in its answer
+    /// (`Recv-Info: fcp-view`, `docs/FORWARDING_ROOMS.md` §2.3); the phone's
+    /// answer says it too, so the phone knows to send its views, which
+    /// [`crate::conference_relay`] then carries to the room.
+    fn carry_room_views(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        room_answer: &sip_core::Response,
+        response: &mut sip_core::Response,
+    ) {
+        let is_room = self
+            .call_manager
+            .get_call(call_id)
+            .is_some_and(|c| c.conference_room.is_some());
+        let recv: Vec<&str> = room_answer.headers().get_all("Recv-Info").collect();
+        if is_room && fcp_core::recv_info_has(&recv, fcp_core::VIEW_INFO_PACKAGE) {
+            let _ = response.headers_mut().push(
+                SmolStr::new("Recv-Info"),
+                SmolStr::new(fcp_core::VIEW_INFO_PACKAGE),
+            );
+        }
+    }
+
     fn ensure_response_hygiene(
         &self,
         request: &sip_core::Request,
@@ -8924,6 +8947,7 @@ impl SipMessageHandler {
             // Inject RFC 4028 session timer headers into A-leg 200 OK
             inject_session_timer_headers(&self.b2bua_config, &request, &mut a_leg_response);
             self.name_call_for_caller(&call_id, &mut a_leg_response);
+            self.carry_room_views(&call_id, &b_leg_final, &mut a_leg_response);
 
             // Create A-leg dialog from the 200 OK response
             let a_leg_dialog = match sip_dialog::Dialog::new_uas(
@@ -9848,6 +9872,7 @@ impl SipMessageHandler {
             // Inject RFC 4028 session timer headers into forked 200 OK
             inject_session_timer_headers(&self.b2bua_config, &request, &mut ok_response);
             self.name_call_for_caller(&call_id, &mut ok_response);
+            self.carry_room_views(&call_id, &response, &mut ok_response);
 
             // Create A-leg dialog from the 200 OK response
             let a_leg_dialog = match sip_dialog::Dialog::new_uas(
@@ -13470,18 +13495,19 @@ impl SipMessageHandler {
         request: &sip_core::Request,
     ) -> Option<sip_core::Response> {
         use crate::conference_relay as relay;
-        let wanted = match request.method() {
-            Method::Subscribe | Method::Notify => relay::is_roster(request),
-            Method::Info => relay::is_floor_info(request),
-            _ => false,
+        // What it is, and whether it comes from the phone: the phone
+        // subscribes and sends its views; the room notifies and tells the
+        // floor.
+        let from_phone = match request.method() {
+            Method::Subscribe if relay::is_roster(request) => true,
+            Method::Notify if relay::is_roster(request) => false,
+            Method::Info if relay::is_view_info(request) => true,
+            Method::Info if relay::is_floor_info(request) => false,
+            _ => return None,
         };
-        if !wanted {
-            return None;
-        }
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request).ok()?;
         call.conference_room.as_ref()?;
-        // The phone subscribes; the room notifies and tells the floor.
-        if (request.method() == &Method::Subscribe) != is_a_leg {
+        if from_phone != is_a_leg {
             return None;
         }
         Some(self.relay_conference(request, &call, is_a_leg).await)

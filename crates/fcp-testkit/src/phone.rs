@@ -1715,12 +1715,24 @@ impl IncomingCall {
 
     /// Send the 200 OK; the call is up.
     pub async fn answer(self) -> Result<Call> {
-        let (response, handle) = self
+        self.answer_with_headers(&[]).await
+    }
+
+    /// [`answer`](Self::answer) with extra headers on the 200 OK (a room's
+    /// `Recv-Info`, …).
+    pub async fn answer_with_headers(self, headers: &[(&str, &str)]) -> Result<Call> {
+        let (mut response, handle) = self
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
             .context("already answered or cancelled")?;
+        for (name, value) in headers {
+            response
+                .headers_mut()
+                .push(*name, *value)
+                .map_err(|e| anyhow!("header {name}: {e}"))?;
+        }
         handle.send_final(response).await;
         self.call.state.phase.send_replace(CallPhase::Answered);
         Ok(self.call)
