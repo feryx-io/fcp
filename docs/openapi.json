@@ -46774,6 +46774,37 @@
                 "type": "null"
               }
             ]
+          },
+          "egress": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VideoEgress",
+                "description": "The node's link (FCP `docs/FORWARDING_ROOMS.md` §3), on the\nhost's line: the link is the node's, whichever device draws.\nAbsent on other devices and on a node from before egress was\nadvertised."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "VideoEgress": {
+        "type": "object",
+        "description": "What a conference node may still send, in kilobits a second: every\ncomposite and forwarded stream leaving it shares its link.",
+        "required": [
+          "left_kbps",
+          "total_kbps"
+        ],
+        "properties": {
+          "left_kbps": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "total_kbps": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       },

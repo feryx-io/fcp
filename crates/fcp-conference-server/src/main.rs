@@ -81,6 +81,10 @@ fn cluster_budget(b: &video_capacity::DeviceBudget) -> fcp_cluster::VideoDeviceB
             }),
             _ => None,
         },
+        egress: b.egress.map(|(left, total)| fcp_cluster::VideoEgress {
+            left_kbps: left,
+            total_kbps: total,
+        }),
     }
 }
 
@@ -628,10 +632,10 @@ async fn main() -> Result<()> {
                 })
                 .collect()
         });
-        let capacity = Arc::new(video_capacity::VideoCapacity::new(
-            video_backend.device.clone(),
-            devices,
-        ));
+        let capacity = Arc::new(
+            video_capacity::VideoCapacity::new(video_backend.device.clone(), devices)
+                .with_egress_mbps(config.conference.video_egress_mbps),
+        );
         for b in capacity.budgets() {
             info!(
                 device = %b.device,
@@ -640,6 +644,10 @@ async fn main() -> Result<()> {
                 "Video budget ready"
             );
         }
+        info!(
+            egress_mbps = config.conference.video_egress_mbps,
+            "Video egress budget ready"
+        );
         capacity
     };
 

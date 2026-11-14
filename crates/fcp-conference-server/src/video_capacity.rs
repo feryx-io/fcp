@@ -19,7 +19,12 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use forge_conference::video::{ContentGate, VideoBackend, VideoRoom, VideoRoomSettings};
+use forge_conference::video::forward::{
+    DEFAULT_MAX_STREAMS, DEFAULT_OTHER_HEIGHT, DEFAULT_SPEAKER_HEIGHT,
+};
+use forge_conference::video::{
+    default_kbps, ContentGate, VideoBackend, VideoRoom, VideoRoomSettings, VideoViewerInfo,
+};
 use forge_conference::ConferenceRoom;
 use forge_core::VideoCodec;
 use forge_video::bench::{self, BenchSettings};
@@ -28,6 +33,10 @@ use tracing::{info, warn};
 
 /// Nanoseconds of device time per second of video in one work unit.
 pub const NS_PER_UNIT: f64 = 1e6;
+
+/// `[conference] video_egress_mbps` when unset (FORWARDING_ROOMS §8 Q11):
+/// a gigabit link.
+pub const DEFAULT_EGRESS_MBPS: u32 = 1000;
 
 /// Work units in one execution unit (a codec-pool thread, a media engine).
 pub const UNITS_PER_EXECUTION_UNIT: f64 = 1000.0;
@@ -126,6 +135,10 @@ pub struct DeviceBudget {
     pub total: u32,
     /// Per engine `(engine, left, total)`, on a GPU (§15.8).
     pub engines: Option<[(Engine, u32, u32); 3]>,
+    /// The node's link `(left, total)` in kilobits a second
+    /// (FORWARDING_ROOMS §3): on the host's line, since the link is the
+    /// node's, whichever device draws the frames.
+    pub egress: Option<(u32, u32)>,
 }
 
 /// The stages of the pipeline as engines that saturate separately on a
@@ -150,13 +163,19 @@ impl Engine {
     }
 }
 
-/// A cost in work units, per device and engine: what a join, a share or
-/// a room takes of each it touches. A room on a GPU spends the device's
-/// decode engine on its sources, its compose engine on its outputs and
-/// its encode engine on the flavors the device has, and the host on the
-/// encodes it lacks.
+/// A cost in work units, per device and engine, and in egress: what a
+/// join, a share or a room takes of each it touches. A room on a GPU
+/// spends the device's decode engine on its sources, its compose engine
+/// on its outputs and its encode engine on the flavors the device has,
+/// and the host on the encodes it lacks. Every stream it sends leaves
+/// through the node's link (FORWARDING_ROOMS §3).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Cost(Vec<(MediaDevice, Engine, u32)>);
+pub struct Cost {
+    units: Vec<(MediaDevice, Engine, u32)>,
+    /// Kilobits a second sent: the composite to each subscriber, each
+    /// forwarded stream to each viewer.
+    egress_kbps: u32,
+}
 
 impl Cost {
     pub fn zero() -> Self {
@@ -168,24 +187,34 @@ impl Cost {
             return;
         }
         match self
-            .0
+            .units
             .iter_mut()
             .find(|(d, e, _)| d == device && *e == engine)
         {
             Some((_, _, u)) => *u = u.saturating_add(units),
-            None => self.0.push((device.clone(), engine, units)),
+            None => self.units.push((device.clone(), engine, units)),
         }
     }
 
+    fn add_egress(&mut self, kbps: u32) {
+        self.egress_kbps = self.egress_kbps.saturating_add(kbps);
+    }
+
     fn extend(&mut self, other: &Cost) {
-        for (d, e, u) in &other.0 {
+        for (d, e, u) in &other.units {
             self.add(d, *e, *u);
         }
+        self.add_egress(other.egress_kbps);
+    }
+
+    /// Kilobits a second this sends out of the node.
+    pub fn egress_kbps(&self) -> u32 {
+        self.egress_kbps
     }
 
     /// Units on `device`, every engine together.
     pub fn on(&self, device: &MediaDevice) -> u32 {
-        self.0
+        self.units
             .iter()
             .filter(|(d, _, _)| d == device)
             .fold(0u32, |a, (_, _, u)| a.saturating_add(*u))
@@ -193,29 +222,29 @@ impl Cost {
 
     /// Units on one engine of `device`.
     pub fn on_engine(&self, device: &MediaDevice, engine: Engine) -> u32 {
-        self.0
+        self.units
             .iter()
             .find(|(d, e, _)| d == device && *e == engine)
             .map(|(_, _, u)| *u)
             .unwrap_or(0)
     }
 
-    /// Units over every device and engine.
+    /// Units over every device and engine (egress apart).
     pub fn total(&self) -> u32 {
-        self.0
+        self.units
             .iter()
             .fold(0u32, |a, (_, _, u)| a.saturating_add(*u))
     }
 
     #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
     pub fn is_zero(&self) -> bool {
-        self.total() == 0
+        self.total() == 0 && self.egress_kbps == 0
     }
 
     /// The devices this cost touches, in order of first mention.
     fn devices(&self) -> Vec<MediaDevice> {
         let mut out: Vec<MediaDevice> = Vec::new();
-        for (d, _, _) in &self.0 {
+        for (d, _, _) in &self.units {
             if !out.contains(d) {
                 out.push(d.clone());
             }
@@ -226,8 +255,11 @@ impl Cost {
 
 impl std::fmt::Display for Cost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0.is_empty() {
+        if self.units.is_empty() && self.egress_kbps == 0 {
             return write!(f, "0");
+        }
+        if self.units.is_empty() {
+            write!(f, "0")?;
         }
         for (i, d) in self.devices().iter().enumerate() {
             if i > 0 {
@@ -246,6 +278,9 @@ impl std::fmt::Display for Cost {
                 }
             }
             write!(f, ")")?;
+        }
+        if self.egress_kbps > 0 {
+            write!(f, " + {} kb/s out", self.egress_kbps)?;
         }
         Ok(())
     }
@@ -496,6 +531,7 @@ impl DeviceCapacity {
                     (e, p.left(), p.total)
                 })
             }),
+            egress: None,
         }
     }
 
@@ -590,6 +626,9 @@ pub struct VideoCapacity {
     /// Where the rooms run.
     room_device: MediaDevice,
     devices: Vec<DeviceCapacity>,
+    /// The node's link in kilobits a second (FORWARDING_ROOMS §3): what
+    /// every composite and forwarded stream leaving the node shares.
+    egress: Pool,
     last_recompute: parking_lot::Mutex<Option<Instant>>,
 }
 
@@ -601,8 +640,26 @@ impl VideoCapacity {
         Self {
             room_device,
             devices,
+            egress: Pool::new(DEFAULT_EGRESS_MBPS.saturating_mul(1000)),
             last_recompute: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// The node's link, `[conference] video_egress_mbps`.
+    pub fn with_egress_mbps(mut self, mbps: u32) -> Self {
+        self.egress = Pool::new(mbps.max(1).saturating_mul(1000));
+        self
+    }
+
+    /// Kilobits a second the node may still send.
+    pub fn egress_left_kbps(&self) -> u32 {
+        self.egress.left()
+    }
+
+    /// The node's link in kilobits a second.
+    #[allow(dead_code)] // the budget's API: tests and the status
+    pub fn egress_total_kbps(&self) -> u32 {
+        self.egress.total
     }
 
     /// The host alone: `execution_units` codec-pool threads at
@@ -738,18 +795,27 @@ impl VideoCapacity {
         cost
     }
 
-    /// What a room's video costs now: a decode per source — a camera or a
-    /// shared screen — at what it sends (the room's canvas until frames
-    /// arrive), an encode per flavor, a composite per output at the room's
-    /// target rate, each on the device the room says it runs on. A
-    /// presentation composite has one more tile than the room has
-    /// cameras, which `sources` already counts.
+    /// What a room's video costs now: a decode per source being decoded —
+    /// a camera or a shared screen — at what it sends (the room's canvas
+    /// until frames arrive), an encode per flavor, a composite per output
+    /// at the room's target rate, each on the device the room says it
+    /// runs on, and what it sends out of the node. A presentation
+    /// composite has one more tile than the room has cameras, which
+    /// `sources` already counts. A room that composes nothing — every
+    /// subscriber forwarded, no recording — decodes nothing, and is
+    /// charged only its egress (FORWARDING_ROOMS §2.1, §3).
     pub fn room_cost(&self, video: &VideoRoom) -> Cost {
         let st = video.status();
         let fps = st.target_fps.max(1);
         let mut cost = Cost::zero();
-        for p in video.participants() {
-            for s in p.source.iter().chain(p.content.iter()) {
+        let participants = video.participants();
+        for p in &participants {
+            for s in p
+                .source
+                .iter()
+                .chain(p.content.iter())
+                .filter(|s| s.decoding)
+            {
                 let resolution = if s.resolution.pixels() == 0 {
                     st.resolution
                 } else {
@@ -788,6 +854,17 @@ impl VideoCapacity {
                 );
             }
         }
+        for p in &participants {
+            if let Some(v) = &p.viewer {
+                cost.add_egress(viewer_kbps(v));
+            }
+            if let Some(sub) = &p.subscription {
+                cost.add_egress(default_kbps(sub.flavor.resolution));
+            }
+            if let (Some(sub), Some(_)) = (&p.content_subscription, &st.content) {
+                cost.add_egress(default_kbps(sub.flavor.resolution));
+            }
+        }
         cost
     }
 
@@ -796,12 +873,22 @@ impl VideoCapacity {
     /// the room's video or wants a canvas without itself — each where it
     /// would run. Priced at the dearest of `codecs`, since which one the
     /// caller ends up with is decided in the answer.
+    ///
+    /// A `forwarding` caller (FORWARDING_ROOMS §3) costs no encode or
+    /// composite of its own: its decode, which the room spends only while
+    /// something composes, and its egress — the default view's streams of
+    /// those already in the room, and its own camera sent to each viewer
+    /// there. A composite caller's egress is its flavor's rate.
     pub fn join_cost(
         &self,
         settings: &VideoRoomSettings,
         codecs: &[VideoCodec],
         room_video: Option<&VideoRoom>,
+        forwarding: bool,
     ) -> Cost {
+        if forwarding {
+            return self.forwarding_join_cost(settings, codecs, room_video);
+        }
         let fps = settings.fps.max(1);
         let mut dearest: Option<Cost> = None;
         for &c in codecs {
@@ -836,6 +923,40 @@ impl VideoCapacity {
             Some(_) => 0,
         };
         cost.add(&room.device, Engine::Compose, compose);
+        cost.add_egress(default_kbps(settings.resolution));
+        if let Some(video) = room_video {
+            cost.add_egress(viewers_of(video).saturating_mul(other_stream_kbps()));
+        }
+        cost
+    }
+
+    fn forwarding_join_cost(
+        &self,
+        settings: &VideoRoomSettings,
+        codecs: &[VideoCodec],
+        room_video: Option<&VideoRoom>,
+    ) -> Cost {
+        let fps = settings.fps.max(1);
+        let mut cost = Cost::zero();
+        let dearest = codecs
+            .iter()
+            .map(|&c| {
+                let dec = self.decoder_of(c);
+                (dec, dec.decode_units(c, settings.resolution, fps))
+            })
+            .max_by_key(|(_, u)| *u);
+        if let Some((dec, u)) = dearest {
+            cost.add(&dec.device, Engine::Decode, u);
+        }
+        if let Some(video) = room_video {
+            let cameras = video
+                .participants()
+                .iter()
+                .filter(|p| p.source.is_some())
+                .count() as u32;
+            cost.add_egress(default_view_kbps(cameras));
+            cost.add_egress(viewers_of(video).saturating_mul(other_stream_kbps()));
+        }
         cost
     }
 
@@ -844,10 +965,14 @@ impl VideoCapacity {
     /// participant in a room. `false` refuses, and holds nothing.
     pub fn try_reserve(&self, cost: &Cost) -> bool {
         let mut taken: Vec<(&Pool, u32)> = Vec::new();
-        for (device, engine, units) in &cost.0 {
-            let pool = self.on(device).pool(*engine);
-            if pool.reserve(*units) {
-                taken.push((pool, *units));
+        let wanted = cost
+            .units
+            .iter()
+            .map(|(device, engine, units)| (self.on(device).pool(*engine), *units))
+            .chain((cost.egress_kbps > 0).then_some((&self.egress, cost.egress_kbps)));
+        for (pool, units) in wanted {
+            if pool.reserve(units) {
+                taken.push((pool, units));
             } else {
                 for (p, u) in taken {
                     p.release(u);
@@ -882,13 +1007,26 @@ impl VideoCapacity {
                 p.reserved.store(0, Ordering::Relaxed);
             }
         }
+        self.egress
+            .committed
+            .store(committed.egress_kbps, Ordering::Relaxed);
+        self.egress.reserved.store(0, Ordering::Relaxed);
         *self.last_recompute.lock() = Some(Instant::now());
         committed
     }
 
     /// The budget lines for cluster membership, the room device's first.
     pub fn budgets(&self) -> Vec<DeviceBudget> {
-        self.devices.iter().map(|d| d.budget()).collect()
+        self.devices
+            .iter()
+            .map(|d| {
+                let mut b = d.budget();
+                if d.device.is_host() {
+                    b.egress = Some((self.egress.left(), self.egress.total));
+                }
+                b
+            })
+            .collect()
     }
 
     /// The room device's budget line.
@@ -902,6 +1040,8 @@ impl VideoCapacity {
     pub fn json(&self) -> serde_json::Value {
         let mut json = self.room().json();
         json["devices"] = serde_json::Value::Array(self.devices.iter().map(|d| d.json()).collect());
+        // Kilobits a second out of the node (FORWARDING_ROOMS §3).
+        json["egress"] = self.egress.json();
         json["last_recompute_secs_ago"] =
             serde_json::json!(self.last_recompute.lock().map(|t| t.elapsed().as_secs()));
         json
@@ -1121,6 +1261,53 @@ fn idle_flavors(
         .collect()
 }
 
+/// What a viewer is being sent (FORWARDING_ROOMS §3): each stream that
+/// is not paused at its layer's nominal rate, no more than its REMB.
+fn viewer_kbps(v: &VideoViewerInfo) -> u32 {
+    let nominal = v
+        .streams
+        .iter()
+        .filter(|s| !s.paused)
+        .fold(0u32, |a, s| a.saturating_add(default_kbps(s.resolution)));
+    if v.remb_kbps > 0 {
+        nominal.min(v.remb_kbps)
+    } else {
+        nominal
+    }
+}
+
+/// One of the default view's other streams, at its height.
+fn other_stream_kbps() -> u32 {
+    default_kbps(Resolution::new(
+        DEFAULT_OTHER_HEIGHT * 16 / 9,
+        DEFAULT_OTHER_HEIGHT,
+    ))
+}
+
+/// The default view in a room of `cameras` others: the speaker at 720p
+/// and up to eight of them at 180p (§8 Q12).
+fn default_view_kbps(cameras: u32) -> u32 {
+    if cameras == 0 {
+        return 0;
+    }
+    let speaker = default_kbps(Resolution::new(
+        DEFAULT_SPEAKER_HEIGHT * 16 / 9,
+        DEFAULT_SPEAKER_HEIGHT,
+    ));
+    let others = cameras.min(DEFAULT_MAX_STREAMS as u32 - 1);
+    speaker.saturating_add(others.saturating_mul(other_stream_kbps()))
+}
+
+/// How many in the room are being forwarded streams: each would be sent
+/// a newcomer's camera too.
+fn viewers_of(video: &VideoRoom) -> u32 {
+    video
+        .participants()
+        .iter()
+        .filter(|p| p.viewer.is_some())
+        .count() as u32
+}
+
 /// The room asks before it grants the floor (§15.6): a share is one more
 /// decode, reserved like a join and priced into `committed` once the next
 /// recompute sees the content source in the room.
@@ -1223,7 +1410,7 @@ mod tests {
         let cap = capacity(1);
         assert_eq!(cap.total(), 800);
         // First participant of a room: decode + encode + compose (1 tile).
-        let first = cap.join_cost(&settings(false), &[VideoCodec::H264], None);
+        let first = cap.join_cost(&settings(false), &[VideoCodec::H264], None, false);
         let h264 =
             units(4.4, Resolution::new(1280, 720), 15) + units(1.4, Resolution::new(1280, 720), 15);
         let compose1 = units(2.0 * 1.1, Resolution::new(1280, 720), 15);
@@ -1248,7 +1435,12 @@ mod tests {
             compose1
         );
         // The dearest allowed codec sets the price.
-        let either = cap.join_cost(&settings(false), &[VideoCodec::H264, VideoCodec::VP8], None);
+        let either = cap.join_cost(
+            &settings(false),
+            &[VideoCodec::H264, VideoCodec::VP8],
+            None,
+            false,
+        );
         assert!(either.total() > first.total());
 
         assert!(cap.try_reserve(&first));
@@ -1319,13 +1511,13 @@ mod tests {
 
         // Joining an existing room with a canvas to share adds no composite;
         // asking for one without yourself does.
-        let more = cap.join_cost(&settings(false), &[VideoCodec::VP8], Some(&video));
+        let more = cap.join_cost(&settings(false), &[VideoCodec::VP8], Some(&video), false);
         assert_eq!(
             more.total(),
             units(1.8, Resolution::new(1280, 720), 15)
                 + units(11.7, Resolution::new(1280, 720), 15)
         );
-        let own = cap.join_cost(&settings(true), &[VideoCodec::VP8], Some(&video));
+        let own = cap.join_cost(&settings(true), &[VideoCodec::VP8], Some(&video), false);
         assert!(own.total() > more.total());
 
         // The recompute over this room commits exactly its cost.
@@ -1346,6 +1538,130 @@ mod tests {
         room.disable_video();
     }
 
+    /// FORWARDING_ROOMS §3: a room whose subscribers are all forwarded
+    /// decodes and encodes nothing and is charged only what it sends; a
+    /// forwarding join is priced at its egress and the link refuses what
+    /// it cannot carry.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_forwarding_room_is_charged_its_egress_and_no_codec_time() {
+        use forge_conference::video::ForwardRequest;
+        let room = Arc::new(
+            ConferenceRoom::new(
+                "3001",
+                AudioFormat::pcm_mono(),
+                160,
+                forge_mixer::MixerOptions::default(),
+            )
+            .unwrap(),
+        );
+        for id in ["alice", "bob"] {
+            room.add_participant(id, true).unwrap();
+        }
+        let res = Resolution::new(640, 360);
+        let video = room.enable_video(
+            VideoRoomSettings {
+                resolution: res,
+                fps: 15,
+                ..VideoRoomSettings::default()
+            },
+            &VideoBackend::raw(),
+        );
+        let cap = VideoCapacity::host(vec![VideoCodec::VP8], CostTable::phase0(), 4, 1.0)
+            .with_egress_mbps(3);
+        assert_eq!(cap.egress_total_kbps(), 3000);
+        video.add_source("alice", VideoCodec::VP8, "").unwrap();
+        video.add_source("bob", VideoCodec::VP8, "").unwrap();
+
+        // Bob takes the composite: two decodes, his flavor, one output,
+        // and the composite's rate out.
+        let sub = video
+            .subscribe(
+                "bob",
+                SubscribeRequest {
+                    codec: VideoCodec::VP8,
+                    profile: String::new(),
+                    payload_type: 97,
+                    resolution: None,
+                    fps: None,
+                    max_kbps: None,
+                    scope: None,
+                    view: None,
+                },
+            )
+            .unwrap();
+        let mixed = cap.room_cost(&video);
+        assert_eq!(
+            mixed.on_engine(&MediaDevice::Host, Engine::Decode),
+            2 * units(1.8, res, 15)
+        );
+        assert_eq!(mixed.egress_kbps(), default_kbps(res), "{mixed}");
+        assert!(mixed.to_string().ends_with("kb/s out"), "{mixed}");
+        drop(sub);
+
+        // Both forwarded: once the room's clock has seen nothing to
+        // compose, nothing is decoded and nothing is charged for it.
+        let forward = ForwardRequest {
+            codec: VideoCodec::VP8,
+            profile: String::new(),
+            payload_type: 97,
+        };
+        let _a = video.forward("alice", forward.clone()).unwrap();
+        let _b = video.forward("bob", forward.clone()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while video
+            .participants()
+            .iter()
+            .any(|p| p.source.as_ref().is_some_and(|s| s.decoding))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the sources never stopped decoding"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let forwarded = cap.room_cost(&video);
+        assert_eq!(forwarded.total(), 0, "no codec time: {forwarded}");
+
+        // A forwarding join: its decode, the default view of the two
+        // cameras there (the speaker at 720p, both at 180p), and its
+        // camera to each of the two viewers.
+        let join = cap.join_cost(&settings(false), &[VideoCodec::VP8], Some(&video), true);
+        assert_eq!(join.on_engine(&MediaDevice::Host, Engine::Encode), 0);
+        assert_eq!(join.on_engine(&MediaDevice::Host, Engine::Compose), 0);
+        assert_eq!(
+            join.on_engine(&MediaDevice::Host, Engine::Decode),
+            units(1.8, Resolution::new(1280, 720), 15)
+        );
+        assert_eq!(join.egress_kbps(), 1200 + 2 * 200 + 2 * 200);
+        // A composite join sends its flavor and is sent to the viewers.
+        let mix = cap.join_cost(&settings(false), &[VideoCodec::VP8], Some(&video), false);
+        assert_eq!(mix.egress_kbps(), 1200 + 2 * 200);
+
+        // The link: one fits in 3 Mb/s, a second does not, and the
+        // refusal holds nothing — not even the codec units it fit.
+        let units_left = cap.left();
+        assert!(cap.try_reserve(&join));
+        assert_eq!(cap.egress_left_kbps(), 3000 - 2000);
+        let units_after_one = cap.left();
+        assert!(units_after_one < units_left);
+        assert!(!cap.try_reserve(&join), "over the link");
+        assert_eq!(
+            cap.left(),
+            units_after_one,
+            "the refused join's units let go"
+        );
+        assert_eq!(cap.egress_left_kbps(), 1000);
+        let budget = cap.budgets().remove(0);
+        assert_eq!(budget.egress, Some((1000, 3000)));
+        assert_eq!(cap.json()["egress"]["total"], 3000);
+
+        // The recompute commits what the room sends (its viewers' streams,
+        // none of which has a frame to carry yet) and drops the hold.
+        let committed = cap.recompute(vec![Arc::clone(&room)]);
+        assert_eq!(cap.egress_left_kbps(), 3000 - committed.egress_kbps());
+        room.disable_video();
+    }
+
     #[test]
     fn a_join_on_a_gpu_node_is_priced_where_each_stage_runs() {
         let (gpu, cap) = gpu_capacity(DeviceCapacity::device_total(1.0));
@@ -1355,7 +1671,7 @@ mod tests {
         // H.264: decode, encode and composite all on the device. Sixty
         // real-time 720p30 encodes fill it, so one 720p15 encode is a
         // 120th of it, and the decode a 480th.
-        let h264 = cap.join_cost(&settings(false), &[VideoCodec::H264], None);
+        let h264 = cap.join_cost(&settings(false), &[VideoCodec::H264], None, false);
         assert_eq!(h264.on(&MediaDevice::Host), 0);
         assert_eq!(
             h264.on(&gpu),
@@ -1370,7 +1686,7 @@ mod tests {
         );
         // VP8: decoded on the device, encoded on the host, composed on
         // the device.
-        let vp8 = cap.join_cost(&settings(false), &[VideoCodec::VP8], None);
+        let vp8 = cap.join_cost(&settings(false), &[VideoCodec::VP8], None, false);
         assert_eq!(vp8.on(&MediaDevice::Host), units(11.7, res, 15));
         assert_eq!(
             vp8.on(&gpu),
@@ -1406,7 +1722,7 @@ mod tests {
         // A device whose engines each hold 120 units: about two H.264
         // joins' composites, many more encodes and decodes.
         let (gpu, cap) = gpu_capacity(120);
-        let h264 = cap.join_cost(&settings(false), &[VideoCodec::H264], None);
+        let h264 = cap.join_cost(&settings(false), &[VideoCodec::H264], None, false);
         let compose = h264.on_engine(&gpu, Engine::Compose);
         assert!(compose > h264.on_engine(&gpu, Engine::Encode));
         let mut joins = 0;
@@ -1451,8 +1767,8 @@ mod tests {
         // A device with room for a couple of joins; the host beside it
         // has a whole thread.
         let (gpu, cap) = gpu_capacity(120);
-        let h264 = cap.join_cost(&settings(false), &[VideoCodec::H264], None);
-        let vp8 = cap.join_cost(&settings(false), &[VideoCodec::VP8], None);
+        let h264 = cap.join_cost(&settings(false), &[VideoCodec::H264], None, false);
+        let vp8 = cap.join_cost(&settings(false), &[VideoCodec::VP8], None, false);
         let mut admitted = 0;
         while cap.try_reserve(&h264) {
             admitted += 1;

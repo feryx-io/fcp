@@ -290,6 +290,52 @@ a recorded flavor).
   say what a forwarding room carries. Raising it is a follow-up with numbers (§8
   Q10).
 
+*As built (R3b, v0.25.561):*
+
+- **The egress line.** `[conference] video_egress_mbps` (default 1,000) is a
+  pool of kilobits a second beside the work units (`VideoCapacity::egress`).
+  `room_cost` charges each composite subscriber its flavor's nominal rate
+  (`default_kbps`), the content section its share's, and each viewer the
+  nominal rate of every stream not paused at the layer it carries, no more than
+  its REMB. `join_cost` prices a forwarding caller at its decode alone plus its
+  egress: the default view of the cameras already there (the speaker at 720p,
+  up to eight at 180p) and its own camera to each viewer there. A composite
+  caller adds its flavor's rate. `try_reserve` takes the units and the egress
+  together or neither.
+- **No decode where nothing composes.** forge-conference 0.16.1 reports
+  `VideoSourceInfo::decoding`, and `room_cost` charges a decode only for a
+  source that is being decoded. A room whose subscribers are all forwarded and
+  which records nothing costs no codec time at all. A recorded one is still
+  charged its composite (§2.10).
+- **Placement.** The host's line in cluster membership carries the link
+  (`VideoDeviceBudget.egress`, `left_kbps`/`total_kbps`). A node with less left
+  than `DEFAULT_JOIN_EGRESS_KBPS` (2,800, a full default view) ranks with the
+  nodes that are out of video budget. Otherwise the most work units left wins,
+  then the most egress. A node that says nothing of its link is unknown, as
+  before.
+- **What the node shows.** `/status`'s video budget has `egress`; a participant's
+  video has `decoding` on its source and `forwarded` (its streams, their layers,
+  `paused`, the REMB) when it is a viewer.
+- **Measured.** `fcp-loadgen`'s `what_a_forwarded_stream_costs`
+  (`tests/forwarding.rs`) puts N forwarding phones in one room. Each sends one
+  1,100-byte packet a frame at 30 fps and takes the default view. The run samples
+  the conference server's CPU while they do. On a Core Ultra 9 275HX in release,
+  with the phones on the same box (an upper bound on the node's cost):
+
+  | Participants | Media | Forwarded | CPU (one core) | Per forwarded packet |
+  |---|---|---|---|---|
+  | 9 | RTP | 2,462 packets/s (21.7 Mb/s) | 2.9% | 11.6 µs |
+  | 16 | RTP | 4,378 packets/s (38.5 Mb/s) | 4.2% | 9.6 µs |
+  | 16 | SRTP | 4,378 packets/s (38.5 Mb/s) | 5.8% | 13.3 µs |
+
+  These are all-in: ingress, the room's tick and the rewrite. At about 57 packets
+  a second for a 500 kb/s stream, one core forwards about 1,300 SRTP streams. A
+  full sixteen-person forwarding room (144 streams) is under 6% of a core. A
+  forwarding node of several cores is bound by its link, not its processor. At
+  1 Gb/s the egress line fills at about 2,000 such streams, a core and a half of
+  forwarding, so the egress budget is the limit that matters. That is the evidence Q10 asked for before `video_max_participants`
+  is raised; raising it is still its own change.
+
 ## 4. How it is proved
 
 - **forge-media.** Unit tests of the rid parsing, the layers, the allocator under a
@@ -408,11 +454,30 @@ Each phase is one PR in its repository.
       signalling against a stand-in room;
       `a_forwarding_room_is_reached_through_the_call_manager` proves three
       SSRCs through the anchored video relay, the roster and the view.
-  - **R3b.** The egress budget (`video_egress_mbps`) in `room_cost` and
-    admission, and placement by it; a room that composes nothing charged no
-    decodes; the measurements with `fcp-loadgen`; the remaining `rooms.rs`
-    cases (a layer move on one SSRC from a three-rid sender, a REMB cut pausing
-    a stream, a recording still composing).
+  - **R3b, done (v0.25.561, forge-media v2026.11.14: forge-conference 0.16.1).**
+    The capacity and the rest of the proof (§3 *As built*).
+    - The egress budget (`video_egress_mbps`) in `room_cost`, `join_cost` and
+      admission, published on the host's budget line, and placement by it
+      (`VideoNeed.egress_kbps`).
+    - A source not being decoded is charged nothing (`VideoSourceInfo::decoding`).
+    - The measurements, with `fcp-loadgen` (§3).
+    - The test kit sends simulcast (`Phone::set_video_simulcast`,
+      `VideoLeg::send_layers`: an SSRC and the rid extension per layer, a VP8
+      keyframe header with the layer's size), says which layer reached it
+      (`layer_by_ssrc`), sends a REMB and pads its packets.
+      `a_three_layer_sender_is_moved_between_her_layers_under_one_ssrc`: a
+      viewer's stream of a three-rid sender goes to the small layer, then up to
+      the large one when the view asks, then down at once when the sender stops
+      it, all on one SSRC. `a_remb_cut_pauses_a_viewer_s_streams_and_its_roster_says_so`:
+      a REMB under every stream pauses them, nothing is sent, the roster says
+      `fcp:paused`, and a REMB that covers them brings them back.
+      `a_recorded_forwarding_room_still_composes_for_its_recording` (built with
+      MP4 recording and OpenH264, as CI builds it): every caller forwarded, the
+      recording still decodes and encodes.
+    - That test found every room recording itself from its first caller: a
+      meeting without `auto_record` left the room's threshold to
+      forge-conference's default of one. Fixed in v0.25.560: the threshold is
+      0 (off) unless the meeting auto-records.
 
   As designed:
   - `video_mode` on meetings (migration, API, admin UI).

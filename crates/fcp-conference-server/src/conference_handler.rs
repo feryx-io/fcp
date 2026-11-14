@@ -5946,7 +5946,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 .get_room(&key)
                 .ok()
                 .and_then(|room| room.video());
-            let cost = capacity.join_cost(settings, codecs, room_video.as_deref());
+            let cost = capacity.join_cost(settings, codecs, room_video.as_deref(), view_streams);
             if !capacity.try_reserve(&cost) {
                 warn!(
                     room = %room_number,
@@ -5954,6 +5954,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     device = %capacity.device(),
                     left = capacity.left(),
                     total = capacity.total(),
+                    egress_kbps = cost.egress_kbps(),
+                    egress_left_kbps = capacity.egress_left_kbps(),
                     "Video budget exhausted on this node, rejecting INVITE"
                 );
                 let reject = UserAgentServer::create_response(request, 503, "Service Unavailable");

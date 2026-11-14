@@ -117,6 +117,9 @@ fn source_json(json: &mut serde_json::Value, src: &forge_conference::video::Vide
     json["decode_errors"] = serde_json::json!(src.decode_errors);
     json["nacks_sent"] = serde_json::json!(src.nacks_sent);
     json["plis_sent"] = serde_json::json!(src.plis_sent);
+    // Not while nothing in the room composes (`docs/FORWARDING_ROOMS.md`
+    // §2.1): every subscriber forwarded, no recording.
+    json["decoding"] = serde_json::json!(src.decoding);
     // A simulcast sender's layers: which one the room decodes, and what
     // each is sending (`docs/FORWARDING_ROOMS.md` §2.4).
     if src.layers.len() > 1 {
@@ -165,6 +168,29 @@ fn subscription_json(
     }
 }
 
+/// What a forwarding subscriber is being sent (`docs/FORWARDING_ROOMS.md`
+/// §2.1): each stream — whose, which layer, whether held back — and the
+/// budget its REMB gives the allocator.
+fn viewer_json(json: &mut serde_json::Value, v: &forge_conference::video::VideoViewerInfo) {
+    json["forwarded"] = serde_json::json!({
+        "remb_kbps": v.remb_kbps,
+        "packets_sent": v.packets_sent,
+        "packets_dropped": v.packets_dropped,
+        "nacks": v.nacks_received,
+        "packets_retransmitted": v.packets_retransmitted,
+        "plis": v.plis_received,
+        "streams": v.streams.iter().map(|s| serde_json::json!({
+            "ssrc": s.ssrc,
+            "participant": s.participant,
+            "speaker": matches!(s.target, forge_conference::video::StreamTarget::Speaker),
+            "rid": s.rid,
+            "resolution": s.resolution.to_string(),
+            "paused": s.paused,
+            "packets_sent": s.packets_sent,
+        })).collect::<Vec<_>>(),
+    });
+}
+
 /// A participant's video for the API (design §12): `{codec, resolution,
 /// fps, bitrate_kbps, keyframes_sent, nacks, plis, state}` plus the leg's
 /// socket counters, and — when the participant's offer carried a
@@ -191,6 +217,9 @@ pub fn participant_video_json(
             }
             if let Some(sub) = &info.subscription {
                 subscription_json(&mut json, sub);
+            }
+            if let Some(v) = &info.viewer {
+                viewer_json(&mut json, v);
             }
         }
         json["speaking"] = serde_json::json!(info.speaking);

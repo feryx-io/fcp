@@ -194,6 +194,9 @@ struct Inner {
     video: std::sync::Mutex<Option<crate::video::VideoMode>>,
     /// What its video section says it sends ([`Phone::set_video_codec`]).
     video_codec: std::sync::Mutex<crate::video::VideoCodec>,
+    /// The simulcast layers its calls' video sends
+    /// ([`Phone::set_video_simulcast`]).
+    video_simulcast: std::sync::Mutex<Vec<(&'static str, u32)>>,
     /// Every REGISTER this phone has been sent, in order — a carrier's
     /// registrar, for a test that asks who registered and as whom.
     registrations: std::sync::Mutex<Vec<SeenRegistration>>,
@@ -267,10 +270,20 @@ impl Inner {
         let video_mode = *self.video.lock().unwrap();
         let video_codec = *self.video_codec.lock().unwrap();
         let video = match video_mode {
-            Some(mode) => Some(Arc::new(
-                crate::video::VideoLeg::open_as(self.media_ip, self.advertised, mode, video_codec)
-                    .await?,
-            )),
+            Some(mode) => {
+                let leg = crate::video::VideoLeg::open_as(
+                    self.media_ip,
+                    self.advertised,
+                    mode,
+                    video_codec,
+                )
+                .await?;
+                let layers = self.video_simulcast.lock().unwrap().clone();
+                if !layers.is_empty() {
+                    leg.set_simulcast(&layers);
+                }
+                Some(Arc::new(leg))
+            }
             None => None,
         };
         let offer = edit(with_video(
@@ -712,6 +725,12 @@ impl Phone {
         *self.inner.video_codec.lock().unwrap() = codec;
     }
 
+    /// Send simulcast on the calls this phone places: `layers` as
+    /// `(rid, height)`, largest first ([`crate::video::VideoLeg::set_simulcast`]).
+    pub fn set_video_simulcast(&self, layers: &[(&'static str, u32)]) {
+        *self.inner.video_simulcast.lock().unwrap() = layers.to_vec();
+    }
+
     /// A phone behind NAT: bound at `bind`, it names `advertised` in its
     /// Contact and SDP, an address it cannot be reached at — what a phone
     /// naming its LAN address, or loopback, does from behind a router.
@@ -926,6 +945,7 @@ impl Phone {
             codec: std::sync::Mutex::new(crate::media::Codec::Pcmu),
             video: std::sync::Mutex::new(None),
             video_codec: std::sync::Mutex::new(crate::video::VideoCodec::H264),
+            video_simulcast: std::sync::Mutex::new(Vec::new()),
         });
 
         let handler: Arc<dyn UasRequestHandler> = Arc::new(Handler(Arc::clone(&inner)));

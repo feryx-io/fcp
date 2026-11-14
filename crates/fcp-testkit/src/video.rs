@@ -7,8 +7,13 @@
 //! [`VideoLeg::send_frames`] starts with the payload descriptor of its codec,
 //! a keyframe's or not, which is all a room that forwards it without
 //! decoding reads (`docs/FORWARDING_ROOMS.md`). What arrives is counted by
-//! SSRC, for a room that sends several streams in the section. RTCP is a PLI
-//! (RFC 4585 §6.3.1) sent on request and counted on receipt. With SDES
+//! SSRC, for a room that sends several streams in the section. A section
+//! told to send simulcast ([`VideoLeg::set_simulcast`]) sends each frame
+//! once per layer (RFC 8853): its own SSRC, its rid in the header
+//! extension, a VP8 keyframe header saying its size, and the rid after the
+//! payload's number so a receiver can tell which layer reached it. RTCP is
+//! a PLI (RFC 4585 §6.3.1) sent on request and counted on receipt, and a
+//! REMB sent on request. With SDES
 //! the section is keyed as a phone keys it: its own key in an offer, or
 //! its own under the offer's tag in an answer.
 
@@ -25,8 +30,15 @@ use tokio::task::JoinHandle;
 /// The payload type the section offers, as H.264.
 pub const VIDEO_PT: u8 = 96;
 
-/// The SSRC this phone's video is sent with.
+/// The SSRC this phone's video is sent with; a simulcast layer's is this
+/// plus one more than its index.
 const SSRC: u32 = 0x5644_4f30;
+
+/// The one-byte header extension id the rid goes under (RFC 8852).
+const RID_EXT_ID: u8 = 3;
+
+/// What every payload carries after its codec's first bytes.
+const MARK: &[u8] = b"fcp-video";
 
 /// What the section says it sends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -63,6 +75,15 @@ pub struct VideoLeg {
     codec: VideoCodec,
     /// Packets received, by SSRC.
     by_ssrc: Arc<Mutex<std::collections::HashMap<u32, u64>>>,
+    /// The layer each SSRC last carried, by the rid its payload named.
+    layer_by_ssrc: Arc<Mutex<std::collections::HashMap<u32, String>>>,
+    /// The simulcast layers it sends, `(rid, height)`, largest first;
+    /// empty for one stream.
+    simulcast: Mutex<Vec<(String, u32)>>,
+    /// Each layer's next sequence number.
+    layer_seq: Mutex<std::collections::HashMap<String, u16>>,
+    /// Bytes a frame's packet is padded to ([`VideoLeg::set_packet_size`]).
+    packet_size: std::sync::atomic::AtomicUsize,
     /// The `a=crypto` this phone puts in its section, once it has a key.
     crypto: Mutex<Option<SrtpSdpContext>>,
     remote: Mutex<Option<SocketAddr>>,
@@ -99,22 +120,20 @@ impl VideoLeg {
         let received = Arc::new(AtomicU64::new(0));
         let plis = Arc::new(AtomicU64::new(0));
         let by_ssrc = Arc::new(Mutex::new(std::collections::HashMap::new()));
-        let tasks = vec![
-            tokio::spawn(read(
-                Arc::clone(&rtp),
-                Arc::clone(&keys),
-                Arc::clone(&received),
-                Arc::clone(&plis),
-                Arc::clone(&by_ssrc),
-            )),
-            tokio::spawn(read(
-                Arc::clone(&rtcp),
-                Arc::clone(&keys),
-                Arc::clone(&received),
-                Arc::clone(&plis),
-                Arc::clone(&by_ssrc),
-            )),
-        ];
+        let layer_by_ssrc = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let tasks = [&rtp, &rtcp]
+            .into_iter()
+            .map(|socket| {
+                tokio::spawn(read(
+                    Arc::clone(socket),
+                    Arc::clone(&keys),
+                    Arc::clone(&received),
+                    Arc::clone(&plis),
+                    Arc::clone(&by_ssrc),
+                    Arc::clone(&layer_by_ssrc),
+                ))
+            })
+            .collect();
         Ok(Self {
             rtp,
             rtcp,
@@ -124,6 +143,10 @@ impl VideoLeg {
             keys,
             codec,
             by_ssrc,
+            layer_by_ssrc,
+            simulcast: Mutex::new(Vec::new()),
+            layer_seq: Mutex::new(std::collections::HashMap::new()),
+            packet_size: std::sync::atomic::AtomicUsize::new(0),
             crypto: Mutex::new(crypto),
             remote: Mutex::new(None),
             received,
@@ -160,6 +183,18 @@ impl VideoLeg {
             ip = self.advertised,
             pt = VIDEO_PT,
         );
+        let simulcast = self.simulcast.lock().unwrap();
+        if !simulcast.is_empty() {
+            s.push_str(&format!(
+                "a=extmap:{RID_EXT_ID} urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\n"
+            ));
+            for (rid, _) in simulcast.iter() {
+                s.push_str(&format!("a=rid:{rid} send\r\n"));
+            }
+            let rids: Vec<&str> = simulcast.iter().map(|(r, _)| r.as_str()).collect();
+            s.push_str(&format!("a=simulcast:send {}\r\n", rids.join(";")));
+        }
+        drop(simulcast);
         if let Some(c) = &*self.crypto.lock().unwrap() {
             s.push_str(&format!(
                 "a=crypto:{} {} {}\r\n",
@@ -232,6 +267,17 @@ impl VideoLeg {
     /// starts as the codec's does, so a room that forwards without
     /// decoding can tell where pictures start.
     pub async fn send_frames(&self, n: u16, keyframe_every: u16) -> Result<()> {
+        let rids: Vec<String> = self
+            .simulcast
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(r, _)| r.clone())
+            .collect();
+        if !rids.is_empty() {
+            let rids: Vec<&str> = rids.iter().map(String::as_str).collect();
+            return self.send_layers(n, keyframe_every, &rids).await;
+        }
         let to = self.remote().context("no far end for video")?;
         for i in 0..n {
             let seq = self.seq.fetch_add(1, Ordering::Relaxed) as u16;
@@ -246,8 +292,13 @@ impl VideoLeg {
                 // The start of partition 0, then the payload header's P bit.
                 VideoCodec::Vp8 => packet.extend_from_slice(&[0x10, if key { 0x00 } else { 0x01 }]),
             }
-            packet.extend_from_slice(b"fcp-video");
+            packet.extend_from_slice(MARK);
             packet.extend_from_slice(&seq.to_be_bytes());
+            let size = self.packet_size.load(Ordering::Relaxed);
+            if packet.len() < size {
+                // Zeros, which no rid begins with.
+                packet.resize(size, 0);
+            }
             let out = self.protect(&packet, false)?;
             self.rtp.send_to(&out, to).await?;
         }
@@ -257,6 +308,112 @@ impl VideoLeg {
     /// Packets of this harness's received, by the SSRC they came under.
     pub fn received_by_ssrc(&self) -> std::collections::HashMap<u32, u64> {
         self.by_ssrc.lock().unwrap().clone()
+    }
+
+    /// The simulcast layer each SSRC last carried, by rid.
+    pub fn layer_by_ssrc(&self) -> std::collections::HashMap<u32, String> {
+        self.layer_by_ssrc.lock().unwrap().clone()
+    }
+
+    /// Pad each packet [`send_frames`](Self::send_frames) sends to `bytes`
+    /// of RTP, as a camera's packets are: what a load run measures a
+    /// forwarding room's per-packet cost with.
+    pub fn set_packet_size(&self, bytes: usize) {
+        self.packet_size.store(bytes, Ordering::Relaxed);
+    }
+
+    /// Send simulcast: `layers` as `(rid, height)`, largest first (RFC
+    /// 8853). Set before the section goes into an offer.
+    pub fn set_simulcast(&self, layers: &[(&str, u32)]) {
+        *self.simulcast.lock().unwrap() = layers
+            .iter()
+            .map(|(rid, h)| (rid.to_string(), *h))
+            .collect();
+    }
+
+    /// Send `n` frames on the simulcast layers named by `rids` alone,
+    /// every `keyframe_every`-th a keyframe (the first always is): what
+    /// a sender does when its uplink stops carrying its largest layer.
+    pub async fn send_layers(&self, n: u16, keyframe_every: u16, rids: &[&str]) -> Result<()> {
+        let to = self.remote().context("no far end for video")?;
+        let layers: Vec<(usize, String, u32)> = self
+            .simulcast
+            .lock()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .filter(|(_, (rid, _))| rids.contains(&rid.as_str()))
+            .map(|(i, (rid, h))| (i, rid.clone(), *h))
+            .collect();
+        for i in 0..n {
+            let frame = self.seq.fetch_add(1, Ordering::Relaxed) as u32;
+            let key = i % keyframe_every.max(1) == 0;
+            for (index, rid, height) in &layers {
+                let seq = {
+                    let mut seqs = self.layer_seq.lock().unwrap();
+                    let s = seqs.entry(rid.clone()).or_default();
+                    let now = *s;
+                    *s = s.wrapping_add(1);
+                    now
+                };
+                // RTP with the one-byte header extension (RFC 8285): the
+                // rid, padded to a word.
+                let mut packet = vec![0x90, 0x80 | VIDEO_PT];
+                packet.extend_from_slice(&seq.to_be_bytes());
+                packet.extend_from_slice(&(frame * 3000).to_be_bytes());
+                packet.extend_from_slice(&(SSRC + 1 + *index as u32).to_be_bytes());
+                let mut ext = vec![(RID_EXT_ID << 4) | (rid.len() as u8 - 1)];
+                ext.extend_from_slice(rid.as_bytes());
+                while ext.len() % 4 != 0 {
+                    ext.push(0);
+                }
+                packet.extend_from_slice(&[0xBE, 0xDE]);
+                packet.extend_from_slice(&((ext.len() / 4) as u16).to_be_bytes());
+                packet.extend_from_slice(&ext);
+                packet.push(0x10); // VP8: the start of partition 0
+                if key {
+                    // A key frame's tag, start code and size (RFC 6386 §9.1).
+                    let width = (height * 16 / 9) as u16;
+                    packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x9d, 0x01, 0x2a]);
+                    packet.extend_from_slice(&width.to_le_bytes());
+                    packet.extend_from_slice(&(*height as u16).to_le_bytes());
+                } else {
+                    packet.extend_from_slice(&[0x01, 0x00, 0x00]);
+                }
+                packet.extend_from_slice(MARK);
+                packet.extend_from_slice(&seq.to_be_bytes());
+                packet.extend_from_slice(rid.as_bytes());
+                let out = self.protect(&packet, false)?;
+                self.rtp.send_to(&out, to).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Tell the far end what this phone can take: a REMB
+    /// (draft-alvestrand-rmcat-remb) of `kbps`.
+    pub async fn send_remb(&self, kbps: u32) -> Result<()> {
+        let to = self.remote().context("no far end for video")?;
+        let mut mantissa = u64::from(kbps) * 1000;
+        let mut exp = 0u8;
+        while mantissa >= 1 << 18 {
+            mantissa >>= 1;
+            exp += 1;
+        }
+        let mut remb = vec![0x8F, 206, 0, 5];
+        remb.extend_from_slice(&SSRC.to_be_bytes());
+        remb.extend_from_slice(&0u32.to_be_bytes());
+        remb.extend_from_slice(b"REMB");
+        remb.push(1);
+        remb.push((exp << 2) | ((mantissa >> 16) as u8 & 0x03));
+        remb.push((mantissa >> 8) as u8);
+        remb.push(mantissa as u8);
+        remb.extend_from_slice(&0u32.to_be_bytes());
+        let out = self.protect(&remb, true)?;
+        self.rtcp
+            .send_to(&out, SocketAddr::new(to.ip(), to.port() + 1))
+            .await?;
+        Ok(())
     }
 
     /// Ask the far end for a keyframe.
@@ -335,6 +492,7 @@ async fn read(
     received: Arc<AtomicU64>,
     plis: Arc<AtomicU64>,
     by_ssrc: Arc<Mutex<std::collections::HashMap<u32, u64>>>,
+    layer_by_ssrc: Arc<Mutex<std::collections::HashMap<u32, String>>>,
 ) {
     let mut buf = vec![0u8; 2048];
     loop {
@@ -362,15 +520,26 @@ async fn read(
             if plain.len() >= 2 && plain[1] == 206 && plain[0] & 0x1f == 1 {
                 plis.fetch_add(1, Ordering::Relaxed);
             }
-        } else if plain.len() > 12
-            && plain[1] & 0x7f == VIDEO_PT
+        } else if plain.len() > 12 && plain[1] & 0x7f == VIDEO_PT {
             // After the header: the payload as sent, behind its codec's
             // first bytes when it was sent as frames.
-            && (0..=2).any(|at| plain[12 + at.min(plain.len() - 12)..].starts_with(b"fcp-video"))
-        {
+            let head = &plain[12..plain.len().min(12 + 48)];
+            let Some(at) = head.windows(MARK.len()).position(|w| w == MARK) else {
+                continue;
+            };
             received.fetch_add(1, Ordering::Relaxed);
             let ssrc = u32::from_be_bytes([plain[8], plain[9], plain[10], plain[11]]);
             *by_ssrc.lock().unwrap().entry(ssrc).or_default() += 1;
+            let rest = &plain[12 + at + MARK.len()..];
+            if rest.len() > 2 {
+                let rid = &rest[2..];
+                let rid = &rid[..rid.iter().position(|b| *b == 0).unwrap_or(rid.len())];
+                if let Ok(rid) = std::str::from_utf8(rid) {
+                    if !rid.is_empty() {
+                        layer_by_ssrc.lock().unwrap().insert(ssrc, rid.to_string());
+                    }
+                }
+            }
         }
     }
 }

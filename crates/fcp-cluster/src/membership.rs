@@ -156,6 +156,21 @@ pub struct VideoDeviceBudget {
     /// before engines were advertised.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engines: Option<VideoEngines>,
+    /// The node's link (FCP `docs/FORWARDING_ROOMS.md` §3), on the
+    /// host's line: the link is the node's, whichever device draws.
+    /// Absent on other devices and on a node from before egress was
+    /// advertised.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<VideoEgress>,
+}
+
+/// What a conference node may still send, in kilobits a second: every
+/// composite and forwarded stream leaving it shares its link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct VideoEgress {
+    pub left_kbps: u32,
+    pub total_kbps: u32,
 }
 
 impl VideoDeviceBudget {
@@ -241,6 +256,15 @@ impl ClusterMember {
             }
         }
         self.video_budget_left(&need.codecs)
+    }
+
+    /// Kilobits a second this node may still send, from its host line;
+    /// `None` when it advertises no egress — unknown, not zero.
+    pub fn video_egress_left_kbps(&self) -> Option<u32> {
+        self.video_budget
+            .iter()
+            .filter_map(|b| b.egress.map(|e| e.left_kbps))
+            .max()
     }
 
     /// Whether this node is in `region`. A node without a region is in
@@ -1329,6 +1353,7 @@ mod tests {
                 left: 700,
                 total: 8000,
                 engines: None,
+                egress: None,
             },
             VideoDeviceBudget {
                 device: "vaapi:/dev/dri/renderD128".into(),
@@ -1336,6 +1361,7 @@ mod tests {
                 left: 3000,
                 total: 20000,
                 engines: None,
+                egress: None,
             },
         ];
         let back: ClusterMember =
@@ -1379,10 +1405,15 @@ mod tests {
                     total: 800,
                 },
             }),
+            egress: Some(VideoEgress {
+                left_kbps: 900_000,
+                total_kbps: 1_000_000,
+            }),
         };
         let back: VideoDeviceBudget =
             serde_json::from_str(&serde_json::to_string(&gpu).unwrap()).unwrap();
         assert_eq!(back, gpu);
+        assert_eq!(b.egress, None, "egress absent on an older record");
         assert_eq!(back.placement_left(), 600);
         let mut m = member("conf-3", None);
         m.video_budget = vec![gpu];

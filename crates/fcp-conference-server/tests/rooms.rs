@@ -308,6 +308,18 @@ format = "compact"
         panic!("{why}\nphone {} saw: {seen:#?}\n{logs}", phone.username);
     }
 
+    /// Fail saying `why`, with what the services logged.
+    async fn fail_with_logs(&self, why: &str) -> ! {
+        let mut logs = String::new();
+        if let Some(s) = self.call_manager.lock().await.take() {
+            logs.push_str(&s.kill().await);
+        }
+        if let Some(s) = self.conference.lock().await.take() {
+            logs.push_str(&s.kill().await);
+        }
+        panic!("{why}\n{logs}");
+    }
+
     async fn finish(mut self) {
         if let Some(s) = self.call_manager.lock().await.take() {
             s.stop().await;
@@ -1310,6 +1322,7 @@ async fn join_forwarding(stack: &Stack, phone: &Phone, ask: bool) -> fcp_testkit
 /// Send frames from `senders` until `done` holds of what `viewer` has
 /// received, or fail after a while saying `what`.
 async fn pump_until(
+    stack: &Stack,
     senders: &[&fcp_testkit::Call],
     viewer: &fcp_testkit::Call,
     what: &str,
@@ -1324,10 +1337,11 @@ async fn pump_until(
         if done(&got) {
             return got;
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "never: {what}; received {got:?}"
-        );
+        if tokio::time::Instant::now() >= deadline {
+            stack
+                .fail_with_logs(&format!("never: {what}; received {got:?}"))
+                .await;
+        }
         for s in senders {
             s.video()
                 .expect("a sender has video")
@@ -1390,6 +1404,7 @@ async fn a_caller_that_asks_is_forwarded_each_persons_stream_and_told_whose_it_i
 
     // The default view: the speaker, then everyone else — three streams.
     let got = pump_until(
+        &stack,
         &[&alice_call, &carol_call],
         &bob_call,
         "three streams for Bob",
@@ -1434,10 +1449,18 @@ async fn a_caller_that_asks_is_forwarded_each_persons_stream_and_told_whose_it_i
         "a view that means nothing"
     );
     // Give the room a tick, then count afresh.
-    pump_until(&[&alice_call, &carol_call], &bob_call, "a tick", |_| true).await;
+    pump_until(
+        &stack,
+        &[&alice_call, &carol_call],
+        &bob_call,
+        "a tick",
+        |_| true,
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     let before = bob_call.video().unwrap().received_by_ssrc();
     let after = pump_until(
+        &stack,
         &[&alice_call, &carol_call],
         &bob_call,
         "Carol's stream going on",
@@ -1482,6 +1505,340 @@ async fn a_caller_that_asks_is_forwarded_each_persons_stream_and_told_whose_it_i
     );
 
     for call in [&alice_call, &carol_call, &bob_call, &dave_call] {
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
+    stack.finish().await;
+}
+
+/// Send one keyframe a frame from `sender` — on the simulcast layers
+/// `rids` when it sends simulcast, else its one stream — until `done`
+/// holds of `viewer`'s video, or fail after `within` saying `what`.
+async fn pump_layers(
+    stack: &Stack,
+    sender: &fcp_testkit::Call,
+    rids: Option<&[&str]>,
+    viewer: &fcp_testkit::Call,
+    what: &str,
+    within: Duration,
+    done: impl Fn(&fcp_testkit::video::VideoLeg) -> bool,
+) {
+    let deadline = tokio::time::Instant::now() + within;
+    let leg = viewer.video().expect("the viewer has video");
+    loop {
+        if done(leg) {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let why = format!(
+                "never: {what}; received {:?}, layers {:?}",
+                leg.received_by_ssrc(),
+                leg.layer_by_ssrc()
+            );
+            stack.fail_with_logs(&why).await;
+        }
+        let video = sender.video().expect("the sender has video");
+        match rids {
+            Some(rids) => video.send_layers(1, 1, rids).await.unwrap(),
+            None => video.send_frames(1, 1).await.unwrap(),
+        }
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    }
+}
+
+/// Send `view` as `call`'s `fcp-view` INFO; the status it was answered.
+async fn send_view(call: &fcp_testkit::Call, view: &str) -> u16 {
+    call.send_in_call(
+        sip_core::Method::Info,
+        &[
+            ("Info-Package", fcp_core::VIEW_INFO_PACKAGE),
+            ("Content-Type", fcp_core::VIEW_INFO_TYPE),
+        ],
+        view.as_bytes(),
+    )
+    .await
+    .unwrap()
+}
+
+/// The streams the room says it forwards to `pid`.
+async fn forwarded_streams(stack: &Stack, pid: &str) -> Vec<serde_json::Value> {
+    stack.participant(pid).await["video"]["forwarded"]["streams"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// A meeting that forwards (`video_mode = auto`), in VP8, with `extra`.
+async fn forwarding_meeting(stack: &Stack, extra: serde_json::Value) {
+    let mut meeting = serde_json::json!({
+        "video_enabled": true,
+        "video_codecs": ["VP8"],
+        "video_mode": "auto",
+    });
+    for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+        meeting[k] = v;
+    }
+    stack.seed.meeting_with(ROOM, meeting).await;
+}
+
+/// A three-rid sender in a forwarding room (`docs/FORWARDING_ROOMS.md`
+/// R3b): the viewer's stream of her moves between her layers — down to
+/// what its view asks, up when it asks for more, down at once when her
+/// largest layer stops — and all of it under the one SSRC its roster
+/// names her by.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_three_layer_sender_is_moved_between_her_layers_under_one_ssrc() {
+    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    forwarding_meeting(&stack, serde_json::json!({})).await;
+    let alice = stack.phone("alice").await;
+    alice.set_video_simulcast(&[("h", 720), ("m", 360), ("l", 180)]);
+    let bob = stack.phone("bob").await;
+    let alice_call = join_forwarding(&stack, &alice, true).await;
+    let bob_call = join_forwarding(&stack, &bob, true).await;
+    stack.wait_participants(2).await;
+    let alice_id = stack.participant_named("alice").await;
+    let bob_id = stack.participant_named("bob").await;
+
+    // Bob asks for Alice alone at 180p: her small layer.
+    let view = |height: u32| {
+        format!(r#"{{"streams":[{{"participant":"{alice_id}","max_height":{height}}}]}}"#)
+    };
+    assert_eq!(send_view(&bob_call, &view(180)).await, 200);
+    let deadline = tokio::time::Instant::now() + SOON;
+    let ssrc = loop {
+        let streams = forwarded_streams(&stack, &bob_id).await;
+        if let [s] = streams.as_slice() {
+            if s["rid"] == "l" && s["participant"] == alice_id.as_str() {
+                break s["ssrc"].as_u64().unwrap() as u32;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Bob's one stream never took Alice's small layer: {streams:?}"
+        );
+        alice_call.video().unwrap().send_frames(1, 1).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    };
+    let layers = stack.participant(&alice_id).await["video"]["layers"].clone();
+    assert_eq!(layers.as_array().map(Vec::len), Some(3), "{layers}");
+    pump_layers(
+        &stack,
+        &alice_call,
+        None,
+        &bob_call,
+        "the small layer at Bob",
+        SOON,
+        |v| v.layer_by_ssrc().get(&ssrc).map(String::as_str) == Some("l"),
+    )
+    .await;
+    let settled = bob_call.video().unwrap().received_by_ssrc();
+
+    // He asks for 720p: up to her large layer once it has been
+    // affordable a while (STREAM_UP_AFTER), on the same SSRC.
+    assert_eq!(send_view(&bob_call, &view(720)).await, 200);
+    pump_layers(
+        &stack,
+        &alice_call,
+        None,
+        &bob_call,
+        "the large layer at Bob",
+        Duration::from_secs(15),
+        |v| v.layer_by_ssrc().get(&ssrc).map(String::as_str) == Some("h"),
+    )
+    .await;
+
+    // Her uplink stops carrying the large layer: down to the middle one
+    // at once, still the same SSRC.
+    pump_layers(
+        &stack,
+        &alice_call,
+        Some(&["m", "l"]),
+        &bob_call,
+        "the middle layer at Bob",
+        Duration::from_secs(10),
+        |v| v.layer_by_ssrc().get(&ssrc).map(String::as_str) == Some("m"),
+    )
+    .await;
+
+    let after = bob_call.video().unwrap().received_by_ssrc();
+    for (other, n) in &after {
+        if *other != ssrc {
+            assert_eq!(
+                Some(n),
+                settled.get(other),
+                "every move on one SSRC: {settled:?} then {after:?}"
+            );
+        }
+    }
+    assert!(after[&ssrc] > settled[&ssrc]);
+    for call in [&alice_call, &bob_call] {
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
+    stack.finish().await;
+}
+
+/// A viewer's REMB is its budget (`docs/FORWARDING_ROOMS.md` §2.5, R3b):
+/// cut below its smallest stream, every stream is paused — nothing sent,
+/// the room and the roster both say so — and a REMB that covers them
+/// brings them back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_remb_cut_pauses_a_viewer_s_streams_and_its_roster_says_so() {
+    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    forwarding_meeting(&stack, serde_json::json!({})).await;
+    let alice = stack.phone("alice").await;
+    let carol = stack.phone("carol").await;
+    let bob = stack.phone("bob").await;
+    let alice_call = join_forwarding(&stack, &alice, true).await;
+    let carol_call = join_forwarding(&stack, &carol, true).await;
+    let bob_call = join_forwarding(&stack, &bob, true).await;
+    stack.wait_participants(3).await;
+    let alice_id = stack.participant_named("alice").await;
+    let carol_id = stack.participant_named("carol").await;
+    let bob_id = stack.participant_named("bob").await;
+    let view = format!(
+        r#"{{"streams":[{{"participant":"{alice_id}","priority":1}},{{"participant":"{carol_id}","priority":2}}]}}"#
+    );
+    assert_eq!(send_view(&bob_call, &view).await, 200);
+    pump_until(
+        &stack,
+        &[&alice_call, &carol_call],
+        &bob_call,
+        "both streams at Bob",
+        |got| got.len() >= 2 && got.values().filter(|n| **n >= 3).count() >= 2,
+    )
+    .await;
+    assert_eq!(
+        bob_call.subscribe_in_call("conference", 600).await.unwrap(),
+        200
+    );
+    let (_, full) = roster(&bob, bob_call.call_id()).await;
+    assert!(!full.contains("<fcp:paused>true</fcp:paused>"), "{full}");
+
+    // A REMB no stream fits under: both paused.
+    let bob_video = bob_call.video().unwrap();
+    bob_video.send_remb(1).await.unwrap();
+    let deadline = tokio::time::Instant::now() + SOON;
+    loop {
+        let p = stack.participant(&bob_id).await;
+        let streams = forwarded_streams(&stack, &bob_id).await;
+        if p["video"]["forwarded"]["remb_kbps"] == 1
+            && streams.len() == 2
+            && streams.iter().all(|s| s["paused"] == true)
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never paused: {}",
+            p["video"]
+        );
+        for call in [&alice_call, &carol_call] {
+            call.video().unwrap().send_frames(1, 1).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    }
+    // Nothing is sent while paused.
+    let paused = bob_video.received_by_ssrc();
+    for _ in 0..20 {
+        for call in [&alice_call, &carol_call] {
+            call.video().unwrap().send_frames(1, 1).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    }
+    assert_eq!(bob_video.received_by_ssrc(), paused, "nothing while paused");
+    // Bob's roster says so.
+    let mut told = false;
+    for _ in 0..10 {
+        let (_, doc) = roster(&bob, bob_call.call_id()).await;
+        if doc.contains("<fcp:paused>true</fcp:paused>") {
+            told = true;
+            break;
+        }
+    }
+    assert!(told, "the roster never said paused");
+
+    // A REMB that covers them: both resume.
+    bob_video.send_remb(20_000).await.unwrap();
+    pump_until(
+        &stack,
+        &[&alice_call, &carol_call],
+        &bob_call,
+        "both streams back at Bob",
+        |got| {
+            got.iter()
+                .filter(|(ssrc, n)| **n >= paused.get(ssrc).copied().unwrap_or(0) + 3)
+                .count()
+                >= 2
+        },
+    )
+    .await;
+    for call in [&alice_call, &carol_call, &bob_call] {
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
+    stack.finish().await;
+}
+
+/// A recorded forwarding room (`docs/FORWARDING_ROOMS.md` §8 Q9, R3b):
+/// every caller is forwarded, but the recording takes the composite, so
+/// the room still decodes and encodes for it.
+#[cfg(all(feature = "recording-mp4", feature = "video-openh264"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recorded_forwarding_room_still_composes_for_its_recording() {
+    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    forwarding_meeting(&stack, serde_json::json!({})).await;
+    let alice = stack.phone("alice").await;
+    let bob = stack.phone("bob").await;
+    let alice_call = join_forwarding(&stack, &alice, true).await;
+    let bob_call = join_forwarding(&stack, &bob, true).await;
+    stack.wait_participants(2).await;
+    let alice_id = stack.participant_named("alice").await;
+    let bob_id = stack.participant_named("bob").await;
+    pump_until(
+        &stack,
+        &[&alice_call],
+        &bob_call,
+        "Alice's stream at Bob",
+        |got| got.values().any(|n| *n >= 5),
+    )
+    .await;
+    assert!(
+        !forwarded_streams(&stack, &bob_id).await.is_empty(),
+        "Bob is forwarded"
+    );
+    // Not recorded until asked: the meeting does not auto-record.
+    let (code, started) = stack
+        .post(&format!("/conferences/{ROOM}/recording/start"))
+        .await;
+    assert!(
+        (200..300).contains(&code),
+        "recording start: {code} {started}"
+    );
+    let deadline = tokio::time::Instant::now() + SOON;
+    loop {
+        let (_, video) = stack.get(&format!("/conferences/{ROOM}/video")).await;
+        let alice_video = stack.participant(&alice_id).await["video"].clone();
+        if video["video"]["encoders"].as_u64().unwrap_or(0) > 0 && alice_video["decoding"] == true {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the recording's composite never ran: {video}\n{alice_video}"
+        );
+        alice_call.video().unwrap().send_frames(1, 1).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    for call in [&alice_call, &bob_call] {
         assert_eq!(call.hangup().await.unwrap(), 200);
     }
     stack.finish().await;
@@ -1552,6 +1909,7 @@ async fn a_forwarding_room_is_reached_through_the_call_manager() {
 
     // Three streams across the call manager's relay, each its own SSRC.
     let got = pump_until(
+        &stack,
         &[&alice_call, &carol_call],
         &bob_call,
         "three streams through the call manager",
@@ -1586,10 +1944,18 @@ async fn a_forwarding_room_is_reached_through_the_call_manager() {
             .unwrap(),
         200
     );
-    pump_until(&[&alice_call, &carol_call], &bob_call, "a tick", |_| true).await;
+    pump_until(
+        &stack,
+        &[&alice_call, &carol_call],
+        &bob_call,
+        "a tick",
+        |_| true,
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     let before = bob_call.video().unwrap().received_by_ssrc();
     let after = pump_until(
+        &stack,
         &[&alice_call, &carol_call],
         &bob_call,
         "Carol's stream going on",

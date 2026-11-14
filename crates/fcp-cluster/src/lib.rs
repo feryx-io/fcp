@@ -25,13 +25,14 @@ pub use call_leases::{CallLeases, LeaseSubject, DEFAULT_LEASE_TTL_SECS};
 pub use call_registry::CallRegistry;
 pub use conference_registry::{
     choose_conference_node, ConferenceHost, ConferenceRegistry, RoomRecord, VideoNeed,
-    CONFERENCE_NODE_TYPE,
+    CONFERENCE_NODE_TYPE, DEFAULT_JOIN_EGRESS_KBPS,
 };
 pub use fcp_core::transport::advertised_address;
 pub use line_appearances::LineAppearances;
 pub use membership::{
     choose_handover_node, resolve_region, tenant_probe, ClusterManager, ClusterMember,
-    DatabaseProbe, EngineBudget, NodeCapacity, VideoBudgetHandle, VideoDeviceBudget, VideoEngines,
+    DatabaseProbe, EngineBudget, NodeCapacity, VideoBudgetHandle, VideoDeviceBudget, VideoEgress,
+    VideoEngines,
 };
 pub use node_client::NodeClient;
 pub use reader::{ClusterNodeInfo, ClusterNodeStatus, ClusterReader, ClusterStats};
