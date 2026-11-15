@@ -12,6 +12,7 @@ from ..types import UNSET, Unset
 from typing import cast
 
 if TYPE_CHECKING:
+  from ..models.video_egress import VideoEgress
   from ..models.video_engines import VideoEngines
 
 
@@ -36,6 +37,7 @@ class VideoDeviceBudget:
                 with engines, the tightest engine's.
             total (int):
             engines (None | Unset | VideoEngines):
+            egress (None | Unset | VideoEgress):
      """
 
     device: str
@@ -43,6 +45,7 @@ class VideoDeviceBudget:
     left: int
     total: int
     engines: None | Unset | VideoEngines = UNSET
+    egress: None | Unset | VideoEgress = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -50,6 +53,7 @@ class VideoDeviceBudget:
 
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.video_egress import VideoEgress # noqa: PLC0415
         from ..models.video_engines import VideoEngines # noqa: PLC0415
         device = self.device
 
@@ -69,6 +73,14 @@ class VideoDeviceBudget:
         else:
             engines = self.engines
 
+        egress: dict[str, Any] | None | Unset
+        if isinstance(self.egress, Unset):
+            egress = UNSET
+        elif isinstance(self.egress, VideoEgress):
+            egress = self.egress.to_dict()
+        else:
+            egress = self.egress
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -80,6 +92,8 @@ class VideoDeviceBudget:
         })
         if engines is not UNSET:
             field_dict["engines"] = engines
+        if egress is not UNSET:
+            field_dict["egress"] = egress
 
         return field_dict
 
@@ -87,6 +101,7 @@ class VideoDeviceBudget:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.video_egress import VideoEgress # noqa: PLC0415
         from ..models.video_engines import VideoEngines # noqa: PLC0415
         d = dict(src_dict)
         device = d.pop("device")
@@ -118,12 +133,33 @@ class VideoDeviceBudget:
         engines = _parse_engines(d.pop("engines", UNSET))
 
 
+        def _parse_egress(data: object) -> None | Unset | VideoEgress:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                egress_type_0 = VideoEgress.from_dict(data)
+
+
+
+                return egress_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | Unset | VideoEgress, data)
+
+        egress = _parse_egress(d.pop("egress", UNSET))
+
+
         video_device_budget = cls(
             device=device,
             codecs=codecs,
             left=left,
             total=total,
             engines=engines,
+            egress=egress,
         )
 
 

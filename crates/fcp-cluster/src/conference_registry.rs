@@ -232,13 +232,26 @@ pub struct VideoNeed {
     /// VP8, even though the GPU node could run it with the encode on its
     /// host.
     pub first: Option<String>,
+    /// Kilobits a second a join may send out of the node
+    /// (`docs/FORWARDING_ROOMS.md` §3). A node with less egress left
+    /// counts as having no video budget.
+    pub egress_kbps: u32,
 }
+
+/// What [`VideoNeed::of`] expects a join to send: a forwarding viewer's
+/// default view of a full room, the speaker at 720p and eight others at
+/// 180p (1,200 + 8 × 200 kb/s). A composite join sends less.
+pub const DEFAULT_JOIN_EGRESS_KBPS: u32 = 2_800;
 
 impl VideoNeed {
     /// A need for `codecs` in order of preference.
     pub fn of(codecs: Vec<String>) -> Self {
         let first = codecs.first().cloned();
-        Self { codecs, first }
+        Self {
+            codecs,
+            first,
+            egress_kbps: DEFAULT_JOIN_EGRESS_KBPS,
+        }
     }
 }
 
@@ -253,9 +266,10 @@ impl VideoNeed {
 ///   placing node's own region); `None` places without regard to region.
 /// - `video`: for a video meeting, the codecs it allows. Among otherwise
 ///   equal candidates (steps 2 and 4) the node with the most video budget
-///   left on a device that runs one of them wins, a node with a known
-///   budget of zero comes last, and a node advertising no budget sits in
-///   between — unknown, neither preferred nor excluded. Hosting nodes
+///   left on a device that runs one of them wins, then the one with the
+///   most egress left; a node with a known budget of zero, or with less
+///   egress left than the join needs, comes last, and a node advertising
+///   no budget sits in between — unknown, neither preferred nor excluded. Hosting nodes
 ///   (steps 1 and 3) keep their priority regardless of budget: inter-node
 ///   trunks carry audio only, so spreading a video room would cost its
 ///   participants each other's video (`docs/VIDEO_CONFERENCING.md` §9.3).
@@ -314,13 +328,17 @@ pub fn choose_conference_node(
         candidates
             .iter()
             .min_by_key(|m| {
-                let (exhausted, left) = match video {
-                    Some(need) => match m.video_budget_left_for(need) {
-                        Some(0) => (true, 0),
-                        Some(left) => (false, left),
-                        None => (false, 0),
-                    },
-                    None => (false, 0),
+                let (exhausted, left, egress) = match video {
+                    Some(need) => {
+                        let egress = m.video_egress_left_kbps();
+                        let out_of_egress = egress.is_some_and(|e| e < need.egress_kbps);
+                        match m.video_budget_left_for(need) {
+                            Some(0) => (true, 0, 0),
+                            Some(left) => (out_of_egress, left, egress.unwrap_or(0)),
+                            None => (out_of_egress, 0, egress.unwrap_or(0)),
+                        }
+                    }
+                    None => (false, 0, 0),
                 };
                 // Room before load: a node carrying ten calls of a
                 // hundred has more to give than one carrying two of four
@@ -334,6 +352,7 @@ pub fn choose_conference_node(
                     exhausted,
                     headroom == Some(0),
                     std::cmp::Reverse(left),
+                    std::cmp::Reverse(egress),
                     std::cmp::Reverse(headroom.unwrap_or(0)),
                     m.active_calls,
                     m.node_id.clone(),
@@ -719,8 +738,55 @@ mod tests {
             left,
             total: 8000,
             engines: None,
+            egress: None,
         });
         m
+    }
+
+    fn with_egress(mut m: ClusterMember, left_kbps: u32) -> ClusterMember {
+        if let Some(host) = m.video_budget.iter_mut().find(|b| b.device == "host") {
+            host.egress = Some(crate::membership::VideoEgress {
+                left_kbps,
+                total_kbps: 1_000_000,
+            });
+        }
+        m
+    }
+
+    #[test]
+    fn a_node_out_of_egress_is_passed_over_for_one_with_its_link_free() {
+        // The same codec budget; the busier link loses, and a link that
+        // cannot carry a join's default view counts as out of budget —
+        // behind even a node that says nothing of its link.
+        let members = vec![
+            with_egress(
+                with_budget(member("conf-saturated", "conference", 0), &["VP8"], 4000),
+                1_000,
+            ),
+            with_egress(
+                with_budget(member("conf-busy-link", "conference", 0), &["VP8"], 4000),
+                200_000,
+            ),
+            with_egress(
+                with_budget(member("conf-free-link", "conference", 0), &["VP8"], 4000),
+                900_000,
+            ),
+        ];
+        let video = need(&["VP8"]);
+        let pick = choose_conference_node(&[], &members, 0, None, Some(&video)).unwrap();
+        assert_eq!(pick.node_id, "conf-free-link");
+        let pick = choose_conference_node(&[], &members[..2], 0, None, Some(&video)).unwrap();
+        assert_eq!(pick.node_id, "conf-busy-link");
+        let unknown = with_budget(member("conf-unknown-link", "conference", 0), &["VP8"], 10);
+        assert_eq!(unknown.video_egress_left_kbps(), None);
+        let pick =
+            choose_conference_node(&[], &[members[0].clone(), unknown], 0, None, Some(&video))
+                .unwrap();
+        assert_eq!(
+            pick.node_id, "conf-unknown-link",
+            "unknown beats too little"
+        );
+        assert_eq!(members[0].video_egress_left_kbps(), Some(1_000));
     }
 
     fn need(codecs: &[&str]) -> VideoNeed {
@@ -764,6 +830,7 @@ mod tests {
         let vp9 = VideoNeed {
             codecs: vec!["VP9".into()],
             first: Some("VP9".into()),
+            egress_kbps: 0,
         };
         assert_eq!(gpu.video_budget_left_for(&vp9), Some(0), "nothing runs it");
     }

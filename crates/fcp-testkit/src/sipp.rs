@@ -229,10 +229,12 @@ impl SippRun {
     }
 }
 
-/// A UDP port free on loopback just now.
+/// A UDP port free on loopback just now, picked as
+/// [`free_port`](crate::free_port) picks one: below the OS's ephemeral
+/// range and never given out twice by one test process. A port the OS
+/// chose (`bind(0)`) is in that range, so by the time SIPp binds it
+/// another connection may have taken it as its source port (CI's
+/// "Unable to bind main socket, errno = 98").
 pub fn free_udp_port() -> u16 {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .and_then(|s| s.local_addr())
-        .expect("bind a UDP port")
-        .port()
+    crate::free_port()
 }

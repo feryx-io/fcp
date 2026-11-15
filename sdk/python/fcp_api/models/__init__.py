@@ -575,6 +575,7 @@ from .validate_config_response import ValidateConfigResponse
 from .validation_response import ValidationResponse
 from .video_codec import VideoCodec
 from .video_device_budget import VideoDeviceBudget
+from .video_egress import VideoEgress
 from .video_engines import VideoEngines
 from .view_state import ViewState
 from .watcher_response import WatcherResponse
@@ -1165,6 +1166,7 @@ __all__ = (
     "ValidationResponse",
     "VideoCodec",
     "VideoDeviceBudget",
+    "VideoEgress",
     "VideoEngines",
     "ViewState",
     "WatcherResponse",

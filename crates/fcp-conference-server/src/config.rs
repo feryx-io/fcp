@@ -753,6 +753,14 @@ pub struct ConferenceSection {
     #[serde(default = "default_video_budget_headroom")]
     pub video_budget_headroom: f64,
 
+    /// The node's link in megabits a second (FORWARDING_ROOMS §3): what
+    /// every composite and forwarded stream it sends shares. A join is
+    /// admitted only where its egress fits beside its codec time, and
+    /// placement weighs what is left. Set it to the link's speed.
+    /// Default: 1000.
+    #[serde(default = "default_video_egress_mbps")]
+    pub video_egress_mbps: u32,
+
     /// Seconds a presenter may send nothing before the shared screen's
     /// floor is given up (design §15.6). Judged on packets, not frames:
     /// a slide that has not changed is still being shared. Default: 30.
@@ -931,6 +939,10 @@ fn default_video_budget_headroom() -> f64 {
     0.8
 }
 
+fn default_video_egress_mbps() -> u32 {
+    1000
+}
+
 fn default_recordings_dir() -> String {
     "/var/fcp/conference/recordings".to_string()
 }
@@ -1021,6 +1033,7 @@ impl Default for ConferenceSection {
             video_native_codecs_only: true,
             video_benchmark_seconds: default_video_benchmark_seconds(),
             video_budget_headroom: default_video_budget_headroom(),
+            video_egress_mbps: default_video_egress_mbps(),
             content_idle_secs: default_content_idle_secs(),
             bfcp_bind: None,
             announcements_dir: default_announcements_dir(),

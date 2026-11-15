@@ -14843,6 +14843,17 @@ export interface components {
             /** Format: int32 */
             total: number;
             engines?: components["schemas"]["VideoEngines"] | null;
+            egress?: components["schemas"]["VideoEgress"] | null;
+        };
+        /**
+         * @description What a conference node may still send, in kilobits a second: every
+         *     composite and forwarded stream leaving it shares its link.
+         */
+        VideoEgress: {
+            /** Format: int32 */
+            left_kbps: number;
+            /** Format: int32 */
+            total_kbps: number;
         };
         /** @description The three budgets of a GPU. */
         VideoEngines: {
