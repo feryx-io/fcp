@@ -3014,10 +3014,14 @@ record_calls = true
         };
         let bob_call = incoming.answer().await.unwrap();
         // Inside the announcement: both are hearing it.
-        assert!(
-            bob_call.media().heard(PROMPT_HZ, SOON).await,
-            "the agent never heard the announcement ({who} round)"
-        );
+        if !bob_call.media().heard(PROMPT_HZ, SOON).await {
+            stack
+                .fail(
+                    &format!("the agent never heard the announcement ({who} round)"),
+                    &bob_phone,
+                )
+                .await;
+        }
         let (leaving, staying, staying_phone) = if agent_leaves {
             (&bob_call, &alice_call, &alice_phone)
         } else {
