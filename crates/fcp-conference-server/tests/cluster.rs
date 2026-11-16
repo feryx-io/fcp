@@ -600,3 +600,241 @@ async fn callers_on_a_killed_node_are_moved_to_another() {
     assert_eq!(carol_call.hangup().await.unwrap(), 200);
     cluster.finish().await;
 }
+
+/// Dial `node`'s room straight, with VP8 video, asking for each person's
+/// own stream (`docs/FORWARDING_ROOMS.md` §2.3).
+async fn join_forwarding_at(node: SocketAddr, name: &str) -> (Phone, fcp_testkit::Call) {
+    let phone = Phone::new(name, "x", REALM, node)
+        .await
+        .expect("phone binds");
+    phone.enable_video(fcp_testkit::video::VideoMode::Plain);
+    phone.set_video_codec(fcp_testkit::video::VideoCodec::Vp8);
+    let call = phone
+        .call_with_headers(ROOM, &[("Recv-Info", "fcp-content, fcp-view")])
+        .await
+        .expect("INVITE sent");
+    call.answered(A_WHILE)
+        .await
+        .unwrap_or_else(|e| panic!("{name} was not admitted: {e}"));
+    (phone, call)
+}
+
+/// `GET /conferences/{room}/video` on `node`: the room's video, with its
+/// trunks in detail.
+async fn room_video(node: &fcp_testkit::cluster::Node) -> Option<serde_json::Value> {
+    let (code, body) = http_get(&loopback(node.http, &format!("/conferences/{ROOM}/video")))
+        .await
+        .ok()?;
+    (code == 200)
+        .then(|| serde_json::from_str(&body).ok())
+        .flatten()
+}
+
+/// The SSRC a roster says its subscriber receives `pid` on.
+fn src_id_of(roster: &str, pid: &str) -> Option<u32> {
+    let user = &roster[roster.find(&format!("sip:{pid}@"))?..];
+    let user = &user[..user.find("</user>")?];
+    let video = &user[user.find("<media id=\"video\">")?..];
+    let video = &video[..video.find("</media>")?];
+    let at = video.find("<src-id>")? + "<src-id>".len();
+    video[at..at + video[at..].find('<')?].parse().ok()
+}
+
+/// The latest roster `phone` has been sent in subscription `call_id`,
+/// once one passes `check`.
+async fn roster_when(
+    phone: &Phone,
+    call_id: &str,
+    within: Duration,
+    check: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        if let Some(PhoneEvent::Notify { body, .. }) = phone
+            .expect(left, |e| {
+                matches!(e, PhoneEvent::Notify { call_id: c, event, .. }
+                    if c == call_id && event == "conference")
+            })
+            .await
+        {
+            if check(&body) {
+                return Some(body);
+            }
+        }
+    }
+}
+
+/// A forwarding room on two nodes (`docs/FORWARDING_ROOMS.md` §2.8, R7):
+/// the trunk between them forwards each person's own stream, so a caller
+/// on one node is sent each caller on the other under an SSRC of their
+/// own, named in their roster as everyone else is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forwarding_room_on_two_nodes_forwards_each_person_across_the_trunk() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    seed.meeting_with(
+        ROOM,
+        serde_json::json!({
+            "video_enabled": true,
+            "video_codecs": ["VP8"],
+            "video_mode": "auto",
+        }),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut nodes) = ConferenceCluster::start(
+        db.url(),
+        dir.path(),
+        ClusterOptions {
+            conference_extra: "video_native_codecs_only = false\n".into(),
+            ..ClusterOptions::default()
+        },
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_REDIS_URL is not set");
+        db.drop_db().await;
+        return;
+    };
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (a, b) = (nodes.nodes[0].sip, nodes.nodes[1].sip);
+
+    // Alice and Carol on one node, Bob on the other.
+    let (_alice, alice_call) = join_forwarding_at(a, "alice").await;
+    let (_carol, carol_call) = join_forwarding_at(a, "carol").await;
+    let (bob, bob_call) = join_forwarding_at(b, "bob").await;
+    let alice_id = nodes.nodes[0]
+        .find(ROOM, "alice")
+        .await
+        .expect("Alice on A");
+    let carol_id = nodes.nodes[0]
+        .find(ROOM, "carol")
+        .await
+        .expect("Carol on A");
+    let bob_id = nodes.nodes[1].find(ROOM, "bob").await.expect("Bob on B");
+
+    let senders = [&alice_call, &carol_call, &bob_call];
+    let pump = || async {
+        for s in senders {
+            let _ = s.video().expect("video").send_frames(1, 10).await;
+        }
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    };
+
+    // Both ends of the trunk forward, and each lists the other's people.
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        let mut ready = 0;
+        for (node, members) in [(&nodes.nodes[0], 1), (&nodes.nodes[1], 2)] {
+            if let Some(r) = room_video(node).await {
+                if r["trunks"].as_array().is_some_and(|t| {
+                    t.iter()
+                        .any(|t| t["forwarding"] == true && t["peer_members"] == members)
+                }) {
+                    ready += 1;
+                }
+            }
+        }
+        if ready == 2 {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let rooms = (
+                room_video(&nodes.nodes[0]).await,
+                room_video(&nodes.nodes[1]).await,
+            );
+            let logs = nodes.kill_all().await;
+            panic!("the trunk never forwarded: {rooms:#?}\n{logs}");
+        }
+        pump().await;
+    }
+
+    // Bob's roster names Alice and Carol, who are on the other node, with
+    // the SSRCs he receives them on; and he receives them.
+    assert_eq!(
+        bob_call.subscribe_in_call("conference", 600).await.unwrap(),
+        200
+    );
+    let mut got = std::collections::HashMap::new();
+    let mut named = None;
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    while tokio::time::Instant::now() < deadline {
+        pump().await;
+        if named.is_none() {
+            named = roster_when(&bob, bob_call.call_id(), Duration::from_millis(50), |r| {
+                src_id_of(r, &alice_id).is_some() && src_id_of(r, &carol_id).is_some()
+            })
+            .await;
+        }
+        got = bob_call.video().unwrap().received_by_ssrc();
+        if let Some(r) = &named {
+            let (sa, sc) = (
+                src_id_of(r, &alice_id).unwrap(),
+                src_id_of(r, &carol_id).unwrap(),
+            );
+            if got.get(&sa).copied().unwrap_or(0) >= 10 && got.get(&sc).copied().unwrap_or(0) >= 10
+            {
+                break;
+            }
+        }
+    }
+    let Some(roster) = named else {
+        let r = room_video(&nodes.nodes[1]).await;
+        let logs = nodes.kill_all().await;
+        panic!("Bob's roster never named Alice and Carol; received {got:?}\n{r:#?}\n{logs}");
+    };
+    assert!(
+        roster.contains("alice") && roster.contains("carol"),
+        "{roster}"
+    );
+    let (sa, sc) = (
+        src_id_of(&roster, &alice_id).unwrap(),
+        src_id_of(&roster, &carol_id).unwrap(),
+    );
+    if got.get(&sa).copied().unwrap_or(0) < 10 || got.get(&sc).copied().unwrap_or(0) < 10 {
+        let r = (
+            room_video(&nodes.nodes[0]).await,
+            room_video(&nodes.nodes[1]).await,
+        );
+        let logs = nodes.kill_all().await;
+        panic!(
+            "Bob never received Alice ({sa}) and Carol ({sc}): {got:?}\n{roster}\n{r:#?}\n{logs}"
+        );
+    }
+
+    // Alice receives Bob, from the other node, the same way.
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        pump().await;
+        let p = nodes.nodes[0].participant(ROOM, &alice_id).await;
+        let streams = p["video"]["forwarded"]["streams"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let bob_ssrc = streams
+            .iter()
+            .find(|s| s["participant"] == bob_id.as_str())
+            .and_then(|s| s["ssrc"].as_u64());
+        let got = alice_call.video().unwrap().received_by_ssrc();
+        if bob_ssrc.is_some_and(|s| got.get(&(s as u32)).copied().unwrap_or(0) >= 10) {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let logs = nodes.kill_all().await;
+            panic!("Alice never received Bob: {streams:#?} {got:?}\n{logs}");
+        }
+    }
+
+    for call in senders {
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
+    nodes.stop_all().await;
+    db.drop_db().await;
+}

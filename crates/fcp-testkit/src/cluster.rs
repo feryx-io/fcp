@@ -163,6 +163,8 @@ pub struct ClusterOptions {
     pub nodes: usize,
     /// `conference.join_secret` on every node, for a browser's join token.
     pub join_secret: Option<String>,
+    /// More `[conference]` lines on every node, as written.
+    pub conference_extra: String,
 }
 
 impl Default for ClusterOptions {
@@ -170,6 +172,7 @@ impl Default for ClusterOptions {
         Self {
             nodes: 2,
             join_secret: None,
+            conference_extra: String::new(),
         }
     }
 }
@@ -238,7 +241,7 @@ rtp_port_end = {rtp_end}
 [conference]
 recordings_dir = "{dir}/recordings-{name}"
 announcements_dir = "{dir}/announcements"
-{join_secret}
+{join_secret}{extra}
 [cluster]
 enabled = true
 secret = "{secret}"
@@ -258,6 +261,7 @@ format = "compact"
                 rtp_end = rtp_start + 120,
                 dir = dir.display(),
                 secret = CLUSTER_SECRET,
+                extra = opts.conference_extra,
             );
             let service = Service::start(&id, &bin, &config, &loopback(http, "/health")).await;
             nodes.push(Node {

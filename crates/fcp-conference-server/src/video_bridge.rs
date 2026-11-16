@@ -60,10 +60,51 @@ pub struct VideoLeg {
     /// composite (`docs/FORWARDING_ROOMS.md` §2.1): the participant asked
     /// (`Recv-Info: fcp-view`) and the meeting's `video_mode` is `auto`.
     pub forward: bool,
+    /// On a trunk that forwards (`docs/FORWARDING_ROOMS.md` §2.8): whose
+    /// each SSRC arriving from the peer is, as the peer says. `None` on
+    /// every other leg.
+    pub demux: Option<Arc<TrunkStreams>>,
     /// The bridge task, when it runs on its own. A participant admitted
     /// after waiting for a moderator runs it joined with the audio
     /// bridge, whose handle covers both.
     pub bridge_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Whose each SSRC arriving on a forwarding trunk is
+/// (`docs/FORWARDING_ROOMS.md` §2.8): the peer forwards each of its people
+/// under an SSRC of their own, and says which in its forwarding
+/// announcement. A packet under an SSRC not (yet) named is dropped.
+#[derive(Debug, Default)]
+pub struct TrunkStreams {
+    by_ssrc: std::sync::RwLock<std::collections::HashMap<u32, String>>,
+}
+
+impl TrunkStreams {
+    /// Whose `ssrc` is.
+    pub fn person(&self, ssrc: u32) -> Option<String> {
+        self.by_ssrc.read().ok().and_then(|m| m.get(&ssrc).cloned())
+    }
+
+    /// The peer's word as it stands. Returns the people now under an SSRC
+    /// they were not under before: their decoders here need a keyframe
+    /// from the new stream.
+    pub fn set(&self, streams: std::collections::HashMap<u32, String>) -> Vec<String> {
+        let Ok(mut map) = self.by_ssrc.write() else {
+            return Vec::new();
+        };
+        let moved: Vec<String> = streams
+            .iter()
+            .filter(|(ssrc, who)| map.get(ssrc) != Some(*who))
+            .map(|(_, who)| who.clone())
+            .collect();
+        *map = streams;
+        moved
+    }
+
+    /// How many SSRCs are named.
+    pub fn len(&self) -> usize {
+        self.by_ssrc.read().map(|m| m.len()).unwrap_or(0)
+    }
 }
 
 impl VideoLeg {
@@ -80,6 +121,7 @@ impl VideoLeg {
             settings: self.settings.clone(),
             stats: Arc::clone(&self.stats),
             forward: self.forward,
+            demux: self.demux.clone(),
             bridge_handle: None,
         }
     }
@@ -811,6 +853,7 @@ pub fn attach_video(
             Outbound::Streams(fwd.packets),
             leg.negotiated.clone(),
             Arc::clone(&leg.stats),
+            None,
         ));
     }
     let view = video
@@ -848,6 +891,7 @@ pub fn attach_video(
         sub.into(),
         leg.negotiated.clone(),
         Arc::clone(&leg.stats),
+        None,
     ))
 }
 
@@ -916,6 +960,7 @@ pub fn attach_content(
         sub.into(),
         leg.negotiated.clone(),
         Arc::clone(&leg.stats),
+        None,
     ))
 }
 
@@ -941,6 +986,37 @@ pub fn attach_trunk_video(
     video.set_local_node(&sink.node_id);
     if sink.pumps.insert(sink.key(), ()).is_none() {
         spawn_event_pump(&video, sink);
+    }
+    // A trunk that forwards (`docs/FORWARDING_ROOMS.md` §2.8): no tile for
+    // the peer — its people are members here, each arriving under their
+    // own SSRC — and this node's people sent back, each under theirs, as
+    // the peer asks for them.
+    if let (true, Some(demux)) = (leg.forward, leg.demux.as_ref()) {
+        let fwd = match video.forward_trunk(
+            participant_id,
+            ForwardRequest {
+                codec: leg.negotiated.codec,
+                profile: leg.negotiated.fmtp.clone().unwrap_or_default(),
+                payload_type: leg.negotiated.payload_type,
+            },
+        ) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(trunk = %participant_id, error = %e, "could not forward to the trunk");
+                return None;
+            }
+        };
+        return Some(run_video_bridge(
+            video,
+            participant_id.to_string(),
+            StreamKind::Camera,
+            Arc::clone(&leg.socket),
+            leg.srtp_context.clone(),
+            Outbound::Streams(fwd.packets),
+            leg.negotiated.clone(),
+            Arc::clone(&leg.stats),
+            Some(Arc::clone(demux)),
+        ));
     }
     // The tile has to exist before it can be named: unlike a caller,
     // nothing put it in the room ahead of its video.
@@ -979,6 +1055,7 @@ pub fn attach_trunk_video(
         sub.into(),
         leg.negotiated.clone(),
         Arc::clone(&leg.stats),
+        None,
     ))
 }
 
@@ -1035,6 +1112,7 @@ pub fn attach_trunk_content(
         sub.into(),
         leg.negotiated.clone(),
         Arc::clone(&leg.stats),
+        None,
     ))
 }
 
@@ -1062,6 +1140,7 @@ pub fn detach_content(room: &ConferenceRoom, participant_id: &str) {
 pub fn detach_video(room: &ConferenceRoom, participant_id: &str) {
     if let Some(video) = room.video() {
         video.unsubscribe(participant_id);
+        video.unforward(participant_id);
         if video.is_remote(participant_id) {
             video.remove_remote(participant_id);
         } else {
@@ -1278,7 +1357,9 @@ fn unix_ms() -> u64 {
 /// The bridge: RTP in → room; RTCP in → room feedback; the room's
 /// feedback for the source → RTCP out; the subscription's packets → RTP
 /// out. Ends when the subscription closes (the participant left the room's
-/// video) or the socket fails.
+/// video) or the socket fails. On a forwarding trunk, `demux` says whose
+/// each arriving SSRC is.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_video_bridge(
     room: Arc<VideoRoom>,
     participant_id: String,
@@ -1288,6 +1369,7 @@ pub async fn run_video_bridge(
     outbound: Outbound,
     negotiated: NegotiatedVideo,
     stats: Arc<VideoLegStats>,
+    demux: Option<Arc<TrunkStreams>>,
 ) {
     let (ssrc, mut packets) = match outbound {
         Outbound::Composite(sub) => (Some(sub.ssrc), sub.packets),
@@ -1344,7 +1426,20 @@ pub async fn run_video_bridge(
                         trace!(pt = packet.header.payload_type(), "video packet with another payload type");
                         continue;
                     }
-                    for fb in room.push_rtp_kind(&participant_id, kind, packet) {
+                    // A forwarding trunk carries the peer's people, each
+                    // under an SSRC the peer named (§2.8).
+                    let from = match &demux {
+                        Some(d) => match d.person(packet.header.ssrc) {
+                            Some(p) => p,
+                            None => {
+                                let ssrc = { packet.header.ssrc };
+                                trace!(ssrc, "trunk packet under an SSRC not yet named");
+                                continue;
+                            }
+                        },
+                        None => participant_id.clone(),
+                    };
+                    for fb in room.push_rtp_kind(&from, kind, packet) {
                         let fb = match adapt_feedback(fb, &negotiated, &mut fir_seq) {
                             Some(fb) => fb,
                             None => continue,
@@ -2092,6 +2187,7 @@ mod tests {
                 settings: settings.clone(),
                 stats: Arc::new(VideoLegStats::default()),
                 forward: false,
+                demux: None,
                 bridge_handle: None,
             };
             let fut = attach_video(&room, &backend, pid, Some(pid), &leg, sink.clone()).unwrap();
@@ -2260,6 +2356,7 @@ mod tests {
                 settings: settings.clone(),
                 stats: Arc::new(VideoLegStats::default()),
                 forward: false,
+                demux: None,
                 bridge_handle: None,
             };
             let fut: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> = match w.kind {
@@ -2676,6 +2773,7 @@ mod tests {
                 settings: settings.clone(),
                 stats: Arc::new(VideoLegStats::default()),
                 forward: false,
+                demux: None,
                 bridge_handle: None,
             };
             let fut = attach_video(&room, &backend, pid, Some(pid), &leg, sink.clone()).unwrap();
@@ -3097,6 +3195,7 @@ mod tests {
             settings: settings.clone(),
             stats: Arc::new(VideoLegStats::default()),
             forward: false,
+            demux: None,
             bridge_handle: None,
         };
 
@@ -3226,6 +3325,7 @@ mod tests {
             settings: settings.clone(),
             stats: Arc::new(VideoLegStats::default()),
             forward: false,
+            demux: None,
             bridge_handle: None,
         };
         // A socket pair pointed at another.

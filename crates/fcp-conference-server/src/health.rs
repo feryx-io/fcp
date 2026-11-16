@@ -296,6 +296,10 @@ fn internal_router(state: Arc<ConferenceState>) -> Router<Arc<ConferenceState>> 
             post(internal_content_handler),
         )
         .route(
+            "/internal/conferences/:room_number/forwarding",
+            post(internal_forwarding_handler),
+        )
+        .route(
             "/internal/conferences/:room_number/video",
             get(internal_video_status_handler),
         )
@@ -1956,6 +1960,45 @@ async fn internal_content_handler(
         claim.display_name.as_deref(),
         claim.since_ms,
     ) {
+        Ok(applied) => (
+            StatusCode::OK,
+            Json(
+                serde_json::json!({ "status": "applied", "room": room_number, "applied": applied }),
+            ),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// What a peer node forwarding with us says about a room
+/// (`POST /internal/conferences/{room}/forwarding`,
+/// `docs/FORWARDING_ROOMS.md` §2.8): its people, whose each SSRC on the
+/// trunk is, and what it wants of ours.
+async fn internal_forwarding_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Json(ann): Json<crate::trunk_forwarding::Announcement>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    if ann.node.is_empty() || ann.node == state.conference_handler.node_id() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                serde_json::json!({ "error": "A forwarding announcement must name the peer node" }),
+            ),
+        );
+    }
+    match state.conference_handler.apply_forwarding(&key, &ann) {
         Ok(applied) => (
             StatusCode::OK,
             Json(

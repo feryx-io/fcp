@@ -41,6 +41,17 @@ pub const TRUNK_PARTICIPANT_PREFIX: &str = "__trunk__";
 pub const TRUNK_NODE_HEADER: &str = "X-FCP-Trunk-Node";
 /// Header a trunk INVITE carries with the room's tenant id.
 pub const TRUNK_TENANT_HEADER: &str = "X-FCP-Trunk-Tenant";
+/// Header on a trunk INVITE, and on its 200 OK, saying the node forwards
+/// each of its people's own streams over the trunk's video section rather
+/// than its composite (`docs/FORWARDING_ROOMS.md` §2.8). The trunk
+/// forwards when both ends say so; a node that does not know the header
+/// leaves it out of its answer, and the trunk carries composites as it
+/// did before.
+pub const TRUNK_FORWARD_HEADER: &str = "X-FCP-Trunk-Forward";
+/// The H.264 a forwarding trunk offers: constrained baseline in
+/// packetization mode 1, what browsers and Anvil send, so their streams can
+/// be forwarded across untouched.
+pub const TRUNK_H264_FMTP: &str = "profile-level-id=42e01f;packetization-mode=1";
 
 /// How long a failed trunk dial is left alone before it is retried.
 const DIAL_RETRY_AFTER: Duration = Duration::from_secs(10);

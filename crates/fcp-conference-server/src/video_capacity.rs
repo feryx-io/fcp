@@ -854,6 +854,11 @@ impl VideoCapacity {
                 );
             }
         }
+        // A trunk forwarding this node's people to a peer (§2.8): each
+        // stream it is sent leaves the node like a viewer's.
+        for (_, v) in video.trunk_viewers() {
+            cost.add_egress(viewer_kbps(&v));
+        }
         for p in &participants {
             if let Some(v) = &p.viewer {
                 cost.add_egress(viewer_kbps(v));

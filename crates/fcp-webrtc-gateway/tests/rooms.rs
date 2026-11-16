@@ -551,6 +551,7 @@ async fn a_browser_survives_its_node_draining() {
         ClusterOptions {
             nodes: 2,
             join_secret: Some(JOIN_SECRET.to_string()),
+            ..ClusterOptions::default()
         },
     )
     .await
@@ -700,6 +701,7 @@ async fn a_draining_gateway_hands_its_browsers_to_another() {
         ClusterOptions {
             nodes: 1,
             join_secret: Some(JOIN_SECRET.to_string()),
+            ..ClusterOptions::default()
         },
     )
     .await
