@@ -111,6 +111,32 @@ asks with `streams`:
 - A room that composes, or a join without `streams`, gets the room's one
   picture on the camera's track, as before.
 
+The join page asks for nine tracks whenever it sends a camera (`?streams=`
+changes the number, `0` asks for none). Where the session has `forwarding`
+it shows its own grid instead of the room's picture:
+
+- A tile per member, but not this browser (the one member with its name,
+  when exactly one has it), with their name and host, muted, on hold,
+  presenting or paused beside it. A member with no stream on a track (a
+  phone without video, a paused stream) is shown by their initials.
+- A ring round whoever the room says is speaking. The page reads the
+  session every second while the room forwards (every two otherwise), so
+  each forwarding browser makes about sixty requests a minute; the
+  gateway's default limit is 120 a minute per address.
+- Pin on a tile puts that person large; with nobody pinned, a host's
+  spotlight does. The page sends its view whenever the grid changes: the
+  large one at 720 with priority, the rest at 180, or everyone at 720,
+  360 or 180 by how many there are; no more streams than tracks. A view
+  the room refuses is asked again after five seconds.
+- The browser's own feedback reaches the room: a picture that cannot be
+  decoded asks the room for a keyframe, and the room's requests for a
+  keyframe of a simulcast layer reach the camera. (Before forge-media
+  v2026.11.16.1 no RTCP passed between a browser and the gateway: forge-rtp
+  laid out SRTCP under AES-GCM wrongly.)
+- `the_join_page_draws_a_forwarding_room_and_pins_one_large` drives it in
+  Chromium: three browsers and a phone in a forwarding room, the watched
+  page's tiles, a pin and the view it sends, and the phone's ring.
+
 ## Sharing a screen
 
 Both legs carry the screen as a second video section from the start, so
@@ -394,6 +420,5 @@ old session once the new one is connected.
 - Re-offering the browser to drop an idle video section when the
   conference node declined video.
 - A join token bound to one use; consent freshness in forge-webrtc.
-- The join page's own grid on a forwarding room's tracks (R4c).
 - The roster asked for again after the session moves to another conference
   node: until then a forwarding session's names are the old node's.

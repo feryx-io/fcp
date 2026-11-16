@@ -536,8 +536,18 @@ Each phase is one PR in its repository.
       (the gateway with the conference server and two phones).
     - Not yet: after a move to another conference node the roster is not asked
       for again, so the names go stale until the browser joins again.
-  - **R4c.** The join page's own grid (names, speaking rings, a pin) on the
-    tracks, the view posted as its layout changes; proved in Chromium.
+  - **R4c, done (v0.25.568–569, forge-media v2026.11.16.1).** The join page.
+    - Joining with a camera asks for nine tracks. Where the session
+      forwards, the page draws its own grid: a tile per member but itself,
+      names and states on them, initials where no stream is on a track, a
+      ring round the speaker, a pin (else a host's spotlight) putting one
+      large.
+    - The view is posted as the grid changes.
+    - `the_join_page_draws_a_forwarding_room_and_pins_one_large` proves it
+      in Chromium with three browsers and a phone.
+    - It found forge-rtp laying out SRTCP under AES-GCM wrongly (RFC 7714
+      §9.1: the tag before E|index), so no RTCP had ever passed between a
+      browser and the gateway; fixed in forge-rtp 0.7.4.
 
   As designed:
   - The gateway's K transceivers and their mapping.
