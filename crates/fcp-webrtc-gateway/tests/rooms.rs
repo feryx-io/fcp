@@ -78,6 +78,8 @@ drain_wait_secs = {drain_wait_secs}
 
 [http]
 bind_address = "127.0.0.1:{http}"
+# Every browser in a test comes from one address.
+rate_limit_requests = 600
 public_join = {public_join}
 serve_join_page = {public_join}
 {public_url}
@@ -1154,6 +1156,179 @@ async fn a_browser_that_asks_gets_each_person_on_a_track_and_its_view_is_heard()
         let logs = gw.logs().await;
         let conf = conference.kill().await;
         panic!("{why}\n--- gateway\n{logs}\n--- conference\n{conf}");
+    }
+    gw.service.take().unwrap().stop().await;
+    conference.stop().await;
+    db.drop_db().await;
+}
+
+/// Three pages of the join page in one Chromium, each with the fake camera
+/// and microphone: `PW` is the Playwright package, `URLS` the three pages'
+/// addresses, a line each, the last the one watched. The watched page must
+/// draw a tile for each of the others (and none for itself) with ann's and
+/// bob's pictures playing and carol, a phone without video, as her
+/// initials; pin bob large and send the room that view; and light carol's
+/// speaking ring while she plays a tone. It prints `RESULT <json>` or
+/// `FAIL <why>`, then every page's status and log, and leaves.
+const FORWARDING_IN_CHROMIUM: &str = r#"
+const { chromium } = require(process.env.PW);
+(async () => {
+  const browser = await chromium.launch({
+    args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'],
+  });
+  const urls = process.env.URLS.split('\n');
+  const pages = [];
+  for (const url of urls) {
+    const page = await (await browser.newContext()).newPage();
+    await page.goto(url);
+    pages.push(page);
+  }
+  const watched = pages[pages.length - 1];
+  const tiles = () => watched.$$eval('#grid .tile', (els) => els.map((el) => {
+    const v = el.querySelector('video');
+    return {
+      name: el.dataset.name, mid: el.dataset.mid, width: v.videoWidth, height: v.videoHeight,
+      label: el.querySelector('.label').textContent, initials: el.querySelector('.initials').textContent,
+      large: el.classList.contains('large'), speaking: el.classList.contains('speaking'),
+      novideo: el.classList.contains('novideo'),
+    };
+  }));
+  const until = async (what, test, ms) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const t = await tiles();
+      if (test(t)) return t;
+      if (Date.now() > end) throw new Error(`${what}: ${JSON.stringify(t)}`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  };
+  const playing = (t, who) => t.some((x) => x.name.includes(who) && x.width > 0 && !x.novideo);
+  let result = {};
+  try {
+    result.grid = await until('never a picture from each of the others',
+      (t) => playing(t, 'ann') && playing(t, 'bob') && t.some((x) => x.name.includes('carol') && x.novideo), 60000);
+    if (result.grid.some((x) => x.name === 'web')) throw new Error('the page drew a tile for itself');
+    await watched.click('#grid .tile[data-name*="bob"] .pin');
+    result.pinned = await until('bob never large', (t) => t.some((x) => x.name.includes('bob') && x.large), 5000);
+    const end = Date.now() + 10000;
+    for (;;) {
+      const log = await watched.textContent('#log');
+      const sent = log.split('\n').filter((l) => l.includes('view sent') && l.includes('"priority":1'));
+      if (sent.length) { result.view = sent[sent.length - 1]; break; }
+      if (log.includes('view refused')) throw new Error('the room refused the view');
+      if (Date.now() > end) throw new Error('the pinned view was never sent');
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    // Still both pictures, Bob's now on the large tile.
+    result.after = await until('a picture stopped after the pin', (t) => playing(t, 'ann') && playing(t, 'bob'), 10000);
+    result.speaking = (await until('carol never lit a speaking ring',
+      (t) => t.some((x) => x.name.includes('carol') && x.speaking), 30000))
+      .filter((x) => x.speaking).map((x) => x.name);
+    console.log('RESULT ' + JSON.stringify(result));
+  } catch (e) {
+    console.log('FAIL ' + e.message);
+  }
+  for (const [i, page] of pages.entries()) {
+    console.log(`--- page ${i}: ${await page.textContent('#call-status')}`);
+    console.log(await page.textContent('#log'));
+  }
+  await browser.close();
+})().catch((e) => { console.error(e); process.exit(1); });
+"#;
+
+/// The join page in a forwarding room (`docs/FORWARDING_ROOMS.md` §2.7,
+/// R4c), in Chromium: three browsers join a room that forwards, each
+/// taking tracks for the others, and a phone joins without video. The
+/// watched page draws a tile per person with their own picture playing
+/// (the phone as initials), names on them and none for itself; pinning one
+/// makes it large and sends the room a view naming it first; and the
+/// phone, heard, lights a speaking ring. Runs where
+/// [`a_browser_s_camera_reaches_the_room_as_simulcast`] does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_join_page_draws_a_forwarding_room_and_pins_one_large() {
+    let Ok(playwright) = std::env::var("FCP_TEST_PLAYWRIGHT") else {
+        eprintln!("skipped: FCP_TEST_PLAYWRIGHT is not set");
+        return;
+    };
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    seed.meeting_with(
+        ROOM,
+        serde_json::json!({
+            "video_enabled": true,
+            // The gateway offers browsers H.264 first.
+            "video_codecs": ["H264", "VP8"],
+            "video_mode": "auto",
+            "video_passthrough": "off",
+        }),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (conference, conf_sip, conf_http) = conference_server_http(db.url(), dir.path()).await;
+    let mut gw = Gateway::start_as("e2e-webrtc-gw", None, 0, conf_sip, None, true).await;
+
+    // Carol calls in from a phone, audio only, and is heard throughout.
+    let carol = Phone::new("carol", "x", REALM, conf_sip)
+        .await
+        .expect("a phone");
+    let call = carol.call(ROOM).await.expect("carol calls the room");
+    call.answered(SOON).await.expect("the room answers carol");
+    call.media().play_tone(440.0, 180_000);
+
+    let script = dir.path().join("forwarding.js");
+    std::fs::write(&script, FORWARDING_IN_CHROMIUM).unwrap();
+    let urls: Vec<String> = ["ann", "bob", "web"]
+        .iter()
+        .map(|name| {
+            format!(
+                "http://127.0.0.1:{}/join?room={ROOM}&name={name}&video=true&streams=4&autojoin=true&token={}",
+                gw.http,
+                join_token(&seed, name),
+            )
+        })
+        .collect();
+    let run = tokio::process::Command::new(
+        std::env::var("FCP_TEST_NODE").unwrap_or_else(|_| "node".into()),
+    )
+    .arg(&script)
+    .env("PW", &playwright)
+    .env("URLS", urls.join("\n"))
+    .kill_on_drop(true)
+    .output();
+    let out = match tokio::time::timeout(Duration::from_secs(180), run).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => panic!("node did not run: {e}"),
+        Err(_) => panic!("chromium did not finish"),
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let result = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("RESULT "))
+        .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok());
+    call.media().stop_tone();
+    match result {
+        Some(result) => eprintln!("the page: {result:#}"),
+        None => {
+            let tenant = seed.tenant_id.to_string();
+            let stats = http_request(
+                "GET",
+                &loopback(conf_http, &format!("/conferences/{ROOM}/stats")),
+                &[("x-fcp-tenant-id", &tenant)],
+                None,
+            )
+            .await
+            .map(|(_, body)| body)
+            .unwrap_or_default();
+            let logs = gw.logs().await;
+            let conf = conference.kill().await;
+            panic!(
+                "{stdout}\n{}\n--- the room\n{stats}\n--- gateway\n{logs}\n--- conference\n{conf}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
     }
     gw.service.take().unwrap().stop().await;
     conference.stop().await;

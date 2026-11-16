@@ -37,6 +37,18 @@
   .state-failed { color: var(--danger); }
   #log { font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; max-height: 200px; overflow: auto; color: var(--muted); margin: 0; }
   .hidden { display: none !important; }
+  /* A room that forwards: each person on a tile of their own. */
+  .grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); align-content: start; }
+  .tile { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; outline: 3px solid transparent; outline-offset: -3px; transition: outline-color .15s; }
+  .tile video { position: absolute; inset: 0; height: 100%; border-radius: 0; aspect-ratio: auto; object-fit: cover; }
+  .tile.large { grid-column: 1 / -1; }
+  .tile.speaking { outline-color: var(--ok); }
+  .tile .initials { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; font-size: 32px; color: #ddd; }
+  .tile.novideo .initials { display: flex; }
+  .tile.novideo video { visibility: hidden; }
+  .tile .label { position: absolute; left: 6px; bottom: 6px; right: 44px; padding: 2px 8px; border-radius: 4px; background: rgba(0,0,0,.6); color: #fff; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile .pin { position: absolute; right: 6px; bottom: 6px; padding: 2px 8px; font-size: 12px; background: rgba(0,0,0,.6); }
+  .tile.pinned .pin { background: var(--accent); }
 </style>
 </head>
 <body>
@@ -62,6 +74,7 @@
     <div class="videos" id="videos">
       <video id="content" autoplay playsinline></video>
       <video id="remote" autoplay playsinline></video>
+      <div class="grid hidden" id="grid"></div>
       <video id="self" autoplay playsinline muted></video>
     </div>
     <div class="row" style="margin-top: 12px">
@@ -71,6 +84,7 @@
       <div class="status" id="call-status"></div>
     </div>
     <div class="share" id="share-status"></div>
+    <audio id="audio" autoplay></audio>
   </section>
 
   <section class="card">
@@ -104,6 +118,20 @@
   let noticesSeen = 0;     // the floor notices the session had taken in, last seen
   let noticesAtShare = 0;  // ... when this share started
 
+  // A room that forwards (docs/FORWARDING_ROOMS.md §2.7) sends each person
+  // on a track of their own: the browser takes STREAMS send-only sections
+  // at the start, and the session's `forwarding` says who is in the room
+  // and whose stream is on which section. The page draws its own grid,
+  // and tells the room what it shows as its view.
+  const STREAMS = Math.min(25, Math.max(0, Number(params.get('streams') ?? 9) || 0));
+  let forwarding = null;          // the session's `forwarding`, last read
+  const streamTracks = new Map(); // a section's mid -> its track
+  const tiles = new Map();        // a member's id -> their tile
+  let pinned = null;              // the member pinned large, by id
+  let sentView = null;            // the view the room has, as sent
+  let polling = 0;                // the status poll's period
+  let shownStreams = '';          // whose stream is on which track, as last logged
+
   const log = (line) => { $('log').textContent += `${new Date().toISOString().slice(11, 19)} ${line}\n`; $('log').scrollTop = $('log').scrollHeight; };
   const setStatus = (el, html) => { $(el).innerHTML = html; };
 
@@ -131,7 +159,7 @@
     if (info.video) parts.push(`video ${info.video.codec}`); else if (info.state === 'connected') parts.push('audio only');
     if (info.stats) {
       const s = info.stats;
-      parts.push(`↑${s.audio_to_sip + s.video_to_sip + (s.content_to_sip || 0)} ↓${s.audio_to_browser + s.video_to_browser + (s.content_to_browser || 0)} packets`);
+      parts.push(`↑${s.audio_to_sip + s.video_to_sip + (s.content_to_sip || 0)} ↓${s.audio_to_browser + s.video_to_browser + (s.content_to_browser || 0) + (s.streams_to_browser || 0)} packets`);
     }
     return parts.join(' · ');
   }
@@ -161,8 +189,21 @@
     const token = created.session_token;
     const conn = new RTCPeerConnection({ iceServers: created.ice_servers || [] });
     conn.ontrack = (ev) => {
+      const mid = ev.transceiver && ev.transceiver.mid;
+      // Sections after the screen's (mid 3 on) are a forwarding room's
+      // tracks, a person each.
+      if (ev.track.kind === 'video' && Number(mid) >= 3) {
+        streamTracks.set(mid, ev.track);
+        render();
+        return;
+      }
+      if (ev.track.kind === 'audio') {
+        log('remote audio track');
+        $('audio').srcObject = new MediaStream([ev.track]);
+        return;
+      }
       // The second video section (mid 2) is the room's shared screen.
-      if (ev.transceiver && ev.transceiver.mid === '2') {
+      if (mid === '2') {
         log('content track');
         $('content').srcObject = new MediaStream([ev.track]);
         // The track goes quiet between shares: show it only while it flows.
@@ -170,9 +211,8 @@
         ev.track.onmute = () => $('videos').classList.remove('sharing');
         return;
       }
-      log(`remote ${ev.track.kind} track`);
-      if (!$('remote').srcObject) $('remote').srcObject = new MediaStream();
-      $('remote').srcObject.addTrack(ev.track);
+      log('remote video track');
+      $('remote').srcObject = new MediaStream([ev.track]);
     };
     conn.onicecandidate = async (ev) => {
       if (!ev.candidate) return;
@@ -241,9 +281,11 @@
     setStatus('call-status', 'Moving to another gateway…');
     try {
       const created = await call('POST', `/v1/rooms/${encodeURIComponent(joined.room)}/join`,
-        { display_name: joined.name, video: joined.video, join_token: joined.token || null }, null, target);
+        { display_name: joined.name, video: joined.video, join_token: joined.token || null, streams: joined.video ? STREAMS : 0 }, null, target);
       const old = pc;
       $('remote').srcObject = null;
+      $('audio').srcObject = null;
+      forgetForwarding();
       $('content').srcObject = null;
       $('videos').classList.remove('sharing');
       const attached = await attach(created, target);
@@ -284,7 +326,7 @@
       return;
     }
     try {
-      const created = await call('POST', `/v1/rooms/${encodeURIComponent(room)}/join`, { display_name: name, video: wantVideo, join_token: token || null }, null);
+      const created = await call('POST', `/v1/rooms/${encodeURIComponent(room)}/join`, { display_name: name, video: wantVideo, join_token: token || null, streams: wantVideo ? STREAMS : 0 }, null);
       session = { id: created.id, token: created.session_token };
       joined = { room, name, video: wantVideo, token };
       log(`session ${created.id} created; answering the gateway's offer`);
@@ -295,7 +337,7 @@
       log('answer sent; connecting');
       $('setup').classList.add('hidden');
       $('call').classList.remove('hidden');
-      poll = setInterval(refresh, 2000);
+      pollEvery(2000);
       refresh();
     } catch (e) {
       log(`join failed: ${e.message}`);
@@ -312,6 +354,7 @@
       setStatus('call-status', describe(info));
       setStatus('share-status', describeShare(info.content));
       if (info.content) noticesSeen = info.content.notices || 0;
+      showForwarding(info.forwarding || null);
       // A host stopped the share, or the room refused it: stop sending.
       // Only a verdict newer than this share counts; an earlier one is history.
       if (screen && info.content && noticesSeen > noticesAtShare && (info.content.state === 'refused' || info.content.state === 'released')) stopSharing('the room ended it');
@@ -327,6 +370,169 @@
     }
   }
 
+  function pollEvery(ms) {
+    if (polling === ms) return;
+    if (poll) clearInterval(poll);
+    poll = setInterval(refresh, ms);
+    polling = ms;
+  }
+
+  // The room forwards, or has stopped (a move to a node that mixes): the
+  // grid in place of the room's one picture, drawn from what the session
+  // says, and the view sent when it changes. Read every second while
+  // forwarding, so the speaking rings keep up.
+  function showForwarding(f) {
+    forwarding = f;
+    $('grid').classList.toggle('hidden', !f);
+    $('remote').classList.toggle('hidden', !!f);
+    if (!f) return;
+    if (session) pollEvery(1000);
+    render();
+    sendView();
+  }
+
+  function forgetForwarding() {
+    forwarding = null;
+    streamTracks.clear();
+    for (const t of tiles.values()) t.el.remove();
+    tiles.clear();
+    pinned = null;
+    sentView = null;
+    shownStreams = '';
+    $('grid').classList.add('hidden');
+    $('remote').classList.remove('hidden');
+  }
+
+  // The members the grid shows: everyone but this browser, which is the
+  // one member with our name when exactly one has it (the room does not
+  // say which is us; the self view shows us anyway).
+  function others() {
+    const members = (forwarding && forwarding.members) || [];
+    const mine = joined ? members.filter((m) => m.name === joined.name) : [];
+    return mine.length === 1 ? members.filter((m) => m !== mine[0]) : members;
+  }
+
+  // Who is large: the pinned member, else whoever a host spotlit.
+  function largeOne(members) {
+    if (pinned && members.some((m) => m.id === pinned)) return pinned;
+    const lit = members.find((m) => m.spotlight);
+    return lit ? lit.id : null;
+  }
+
+  const initials = (name) => String(name).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => [...w][0]).join('').toUpperCase() || '?';
+
+  function makeTile(id) {
+    const el = document.createElement('div');
+    el.className = 'tile novideo';
+    el.dataset.id = id;
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    const face = document.createElement('div');
+    face.className = 'initials';
+    const label = document.createElement('div');
+    label.className = 'label';
+    const pin = document.createElement('button');
+    pin.className = 'pin';
+    pin.textContent = 'Pin';
+    pin.addEventListener('click', () => {
+      pinned = pinned === id ? null : id;
+      log(pinned ? `pinned ${tiles.get(id).name}` : 'unpinned');
+      render();
+      sendView();
+    });
+    el.append(video, face, label, pin);
+    $('grid').appendChild(el);
+    return { el, video, face, label, pin, track: null, name: '' };
+  }
+
+  function render() {
+    if (!forwarding) return;
+    const members = others();
+    const large = largeOne(members);
+    // Each person's own stream, else the speaker stream while it shows them.
+    const own = new Map();
+    const speaker = new Map();
+    for (const s of forwarding.streams || []) {
+      if (!s.participant) continue;
+      (s.speaker ? speaker : own).set(s.participant, s.mid);
+    }
+    const named = (forwarding.streams || [])
+      .map((s) => `${s.mid}→${s.speaker ? 'speaker:' : ''}${(members.find((m) => m.id === s.participant) || {}).name || s.participant || '?'}`)
+      .join(' ');
+    if (named !== shownStreams) {
+      shownStreams = named;
+      log(`tracks: ${named || 'none'}`);
+    }
+    const seen = new Set();
+    members.forEach((m, i) => {
+      seen.add(m.id);
+      const t = tiles.get(m.id) || makeTile(m.id);
+      tiles.set(m.id, t);
+      const mid = own.get(m.id) || speaker.get(m.id);
+      const track = (mid && streamTracks.get(mid)) || null;
+      if (t.track !== track) {
+        t.track = track;
+        t.video.srcObject = track ? new MediaStream([track]) : null;
+      }
+      t.name = m.name;
+      // CSS order, not moving the element: a video taken out of the
+      // page stops playing.
+      t.el.style.order = m.id === large ? -1 : i;
+      t.el.dataset.name = m.name;
+      t.el.dataset.mid = mid || '';
+      t.el.classList.toggle('large', m.id === large);
+      t.el.classList.toggle('pinned', m.id === pinned);
+      t.el.classList.toggle('speaking', !!m.speaking);
+      t.el.classList.toggle('novideo', !track || !!m.paused);
+      t.face.textContent = initials(m.name);
+      const notes = [];
+      if (m.host) notes.push('host');
+      if (m.audio === 'muted') notes.push('muted');
+      if (m.audio === 'held') notes.push('on hold');
+      if (m.presenting) notes.push('presenting');
+      if (m.paused && track) notes.push('paused');
+      t.label.textContent = [m.name, ...notes].join(' · ');
+      t.pin.textContent = m.id === pinned ? 'Unpin' : 'Pin';
+    });
+    for (const [id, t] of tiles) {
+      if (!seen.has(id)) { t.el.remove(); tiles.delete(id); }
+    }
+  }
+
+  // What the page shows, as the room's view (§2.3): the large one at 720
+  // first, everyone else at the height their tiles have, no more than the
+  // tracks this browser took.
+  function viewOf(members, large) {
+    const streams = [];
+    if (large) streams.push({ participant: large, max_height: 720, priority: 1 });
+    const rest = members.filter((m) => m.id !== large);
+    const height = large ? 180 : rest.length <= 1 ? 720 : rest.length <= 4 ? 360 : 180;
+    for (const m of rest) streams.push({ participant: m.id, max_height: height });
+    const taken = streams.slice(0, STREAMS);
+    return { streams: taken, max_streams: taken.length };
+  }
+
+  async function sendView() {
+    if (!forwarding || !session) return;
+    const members = others();
+    if (!members.length) return;
+    const view = viewOf(members, largeOne(members));
+    const body = JSON.stringify(view);
+    if (body === sentView) return;
+    sentView = body;
+    try {
+      await call('POST', `/v1/rooms/${session.id}/view`, view, session.token);
+      log(`view sent: ${body}`);
+    } catch (e) {
+      log(`view refused: ${e.message}`);
+      // Sent again on a change, or the same view in a while: not every
+      // second.
+      setTimeout(() => { if (sentView === body) sentView = null; }, 5000);
+    }
+  }
+
   async function leave() {
     log('leaving');
     await cleanup(true);
@@ -334,6 +540,7 @@
 
   async function cleanup(tellGateway) {
     if (poll) { clearInterval(poll); poll = null; }
+    polling = 0;
     joined = null;
     if (tellGateway && session) {
       try { await call('DELETE', `/v1/rooms/${session.id}`, null, session.token); } catch (e) { log(`leave: ${e.message}`); }
@@ -344,7 +551,9 @@
     if (local) { local.getTracks().forEach((t) => t.stop()); local = null; }
     $('self').srcObject = null;
     $('remote').srcObject = null;
+    $('audio').srcObject = null;
     $('content').srcObject = null;
+    forgetForwarding();
     $('videos').classList.remove('sharing');
     $('share').classList.add('hidden');
     $('share').textContent = 'Share screen';
