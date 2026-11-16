@@ -42,6 +42,7 @@ mod migration;
 mod rooms;
 mod roster;
 mod storage;
+mod trunk_forwarding;
 mod trunks;
 mod video_bridge;
 mod video_capacity;
@@ -1672,6 +1673,15 @@ async fn main() -> Result<()> {
                     }
                     if let Some(claim) = handler.local_content_claim(&key) {
                         control.announce_content(&tenant, &key.room, claim).await;
+                    }
+                    // Each peer this node forwards with is told whose each
+                    // stream is and what is wanted of it (§2.8).
+                    for (peer, ann) in handler.forwarding_announcements(&key) {
+                        if let Ok(body) = serde_json::to_value(&ann) {
+                            control
+                                .announce_forwarding(&tenant, &key.room, &peer, body)
+                                .await;
+                        }
                     }
                 }
             }

@@ -260,6 +260,44 @@ A peer node's callers reach a forwarding viewer as what the trunk carries:
   re-forwards them. Every node then forwards everyone. The cost is a stream per
   remote source per trunk, priced by the budget like any stream (§3).
 
+As built (R7):
+
+- **Negotiated per trunk.** A node whose meeting forwards (`video_mode = auto`) puts
+  `X-FCP-Trunk-Forward: 1` on the trunk INVITE, and the peer answers with it when
+  its meeting forwards too. A peer that does not know the header leaves it out, and
+  the trunk carries composites as before. In H.264 the trunk offers
+  `profile-level-id=42e01f;packetization-mode=1`, what browsers and Anvil send.
+- **The section.** Each end is a forwarding viewer of the other over the trunk's one
+  video section (forge-conference's `forward_trunk`). It is sent the other node's
+  own people only, never a third node's, each under an SSRC of their own, and
+  nothing until it says whom it wants.
+- **The announcement.** Beside the section, each node posts each peer it forwards
+  with an announcement on the cluster's control channel
+  (`POST /internal/conferences/{room}/forwarding`), at the speaker announcer's
+  interval (`[cluster] speaker_interval_ms`, 400 ms). It is the whole picture each
+  time:
+  - `members`: its own people, with name, host, audio, and whether their camera
+    can cross (it does only in the trunk's codec);
+  - `streams`: whose each SSRC it sends that peer is;
+  - `wants`: which of the peer's people it wants and how tall — the tallest any
+    viewer here asks for them (a speaker stream counting for whoever it shows),
+    and at least 180 lines while anything here composes.
+- **The peer's people here.** Each is a remote member of the room
+  (`add_remote_member`), drawn in a composite and forwarded to viewers like anyone,
+  listed in the roster with their `src-id`, and gone with the trunk. The speaker
+  claim of a forwarding peer stands under the speaker's own id, so a viewer's
+  speaker stream and the roster's speaking flag follow a person on another node.
+- **One layer each.** A peer's person crosses at the one layer the tallest want
+  here needs; a viewer here wanting less of them is still sent that layer. Each
+  layer crossing separately is left for later, should rooms across nodes need it.
+- **Shared screens** cross on the content section as before (§15.6, 7d).
+- **Priced.** Each stream a trunk is sent is on the node's egress line, as a
+  viewer's is.
+- **Proved** by `a_forwarding_room_on_two_nodes_forwards_each_person_across_the_trunk`
+  (`fcp-conference-server/tests/cluster.rs`): two people on one node, one on the
+  other, each receiving the other node's people under the SSRCs their roster
+  names.
+
 ### 2.9 Controls
 
 - **Pin and the grid are the viewer's own.** Anvil and the join page build their
@@ -559,6 +597,11 @@ Each phase is one PR in its repository.
   takes the faster estimate. Its own design note comes first, after R3's numbers.
 - **R7: forwarding across nodes** (FCP). Trunks as forwarding subscribers, with
   sources named across nodes in the roster.
+  - **Done (v0.25.570–571, forge-media v2026.11.16.2: forge-conference 0.16.2).** As
+    §2.8 describes: `X-FCP-Trunk-Forward` on the trunk's INVITE and answer, each
+    end a forwarding viewer of the other, the announcement on the control
+    channel, the peer's people as remote members in the room and the roster, the
+    speaker claim per person, trunk streams on the egress line.
 
 The order is R1, R2, R3, then A6 and R4 in either order, then R7 and R5.
 

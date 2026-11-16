@@ -348,6 +348,14 @@ pub struct ConferenceCallHandler {
     /// arrived, by room and node (§15.6, 7d). The presenter's name is what
     /// this node's browsers are told; the claim's age is what expires it.
     content_claims: DashMap<(RoomKey, String), (ContentClaim, Instant)>,
+    /// Each peer's people in a room this node forwards with it, by room
+    /// and node, as its last announcement listed them
+    /// (`docs/FORWARDING_ROOMS.md` §2.8).
+    peer_members: DashMap<(RoomKey, String), Vec<crate::trunk_forwarding::PeerMember>>,
+    /// The person a forwarding peer last said was speaking, by room and
+    /// node: their own claim is under their own id here, so a new claim
+    /// withdraws it.
+    forward_claims: DashMap<(RoomKey, String), String>,
     /// Calls that have been answered and are waiting for PIN input.
     pending_pin_auth: DashMap<String, PendingPinAuth>,
     /// Calls answered and not yet sessions, by Call-ID: `true` once a BYE
@@ -867,6 +875,8 @@ impl ConferenceCallHandler {
             bfcp: Arc::new(Floors::new()),
             speaker_claims: DashMap::new(),
             content_claims: DashMap::new(),
+            peer_members: DashMap::new(),
+            forward_claims: DashMap::new(),
             pending_pin_auth: DashMap::new(),
             joining: Arc::new(DashMap::new()),
             cdr: None,
@@ -1617,6 +1627,36 @@ impl ConferenceCallHandler {
         let Some(video) = room.video() else {
             return Ok(false);
         };
+        // A peer that forwards (§2.8): its people are members here, and
+        // the claim stands under the speaker's own id.
+        let peer = (key.clone(), node.to_string());
+        if self.peer_members.contains_key(&peer) {
+            let next = participant_id.filter(|p| video.is_remote(p));
+            let prev = self.forward_claims.get(&peer).map(|p| p.clone());
+            if let Some(prev) = prev.filter(|p| Some(p.as_str()) != next) {
+                video.set_remote_speaker(&prev, None);
+            }
+            match next {
+                Some(p) => {
+                    video.set_remote_speaker(
+                        p,
+                        Some(forge_conference::video::RemoteSpeaker {
+                            node: node.to_string(),
+                            participant_id: p.to_string(),
+                            display_name: display_name.unwrap_or(p).to_string(),
+                            energy,
+                            speaking,
+                        }),
+                    );
+                    self.forward_claims.insert(peer.clone(), p.to_string());
+                }
+                None => {
+                    self.forward_claims.remove(&peer);
+                }
+            }
+            self.speaker_claims.insert(peer, Instant::now());
+            return Ok(true);
+        }
         let tile = trunks::trunk_participant_id(node);
         if !video.is_remote(&tile) {
             return Ok(false);
@@ -1650,6 +1690,9 @@ impl ConferenceCallHandler {
             if let Ok(room) = self.bridge.get_room(key) {
                 if let Some(video) = room.video() {
                     video.set_remote_speaker(&trunks::trunk_participant_id(node), None);
+                    if let Some((_, p)) = self.forward_claims.remove(&claim) {
+                        video.set_remote_speaker(&p, None);
+                    }
                 }
             }
             debug!(room = %key, peer = %node, "Speaker claim expired");
@@ -1782,6 +1825,255 @@ impl ConferenceCallHandler {
         }))
     }
 
+    /// The peers this node forwards with in a room
+    /// (`docs/FORWARDING_ROOMS.md` §2.8), by node, with the trunk's id
+    /// here and the codec its video section was agreed in.
+    fn forwarding_trunks(&self, key: &RoomKey) -> Vec<(String, String, forge_core::VideoCodec)> {
+        let Some(call_ids) = self.room_sessions.get(key).map(|ids| ids.clone()) else {
+            return Vec::new();
+        };
+        call_ids
+            .iter()
+            .filter_map(|id| self.sessions.get(id))
+            .filter_map(|s| {
+                let peer = s.trunk_peer.clone()?;
+                let v = s.video.as_ref().filter(|v| v.forward)?;
+                Some((peer, s.participant_id.clone(), v.negotiated.codec))
+            })
+            .collect()
+    }
+
+    /// What this node tells each peer it forwards with about a room: its
+    /// own people, whose each SSRC sent to that peer is, and which of the
+    /// peer's people it wants (§2.8). Nothing when the room has no video
+    /// or forwards with nobody.
+    pub fn forwarding_announcements(
+        &self,
+        key: &RoomKey,
+    ) -> Vec<(String, crate::trunk_forwarding::Announcement)> {
+        use crate::trunk_forwarding::{Announcement, PeerMember, StreamName, Want};
+        let trunks = self.forwarding_trunks(key);
+        if trunks.is_empty() {
+            return Vec::new();
+        }
+        let Ok(room) = self.bridge.get_room(key) else {
+            return Vec::new();
+        };
+        let Some(video) = room.video() else {
+            return Vec::new();
+        };
+        let meta: std::collections::HashMap<String, forge_mixer::ParticipantMetadata> = room
+            .get_all_participant_metadata()
+            .into_iter()
+            .map(|m| (m.id.clone(), m))
+            .collect();
+        let local: Vec<(PeerMember, Option<forge_core::VideoCodec>)> = self
+            .room_sessions
+            .get(key)
+            .map(|ids| ids.clone())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|id| self.sessions.get(id))
+            .filter(|s| s.trunk_peer.is_none())
+            .map(|s| {
+                let id = s.participant_id.clone();
+                let audio = match meta.get(&id).map(|m| m.state) {
+                    Some(forge_mixer::ParticipantState::Muted) => "muted",
+                    Some(forge_mixer::ParticipantState::OnHold) => "held",
+                    _ => "sending",
+                };
+                let camera = video
+                    .participant(&id)
+                    .and_then(|p| p.source)
+                    .map(|src| src.codec);
+                (
+                    PeerMember {
+                        display_name: s
+                            .display_name
+                            .clone()
+                            .or_else(|| s.caller_id.clone())
+                            .unwrap_or_else(|| id.clone()),
+                        participant_id: id,
+                        host: s.is_host,
+                        audio: audio.to_string(),
+                        camera: false,
+                        joined_at_ms: s
+                            .joined_at
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0),
+                    },
+                    camera,
+                )
+            })
+            .collect();
+        let wants = video.remote_wants();
+        trunks
+            .into_iter()
+            .map(|(peer, trunk_id, codec)| {
+                let members = local
+                    .iter()
+                    .map(|(m, cam)| PeerMember {
+                        // A camera crosses only in the trunk's codec.
+                        camera: *cam == Some(codec),
+                        ..m.clone()
+                    })
+                    .collect();
+                let streams = video
+                    .forwarded_streams(&trunk_id)
+                    .into_iter()
+                    .filter_map(|s| {
+                        let who = match s.target {
+                            forge_conference::video::StreamTarget::Participant(p) => Some(p),
+                            forge_conference::video::StreamTarget::Speaker => s.participant,
+                        }?;
+                        Some(StreamName {
+                            ssrc: s.ssrc,
+                            participant_id: who,
+                        })
+                    })
+                    .collect();
+                let theirs: std::collections::HashSet<String> = self
+                    .peer_members
+                    .get(&(key.clone(), peer.clone()))
+                    .map(|m| m.iter().map(|m| m.participant_id.clone()).collect())
+                    .unwrap_or_default();
+                let wants = wants
+                    .iter()
+                    .filter(|(p, _)| theirs.contains(p))
+                    .map(|(p, h)| Want {
+                        participant_id: p.clone(),
+                        max_height: *h,
+                    })
+                    .collect();
+                (
+                    peer,
+                    Announcement {
+                        node: self.node_id.clone(),
+                        members,
+                        streams,
+                        wants,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Apply a forwarding peer's announcement (§2.8): its people as
+    /// members here, cameras added and taken away as it says; whose each
+    /// SSRC on the trunk is; and what it wants of this node's people, as
+    /// the trunk's view. `Ok(false)` when the room is here but the trunk
+    /// to that peer does not forward (yet).
+    pub fn apply_forwarding(
+        &self,
+        key: &RoomKey,
+        ann: &crate::trunk_forwarding::Announcement,
+    ) -> Result<bool> {
+        let room = self
+            .bridge
+            .get_room(key)
+            .map_err(|_| anyhow::anyhow!("room {} is not hosted on this node", key.room))?;
+        let Some(video) = room.video() else {
+            return Ok(false);
+        };
+        let trunk_id = trunks::trunk_participant_id(&ann.node);
+        let Some((demux, codec, fmtp)) = self
+            .room_sessions
+            .get(key)
+            .map(|ids| ids.clone())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|id| self.sessions.get(id))
+            .find(|s| s.trunk_peer.as_deref() == Some(ann.node.as_str()))
+            .and_then(|s| {
+                let v = s.video.as_ref().filter(|v| v.forward)?;
+                Some((
+                    Arc::clone(v.demux.as_ref()?),
+                    v.negotiated.codec,
+                    v.negotiated.fmtp.clone().unwrap_or_default(),
+                ))
+            })
+        else {
+            return Ok(false);
+        };
+        let peer = (key.clone(), ann.node.clone());
+        // Never take a peer's word about someone who is here.
+        let members: Vec<_> = ann
+            .members
+            .iter()
+            .filter(|m| {
+                !video
+                    .participant(&m.participant_id)
+                    .is_some_and(|p| !p.remote)
+            })
+            .filter(|m| !trunks::is_trunk_participant(&m.participant_id))
+            .cloned()
+            .collect();
+        let before: Vec<String> = self
+            .peer_members
+            .get(&peer)
+            .map(|m| m.iter().map(|m| m.participant_id.clone()).collect())
+            .unwrap_or_default();
+        for gone in before
+            .iter()
+            .filter(|id| !members.iter().any(|m| &m.participant_id == *id))
+        {
+            video.remove_remote(gone);
+        }
+        for m in &members {
+            video.add_remote_member(&m.participant_id, &m.display_name);
+            let has = video.has_source(&m.participant_id);
+            if m.camera && !has {
+                if let Err(e) = video.add_remote(&m.participant_id, codec, &fmtp) {
+                    warn!(room = %key.room, peer = %ann.node, participant = %m.participant_id, error = %e, "Could not add a peer's camera");
+                }
+            } else if !m.camera && has {
+                video.remove_source(&m.participant_id);
+            }
+        }
+        self.peer_members.insert(peer, members);
+        let moved = demux.set(
+            ann.streams
+                .iter()
+                .map(|s| (s.ssrc, s.participant_id.clone()))
+                .collect(),
+        );
+        for p in moved {
+            video.request_source_keyframe(&p);
+        }
+        // What the peer wants of this node's own people.
+        let mine: Vec<crate::trunk_forwarding::Want> = ann
+            .wants
+            .iter()
+            .filter(|w| !video.is_remote(&w.participant_id))
+            .cloned()
+            .collect();
+        if let Err(e) = video.set_view(&trunk_id, crate::trunk_forwarding::view_of(&mine)) {
+            debug!(room = %key.room, peer = %ann.node, error = %e, "The trunk's view was not set");
+        }
+        Ok(true)
+    }
+
+    /// The peer's people leave with its trunk (§2.8).
+    fn forget_peer_members(&self, key: &RoomKey, node: &str) {
+        let peer = (key.clone(), node.to_string());
+        let claim = self.forward_claims.remove(&peer);
+        let Some((_, members)) = self.peer_members.remove(&peer) else {
+            return;
+        };
+        if let Ok(room) = self.bridge.get_room(key) {
+            if let Some(video) = room.video() {
+                if let Some((_, p)) = claim {
+                    video.set_remote_speaker(&p, None);
+                }
+                for m in members {
+                    video.remove_remote(&m.participant_id);
+                }
+            }
+        }
+        debug!(room = %key.room, peer = %node, "A forwarding peer's people left with its trunk");
+    }
+
     /// This node's own speaker in a room, as a claim to send to the
     /// peers hosting it: the participant the room is showing, with the
     /// level the mixer has for them right now. `None` when the room's
@@ -1858,6 +2150,19 @@ impl ConferenceCallHandler {
                         .map(|v| v.negotiated.codec.sdp_name()),
                     // Whether a shared screen crosses this trunk (7d).
                     "content": session.content.is_some(),
+                    // Whether each person's own stream crosses it (§2.8),
+                    // how many SSRCs the peer has named, and how many of
+                    // its people are listed here.
+                    "forwarding": session.video.as_ref().is_some_and(|v| v.forward),
+                    "streams_named": session
+                        .video
+                        .as_ref()
+                        .and_then(|v| v.demux.as_ref())
+                        .map(|d| d.len()),
+                    "peer_members": self
+                        .peer_members
+                        .get(&(key.clone(), peer.clone()))
+                        .map(|m| m.len()),
                 }))
             })
             .collect();
@@ -3636,6 +3941,10 @@ impl ConferenceCallHandler {
             if let Some(a) = &session.bfcp {
                 self.bfcp.leave(&key, a.user_id);
             }
+            // A forwarding trunk's peer's people go with it (§2.8).
+            if let Some(peer) = &session.trunk_peer {
+                self.forget_peer_members(&key, peer);
+            }
 
             // Abort the audio bridge task and validate it actually stops
             session.audio_bridge_handle.abort();
@@ -4239,6 +4548,7 @@ impl ConferenceCallHandler {
                 settings,
                 stats: Arc::new(VideoLegStats::default()),
                 forward: false,
+                demux: None,
                 bridge_handle: None,
             },
             meeting.video_content_share,
@@ -4658,7 +4968,7 @@ impl ConferenceCallHandler {
                 rtp_port: pair.rtp_port,
                 payload_type: TRUNK_VIDEO_PAYLOAD_TYPE,
                 codec: plan.codec,
-                fmtp: None,
+                fmtp: plan.fmtp(),
                 feedback: true,
                 srtp: video_srtp.as_ref().map(|o| &o.sdp),
                 simulcast: None,
@@ -4731,6 +5041,11 @@ impl ConferenceCallHandler {
         headers
             .push(TRUNK_TENANT_HEADER, tenant_id.to_string())
             .map_err(|e| anyhow::anyhow!("trunk header: {e}"))?;
+        if planned.as_ref().is_some_and(|p| p.forward) && video_pair.is_some() {
+            headers
+                .push(trunks::TRUNK_FORWARD_HEADER, "1")
+                .map_err(|e| anyhow::anyhow!("trunk header: {e}"))?;
+        }
 
         info!(room = %room_number, peer = %peer_node, target = %target_uri, "Sending conference trunk INVITE");
         // Every video port pair goes back if the trunk never comes up.
@@ -4858,6 +5173,16 @@ impl ConferenceCallHandler {
             }
             _ => None,
         };
+        // Both ends forward (§2.8): the peer said so in its answer.
+        let peer_forwards = sip_parse::header(response.headers(), trunks::TRUNK_FORWARD_HEADER)
+            .is_some_and(|v| v.as_str().trim() == "1");
+        let video = video.map(|mut leg| {
+            if planned.as_ref().is_some_and(|p| p.forward) && peer_forwards {
+                leg.forward = true;
+                leg.demux = Some(Arc::new(video_bridge::TrunkStreams::default()));
+            }
+            leg
+        });
         // The screen's section rides only beside a video one.
         let content = match (&planned, content_pair, video.is_some()) {
             (Some(plan), Some(pair), true) => {
@@ -4940,7 +5265,11 @@ impl ConferenceCallHandler {
         )?;
         // The first codec the meeting prefers that this node can encode.
         let codec = *codecs.first()?;
-        Some(TrunkVideoPlan { settings, codec })
+        Some(TrunkVideoPlan {
+            settings,
+            codec,
+            forward: meeting.video_mode == "auto",
+        })
     }
 
     /// Read the peer's answer to one of our video sections — the camera's
@@ -5021,6 +5350,7 @@ impl ConferenceCallHandler {
             settings: plan.settings.clone(),
             stats: Arc::new(VideoLegStats::default()),
             forward: false,
+            demux: None,
             bridge_handle: None,
         }))
     }
@@ -5236,7 +5566,7 @@ impl ConferenceCallHandler {
         let sdp_answer = answer.sdp;
         let local_sip_uri = self.parse_local_sip_uri();
         let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
-        let (response, dialog) = match uas.accept_invite(request, Some(&sdp_answer)) {
+        let (mut response, dialog) = match uas.accept_invite(request, Some(&sdp_answer)) {
             Ok(v) => v,
             Err(e) => {
                 let pool = Arc::clone(&self.port_pool);
@@ -5247,6 +5577,17 @@ impl ConferenceCallHandler {
                 return Err(anyhow::anyhow!("Failed to create 200 OK for trunk: {}", e));
             }
         };
+        // The trunk forwards (§2.8) when the peer offered to and this
+        // node's meeting forwards too; the answer says so.
+        let forwards = video_pair.is_some()
+            && plan.as_ref().is_some_and(|p| p.forward)
+            && sip_parse::header(request.headers(), trunks::TRUNK_FORWARD_HEADER)
+                .is_some_and(|v| v.as_str().trim() == "1");
+        if forwards {
+            let _ = response
+                .headers_mut()
+                .push(trunks::TRUNK_FORWARD_HEADER, "1");
+        }
         handle.send_final(response).await;
 
         // The video half of the answer, when one was agreed, and the
@@ -5269,6 +5610,13 @@ impl ConferenceCallHandler {
             }
             _ => None,
         };
+        let video = video.map(|mut leg| {
+            if forwards {
+                leg.forward = true;
+                leg.demux = Some(Arc::new(video_bridge::TrunkStreams::default()));
+            }
+            leg
+        });
         let content = match (&plan, content_pair, answer.content, video.is_some()) {
             (Some(plan), Some(pair), Some(negotiated), true) => {
                 self.trunk_leg_from_answer(
@@ -5388,6 +5736,7 @@ impl ConferenceCallHandler {
             settings,
             stats: Arc::new(VideoLegStats::default()),
             forward: false,
+            demux: None,
             bridge_handle: None,
         })
     }
@@ -5633,6 +5982,17 @@ struct TrunkVideoPlan {
     settings: forge_conference::video::VideoRoomSettings,
     /// The codec offered: the meeting's first that this node encodes.
     codec: forge_core::VideoCodec,
+    /// The meeting forwards (`video_mode = auto`): the trunk offers to
+    /// forward each person's own stream (`docs/FORWARDING_ROOMS.md` §2.8).
+    forward: bool,
+}
+
+impl TrunkVideoPlan {
+    /// The `a=fmtp` the trunk offers its video with.
+    fn fmtp(&self) -> Option<&'static str> {
+        (self.forward && self.codec == forge_core::VideoCodec::H264)
+            .then_some(trunks::TRUNK_H264_FMTP)
+    }
 }
 
 #[async_trait::async_trait]
@@ -6318,6 +6678,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     settings: settings.clone(),
                     stats: Arc::new(VideoLegStats::default()),
                     forward: false,
+                    demux: None,
                     bridge_handle: None,
                 })
             }
@@ -6345,6 +6706,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     settings: settings.clone(),
                     stats: Arc::new(VideoLegStats::default()),
                     forward: view_streams,
+                    demux: None,
                     bridge_handle: None,
                 })
             }
@@ -8834,6 +9196,46 @@ impl ConferenceCallHandler {
                     joined_at: s.joined_at,
                 },
             );
+        }
+        // The people of each peer this node forwards with (§2.8): named
+        // there, their camera as it arrives here.
+        let peers: Vec<(String, Vec<crate::trunk_forwarding::PeerMember>)> = self
+            .peer_members
+            .iter()
+            .filter(|e| &e.key().0 == key)
+            .map(|e| (e.key().1.clone(), e.value().clone()))
+            .collect();
+        for (node, members) in peers {
+            let presenting = self
+                .content_claims
+                .get(&(key.clone(), node.clone()))
+                .map(|c| c.0.participant_id.clone());
+            for m in members {
+                let id = m.participant_id;
+                let audio = match m.audio.as_str() {
+                    "muted" => crate::roster::Audio::Muted,
+                    "held" => crate::roster::Audio::Held,
+                    _ => crate::roster::Audio::Sending,
+                };
+                let camera = video
+                    .as_ref()
+                    .map(|v| v.participant(&id).map_or("off", |i| i.state.name()));
+                roster.members.insert(
+                    id.clone(),
+                    crate::roster::Member {
+                        name: m.display_name,
+                        host: m.host,
+                        audio,
+                        video: camera,
+                        speaking: speaker.as_deref() == Some(id.as_str()),
+                        presenting: presenting.as_deref() == Some(id.as_str()),
+                        spotlight: spotlight.as_deref() == Some(id.as_str()),
+                        stream: None,
+                        speaker_stream: None,
+                        joined_at: std::time::UNIX_EPOCH + Duration::from_millis(m.joined_at_ms),
+                    },
+                );
+            }
         }
         Some(roster)
     }

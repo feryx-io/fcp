@@ -272,6 +272,35 @@ impl ClusterControl {
             .await
     }
 
+    /// Tell one peer what this node forwards it and wants of it in a room
+    /// (`docs/FORWARDING_ROOMS.md` §2.8). Fire and forget, as a claim is:
+    /// the next announcement carries the whole picture again.
+    pub async fn announce_forwarding(
+        &self,
+        tenant_id: &str,
+        room_number: &str,
+        peer_node: &str,
+        announcement: serde_json::Value,
+    ) {
+        let Some(peer) = self.members.get(peer_node).map(|m| m.value().clone()) else {
+            debug!(room = %room_number, peer = %peer_node, "Forwarding peer not in membership; not announced");
+            return;
+        };
+        let path = format!("/conferences/{room_number}/forwarding");
+        let outcome = self
+            .send(
+                &peer,
+                tenant_id,
+                reqwest::Method::POST,
+                &path,
+                Some(&announcement),
+            )
+            .await;
+        if !outcome.ok {
+            debug!(peer = %outcome.node, room = %room_number, "Forwarding announcement not applied");
+        }
+    }
+
     async fn announce(
         &self,
         tenant_id: &str,
