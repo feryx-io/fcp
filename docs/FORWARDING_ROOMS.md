@@ -488,7 +488,20 @@ Each phase is one PR in its repository.
   - The measurements.
   - The call manager carrying `fcp-view` INFOs in the call, as it carries
     `fcp-content`, with the relay proved for several SSRCs and the rid extension.
-- **A6: Anvil forwards** (anvil).
+- **A6: Anvil forwards** (anvil). **Done** in four parts, Anvil v0.2.84–92.
+  - **A6a** (anvil #95): `Recv-Info: fcp-view` on a room's video join, the
+    roster's `src-id`, `fcp:paused` and `fcp:spotlight`, whose stream is whose,
+    the view as an INFO; the three-Anvil test against FCP.
+  - **A6b** (anvil #96): simulcast send — a room's camera as up to three
+    encodings (`h`, `m`, `l`), each under its own SSRC and rid, the REMB shared
+    smallest first; Linux.
+  - **A6c** (anvil #97): the same on macOS, Windows, Android and iOS, each
+    shown in CI to run three encoders at once.
+  - **A6d** (anvil #98): the app lays out a forwarding room — a grid, a pin, a
+    host's spotlight or the speaker large, names and speaking rings on tiles,
+    the view sent as the layout changes; more than one content stream kept.
+
+  As designed:
   - Simulcast send: one capture feeding two or three encoders in each platform host,
     and the send loop sending every encoding under its rid.
   - `src-id` in the roster parser.
@@ -496,7 +509,37 @@ Each phase is one PR in its repository.
   - The view: the app's grid, a pin, the speaker, sent as `fcp-view`.
   - More than one content stream kept.
   - The three-Anvil test.
-- **R4: browsers forward** (FCP).
+- **R4: browsers forward** (FCP). Split in three.
+  - **R4a, done (forge-media v2026.11.16: forge-webrtc 0.10.0).** A peer
+    connection offers `VideoConfig::streams` send-only video sections after the
+    camera's and the screen's (`a=mid:3`, `4`, …, at most 25), each with its own
+    SSRC, track and sender report (`stream_sender`, `negotiated_streams`,
+    `stream_mids`). An answerer with `streams` takes them receive-only, their
+    packets arriving as `StreamRtp(index, packet)`: what the gateway's tests use
+    for a browser.
+  - **R4b, done (v0.25.566).** The gateway.
+    - A join with `streams` (K, at most 25) offers the browser K such tracks and
+      the room `Recv-Info: fcp-view`; a room that answers in kind forwards.
+    - Each SSRC the room sends is put on a free track when its first packet
+      comes, and the track is free again three seconds after the stream stops
+      (half a second when the roster no longer names it and a new stream needs
+      the track). A stream with no track left is dropped.
+    - The browser's feedback about a track goes to the room's SSRC on it; its
+      REMB to the room, as the viewer's budget.
+    - The roster, subscribed to in the call and renewed every five minutes, is
+      read by `fcp_core::conference_info` (proved against the room's own writer).
+      The session's `forwarding` says who is in the room and whose stream is on
+      each mid.
+    - `POST /v1/rooms/{id}/view` sends the page's view as the `fcp-view` INFO.
+    - `a_forwarding_room_s_streams_ride_a_section_each` (the relay) and
+      `a_browser_that_asks_gets_each_person_on_a_track_and_its_view_is_heard`
+      (the gateway with the conference server and two phones).
+    - Not yet: after a move to another conference node the roster is not asked
+      for again, so the names go stale until the browser joins again.
+  - **R4c.** The join page's own grid (names, speaking rings, a pin) on the
+    tracks, the view posted as its layout changes; proved in Chromium.
+
+  As designed:
   - The gateway's K transceivers and their mapping.
   - The view relayed.
   - The join page's own grid.

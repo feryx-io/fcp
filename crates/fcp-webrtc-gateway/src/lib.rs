@@ -15,6 +15,7 @@
 
 pub mod config;
 pub mod drain;
+pub mod forwarding;
 pub mod http_api;
 pub mod inbound;
 pub mod placement;

@@ -33,6 +33,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, Notify};
 use tracing::{debug, trace, warn};
 
+use crate::forwarding::Forwarding;
+
 /// The SIP side's audio section.
 pub struct SipAudioLeg {
     pub socket: Arc<RtpSocketPair>,
@@ -72,6 +74,12 @@ pub struct BrowserLeg {
     pub video: Option<(VideoSender, u8)>,
     /// The shared screen's sender and payload type on the browser side.
     pub content: Option<(VideoSender, u8)>,
+    /// Where the room forwards each person's stream: a sender (and the
+    /// browser side's payload type) per send-only section the browser
+    /// took, `None` where it rejected one, and the map of the room's SSRCs
+    /// onto them. Empty: the room's one picture goes out on `video`.
+    pub streams: Vec<Option<(VideoSender, u8)>>,
+    pub forwarding: Option<Arc<std::sync::Mutex<Forwarding>>>,
     /// How long the browser may send nothing at all — no RTP, no RTCP —
     /// before it is taken as gone. A live browser reports every second or
     /// so even with its tracks muted; the peer connection itself does not
@@ -89,6 +97,8 @@ pub struct RelayStats {
     pub video_to_browser: AtomicU64,
     pub content_to_sip: AtomicU64,
     pub content_to_browser: AtomicU64,
+    /// A forwarding room's streams, each on its section.
+    pub streams_to_browser: AtomicU64,
     pub feedback_to_sip: AtomicU64,
     pub feedback_to_browser: AtomicU64,
     pub dropped: AtomicU64,
@@ -107,6 +117,7 @@ pub struct RelayStatsSnapshot {
     pub video_to_browser: u64,
     pub content_to_sip: u64,
     pub content_to_browser: u64,
+    pub streams_to_browser: u64,
     pub feedback_to_sip: u64,
     pub feedback_to_browser: u64,
     pub dropped: u64,
@@ -122,6 +133,7 @@ impl RelayStats {
             video_to_browser: self.video_to_browser.load(Ordering::Relaxed),
             content_to_sip: self.content_to_sip.load(Ordering::Relaxed),
             content_to_browser: self.content_to_browser.load(Ordering::Relaxed),
+            streams_to_browser: self.streams_to_browser.load(Ordering::Relaxed),
             feedback_to_sip: self.feedback_to_sip.load(Ordering::Relaxed),
             feedback_to_browser: self.feedback_to_browser.load(Ordering::Relaxed),
             dropped: self.dropped.load(Ordering::Relaxed),
@@ -324,6 +336,17 @@ pub async fn run_relay(
     let mut browser_content_ssrc: Option<u32> = None;
     let mut sip_content_ssrc: Option<u32> = None;
     let our_content_ssrc = browser.content.as_ref().map(|(v, _)| v.ssrc());
+    // Where the room forwards: our SSRC on each section, so feedback about
+    // one reaches the room's stream on it.
+    let stream_ssrcs: Vec<Option<u32>> = browser
+        .streams
+        .iter()
+        .map(|s| s.as_ref().map(|(v, _)| v.ssrc()))
+        .collect();
+    let forwarding = browser
+        .forwarding
+        .clone()
+        .filter(|_| !browser.streams.is_empty());
     let mut last_browser_activity = Instant::now();
     let mut liveness = tokio::time::interval(Duration::from_secs(1));
     liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -337,10 +360,16 @@ pub async fn run_relay(
                 sip = new_leg;
                 sip_video_ssrc = None;
                 sip_content_ssrc = None;
+                if let Some(f) = &forwarding {
+                    f.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                }
                 debug!("SIP leg swapped; relaying to the new far end");
             }
 
             _ = liveness.tick() => {
+                if let Some(f) = &forwarding {
+                    f.lock().unwrap_or_else(|e| e.into_inner()).expire(Instant::now());
+                }
                 if last_browser_activity.elapsed() > browser.inactivity_timeout {
                     return RelayEnd::BrowserFailed(format!(
                         "no media or RTCP from the browser for {} s",
@@ -351,7 +380,7 @@ pub async fn run_relay(
 
             event = browser.events.recv() => {
                 let Some(event) = event else { return RelayEnd::BrowserClosed };
-                if matches!(event, PeerEvent::Rtp(_) | PeerEvent::VideoRtp(_) | PeerEvent::ContentRtp(_) | PeerEvent::Rtcp(_)) {
+                if matches!(event, PeerEvent::Rtp(_) | PeerEvent::VideoRtp(_) | PeerEvent::ContentRtp(_) | PeerEvent::StreamRtp(..) | PeerEvent::Rtcp(_)) {
                     last_browser_activity = Instant::now();
                 }
                 match event {
@@ -397,11 +426,37 @@ pub async fn run_relay(
                         stats.content_last_from_browser_ms.store(unix_ms(), Ordering::Relaxed);
                         video_to_sip(content, &pkt, &stats, &stats.content_to_sip, "content").await;
                     }
+                    // The browser's sections for a forwarding room only
+                    // receive: nothing arrives on them.
+                    PeerEvent::StreamRtp(..) => {}
                     PeerEvent::Rtcp(packets) => {
                         // Feedback about what we send the browser on each
                         // section goes to that section's far end; a REMB,
                         // which is about the whole transport, to the camera's.
-                        if let (Some(video), Some(media)) = (&sip.video, sip_video_ssrc) {
+                        if let (Some(video), Some(f)) = (&sip.video, &forwarding) {
+                            // A forwarding room: feedback about the stream
+                            // on one of its sections is about the room's
+                            // SSRC there; a REMB is the viewer's budget.
+                            let sender = browser_video_ssrc.unwrap_or(0);
+                            let rewritten: Vec<RtcpPacket> = {
+                                let map = f.lock().unwrap_or_else(|e| e.into_inner());
+                                packets
+                                    .iter()
+                                    .filter_map(|p| {
+                                        let room = p
+                                            .feedback_media_ssrc()
+                                            .and_then(|ours| stream_ssrcs.iter().position(|s| *s == Some(ours)))
+                                            .and_then(|i| map.ssrc_on(i));
+                                        match room {
+                                            Some(media) => rewrite_feedback(p, sender, media),
+                                            None if is_remb(p) => rewrite_feedback(p, sender, 0),
+                                            None => None,
+                                        }
+                                    })
+                                    .collect()
+                            };
+                            feedback_to_sip(video, &rewritten, &stats).await;
+                        } else if let (Some(video), Some(media)) = (&sip.video, sip_video_ssrc) {
                             let sender = browser_video_ssrc.unwrap_or(0);
                             let rewritten: Vec<RtcpPacket> = packets
                                 .iter()
@@ -462,6 +517,10 @@ pub async fn run_relay(
                     Ok(r) => r,
                     Err(e) => return RelayEnd::SipSocketError(format!("video: {e}")),
                 };
+                if let (Some(video), Some(f)) = (&sip.video, &forwarding) {
+                    stream_to_browser(video, &browser.streams, f, raw, &stats).await;
+                    continue;
+                }
                 let (Some(video), Some((sender, browser_pt))) = (&sip.video, &browser.video) else { continue };
                 if let Some(ssrc) = video_to_browser(video, sender, *browser_pt, raw, &stats, &stats.video_to_browser, "video").await {
                     sip_video_ssrc = Some(ssrc);
@@ -585,6 +644,44 @@ async fn video_to_browser(
         Err(e) => trace!(error = %e, "{what} send to browser failed"),
     }
     ssrc
+}
+
+/// A forwarding room's packet to the browser: on the section its SSRC
+/// holds, or takes when it is new; dropped when every section is taken.
+async fn stream_to_browser(
+    leg: &SipVideoLeg,
+    senders: &[Option<(VideoSender, u8)>],
+    forwarding: &std::sync::Mutex<Forwarding>,
+    raw: Bytes,
+    stats: &RelayStats,
+) {
+    let Some(plain) = unprotect(&leg.srtp, &raw, false, stats).await else {
+        return;
+    };
+    let ssrc = match ssrc_of(&plain) {
+        Some(ssrc) if plain.len() >= 12 && (plain[1] & 0x7f) == leg.payload_type => ssrc,
+        _ => {
+            stats.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    };
+    let slot = forwarding
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .slot_for(ssrc, Instant::now());
+    let Some((sender, browser_pt)) = slot.and_then(|i| senders.get(i)?.as_ref()) else {
+        stats.dropped.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    match sender
+        .send_packet(retag(&plain, *browser_pt).freeze())
+        .await
+    {
+        Ok(()) => {
+            stats.streams_to_browser.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(e) => trace!(error = %e, "stream send to browser failed"),
+    }
 }
 
 /// Re-addressed feedback onto a SIP section, as one compound packet.

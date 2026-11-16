@@ -67,7 +67,7 @@ pub fn simple_response(request: &Request, code: u16, reason: &str) -> Response {
     }
     let _ = headers.push("Content-Length", "0");
     if code == 405 {
-        let _ = headers.push("Allow", "BYE, INFO, OPTIONS");
+        let _ = headers.push("Allow", "BYE, INFO, NOTIFY, OPTIONS");
     }
     if code == 415 {
         let _ = headers.push("Accept", CONTENT_NOTICE_TYPE);
@@ -148,6 +148,23 @@ impl InboundMessageHandler for GatewayInboundHandler {
                             .await;
                     }
                 },
+                // The room's roster, which a forwarding session subscribed
+                // to in the call: whose stream is on each of its tracks.
+                Method::Notify
+                    if request
+                        .headers()
+                        .get("Event")
+                        .is_some_and(|e| e.trim().starts_with("conference")) =>
+                {
+                    let code = if self.sessions.roster_notice(&call_id, request.body()).await {
+                        (200, "OK")
+                    } else {
+                        (481, "Call/Transaction Does Not Exist")
+                    };
+                    handle
+                        .send_final(simple_response(&request, code.0, code.1))
+                        .await;
+                }
                 Method::Refer => {
                     // The conference node is draining and names another
                     // node for this session (phase 5c). Any other REFER is
@@ -249,7 +266,10 @@ mod tests {
             Some("<sip:webrtc-gw@10.0.0.2>;tag=xyz")
         );
         let refused = simple_response(&tagged, 405, "Method Not Allowed");
-        assert_eq!(refused.headers().get("Allow"), Some("BYE, INFO, OPTIONS"));
+        assert_eq!(
+            refused.headers().get("Allow"),
+            Some("BYE, INFO, NOTIFY, OPTIONS")
+        );
         let unsupported = simple_response(&tagged, 415, "Unsupported Media Type");
         assert_eq!(
             unsupported.headers().get("Accept"),

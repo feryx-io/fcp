@@ -12,6 +12,7 @@ pub mod cdr_archive;
 pub mod class_of_service;
 pub mod codec;
 pub mod compliance;
+pub mod conference_info;
 pub mod config;
 pub mod config_store;
 pub mod config_template;

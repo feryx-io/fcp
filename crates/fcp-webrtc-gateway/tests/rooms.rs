@@ -163,6 +163,9 @@ struct Browser {
     events: Arc<Mutex<mpsc::Receiver<PeerEvent>>>,
     sender: forge_webrtc::AudioSender,
     heard: Arc<Mutex<Vec<ToneDetector>>>,
+    /// Packets that arrived on each of a forwarding room's tracks, by
+    /// section index.
+    tracks: Arc<std::sync::Mutex<std::collections::BTreeMap<u8, u64>>>,
 }
 
 impl Browser {
@@ -173,8 +176,56 @@ impl Browser {
             "display_name": name,
             "video": false,
             "join_token": join_token,
-        })
-        .to_string();
+        });
+        Self::join_with(
+            gw,
+            body,
+            PeerConfig {
+                codecs: vec![(AudioCodec::PCMU, 0)],
+                video: None,
+                ..PeerConfig::default()
+            },
+        )
+        .await
+    }
+
+    /// Join asking for a forwarding room's streams on `tracks` tracks, a
+    /// browser taking every one of them (VP8).
+    async fn join_forwarding(
+        gw: &Gateway,
+        join_token: &str,
+        name: &str,
+        tracks: u8,
+    ) -> Result<Self, String> {
+        let body = serde_json::json!({
+            "display_name": name,
+            "video": true,
+            "content": false,
+            "streams": tracks,
+            "join_token": join_token,
+        });
+        Self::join_with(
+            gw,
+            body,
+            PeerConfig {
+                codecs: vec![(AudioCodec::PCMU, 0)],
+                video: Some(forge_webrtc::VideoConfig {
+                    codecs: vec![(forge_webrtc::VideoCodec::VP8, 96)],
+                    streams: tracks,
+                    ..forge_webrtc::VideoConfig::default()
+                }),
+                ..PeerConfig::default()
+            },
+        )
+        .await
+    }
+
+    async fn join_with(
+        gw: &Gateway,
+        body: serde_json::Value,
+        peer_cfg: PeerConfig,
+    ) -> Result<Self, String> {
+        let body = body.to_string();
         let (code, created) = gw
             .api(
                 "POST",
@@ -193,13 +244,9 @@ impl Browser {
             .to_string();
         let offer = created["sdp_offer"].as_str().ok_or("no offer")?.to_string();
 
-        let mut peer = PeerConnection::with_config(PeerConfig {
-            codecs: vec![(AudioCodec::PCMU, 0)],
-            video: None,
-            ..PeerConfig::default()
-        })
-        .await
-        .map_err(|e| format!("peer: {e}"))?;
+        let mut peer = PeerConnection::with_config(peer_cfg)
+            .await
+            .map_err(|e| format!("peer: {e}"))?;
         peer.set_remote_offer(&offer)
             .await
             .map_err(|e| format!("offer: {e}"))?;
@@ -254,6 +301,7 @@ impl Browser {
             events: Arc::new(Mutex::new(events)),
             sender,
             heard: Arc::new(Mutex::new(Vec::new())),
+            tracks: Arc::default(),
         };
         browser.spawn_listener();
         Ok(browser)
@@ -263,6 +311,7 @@ impl Browser {
     fn spawn_listener(&self) {
         let events = Arc::clone(&self.events);
         let heard = Arc::clone(&self.heard);
+        let tracks = Arc::clone(&self.tracks);
         tokio::spawn(async move {
             loop {
                 let ev = events.lock().await.recv().await;
@@ -277,6 +326,9 @@ impl Browser {
                         for d in heard.lock().await.iter_mut() {
                             d.feed(&samples);
                         }
+                    }
+                    Some(PeerEvent::StreamRtp(i, _)) => {
+                        *tracks.lock().unwrap().entry(i).or_default() += 1;
                     }
                     Some(PeerEvent::Closed) | None => return,
                     Some(_) => {}
@@ -379,6 +431,15 @@ async fn conference_server(db_url: &str, dir: &std::path::Path) -> (Service, Soc
 
 /// [`conference_server`], and the port of its HTTP API.
 async fn conference_server_http(db_url: &str, dir: &std::path::Path) -> (Service, SocketAddr, u16) {
+    conference_server_with(db_url, dir, "").await
+}
+
+/// [`conference_server_http`] with more of its `[conference]` section.
+async fn conference_server_with(
+    db_url: &str,
+    dir: &std::path::Path,
+    conference: &str,
+) -> (Service, SocketAddr, u16) {
     let sip = free_port();
     let http = free_port();
     let rtp_start = allocate_port_pair().rtp_port;
@@ -410,6 +471,7 @@ rtp_port_end = {rtp_end}
 recordings_dir = "{dir}/recordings"
 announcements_dir = "{dir}/announcements"
 join_secret = "{JOIN_SECRET}"
+{conference}
 
 [logging]
 level = "info"
@@ -932,6 +994,166 @@ async fn a_browser_s_camera_reaches_the_room_as_simulcast() {
             let conf = conference.kill().await;
             panic!("{why}\n--- page\n{page}\n--- gateway\n{logs}\n--- conference\n{conf}");
         }
+    }
+    gw.service.take().unwrap().stop().await;
+    conference.stop().await;
+    db.drop_db().await;
+}
+
+/// A browser that asks is forwarded each person's stream on a track of its
+/// own (`docs/FORWARDING_ROOMS.md` §2.7, R4b): the gateway joins with
+/// `Recv-Info: fcp-view`, puts each of the room's SSRCs on one of the
+/// browser's send-only sections, follows the roster in the call to say
+/// whose stream is on which mid, and passes the browser's view on to the
+/// room, which then sends only what it names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_that_asks_gets_each_person_on_a_track_and_its_view_is_heard() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    seed.meeting_with(
+        ROOM,
+        serde_json::json!({
+            "video_enabled": true,
+            "video_codecs": ["VP8"],
+            "video_mode": "auto",
+        }),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (conference, conf_sip, _) =
+        conference_server_with(db.url(), dir.path(), "video_native_codecs_only = false").await;
+    let mut gw = Gateway::start(conf_sip, None).await;
+
+    let scenario = async {
+        // Two people send their cameras.
+        let mut calls = Vec::new();
+        let mut phones = Vec::new();
+        for name in ["alice", "carol"] {
+            let phone = Phone::new(name, "x", REALM, conf_sip)
+                .await
+                .map_err(|e| e.to_string())?;
+            phone.enable_video(fcp_testkit::video::VideoMode::Plain);
+            phone.set_video_codec(fcp_testkit::video::VideoCodec::Vp8);
+            let call = phone.call(ROOM).await.map_err(|e| e.to_string())?;
+            call.answered(SOON).await.map_err(|e| e.to_string())?;
+            calls.push(call);
+            phones.push(phone);
+        }
+        let browser = Browser::join_forwarding(&gw, &join_token(&seed, "web"), "web", 4).await?;
+        browser.wait_state(&gw, "connected", A_WHILE).await?;
+        let send = || async {
+            for c in &calls {
+                c.video()
+                    .expect("a sender has video")
+                    .send_frames(1, 10)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            tokio::time::sleep(Duration::from_millis(33)).await;
+            Ok::<_, String>(())
+        };
+
+        // Each person on a track of their own, and the session says whose.
+        let deadline = tokio::time::Instant::now() + A_WHILE;
+        let (alice, carol, tracks) = loop {
+            // Frames all along; the session read now and then (its
+            // routes are rate limited).
+            for _ in 0..10 {
+                send().await?;
+            }
+            let info = browser.info(&gw).await?;
+            let f = &info["forwarding"];
+            let id_of = |who: &str| {
+                f["members"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|m| m["name"].as_str().is_some_and(|n| n.contains(who)))
+                    .and_then(|m| m["id"].as_str())
+                    .map(str::to_string)
+            };
+            let on = |id: &Option<String>| {
+                f["streams"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|s| s["participant"].as_str() == id.as_deref() && s["speaker"] == false)
+                    .and_then(|s| s["mid"].as_str())
+                    .map(str::to_string)
+            };
+            let (a, c) = (id_of("alice"), id_of("carol"));
+            let tracks = browser.tracks.lock().unwrap().clone();
+            if let (Some(a), Some(c)) = (&a, &c) {
+                let named = on(&Some(a.clone())).is_some() && on(&Some(c.clone())).is_some();
+                if named && tracks.len() >= 2 && tracks.values().all(|n| *n >= 3) {
+                    break (a.clone(), c.clone(), tracks);
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!("never each person on a track: {info}\n{tracks:?}"));
+            }
+        };
+        eprintln!("tracks: {tracks:?}");
+        let _ = alice;
+
+        // The browser asks for Carol alone: only her track goes on.
+        let view = serde_json::json!({ "streams": [{ "participant": carol, "max_height": 360 }] });
+        let (code, body) = gw
+            .api(
+                "POST",
+                &format!("/v1/rooms/{}/view", browser.id),
+                &browser.token,
+                Some(&view.to_string()),
+            )
+            .await?;
+        if code != 204 {
+            return Err(format!("the view answered {code}: {body}"));
+        }
+        let (code, _) = gw
+            .api(
+                "POST",
+                &format!("/v1/rooms/{}/view", browser.id),
+                &browser.token,
+                Some("{\"streams\":[{}]}"),
+            )
+            .await?;
+        if code != 400 {
+            return Err(format!("a view that means nothing answered {code}"));
+        }
+        for _ in 0..15 {
+            send().await?;
+        }
+        let before = browser.tracks.lock().unwrap().clone();
+        let deadline = tokio::time::Instant::now() + A_WHILE;
+        loop {
+            send().await?;
+            let now = browser.tracks.lock().unwrap().clone();
+            let grew: Vec<u8> = now
+                .iter()
+                .filter(|(i, n)| **n > before.get(i).copied().unwrap_or(0))
+                .map(|(i, _)| *i)
+                .collect();
+            if grew.len() == 1 && now[&grew[0]] >= before.get(&grew[0]).copied().unwrap_or(0) + 10 {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!("not Carol's track alone: {before:?} then {now:?}"));
+            }
+        }
+        browser.leave(&gw).await?;
+        for c in &calls {
+            c.hangup().await.map_err(|e| e.to_string())?;
+        }
+        Ok::<_, String>(())
+    }
+    .await;
+    if let Err(why) = scenario {
+        let logs = gw.logs().await;
+        let conf = conference.kill().await;
+        panic!("{why}\n--- gateway\n{logs}\n--- conference\n{conf}");
     }
     gw.service.take().unwrap().stop().await;
     conference.stop().await;
