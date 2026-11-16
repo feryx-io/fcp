@@ -322,6 +322,73 @@ mod tests {
         }
     }
 
+    /// What the room writes is what `fcp_core::conference_info` (the
+    /// gateway's reader) takes: whole, then a change, then a leaver.
+    #[test]
+    fn the_roster_written_is_the_roster_read() {
+        use fcp_core::conference_info::{self as info, Applied};
+        let mut ann = member("Ann & Co");
+        ann.host = true;
+        ann.speaking = true;
+        let mut bob = member("Bob");
+        bob.audio = Audio::Muted;
+        bob.spotlight = true;
+        let room = roster(&[("p1", ann), ("p2", bob)]).for_viewer(&[
+            ViewerStream {
+                ssrc: 0x10,
+                asked_for: Some("p1".into()),
+                showing: Some("p1".into()),
+                paused: false,
+            },
+            ViewerStream {
+                ssrc: 0x20,
+                asked_for: Some("p2".into()),
+                showing: Some("p2".into()),
+                paused: true,
+            },
+            ViewerStream {
+                ssrc: 0x30,
+                asked_for: None,
+                showing: Some("p1".into()),
+                paused: false,
+            },
+        ]);
+        let mut read = info::Roster::default();
+        let doc = info::parse(&full(&NAMES, 1, &room)).expect("a roster");
+        assert!(doc.full);
+        assert_eq!(read.apply(doc), Applied::Changed);
+        let members = read.members();
+        assert_eq!(members.len(), 2);
+        let (a, b) = (&members[0], &members[1]);
+        assert_eq!(
+            (a.id.as_str(), a.name.as_str(), a.host),
+            ("p1", "Ann & Co", true)
+        );
+        assert!(a.speaking && !a.paused && !a.spotlight);
+        assert_eq!(a.camera.as_deref(), Some("on"));
+        assert_eq!(b.audio, info::Audio::Muted);
+        assert!(b.paused && b.spotlight);
+        assert_eq!(read.speaker().as_deref(), Some("p1"));
+        let sources = read.sources();
+        assert_eq!(sources.get(&0x10), Some(&("p1".to_string(), false)));
+        assert_eq!(sources.get(&0x20), Some(&("p2".to_string(), false)));
+        assert_eq!(sources.get(&0x30), Some(&("p1".to_string(), true)));
+
+        // Bob leaves: the next document says so, and only that.
+        let mut after = room.clone();
+        after.members.remove("p2");
+        let doc = info::parse(&partial(&NAMES, 2, &room, &after).unwrap()).unwrap();
+        assert!(!doc.full);
+        assert_eq!(read.apply(doc), Applied::Changed);
+        assert_eq!(read.members().len(), 1);
+        assert!(!read.sources().contains_key(&0x20));
+        // A document missed is a gap; an old one is stale.
+        let skipped = info::parse(&partial(&NAMES, 4, &after, &room).unwrap()).unwrap();
+        assert_eq!(read.apply(skipped), Applied::Gap);
+        let old = info::parse(&full(&NAMES, 2, &room)).unwrap();
+        assert_eq!(read.apply(old), Applied::Stale);
+    }
+
     #[test]
     fn the_whole_roster_names_everyone_with_their_media() {
         let mut ann = member("Ann <Lee> & Co");

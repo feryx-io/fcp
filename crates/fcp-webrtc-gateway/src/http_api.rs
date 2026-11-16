@@ -238,6 +238,25 @@ async fn leave_room(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `POST /v1/rooms/{id}/view` — what a room that forwards should send this
+/// browser (`docs/FORWARDING_ROOMS.md` §2.3): the body is the view, sent
+/// on to the room as an `fcp-view` INFO. What was granted shows in the
+/// session's `forwarding` once the room's roster says.
+async fn set_view(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    if !state.sessions.exists(&id, true).await {
+        return Err(SessionError::NotFound(format!("room session '{id}' not found")).into());
+    }
+    match state.sessions.set_view(&id, &body).await? {
+        200..=299 => Ok(StatusCode::NO_CONTENT),
+        400 => Err(SessionError::BadRequest("the room refused the view".into()).into()),
+        code => Err(SessionError::Internal(format!("the room answered the view {code}")).into()),
+    }
+}
+
 /// `POST /v1/{rooms|calls}/{id}/answer` — the browser's answer.
 async fn answer(
     State(state): State<ApiState>,
@@ -391,6 +410,7 @@ pub fn routes(state: ApiState) -> Router {
         .route("/v1/rooms/{id}", get(get_room).delete(leave_room))
         .route("/v1/rooms/{id}/answer", post(answer))
         .route("/v1/rooms/{id}/ice-candidate", post(ice_candidate))
+        .route("/v1/rooms/{id}/view", post(set_view))
         .route("/v1/calls", post(initiate_call).get(list_calls))
         .route("/v1/calls/{id}", get(get_call).delete(hangup_call))
         .route("/v1/calls/{id}/answer", post(answer))

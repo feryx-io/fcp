@@ -81,6 +81,36 @@ Chromium. It runs when:
 - `FCP_TEST_NODE` names a node (else `node` is used);
 - the conference server is built with `video-vpx,video-openh264`.
 
+### Each person on a track of their own
+
+A room whose meeting has `video_mode = "auto"` forwards each person's own
+stream to a subscriber that asks (`docs/FORWARDING_ROOMS.md` §2.7). A join
+asks with `streams`:
+
+```json
+{ "display_name": "Ann", "video": true, "streams": 9, "join_token": "…" }
+```
+
+- The gateway's offer then has nine more video sections after the camera's
+  and the screen's (`a=mid:3` to `a=mid:11`), each send-only: a receive-only
+  transceiver in the browser, a track of its own. At most 25.
+- The gateway joins the room with `Recv-Info: fcp-view`. A room that answers
+  in kind sends each person under an SSRC of their own, and the gateway puts
+  each on a free track. A track is free again once its stream has stopped
+  for three seconds. Nobody needs to renegotiate as people come and go.
+- The gateway follows the room's roster in the call. `GET /v1/rooms/{id}`
+  then carries `forwarding`: the members (id, name, host, audio, camera,
+  speaking, presenting, paused, spotlight), who speaks, and for each track
+  in use its `mid`, whose stream it is (`participant`) and whether it is the
+  speaker's stream that follows whoever speaks.
+- `POST /v1/rooms/{id}/view` (session token) sends the room the page's view,
+  as `docs/FORWARDING_ROOMS.md` §2.3 has it:
+  `{"streams": [{"participant": "p-…", "max_height": 720, "priority": 1}, {"speaker": true, "max_height": 180}], "max_streams": 9}`.
+  204 once the room took it; 400 for a view that means nothing, or a session
+  the room does not forward to.
+- A room that composes, or a join without `streams`, gets the room's one
+  picture on the camera's track, as before.
+
 ## Sharing a screen
 
 Both legs carry the screen as a second video section from the start, so
@@ -364,3 +394,6 @@ old session once the new one is connected.
 - Re-offering the browser to drop an idle video section when the
   conference node declined video.
 - A join token bound to one use; consent freshness in forge-webrtc.
+- The join page's own grid on a forwarding room's tracks (R4c).
+- The roster asked for again after the session moves to another conference
+  node: until then a forwarding session's names are the old node's.

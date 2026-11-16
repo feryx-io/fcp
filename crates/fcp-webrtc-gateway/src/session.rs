@@ -11,6 +11,7 @@
 //!                                          ─► SipLeg ─► run_relay ─► BYE / far-end BYE
 //! ```
 
+use crate::forwarding::{Forwarding, ForwardingSummary};
 use crate::placement::ConferencePlacement;
 use crate::relay::{
     log_relay_end, run_relay, BrowserLeg, RelayEnd, RelayStats, RelayStatsSnapshot, SipAudioLeg,
@@ -34,7 +35,7 @@ use forge_rtp::{
 use forge_webrtc::TurnServer;
 use forge_webrtc::{
     ConnectionState, Direction, NegotiatedVideo, PeerConfig, PeerConnection, PeerEvent,
-    TransportConfig, VideoConfig,
+    TransportConfig, VideoConfig, VideoSender,
 };
 use serde::{Deserialize, Serialize};
 use sip_core::{Headers, SipUri};
@@ -141,9 +142,17 @@ pub enum SessionKind {
         /// Whether the browser was offered a second video section for a
         /// shared screen (§15.6).
         content: bool,
+        /// How many tracks the browser was offered for a forwarding room's
+        /// streams; 0, the room's one picture.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        streams: u8,
         #[serde(skip)]
         join_token: Option<String>,
     },
+}
+
+fn is_zero(n: &u8) -> bool {
+    *n == 0
 }
 
 impl SessionKind {
@@ -278,6 +287,12 @@ pub struct JoinRequest {
     /// then, in which case the meeting must need no PIN.
     #[serde(default)]
     pub join_token: Option<String>,
+    /// Ask a room that forwards for each person's own stream, on this many
+    /// receive-only tracks the page lays out itself
+    /// (`docs/FORWARDING_ROOMS.md` §2.7); none, the room's one picture.
+    /// At most [`forge_webrtc::MAX_STREAMS`]; needs `video`.
+    #[serde(default)]
+    pub streams: Option<u8>,
 }
 
 /// A session's public state.
@@ -306,6 +321,10 @@ pub struct SessionInfo {
     /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub handover: Option<Handover>,
+    /// The room forwards each person's stream to this browser: who is in
+    /// it, and whose stream is on each of the browser's tracks (by mid).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forwarding: Option<ForwardingSummary>,
 }
 
 /// An ICE server a browser should use, as `RTCPeerConnection` takes it.
@@ -370,6 +389,12 @@ pub struct Session {
     connected_at: Option<SystemTime>,
     ended_by: Option<fcp_core::storage::HangupParty>,
     last_sip_call_id: Option<String>,
+    /// The room took `Recv-Info: fcp-view`: it forwards each person's
+    /// stream, mapped onto the browser's tracks here.
+    forwarding: Option<Arc<std::sync::Mutex<Forwarding>>>,
+    /// Woken when the roster missed a document: subscribe again for the
+    /// whole of it.
+    roster_gap: Arc<Notify>,
 }
 
 /// The browser's side of the negotiation, as the SIP offer mirrors it.
@@ -435,6 +460,10 @@ impl Session {
             // Filled in by the manager, which knows whether this node is
             // leaving service and where a browser should go instead.
             handover: None,
+            forwarding: self
+                .forwarding
+                .as_ref()
+                .map(|f| f.lock().unwrap_or_else(|e| e.into_inner()).summary()),
         }
     }
 
@@ -740,11 +769,17 @@ impl SessionManager {
                 .collect()
         };
         let content = req.video && req.content.unwrap_or(true);
+        let streams = if req.video {
+            req.streams.unwrap_or(0).min(forge_webrtc::MAX_STREAMS)
+        } else {
+            0
+        };
         let kind = SessionKind::Room {
             room_number: room_number.to_string(),
             display_name,
             video: req.video,
             content,
+            streams,
             join_token: req.join_token.filter(|t| !t.is_empty()),
         };
         // What this node accepts, before it opens a peer connection and
@@ -752,7 +787,10 @@ impl SessionManager {
         // the browser is placed elsewhere.
         let id = new_session_id();
         self.admit(&id, false).await?;
-        let conn = match self.new_browser_connection(req.video, content).await {
+        let conn = match self
+            .new_browser_connection(req.video, content, streams)
+            .await
+        {
             Ok(conn) => conn,
             Err(e) => {
                 self.release(&id);
@@ -866,7 +904,7 @@ impl SessionManager {
                     ice_ports: None,
                 })
             }
-            None => self.new_browser_connection(false, false).await,
+            None => self.new_browser_connection(false, false, 0).await,
         }
     }
 
@@ -878,6 +916,7 @@ impl SessionManager {
         &self,
         video: bool,
         content: bool,
+        streams: u8,
     ) -> Result<BrowserConnection, SessionError> {
         // The ICE socket comes out of the media port range so a firewall
         // opened for RTP covers it.
@@ -899,6 +938,9 @@ impl SessionManager {
                 // (`docs/FORWARDING_ROOMS.md` §2.7). The join page sizes
                 // the encodings: `h` full, `m` half, `l` a quarter.
                 simulcast: BROWSER_SIMULCAST.iter().map(|r| r.to_string()).collect(),
+                // A forwarding room's people, each on a track of the
+                // browser's own, fixed for the session.
+                streams,
                 ..VideoConfig::default()
             }),
             transport: TransportConfig {
@@ -1020,6 +1062,8 @@ impl SessionManager {
             connected_at: None,
             ended_by: None,
             last_sip_call_id: None,
+            forwarding: None,
+            roster_gap: Arc::new(Notify::new()),
         };
         let info = session.info();
         let session_token = session.session_token.clone();
@@ -1123,6 +1167,23 @@ impl SessionManager {
             return;
         }
 
+        // A forwarding room's tracks: a sender per section the browser
+        // kept, by index, and each section's mid.
+        let (stream_senders, stream_mids): (Vec<Option<(VideoSender, u8)>>, Vec<String>) = {
+            let guard = peer.lock().await;
+            let senders = guard
+                .negotiated_streams()
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let v = v.as_ref()?;
+                    let sender = guard.stream_sender(i as u8).ok()?;
+                    Some((sender, v.payload_type))
+                })
+                .collect();
+            (senders, guard.stream_mids().to_vec())
+        };
+
         // 3. The SIP leg's ports, keys and offer.
         let shape = SipShape {
             audio_codec,
@@ -1220,6 +1281,20 @@ impl SessionManager {
         let dialog = handle.dialog.read().await.clone();
         let sip_call_id = dialog.id().call_id().to_string();
         let answer = String::from_utf8_lossy(final_response.body()).to_string();
+        // The room forwards each person's stream when it answered our
+        // `Recv-Info: fcp-view` in kind, and the browser kept a track.
+        let forwards = stream_senders.iter().any(Option::is_some)
+            && final_response.headers().get_all("Recv-Info").any(|v| {
+                v.split(',')
+                    .any(|p| p.trim().eq_ignore_ascii_case(fcp_core::VIEW_INFO_PACKAGE))
+            });
+        let forwarding = forwards.then(|| {
+            let usable = stream_senders.iter().map(Option::is_some).collect();
+            Arc::new(std::sync::Mutex::new(Forwarding::new(
+                stream_mids.clone(),
+                usable,
+            )))
+        });
 
         // 6. The SIP leg from the answer.
         let plan = match self
@@ -1259,6 +1334,7 @@ impl SessionManager {
             s.srtp = plan.srtp;
             s.video = plan.video.clone();
             s.content = plan.content.clone();
+            s.forwarding = forwarding.clone();
             s.stats.clone()
         };
         self.by_sip_call_id.insert(sip_call_id.clone(), id.clone());
@@ -1286,7 +1362,19 @@ impl SessionManager {
                 _ => None,
             },
             inactivity_timeout: self.cfg.inactivity_timeout,
+            streams: if forwarding.is_some() {
+                stream_senders
+            } else {
+                Vec::new()
+            },
+            forwarding: forwarding.clone(),
         };
+        // Whose stream is whose: the room's roster, in the call.
+        if forwarding.is_some() {
+            let mgr = Arc::clone(&self);
+            let session = Arc::clone(&session);
+            tokio::spawn(async move { mgr.follow_roster(session).await });
+        }
         let (swap_tx, swap_rx) = mpsc::channel(1);
         session.write().await.swap_tx = Some(swap_tx);
         let end = run_relay(browser, plan.leg, stats, stop, swap_rx).await;
@@ -1748,8 +1836,15 @@ impl SessionManager {
                 room_number,
                 display_name,
                 join_token,
+                streams,
                 ..
             } => {
+                // Each person's own stream, where the room forwards.
+                if streams > 0 && video.is_some() {
+                    headers
+                        .push("Recv-Info", fcp_core::VIEW_INFO_PACKAGE)
+                        .map_err(|e| format!("header: {e}"))?;
+                }
                 let codecs: Vec<String> = video
                     .map(|v| vec![v.codec.sdp_name().to_string()])
                     .unwrap_or_default();
@@ -2118,6 +2213,161 @@ impl SessionManager {
         true
     }
 
+    /// Subscribe to the room's roster inside the call, and keep the
+    /// subscription up while the session lasts: its NOTIFYs say whose
+    /// stream is on each of the browser's tracks ([`Self::roster_notice`]).
+    async fn follow_roster(self: Arc<Self>, session: Arc<RwLock<Session>>) {
+        loop {
+            let (dialog, stop) = {
+                let s = session.read().await;
+                if s.is_over() {
+                    return;
+                }
+                (s.dialog.clone(), s.stop.clone())
+            };
+            let Some(mut dialog) = dialog else { return };
+            let id = session.read().await.id.clone();
+            let request = in_dialog_request(
+                &dialog,
+                sip_core::Method::Subscribe,
+                &[
+                    ("Event", "conference".to_string()),
+                    (
+                        "Accept",
+                        fcp_core::conference_info::CONTENT_TYPE.to_string(),
+                    ),
+                    ("Expires", ROSTER_EXPIRES.as_secs().to_string()),
+                ],
+                None,
+            );
+            let next = match request {
+                Ok(request) => match tokio::time::timeout(
+                    SOON,
+                    self.uac
+                        .inner()
+                        .send_in_dialog_non_invite(&mut dialog, request),
+                )
+                .await
+                {
+                    Ok(Ok(r)) if (200..300).contains(&r.start_line().code()) => {
+                        info!(session = %id, "roster subscribed");
+                        ROSTER_EXPIRES / 2
+                    }
+                    Ok(Ok(r)) => {
+                        warn!(session = %id, code = r.start_line().code(), "roster SUBSCRIBE refused; names stay unknown");
+                        return;
+                    }
+                    Ok(Err(e)) => {
+                        info!(session = %id, error = %e, "roster SUBSCRIBE failed; again shortly");
+                        RETRY
+                    }
+                    Err(_) => RETRY,
+                },
+                Err(e) => {
+                    warn!(session = %id, error = %e, "roster SUBSCRIBE not built");
+                    return;
+                }
+            };
+            // The dialog's CSeq moved on.
+            {
+                let mut s = session.write().await;
+                if s.dialog.as_ref().is_some_and(|d| d.id() == dialog.id()) {
+                    s.dialog = Some(dialog);
+                }
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(next) => {}
+                _ = stop.notified() => return,
+                _ = self.roster_gap(&session) => {}
+            }
+        }
+    }
+
+    /// Resolves when the session's roster missed a document and must be
+    /// asked for whole again.
+    async fn roster_gap(&self, session: &Arc<RwLock<Session>>) {
+        let gap = session.read().await.roster_gap.clone();
+        gap.notified().await;
+    }
+
+    /// The room sent a roster NOTIFY in the call `sip_call_id`; false when
+    /// no session has it.
+    pub async fn roster_notice(&self, sip_call_id: &str, body: &[u8]) -> bool {
+        let Some(session) = self.session_by_sip_call_id(sip_call_id) else {
+            return false;
+        };
+        let s = session.read().await;
+        let (Some(f), Some(doc)) = (
+            s.forwarding.as_ref(),
+            fcp_core::conference_info::parse(&String::from_utf8_lossy(body)),
+        ) else {
+            return true;
+        };
+        let applied = f
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .roster_mut()
+            .apply(doc);
+        if applied == fcp_core::conference_info::Applied::Gap {
+            s.roster_gap.notify_one();
+        }
+        true
+    }
+
+    /// Send the room the browser's view (`docs/FORWARDING_ROOMS.md` §2.3):
+    /// an INFO in the `fcp-view` package. The room's answer is returned.
+    pub async fn set_view(&self, id: &str, body: &[u8]) -> Result<u16, SessionError> {
+        let view = fcp_core::video_view::View::parse(body).map_err(SessionError::BadRequest)?;
+        let session = self
+            .sessions
+            .get(id)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| SessionError::NotFound(id.to_string()))?;
+        let mut dialog = {
+            let s = session.read().await;
+            if s.forwarding.is_none() {
+                return Err(SessionError::BadRequest(
+                    "the room does not forward each person's stream to this session".into(),
+                ));
+            }
+            s.dialog
+                .clone()
+                .ok_or_else(|| SessionError::NotFound(id.to_string()))?
+        };
+        let json =
+            serde_json::to_vec(&view).map_err(|e| SessionError::Internal(format!("view: {e}")))?;
+        let request = in_dialog_request(
+            &dialog,
+            sip_core::Method::Info,
+            &[
+                ("Info-Package", fcp_core::VIEW_INFO_PACKAGE.to_string()),
+                ("Content-Disposition", "Info-Package".to_string()),
+                ("Content-Type", fcp_core::VIEW_INFO_TYPE.to_string()),
+            ],
+            Some(json.into()),
+        )
+        .map_err(|e| SessionError::Internal(format!("view INFO: {e}")))?;
+        let response = tokio::time::timeout(
+            SOON,
+            self.uac
+                .inner()
+                .send_in_dialog_non_invite(&mut dialog, request),
+        )
+        .await
+        .map_err(|_| SessionError::Internal("the room did not answer the view".into()))?
+        .map_err(|e| SessionError::Internal(format!("view INFO: {e}")))?;
+        let mut s = session.write().await;
+        if s.dialog.as_ref().is_some_and(|d| d.id() == dialog.id()) {
+            s.dialog = Some(dialog);
+        }
+        Ok(response.start_line().code())
+    }
+
+    fn session_by_sip_call_id(&self, sip_call_id: &str) -> Option<Arc<RwLock<Session>>> {
+        let id = self.by_sip_call_id.get(sip_call_id)?.value().clone();
+        self.sessions.get(&id).map(|e| e.value().clone())
+    }
+
     // ------------------------------------------------------------ queries
 
     /// Every session of one kind.
@@ -2225,6 +2475,61 @@ async fn open_video_section(
     )))
 }
 
+/// How long a roster subscription is asked for; renewed at half.
+const ROSTER_EXPIRES: Duration = Duration::from_secs(600);
+/// A request in the call is answered within this, or taken as lost.
+const SOON: Duration = Duration::from_secs(5);
+/// A roster SUBSCRIBE that failed is tried again after this.
+const RETRY: Duration = Duration::from_secs(5);
+
+/// A request inside `dialog`: its From, To, Call-ID and a Via to be
+/// filled, the given headers and body. The UAC sets the CSeq, Route and
+/// the Via's address.
+fn in_dialog_request(
+    dialog: &sip_dialog::Dialog,
+    method: sip_core::Method,
+    extra: &[(&str, String)],
+    body: Option<bytes::Bytes>,
+) -> Result<sip_core::Request, String> {
+    let id = dialog.id();
+    let mut headers = Headers::new();
+    let mut push = |name: &str, value: String| {
+        headers
+            .push(name, value)
+            .map_err(|e| format!("header {name}: {e}"))
+    };
+    push(
+        "From",
+        format!("<{}>;tag={}", dialog.local_uri().as_str(), id.local_tag()),
+    )?;
+    push(
+        "To",
+        format!("<{}>;tag={}", dialog.remote_uri().as_str(), id.remote_tag()),
+    )?;
+    push("Call-ID", id.call_id().to_string())?;
+    // A placeholder the UAC fills with our address; the branch names the
+    // transaction.
+    push(
+        "Via",
+        format!(
+            "SIP/2.0/UDP 0.0.0.0;branch=z9hG4bK{}",
+            uuid::Uuid::new_v4().simple()
+        ),
+    )?;
+    push("Max-Forwards", "70".to_string())?;
+    for (name, value) in extra {
+        push(name, value.clone())?;
+    }
+    let body = body.unwrap_or_default();
+    push("Content-Length", body.len().to_string())?;
+    sip_core::Request::new(
+        sip_core::RequestLine::new(method, dialog.remote_target().clone()),
+        headers,
+        body,
+    )
+    .map_err(|e| format!("request: {e}"))
+}
+
 /// Point a socket pair at the far end and accept media only from there.
 async fn point_at(socket: &RtpSocketPair, remote: std::net::SocketAddr) {
     socket
@@ -2307,6 +2612,7 @@ mod tests {
             display_name: "Ann".into(),
             video: true,
             content: true,
+            streams: 0,
             join_token: Some("secret".into()),
         };
         let json = serde_json::to_string(&kind).unwrap();

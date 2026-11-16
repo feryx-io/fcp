@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use fcp_media::SrtpOffer;
+use fcp_webrtc_gateway::forwarding::{Forwarding, SectionStream};
 use fcp_webrtc_gateway::relay::{
     run_relay, BrowserLeg, RelayEnd, RelayStats, SipAudioLeg, SipLeg, SipVideoLeg,
 };
@@ -77,8 +78,21 @@ async fn connected_pair() -> (
     mpsc::Receiver<PeerEvent>,
     mpsc::Receiver<PeerEvent>,
 ) {
-    let mut gateway = PeerConnection::with_config(peer_cfg()).await.unwrap();
-    let mut browser = PeerConnection::with_config(peer_cfg()).await.unwrap();
+    connected_pair_with(peer_cfg(), peer_cfg()).await
+}
+
+/// As [`connected_pair`], each side configured.
+async fn connected_pair_with(
+    gateway_cfg: PeerConfig,
+    browser_cfg: PeerConfig,
+) -> (
+    PeerConnection,
+    PeerConnection,
+    mpsc::Receiver<PeerEvent>,
+    mpsc::Receiver<PeerEvent>,
+) {
+    let mut gateway = PeerConnection::with_config(gateway_cfg).await.unwrap();
+    let mut browser = PeerConnection::with_config(browser_cfg).await.unwrap();
     let offer = gateway.create_offer().await.unwrap();
     let (mut gw_cands, gw_events) = pump(gateway.take_events().unwrap());
     browser.set_remote_offer(&offer).await.unwrap();
@@ -268,6 +282,8 @@ async fn relay_case(srtp: bool) {
         video: Some((video_sender, 96)),
         content: Some((content_sender, 96)),
         inactivity_timeout: Duration::from_secs(30),
+        streams: Vec::new(),
+        forwarding: None,
     };
     let stats = Arc::new(RelayStats::default());
     let stop = Arc::new(Notify::new());
@@ -601,6 +617,8 @@ async fn relay_ends_when_the_browser_closes() {
         video: None,
         content: None,
         inactivity_timeout: Duration::from_secs(2),
+        streams: Vec::new(),
+        forwarding: None,
     };
     let stop = Arc::new(Notify::new());
     let (_swap_tx, swap_rx) = mpsc::channel(1);
@@ -659,6 +677,8 @@ async fn the_sip_leg_can_be_swapped_under_the_browser() {
         video: None,
         content: None,
         inactivity_timeout: Duration::from_secs(30),
+        streams: Vec::new(),
+        forwarding: None,
     };
     let stats = Arc::new(RelayStats::default());
     let stop = Arc::new(Notify::new());
@@ -732,4 +752,164 @@ async fn the_sip_leg_can_be_swapped_under_the_browser() {
         .unwrap()
         .unwrap();
     assert_eq!(end, RelayEnd::Stopped);
+}
+
+/// A forwarding room: each person's stream, under the room's own SSRC,
+/// goes out on a section of its own the browser took; a stream with no
+/// section left is dropped; the browser's feedback about a section reaches
+/// the room's stream on it, and its REMB the room.
+#[tokio::test]
+async fn a_forwarding_room_s_streams_ride_a_section_each() {
+    init_tracing();
+    let with_streams = |streams| {
+        let mut cfg = peer_cfg();
+        if let Some(v) = cfg.video.as_mut() {
+            v.streams = streams;
+        }
+        cfg
+    };
+    // The gateway offers three; the browser takes two.
+    let (gateway, browser, gw_events, mut br_events) =
+        connected_pair_with(with_streams(3), with_streams(2)).await;
+    let (_, browser_audio_pt) = gateway.negotiated_codec();
+    let senders: Vec<_> = (0..3u8)
+        .map(|i| {
+            let v = gateway.negotiated_streams()[usize::from(i)].as_ref()?;
+            Some((gateway.stream_sender(i).ok()?, v.payload_type))
+        })
+        .collect();
+    assert!(senders[2].is_none(), "the third section was rejected");
+    let forwarding = Arc::new(std::sync::Mutex::new(Forwarding::new(
+        gateway.stream_mids().to_vec(),
+        senders.iter().map(Option::is_some).collect(),
+    )));
+    let ours: Vec<u32> = gateway.stream_ssrcs().to_vec();
+
+    let (relay_audio, _far_audio) = socket_pair(0xB8).await;
+    let (relay_video, far_video) = socket_pair(0xA0).await;
+    let sip = SipLeg {
+        audio: SipAudioLeg {
+            socket: relay_audio,
+            srtp: None,
+            payload_type: 9,
+            telephone_event_pt: None,
+        },
+        video: Some(SipVideoLeg {
+            socket: relay_video,
+            srtp: None,
+            payload_type: 121,
+        }),
+        content: None,
+    };
+    let browser_leg = BrowserLeg {
+        events: gw_events,
+        audio: gateway.sender().unwrap(),
+        audio_payload_type: browser_audio_pt,
+        telephone_event_pt: None,
+        video: Some((gateway.video_sender().unwrap(), 96)),
+        content: None,
+        inactivity_timeout: Duration::from_secs(30),
+        streams: senders,
+        forwarding: Some(forwarding.clone()),
+    };
+    let stats = Arc::new(RelayStats::default());
+    let stop = Arc::new(Notify::new());
+    let (_swap_tx, swap_rx) = mpsc::channel(1);
+    let relay = tokio::spawn(run_relay(
+        browser_leg,
+        sip,
+        stats.clone(),
+        stop.clone(),
+        swap_rx,
+    ));
+
+    // Ann on 0xA1, Bob on 0xB2, Cy on 0xC3: the first two get a section
+    // each, Cy none.
+    let room = [0xA1u32, 0xB2, 0xC3];
+    for (i, ssrc) in room.iter().enumerate() {
+        let pkt = RtpPacket::build(
+            121,
+            100 + i as u16,
+            0,
+            *ssrc,
+            Bytes::from(vec![i as u8; 50]),
+            true,
+        );
+        send_rtp(&far_video, &None, &pkt).await;
+    }
+    let mut got = Vec::new();
+    while got.len() < 2 {
+        let ev = next_event(&mut br_events, |e| matches!(e, PeerEvent::StreamRtp(..))).await;
+        if let PeerEvent::StreamRtp(i, p) = ev {
+            got.push((
+                i,
+                p.header.ssrc,
+                p.header.sequence_number,
+                p.header.payload_type(),
+            ));
+        }
+    }
+    got.sort();
+    assert_eq!(got, [(0, ours[0], 100, 96), (1, ours[1], 101, 96)]);
+    let mids = gateway.stream_mids().to_vec();
+    let summary = forwarding.lock().unwrap().summary();
+    assert_eq!(
+        summary.streams,
+        [
+            SectionStream {
+                mid: mids[0].clone(),
+                participant: None,
+                speaker: false
+            },
+            SectionStream {
+                mid: mids[1].clone(),
+                participant: None,
+                speaker: false
+            },
+        ]
+    );
+
+    // The browser asks for a keyframe of what it shows on its second
+    // track: the room hears it about Bob's stream. And its REMB goes too.
+    browser
+        .send_rtcp(&[
+            RtcpPacket::PayloadFeedback(PsFeedback::pli(browser.video_ssrc(), ours[1])),
+            RtcpPacket::PayloadFeedback(PsFeedback {
+                sender_ssrc: browser.video_ssrc(),
+                media_ssrc: 0,
+                kind: PayloadFeedback::Remb {
+                    bitrate_bps: 1_200_000,
+                    ssrcs: vec![ours[0], ours[1]],
+                },
+            }),
+        ])
+        .await
+        .unwrap();
+    let mut pli = None;
+    let mut remb = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while pli.is_none() || remb.is_none() {
+        let (raw, _) = tokio::time::timeout_at(deadline, far_video.recv_rtcp())
+            .await
+            .expect("feedback on the far end")
+            .unwrap();
+        for p in RtcpPacket::parse_compound(&raw) {
+            if let RtcpPacket::PayloadFeedback(fb) = p {
+                match fb.kind {
+                    PayloadFeedback::Pli => pli = Some(fb.media_ssrc),
+                    PayloadFeedback::Remb { bitrate_bps, .. } => remb = Some(bitrate_bps),
+                    _ => {}
+                }
+            }
+        }
+    }
+    assert_eq!(pli, Some(0xB2));
+    assert_eq!(remb, Some(1_200_000));
+    let snap = stats.snapshot();
+    assert_eq!(snap.streams_to_browser, 2);
+    assert_eq!(snap.video_to_browser, 0, "nothing on the camera's track");
+    assert!(snap.dropped >= 1, "Cy had no section");
+
+    stop.notify_one();
+    assert_eq!(relay.await.unwrap(), RelayEnd::Stopped);
 }
