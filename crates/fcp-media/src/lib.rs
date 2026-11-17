@@ -80,11 +80,11 @@ pub use sdp::{
     parse_sdp_codecs, parse_video_offer, parse_video_sdes_crypto, parse_video_sections,
     remote_audio_endpoint, remote_content_endpoint, remote_video_endpoint, rewrite_for_anchoring,
     rewrite_sdp_for_anchoring, sdes_suite_to_profile, srtp_context_of, video_codec_from_forge,
-    video_codec_to_forge, with_sdes, with_video_direction, with_video_sdes, AnchorKeys,
-    AnchorPorts, Answer, AnswerOptions, AudioOfferSection, BfcpAnswer, BfcpOffer, BfcpTransport,
-    NegotiatedBfcp, NegotiatedSections, NegotiatedVideo, OfferOptions, SdesCryptoLine,
-    SdpCodecInfo, SrtpOffer, SrtpSdpContext, VideoAnswer, VideoOffer, VideoOfferCodec,
-    VideoOfferSection, VideoSections, VideoStream, CONTENT_LABEL,
+    video_codec_to_forge, with_sdes, with_video_direction, with_video_sdes,
+    with_video_sending_only, AnchorKeys, AnchorPorts, Answer, AnswerOptions, AudioOfferSection,
+    BfcpAnswer, BfcpOffer, BfcpTransport, NegotiatedBfcp, NegotiatedSections, NegotiatedVideo,
+    OfferOptions, SdesCryptoLine, SdpCodecInfo, SrtpOffer, SrtpSdpContext, VideoAnswer, VideoOffer,
+    VideoOfferCodec, VideoOfferSection, VideoSections, VideoStream, CONTENT_LABEL,
 };
 pub use session::{
     DtmfMode, MediaSession, MediaSessionConfig, MediaSessionState, MediaSessionStats,

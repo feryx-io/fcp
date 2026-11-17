@@ -23,7 +23,8 @@ use forge_conference::video::forward::{
     DEFAULT_MAX_STREAMS, DEFAULT_OTHER_HEIGHT, DEFAULT_SPEAKER_HEIGHT,
 };
 use forge_conference::video::{
-    default_kbps, ContentGate, VideoBackend, VideoRoom, VideoRoomSettings, VideoViewerInfo,
+    default_kbps, ContentGate, OutputScope, VideoBackend, VideoRoom, VideoRoomSettings,
+    VideoViewerInfo, View,
 };
 use forge_conference::ConferenceRoom;
 use forge_core::VideoCodec;
@@ -965,6 +966,62 @@ impl VideoCapacity {
         cost
     }
 
+    /// What one more of a webinar's audience would add
+    /// (`docs/WEBINARS.md` §2.3): nothing decoded, as they send nothing,
+    /// and only egress once the room composes for the audience — they
+    /// share one composite of the whole room. The first of them pays for
+    /// that composite and its encode. A forwarding attendee is sent the
+    /// default view of the stage's cameras. Nobody is sent their camera.
+    pub fn audience_join_cost(
+        &self,
+        settings: &VideoRoomSettings,
+        codecs: &[VideoCodec],
+        room_video: Option<&VideoRoom>,
+        forwarding: bool,
+    ) -> Cost {
+        let mut cost = Cost::zero();
+        if forwarding {
+            let cameras = room_video.map_or(0, |video| {
+                video
+                    .participants()
+                    .iter()
+                    .filter(|p| p.source.is_some())
+                    .count() as u32
+            });
+            cost.add_egress(default_view_kbps(cameras));
+            return cost;
+        }
+        cost.add_egress(default_kbps(settings.resolution));
+        let shared = room_video.is_some_and(|video| {
+            video
+                .status()
+                .outputs
+                .iter()
+                .any(|o| o.scope == OutputScope::All && o.view == View::Composite)
+        });
+        if !shared {
+            let fps = settings.fps.max(1);
+            let dearest = codecs
+                .iter()
+                .map(|&c| {
+                    let enc = self.encoder_of(c);
+                    (enc, enc.encode_units(c, settings.resolution, fps))
+                })
+                .max_by_key(|(_, u)| *u);
+            if let Some((enc, u)) = dearest {
+                cost.add(&enc.device, Engine::Encode, u);
+            }
+            let room = self.room();
+            let tiles = room_video.map_or(1, |v| v.status().sources.max(1) as u32);
+            cost.add(
+                &room.device,
+                Engine::Compose,
+                room.compose_units(tiles as usize, settings.resolution, fps),
+            );
+        }
+        cost
+    }
+
     /// Admit a join costing `cost` if it fits on every device it
     /// touches, holding the units until the next recompute sees the
     /// participant in a room. `false` refuses, and holds nothing.
@@ -1665,6 +1722,68 @@ mod tests {
         // none of which has a frame to carry yet) and drops the hold.
         let committed = cap.recompute(vec![Arc::clone(&room)]);
         assert_eq!(cap.egress_left_kbps(), 3000 - committed.egress_kbps());
+        room.disable_video();
+    }
+
+    #[tokio::test]
+    async fn an_attendee_is_priced_at_what_they_watch() {
+        let room = Arc::new(
+            ConferenceRoom::new(
+                "3002",
+                AudioFormat::pcm_mono(),
+                160,
+                forge_mixer::MixerOptions::default(),
+            )
+            .unwrap(),
+        );
+        room.add_participant("alice", true).unwrap();
+        room.add_participant("bob", false).unwrap();
+        room.add_listener("x").unwrap();
+        let res = Resolution::new(640, 360);
+        let settings = VideoRoomSettings {
+            resolution: res,
+            fps: 15,
+            exclude_self: true,
+            ..VideoRoomSettings::default()
+        };
+        let video = room.enable_video(settings.clone(), &VideoBackend::raw());
+        let cap = VideoCapacity::host(vec![VideoCodec::VP8], CostTable::phase0(), 4, 1.0);
+        video.add_source("alice", VideoCodec::VP8, "").unwrap();
+        video.add_source("bob", VideoCodec::VP8, "").unwrap();
+        let vp8 = [VideoCodec::VP8];
+
+        // The first attendee watching starts the audience's composite.
+        let first = cap.audience_join_cost(&settings, &vp8, Some(&video), false);
+        assert_eq!(first.on_engine(&MediaDevice::Host, Engine::Decode), 0);
+        assert!(first.on_engine(&MediaDevice::Host, Engine::Encode) > 0);
+        assert!(first.on_engine(&MediaDevice::Host, Engine::Compose) > 0);
+        assert_eq!(first.egress_kbps(), default_kbps(res));
+        let _x = video
+            .subscribe(
+                "x",
+                SubscribeRequest {
+                    codec: VideoCodec::VP8,
+                    profile: String::new(),
+                    payload_type: 97,
+                    resolution: None,
+                    fps: None,
+                    max_kbps: None,
+                    scope: None,
+                    view: None,
+                },
+            )
+            .unwrap();
+        // Every one after shares it: their picture's rate out, nothing more.
+        let next = cap.audience_join_cost(&settings, &vp8, Some(&video), false);
+        assert_eq!(next.total(), 0, "{next}");
+        assert_eq!(next.egress_kbps(), default_kbps(res));
+        // A stage member costs a decode, and sends to the room.
+        let stage = cap.join_cost(&settings, &vp8, Some(&video), false);
+        assert!(stage.on_engine(&MediaDevice::Host, Engine::Decode) > 0);
+        // A forwarding attendee: the default view of the two cameras.
+        let fwd = cap.audience_join_cost(&settings, &vp8, Some(&video), true);
+        assert_eq!(fwd.total(), 0);
+        assert_eq!(fwd.egress_kbps(), 1200 + 2 * 200);
         room.disable_video();
     }
 

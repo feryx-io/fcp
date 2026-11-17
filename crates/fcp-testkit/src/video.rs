@@ -116,6 +116,8 @@ pub struct VideoLeg {
     /// The next transport-cc number this phone sends with.
     tcc_seq: AtomicU64,
     received: Arc<AtomicU64>,
+    /// Every video packet received, and their bytes.
+    any: Arc<(AtomicU64, AtomicU64)>,
     plis: Arc<AtomicU64>,
     seq: AtomicU64,
     tasks: Vec<JoinHandle<()>>,
@@ -146,6 +148,7 @@ impl VideoLeg {
             _ => None,
         };
         let received = Arc::new(AtomicU64::new(0));
+        let any = Arc::new((AtomicU64::new(0), AtomicU64::new(0)));
         let plis = Arc::new(AtomicU64::new(0));
         let by_ssrc = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let layer_by_ssrc = Arc::new(Mutex::new(std::collections::HashMap::new()));
@@ -160,6 +163,7 @@ impl VideoLeg {
                     Reader {
                         keys: Arc::clone(&keys),
                         received: Arc::clone(&received),
+                        any: Arc::clone(&any),
                         plis: Arc::clone(&plis),
                         by_ssrc: Arc::clone(&by_ssrc),
                         layer_by_ssrc: Arc::clone(&layer_by_ssrc),
@@ -190,6 +194,7 @@ impl VideoLeg {
             cc_feedback,
             tcc_seq: AtomicU64::new(0),
             received,
+            any,
             plis,
             seq: AtomicU64::new(0),
             tasks,
@@ -549,6 +554,15 @@ impl VideoLeg {
         self.received.load(Ordering::Relaxed)
     }
 
+    /// Every video packet that arrived, and their bytes on the wire: a
+    /// room's composite as well as the phones' own frames.
+    pub fn received_any(&self) -> (u64, u64) {
+        (
+            self.any.0.load(Ordering::Relaxed),
+            self.any.1.load(Ordering::Relaxed),
+        )
+    }
+
     /// Wait until at least `n` video packets have arrived.
     pub async fn received_at_least(&self, n: u64, within: Duration) -> bool {
         let deadline = tokio::time::Instant::now() + within;
@@ -592,6 +606,8 @@ impl Drop for VideoLeg {
 struct Reader {
     keys: Arc<Mutex<Keys>>,
     received: Arc<AtomicU64>,
+    /// Every video RTP packet and its bytes, a composite's included.
+    any: Arc<(AtomicU64, AtomicU64)>,
     plis: Arc<AtomicU64>,
     by_ssrc: Arc<Mutex<std::collections::HashMap<u32, u64>>>,
     layer_by_ssrc: Arc<Mutex<std::collections::HashMap<u32, String>>>,
@@ -710,6 +726,8 @@ async fn read(socket: Arc<UdpSocket>, r: Reader) {
             if !r.transport_cc(&plain).await {
                 continue;
             }
+            r.any.0.fetch_add(1, Ordering::Relaxed);
+            r.any.1.fetch_add(n as u64, Ordering::Relaxed);
             // After the header: the payload as sent, behind its codec's
             // first bytes when it was sent as frames.
             let head = &plain[12..plain.len().min(12 + 48)];

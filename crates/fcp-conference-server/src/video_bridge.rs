@@ -276,6 +276,8 @@ pub fn participant_video_json(
             }
         }
         json["speaking"] = serde_json::json!(info.speaking);
+        // A webinar's attendee: watches, never drawn or forwarded.
+        json["audience"] = serde_json::json!(info.audience);
         if let Some(cleg) = content_leg {
             let mut c = leg_json(cleg, info.content_state.name());
             if let Some(src) = &info.content {
@@ -335,6 +337,8 @@ pub fn room_video_json(room: &ConferenceRoom) -> serde_json::Value {
         // source says where it actually runs (§15.7).
         "device": st.device.to_string(),
         "sources": st.sources,
+        // A webinar's audience watching, drawn by nobody (`docs/WEBINARS.md` §2.3).
+        "audience": video.audience_count(),
         "encoders": st.encoders,
         "ticks": st.ticks,
         "overruns": st.overruns,
@@ -822,23 +826,30 @@ pub fn attach_video(
         rids: layers.rids.iter().map(|r| r.id.to_string()).collect(),
         rid_extension: layers.rid_extension,
     });
-    if let Err(e) = video.add_source_layered(
-        participant_id,
-        StreamKind::Camera,
-        leg.negotiated.codec,
-        &profile,
-        simulcast.as_ref(),
-    ) {
-        warn!(participant = %participant_id, error = %e, "could not add video source");
-        return None;
+    // A webinar's attendee watches and is not watched
+    // (`docs/WEBINARS.md` §2.3): no camera source, so whatever they send
+    // is dropped undecoded, and the shared composite or the stage's
+    // streams back.
+    let audience = video.is_audience(participant_id);
+    if !audience {
+        if let Err(e) = video.add_source_layered(
+            participant_id,
+            StreamKind::Camera,
+            leg.negotiated.codec,
+            &profile,
+            simulcast.as_ref(),
+        ) {
+            warn!(participant = %participant_id, error = %e, "could not add video source");
+            return None;
+        }
+        // Feedback for what the caller sends, when their section kept
+        // transport-cc: their own uplink's estimate.
+        video.set_source_transport_cc(
+            participant_id,
+            StreamKind::Camera,
+            leg.negotiated.transport_cc,
+        );
     }
-    // Feedback for what the caller sends, when their section kept
-    // transport-cc: their own uplink's estimate.
-    video.set_source_transport_cc(
-        participant_id,
-        StreamKind::Camera,
-        leg.negotiated.transport_cc,
-    );
     // A caller with a content section of their own — attached first, so
     // it is known here — gets people on this section and the slides on
     // the other; a caller with one section gets the composite, which
@@ -946,22 +957,28 @@ pub fn attach_content(
         spawn_event_pump(&video, sink);
     }
     let profile = leg.negotiated.fmtp.clone().unwrap_or_default();
-    if let Err(e) = video.add_source_kind(
-        participant_id,
-        StreamKind::Content,
-        leg.negotiated.codec,
-        &profile,
-    ) {
-        warn!(participant = %participant_id, error = %e, "could not add content source");
-        return None;
-    }
-    video.set_source_transport_cc(
-        participant_id,
-        StreamKind::Content,
-        leg.negotiated.transport_cc,
-    );
-    if !may_share {
+    // The audience sees the slides and never shows its own
+    // (`docs/WEBINARS.md` §2.1).
+    if video.is_audience(participant_id) {
         video.set_participant_content_enabled(participant_id, false);
+    } else {
+        if let Err(e) = video.add_source_kind(
+            participant_id,
+            StreamKind::Content,
+            leg.negotiated.codec,
+            &profile,
+        ) {
+            warn!(participant = %participant_id, error = %e, "could not add content source");
+            return None;
+        }
+        video.set_source_transport_cc(
+            participant_id,
+            StreamKind::Content,
+            leg.negotiated.transport_cc,
+        );
+        if !may_share {
+            video.set_participant_content_enabled(participant_id, false);
+        }
     }
     let sub = match video.subscribe_kind(
         participant_id,

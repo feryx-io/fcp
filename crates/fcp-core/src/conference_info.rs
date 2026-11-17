@@ -64,6 +64,10 @@ pub struct RosterDoc {
     pub version: u32,
     /// Each user listed: in full, or `None` when they left.
     pub users: Vec<(String, Option<(Member, Sources)>)>,
+    /// A webinar's audience, counted rather than listed
+    /// (`docs/WEBINARS.md` §2.4): `fcp:audience` in the conference state,
+    /// when the document carries it.
+    pub audience: Option<usize>,
 }
 
 /// What applying a document did.
@@ -84,6 +88,7 @@ pub struct Roster {
     sources: BTreeMap<String, Sources>,
     version: Option<u32>,
     speaker: Option<String>,
+    audience: usize,
 }
 
 impl Roster {
@@ -97,10 +102,14 @@ impl Roster {
             (true, _) => {
                 self.members.clear();
                 self.sources.clear();
+                self.audience = 0;
             }
             (false, _) => {}
         }
         self.version = Some(doc.version);
+        if let Some(n) = doc.audience {
+            self.audience = n;
+        }
         for (id, member) in doc.users {
             match member {
                 Some((m, src)) => {
@@ -139,6 +148,11 @@ impl Roster {
     /// Everyone, by id.
     pub fn members(&self) -> Vec<Member> {
         self.members.values().cloned().collect()
+    }
+
+    /// How many of a webinar's audience are in the room, never listed.
+    pub fn audience(&self) -> usize {
+        self.audience
     }
 
     /// Who speaks, or last spoke, by id.
@@ -260,6 +274,7 @@ pub fn parse(xml: &str) -> Option<RosterDoc> {
                             full: attr("state").as_deref() != Some("partial"),
                             version: attr("version")?.trim().parse().ok()?,
                             users: Vec::new(),
+                            audience: None,
                         });
                     }
                     "user" if path.last().map(String::as_str) == Some("users") => {
@@ -324,6 +339,12 @@ fn end(
 ) {
     let parent = path.last().map(String::as_str);
     let value = text.trim();
+    if (name, parent) == ("audience", Some("conference-state")) {
+        if let Some(d) = doc.as_mut() {
+            d.audience = value.parse().ok();
+        }
+        return;
+    }
     let Some(u) = user.as_mut() else {
         return;
     };
