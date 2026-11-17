@@ -2075,6 +2075,8 @@ async fn meetings_round_trip_video_settings() {
         vec![fcp_core::VideoCodec::H264, fcp_core::VideoCodec::Vp8]
     );
     assert_eq!(back.video_mode, "mix");
+    assert_eq!(back.kind, "meeting");
+    assert!(back.panelist_pin.is_none() && back.panelists.is_empty());
 
     // Non-default values survive the upsert and every read path.
     let mut m = meeting(a.id, "2001", "2222");
@@ -2085,6 +2087,9 @@ async fn meetings_round_trip_video_settings() {
     m.video_fps = 30;
     m.video_exclude_self = true;
     m.video_mode = "auto".to_string();
+    m.kind = "webinar".to_string();
+    m.panelist_pin = Some("5555".to_string());
+    m.panelists = vec!["user-1".to_string(), "user-2".to_string()];
     m.video_codecs = vec![
         fcp_core::VideoCodec::Av1,
         fcp_core::VideoCodec::Vp9,
@@ -2104,6 +2109,9 @@ async fn meetings_round_trip_video_settings() {
         assert_eq!(back.video_fps, 24);
         assert!(back.video_exclude_self);
         assert_eq!(back.video_mode, "auto");
+        assert_eq!(back.kind, "webinar");
+        assert_eq!(back.panelist_pin.as_deref(), Some("5555"));
+        assert_eq!(back.panelists, vec!["user-1", "user-2"]);
         assert_eq!(
             back.video_codecs,
             vec![
@@ -2205,21 +2213,26 @@ async fn encryption_seals_secret_columns_and_reads_them_back() {
         Some("trunk-pass")
     );
 
-    // Conference PINs.
-    let m = meeting(a.id, "1000", "1234");
+    // Conference PINs, a webinar's panelist PIN among them.
+    let mut m = meeting(a.id, "1000", "1234");
+    m.kind = "webinar".to_string();
+    m.panelist_pin = Some("5555".to_string());
     let meeting_id = m.id;
     s.put_meeting(m).await.unwrap();
     let back = s.get_meeting(&meeting_id).await.unwrap().unwrap();
     assert_eq!(back.guest_pin.as_deref(), Some("1234"));
     assert_eq!(back.host_pin.as_deref(), Some("12349"));
-    let raw = db
-        .raw(
-            "SELECT guest_pin FROM conference_meetings WHERE id = $1",
-            &meeting_id.to_string(),
-        )
-        .await
-        .unwrap();
-    assert!(raw.starts_with("enc:v1:"));
+    assert_eq!(back.panelist_pin.as_deref(), Some("5555"));
+    for column in ["guest_pin", "panelist_pin"] {
+        let raw = db
+            .raw(
+                &format!("SELECT {column} FROM conference_meetings WHERE id = $1"),
+                &meeting_id.to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(raw.starts_with("enc:v1:"), "{column} sealed at rest");
+    }
 
     // Webhook secret inside JSONB.
     let w = webhook(a.id, "whsec_123");

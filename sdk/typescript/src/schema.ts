@@ -7705,6 +7705,15 @@ export interface components {
             video_content_layout?: string;
             /** @description `mix` (the default) or `auto`. */
             video_mode?: string;
+            /** @description `meeting` (the default) or `webinar`. */
+            kind?: string;
+            /** @description A webinar's PIN for panelists; it must differ from the others. */
+            panelist_pin?: string | null;
+            /**
+             * @description A webinar's panelists: users of the tenant, by username or id
+             *     (kept by id).
+             */
+            panelists?: string[];
         };
         CreateNetworkRequest: {
             /** @description A range (`10.1.2.0/24`) or a single address. */
@@ -8846,7 +8855,7 @@ export interface components {
          * @description The role a token admits its holder in.
          * @enum {string}
          */
-        JoinRole: "guest" | "host";
+        JoinRole: "guest" | "host" | "panelist" | "attendee";
         /** @description A minted token. */
         JoinTokenResponse: {
             token: string;
@@ -9192,6 +9201,12 @@ export interface components {
              *     that asks for each person's own stream gets them instead).
              */
             video_mode: string;
+            /** @description `meeting` or `webinar` (`docs/WEBINARS.md` §2.1). */
+            kind: string;
+            /** @description A webinar's PIN for panelists. */
+            panelist_pin?: string | null;
+            /** @description A webinar's panelists, users by id. */
+            panelists: string[];
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -9225,7 +9240,7 @@ export interface components {
              *     "guest"/"host" when absent).
              */
             display_name?: string | null;
-            /** @description Guest (default) or host. */
+            /** @description Guest (default), host, or — for a webinar — panelist or attendee. */
             role?: components["schemas"]["JoinRole"];
             /**
              * Format: int64
@@ -10647,6 +10662,12 @@ export interface components {
                  *     that asks for each person's own stream gets them instead).
                  */
                 video_mode: string;
+                /** @description `meeting` or `webinar` (`docs/WEBINARS.md` §2.1). */
+                kind: string;
+                /** @description A webinar's PIN for panelists. */
+                panelist_pin?: string | null;
+                /** @description A webinar's panelists, users by id. */
+                panelists: string[];
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -14305,6 +14326,9 @@ export interface components {
             video_content_share?: string | null;
             video_content_layout?: string | null;
             video_mode?: string | null;
+            kind?: string | null;
+            panelist_pin?: string | null;
+            panelists?: string[] | null;
         };
         /** @description Update message request. */
         UpdateMessageRequest: {
@@ -14325,6 +14349,11 @@ export interface components {
             auto_record?: boolean | null;
             default_locked?: boolean | null;
             welcome_tts?: string | null;
+            /** @description `meeting` or `webinar`. */
+            kind?: string | null;
+            panelist_pin?: string | null;
+            /** @description A webinar's panelists, users of the tenant by username or id. */
+            panelists?: string[] | null;
         };
         /** @description What an assistant changes of their own part in an executive's handling. */
         UpdateMyExecutive: {

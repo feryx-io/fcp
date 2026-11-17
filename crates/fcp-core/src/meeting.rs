@@ -54,6 +54,18 @@ pub fn default_video_mode() -> String {
     "mix".to_string()
 }
 
+/// What a meeting is (`kind`, `docs/WEBINARS.md` §2.1): `meeting`, where
+/// everyone may speak, or `webinar`, a stage of hosts and panelists heard
+/// by an audience of attendees who are not.
+pub const MEETING_KINDS: [&str; 2] = ["meeting", "webinar"];
+
+pub fn default_meeting_kind() -> String {
+    "meeting".to_string()
+}
+
+/// The most panelists a webinar may name.
+pub const MAX_PANELISTS: usize = 100;
+
 /// Who may share a screen (`video_content_share`, §15.6): nobody, hosts
 /// only, or anyone.
 pub const VIDEO_CONTENT_SHARE_MODES: [&str; 3] = ["off", "hosts", "anyone"];
@@ -163,6 +175,20 @@ pub struct Meeting {
 
     /// PIN that grants host/moderator privileges (None = no host PIN)
     pub host_pin: Option<String>,
+
+    /// `meeting` (the default) or `webinar` (`docs/WEBINARS.md` §2.1).
+    #[serde(default = "default_meeting_kind")]
+    pub kind: String,
+
+    /// A webinar's PIN for panelists: heard and seen on the stage, with
+    /// none of a host's controls. Ignored in a meeting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panelist_pin: Option<String>,
+
+    /// Users (by id) who are a webinar's panelists when they join with a
+    /// token they mint for themselves. Ignored in a meeting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub panelists: Vec<String>,
 
     /// Whether guests must enter a PIN to join
     pub require_guest_pin: bool,
@@ -296,6 +322,40 @@ pub struct Meeting {
 }
 
 impl Meeting {
+    /// Whether this is a webinar: a stage heard by an audience.
+    pub fn is_webinar(&self) -> bool {
+        self.kind == "webinar"
+    }
+
+    /// Validate the kind, the panelist PIN and the panelists: the kind is
+    /// known, the three PINs differ (one PIN, one role), and the
+    /// panelists are distinct and at most [`MAX_PANELISTS`].
+    pub fn validate_roles(&self) -> Result<(), String> {
+        if !MEETING_KINDS.contains(&self.kind.as_str()) {
+            return Err(format!("kind must be one of {}", MEETING_KINDS.join(", ")));
+        }
+        if let Some(pin) = self.panelist_pin.as_deref() {
+            if pin.is_empty() || pin.len() > 16 || !pin.bytes().all(|b| b.is_ascii_digit()) {
+                return Err("panelist_pin must be 1 to 16 digits".to_string());
+            }
+            if self.host_pin.as_deref() == Some(pin) || self.guest_pin.as_deref() == Some(pin) {
+                return Err("panelist_pin must differ from host_pin and guest_pin".to_string());
+            }
+        }
+        if self.panelists.len() > MAX_PANELISTS {
+            return Err(format!("panelists may name at most {MAX_PANELISTS} users"));
+        }
+        for (i, p) in self.panelists.iter().enumerate() {
+            if p.trim().is_empty() {
+                return Err("panelists must name users by id".to_string());
+            }
+            if self.panelists[..i].contains(p) {
+                return Err(format!("panelists names {p} more than once"));
+            }
+        }
+        Ok(())
+    }
+
     /// Validate this meeting's video settings; see [`validate_video_settings`].
     pub fn validate_video_settings(&self) -> Result<(), String> {
         if !VIDEO_MODES.contains(&self.video_mode.as_str()) {
@@ -359,6 +419,9 @@ mod tests {
             video_content_share: default_video_content_share(),
             video_content_layout: default_video_content_layout(),
             video_mode: default_video_mode(),
+            kind: default_meeting_kind(),
+            panelist_pin: None,
+            panelists: Vec::new(),
             video_codecs: vec![VideoCodec::Vp8, VideoCodec::H264, VideoCodec::Av1],
             created_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
             updated_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
@@ -429,6 +492,68 @@ mod tests {
             .validate_video_settings()
             .unwrap_err()
             .contains("video_mode"));
+    }
+
+    #[test]
+    fn a_webinar_s_roles_are_checked() {
+        let json = serde_json::json!({
+            "id": MeetingId::new(), "tenant_id": TenantId::new(),
+            "room_number": "8003", "name": "Town hall",
+            "guest_pin": "1111", "host_pin": "9999", "require_guest_pin": false,
+            "max_participants": 0, "wait_for_moderator": false, "enabled": true,
+            "auto_record": false, "default_locked": false, "permanent": false,
+            "created_at": { "secs_since_epoch": 1700000000, "nanos_since_epoch": 0 },
+            "updated_at": { "secs_since_epoch": 1700000000, "nanos_since_epoch": 0 },
+        });
+        let mut m: Meeting = serde_json::from_value(json).unwrap();
+        assert_eq!(m.kind, "meeting", "a meeting unless it says otherwise");
+        assert!(!m.is_webinar());
+        m.validate_roles().unwrap();
+
+        m.kind = "webinar".into();
+        m.panelist_pin = Some("5555".into());
+        m.panelists = vec!["u-1".into(), "u-2".into()];
+        m.validate_roles().unwrap();
+        assert!(m.is_webinar());
+        let back: Meeting = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back.panelists, m.panelists);
+        assert_eq!(back.panelist_pin.as_deref(), Some("5555"));
+
+        for (field, bad) in [
+            ("kind", {
+                let mut b = m.clone();
+                b.kind = "townhall".into();
+                b
+            }),
+            ("differ", {
+                let mut b = m.clone();
+                b.panelist_pin = Some("9999".into());
+                b
+            }),
+            ("differ", {
+                let mut b = m.clone();
+                b.panelist_pin = Some("1111".into());
+                b
+            }),
+            ("digits", {
+                let mut b = m.clone();
+                b.panelist_pin = Some("12a".into());
+                b
+            }),
+            ("more than once", {
+                let mut b = m.clone();
+                b.panelists.push("u-1".into());
+                b
+            }),
+            ("at most", {
+                let mut b = m.clone();
+                b.panelists = (0..=MAX_PANELISTS).map(|i| format!("u-{i}")).collect();
+                b
+            }),
+        ] {
+            let err = bad.validate_roles().unwrap_err();
+            assert!(err.contains(field), "{field}: {err}");
+        }
     }
 
     #[test]

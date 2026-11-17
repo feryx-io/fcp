@@ -24847,6 +24847,24 @@
           "video_mode": {
             "type": "string",
             "description": "`mix` (the default) or `auto`."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`meeting` (the default) or `webinar`."
+          },
+          "panelist_pin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A webinar's PIN for panelists; it must differ from the others."
+          },
+          "panelists": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A webinar's panelists: users of the tenant, by username or id\n(kept by id)."
           }
         }
       },
@@ -28553,7 +28571,9 @@
         "description": "The role a token admits its holder in.",
         "enum": [
           "guest",
-          "host"
+          "host",
+          "panelist",
+          "attendee"
         ]
       },
       "JoinTokenResponse": {
@@ -29370,6 +29390,8 @@
           "video_content_share",
           "video_content_layout",
           "video_mode",
+          "kind",
+          "panelists",
           "created_at",
           "updated_at"
         ],
@@ -29524,6 +29546,24 @@
             "type": "string",
             "description": "Who is sent the composite: `mix` (everyone) or `auto` (a client\nthat asks for each person's own stream gets them instead)."
           },
+          "kind": {
+            "type": "string",
+            "description": "`meeting` or `webinar` (`docs/WEBINARS.md` §2.1)."
+          },
+          "panelist_pin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A webinar's PIN for panelists."
+          },
+          "panelists": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A webinar's panelists, users by id."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -29621,7 +29661,7 @@
           },
           "role": {
             "$ref": "#/components/schemas/JoinRole",
-            "description": "Guest (default) or host."
+            "description": "Guest (default), host, or — for a webinar — panelist or attendee."
           },
           "ttl_secs": {
             "type": [
@@ -33822,6 +33862,8 @@
                 "video_content_share",
                 "video_content_layout",
                 "video_mode",
+                "kind",
+                "panelists",
                 "created_at",
                 "updated_at"
               ],
@@ -33975,6 +34017,24 @@
                 "video_mode": {
                   "type": "string",
                   "description": "Who is sent the composite: `mix` (everyone) or `auto` (a client\nthat asks for each person's own stream gets them instead)."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`meeting` or `webinar` (`docs/WEBINARS.md` §2.1)."
+                },
+                "panelist_pin": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A webinar's PIN for panelists."
+                },
+                "panelists": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "A webinar's panelists, users by id."
                 },
                 "created_at": {
                   "type": "string",
@@ -44725,6 +44785,27 @@
               "string",
               "null"
             ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "panelist_pin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "panelists": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -44798,6 +44879,29 @@
               "string",
               "null"
             ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`meeting` or `webinar`."
+          },
+          "panelist_pin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "panelists": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "A webinar's panelists, users of the tenant by username or id."
           }
         },
         "additionalProperties": false

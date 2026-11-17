@@ -1751,6 +1751,9 @@ mod tests {
             video_content_share: "anyone".to_string(),
             video_content_layout: "presentation".to_string(),
             video_mode: fcp_core::meeting::default_video_mode(),
+            kind: fcp_core::meeting::default_meeting_kind(),
+            panelist_pin: None,
+            panelists: Vec::new(),
             created_at: now,
             updated_at: now,
         }

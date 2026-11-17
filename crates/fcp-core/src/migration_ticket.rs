@@ -55,6 +55,10 @@ pub struct MigrationTicket {
     /// Moderator.
     #[serde(rename = "host")]
     pub is_host: bool,
+    /// A webinar's attendee, who listens (`docs/WEBINARS.md` §2.2): the
+    /// new node admits them as a listener.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub listener: bool,
     /// Muted in the mixer.
     #[serde(default)]
     pub muted: bool,
@@ -163,6 +167,7 @@ mod tests {
             display_name: Some("Ann".into()),
             caller_id: Some("1001".into()),
             is_host: true,
+            listener: false,
             muted: true,
             gain: 1.5,
             video: false,

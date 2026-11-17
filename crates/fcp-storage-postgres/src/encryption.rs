@@ -93,6 +93,11 @@ pub(crate) const SEALED_COLUMNS: &[SealedColumn] = &[
         json_field: None,
     },
     SealedColumn {
+        table: "conference_meetings",
+        column: "panelist_pin",
+        json_field: None,
+    },
+    SealedColumn {
         table: "webhook_endpoints",
         column: "endpoint_json",
         json_field: Some("secret"),

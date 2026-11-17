@@ -189,6 +189,14 @@ pub async fn run_audio_bridge(
         "Audio bridge started"
     );
 
+    // A listener (a webinar's attendee) hears the room's audience feed,
+    // mixed and encoded once for every listener in this flavor
+    // (`docs/WEBINARS.md` §2.2), and switches to its own N−1 mix the frame
+    // it is promoted; sent back, it rejoins the feed.
+    let flavor = audience_flavor(encoder.name(), mixer_sample_rate, frame_size);
+    let mut audience: Option<tokio::sync::broadcast::Receiver<forge_conference::AudienceFrame>> =
+        None;
+
     // Drain stale RTP packets that accumulated in the kernel UDP buffer
     // during the welcome message / TTS playback delay. Without this,
     // hundreds of buffered packets arrive at once and flood the mixer.
@@ -341,6 +349,12 @@ pub async fn run_audio_bridge(
                             continue; // Don't decode telephone-event as audio
                         }
 
+                        // A listener is heard by nobody: its audio is not
+                        // even decoded.
+                        if audience.is_some() && room.is_listener(&participant_id) {
+                            continue;
+                        }
+
                         // Push audio payload into jitter buffer
                         jitter_buffer.push(
                             packet.header.sequence_number,
@@ -414,6 +428,42 @@ pub async fn run_audio_bridge(
                     // Room gone
                     break;
                 }
+                if !is_trunk && room.is_listener(&participant_id) {
+                    let Some(flavor) = flavor.as_deref() else {
+                        // A codec the feed cannot make: nothing to hear.
+                        timestamp = timestamp.wrapping_add(frame_size as u32);
+                        continue;
+                    };
+                    let rx = audience.get_or_insert_with(|| {
+                        room.listen_audience(flavor, || {
+                            Box::new(CodecAudienceEncoder::new(
+                                flavor,
+                                mixer_sample_rate,
+                            ))
+                        })
+                    });
+                    // The frame for this tick is already in the channel:
+                    // the clock feeds the audience before it ticks.
+                    let mut latest = None;
+                    loop {
+                        match rx.try_recv() {
+                            Ok(frame) => latest = Some(frame),
+                            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                            Err(_) => break,
+                        }
+                    }
+                    if let Some(payload) = latest.and_then(|f| f.payload) {
+                        let packet = RtpPacket::build(payload_type, seq, timestamp, ssrc, payload, false);
+                        if send_packet(&rtp_socket, &srtp_context, &packet).await {
+                            stats.packets_sent.fetch_add(1, Ordering::Relaxed);
+                        }
+                        seq = seq.wrapping_add(1);
+                    }
+                    timestamp = timestamp.wrapping_add(frame_size as u32);
+                    continue;
+                }
+                // On the stage (or promoted to it): no audience feed.
+                audience = None;
                 let mix_start = Instant::now();
                 let mix_result = if is_trunk {
                     // A trunk carries this node's local callers only: not
@@ -547,6 +597,73 @@ pub async fn run_audio_bridge(
         "Audio bridge stopped"
     );
     }.instrument(span).await
+}
+
+/// The audience flavor a leg in `codec` hears: the codec, the mixer's
+/// rate and the frame, so legs that would encode alike share one encode.
+/// `None` for a codec the feed cannot make.
+fn audience_flavor(codec: &str, mixer_rate: u32, frame_size: usize) -> Option<String> {
+    let short = if codec.contains("PCMU") {
+        "PCMU"
+    } else if codec.contains("PCMA") {
+        "PCMA"
+    } else if codec.contains("722") {
+        "G722"
+    } else {
+        return None;
+    };
+    Some(format!("{short}/{mixer_rate}/{frame_size}"))
+}
+
+/// The audience's encoder for one flavor: the room's mix resampled to
+/// the codec's rate, then encoded.
+struct CodecAudienceEncoder {
+    codec: Option<Box<dyn AudioCodec>>,
+    resampler: Option<Resampler>,
+}
+
+impl CodecAudienceEncoder {
+    fn new(flavor: &str, mixer_rate: u32) -> Self {
+        let name = flavor.split('/').next().unwrap_or_default();
+        let codec = crate::conference_handler::create_codec_instance(name).ok();
+        let resampler = codec.as_ref().and_then(|c| {
+            let rate = c.native_format().sample_rate;
+            (rate != mixer_rate)
+                .then(|| Resampler::new(mixer_rate, rate, 1).ok())
+                .flatten()
+        });
+        Self { codec, resampler }
+    }
+}
+
+impl forge_conference::AudienceEncoder for CodecAudienceEncoder {
+    fn encode(&mut self, pcm: &[i16]) -> Option<Bytes> {
+        let codec = self.codec.as_mut()?;
+        let encoded = match self.resampler.as_mut() {
+            Some(rs) => codec.encode(&rs.resample(pcm).ok()?),
+            None => codec.encode(pcm),
+        };
+        encoded.ok().map(Bytes::from)
+    }
+}
+
+/// Send one packet on the leg, encrypted when it is SRTP. Whether it went.
+async fn send_packet(
+    socket: &RtpSocketPair,
+    srtp: &Option<Arc<RwLock<SrtpContext>>>,
+    packet: &RtpPacket,
+) -> bool {
+    let sent = match srtp {
+        Some(ctx) => {
+            let protected = { ctx.write().await.protect_rtp(&packet.to_bytes()) };
+            match protected {
+                Ok(p) => socket.send_rtp_raw(&p).await,
+                Err(_) => return false,
+            }
+        }
+        None => socket.send_rtp(packet).await,
+    };
+    sent.is_ok()
 }
 
 /// Result of executing a DTMF command

@@ -22,7 +22,7 @@ pub struct MintJoinTokenRequest {
     /// "guest"/"host" when absent).
     #[serde(default)]
     pub display_name: Option<String>,
-    /// Guest (default) or host.
+    /// Guest (default), host, or — for a webinar — panelist or attendee.
     #[serde(default)]
     pub role: JoinRole,
     /// Lifetime in seconds; 15 minutes by default, one day at most.
@@ -90,6 +90,13 @@ pub fn mint_for_meeting(
     if !meeting.enabled {
         return Err(ApiError::Conflict("the meeting is disabled".to_string()));
     }
+    if req.role.is_webinar_only() && !meeting.is_webinar() {
+        return Err(ApiError::BadRequest(format!(
+            "role {} is for a webinar; this meeting's kind is {}",
+            req.role.as_str(),
+            meeting.kind
+        )));
+    }
     let ttl_secs = req.ttl_secs.unwrap_or(DEFAULT_TTL_SECS);
     if ttl_secs == 0 || ttl_secs > MAX_JOIN_TOKEN_TTL.as_secs() {
         return Err(ApiError::BadRequest(format!(
@@ -101,16 +108,7 @@ pub fn mint_for_meeting(
         .display_name
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| {
-            format!(
-                "{} {}",
-                meeting.name,
-                match req.role {
-                    JoinRole::Host => "host",
-                    JoinRole::Guest => "guest",
-                }
-            )
-        });
+        .unwrap_or_else(|| format!("{} {}", meeting.name, req.role.as_str()));
     if display_name.chars().count() > 64 {
         return Err(ApiError::BadRequest(
             "display_name must be at most 64 characters".to_string(),

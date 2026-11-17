@@ -2062,19 +2062,53 @@ pub async fn mint_my_join_token(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound("Conference not found".to_string()))?;
 
-    if meeting.tenant_id != tenant_id || meeting.owner_id.as_deref() != Some(&claims.sub) {
+    if meeting.tenant_id != tenant_id {
+        return Err(ApiError::NotFound("Conference not found".to_string()));
+    }
+    let owner = meeting.owner_id.as_deref() == Some(&claims.sub);
+    // A webinar's panelist mints a panelist token for themselves, under
+    // their own name (docs/WEBINARS.md §2.1).
+    let panelist = if owner || !meeting.is_webinar() {
+        None
+    } else {
+        let me = storage
+            .get_user_in_tenant(&claims.sub, &tenant_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .filter(|u| u.may_use_services());
+        me.filter(|u| meeting.panelists.contains(&u.id.to_string()))
+    };
+    if !owner && panelist.is_none() {
         return Err(ApiError::NotFound("Conference not found".to_string()));
     }
 
     let bytes = axum::body::to_bytes(req.into_body(), 64 * 1024)
         .await
         .map_err(|e| ApiError::BadRequest(format!("Invalid body: {}", e)))?;
-    let body: super::join_tokens::MintJoinTokenRequest = if bytes.is_empty() {
+    let mut body: super::join_tokens::MintJoinTokenRequest = if bytes.is_empty() {
         Default::default()
     } else {
         serde_json::from_slice(&bytes)
             .map_err(|e| ApiError::BadRequest(format!("Invalid JSON body: {}", e)))?
     };
+    if let Some(me) = &panelist {
+        if !matches!(
+            body.role,
+            fcp_core::JoinRole::Guest | fcp_core::JoinRole::Panelist
+        ) {
+            return Err(ApiError::Forbidden(
+                "a panelist may mint only a panelist token".to_string(),
+            ));
+        }
+        body.role = fcp_core::JoinRole::Panelist;
+        if body.display_name.is_none() {
+            body.display_name = Some(
+                me.display_name
+                    .clone()
+                    .unwrap_or_else(|| me.username.clone()),
+            );
+        }
+    }
 
     let minted = super::join_tokens::mint_for_meeting(&state, &meeting, body)?;
     Ok((axum::http::StatusCode::CREATED, Json(minted)))
@@ -2144,6 +2178,16 @@ pub async fn update_my_conference(
     if let Some(v) = req.welcome_tts {
         meeting.welcome_tts = v;
     }
+    if let Some(v) = req.kind {
+        meeting.kind = v;
+    }
+    if let Some(v) = req.panelist_pin {
+        meeting.panelist_pin = v;
+    }
+    if let Some(v) = req.panelists {
+        meeting.panelists = super::conferences::panelists_of(&state, &tenant_id, &v).await?;
+    }
+    meeting.validate_roles().map_err(ApiError::BadRequest)?;
     meeting.updated_at = SystemTime::now();
 
     storage
@@ -2172,6 +2216,12 @@ pub struct UpdateMyConferenceRequest {
     pub default_locked: Option<bool>,
     #[serde(default, deserialize_with = "super::conferences::double_option")]
     pub welcome_tts: Option<Option<String>>,
+    /// `meeting` or `webinar`.
+    pub kind: Option<String>,
+    #[serde(default, deserialize_with = "super::conferences::double_option")]
+    pub panelist_pin: Option<Option<String>>,
+    /// A webinar's panelists, users of the tenant by username or id.
+    pub panelists: Option<Vec<String>>,
 }
 
 /// Resolve the tenant ID from JWT claims, falling back to the default tenant.
