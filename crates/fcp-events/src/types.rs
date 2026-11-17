@@ -1279,6 +1279,50 @@ pub enum ConferenceEvent {
         timestamp: SystemTime,
     },
 
+    /// A participant raised their hand (`docs/WEBINARS.md` §2.5): by `*4`,
+    /// an `fcp-qa` INFO or their app.
+    HandRaised {
+        room_number: String,
+        participant_id: String,
+        /// The name the room shows them by.
+        display_name: Option<String>,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A raised hand came down: its owner lowered it (`by_host` false), or
+    /// a host lowered it or brought its owner to the stage.
+    HandLowered {
+        room_number: String,
+        participant_id: String,
+        by_host: bool,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A host brought a webinar's attendee to the stage: they are heard by
+    /// the room until sent back.
+    StageJoined {
+        room_number: String,
+        participant_id: String,
+        display_name: Option<String>,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A host sent an attendee they had brought to the stage back to the
+    /// audience.
+    StageLeft {
+        room_number: String,
+        participant_id: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// Conference room was locked
     RoomLocked {
         room_number: String,
@@ -2056,6 +2100,10 @@ impl PlatformEvent {
         "conference.video_overload",
         "conference.video_layout_changed",
         "conference.active_speaker_changed",
+        "conference.hand_raised",
+        "conference.hand_lowered",
+        "conference.stage_joined",
+        "conference.stage_left",
         "queue.caller_enqueued",
         "queue.caller_dequeued",
         "queue.caller_abandoned",
@@ -2223,6 +2271,10 @@ impl PlatformEvent {
                 ConferenceEvent::VideoOverload { .. } => "conference.video_overload",
                 ConferenceEvent::VideoLayoutChanged { .. } => "conference.video_layout_changed",
                 ConferenceEvent::ActiveSpeakerChanged { .. } => "conference.active_speaker_changed",
+                ConferenceEvent::HandRaised { .. } => "conference.hand_raised",
+                ConferenceEvent::HandLowered { .. } => "conference.hand_lowered",
+                ConferenceEvent::StageJoined { .. } => "conference.stage_joined",
+                ConferenceEvent::StageLeft { .. } => "conference.stage_left",
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { .. } => "queue.caller_enqueued",
@@ -2361,7 +2413,11 @@ impl PlatformEvent {
                 | ConferenceEvent::ContentStopped { tenant_id, .. }
                 | ConferenceEvent::VideoOverload { tenant_id, .. }
                 | ConferenceEvent::VideoLayoutChanged { tenant_id, .. }
-                | ConferenceEvent::ActiveSpeakerChanged { tenant_id, .. } => Some(tenant_id),
+                | ConferenceEvent::ActiveSpeakerChanged { tenant_id, .. }
+                | ConferenceEvent::HandRaised { tenant_id, .. }
+                | ConferenceEvent::HandLowered { tenant_id, .. }
+                | ConferenceEvent::StageJoined { tenant_id, .. }
+                | ConferenceEvent::StageLeft { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { tenant_id, .. }
@@ -2740,7 +2796,11 @@ impl ConferenceEvent {
             | ConferenceEvent::ContentStopped { timestamp, .. }
             | ConferenceEvent::VideoOverload { timestamp, .. }
             | ConferenceEvent::VideoLayoutChanged { timestamp, .. }
-            | ConferenceEvent::ActiveSpeakerChanged { timestamp, .. } => *timestamp,
+            | ConferenceEvent::ActiveSpeakerChanged { timestamp, .. }
+            | ConferenceEvent::HandRaised { timestamp, .. }
+            | ConferenceEvent::HandLowered { timestamp, .. }
+            | ConferenceEvent::StageJoined { timestamp, .. }
+            | ConferenceEvent::StageLeft { timestamp, .. } => *timestamp,
         }
     }
 }

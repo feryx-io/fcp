@@ -20715,6 +20715,233 @@
         }
       }
     },
+    "/api/v1/me/conferences/live/{room}/hand": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/conferences/live/:room/hand — raise or lower one's own hand\n(`docs/WEBINARS.md` §2.5), from an app in the room. Any user of the\nroom's tenant may; the call names whose hand it is.",
+        "operationId": "self_service_my_live_conference_hand",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnHandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/participants/{pid}/hand": {
+      "delete": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "DELETE /me/conferences/live/:room/participants/:pid/hand — a host\nlowers one hand.",
+        "operationId": "self_service_my_live_conference_lower_hand",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/hands": {
+      "delete": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "DELETE /me/conferences/live/:room/hands — a host lowers every hand.",
+        "operationId": "self_service_my_live_conference_lower_hands",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/participants/{pid}/stage": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/conferences/live/:room/participants/:pid/stage — a host\nbrings a webinar's attendee to the stage.",
+        "operationId": "self_service_my_live_conference_stage_on",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "DELETE /me/conferences/live/:room/participants/:pid/stage — a host\nsends an attendee back to the audience.",
+        "operationId": "self_service_my_live_conference_stage_off",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/cluster/nodes": {
       "get": {
         "tags": [
@@ -30240,6 +30467,23 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "OwnHandRequest": {
+        "type": "object",
+        "description": "The body of `POST /me/conferences/live/:room/hand`.",
+        "required": [
+          "call_id",
+          "raised"
+        ],
+        "properties": {
+          "call_id": {
+            "type": "string",
+            "description": "The call the app is in the room on: the `X-FCP-Call-Id` its 200 OK\nnamed. Knowing it is what makes the hand the caller's."
+          },
+          "raised": {
+            "type": "boolean"
           }
         }
       },
@@ -47191,6 +47435,10 @@
               "conference.video_overload",
               "conference.video_layout_changed",
               "conference.active_speaker_changed",
+              "conference.hand_raised",
+              "conference.hand_lowered",
+              "conference.stage_joined",
+              "conference.stage_left",
               "queue.caller_enqueued",
               "queue.caller_dequeued",
               "queue.caller_abandoned",

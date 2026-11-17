@@ -513,6 +513,35 @@ async fn a_host_controls_their_room_from_their_own_session() {
             "POST",
             "/conferences/8402/video/content/stop",
         ),
+        // The audience's voice (`docs/WEBINARS.md` §2.5).
+        (
+            Method::DELETE,
+            format!("{base}/participants/p1/hand"),
+            None,
+            "DELETE",
+            "/conferences/8402/participants/p1/hand",
+        ),
+        (
+            Method::DELETE,
+            format!("{base}/hands"),
+            None,
+            "DELETE",
+            "/conferences/8402/hands",
+        ),
+        (
+            Method::POST,
+            format!("{base}/participants/p1/stage"),
+            None,
+            "POST",
+            "/conferences/8402/participants/p1/stage",
+        ),
+        (
+            Method::DELETE,
+            format!("{base}/participants/p1/stage"),
+            None,
+            "DELETE",
+            "/conferences/8402/participants/p1/stage",
+        ),
     ];
     for (method, path, body, up_method, up_path) in &controls {
         let res = app.send_as(&olga, method.clone(), path, body.clone()).await;
@@ -574,6 +603,41 @@ async fn a_host_controls_their_room_from_their_own_session() {
         .send_as(&olga, Method::GET, "/api/v1/me/conferences/live/8999", None)
         .await;
     assert_eq!(none.status, StatusCode::NOT_FOUND, "{}", none.text);
+
+    // Anyone of the tenant raises their own hand, named by their call; a
+    // host's controls stay a host's.
+    let before = seen.lock().unwrap().len();
+    let res = app
+        .send_as(
+            &pete,
+            Method::POST,
+            &format!("{base}/hand"),
+            Some(json!({ "call_id": " call-1 ", "raised": true })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["path"], "/conferences/8402/hand");
+    let last = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(last.method, "POST");
+    assert_eq!(
+        last.body,
+        json!({ "call_id": "call-1", "raised": true }),
+        "the call trimmed"
+    );
+    let res = app
+        .send_as(
+            &pete,
+            Method::POST,
+            &format!("{base}/hand"),
+            Some(json!({ "call_id": "", "raised": true })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.text);
+    let res = app
+        .send_as(&pete, Method::DELETE, &format!("{base}/hands"), None)
+        .await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.text);
+    assert_eq!(seen.lock().unwrap().len(), before + 1);
     app.finish().await;
 }
 

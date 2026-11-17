@@ -51,6 +51,9 @@ use crate::rooms::{RoomBridge, RoomKey};
 use crate::trunks::{self, TRUNK_NODE_HEADER, TRUNK_TENANT_HEADER};
 use futures::StreamExt;
 
+mod hands;
+pub use hands::{HandBy, StageError};
+
 /// Fallback remote address used when SDP parsing fails to extract the caller's RTP endpoint.
 const UNKNOWN_REMOTE: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
@@ -155,6 +158,16 @@ impl ConferenceRole {
     }
 }
 
+/// When a participant's hand went up, as the room's JSON says it: RFC 3339,
+/// or `null` while it is down.
+fn hand_json(hand: Option<SystemTime>) -> serde_json::Value {
+    hand.map(|at| {
+        serde_json::json!(chrono::DateTime::<chrono::Utc>::from(at)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    })
+    .unwrap_or(serde_json::Value::Null)
+}
+
 /// Tracks a single participant's connection to a conference room.
 pub struct ParticipantSession {
     pub call_id: String,
@@ -211,6 +224,12 @@ pub struct ParticipantSession {
     /// `Recv-Info: fcp-view` and the meeting's `video_mode` is `auto`. Its
     /// `fcp-view` INFOs say which streams.
     pub view_streams: bool,
+    /// Told by INFO what the room did to their hand and whether they are on
+    /// the stage (`docs/WEBINARS.md` §2.5): the INVITE said
+    /// `Recv-Info: fcp-qa`, or they came by a token (the gateway takes it).
+    pub qa_notices: bool,
+    /// Their hand is up, since then.
+    pub hand: Option<SystemTime>,
     /// The BFCP ids the answer gave a room system that offered floor
     /// control (§15.6, 7e).
     pub bfcp: Option<BfcpAssignment>,
@@ -1554,6 +1573,7 @@ impl ConferenceCallHandler {
         if let Some(entry) = session_data {
             let session = entry.value();
             json["role"] = serde_json::json!(session.role.as_str());
+            json["hand"] = hand_json(session.hand);
             let joined_secs = session
                 .joined_at
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1628,6 +1648,7 @@ impl ConferenceCallHandler {
                         p["is_host"] = serde_json::json!(session.is_host);
                         p["role"] = serde_json::json!(session.role.as_str());
                         p["listener"] = serde_json::json!(meta.listener);
+                        p["hand"] = hand_json(session.hand);
                         p["is_dial_out"] = serde_json::json!(session.is_dial_out);
                         if let Some(ref dn) = session.display_name {
                             p["display_name"] = serde_json::json!(dn);
@@ -3531,6 +3552,8 @@ impl ConferenceCallHandler {
                 joined_by_token: false,
                 floor_notices: false,
                 view_streams: false,
+                qa_notices: false,
+                hand: None,
                 bfcp: None,
                 record: LegRecord::own(
                     format!("conference:{room_number}"),
@@ -3955,9 +3978,11 @@ impl ConferenceCallHandler {
             | ConferenceEvent::ContentStopped { room_number, .. }
             | ConferenceEvent::VideoOverload { room_number, .. }
             | ConferenceEvent::VideoLayoutChanged { room_number, .. }
-            | ConferenceEvent::ActiveSpeakerChanged { room_number, .. } => {
-                Some(room_number.clone())
-            }
+            | ConferenceEvent::ActiveSpeakerChanged { room_number, .. }
+            | ConferenceEvent::HandRaised { room_number, .. }
+            | ConferenceEvent::HandLowered { room_number, .. }
+            | ConferenceEvent::StageJoined { room_number, .. }
+            | ConferenceEvent::StageLeft { room_number, .. } => Some(room_number.clone()),
         };
 
         let platform_event = PlatformEvent::Conference(event);
@@ -5923,6 +5948,8 @@ impl ConferenceCallHandler {
                 joined_by_token: false,
                 floor_notices: false,
                 view_streams: false,
+                qa_notices: false,
+                hand: None,
                 bfcp: None,
                 record: LegRecord::own(
                     format!("trunk:{}", leg.peer_node),
@@ -6283,6 +6310,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let recv_info: Vec<&str> = request.headers().get_all("Recv-Info").collect();
         let floor_notices = join.is_some()
             || fcp_core::recv_info_has(&recv_info, fcp_core::CONTENT_INFO_PACKAGE)
+            || migrate.as_ref().is_some_and(|t| t.token_join);
+        // Who is told about their hand and the stage the same way.
+        let qa_notices = join.is_some()
+            || fcp_core::recv_info_has(&recv_info, fcp_core::QA_INFO_PACKAGE)
             || migrate.as_ref().is_some_and(|t| t.token_join);
 
         // 1. Extract room number (the ticket's or the token's, when there is one)
@@ -6656,6 +6687,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let _ = response
                 .headers_mut()
                 .push("Recv-Info", fcp_core::VIEW_INFO_PACKAGE);
+        }
+        // And is told about its hand and the stage (`docs/WEBINARS.md`
+        // §2.5) when it asked.
+        if qa_notices {
+            let _ = response
+                .headers_mut()
+                .push("Recv-Info", fcp_core::QA_INFO_PACKAGE);
         }
 
         // 8b. RFC 4028: Add Session-Expires and Min-SE headers if session timers are enabled
@@ -7702,6 +7740,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         || migrate.as_ref().is_some_and(|t| t.token_join),
                     floor_notices,
                     view_streams,
+                    qa_notices,
+                    hand: None,
                     bfcp: bfcp_assignment.clone(),
                     record: LegRecord::from_request(request, None),
                 },
@@ -8017,6 +8057,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 joined_by_token: join.is_some(),
                 floor_notices,
                 view_streams,
+                qa_notices,
+                hand: None,
                 bfcp: bfcp_assignment.clone(),
                 record: LegRecord::from_request(
                     request,
@@ -8684,6 +8726,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let (code, reason) = self.take_view(&session, body);
             return Ok(UserAgentServer::create_response(request, code, reason));
         }
+        // The audience's voice (`docs/WEBINARS.md` §2.5): a raised hand.
+        if package.as_deref() == Some(fcp_core::QA_INFO_PACKAGE) {
+            let (key, pid) = (session.room_key(), session.participant_id.clone());
+            drop(session);
+            let (code, reason) = self.take_qa(&key, &pid, body);
+            return Ok(UserAgentServer::create_response(request, code, reason));
+        }
 
         // Parse DTMF from application/dtmf-relay body
         if !body.is_empty() {
@@ -9147,7 +9196,8 @@ impl ConferenceCallHandler {
     /// over, is ended.
     fn update_rosters(&self, key: &RoomKey) {
         let room_roster = self.roster_of(key);
-        let video = self.bridge.get_room(key).ok().and_then(|r| r.video());
+        let audio_room = self.bridge.get_room(key).ok();
+        let video = audio_room.as_ref().and_then(|r| r.video());
         let domain = self.local_sip_uri.host().to_string();
         let names = crate::roster::Names {
             room: &key.room,
@@ -9169,9 +9219,17 @@ impl ConferenceCallHandler {
                 .get(&sub.participant_call)
                 .map(|s| s.participant_id.clone());
             let here = viewer.is_some();
+            // The stage is shown the audience's raised hands, an attendee
+            // their own (`docs/WEBINARS.md` §2.5).
+            let room_roster_here = room_roster.as_ref().map(|r| {
+                let stage = viewer
+                    .as_deref()
+                    .is_some_and(|pid| !audio_room.as_ref().is_some_and(|a| a.is_listener(pid)));
+                r.for_subscriber(stage, viewer.as_deref())
+            });
             // A forwarding participant is told whose each of their
             // streams is (`docs/FORWARDING_ROOMS.md` §2.2).
-            let mut roster = match (&room_roster, &video, &viewer) {
+            let mut roster = match (&room_roster_here, &video, &viewer) {
                 (Some(r), Some(v), Some(pid)) if v.is_forwarding(pid) => {
                     Some(r.for_viewer(&viewer_streams(&v.forwarded_streams(pid))))
                 }
@@ -9366,9 +9424,34 @@ impl ConferenceCallHandler {
             if s.trunk_peer.is_some() {
                 continue;
             }
-            // The audience is counted, not listed (`docs/WEBINARS.md` §2.4).
+            // The audience is counted, not listed (`docs/WEBINARS.md` §2.4),
+            // but for a raised hand, which the stage is shown (§2.5).
             if room.is_listener(&s.participant_id) {
                 roster.audience += 1;
+                if let Some(at) = s.hand {
+                    roster.hands.insert(
+                        s.participant_id.clone(),
+                        crate::roster::Member {
+                            name: s
+                                .display_name
+                                .clone()
+                                .or_else(|| s.caller_id.clone())
+                                .unwrap_or_else(|| s.participant_id.clone()),
+                            host: false,
+                            panelist: false,
+                            attendee: true,
+                            hand: Some(at),
+                            audio: crate::roster::Audio::Muted,
+                            video: None,
+                            speaking: false,
+                            presenting: false,
+                            spotlight: false,
+                            stream: None,
+                            speaker_stream: None,
+                            joined_at: s.joined_at,
+                        },
+                    );
+                }
                 continue;
             }
             let id = s.participant_id.clone();
@@ -9396,6 +9479,8 @@ impl ConferenceCallHandler {
                     host: s.is_host,
                     // A panelist, or an attendee the host brought up.
                     panelist: matches!(s.role, ConferenceRole::Panelist | ConferenceRole::Attendee),
+                    attendee: false,
+                    hand: s.hand,
                     audio,
                     video: camera,
                     speaking,
@@ -9436,6 +9521,8 @@ impl ConferenceCallHandler {
                         name: m.display_name,
                         host: m.host,
                         panelist: false,
+                        attendee: false,
+                        hand: None,
                         audio,
                         video: camera,
                         speaking: speaker.as_deref() == Some(id.as_str()),

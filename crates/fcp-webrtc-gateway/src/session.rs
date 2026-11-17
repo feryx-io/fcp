@@ -235,6 +235,30 @@ impl FloorState {
     }
 }
 
+/// The audience's voice as this session knows it (`docs/WEBINARS.md`
+/// §2.5): its hand, and whether a host has brought it to the stage, from
+/// what the browser asked and the room's `fcp-qa` INFOs.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct QaState {
+    pub hand: bool,
+    pub on_stage: bool,
+}
+
+impl QaState {
+    /// Take in a message from the room.
+    pub fn apply(&mut self, message: &fcp_core::qa::QaMessage) {
+        match *message {
+            fcp_core::qa::QaMessage::Hand { raised } => self.hand = raised,
+            fcp_core::qa::QaMessage::Stage { on } => {
+                self.on_stage = on;
+                if on {
+                    self.hand = false;
+                }
+            }
+        }
+    }
+}
+
 /// What the conference server tells a session about the floor: the body
 /// of an `INFO` of type `application/vnd.fcp.content+json`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -325,6 +349,9 @@ pub struct SessionInfo {
     /// it, and whose stream is on each of the browser's tracks (by mid).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forwarding: Option<ForwardingSummary>,
+    /// In a room: the browser's hand and whether it is on the stage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qa: Option<QaState>,
 }
 
 /// An ICE server a browser should use, as `RTCPeerConnection` takes it.
@@ -362,6 +389,7 @@ pub struct Session {
     pub video: Option<VideoSummary>,
     pub content: Option<VideoSummary>,
     pub floor: FloorState,
+    pub qa: QaState,
     pub srtp: bool,
     pub sip_target: Option<String>,
     pub sip_call_id: Option<String>,
@@ -467,6 +495,7 @@ impl Session {
                 .forwarding
                 .as_ref()
                 .map(|f| f.lock().unwrap_or_else(|e| e.into_inner()).summary()),
+            qa: self.kind.is_room().then(|| self.qa.clone()),
         }
     }
 
@@ -1046,6 +1075,7 @@ impl SessionManager {
             video: None,
             content: None,
             floor: FloorState::default(),
+            qa: QaState::default(),
             srtp: false,
             sip_target: None,
             sip_call_id: None,
@@ -1853,6 +1883,10 @@ impl SessionManager {
                 streams,
                 ..
             } => {
+                // Told of its hand and the stage (`docs/WEBINARS.md` §2.5).
+                headers
+                    .push("Recv-Info", fcp_core::QA_INFO_PACKAGE)
+                    .map_err(|e| format!("header: {e}"))?;
                 // Each person's own stream, where the room forwards.
                 if streams > 0 && video.is_some() {
                     headers
@@ -2227,6 +2261,18 @@ impl SessionManager {
         true
     }
 
+    /// The conference server told `sip_call_id` of its hand or the stage.
+    /// Returns whether it was ours.
+    pub async fn qa_notice(&self, sip_call_id: &str, message: &fcp_core::qa::QaMessage) -> bool {
+        let Some(session) = self.session_by_sip_call_id(sip_call_id) else {
+            return false;
+        };
+        let mut s = session.write().await;
+        s.qa.apply(message);
+        info!(session = %s.id, hand = s.qa.hand, on_stage = s.qa.on_stage, "fcp-qa notice");
+        true
+    }
+
     /// Subscribe to the room's roster inside the call, and keep the
     /// subscription up while the session lasts: its NOTIFYs say whose
     /// stream is on each of the browser's tracks ([`Self::roster_notice`]).
@@ -2375,6 +2421,52 @@ impl SessionManager {
             s.dialog = Some(dialog);
         }
         Ok(response.start_line().code())
+    }
+
+    /// Raise or lower the browser's hand (`docs/WEBINARS.md` §2.5): an
+    /// INFO in the `fcp-qa` package. The room's answer is returned.
+    pub async fn set_hand(&self, id: &str, raised: bool) -> Result<u16, SessionError> {
+        let session = self
+            .sessions
+            .get(id)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| SessionError::NotFound(id.to_string()))?;
+        let mut dialog = {
+            let s = session.read().await;
+            s.dialog
+                .clone()
+                .ok_or_else(|| SessionError::NotFound(id.to_string()))?
+        };
+        let body = fcp_core::qa::QaMessage::Hand { raised }.to_body();
+        let request = in_dialog_request(
+            &dialog,
+            sip_core::Method::Info,
+            &[
+                ("Info-Package", fcp_core::QA_INFO_PACKAGE.to_string()),
+                ("Content-Disposition", "Info-Package".to_string()),
+                ("Content-Type", fcp_core::QA_INFO_TYPE.to_string()),
+            ],
+            Some(body.into_bytes().into()),
+        )
+        .map_err(|e| SessionError::Internal(format!("fcp-qa INFO: {e}")))?;
+        let response = tokio::time::timeout(
+            SOON,
+            self.uac
+                .inner()
+                .send_in_dialog_non_invite(&mut dialog, request),
+        )
+        .await
+        .map_err(|_| SessionError::Internal("the room did not answer the hand".into()))?
+        .map_err(|e| SessionError::Internal(format!("fcp-qa INFO: {e}")))?;
+        let code = response.start_line().code();
+        let mut s = session.write().await;
+        if s.dialog.as_ref().is_some_and(|d| d.id() == dialog.id()) {
+            s.dialog = Some(dialog);
+        }
+        if (200..300).contains(&code) {
+            s.qa.hand = raised;
+        }
+        Ok(code)
     }
 
     fn session_by_sip_call_id(&self, sip_call_id: &str) -> Option<Arc<RwLock<Session>>> {

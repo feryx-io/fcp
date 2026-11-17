@@ -210,6 +210,21 @@ format = "compact"
         (code, json)
     }
 
+    /// `method` with a JSON body (`{}` when none) on the node's HTTP API.
+    async fn send(&self, method: &str, path: &str, body: Option<&str>) -> (u16, serde_json::Value) {
+        let (code, body) = http_request(
+            method,
+            &loopback(self.http, path),
+            &[],
+            Some(body.unwrap_or("{}")),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{method} {path}: {e}"));
+        let json: serde_json::Value =
+            serde_json::from_str(&body).unwrap_or_else(|_| serde_json::Value::String(body.clone()));
+        (code, json)
+    }
+
     /// The room's participant ids as the API lists them, or none when
     /// the room is not (or no longer) there.
     async fn participants(&self) -> Vec<String> {
@@ -2394,6 +2409,357 @@ async fn a_webinar_s_audience_watches_the_stage_and_is_counted_not_listed() {
     for call in [&host_call, &panelist_call, &ann_call, &ben_call, &carl_call] {
         assert_eq!(call.hangup().await.unwrap(), 200);
     }
+    stack.wait_participants(0).await;
+    stack.finish().await;
+}
+
+/// An `fcp-qa` INFO from `call` with `body`: the room's answer.
+async fn send_qa(call: &fcp_testkit::Call, body: &str) -> u16 {
+    call.send_in_call(
+        sip_core::Method::Info,
+        &[
+            ("Info-Package", fcp_core::QA_INFO_PACKAGE),
+            ("Content-Type", fcp_core::QA_INFO_TYPE),
+        ],
+        body.as_bytes(),
+    )
+    .await
+    .unwrap()
+}
+
+/// The next `fcp-qa` INFO `phone` is sent in `call_id`.
+async fn qa_told(phone: &Phone, call_id: &str) -> fcp_core::qa::QaMessage {
+    match phone
+        .expect(SOON, |e| {
+            matches!(e, PhoneEvent::Info { call_id: c, package: Some(p), .. }
+                if c == call_id && p == fcp_core::QA_INFO_PACKAGE)
+        })
+        .await
+    {
+        Some(PhoneEvent::Info { body, .. }) => {
+            fcp_core::qa::QaMessage::parse(body.as_bytes()).expect("an fcp-qa message")
+        }
+        _ => panic!("no fcp-qa INFO in {call_id}"),
+    }
+}
+
+/// Roster NOTIFYs in `call_id` until one satisfies `done`; its body.
+async fn roster_until(phone: &Phone, call_id: &str, done: impl Fn(&str) -> bool) -> String {
+    let deadline = tokio::time::Instant::now() + SOON;
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the roster never said it in {call_id}"
+        );
+        let (_, body) = roster(phone, call_id).await;
+        if done(&body) {
+            return body;
+        }
+    }
+}
+
+/// The audience's voice (`docs/WEBINARS.md` §2.5). An attendee raises a
+/// hand by `*4` and another by an `fcp-qa` INFO; the stage's roster lists
+/// both with `fcp:hand`, an attendee's lists only their own. A host lowers
+/// one, brings the other to the stage — heard, and told so — and sends
+/// them back; lowering every hand takes down what is left.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attendee_raises_a_hand_and_a_host_brings_them_to_the_stage() {
+    let stack = stack_or_skip!();
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({ "kind": "webinar", "host_pin": "9999" }),
+        )
+        .await;
+    let host = stack.phone("hostess").await;
+    let host_call = join(&stack, &host).await;
+    dial_digits(&host_call, "9999").await;
+    // Ann's client takes the package; Ben is a plain phone.
+    let ann = stack.phone("ann").await;
+    let ann_call = ann
+        .call_with_headers(ROOM, &[("Recv-Info", fcp_core::QA_INFO_PACKAGE)])
+        .await
+        .unwrap();
+    if let Err(e) = ann_call.answered(SOON).await {
+        stack
+            .fail(&format!("Ann was not admitted: {e}"), &ann)
+            .await;
+    }
+    assert!(
+        ann_call
+            .answer_header("Recv-Info")
+            .is_some_and(|v| v.contains(fcp_core::QA_INFO_PACKAGE)),
+        "the room says it will tell Ann"
+    );
+    dial_digits(&ann_call, "").await;
+    let ben = stack.phone("ben").await;
+    let ben_call = join(&stack, &ben).await;
+    dial_digits(&ben_call, "").await;
+    stack.wait_participants(3).await;
+    let host_id = stack.participant_named("hostess").await;
+    let ann_id = stack.participant_named("ann").await;
+    let ben_id = stack.participant_named("ben").await;
+    for pid in [&ann_id, &ben_id] {
+        stack
+            .wait_participant(pid, |p| p["role"] == "attendee" && p["listener"] == true)
+            .await;
+    }
+
+    assert_eq!(
+        host_call
+            .subscribe_in_call("conference", 600)
+            .await
+            .unwrap(),
+        200
+    );
+    let full = roster_until(&host, host_call.call_id(), |b| {
+        b.contains("<fcp:audience>2</fcp:audience>")
+    })
+    .await;
+    assert!(!full.contains(&ann_id) && !full.contains(&ben_id), "{full}");
+
+    // Ben presses *4.
+    ben_call.media().send_dtmf('*');
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    ben_call.media().send_dtmf('4');
+    stack
+        .wait_participant(&ben_id, |p| p["hand"].is_string())
+        .await;
+    let doc = roster_until(&host, host_call.call_id(), |b| b.contains(&ben_id)).await;
+    assert!(doc.contains("<fcp:hand>"), "{doc}");
+    assert!(doc.contains("<entry>attendee</entry>"), "{doc}");
+
+    // Ann raises hers by INFO; nothing comes back to her for it.
+    assert_eq!(
+        send_qa(&ann_call, r#"{"op":"hand","raised":true}"#).await,
+        200
+    );
+    stack
+        .wait_participant(&ann_id, |p| p["hand"].is_string())
+        .await;
+    roster_until(&host, host_call.call_id(), |b| b.contains(&ann_id)).await;
+    // Her own roster shows her hand and nobody else's.
+    assert_eq!(
+        ann_call.subscribe_in_call("conference", 600).await.unwrap(),
+        200
+    );
+    let hers = roster_until(&ann, ann_call.call_id(), |b| b.contains(&ann_id)).await;
+    assert!(!hers.contains(&ben_id), "{hers}");
+    assert!(hers.contains("<fcp:audience>1</fcp:audience>"), "{hers}");
+    // What only the room says, and what is not a message, are refused.
+    assert_eq!(send_qa(&ann_call, r#"{"op":"stage","on":true}"#).await, 403);
+    assert_eq!(send_qa(&ann_call, r#"{"op":"wave"}"#).await, 400);
+    // A host has no hand to raise.
+    assert_eq!(
+        send_qa(&host_call, r#"{"op":"hand","raised":true}"#).await,
+        403
+    );
+
+    // The host lowers Ben's.
+    let (code, out) = stack
+        .send(
+            "DELETE",
+            &format!("/conferences/{ROOM}/participants/{ben_id}/hand"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (code, &out["changed"]),
+        (200, &serde_json::json!(true)),
+        "{out}"
+    );
+    stack
+        .wait_participant(&ben_id, |p| p["hand"].is_null())
+        .await;
+
+    // Ann is brought to the stage: her hand comes down, she is told, and
+    // the room hears her.
+    let stage = format!("/conferences/{ROOM}/participants/{ann_id}/stage");
+    let (code, out) = stack.send("POST", &stage, None).await;
+    assert_eq!(
+        (code, &out["changed"]),
+        (200, &serde_json::json!(true)),
+        "{out}"
+    );
+    assert_eq!(
+        qa_told(&ann, ann_call.call_id()).await,
+        fcp_core::qa::QaMessage::Stage { on: true },
+        "the stage's word is the hand's too"
+    );
+    stack
+        .wait_participant(&ann_id, |p| p["listener"] == false && p["hand"].is_null())
+        .await;
+    let on_stage = roster_until(&host, host_call.call_id(), |b| {
+        b.contains(&ann_id) && b.contains("<entry>panelist</entry>")
+    })
+    .await;
+    assert!(!on_stage.contains("<fcp:hand>"), "{on_stage}");
+    ann_call.media().play_tone(660.0, 2000);
+    assert!(
+        host_call.media().heard(660, SOON).await,
+        "the host hears Ann on the stage"
+    );
+    assert!(
+        ben_call.media().heard(660, SOON).await,
+        "the audience hears Ann on the stage"
+    );
+    let (code, out) = stack.send("POST", &stage, None).await;
+    assert_eq!(
+        (code, &out["changed"]),
+        (200, &serde_json::json!(false)),
+        "{out}"
+    );
+    let (code, _) = stack
+        .send(
+            "POST",
+            &format!("/conferences/{ROOM}/participants/{host_id}/stage"),
+            None,
+        )
+        .await;
+    assert_eq!(code, 409, "the host is not an attendee");
+
+    // Sent back: a listener again, heard by nobody.
+    let (code, _) = stack.send("DELETE", &stage, None).await;
+    assert_eq!(code, 200);
+    assert_eq!(
+        qa_told(&ann, ann_call.call_id()).await,
+        fcp_core::qa::QaMessage::Stage { on: false }
+    );
+    stack
+        .wait_participant(&ann_id, |p| p["listener"] == true)
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    ann_call.media().play_tone(770.0, 2000);
+    assert!(
+        !host_call.media().heard(770, Duration::from_secs(2)).await,
+        "the host no longer hears Ann"
+    );
+
+    // Ben raises it again; every hand comes down at once.
+    ben_call.media().send_dtmf('*');
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    ben_call.media().send_dtmf('4');
+    stack
+        .wait_participant(&ben_id, |p| p["hand"].is_string())
+        .await;
+    let (code, out) = stack
+        .send("DELETE", &format!("/conferences/{ROOM}/hands"), None)
+        .await;
+    assert_eq!(
+        (code, &out["lowered"]),
+        (200, &serde_json::json!(1)),
+        "{out}"
+    );
+    stack
+        .wait_participant(&ben_id, |p| p["hand"].is_null())
+        .await;
+
+    // An app names itself by its call.
+    let (code, out) = stack
+        .send(
+            "POST",
+            &format!("/conferences/{ROOM}/hand"),
+            Some(&format!(
+                r#"{{"call_id":"{}","raised":true}}"#,
+                ann_call.call_id()
+            )),
+        )
+        .await;
+    assert_eq!(code, 200, "{out}");
+    assert_eq!(out["participant"], serde_json::json!(ann_id));
+    assert_eq!(
+        qa_told(&ann, ann_call.call_id()).await,
+        fcp_core::qa::QaMessage::Hand { raised: true },
+        "told, since the app is not the call"
+    );
+    let (code, _) = stack
+        .send(
+            "POST",
+            &format!("/conferences/{ROOM}/hand"),
+            Some(r#"{"call_id":"no-such-call","raised":true}"#),
+        )
+        .await;
+    assert_eq!(code, 404);
+
+    for call in [&host_call, &ann_call, &ben_call] {
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
+    stack.wait_participants(0).await;
+    stack.finish().await;
+}
+
+/// The audience's voice through the call manager (`docs/WEBINARS.md`
+/// §2.5): Bob's `Recv-Info: fcp-qa` reaches the room and its answer
+/// reaches Bob, his hand INFO reaches the room, and the room's word that
+/// he is on the stage reaches him.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attendee_s_hand_and_the_stage_cross_the_call_manager() {
+    let Some(stack) = Stack::start_conference(r#"trusted_edges = ["127.0.0.1"]"#, 60, "").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    // A webinar that asks no PIN: everyone who dials in is an attendee.
+    stack
+        .seed
+        .meeting_with(ROOM, serde_json::json!({ "kind": "webinar" }))
+        .await;
+    let cm = stack.start_call_manager().await;
+    let bob_user = stack.seed.user("bob", "bob-pw", "1002").await;
+    let bob = Phone::new(&bob_user.username, &bob_user.password, REALM, cm)
+        .await
+        .unwrap();
+    assert_eq!(bob.register().await.unwrap(), 200);
+    let bob_call = bob
+        .call_with_headers(ROOM, &[("Recv-Info", fcp_core::QA_INFO_PACKAGE)])
+        .await
+        .unwrap();
+    if let Err(e) = bob_call.answered(SOON).await {
+        stack
+            .fail(&format!("Bob was not admitted: {e}"), &bob)
+            .await;
+    }
+    assert!(
+        bob_call
+            .answer_header("Recv-Info")
+            .is_some_and(|v| v.contains(fcp_core::QA_INFO_PACKAGE)),
+        "the room's answer reached Bob"
+    );
+    stack.wait_participants(1).await;
+    let bob_id = stack.participant_named("bob").await;
+    stack
+        .wait_participant(&bob_id, |p| {
+            p["role"] == "attendee" && p["listener"] == true
+        })
+        .await;
+
+    assert_eq!(
+        send_qa(&bob_call, r#"{"op":"hand","raised":true}"#).await,
+        200
+    );
+    stack
+        .wait_participant(&bob_id, |p| p["hand"].is_string())
+        .await;
+
+    let (code, out) = stack
+        .send(
+            "POST",
+            &format!("/conferences/{ROOM}/participants/{bob_id}/stage"),
+            None,
+        )
+        .await;
+    assert_eq!(code, 200, "{out}");
+    assert_eq!(
+        qa_told(&bob, bob_call.call_id()).await,
+        fcp_core::qa::QaMessage::Stage { on: true }
+    );
+    stack
+        .wait_participant(&bob_id, |p| p["listener"] == false && p["hand"].is_null())
+        .await;
+
+    assert_eq!(bob_call.hangup().await.unwrap(), 200);
     stack.wait_participants(0).await;
     stack.finish().await;
 }

@@ -18,7 +18,10 @@
 //! A webinar's audience is counted, never listed (`docs/WEBINARS.md` §2.4):
 //! the members are the stage, and `fcp:audience` in the conference state
 //! says how many watch. Nobody in the audience is on anybody's roster, so
-//! the [`MAX_USERS`] cap is out of a webinar's reach.
+//! the [`MAX_USERS`] cap is out of a webinar's reach. The exception is a
+//! raised hand (§2.5): an attendee with their hand up is on the stage's
+//! rosters, with the role `attendee` and `fcp:hand` saying since when, so a
+//! host can bring them up; and on their own, so their client shows it.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -60,6 +63,10 @@ pub(crate) struct Member {
     pub host: bool,
     /// A webinar's panelist, or an attendee brought to the stage.
     pub panelist: bool,
+    /// A webinar's attendee, listed for their raised hand.
+    pub attendee: bool,
+    /// Their hand is up, since then.
+    pub hand: Option<SystemTime>,
     pub audio: Audio,
     /// Their camera as the room has it (`on`, `off`, `lost`, `disabled`,
     /// `failed`), when the room has video.
@@ -90,6 +97,9 @@ pub(crate) struct Roster {
     pub members: BTreeMap<String, Member>,
     /// A webinar's audience: how many listen and watch.
     pub audience: usize,
+    /// Attendees with their hand up, counted in `audience` and listed
+    /// only where [`Roster::for_subscriber`] puts them.
+    pub hands: BTreeMap<String, Member>,
 }
 
 /// One of a forwarding subscriber's streams, for [`Roster::for_viewer`].
@@ -105,6 +115,25 @@ pub(crate) struct ViewerStream {
 }
 
 impl Roster {
+    /// This roster as one subscriber is told it: the stage (`stage`) sees
+    /// every raised hand in the audience, and an attendee (`me`) their
+    /// own. Whoever is listed leaves the audience's count, so
+    /// `user-count` still counts everyone once.
+    pub(crate) fn for_subscriber(&self, stage: bool, me: Option<&str>) -> Roster {
+        let mut out = Roster {
+            members: self.members.clone(),
+            audience: self.audience,
+            hands: BTreeMap::new(),
+        };
+        for (id, m) in &self.hands {
+            if stage || me == Some(id.as_str()) {
+                out.members.insert(id.clone(), m.clone());
+                out.audience = out.audience.saturating_sub(1);
+            }
+        }
+        out
+    }
+
     /// This roster as a forwarding subscriber is told it: each member with
     /// the stream the subscriber receives them on.
     pub(crate) fn for_viewer(&self, streams: &[ViewerStream]) -> Roster {
@@ -228,6 +257,8 @@ fn user(out: &mut String, names: &Names, id: &str, member: Option<&Member>) {
             "host"
         } else if m.panelist {
             "panelist"
+        } else if m.attendee {
+            "attendee"
         } else {
             "participant"
         }
@@ -288,6 +319,11 @@ fn user(out: &mut String, names: &Names, id: &str, member: Option<&Member>) {
     if m.spotlight {
         let _ = writeln!(out, "        <fcp:spotlight>true</fcp:spotlight>");
     }
+    if let Some(at) = m.hand {
+        let at = chrono::DateTime::<chrono::Utc>::from(at)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let _ = writeln!(out, "        <fcp:hand>{at}</fcp:hand>");
+    }
     let _ = writeln!(out, "      </endpoint>\n    </user>");
 }
 
@@ -321,6 +357,8 @@ mod tests {
             name: name.into(),
             host: false,
             panelist: false,
+            attendee: false,
+            hand: None,
             audio: Audio::Sending,
             video: Some("on"),
             speaking: false,
@@ -339,6 +377,7 @@ mod tests {
                 .map(|(id, m)| (id.to_string(), m.clone()))
                 .collect(),
             audience: 0,
+            hands: BTreeMap::new(),
         }
     }
 
@@ -579,6 +618,60 @@ mod tests {
         assert_eq!(read.apply(info::parse(&doc).unwrap()), Applied::Changed);
         assert_eq!(read.audience(), 1250);
         assert_eq!(read.members().len(), 2, "the stage is as it was");
+    }
+
+    #[test]
+    fn a_raised_hand_is_shown_to_the_stage_and_its_owner_only() {
+        use fcp_core::conference_info::{self as info, Applied};
+        let mut host = member("Ann");
+        host.host = true;
+        let mut stage = roster(&[("p1", host)]);
+        stage.audience = 500;
+        let mut dan = member("Dan");
+        dan.attendee = true;
+        dan.video = None;
+        dan.hand = Some(UNIX_EPOCH + Duration::from_millis(1_794_000_123_456));
+        stage.hands.insert("p9".into(), dan);
+
+        // The stage: Dan listed with his hand, out of the count once.
+        let host_view = stage.for_subscriber(true, Some("p1"));
+        let doc = full(&NAMES, 1, &host_view);
+        assert!(doc.contains("<user-count>501</user-count>"), "{doc}");
+        assert!(doc.contains("<fcp:audience>499</fcp:audience>"), "{doc}");
+        assert!(
+            doc.contains("<roles><entry>attendee</entry></roles>"),
+            "{doc}"
+        );
+        assert!(
+            doc.contains("<fcp:hand>2026-11-06T21:22:03.456Z</fcp:hand>"),
+            "{doc}"
+        );
+        let mut read = info::Roster::default();
+        assert_eq!(read.apply(info::parse(&doc).unwrap()), Applied::Changed);
+        let dan = read.members().into_iter().find(|m| m.id == "p9").unwrap();
+        assert!(dan.hand && dan.attendee && !dan.host);
+        assert!(!read.members().into_iter().any(|m| m.id == "p1" && m.hand));
+
+        // Dan himself sees his own hand; another attendee sees nobody's.
+        let mine = stage.for_subscriber(false, Some("p9"));
+        assert!(mine.members.contains_key("p9"));
+        assert_eq!(mine.audience, 499);
+        let theirs = stage.for_subscriber(false, Some("p8"));
+        assert_eq!(theirs.members.len(), 1);
+        assert_eq!(theirs.audience, 500);
+
+        // The hand coming down is an update that takes Dan off the stage's.
+        let mut lowered = stage.clone();
+        lowered.hands.clear();
+        let doc = partial(
+            &NAMES,
+            2,
+            &host_view,
+            &lowered.for_subscriber(true, Some("p1")),
+        )
+        .expect("a change");
+        assert!(doc.contains("state=\"deleted\""), "{doc}");
+        assert!(doc.contains("<fcp:audience>500</fcp:audience>"), "{doc}");
     }
 
     #[test]

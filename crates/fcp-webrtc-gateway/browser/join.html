@@ -81,6 +81,7 @@
       <div style="flex: 0 0 auto"><button id="leave" class="danger">Leave</button></div>
       <div style="flex: 0 0 auto"><button id="mute" class="secondary">Mute</button></div>
       <div style="flex: 0 0 auto"><button id="share" class="secondary hidden">Share screen</button></div>
+      <div style="flex: 0 0 auto"><button id="hand" class="secondary">Raise hand</button></div>
       <div class="status" id="call-status"></div>
     </div>
     <div class="share" id="share-status"></div>
@@ -355,6 +356,7 @@
       setStatus('share-status', describeShare(info.content));
       if (info.content) noticesSeen = info.content.notices || 0;
       showForwarding(info.forwarding || null);
+      showHand(info.qa || null);
       // A host stopped the share, or the room refused it: stop sending.
       // Only a verdict newer than this share counts; an earlier one is history.
       if (screen && info.content && noticesSeen > noticesAtShare && (info.content.state === 'refused' || info.content.state === 'released')) stopSharing('the room ended it');
@@ -608,7 +610,26 @@
     if (contentSender) { try { await contentSender.replaceTrack(null); } catch (_) {} }
   }
 
+  // A raised hand (docs/WEBINARS.md §2.5): sent to the room, and shown as
+  // the session says it stands — a host lowers it, the stage takes it down.
+  let handUp = false;
+  function showHand(qa) {
+    handUp = !!(qa && qa.hand);
+    $('hand').textContent = handUp ? 'Lower hand' : 'Raise hand';
+    $('hand').title = qa && qa.on_stage ? 'You are on the stage' : '';
+  }
+  async function toggleHand() {
+    if (!session) return;
+    try {
+      await call('POST', `/v1/rooms/${session.id}/hand`, { raised: !handUp }, session.token);
+      showHand({ hand: !handUp });
+    } catch (e) {
+      log(`hand: ${e.message}`);
+    }
+  }
+
   $('join').addEventListener('click', join);
+  $('hand').addEventListener('click', toggleHand);
   $('leave').addEventListener('click', leave);
   $('mute').addEventListener('click', toggleMute);
   $('share').addEventListener('click', () => (screen ? stopSharing('by you') : startSharing()));

@@ -745,6 +745,16 @@ fn execute_dtmf_command(
                 gain_delta: 0.0,
             }
         }
+        DtmfCommand::RaiseHand => {
+            // Whose hand is up is the handler's to keep: it takes the
+            // press from the room (`docs/WEBINARS.md` §2.5).
+            room.request_hand_toggle(participant_id);
+            DtmfResult {
+                should_leave: false,
+                feedback: None,
+                gain_delta: 0.0,
+            }
+        }
         DtmfCommand::Leave => {
             info!(participant = %participant_id, "DTMF leave requested");
             DtmfResult {

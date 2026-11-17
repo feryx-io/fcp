@@ -1469,3 +1469,95 @@ async fn a_browser_s_feedback_is_the_room_s_estimate_through_the_gateway() {
     conference.stop().await;
     db.drop_db().await;
 }
+
+/// The audience's voice through the gateway (`docs/WEBINARS.md` §2.5): a
+/// browser in a webinar raises its hand with `POST /v1/rooms/{id}/hand`,
+/// the room has it, and when a host brings it to the stage the room's
+/// `fcp-qa` INFO shows on the session as `qa`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_raises_its_hand_and_is_told_it_is_on_the_stage() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    seed.meeting_with(ROOM, serde_json::json!({ "kind": "webinar" }))
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (conference, conf_sip, conf_http) = conference_server_http(db.url(), dir.path()).await;
+    let mut gw = Gateway::start(conf_sip, None).await;
+    let conf = |method: &'static str, path: String| async move {
+        let (code, body) = http_request(method, &loopback(conf_http, &path), &[], Some("{}"))
+            .await
+            .map_err(|e| format!("{method} {path}: {e}"))?;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        Ok::<_, String>((code, json))
+    };
+
+    let scenario = async {
+        // A guest token in a webinar admits an attendee.
+        let browser = Browser::join(&gw, &join_token(&seed, "web"), "web").await?;
+        browser.wait_state(&gw, "connected", A_WHILE).await?;
+        let session = format!("/v1/rooms/{}", browser.id);
+        let (_, info) = gw.api("GET", &session, &browser.token, None).await?;
+        if info["qa"] != serde_json::json!({ "hand": false, "on_stage": false }) {
+            return Err(format!("a new session's qa: {info}"));
+        }
+
+        let (code, body) = gw
+            .api(
+                "POST",
+                &format!("{session}/hand"),
+                &browser.token,
+                Some(r#"{"raised":true}"#),
+            )
+            .await?;
+        if code != 204 {
+            return Err(format!("the hand answered {code}: {body}"));
+        }
+        let (_, info) = gw.api("GET", &session, &browser.token, None).await?;
+        if info["qa"]["hand"] != true {
+            return Err(format!("the hand is not up on the session: {info}"));
+        }
+        let (_, room) = conf("GET", format!("/conferences/{ROOM}")).await?;
+        let pid = room["participants"][0]
+            .as_str()
+            .ok_or(format!("nobody in the room: {room}"))?
+            .to_string();
+        let (_, p) = conf("GET", format!("/conferences/{ROOM}/participants/{pid}")).await?;
+        if !p["hand"].is_string() || p["role"] != "attendee" {
+            return Err(format!("the room has no hand up: {p}"));
+        }
+
+        let (code, out) = conf(
+            "POST",
+            format!("/conferences/{ROOM}/participants/{pid}/stage"),
+        )
+        .await?;
+        if code != 200 {
+            return Err(format!("the stage answered {code}: {out}"));
+        }
+        let deadline = tokio::time::Instant::now() + SOON;
+        loop {
+            let (_, info) = gw.api("GET", &session, &browser.token, None).await?;
+            if info["qa"] == serde_json::json!({ "hand": false, "on_stage": true }) {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!("never told it is on the stage: {info}"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        browser.leave(&gw).await?;
+        Ok::<_, String>(())
+    }
+    .await;
+    if let Err(why) = scenario {
+        let logs = gw.logs().await;
+        let conf = conference.kill().await;
+        panic!("{why}\n{logs}\n{conf}");
+    }
+    gw.service.take().unwrap().stop().await;
+    conference.stop().await;
+    db.drop_db().await;
+}

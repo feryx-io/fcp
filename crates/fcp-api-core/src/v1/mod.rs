@@ -341,6 +341,23 @@ pub fn router() -> Router<ApiState> {
             "/me/conferences/live/:room/video/content/stop",
             post(me_conferences_live::stop_content),
         )
+        // The audience's voice (`docs/WEBINARS.md` §2.5)
+        .route(
+            "/me/conferences/live/:room/hand",
+            post(me_conferences_live::own_hand),
+        )
+        .route(
+            "/me/conferences/live/:room/participants/:pid/hand",
+            delete(me_conferences_live::lower_hand),
+        )
+        .route(
+            "/me/conferences/live/:room/hands",
+            delete(me_conferences_live::lower_hands),
+        )
+        .route(
+            "/me/conferences/live/:room/participants/:pid/stage",
+            post(me_conferences_live::stage_on).delete(me_conferences_live::stage_off),
+        )
         .route(
             "/me/conferences/:id/join-tokens",
             post(self_service::mint_my_join_token),

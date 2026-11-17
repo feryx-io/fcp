@@ -172,6 +172,21 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/conferences/:room_number/promote/:pid",
             post(promote_participant_handler),
         )
+        // The audience's voice (`docs/WEBINARS.md` §2.5): a participant's
+        // own hand by their call, a host lowering hands, and the stage.
+        .route("/conferences/:room_number/hand", post(own_hand_handler))
+        .route(
+            "/conferences/:room_number/participants/:pid/hand",
+            delete(lower_hand_handler),
+        )
+        .route(
+            "/conferences/:room_number/hands",
+            delete(lower_hands_handler),
+        )
+        .route(
+            "/conferences/:room_number/participants/:pid/stage",
+            post(stage_on_handler).delete(stage_off_handler),
+        )
         .route("/conferences/:room_number/stats", get(room_stats_handler))
         .route("/conferences/:room_number/announce", post(announce_handler))
         // Video (design §12): status, layout, pin, spotlight, per-participant on/off
@@ -1647,6 +1662,146 @@ async fn promote_participant_handler(
             Json(serde_json::json!({ "error": format!("{}", e) })),
         ),
     }
+}
+
+/// The answer to a hand or stage operation.
+fn stage_answer(
+    result: Result<bool, crate::conference_handler::StageError>,
+    pid: &str,
+) -> (StatusCode, Json<serde_json::Value>) {
+    use crate::conference_handler::StageError;
+    match result {
+        Ok(changed) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "participant": pid, "changed": changed })),
+        ),
+        Err(StageError::NotFound) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": StageError::NotFound.to_string() })),
+        ),
+        Err(e) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// The body of `POST /conferences/:room/hand`.
+#[derive(Debug, Deserialize)]
+struct OwnHandRequest {
+    /// The participant's call: the call manager's or the gateway's
+    /// `X-FCP-Call-Id`, or the leg's SIP Call-ID.
+    call_id: String,
+    raised: bool,
+}
+
+/// `POST /conferences/:room/hand` — a participant raises or lowers their
+/// own hand, named by their call (their app, through the admin's
+/// `/me/conferences/live/{room}/hand`).
+async fn own_hand_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Json(req): Json<OwnHandRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let Some(pid) = state
+        .conference_handler
+        .participant_by_call(&key, req.call_id.trim())
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "no participant on that call in the room" })),
+        );
+    };
+    let result = state.conference_handler.set_hand(
+        &key,
+        &pid,
+        req.raised,
+        crate::conference_handler::HandBy::Owner,
+    );
+    stage_answer(result, &pid)
+}
+
+/// `DELETE /conferences/:room/participants/:pid/hand` — a host lowers one
+/// hand.
+async fn lower_hand_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let result = state.conference_handler.set_hand(
+        &key,
+        &pid,
+        false,
+        crate::conference_handler::HandBy::Host,
+    );
+    if matches!(result, Ok(true)) {
+        info!(action = "lower_hand", room = %room_number, participant = %pid, "AUDIT: hand lowered via API");
+    }
+    stage_answer(result, &pid)
+}
+
+/// `DELETE /conferences/:room/hands` — a host lowers every hand.
+async fn lower_hands_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let lowered = state.conference_handler.lower_hands(&key);
+    info!(action = "lower_hands", room = %room_number, lowered, "AUDIT: hands lowered via API");
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "lowered": lowered })),
+    )
+}
+
+/// `POST /conferences/:room/participants/:pid/stage` — bring a webinar's
+/// attendee to the stage.
+async fn stage_on_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    stage_handler(state, headers, room_number, pid, true).await
+}
+
+/// `DELETE /conferences/:room/participants/:pid/stage` — send them back.
+async fn stage_off_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    stage_handler(state, headers, room_number, pid, false).await
+}
+
+async fn stage_handler(
+    state: Arc<ConferenceState>,
+    headers: HeaderMap,
+    room_number: String,
+    pid: String,
+    on: bool,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let result = state.conference_handler.set_stage(&key, &pid, on);
+    if matches!(result, Ok(true)) {
+        info!(action = if on { "stage_on" } else { "stage_off" }, room = %room_number, participant = %pid, "AUDIT: the stage changed via API");
+    }
+    stage_answer(result, &pid)
 }
 
 async fn room_stats_handler(

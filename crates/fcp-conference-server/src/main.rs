@@ -1834,6 +1834,14 @@ async fn main() -> Result<()> {
                             continue;
                         }
 
+                        // A hand raised or lowered by `*4` (`docs/WEBINARS.md`
+                        // §2.5), oldest first.
+                        for pid in room.drain_hand_requests() {
+                            if let Err(e) = dialout_handler.toggle_hand(&room_id, &pid) {
+                                tracing::debug!(room = %room_id, participant = %pid, error = %e, "A raised hand not taken");
+                            }
+                        }
+
                         // Check for dial-out requests
                         let requests = room.drain_dial_out_requests();
                         for destination in requests {

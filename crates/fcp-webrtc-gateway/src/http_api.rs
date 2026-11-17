@@ -257,6 +257,30 @@ async fn set_view(
     }
 }
 
+/// The body of `POST /v1/rooms/{id}/hand`.
+#[derive(Debug, Deserialize)]
+struct HandRequest {
+    raised: bool,
+}
+
+/// `POST /v1/rooms/{id}/hand` — raise or lower the browser's hand
+/// (`docs/WEBINARS.md` §2.5), sent on to the room as an `fcp-qa` INFO. The
+/// session's `qa` says where it stands.
+async fn set_hand(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<HandRequest>,
+) -> Result<StatusCode, ApiError> {
+    if !state.sessions.exists(&id, true).await {
+        return Err(SessionError::NotFound(format!("room session '{id}' not found")).into());
+    }
+    match state.sessions.set_hand(&id, req.raised).await? {
+        200..=299 => Ok(StatusCode::NO_CONTENT),
+        403 => Err(SessionError::BadRequest("a host has no hand to raise".into()).into()),
+        code => Err(SessionError::Internal(format!("the room answered the hand {code}")).into()),
+    }
+}
+
 /// `POST /v1/{rooms|calls}/{id}/answer` — the browser's answer.
 async fn answer(
     State(state): State<ApiState>,
@@ -411,6 +435,7 @@ pub fn routes(state: ApiState) -> Router {
         .route("/v1/rooms/{id}/answer", post(answer))
         .route("/v1/rooms/{id}/ice-candidate", post(ice_candidate))
         .route("/v1/rooms/{id}/view", post(set_view))
+        .route("/v1/rooms/{id}/hand", post(set_hand))
         .route("/v1/calls", post(initiate_call).get(list_calls))
         .route("/v1/calls/{id}", get(get_call).delete(hangup_call))
         .route("/v1/calls/{id}/answer", post(answer))

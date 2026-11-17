@@ -48,6 +48,15 @@ pub fn parse_content_notice(request: &Request) -> Option<ContentNotice> {
     serde_json::from_slice(request.body()).ok()
 }
 
+/// An INFO of the audience's voice in a room (`docs/WEBINARS.md` §2.5).
+pub fn is_qa_info(request: &Request) -> bool {
+    request
+        .headers()
+        .get("Content-Type")
+        .and_then(|t| t.split(';').next())
+        .is_some_and(|t| t.trim().eq_ignore_ascii_case(fcp_core::QA_INFO_TYPE))
+}
+
 /// A bodyless response to `request` with the headers RFC 3261 §8.2.6
 /// requires copied over, and a To tag when the request had none.
 pub fn simple_response(request: &Request, code: u16, reason: &str) -> Response {
@@ -122,6 +131,30 @@ impl InboundMessageHandler for GatewayInboundHandler {
                                 "Call/Transaction Does Not Exist",
                             ))
                             .await;
+                    }
+                }
+                Method::Info if is_qa_info(&request) => {
+                    match fcp_core::qa::QaMessage::parse(request.body()) {
+                        Ok(message) if self.sessions.qa_notice(&call_id, &message).await => {
+                            handle
+                                .send_final(simple_response(&request, 200, "OK"))
+                                .await;
+                        }
+                        Ok(_) => {
+                            handle
+                                .send_final(simple_response(
+                                    &request,
+                                    481,
+                                    "Call/Transaction Does Not Exist",
+                                ))
+                                .await;
+                        }
+                        Err(e) => {
+                            debug!(%peer, call_id = %call_id, error = %e, "fcp-qa INFO refused");
+                            handle
+                                .send_final(simple_response(&request, 400, "Bad Request"))
+                                .await;
+                        }
                     }
                 }
                 Method::Info => match parse_content_notice(&request) {

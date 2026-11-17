@@ -4,7 +4,8 @@ Status: agreed 2026-11-17: every recommendation, except that chat is in (§2.5,
 §6 Q5). W1 is done (v0.25.582–583, forge-media v2026.11.17): the roles and the shared
 audience mix, measured at 1,000 and 2,000 attendees on one node (§5). W2 is done
 (v0.25.584–585, forge-media v2026.11.17.1): the audience's video and roster, measured
-at 1,000 and 2,000 watching (§5).
+at 1,000 and 2,000 watching (§5). W3 is in two parts: W3.1, hands and the stage, is
+done (v0.25.586–587, forge-media v2026.11.17.2); W3.2, Q&A, is next.
 
 A webinar is a meeting with a stage and an audience:
 - a few people speak and are seen;
@@ -450,12 +451,63 @@ For an audience that is not on FCP at all.
         queue), where a composite subscriber holds a fraction of that. A
         large forwarded audience is a memory budget as well as an egress
         budget, which W5's edges should weigh.
-- **W3: hands and Q&A** (FCP).
+- **W3: hands and Q&A** (FCP), in two parts.
   - Raise hand by DTMF, INFO and API; promote and send back.
   - `webinar_questions` (migration), the `fcp-qa` INFO package, the
     `/me/conferences/live/{room}/questions` routes, `conference.question_*`
     and `conference.hand_*` events.
   - The gateway relaying the package.
+  - **W3.1: hands and the stage.** **Done** (v0.25.586–587, forge-media
+    v2026.11.17.2: forge-conference 0.20.0). As built:
+    - **Raising a hand.** Anyone but a host raises or lowers their own hand:
+      - `*4` on a phone. forge-conference's `DtmfCommand::RaiseHand` queues
+        the press on the room, and the node takes it within a second, as it
+        takes a DTMF dial-out.
+      - An `fcp-qa` INFO, `{"op":"hand","raised":true}`
+        (`application/vnd.fcp.qa+json`, `fcp_core::qa::QaMessage`).
+      - The app's `POST /me/conferences/live/{room}/hand` with
+        `{call_id, raised}`. The call is the `X-FCP-Call-Id` its 200 OK named;
+        knowing it is what makes the hand the caller's.
+      - The browser's `POST /v1/rooms/{id}/hand` on the gateway, and a Raise
+        hand button on the join page.
+    - **A host's controls**, under `/me/conferences/live/{room}` as a host's
+      others are: `DELETE …/participants/{pid}/hand`, `DELETE …/hands`, and
+      `POST`/`DELETE …/participants/{pid}/stage`. The conference server has
+      the same routes, plus `POST /conferences/{room}/hand` by call.
+    - **The stage.** Bringing a webinar's attendee up takes them out of the
+      room's listeners: they hear N−1 and are heard from the next frame, and
+      the video room stops counting them as audience. Their hand comes down.
+      Sending them back makes them a listener again. Only an attendee goes
+      up and back (409 otherwise). Their camera stays as it was answered,
+      receive-only: Q12's re-INVITE to send is not built yet.
+    - **Rosters.** A raised hand in the audience is listed on the stage's
+      rosters, with the role `attendee` and `fcp:hand` (RFC 3339, since
+      when), and out of `fcp:audience` once, so `user-count` is unchanged.
+      An attendee's roster lists their own raised hand and nobody else's.
+      A member of the stage (or a meeting's guest) with a hand up carries
+      `fcp:hand` too. `fcp_core::conference_info` reads `hand` and
+      `attendee`.
+    - **Being told.** A participant whose INVITE said `Recv-Info: fcp-qa`
+      (or who came by a token: the gateway always asks) is answered
+      `Recv-Info: fcp-qa`. They are sent `{"op":"hand","raised":false}` when
+      a host lowers their hand, `{"op":"hand",…}` when `*4` or their app moves
+      it, and `{"op":"stage","on":…}` when they go up or back. Going up says
+      nothing more about the hand. Each INFO's CSeq is taken from the dialog
+      as it is cloned, so two sent at once differ. The room refuses a
+      `stage` message from a participant (403) and anything that is not a
+      message (400).
+    - **Relays.** The call manager carries `Recv-Info: fcp-qa` both ways and
+      `fcp-qa` INFOs in either direction (`conference_relay::is_qa_info`).
+      The gateway asks for the package, keeps `qa: {hand, on_stage}` on a
+      room session, and sends the browser's hand as an INFO.
+    - **Events:** `conference.hand_raised`, `conference.hand_lowered`
+      (`by_host`), `conference.stage_joined` and `conference.stage_left`.
+    - `hand` (RFC 3339 or `null`) on each participant in the room's JSON.
+    - **Not kept across a move:** a participant migrated off a draining node
+      arrives with their hand down. A SIP client that asked for `fcp-qa` and
+      did not come by a token is not told after a move either.
+  - **W3.2: Q&A.** Questions, upvotes, answers and moderation over the same
+    package.
 - **W3b: chat** (FCP), for every room.
   - `conference_chat` (migration) under retention, holds and subject requests.
   - The `fcp-chat` INFO package, relayed by the call manager and the gateway.

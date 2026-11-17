@@ -218,6 +218,7 @@ from .notify_call_response import NotifyCallResponse
 from .number_usage_response import NumberUsageResponse
 from .number_validation_response import NumberValidationResponse
 from .order_statuses_request import OrderStatusesRequest
+from .own_hand_request import OwnHandRequest
 from .own_status_request import OwnStatusRequest
 from .own_status_response import OwnStatusResponse
 from .page_agent_response import PageAgentResponse
@@ -809,6 +810,7 @@ __all__ = (
     "NumberUsageResponse",
     "NumberValidationResponse",
     "OrderStatusesRequest",
+    "OwnHandRequest",
     "OwnStatusRequest",
     "OwnStatusResponse",
     "PageAgentResponse",
