@@ -1234,6 +1234,29 @@ async fn callers_are_answered_on_ports_the_node_could_bind() {
     stack.finish().await;
 }
 
+/// A node with no port pair left refuses a caller with 503 rather than
+/// leave them ringing (found measuring `docs/WEBINARS.md` W2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_is_refused_when_no_port_pair_is_left() {
+    let Some(stack) = Stack::start_with("", 50).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let start = stack.rtp_start;
+    let _held: Vec<_> = (0..50)
+        .map(|pair| start + 2 * pair)
+        .flat_map(|port| [port, port + 1])
+        .filter_map(|port| std::net::UdpSocket::bind(("0.0.0.0", port)).ok())
+        .collect();
+    stack.seed.meeting(ROOM, None, None).await;
+    let alice = stack.phone("alice").await;
+    let call = alice.call(ROOM).await.expect("INVITE sent");
+    let refused = call.answered(SOON).await.expect_err("no ports, no answer");
+    assert!(refused.to_string().contains("503"), "{refused}");
+    stack.wait_participants(0).await;
+    stack.finish().await;
+}
+
 /// Calls into a room through the call manager leave nothing behind there
 /// once they end (#372): the soak's call manager kept about one more thing
 /// for every room call (`fcp_node_held`). Callers leave both ways — the
@@ -2204,6 +2227,171 @@ async fn a_webinar_s_stage_is_heard_by_attendees_who_are_not() {
     }
 
     for call in [&host_call, &panelist_call, &ann_call, &ben_call] {
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
+    stack.wait_participants(0).await;
+    stack.finish().await;
+}
+
+/// A webinar's video (`docs/WEBINARS.md` §2.3–2.4). The stage sends and is
+/// drawn; the audience is answered sending only, watches one composite
+/// of the whole room shared by all of it whatever `exclude_self` says,
+/// is never drawn, and is counted on the roster, never listed, the
+/// count alone an update of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_webinar_s_audience_watches_the_stage_and_is_counted_not_listed() {
+    let Some(stack) = Stack::start_conference(
+        "",
+        60,
+        "join_secret = \"join-s3cret\"\nvideo_native_codecs_only = false",
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({
+                "kind": "webinar",
+                "video_enabled": true,
+                "video_codecs": ["VP8"],
+                "video_exclude_self": true,
+            }),
+        )
+        .await;
+    let token = |name: &str, role: fcp_core::JoinRole| {
+        fcp_core::JoinToken::new(
+            stack.seed.tenant_id,
+            ROOM,
+            name,
+            role,
+            Duration::from_secs(600),
+        )
+        .mint(b"join-s3cret")
+    };
+    let join_as = |name: &'static str, role: fcp_core::JoinRole, video: bool| {
+        let stack = &stack;
+        let token = token(name, role);
+        async move {
+            let phone = stack.phone(&name.to_lowercase()).await;
+            if video {
+                phone.enable_video(fcp_testkit::video::VideoMode::Plain);
+                phone.set_video_codec(fcp_testkit::video::VideoCodec::Vp8);
+            }
+            let call = phone
+                .call_with_headers(ROOM, &[("X-FCP-Join", &token)])
+                .await
+                .expect("INVITE sent");
+            if let Err(e) = call.answered(SOON).await {
+                stack
+                    .fail(&format!("{name} was not admitted: {e}"), &phone)
+                    .await;
+            }
+            (phone, call)
+        }
+    };
+    let (host, host_call) = join_as("Hostess", fcp_core::JoinRole::Host, true).await;
+    let (_panelist, panelist_call) = join_as("Panelist", fcp_core::JoinRole::Panelist, true).await;
+    let (_ann, ann_call) = join_as("Ann", fcp_core::JoinRole::Guest, true).await;
+    let (_ben, ben_call) = join_as("Ben", fcp_core::JoinRole::Attendee, true).await;
+    stack.wait_participants(4).await;
+    let ann_id = stack.participant_named("Ann").await;
+    let ben_id = stack.participant_named("Ben").await;
+    let panelist_id = stack.participant_named("Panelist").await;
+
+    // Answered: the stage both ways, the audience sent to only.
+    let video_of = |sdp: String| sdp[sdp.find("m=video").expect("a video section")..].to_string();
+    let ann_video = video_of(ann_call.answer_sdp().unwrap());
+    assert!(ann_video.contains("a=sendonly"), "{ann_video}");
+    assert!(!ann_video.contains("a=simulcast"), "{ann_video}");
+    let host_video = video_of(host_call.answer_sdp().unwrap());
+    assert!(host_video.contains("a=sendrecv"), "{host_video}");
+
+    // The audience is sent the stage, and what an attendee sends goes
+    // nowhere. (The phone counts only its own kind of packets; the room
+    // says what it sent.)
+    for _ in 0..15 {
+        for call in [&host_call, &panelist_call, &ann_call] {
+            call.video().unwrap().send_frames(1, 10).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(66)).await;
+    }
+    stack
+        .wait_participant(&ben_id, |p| {
+            p["video"]["frames_sent"].as_u64().unwrap_or(0) > 0
+                && p["video"]["packets_sent"].as_u64().unwrap_or(0) > 0
+        })
+        .await;
+    let ann = stack.participant(&ann_id).await;
+    assert_eq!(ann["video"]["audience"], true, "{ann}");
+    assert_eq!(ann["video"]["view"], "composite", "{ann}");
+    assert!(
+        ann["video"].get("decode_errors").is_none(),
+        "no source: {ann}"
+    );
+    let panelist = stack.participant(&panelist_id).await;
+    assert_eq!(panelist["video"]["audience"], false, "{panelist}");
+    assert!(
+        panelist["video"].get("decode_errors").is_some(),
+        "a source: {panelist}"
+    );
+
+    // One composite of the whole room for both attendees; the stage's
+    // own leave themselves out.
+    let (_, room) = stack.get(&format!("/conferences/{ROOM}")).await;
+    let video = &room["video"];
+    assert_eq!(video["audience"], 2, "{video}");
+    assert_eq!(video["sources"], 2, "the stage's cameras only: {video}");
+    let outputs = video["outputs"].as_array().cloned().unwrap_or_default();
+    let shared: Vec<_> = outputs
+        .iter()
+        .filter(|o| o["scope"]["kind"] == "all" && o["view"] == "composite")
+        .collect();
+    assert_eq!(shared.len(), 1, "{video}");
+    assert_eq!(shared[0]["flavors"][0]["subscribers"], 2, "{video}");
+
+    // The roster: the stage listed, the audience counted.
+    assert_eq!(
+        host_call
+            .subscribe_in_call("conference", 600)
+            .await
+            .unwrap(),
+        200
+    );
+    let (_, full) = roster(&host, host_call.call_id()).await;
+    assert_eq!(full.matches("<user ").count(), 2, "{full}");
+    assert!(full.contains("<user-count>4</user-count>"), "{full}");
+    assert!(full.contains("<fcp:audience>2</fcp:audience>"), "{full}");
+    assert!(
+        full.contains("<roles><entry>panelist</entry></roles>"),
+        "{full}"
+    );
+
+    // A third attendee is a new count and nobody new on the roster.
+    let (_carl, carl_call) = join_as("Carl", fcp_core::JoinRole::Guest, false).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, doc) = roster(&host, host_call.call_id()).await;
+        for id in [&ann_id, &ben_id] {
+            assert!(
+                !doc.contains(&format!("sip:{id}@")),
+                "an attendee listed: {doc}"
+            );
+        }
+        if doc.contains("<fcp:audience>3</fcp:audience>") {
+            assert!(doc.contains("<user-count>5</user-count>"), "{doc}");
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the count never moved"
+        );
+    }
+
+    for call in [&host_call, &panelist_call, &ann_call, &ben_call, &carl_call] {
         assert_eq!(call.hangup().await.unwrap(), 200);
     }
     stack.wait_participants(0).await;

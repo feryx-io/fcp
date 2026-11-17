@@ -14,6 +14,11 @@
 //! stream is held back, and the member the speaker stream shows has a
 //! `<media id="speaker">` with that stream's `<src-id>`. Every subscriber's
 //! roster is its own, since NOTIFYs are sent per subscription.
+//!
+//! A webinar's audience is counted, never listed (`docs/WEBINARS.md` §2.4):
+//! the members are the stage, and `fcp:audience` in the conference state
+//! says how many watch. Nobody in the audience is on anybody's roster, so
+//! the [`MAX_USERS`] cap is out of a webinar's reach.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -53,6 +58,8 @@ impl Audio {
 pub(crate) struct Member {
     pub name: String,
     pub host: bool,
+    /// A webinar's panelist, or an attendee brought to the stage.
+    pub panelist: bool,
     pub audio: Audio,
     /// Their camera as the room has it (`on`, `off`, `lost`, `disabled`,
     /// `failed`), when the room has video.
@@ -81,6 +88,8 @@ pub(crate) struct StreamOf {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Roster {
     pub members: BTreeMap<String, Member>,
+    /// A webinar's audience: how many listen and watch.
+    pub audience: usize,
 }
 
 /// One of a forwarding subscriber's streams, for [`Roster::for_viewer`].
@@ -167,7 +176,7 @@ pub(crate) fn partial(
             user(&mut users, names, id, None);
         }
     }
-    if users.is_empty() {
+    if users.is_empty() && before.audience == now.audience {
         return None;
     }
     Some(document(names, version, "partial", now, &users))
@@ -179,7 +188,8 @@ pub(crate) fn ended(names: &Names, version: u32) -> String {
 }
 
 fn document(names: &Names, version: u32, state: &str, roster: &Roster, users: &str) -> String {
-    let count = roster.members.len();
+    // Everyone in the room, the audience with the stage.
+    let count = roster.members.len() + roster.audience;
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <conference-info xmlns=\"urn:ietf:params:xml:ns:conference-info\" \
@@ -187,12 +197,14 @@ fn document(names: &Names, version: u32, state: &str, roster: &Roster, users: &s
          <conference-description>\n    <display-text>Conference {name}</display-text>\n  \
          </conference-description>\n  \
          <conference-state>\n    <user-count>{count}</user-count>\n    \
-         <active>{active}</active>\n  </conference-state>\n  \
+         <active>{active}</active>\n    \
+         <fcp:audience>{audience}</fcp:audience>\n  </conference-state>\n  \
          <users>\n{users}  </users>\n\
          </conference-info>\n",
         room = names.room(),
         name = escape(names.room),
         active = count > 0,
+        audience = roster.audience,
     )
 }
 
@@ -212,7 +224,13 @@ fn user(out: &mut String, names: &Names, id: &str, member: Option<&Member>) {
     let _ = writeln!(
         out,
         "      <roles><entry>{}</entry></roles>",
-        if m.host { "host" } else { "participant" }
+        if m.host {
+            "host"
+        } else if m.panelist {
+            "panelist"
+        } else {
+            "participant"
+        }
     );
     let _ = writeln!(out, "      <endpoint entity=\"{entity}\" state=\"full\">");
     let _ = writeln!(out, "        <status>connected</status>");
@@ -302,6 +320,7 @@ mod tests {
         Member {
             name: name.into(),
             host: false,
+            panelist: false,
             audio: Audio::Sending,
             video: Some("on"),
             speaking: false,
@@ -319,6 +338,7 @@ mod tests {
                 .iter()
                 .map(|(id, m)| (id.to_string(), m.clone()))
                 .collect(),
+            audience: 0,
         }
     }
 
@@ -526,6 +546,39 @@ mod tests {
             room.members["p1"].stream, None,
             "the room's own is left alone"
         );
+    }
+
+    #[test]
+    fn a_webinar_s_audience_is_counted_never_listed() {
+        use fcp_core::conference_info::{self as info, Applied};
+        let mut host = member("Ann");
+        host.host = true;
+        let mut panelist = member("Bob");
+        panelist.panelist = true;
+        let mut stage = roster(&[("p1", host), ("p2", panelist)]);
+        stage.audience = 1200;
+        let doc = full(&NAMES, 1, &stage);
+        // Everyone counted, two listed.
+        assert!(doc.contains("<user-count>1202</user-count>"), "{doc}");
+        assert!(doc.contains("<fcp:audience>1200</fcp:audience>"), "{doc}");
+        assert_eq!(doc.matches("<user ").count(), 2);
+        assert!(
+            doc.contains("<roles><entry>panelist</entry></roles>"),
+            "{doc}"
+        );
+        let mut read = info::Roster::default();
+        assert_eq!(read.apply(info::parse(&doc).unwrap()), Applied::Changed);
+        assert_eq!(read.audience(), 1200);
+        assert_eq!(read.members().len(), 2);
+
+        // The count alone is an update, with nobody in it.
+        let mut more = stage.clone();
+        more.audience = 1250;
+        let doc = partial(&NAMES, 2, &stage, &more).expect("the count changed");
+        assert!(!doc.contains("<user "), "{doc}");
+        assert_eq!(read.apply(info::parse(&doc).unwrap()), Applied::Changed);
+        assert_eq!(read.audience(), 1250);
+        assert_eq!(read.members().len(), 2, "the stage is as it was");
     }
 
     #[test]

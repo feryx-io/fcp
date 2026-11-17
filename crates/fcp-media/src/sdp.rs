@@ -1941,6 +1941,51 @@ pub fn with_video_direction(sdp: &str, direction: &str) -> String {
     out
 }
 
+/// An answer's live video sections, the camera's and a shared screen's,
+/// made to send and never receive: a webinar's attendee watches and is
+/// not watched (FCP `docs/WEBINARS.md` §2.3). A section the answer sent
+/// on (`sendrecv`, `sendonly`) becomes `sendonly`; one it only received on
+/// (`recvonly`, the offer sending only) becomes `inactive`. Audio and
+/// turned-down sections are left alone.
+pub fn with_video_sending_only(answer: &str) -> String {
+    let direction_of_line = |l: &str| match l.trim() {
+        "a=sendrecv" => Some("sendrecv"),
+        "a=sendonly" => Some("sendonly"),
+        "a=recvonly" => Some("recvonly"),
+        "a=inactive" => Some("inactive"),
+        _ => None,
+    };
+    let (head, sections) = split_sections(answer);
+    let mut out = head;
+    for section in sections {
+        let mut lines = section.lines();
+        let m = lines.next().unwrap_or_default();
+        let live_video =
+            m.starts_with("m=video") && m.split_whitespace().nth(1).is_some_and(|p| p != "0");
+        if !live_video {
+            out.push_str(&section);
+            continue;
+        }
+        let rest: Vec<&str> = lines.collect();
+        let was = rest
+            .iter()
+            .find_map(|l| direction_of_line(l))
+            .unwrap_or("sendrecv");
+        let now = match was {
+            "sendrecv" | "sendonly" => "sendonly",
+            _ => "inactive",
+        };
+        out.push_str(m);
+        out.push_str("\r\n");
+        for line in rest.iter().filter(|l| direction_of_line(l).is_none()) {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+        out.push_str(&format!("a={now}\r\n"));
+    }
+    out
+}
+
 /// One section pointed at the node: its port, its connection line, and
 /// the node's key or none, the other leg's crypto dropped.
 fn anchor_section(
@@ -3844,6 +3889,27 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
             split_sections(&with_video_direction(&bare, "inactive")).1[1]
                 .ends_with("a=inactive\r\n")
         );
+    }
+
+    #[test]
+    fn an_attendee_s_video_is_answered_sending_only() {
+        let answer = "v=0\r\no=- 1 1 IN IP4 10.0.0.5\r\ns=-\r\nc=IN IP4 10.0.0.5\r\nt=0 0\r\n\
+             m=audio 20000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendrecv\r\n\
+             m=video 20002 RTP/AVPF 97\r\na=rtpmap:97 VP8/90000\r\na=sendrecv\r\n\
+             m=video 20004 RTP/AVPF 97\r\na=content:slides\r\na=recvonly\r\n\
+             m=video 0 RTP/AVPF 97\r\n";
+        let only = with_video_sending_only(answer);
+        let (_, sections) = split_sections(&only);
+        assert!(sections[0].contains("a=sendrecv"), "audio keeps its own");
+        assert!(sections[1].ends_with("a=sendonly\r\n"), "{only}");
+        assert!(!sections[1].contains("sendrecv"));
+        // The offer only sent its screen: nothing left to answer with.
+        assert!(sections[2].ends_with("a=inactive\r\n"), "{only}");
+        assert!(!sections[3].contains("a="), "a turned-down section stays");
+        // No direction is sendrecv, and so sendonly.
+        let bare = answer.replacen("a=sendrecv\r\nm=video", "m=video", 1);
+        let bare = bare.replacen("a=sendrecv\r\n", "", 1);
+        assert!(split_sections(&with_video_sending_only(&bare)).1[1].ends_with("a=sendonly\r\n"));
     }
 
     #[test]

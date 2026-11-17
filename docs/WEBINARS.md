@@ -2,7 +2,9 @@
 
 Status: agreed 2026-11-17: every recommendation, except that chat is in (§2.5,
 §6 Q5). W1 is done (v0.25.582–583, forge-media v2026.11.17): the roles and the shared
-audience mix, measured at 1,000 and 2,000 attendees on one node (§5).
+audience mix, measured at 1,000 and 2,000 attendees on one node (§5). W2 is done
+(v0.25.584–585, forge-media v2026.11.17.1): the audience's video and roster, measured
+at 1,000 and 2,000 watching (§5).
 
 A webinar is a meeting with a stage and an audience:
 - a few people speak and are seen;
@@ -381,12 +383,73 @@ For an audience that is not on FCP at all.
       is packet work: building, encrypting and sending one packet every 20 ms.
       The feed's slowest frame was under 7 ms, well inside the 20 ms frame.
       W5's edges are wanted for egress and resilience before CPU.
-- **W2: the audience's video and roster** (forge-media, FCP).
+- **W2: the audience's video and roster** (forge-media, FCP). **Done**
+  (v0.25.584–585, forge-media v2026.11.17.1: forge-conference 0.19.0).
   - Attendees on the composite flavors and as forwarding viewers, camera
     sections answered receive-only.
   - The stage's roster and the attendee's (the count, coalesced).
   - Admission and placement pricing an attendee at their view.
   - Measured: attendees watching per node.
+  - As built:
+    - **The video room.** A listener is the *audience* there
+      (`VideoRoom::is_audience`): never drawn and never forwarded. They
+      always get a composite of the whole room, whatever `exclude_self`
+      says, so the audience shares one encode per flavor. They are left out
+      of the tick's join order, so the size of the audience costs the tick
+      nothing. `set_listener` moves a participant in and out.
+    - **The answer.** An attendee known at the INVITE (by a migration
+      ticket, a token, or a webinar that asks no PIN) gets their camera and
+      screen sections answered `sendonly` from the node's side, with no
+      simulcast (`fcp_media::with_video_sending_only`). A re-INVITE is
+      answered the same way. One the PIN makes an attendee was answered
+      before the PIN was heard; the room adds no source for them, so what
+      they send is dropped undecoded. An attendee never takes the floor,
+      and their screen section receives the slides.
+    - **The roster.** It lists the stage, with a panelist's role entry
+      `panelist`. `fcp:audience` in the conference state says how many
+      watch, and `user-count` counts everyone. A change to the count alone
+      goes out at most once every 2 s per subscription, and rides free with
+      any other change. `fcp_core::conference_info` reads the count. A peer
+      forwarding with this node is told of the stage, not the audience.
+    - **Admission** prices an attendee with `audience_join_cost`: no decode,
+      the composite's rate (the first watcher pays for the audience's
+      composite and its encode) or the forwarded default view of the stage's
+      cameras. Placement is unchanged: `VideoNeed` already prices a join at
+      the default view (2,800 kb/s), more than an attendee costs. W5 places
+      attendees on edges.
+    - `audience` in the room's video JSON and on each participant's.
+    - The audience by page (§2.6) moves to W4, beside attendance.
+    - **Fixed while measuring:**
+      - A join's video and screen ports are bound before the answer, as the
+        audio's are. A port something else on the host holds is now passed
+        over; before, it put the caller in audio only.
+      - A node with no port pair left refuses the caller with 503 instead of
+        leaving them ringing.
+    - **Measured** (`fcp-loadgen/tests/webinar.rs` with `FCP_LOADGEN_VIDEO`,
+      release with `video-vpx`, VP8 at 720p15, plain RTP; the host and two
+      panelists on camera, the phones on the same 12-core box as the node):
+
+      | Audience | Attendees | Node CPU (audio and video) | Video sent | Per attendee | Peak RSS |
+      |---|---|---|---|---|---|
+      | composite | 1,000 | 57.7% of a core | 16,447 packets/s | 16 packets/s | 541 MB |
+      | composite | 2,000 | 133.4% of a core | 32,494 packets/s | 16 packets/s | 672 MB |
+      | forwarded | 1,000 | 81.1% of a core | 60,802 packets/s, 584 Mb/s | 61 packets/s, 584 kb/s | 1,627 MB |
+
+      - Every attendee was sent video in every run. Each composite run had
+        one encode and no overruns, with 1,003 and 2,003 subscribers on the
+        one flavor.
+      - Against W1's audio alone (29.8% of a core for 1,000), the composite
+        adds about 17 µs a packet (its one encode included), and forwarding
+        about 8.4 µs a packet.
+      - The test kit's frames decode to nothing, so the composite drew
+        empty tiles and ran far under its 1,200 kb/s. A real 720p composite
+        is about 125 packets a second each. At 8.4 µs a packet that is about
+        one core per 1,000 watching, and 1.2 Gb/s out. A node's link fills
+        before its CPU: about 830 attendees per Gb/s on the 720p composite.
+      - A forwarding viewer holds about 1.1 MB (its retransmission cache and
+        queue), where a composite subscriber holds a fraction of that. A
+        large forwarded audience is a memory budget as well as an egress
+        budget, which W5's edges should weigh.
 - **W3: hands and Q&A** (FCP).
   - Raise hand by DTMF, INFO and API; promote and send back.
   - `webinar_questions` (migration), the `fcp-qa` INFO package, the

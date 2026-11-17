@@ -484,7 +484,16 @@ struct ConferenceSubscription {
     /// The roster the last NOTIFY told: the next is what changed since
     /// (none: the whole roster).
     sent: Option<crate::roster::Roster>,
+    /// When the audience's count last went out: a change to it alone is
+    /// held to one NOTIFY every [`AUDIENCE_COUNT_EVERY`]
+    /// (`docs/WEBINARS.md` §2.4).
+    audience_sent_at: Option<Instant>,
 }
+
+/// The most often a webinar's audience count alone sends a roster NOTIFY:
+/// a thousand joining in a minute is about thirty to each subscriber, not
+/// a thousand.
+const AUDIENCE_COUNT_EVERY: Duration = Duration::from_secs(2);
 
 /// The dialog a roster subscription's NOTIFYs go in.
 enum SubscriptionDialog {
@@ -1929,6 +1938,8 @@ impl ConferenceCallHandler {
             .iter()
             .filter_map(|id| self.sessions.get(id))
             .filter(|s| s.trunk_peer.is_none())
+            // A peer is told of the stage, not the audience.
+            .filter(|s| !room.is_listener(&s.participant_id))
             .map(|s| {
                 let id = s.participant_id.clone();
                 let audio = match meta.get(&id).map(|m| m.state) {
@@ -4440,6 +4451,8 @@ impl ConferenceCallHandler {
             return None;
         };
         let sink = self.video_event_sink(key);
+        // The audience never takes the floor (`docs/WEBINARS.md` §2.1).
+        let may_share = may_share && !room.is_listener(participant_id);
         // A BFCP endpoint's floor is explicit (7e): its policy is noted,
         // and its implicit sending switched off, whichever way it goes.
         if leg.kind == StreamKind::Content {
@@ -6361,6 +6374,22 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             && offered_sections.content.is_some()
             && meeting.video_content_share != "off";
 
+        // A webinar's attendee known before the answer — by a migration
+        // ticket, a token, or a webinar that asks no PIN — has their video
+        // answered sending only: they watch the stage and send nothing
+        // (`docs/WEBINARS.md` §2.3). One the PIN makes an attendee is
+        // answered before the PIN is heard; the room takes nothing they
+        // send all the same (`video_bridge::attach_video`).
+        let known_attendee = match (&migrate, &join) {
+            (Some(ticket), _) => ticket.listener,
+            (None, Some(token)) => {
+                ConferenceRole::from_token(token.role, &meeting) == ConferenceRole::Attendee
+            }
+            (None, None) => {
+                !Self::meeting_requires_pin(&meeting)
+                    && ConferenceRole::audience_of(&meeting) == ConferenceRole::Attendee
+            }
+        };
         // Video budget (design §9.3): a join whose video would not fit on
         // this node is refused the way the participant cap is, before the
         // 180. Placement should have sent it where the budget is; this is
@@ -6374,7 +6403,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 .get_room(&key)
                 .ok()
                 .and_then(|room| room.video());
-            let cost = capacity.join_cost(settings, codecs, room_video.as_deref(), view_streams);
+            // An attendee is priced at what they watch (`docs/WEBINARS.md`
+            // §2.3).
+            let cost = if known_attendee {
+                capacity.audience_join_cost(settings, codecs, room_video.as_deref(), view_streams)
+            } else {
+                capacity.join_cost(settings, codecs, room_video.as_deref(), view_streams)
+            };
             if !capacity.try_reserve(&cost) {
                 warn!(
                     room = %room_number,
@@ -6415,32 +6450,41 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let answered_request = request_with_to_of(request, &ringing);
         handle.send_provisional(ringing).await;
 
-        // 6. Allocate RTP port pair, bound (and a second one for video)
-        let (port_pair, rtp_socket) = self
-            .bound_port_pair()
-            .await
-            .context("Failed to allocate RTP port pair")?;
-        let mut video_pair = match (&video_plan, &offered_sections.camera) {
-            (Some(_), Some(_)) => match self.port_pool.allocate().await {
-                Ok(p) => Some(p),
+        // 6. Allocate RTP port pair, bound (and a second one for video).
+        // A node out of ports refuses the caller, who would otherwise be
+        // left ringing.
+        let (port_pair, rtp_socket) = match self.bound_port_pair().await {
+            Ok(bound) => bound,
+            Err(e) => {
+                warn!(room = %room_number, error = %e, "No RTP port pair left; rejecting INVITE");
+                let reject = UserAgentServer::create_response(request, 503, "Service Unavailable");
+                handle.send_final(reject).await;
+                return Ok(());
+            }
+        };
+        // Bound now, as the audio's are: a pair something else on the
+        // host holds is passed over, not answered and then dropped.
+        let (mut video_pair, mut video_bound) = match (&video_plan, &offered_sections.camera) {
+            (Some(_), Some(_)) => match self.bound_port_pair().await {
+                Ok((p, s)) => (Some(p), Some(s)),
                 Err(e) => {
                     warn!(room = %room_number, error = %e, "No port pair left for video; joining audio-only");
-                    None
+                    (None, None)
                 }
             },
-            _ => None,
+            _ => (None, None),
         };
         // And a third for the shared screen.
-        let mut content_pair = if content_offered {
-            match self.port_pool.allocate().await {
-                Ok(p) => Some(p),
+        let (mut content_pair, mut content_bound) = if content_offered {
+            match self.bound_port_pair().await {
+                Ok((p, s)) => (Some(p), Some(s)),
                 Err(e) => {
                     warn!(room = %room_number, error = %e, "No port pair left for content; the shared screen is rejected");
-                    None
+                    (None, None)
                 }
             }
         } else {
-            None
+            (None, None)
         };
 
         // 7. Negotiate SRTP (if enabled and offered by client)
@@ -6553,7 +6597,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 rtp_port: vp.rtp_port,
                 codecs: &video_codecs,
                 srtp: video_srtp_sdp.as_ref(),
-                simulcast: SIMULCAST_LAYERS,
+                // An attendee's simulcast would be nobody's to take.
+                simulcast: if known_attendee { 0 } else { SIMULCAST_LAYERS },
                 transport_cc: true,
             }),
             content_pair.map(|cp| VideoAnswer {
@@ -6565,7 +6610,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }),
             bfcp_answer,
         );
-        let sdp_answer = answer.sdp;
+        let sdp_answer = if known_attendee {
+            fcp_media::with_video_sending_only(&answer.sdp)
+        } else {
+            answer.sdp
+        };
         if answer.bfcp.is_none() {
             if let Some(a) = bfcp_assignment.take() {
                 self.bfcp.leave(&key, a.user_id);
@@ -6664,9 +6713,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // 11b. The video socket pair, pointed at the video section's endpoint
         let video_socket = match (video_pair, negotiated_video.as_ref()) {
             (Some(vp), Some(nv)) => {
-                match RtpSocketPair::new(vp, RtpSocketConfig::default()).await {
+                let bound = match video_bound.take() {
+                    Some(s) => Ok(s),
+                    None => RtpSocketPair::new(vp, RtpSocketConfig::default())
+                        .await
+                        .map(Arc::new),
+                };
+                match bound {
                     Ok(s) => {
-                        let s = Arc::new(s);
                         if let Some(remote) = nv
                             .remote
                             .or_else(|| fcp_media::remote_video_endpoint(sdp_offer))
@@ -6695,9 +6749,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // 11c. The shared screen's socket pair, pointed at its own section.
         let content_socket = match (content_pair, negotiated_content.as_ref()) {
             (Some(cp), Some(nc)) => {
-                match RtpSocketPair::new(cp, RtpSocketConfig::default()).await {
+                let bound = match content_bound.take() {
+                    Some(s) => Ok(s),
+                    None => RtpSocketPair::new(cp, RtpSocketConfig::default())
+                        .await
+                        .map(Arc::new),
+                };
+                match bound {
                     Ok(s) => {
-                        let s = Arc::new(s);
                         if let Some(remote) = nc
                             .remote
                             .or_else(|| fcp_media::remote_content_endpoint(sdp_offer))
@@ -8343,6 +8402,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .content
             .and_then(|c| c.label);
         let bfcp_answer = self.bfcp_answer_for(&session, bfcp_label.as_deref());
+        // The audience is answered as it was at the join: watching only.
+        let watching = self
+            .bridge
+            .get_room(&key)
+            .ok()
+            .is_some_and(|r| r.is_listener(&session.participant_id));
         let answer = self.build_answer(
             sdp_offer,
             session.port_pair.rtp_port,
@@ -8351,7 +8416,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 rtp_port: leg.port_pair.rtp_port,
                 codecs: &video_codec,
                 srtp: video_srtp_sdp.as_ref(),
-                simulcast: SIMULCAST_LAYERS,
+                simulcast: if watching { 0 } else { SIMULCAST_LAYERS },
                 transport_cc: true,
             }),
             session.content.as_ref().map(|leg| VideoAnswer {
@@ -8371,7 +8436,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             info!(call_id = %call_id, "re-INVITE: the shared screen's codec is no longer offered; content removed");
             self.tear_down_leg(&mut session, StreamKind::Content);
         }
-        let sdp_answer = answer.sdp;
+        let sdp_answer = if watching {
+            fcp_media::with_video_sending_only(&answer.sdp)
+        } else {
+            answer.sdp
+        };
 
         // Build 200 OK response with SDP answer
         let local_sip_uri = self.parse_local_sip_uri();
@@ -8841,6 +8910,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 expires_at: Instant::now() + Duration::from_secs(expires_secs),
                 version: 0,
                 sent: None,
+                audience_sent_at: None,
             },
         );
         info!(
@@ -9101,12 +9171,22 @@ impl ConferenceCallHandler {
             let here = viewer.is_some();
             // A forwarding participant is told whose each of their
             // streams is (`docs/FORWARDING_ROOMS.md` §2.2).
-            let roster = match (&room_roster, &video, &viewer) {
+            let mut roster = match (&room_roster, &video, &viewer) {
                 (Some(r), Some(v), Some(pid)) if v.is_forwarding(pid) => {
                     Some(r.for_viewer(&viewer_streams(&v.forwarded_streams(pid))))
                 }
                 (r, _, _) => r.clone(),
             };
+            // The audience's count, changed alone, waits its turn; it rides
+            // along free with any other change.
+            if let (Some(r), Some(before)) = (roster.as_mut(), sub.sent.as_ref()) {
+                let recent = sub
+                    .audience_sent_at
+                    .is_some_and(|at| now.duration_since(at) < AUDIENCE_COUNT_EVERY);
+                if r.audience != before.audience && r.members == before.members && recent {
+                    r.audience = before.audience;
+                }
+            }
             let version = sub.version + 1;
             let (state, body, end) = match &roster {
                 None => (
@@ -9124,6 +9204,13 @@ impl ConferenceCallHandler {
                     match (body, lapsed) {
                         (Some(body), _) => {
                             sub.version = version;
+                            if sub
+                                .sent
+                                .as_ref()
+                                .is_none_or(|b| b.audience != roster.audience)
+                            {
+                                sub.audience_sent_at = Some(now);
+                            }
                             sub.sent = Some(roster.clone());
                             let state = if lapsed {
                                 "terminated;reason=timeout".to_string()
@@ -9279,6 +9366,11 @@ impl ConferenceCallHandler {
             if s.trunk_peer.is_some() {
                 continue;
             }
+            // The audience is counted, not listed (`docs/WEBINARS.md` §2.4).
+            if room.is_listener(&s.participant_id) {
+                roster.audience += 1;
+                continue;
+            }
             let id = s.participant_id.clone();
             let m = meta.get(&id);
             let audio = match m.map(|m| m.state) {
@@ -9302,6 +9394,8 @@ impl ConferenceCallHandler {
                         .or_else(|| s.caller_id.clone())
                         .unwrap_or_else(|| id.clone()),
                     host: s.is_host,
+                    // A panelist, or an attendee the host brought up.
+                    panelist: matches!(s.role, ConferenceRole::Panelist | ConferenceRole::Attendee),
                     audio,
                     video: camera,
                     speaking,
@@ -9341,6 +9435,7 @@ impl ConferenceCallHandler {
                     crate::roster::Member {
                         name: m.display_name,
                         host: m.host,
+                        panelist: false,
                         audio,
                         video: camera,
                         speaking: speaker.as_deref() == Some(id.as_str()),
