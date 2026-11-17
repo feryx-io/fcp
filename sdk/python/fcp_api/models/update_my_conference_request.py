@@ -36,6 +36,9 @@ class UpdateMyConferenceRequest:
             auto_record (bool | None | Unset):
             default_locked (bool | None | Unset):
             welcome_tts (None | str | Unset):
+            kind (None | str | Unset): `meeting` or `webinar`.
+            panelist_pin (None | str | Unset):
+            panelists (list[str] | None | Unset): A webinar's panelists, users of the tenant by username or id.
      """
 
     name: None | str | Unset = UNSET
@@ -47,6 +50,9 @@ class UpdateMyConferenceRequest:
     auto_record: bool | None | Unset = UNSET
     default_locked: bool | None | Unset = UNSET
     welcome_tts: None | str | Unset = UNSET
+    kind: None | str | Unset = UNSET
+    panelist_pin: None | str | Unset = UNSET
+    panelists: list[str] | None | Unset = UNSET
 
 
 
@@ -107,6 +113,28 @@ class UpdateMyConferenceRequest:
         else:
             welcome_tts = self.welcome_tts
 
+        kind: None | str | Unset
+        if isinstance(self.kind, Unset):
+            kind = UNSET
+        else:
+            kind = self.kind
+
+        panelist_pin: None | str | Unset
+        if isinstance(self.panelist_pin, Unset):
+            panelist_pin = UNSET
+        else:
+            panelist_pin = self.panelist_pin
+
+        panelists: list[str] | None | Unset
+        if isinstance(self.panelists, Unset):
+            panelists = UNSET
+        elif isinstance(self.panelists, list):
+            panelists = self.panelists
+
+
+        else:
+            panelists = self.panelists
+
 
         field_dict: dict[str, Any] = {}
 
@@ -130,6 +158,12 @@ class UpdateMyConferenceRequest:
             field_dict["default_locked"] = default_locked
         if welcome_tts is not UNSET:
             field_dict["welcome_tts"] = welcome_tts
+        if kind is not UNSET:
+            field_dict["kind"] = kind
+        if panelist_pin is not UNSET:
+            field_dict["panelist_pin"] = panelist_pin
+        if panelists is not UNSET:
+            field_dict["panelists"] = panelists
 
         return field_dict
 
@@ -228,6 +262,44 @@ class UpdateMyConferenceRequest:
         welcome_tts = _parse_welcome_tts(d.pop("welcome_tts", UNSET))
 
 
+        def _parse_kind(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        kind = _parse_kind(d.pop("kind", UNSET))
+
+
+        def _parse_panelist_pin(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        panelist_pin = _parse_panelist_pin(d.pop("panelist_pin", UNSET))
+
+
+        def _parse_panelists(data: object) -> list[str] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                panelists_type_0 = cast(list[str], data)
+
+                return panelists_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[str] | None | Unset, data)
+
+        panelists = _parse_panelists(d.pop("panelists", UNSET))
+
+
         update_my_conference_request = cls(
             name=name,
             guest_pin=guest_pin,
@@ -238,6 +310,9 @@ class UpdateMyConferenceRequest:
             auto_record=auto_record,
             default_locked=default_locked,
             welcome_tts=welcome_tts,
+            kind=kind,
+            panelist_pin=panelist_pin,
+            panelists=panelists,
         )
 
         return update_my_conference_request

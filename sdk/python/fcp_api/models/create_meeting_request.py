@@ -59,6 +59,10 @@ class CreateMeetingRequest:
             video_content_share (str | Unset):
             video_content_layout (str | Unset):
             video_mode (str | Unset): `mix` (the default) or `auto`.
+            kind (str | Unset): `meeting` (the default) or `webinar`.
+            panelist_pin (None | str | Unset): A webinar's PIN for panelists; it must differ from the others.
+            panelists (list[str] | Unset): A webinar's panelists: users of the tenant, by username or id
+                (kept by id).
      """
 
     room_number: str
@@ -94,6 +98,9 @@ class CreateMeetingRequest:
     video_content_share: str | Unset = UNSET
     video_content_layout: str | Unset = UNSET
     video_mode: str | Unset = UNSET
+    kind: str | Unset = UNSET
+    panelist_pin: None | str | Unset = UNSET
+    panelists: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -218,6 +225,20 @@ class CreateMeetingRequest:
 
         video_mode = self.video_mode
 
+        kind = self.kind
+
+        panelist_pin: None | str | Unset
+        if isinstance(self.panelist_pin, Unset):
+            panelist_pin = UNSET
+        else:
+            panelist_pin = self.panelist_pin
+
+        panelists: list[str] | Unset = UNSET
+        if not isinstance(self.panelists, Unset):
+            panelists = self.panelists
+
+
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -287,6 +308,12 @@ class CreateMeetingRequest:
             field_dict["video_content_layout"] = video_content_layout
         if video_mode is not UNSET:
             field_dict["video_mode"] = video_mode
+        if kind is not UNSET:
+            field_dict["kind"] = kind
+        if panelist_pin is not UNSET:
+            field_dict["panelist_pin"] = panelist_pin
+        if panelists is not UNSET:
+            field_dict["panelists"] = panelists
 
         return field_dict
 
@@ -459,6 +486,21 @@ class CreateMeetingRequest:
 
         video_mode = d.pop("video_mode", UNSET)
 
+        kind = d.pop("kind", UNSET)
+
+        def _parse_panelist_pin(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        panelist_pin = _parse_panelist_pin(d.pop("panelist_pin", UNSET))
+
+
+        panelists = cast(list[str], d.pop("panelists", UNSET))
+
+
         create_meeting_request = cls(
             room_number=room_number,
             name=name,
@@ -493,6 +535,9 @@ class CreateMeetingRequest:
             video_content_share=video_content_share,
             video_content_layout=video_content_layout,
             video_mode=video_mode,
+            kind=kind,
+            panelist_pin=panelist_pin,
+            panelists=panelists,
         )
 
 

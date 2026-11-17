@@ -241,6 +241,15 @@ impl OffboardingStore for PostgresStorage {
         } else {
             report.meetings_unowned = meetings;
         }
+        // Nor a panelist of any webinar.
+        sqlx::query(
+            "UPDATE conference_meetings SET panelists = array_remove(panelists, $2)
+             WHERE tenant_id = $1 AND $2 = ANY(panelists)",
+        )
+        .bind(&tenant)
+        .bind(&id)
+        .execute(&mut *tx)
+        .await?;
 
         let mut aors: Vec<String> = sqlx::query_scalar(&format!(
             "DELETE FROM registrations WHERE tenant_id = $1 AND {} = ANY($2) RETURNING aor",

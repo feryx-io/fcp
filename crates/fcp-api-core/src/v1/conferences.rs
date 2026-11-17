@@ -83,6 +83,12 @@ pub struct MeetingResponse {
     /// Who is sent the composite: `mix` (everyone) or `auto` (a client
     /// that asks for each person's own stream gets them instead).
     pub video_mode: String,
+    /// `meeting` or `webinar` (`docs/WEBINARS.md` §2.1).
+    pub kind: String,
+    /// A webinar's PIN for panelists.
+    pub panelist_pin: Option<String>,
+    /// A webinar's panelists, users by id.
+    pub panelists: Vec<String>,
     #[serde(with = "crate::time::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
@@ -129,6 +135,9 @@ impl From<Meeting> for MeetingResponse {
             video_content_share: m.video_content_share,
             video_content_layout: m.video_content_layout,
             video_mode: m.video_mode,
+            kind: m.kind,
+            panelist_pin: m.panelist_pin,
+            panelists: m.panelists,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -203,6 +212,16 @@ pub struct CreateMeetingRequest {
     /// `mix` (the default) or `auto`.
     #[serde(default = "default_video_mode")]
     pub video_mode: String,
+    /// `meeting` (the default) or `webinar`.
+    #[serde(default = "fcp_core::meeting::default_meeting_kind")]
+    pub kind: String,
+    /// A webinar's PIN for panelists; it must differ from the others.
+    #[serde(default)]
+    pub panelist_pin: Option<String>,
+    /// A webinar's panelists: users of the tenant, by username or id
+    /// (kept by id).
+    #[serde(default)]
+    pub panelists: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -278,6 +297,55 @@ async fn owner_of(
     }
 }
 
+/// A webinar's panelists as user ids: each a user of the tenant, named
+/// by username or id, none deprovisioned, none twice.
+pub(crate) async fn panelists_of(
+    state: &ApiState,
+    tenant_id: &fcp_core::TenantId,
+    names: &[String],
+) -> Result<Vec<String>, ApiError> {
+    if names.len() > fcp_core::meeting::MAX_PANELISTS {
+        return Err(ApiError::BadRequest(format!(
+            "panelists may name at most {} users",
+            fcp_core::meeting::MAX_PANELISTS
+        )));
+    }
+    let storage = require_storage!(state);
+    let internal = |e: anyhow::Error| ApiError::Internal(e.to_string());
+    let mut out: Vec<String> = Vec::with_capacity(names.len());
+    for name in names {
+        let found = match storage
+            .get_user_in_tenant(name, tenant_id)
+            .await
+            .map_err(internal)?
+        {
+            Some(user) => Some(user),
+            None => match name.parse::<fcp_core::UserId>() {
+                Ok(id) => storage
+                    .get_user_by_id(&id)
+                    .await
+                    .map_err(internal)?
+                    .filter(|u| u.tenant_id == *tenant_id),
+                Err(_) => None,
+            },
+        };
+        match found {
+            Some(user) if !user.is_deprovisioned() => {
+                let id = user.id.to_string();
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+            _ => {
+                return Err(ApiError::BadRequest(format!(
+                    "panelists: '{name}' is not a user of the tenant"
+                )))
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Update meeting request body (all fields optional; `null` clears one
 /// that may be empty).
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -325,6 +393,10 @@ pub struct UpdateMeetingRequest {
     pub video_content_share: Option<String>,
     pub video_content_layout: Option<String>,
     pub video_mode: Option<String>,
+    pub kind: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub panelist_pin: Option<Option<String>>,
+    pub panelists: Option<Vec<String>>,
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
@@ -433,12 +505,16 @@ pub async fn create_meeting(
         video_content_share: req.video_content_share,
         video_content_layout: req.video_content_layout,
         video_mode: req.video_mode,
+        kind: req.kind,
+        panelist_pin: req.panelist_pin,
+        panelists: panelists_of(&state, &tenant_id, &req.panelists).await?,
         created_at: now,
         updated_at: now,
     };
     meeting
         .validate_video_settings()
         .map_err(ApiError::BadRequest)?;
+    meeting.validate_roles().map_err(ApiError::BadRequest)?;
 
     storage
         .put_meeting(meeting.clone())
@@ -620,9 +696,19 @@ pub async fn update_meeting(
     if let Some(v) = req.video_codecs {
         meeting.video_codecs = v;
     }
+    if let Some(v) = req.kind {
+        meeting.kind = v;
+    }
+    if let Some(v) = req.panelist_pin {
+        meeting.panelist_pin = v;
+    }
+    if let Some(v) = req.panelists {
+        meeting.panelists = panelists_of(&state, &tenant.0, &v).await?;
+    }
     meeting
         .validate_video_settings()
         .map_err(ApiError::BadRequest)?;
+    meeting.validate_roles().map_err(ApiError::BadRequest)?;
     meeting.updated_at = SystemTime::now();
 
     storage

@@ -576,3 +576,111 @@ async fn a_host_controls_their_room_from_their_own_session() {
     assert_eq!(none.status, StatusCode::NOT_FOUND, "{}", none.text);
     app.finish().await;
 }
+
+/// A webinar (`docs/WEBINARS.md` §2.1): its kind, panelist PIN and
+/// panelists — users of the tenant, kept by id — set by an administrator
+/// or the owner; the roles only a webinar has refused in a meeting's
+/// token; a panelist minting a panelist token for themselves and no other.
+#[tokio::test]
+async fn a_webinar_has_panelists_who_mint_their_own_tokens() {
+    let app = require_app!().with_join_secret();
+    let olga = app.create_user_with_role("olga", "end_user").await;
+    let pam = app.create_user_with_role("pam", "end_user").await;
+    app.create_user_with_role("pete", "end_user").await;
+    let id = new_meeting(
+        &app,
+        app.tenant_a,
+        "8401",
+        json!({ "kind": "webinar", "owner_id": "olga", "host_pin": "9999",
+                "panelist_pin": "5555", "panelists": ["pam"] }),
+    )
+    .await;
+    let path = format!("/api/v1/conferences/meetings/{id}");
+    let got = app.admin(Method::GET, &path, None).await;
+    assert_eq!(got.json["kind"], "webinar", "{}", got.text);
+    assert_eq!(got.json["panelist_pin"], "5555");
+    assert_eq!(got.json["panelists"], json!([pam]), "kept by id");
+
+    // A PIN that is another role's, a stranger, an unknown kind: refused.
+    for body in [
+        json!({ "panelist_pin": "9999" }),
+        json!({ "panelists": ["nobody"] }),
+        json!({ "kind": "townhall" }),
+    ] {
+        let res = app.admin(Method::PATCH, &path, Some(body.clone())).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{body}: {}", res.text);
+    }
+    // By id as well as by name.
+    let both = app
+        .admin(
+            Method::PATCH,
+            &path,
+            Some(json!({ "panelists": [pam.clone(), "olga"] })),
+        )
+        .await;
+    assert_eq!(both.status, StatusCode::OK, "{}", both.text);
+    assert_eq!(both.json["panelists"], json!([pam, olga]));
+
+    // The owner may change them too.
+    let olga_s = session(&app, "olga").await;
+    let mine = format!("/api/v1/me/conferences/{id}");
+    let res = app
+        .send_as(
+            &olga_s,
+            Method::PATCH,
+            &mine,
+            Some(json!({ "panelists": ["pam"], "panelist_pin": null })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["panelists"], json!([pam]));
+    assert_eq!(res.json["panelist_pin"], Value::Null);
+
+    // A panelist mints a panelist token, under their own name, whatever
+    // they ask for; a host token is not theirs to mint.
+    let pam_s = session(&app, "pam").await;
+    let minted = app
+        .send_as(&pam_s, Method::POST, &format!("{mine}/join-tokens"), None)
+        .await;
+    assert_eq!(minted.status, StatusCode::CREATED, "{}", minted.text);
+    assert_eq!(minted.json["role"], "panelist", "{}", minted.text);
+    assert_eq!(minted.json["display_name"], "pam");
+    let host = app
+        .send_as(
+            &pam_s,
+            Method::POST,
+            &format!("{mine}/join-tokens"),
+            Some(json!({ "role": "host" })),
+        )
+        .await;
+    assert_eq!(host.status, StatusCode::FORBIDDEN, "{}", host.text);
+    // Anyone else in the tenant sees no such conference.
+    let pete_s = session(&app, "pete").await;
+    let res = app
+        .send_as(&pete_s, Method::POST, &format!("{mine}/join-tokens"), None)
+        .await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.text);
+
+    // A meeting has no panelists or attendees to mint for.
+    let meeting = new_meeting(&app, app.tenant_a, "8402", json!({})).await;
+    for role in ["panelist", "attendee"] {
+        let res = app
+            .admin(
+                Method::POST,
+                &format!("/api/v1/conferences/meetings/{meeting}/join-tokens"),
+                Some(json!({ "role": role })),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{role}: {}", res.text);
+    }
+    let attendee = app
+        .admin(
+            Method::POST,
+            &format!("{path}/join-tokens"),
+            Some(json!({ "role": "attendee" })),
+        )
+        .await;
+    assert_eq!(attendee.status, StatusCode::CREATED, "{}", attendee.text);
+    assert_eq!(attendee.json["role"], "attendee");
+    app.finish().await;
+}

@@ -61,6 +61,9 @@ const createSchema = z.object({
   video_content_share: z.enum(['off', 'hosts', 'anyone']).optional(),
   video_content_layout: z.enum(['presentation', 'content_only']).optional(),
   video_codecs: z.array(z.string()).optional(),
+  kind: z.enum(['meeting', 'webinar']).optional(),
+  panelist_pin: z.string().regex(/^\d*$/, 'Digits only').optional(),
+  panelists: z.array(z.string()).optional(),
 })
 
 const editSchema = z.object({
@@ -95,6 +98,9 @@ const editSchema = z.object({
   video_content_share: z.enum(['off', 'hosts', 'anyone']).optional(),
   video_content_layout: z.enum(['presentation', 'content_only']).optional(),
   video_codecs: z.array(z.string()).optional(),
+  kind: z.enum(['meeting', 'webinar']).optional(),
+  panelist_pin: z.string().regex(/^\d*$/, 'Digits only').optional(),
+  panelists: z.array(z.string()).optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -263,6 +269,12 @@ export function ConferencesPage() {
     {
       accessorKey: 'name',
       header: 'Name',
+      cell: ({ row }) => (
+        <span className="flex items-center gap-2">
+          {row.original.name}
+          {row.original.kind === 'webinar' && <Badge variant="outline">Webinar</Badge>}
+        </span>
+      ),
     },
     {
       accessorKey: 'enabled',
@@ -468,6 +480,7 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
     defaultValues: {
       enabled: true, require_guest_pin: false, wait_for_moderator: false, auto_record: false, default_locked: false, permanent: false, max_participants: 0,
       video_enabled: false, video_layout: 'grid', video_max_participants: 16, video_max_resolution: '720p', video_fps: 15, video_exclude_self: false, video_passthrough: 'auto', video_mode: 'mix', video_content_share: 'anyone', video_content_layout: 'presentation', video_codecs: DEFAULT_VIDEO_CODECS,
+      kind: 'meeting', panelists: [],
     },
   })
 
@@ -506,6 +519,9 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
       video_content_share: data.video_content_share,
       video_content_layout: data.video_content_layout,
       video_codecs: data.video_codecs as VideoCodecName[] | undefined,
+      kind: data.kind,
+      panelist_pin: data.kind === 'webinar' ? data.panelist_pin || undefined : undefined,
+      panelists: data.kind === 'webinar' ? data.panelists : [],
     })
     reset()
   }
@@ -541,6 +557,16 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
               <Input {...register('host_pin')} placeholder="Optional" type="password" />
             </div>
           </div>
+
+          <WebinarFields
+            kind={watch('kind') ?? 'meeting'}
+            onKind={(v) => setValue('kind', v)}
+            pinField={<Input {...register('panelist_pin')} placeholder="Optional" type="password" />}
+            pinError={errors.panelist_pin?.message}
+            panelists={watch('panelists') ?? []}
+            onPanelists={(v) => setValue('panelists', v)}
+            userList={userList}
+          />
 
           <div>
             <Label>Max Participants</Label>
@@ -791,6 +817,9 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
       video_content_share: (item.video_content_share as 'off' | 'hosts' | 'anyone') ?? 'anyone',
       video_content_layout: (item.video_content_layout as 'presentation' | 'content_only') ?? 'presentation',
       video_codecs: item.video_codecs ?? DEFAULT_VIDEO_CODECS,
+      kind: (item.kind as 'meeting' | 'webinar') ?? 'meeting',
+      panelist_pin: item.panelist_pin || '',
+      panelists: item.panelists ?? [],
     })
   }
 
@@ -824,6 +853,9 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
     if (data.video_exclude_self !== undefined) update.video_exclude_self = data.video_exclude_self
     if (data.video_passthrough !== undefined) update.video_passthrough = data.video_passthrough
     if (data.video_mode !== undefined) update.video_mode = data.video_mode
+    if (data.kind !== undefined) update.kind = data.kind
+    if (data.panelist_pin !== undefined) update.panelist_pin = data.panelist_pin || null
+    if (data.panelists !== undefined) update.panelists = data.panelists
     if (data.video_content_share !== undefined) update.video_content_share = data.video_content_share
     if (data.video_content_layout !== undefined) update.video_content_layout = data.video_content_layout
     if (data.video_codecs !== undefined) update.video_codecs = data.video_codecs as VideoCodecName[]
@@ -855,6 +887,16 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
               <Input {...register('host_pin')} placeholder="None" type="password" />
             </div>
           </div>
+
+          <WebinarFields
+            kind={watch('kind') ?? 'meeting'}
+            onKind={(v) => setValue('kind', v)}
+            pinField={<Input {...register('panelist_pin')} placeholder="None" type="password" />}
+            pinError={errors.panelist_pin?.message}
+            panelists={watch('panelists') ?? []}
+            onPanelists={(v) => setValue('panelists', v)}
+            userList={userList}
+          />
 
           <div>
             <Label>Max Participants</Label>
@@ -1050,5 +1092,66 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** A meeting's kind, and a webinar's panelist PIN and panelists
+ * (`docs/WEBINARS.md` §2.1): a webinar's audience hears the stage and is
+ * not heard. */
+function WebinarFields({ kind, onKind, pinField, pinError, panelists, onPanelists, userList }: {
+  kind: 'meeting' | 'webinar'
+  onKind: (v: 'meeting' | 'webinar') => void
+  pinField: React.ReactNode
+  pinError?: string
+  panelists: string[]
+  onPanelists: (v: string[]) => void
+  userList: User[]
+}) {
+  const toggle = (id: string) =>
+    onPanelists(panelists.includes(id) ? panelists.filter((p) => p !== id) : [...panelists, id])
+  return (
+    <div className="space-y-3">
+      <div>
+        <Label>Kind</Label>
+        <Select value={kind} onValueChange={(v) => onKind(v as 'meeting' | 'webinar')}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="meeting">Meeting — everyone may speak</SelectItem>
+            <SelectItem value="webinar">Webinar — a stage heard by an audience</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {kind === 'webinar' && (
+        <>
+          <div>
+            <Label>Panelist PIN</Label>
+            {pinField}
+            {pinError && <p className="text-xs text-destructive mt-1">{pinError}</p>}
+            <p className="text-xs text-muted-foreground mt-1">
+              The host PIN makes a host, this one a panelist; the guest PIN, or none, an attendee.
+            </p>
+          </div>
+          <div>
+            <Label>Panelists</Label>
+            <div className="max-h-40 overflow-y-auto rounded border p-2 space-y-1">
+              {userList.length === 0 && <p className="text-xs text-muted-foreground">No users</p>}
+              {userList.map((u) => (
+                <label key={u.id} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={panelists.includes(u.id)}
+                    onChange={() => toggle(u.id)}
+                  />
+                  {u.display_name || u.username} ({u.username})
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              A panelist joins with a token they mint for themselves.
+            </p>
+          </div>
+        </>
+      )}
+    </div>
   )
 }

@@ -2081,3 +2081,131 @@ async fn a_forwarding_room_is_reached_through_the_call_manager() {
     }
     stack.finish().await;
 }
+
+/// Digits as RFC 2833, `#` to finish.
+async fn dial_digits(call: &fcp_testkit::Call, pin: &str) {
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for d in pin.chars().chain(std::iter::once('#')) {
+        call.media().send_dtmf(d);
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// A webinar (`docs/WEBINARS.md` §2.1–2.2). The host PIN makes a host,
+/// the panelist PIN a panelist, `#` alone or a guest token an attendee.
+/// The stage hears itself; the audience hears the stage, from one feed
+/// encoded once for all of them, and nobody hears the audience.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_webinar_s_stage_is_heard_by_attendees_who_are_not() {
+    let Some(stack) = Stack::start_conference("", 60, "join_secret = \"join-s3cret\"").await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({
+                "kind": "webinar",
+                "host_pin": "9999",
+                "panelist_pin": "5555",
+            }),
+        )
+        .await;
+
+    let host = stack.phone("hostess").await;
+    let host_call = join(&stack, &host).await;
+    dial_digits(&host_call, "9999").await;
+    let panelist = stack.phone("panelist").await;
+    let panelist_call = join(&stack, &panelist).await;
+    dial_digits(&panelist_call, "5555").await;
+    // An attendee needs no PIN: # alone.
+    let ann = stack.phone("ann").await;
+    let ann_call = join(&stack, &ann).await;
+    dial_digits(&ann_call, "").await;
+    // A guest token in a webinar admits an attendee, with no PIN asked.
+    let token = fcp_core::JoinToken::new(
+        stack.seed.tenant_id,
+        ROOM,
+        "Ben",
+        fcp_core::JoinRole::Guest,
+        Duration::from_secs(600),
+    )
+    .mint(b"join-s3cret");
+    let ben = stack.phone("ben").await;
+    let ben_call = ben
+        .call_with_headers(ROOM, &[("X-FCP-Join", &token)])
+        .await
+        .unwrap();
+    if let Err(e) = ben_call.answered(SOON).await {
+        stack
+            .fail(&format!("Ben was not admitted: {e}"), &ben)
+            .await;
+    }
+    stack.wait_participants(4).await;
+
+    for (name, role, listener) in [
+        ("hostess", "host", false),
+        ("panelist", "panelist", false),
+        ("ann", "attendee", true),
+        ("Ben", "attendee", true),
+    ] {
+        let pid = stack.participant_named(name).await;
+        stack
+            .wait_participant(&pid, |p| p["role"] == role && p["listener"] == listener)
+            .await;
+    }
+
+    // The stage is heard by everyone.
+    host_call.media().play_tone(440.0, 2000);
+    for (who, call) in [
+        ("panelist", &panelist_call),
+        ("Ann", &ann_call),
+        ("Ben", &ben_call),
+    ] {
+        assert!(call.media().heard(440, SOON).await, "{who} hears the host");
+    }
+    panelist_call.media().play_tone(550.0, 2000);
+    assert!(
+        host_call.media().heard(550, SOON).await,
+        "the host hears the panelist"
+    );
+    assert!(
+        ann_call.media().heard(550, SOON).await,
+        "Ann hears the panelist"
+    );
+
+    // Both attendees hear one feed, encoded once for the two of them.
+    let (code, room) = stack.get(&format!("/conferences/{ROOM}")).await;
+    assert_eq!(code, 200, "{room}");
+    assert_eq!(room["audience"]["listeners"], 2, "{room}");
+    let flavors = room["audience"]["flavors"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(flavors.len(), 1, "one codec, one feed: {room}");
+    assert_eq!(flavors[0]["subscribers"], 2, "{room}");
+    assert!(
+        flavors[0]["frames_encoded"].as_u64().unwrap_or(0) > 0,
+        "{room}"
+    );
+
+    // An attendee is heard by nobody.
+    ann_call.media().play_tone(660.0, 2000);
+    for (who, call) in [
+        ("host", &host_call),
+        ("panelist", &panelist_call),
+        ("Ben", &ben_call),
+    ] {
+        assert!(
+            !call.media().heard(660, Duration::from_secs(2)).await,
+            "{who} hears Ann, an attendee"
+        );
+    }
+
+    for call in [&host_call, &panelist_call, &ann_call, &ben_call] {
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
+    stack.wait_participants(0).await;
+    stack.finish().await;
+}

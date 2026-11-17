@@ -35,6 +35,29 @@ pub enum JoinRole {
     Guest,
     /// A host (moderator), as the host PIN would grant.
     Host,
+    /// A webinar's panelist: on the stage, heard and seen, with none of a
+    /// host's controls (`docs/WEBINARS.md` §2.1). Only for a webinar.
+    Panelist,
+    /// A webinar's attendee: hears the stage, is not heard. In a webinar a
+    /// guest token admits an attendee too. Only for a webinar.
+    Attendee,
+}
+
+impl JoinRole {
+    /// Whether this role exists only in a webinar.
+    pub fn is_webinar_only(self) -> bool {
+        matches!(self, JoinRole::Panelist | JoinRole::Attendee)
+    }
+
+    /// The word for it, as the API writes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JoinRole::Guest => "guest",
+            JoinRole::Host => "host",
+            JoinRole::Panelist => "panelist",
+            JoinRole::Attendee => "attendee",
+        }
+    }
 }
 
 /// What a token says.

@@ -1,7 +1,8 @@
 # Webinars and town halls
 
 Status: agreed 2026-11-17: every recommendation, except that chat is in (§2.5,
-§6 Q5). Nothing here is built.
+§6 Q5). W1 is done (v0.25.582–583, forge-media v2026.11.17): the roles and the shared
+audience mix, measured at 1,000 and 2,000 attendees on one node (§5).
 
 A webinar is a meeting with a stage and an audience:
 - a few people speak and are seen;
@@ -109,6 +110,29 @@ What this changes in forge-media:
 
 The shape is the composite subscribers' (one encoder per flavor, `Subscriber`s
 fed from it) brought to audio.
+
+As built (W1):
+- **forge-mixer** has *listeners* (`AudioMixer::add_listener`, `set_listener`):
+  what a listener writes is dropped before voice activity or recording see it,
+  the frame clock takes no frame from it, and no mix reads it.
+- **forge-conference** owns the shared output, not forge-mixer, because
+  encoding needs a codec and forge-mixer has none. `ConferenceRoom::add_listener`
+  admits one, and `listen_audience(flavor, make)` subscribes to a flavor. The
+  first subscriber's `AudienceEncoder` is the flavor's. On each frame-clock tick
+  the room mixes once and encodes once per flavor, before the tick wakes anyone,
+  and every subscriber gets the same `AudienceFrame`. A flavor ends with its last
+  subscriber.
+- **The conference server's audio bridge** names a flavor by codec, mixer rate
+  and frame (`PCMU/8000/160`). A leg that is a listener sends the feed's payload
+  under its own SSRC, sequence and timestamp, and does not decode what it
+  receives. The bridge checks the role every frame, so a promoted attendee
+  hears N−1 from the next tick and a demoted one rejoins the feed.
+- **What an attendee loses:** the per-listener volume (`*7`/`*8`) does nothing
+  on the feed, because everyone hears the same encode. No join, exit or "you
+  are alone" tone plays for a listener.
+- **Visible state:** the room's JSON has `audience` (listeners, each flavor's
+  subscribers and frames encoded, the feed's mean and slowest frame time), and
+  each participant has `role` and `listener`.
 
 ### 2.3 Video for the audience
 
@@ -317,7 +341,8 @@ For an audience that is not on FCP at all.
 
 ## 5. Phases
 
-- **W1: roles and the shared mix** (forge-media, FCP).
+- **W1: roles and the shared mix** (forge-media, FCP). **Done** (v0.25.582–583,
+  forge-media v2026.11.17: forge-mixer 0.6.0, forge-conference 0.18.0).
   - `meeting.kind`, `JoinRole::Panelist` and `Attendee`, `panelist_pin` and the
     meeting's `panelists`.
   - In forge-mixer and forge-conference, a listener's leg on the shared
@@ -325,6 +350,37 @@ For an audience that is not on FCP at all.
   - Attendees muted at the room, not in the contributor set.
   - fcp-loadgen measures 1,000 attendees on one node, audio only: CPU per
     attendee and the mixer's frame time.
+  - As built:
+    - **Storage and API.** Migration 141 adds `kind`, `panelist_pin` (sealed at
+      rest like the other PINs) and `panelists` (user ids). The admin's and the
+      owner's routes take them; a panelist may be named by username or id. The
+      three PINs must differ. A purged user leaves every panelist list.
+    - **Join tokens.** A panelist or attendee token is refused for a meeting. A
+      webinar's panelist mints a panelist token for themselves through
+      `POST /me/conferences/{id}/join-tokens`, under their own name; the owner
+      still mints any role.
+    - **Joining.** A host token or the host PIN gives a host, and a panelist
+      token or the panelist PIN a panelist. A guest token, the guest PIN, or `#`
+      alone gives an attendee. A webinar asks for a PIN whenever a host or
+      panelist PIN is set. A guest token for a room that is no longer a webinar
+      admits a guest.
+    - **Migration and the admin UI.** A migration ticket carries `listener`. The
+      admin UI's meeting form has the kind, the panelist PIN and a panelist
+      checklist.
+    - **Measured** (`fcp-loadgen/tests/webinar.rs`, release, G.711, the phones
+      on the same 12-core box as the node):
+
+      | Room | Attendees | Node CPU | Per attendee | Feed frame (mean) | Delivered |
+      |---|---|---|---|---|---|
+      | webinar | 1,000 | 29.8% of a core | 0.30 ms/s | 22.7 µs | 100% |
+      | webinar | 2,000 | 70.5% of a core | 0.35 ms/s | 32.5 µs | 100% |
+      | meeting (N−1) | 1,000 | 185.5% of a core | 1.86 ms/s | — | 100% |
+
+      So 1,000 attendees cost a webinar 6.2× less than the same 1,000 as a
+      meeting. One core carries about 3,000 listeners. What remains per attendee
+      is packet work: building, encrypting and sending one packet every 20 ms.
+      The feed's slowest frame was under 7 ms, well inside the 20 ms frame.
+      W5's edges are wanted for egress and resilience before CPU.
 - **W2: the audience's video and roster** (forge-media, FCP).
   - Attendees on the composite flavors and as forwarding viewers, camera
     sections answered receive-only.

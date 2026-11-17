@@ -109,12 +109,60 @@ impl ParticipantSession {
     }
 }
 
+/// A participant's role in the room (`docs/WEBINARS.md` §2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConferenceRole {
+    /// A moderator.
+    Host,
+    /// A webinar's panelist: on the stage, no controls.
+    Panelist,
+    /// A webinar's attendee: a listener.
+    Attendee,
+    /// A meeting's ordinary participant.
+    Guest,
+}
+
+impl ConferenceRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConferenceRole::Host => "host",
+            ConferenceRole::Panelist => "panelist",
+            ConferenceRole::Attendee => "attendee",
+            ConferenceRole::Guest => "guest",
+        }
+    }
+
+    /// The role a join token admits to `meeting`. A guest token in a
+    /// webinar admits an attendee; a webinar's role in a room that is no
+    /// longer a webinar admits a guest.
+    pub fn from_token(role: fcp_core::JoinRole, meeting: &Meeting) -> Self {
+        use fcp_core::JoinRole;
+        match (role, meeting.is_webinar()) {
+            (JoinRole::Host, _) => ConferenceRole::Host,
+            (JoinRole::Panelist, true) => ConferenceRole::Panelist,
+            (JoinRole::Guest | JoinRole::Attendee, true) => ConferenceRole::Attendee,
+            (_, false) => ConferenceRole::Guest,
+        }
+    }
+
+    /// Anyone not on the stage in a webinar, else a guest.
+    pub fn audience_of(meeting: &Meeting) -> Self {
+        if meeting.is_webinar() {
+            ConferenceRole::Attendee
+        } else {
+            ConferenceRole::Guest
+        }
+    }
+}
+
 /// Tracks a single participant's connection to a conference room.
 pub struct ParticipantSession {
     pub call_id: String,
     pub room_number: String,
     pub participant_id: String,
     pub is_host: bool,
+    /// Host, panelist, attendee or guest.
+    pub role: ConferenceRole,
     /// True if this participant was invited via dial-out
     pub is_dial_out: bool,
     /// For an inter-node conference trunk: the peer node's id. The
@@ -1145,6 +1193,7 @@ impl ConferenceCallHandler {
                 display_name: s.display_name.clone(),
                 caller_id: s.caller_id.clone(),
                 is_host: s.is_host,
+                listener: room.is_listener(&s.participant_id),
                 muted: meta
                     .as_ref()
                     .is_some_and(|m| m.state == forge_mixer::ParticipantState::Muted),
@@ -1490,10 +1539,12 @@ impl ConferenceCallHandler {
             "packets_received": meta.packets_received,
             "is_speaking": meta.is_speaking,
             "is_host": room.is_host(participant_id),
+            "listener": meta.listener,
         });
 
         if let Some(entry) = session_data {
             let session = entry.value();
+            json["role"] = serde_json::json!(session.role.as_str());
             let joined_secs = session
                 .joined_at
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1566,6 +1617,8 @@ impl ConferenceCallHandler {
                     Some(entry) => {
                         let session = entry.value();
                         p["is_host"] = serde_json::json!(session.is_host);
+                        p["role"] = serde_json::json!(session.role.as_str());
+                        p["listener"] = serde_json::json!(meta.listener);
                         p["is_dial_out"] = serde_json::json!(session.is_dial_out);
                         if let Some(ref dn) = session.display_name {
                             p["display_name"] = serde_json::json!(dn);
@@ -1603,6 +1656,7 @@ impl ConferenceCallHandler {
             // decides whether the peer's callers are on screen at all.
             "trunks": self.room_trunk_json(key),
             "video": video_bridge::room_video_json(&room),
+            "audience": audience_json(&room),
         }))
     }
 
@@ -2294,6 +2348,7 @@ impl ConferenceCallHandler {
             "host_count": room.host_count(),
             "participants": participants,
             "video": video_bridge::room_video_json(&room),
+            "audience": audience_json(&room),
         }))
     }
 
@@ -3442,6 +3497,7 @@ impl ConferenceCallHandler {
                 room_number: room_number.to_string(),
                 participant_id: participant_id.clone(),
                 is_host: false,
+                role: ConferenceRole::Guest,
                 is_dial_out: true,
                 trunk_peer: None,
                 audio_bridge_handle,
@@ -4149,6 +4205,7 @@ impl ConferenceCallHandler {
             "room_number": session.room_number,
             "participant_id": session.participant_id,
             "is_host": session.is_host,
+            "role": session.role.as_str(),
             "dial_out": session.is_dial_out,
             "trunk_peer": session.trunk_peer,
             "joined_by_token": session.joined_by_token,
@@ -4247,7 +4304,11 @@ impl ConferenceCallHandler {
 
     /// Check whether PIN authentication is required for a meeting.
     fn meeting_requires_pin(meeting: &Meeting) -> bool {
-        meeting.require_guest_pin && (meeting.guest_pin.is_some() || meeting.host_pin.is_some())
+        // A webinar asks whenever a PIN would make someone more than an
+        // attendee: an attendee with none just presses # (§2.1).
+        (meeting.require_guest_pin && (meeting.guest_pin.is_some() || meeting.host_pin.is_some()))
+            || (meeting.is_webinar()
+                && (meeting.host_pin.is_some() || meeting.panelist_pin.is_some()))
     }
 
     /// Negotiate SDES-SRTP from a parsed crypto line.
@@ -5826,6 +5887,7 @@ impl ConferenceCallHandler {
                 room_number: leg.room_number.clone(),
                 participant_id: participant_id.clone(),
                 is_host: false,
+                role: ConferenceRole::Guest,
                 is_dial_out: false,
                 trunk_peer: Some(leg.peer_node.clone()),
                 audio_bridge_handle,
@@ -6750,24 +6812,34 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // 14. PIN authentication (if required) — a migration ticket or a
         // join token settles the role instead, with no PIN collected.
-        let is_host = if let Some(ticket) = &migrate {
+        let role = if let Some(ticket) = &migrate {
             info!(
                 room = %room_number,
                 participant = %participant_id,
                 from = %ticket.from_node,
                 host = ticket.is_host,
+                listener = ticket.listener,
                 "Admitted by migration ticket"
             );
-            ticket.is_host
+            if ticket.is_host {
+                ConferenceRole::Host
+            } else if ticket.listener {
+                ConferenceRole::Attendee
+            } else if meeting.is_webinar() {
+                // On the stage where they came from.
+                ConferenceRole::Panelist
+            } else {
+                ConferenceRole::Guest
+            }
         } else if let Some(token) = &join {
-            let host = token.role == fcp_core::JoinRole::Host;
+            let role = ConferenceRole::from_token(token.role, &meeting);
             info!(
                 room = %room_number,
                 participant = %participant_id,
-                host,
+                role = role.as_str(),
                 "Admitted by join token"
             );
-            host
+            role
         } else if Self::meeting_requires_pin(&meeting) {
             let max_attempts = conf.max_pin_attempts;
             let pin_timeout = Duration::from_secs(conf.pin_timeout_secs);
@@ -6869,7 +6941,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             );
 
             let mut authenticated = false;
-            let mut is_host_auth = false;
+            let mut role_auth = ConferenceRole::audience_of(&meeting);
 
             for attempt in 1..=max_attempts {
                 // Brief pause between retry attempts to drain leftover DTMF retransmissions
@@ -6930,6 +7002,27 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 }
 
                 match pin_result {
+                    // A webinar's audience may need no PIN at all: an empty
+                    // one (just #) lets them in when no guest PIN is required.
+                    Some(ref pin)
+                        if pin.is_empty()
+                            && meeting.is_webinar()
+                            && !(meeting.require_guest_pin && meeting.guest_pin.is_some()) =>
+                    {
+                        info!(room = %room_number, participant = %participant_id, "Attendee with no PIN");
+                        authenticated = true;
+                        role_auth = ConferenceRole::Attendee;
+                        break;
+                    }
+                    Some(ref pin)
+                        if meeting.is_webinar()
+                            && meeting.panelist_pin.as_deref() == Some(pin.as_str()) =>
+                    {
+                        info!(room = %room_number, participant = %participant_id, "Panelist PIN accepted");
+                        authenticated = true;
+                        role_auth = ConferenceRole::Panelist;
+                        break;
+                    }
                     Some(ref pin) if pin.is_empty() => {
                         // Empty PIN (user pressed # immediately) — treat as incorrect
                         warn!(room = %room_number, participant = %participant_id, attempt, "Empty PIN submitted");
@@ -6953,13 +7046,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                             PinAuthResult::GuestAuthenticated => {
                                 info!(room = %room_number, participant = %participant_id, "Guest PIN accepted");
                                 authenticated = true;
-                                is_host_auth = false;
+                                role_auth = ConferenceRole::audience_of(&meeting);
                                 break;
                             }
                             PinAuthResult::HostAuthenticated => {
                                 info!(room = %room_number, participant = %participant_id, "Host PIN accepted");
                                 authenticated = true;
-                                is_host_auth = true;
+                                role_auth = ConferenceRole::Host;
                                 break;
                             }
                             PinAuthResult::IncorrectPin { attempts_remaining } => {
@@ -7034,10 +7127,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
 
             self.pending_pin_auth.remove(&call_id);
-            is_host_auth
+            role_auth
         } else {
-            false
+            ConferenceRole::audience_of(&meeting)
         };
+        let is_host = role == ConferenceRole::Host;
+        let listener = role == ConferenceRole::Attendee;
 
         // 15. Add participant to room (enforces capacity/locked/wait-for-moderator)
         //
@@ -7079,9 +7174,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             true
         } else {
             // A migrant was admitted once already: no lock, no waiting room.
-            let added = match &migrate {
-                Some(_) => room.add_participant_admitted(&participant_id, is_host),
-                None => room.add_participant_quiet(&participant_id, is_host),
+            let added = match (&migrate, listener) {
+                (Some(_), true) => room.add_listener_admitted(&participant_id),
+                (Some(_), false) => room.add_participant_admitted(&participant_id, is_host),
+                (None, true) => room.add_listener(&participant_id),
+                (None, false) => room.add_participant_quiet(&participant_id, is_host),
             };
             match added {
                 Ok(()) => false,
@@ -7127,9 +7224,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 // Use a low-level DashMap insert via a helper if available, or
                 // call add_participant which will do it for us (it will return
                 // WaitingForModerator since we know the conditions are met).
-                let _ = room.add_participant(&participant_id, false);
+                let _ = if listener {
+                    room.add_listener(&participant_id)
+                } else {
+                    room.add_participant(&participant_id, false)
+                };
                 // The above call should return Err(WaitingForModerator) and
-                // insert the participant into waiting_participants.
+                // insert the participant into waiting_participants (as a
+                // listener, an attendee).
             }
 
             // Spawn a task that polls until they appear in the mixer (when a
@@ -7517,6 +7619,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     room_number,
                     participant_id,
                     is_host,
+                    role,
                     is_dial_out: false,
                     trunk_peer: None,
                     audio_bridge_handle: wait_handle,
@@ -7832,6 +7935,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 room_number,
                 participant_id,
                 is_host,
+                role,
                 is_dial_out: false,
                 trunk_peer: None,
                 audio_bridge_handle,
@@ -9663,6 +9767,30 @@ fn dtmf_digit_to_char(digit: &DtmfDigit) -> Option<char> {
 }
 
 /// Create a codec instance by name for audio encoding/decoding.
+/// A room's audience (`docs/WEBINARS.md` §2.2): how many listen, and the
+/// feeds they hear, each mixed and encoded once for all its subscribers.
+pub(crate) fn audience_json(room: &forge_conference::ConferenceRoom) -> serde_json::Value {
+    let flavors: Vec<serde_json::Value> = room
+        .audience_flavors()
+        .into_iter()
+        .map(|f| {
+            serde_json::json!({
+                "flavor": f.flavor,
+                "subscribers": f.subscribers,
+                "frames_encoded": f.frames_encoded,
+            })
+        })
+        .collect();
+    let frames = room.audience_frame_stats();
+    serde_json::json!({
+        "listeners": room.listener_count(),
+        "flavors": flavors,
+        "frames_fed": frames.frames,
+        "frame_mean_us": frames.mean_us,
+        "frame_max_us": frames.max_us,
+    })
+}
+
 pub fn create_codec_instance(codec_name: &str) -> Result<Box<dyn AudioCodec>> {
     match codec_name {
         "PCMU" => Ok(Box::new(g711::G711MuLaw::new(8000))),

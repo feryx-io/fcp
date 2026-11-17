@@ -54,6 +54,8 @@ class PageMeetingResponseDataItem:
                 `content_only`.
             video_mode (str): Who is sent the composite: `mix` (everyone) or `auto` (a client
                 that asks for each person's own stream gets them instead).
+            kind (str): `meeting` or `webinar` (`docs/WEBINARS.md` §2.1).
+            panelists (list[str]): A webinar's panelists, users by id.
             created_at (datetime.datetime):
             updated_at (datetime.datetime):
             guest_pin (None | str | Unset):
@@ -67,6 +69,7 @@ class PageMeetingResponseDataItem:
             welcome_tts (None | str | Unset):
             join_sound (None | str | Unset):
             exit_sound (None | str | Unset):
+            panelist_pin (None | str | Unset): A webinar's PIN for panelists.
      """
 
     id: str
@@ -93,6 +96,8 @@ class PageMeetingResponseDataItem:
     video_content_share: str
     video_content_layout: str
     video_mode: str
+    kind: str
+    panelists: list[str]
     created_at: datetime.datetime
     updated_at: datetime.datetime
     guest_pin: None | str | Unset = UNSET
@@ -106,6 +111,7 @@ class PageMeetingResponseDataItem:
     welcome_tts: None | str | Unset = UNSET
     join_sound: None | str | Unset = UNSET
     exit_sound: None | str | Unset = UNSET
+    panelist_pin: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -165,6 +171,12 @@ class PageMeetingResponseDataItem:
         video_content_layout = self.video_content_layout
 
         video_mode = self.video_mode
+
+        kind = self.kind
+
+        panelists = self.panelists
+
+
 
         created_at = self.created_at.isoformat()
 
@@ -236,6 +248,12 @@ class PageMeetingResponseDataItem:
         else:
             exit_sound = self.exit_sound
 
+        panelist_pin: None | str | Unset
+        if isinstance(self.panelist_pin, Unset):
+            panelist_pin = UNSET
+        else:
+            panelist_pin = self.panelist_pin
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -264,6 +282,8 @@ class PageMeetingResponseDataItem:
             "video_content_share": video_content_share,
             "video_content_layout": video_content_layout,
             "video_mode": video_mode,
+            "kind": kind,
+            "panelists": panelists,
             "created_at": created_at,
             "updated_at": updated_at,
         })
@@ -289,6 +309,8 @@ class PageMeetingResponseDataItem:
             field_dict["join_sound"] = join_sound
         if exit_sound is not UNSET:
             field_dict["exit_sound"] = exit_sound
+        if panelist_pin is not UNSET:
+            field_dict["panelist_pin"] = panelist_pin
 
         return field_dict
 
@@ -352,6 +374,11 @@ class PageMeetingResponseDataItem:
         video_content_layout = d.pop("video_content_layout")
 
         video_mode = d.pop("video_mode")
+
+        kind = d.pop("kind")
+
+        panelists = cast(list[str], d.pop("panelists"))
+
 
         created_at = datetime.datetime.fromisoformat(d.pop("created_at"))
 
@@ -473,6 +500,16 @@ class PageMeetingResponseDataItem:
         exit_sound = _parse_exit_sound(d.pop("exit_sound", UNSET))
 
 
+        def _parse_panelist_pin(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        panelist_pin = _parse_panelist_pin(d.pop("panelist_pin", UNSET))
+
+
         page_meeting_response_data_item = cls(
             id=id,
             tenant_id=tenant_id,
@@ -498,6 +535,8 @@ class PageMeetingResponseDataItem:
             video_content_share=video_content_share,
             video_content_layout=video_content_layout,
             video_mode=video_mode,
+            kind=kind,
+            panelists=panelists,
             created_at=created_at,
             updated_at=updated_at,
             guest_pin=guest_pin,
@@ -511,6 +550,7 @@ class PageMeetingResponseDataItem:
             welcome_tts=welcome_tts,
             join_sound=join_sound,
             exit_sound=exit_sound,
+            panelist_pin=panelist_pin,
         )
 
 

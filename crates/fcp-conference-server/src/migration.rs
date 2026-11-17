@@ -372,6 +372,7 @@ mod tests {
             display_name: None,
             caller_id: None,
             is_host: false,
+            listener: false,
             muted: false,
             gain: 1.0,
             video: true,

@@ -82,7 +82,7 @@ fn class_query(class: ExportClass) -> String {
              WHERE tenant_id = $1 AND (agent_id = ANY($7) OR extension = ANY($7))"
         }
         ExportClass::Meetings => {
-            "SELECT id, 'owned' AS link, to_jsonb(m) - 'guest_pin' - 'host_pin' AS data,
+            "SELECT id, 'owned' AS link, to_jsonb(m) - 'guest_pin' - 'host_pin' - 'panelist_pin' AS data,
                     created_at AS at, NULL::text AS call_id, NULL::text AS file,
                     NULL::text[] AS ids, false AS others
              FROM conference_meetings m WHERE tenant_id = $1 AND owner_id = ANY($7)"

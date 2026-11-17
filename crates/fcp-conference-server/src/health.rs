@@ -730,6 +730,12 @@ struct CreateMeetingRequest {
     video_content_layout: String,
     #[serde(default = "fcp_core::meeting::default_video_mode")]
     video_mode: String,
+    /// `meeting` or `webinar`; a webinar's panelists are named through
+    /// the admin API, which knows the tenant's users.
+    #[serde(default = "fcp_core::meeting::default_meeting_kind")]
+    kind: String,
+    #[serde(default)]
+    panelist_pin: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -874,10 +880,16 @@ async fn create_meeting_handler(
         video_content_share: payload.video_content_share,
         video_content_layout: payload.video_content_layout,
         video_mode: payload.video_mode,
+        kind: payload.kind,
+        panelist_pin: payload.panelist_pin,
+        panelists: Vec::new(),
         created_at: now,
         updated_at: now,
     };
-    if let Err(msg) = meeting.validate_video_settings() {
+    if let Err(msg) = meeting
+        .validate_video_settings()
+        .and_then(|()| meeting.validate_roles())
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": msg })),
@@ -979,6 +991,8 @@ struct UpdateMeetingRequest {
     video_content_share: Option<String>,
     video_content_layout: Option<String>,
     video_mode: Option<String>,
+    kind: Option<String>,
+    panelist_pin: Option<String>,
 }
 
 async fn update_meeting_handler(
@@ -1147,7 +1161,18 @@ async fn update_meeting_handler(
         meeting.video_mode = v;
         changed_fields.push("video_mode".to_string());
     }
-    if let Err(msg) = meeting.validate_video_settings() {
+    if let Some(v) = payload.kind {
+        meeting.kind = v;
+        changed_fields.push("kind".to_string());
+    }
+    if let Some(v) = payload.panelist_pin {
+        meeting.panelist_pin = Some(v);
+        changed_fields.push("panelist_pin".to_string());
+    }
+    if let Err(msg) = meeting
+        .validate_video_settings()
+        .and_then(|()| meeting.validate_roles())
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": msg })),
@@ -1319,6 +1344,7 @@ async fn get_conference_handler(
                     "node_id": state.conference_handler.node_id(),
                     "trunks": trunks,
                     "video": crate::video_bridge::room_video_json(&room),
+                    "audience": crate::conference_handler::audience_json(&room),
                 })),
             )
         }

@@ -59,6 +59,9 @@ class UpdateMeetingRequest:
             video_content_share (None | str | Unset):
             video_content_layout (None | str | Unset):
             video_mode (None | str | Unset):
+            kind (None | str | Unset):
+            panelist_pin (None | str | Unset):
+            panelists (list[str] | None | Unset):
      """
 
     name: None | str | Unset = UNSET
@@ -93,6 +96,9 @@ class UpdateMeetingRequest:
     video_content_share: None | str | Unset = UNSET
     video_content_layout: None | str | Unset = UNSET
     video_mode: None | str | Unset = UNSET
+    kind: None | str | Unset = UNSET
+    panelist_pin: None | str | Unset = UNSET
+    panelists: list[str] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -299,6 +305,28 @@ class UpdateMeetingRequest:
         else:
             video_mode = self.video_mode
 
+        kind: None | str | Unset
+        if isinstance(self.kind, Unset):
+            kind = UNSET
+        else:
+            kind = self.kind
+
+        panelist_pin: None | str | Unset
+        if isinstance(self.panelist_pin, Unset):
+            panelist_pin = UNSET
+        else:
+            panelist_pin = self.panelist_pin
+
+        panelists: list[str] | None | Unset
+        if isinstance(self.panelists, Unset):
+            panelists = UNSET
+        elif isinstance(self.panelists, list):
+            panelists = self.panelists
+
+
+        else:
+            panelists = self.panelists
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -368,6 +396,12 @@ class UpdateMeetingRequest:
             field_dict["video_content_layout"] = video_content_layout
         if video_mode is not UNSET:
             field_dict["video_mode"] = video_mode
+        if kind is not UNSET:
+            field_dict["kind"] = kind
+        if panelist_pin is not UNSET:
+            field_dict["panelist_pin"] = panelist_pin
+        if panelists is not UNSET:
+            field_dict["panelists"] = panelists
 
         return field_dict
 
@@ -711,6 +745,44 @@ class UpdateMeetingRequest:
         video_mode = _parse_video_mode(d.pop("video_mode", UNSET))
 
 
+        def _parse_kind(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        kind = _parse_kind(d.pop("kind", UNSET))
+
+
+        def _parse_panelist_pin(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        panelist_pin = _parse_panelist_pin(d.pop("panelist_pin", UNSET))
+
+
+        def _parse_panelists(data: object) -> list[str] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                panelists_type_0 = cast(list[str], data)
+
+                return panelists_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[str] | None | Unset, data)
+
+        panelists = _parse_panelists(d.pop("panelists", UNSET))
+
+
         update_meeting_request = cls(
             name=name,
             guest_pin=guest_pin,
@@ -744,6 +816,9 @@ class UpdateMeetingRequest:
             video_content_share=video_content_share,
             video_content_layout=video_content_layout,
             video_mode=video_mode,
+            kind=kind,
+            panelist_pin=panelist_pin,
+            panelists=panelists,
         )
 
 

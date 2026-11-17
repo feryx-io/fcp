@@ -34,4 +34,6 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
+# Join tokens for a webinar's audience (tests/webinar.rs).
+fcp-core = { path = "../fcp-core" }
 tempfile = "3"
