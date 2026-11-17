@@ -986,6 +986,11 @@ pub struct VideoAnswer<'a> {
     /// several (RFC 8853), in the offer's order; 0 takes none, and the
     /// sender then sends one.
     pub simulcast: usize,
+    /// Keep transport-cc when the offer has it on this section (the
+    /// transport-wide sequence extension and `a=rtcp-fb:<pt>
+    /// transport-cc`, `docs/TRANSPORT_CC.md` §3.3); `false` leaves both
+    /// out, as an answer always did.
+    pub transport_cc: bool,
 }
 
 /// Everything an answer needs besides the offer.
@@ -1022,6 +1027,10 @@ pub struct NegotiatedVideo {
     /// The simulcast streams the answer took, when the offer sent several
     /// and the answer asked for them.
     pub simulcast: Option<forge_sdp::SimulcastLayers>,
+    /// The transport-wide sequence extension's id, when the answer kept
+    /// transport-cc: the peer numbers what it sends under it and wants
+    /// feedback, and reads ours.
+    pub transport_cc: Option<u8>,
 }
 
 /// An answer and what it agreed.
@@ -1145,6 +1154,27 @@ fn video_answer_section(
     if let Some(layers) = &simulcast {
         forge_sdp::write_simulcast(&mut sec, forge_sdp::RidDirection::Recv, layers);
     }
+    // Transport-cc, when we carry it and the offer asks for it on the
+    // chosen codec: its extension under the offer's id, and the feedback.
+    let transport_cc = v
+        .transport_cc
+        .then(|| transport_cc_ext(offer, m))
+        .flatten()
+        .filter(|_| {
+            m.rtcp_fb_for(ci.payload_type)
+                .iter()
+                .any(|f| f.kind == "transport-cc" && f.param.is_none())
+        });
+    if let Some(id) = transport_cc {
+        sec.attributes.push(Attribute::Value {
+            name: "extmap".into(),
+            value: format!("{id} {}", forge_rtp::transport_cc::TRANSPORT_CC_URI).into(),
+        });
+        sec.attributes.push(Attribute::Value {
+            name: "rtcp-fb".into(),
+            value: format!("{} transport-cc", ci.payload_type).into(),
+        });
+    }
     sec.protocol = answer_protocol(&m.protocol, v.srtp.is_some());
     if let Some(ctx) = v.srtp {
         sec.attributes
@@ -1171,8 +1201,25 @@ fn video_answer_section(
             .map(|c| format!("{} {} {}", c.tag, c.suite, c.key_params)),
         label: forge_sdp::label(m).map(str::to_string),
         simulcast,
+        transport_cc,
     };
     (sec, Some(negotiated))
+}
+
+/// The id the offer gives the transport-wide sequence extension on `m`,
+/// or at session level.
+fn transport_cc_ext(offer: &SessionDescription, m: &MediaDescription) -> Option<u8> {
+    m.attributes
+        .iter()
+        .chain(offer.attributes.iter())
+        .find_map(|a| match a {
+            Attribute::Value { name, value } if name.as_str() == "extmap" => {
+                let mut parts = value.split_whitespace();
+                let id = parts.next()?.split('/').next()?.parse::<u8>().ok()?;
+                (parts.next()? == forge_rtp::transport_cc::TRANSPORT_CC_URI && id > 0).then_some(id)
+            }
+            _ => None,
+        })
 }
 
 /// What the video sections of an answer agreed.
@@ -3127,6 +3174,7 @@ mod section_tests {
                 codecs: &codecs,
                 srtp: None,
                 simulcast: 0,
+                transport_cc: true,
             }),
             content: None,
             bfcp: None,
@@ -3169,6 +3217,7 @@ mod section_tests {
                 codecs: &codecs,
                 srtp: None,
                 simulcast: 0,
+                transport_cc: true,
             }),
             content: None,
             bfcp: None,
@@ -3226,6 +3275,7 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
                 codecs: &codecs,
                 srtp: Some(&video_ctx),
                 simulcast: 0,
+                transport_cc: true,
             }),
             content: None,
             bfcp: None,
@@ -3283,12 +3333,14 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
                     codecs: &codecs,
                     srtp: None,
                     simulcast: 0,
+                    transport_cc: true,
                 }),
                 content: Some(VideoAnswer {
                     rtp_port: 20004,
                     codecs: &codecs,
                     srtp: None,
                     simulcast: 0,
+                    transport_cc: true,
                 }),
                 bfcp: Some(BfcpAnswer {
                     port: 5060,
@@ -3354,12 +3406,14 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
                     codecs: &codecs,
                     srtp: None,
                     simulcast: 0,
+                    transport_cc: true,
                 }),
                 content: Some(VideoAnswer {
                     rtp_port: 20004,
                     codecs: &codecs,
                     srtp: None,
                     simulcast: 0,
+                    transport_cc: true,
                 }),
                 bfcp: Some(BfcpAnswer {
                     port: 5060,
@@ -3391,12 +3445,14 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
                 codecs: &codecs,
                 srtp: None,
                 simulcast: 0,
+                transport_cc: true,
             }),
             content: Some(VideoAnswer {
                 rtp_port: 20004,
                 codecs: &codecs,
                 srtp: None,
                 simulcast: 0,
+                transport_cc: true,
             }),
             bfcp,
         };
@@ -3489,6 +3545,78 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
 
     /// AV_OFFER's camera sending three simulcast streams (RFC 8853), the
     /// rid extension at session level.
+    #[test]
+    fn transport_cc_is_kept_when_offered_and_carried_and_left_out_otherwise() {
+        let uri = forge_rtp::transport_cc::TRANSPORT_CC_URI;
+        let offer = AV_OFFER.replace(
+            "a=rtcp-fb:* ccm fir\r\n",
+            &format!("a=rtcp-fb:* ccm fir\r\na=rtcp-fb:* transport-cc\r\na=extmap:7 {uri}\r\n"),
+        );
+        let codecs = [VideoCodec::H264];
+        let answer = |carried: bool| {
+            construct_answer(
+                &offer,
+                &AnswerOptions {
+                    server_ip: "10.0.0.5",
+                    audio_rtp_port: 20000,
+                    audio_srtp: None,
+                    video: Some(VideoAnswer {
+                        rtp_port: 20002,
+                        codecs: &codecs,
+                        srtp: None,
+                        simulcast: 0,
+                        transport_cc: carried,
+                    }),
+                    content: None,
+                    bfcp: None,
+                },
+            )
+            .unwrap()
+        };
+        let kept = answer(true);
+        let v = kept.video.unwrap();
+        assert_eq!(v.transport_cc, Some(7));
+        let pt = v.payload_type;
+        assert!(
+            kept.sdp.contains(&format!("a=extmap:7 {uri}\r\n")),
+            "{}",
+            kept.sdp
+        );
+        assert!(
+            kept.sdp
+                .contains(&format!("a=rtcp-fb:{pt} transport-cc\r\n")),
+            "{}",
+            kept.sdp
+        );
+        let left = answer(false);
+        assert_eq!(left.video.unwrap().transport_cc, None);
+        assert!(!left.sdp.contains("transport"), "{}", left.sdp);
+        // Offered without the extension: feedback alone means nothing.
+        let bare = AV_OFFER.replace(
+            "a=rtcp-fb:* ccm fir\r\n",
+            "a=rtcp-fb:* ccm fir\r\na=rtcp-fb:* transport-cc\r\n",
+        );
+        let a = construct_answer(
+            &bare,
+            &AnswerOptions {
+                server_ip: "10.0.0.5",
+                audio_rtp_port: 20000,
+                audio_srtp: None,
+                video: Some(VideoAnswer {
+                    rtp_port: 20002,
+                    codecs: &codecs,
+                    srtp: None,
+                    simulcast: 0,
+                    transport_cc: true,
+                }),
+                content: None,
+                bfcp: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(a.video.unwrap().transport_cc, None);
+    }
+
     fn simulcast_offer() -> String {
         AV_OFFER
             .replace(
@@ -3515,6 +3643,7 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
                     codecs: &codecs,
                     srtp: None,
                     simulcast,
+                    transport_cc: true,
                 }),
                 content: None,
                 bfcp: None,

@@ -13,7 +13,12 @@
 //! extension, a VP8 keyframe header saying its size, and the rid after the
 //! payload's number so a receiver can tell which layer reached it. RTCP is
 //! a PLI (RFC 4585 §6.3.1) sent on request and counted on receipt, and a
-//! REMB sent on request. With SDES
+//! REMB sent on request. A section told to carry transport-cc
+//! ([`VideoLeg::enable_transport_cc`]) offers it and writes feedback for
+//! what arrives, and its receive side can be shaped
+//! ([`VideoLeg::shape`]): every packet passes a simulated link that drops
+//! it or says when it would have arrived, which is all a sender's
+//! estimate sees (`docs/TRANSPORT_CC.md` §5). With SDES
 //! the section is keyed as a phone keys it: its own key in an offer, or
 //! its own under the offer's tag in an answer.
 
@@ -37,6 +42,9 @@ const SSRC: u32 = 0x5644_4f30;
 /// The one-byte header extension id the rid goes under (RFC 8852).
 const RID_EXT_ID: u8 = 3;
 
+/// The one-byte header extension id transport-cc goes under.
+pub const TCC_EXT_ID: u8 = 5;
+
 /// What every payload carries after its codec's first bytes.
 const MARK: &[u8] = b"fcp-video";
 
@@ -55,6 +63,20 @@ pub enum VideoMode {
     Plain,
     /// SDES-SRTP (`RTP/SAVPF`), the phone's own key.
     Srtp,
+}
+
+/// Transport-cc on the receive side: the feedback writer and, when the
+/// link is shaped, the simulated link every packet passes.
+#[derive(Default)]
+struct Receiving {
+    writer: forge_bwe::FeedbackWriter,
+    link: Option<forge_bwe::testing::Bottleneck>,
+    /// Packets the shaped link dropped.
+    dropped: u64,
+    /// Feedback messages sent.
+    feedback_sent: u64,
+    /// Padding-only packets (a sender's probes) seen.
+    padding: u64,
 }
 
 enum Keys {
@@ -86,7 +108,11 @@ pub struct VideoLeg {
     packet_size: std::sync::atomic::AtomicUsize,
     /// The `a=crypto` this phone puts in its section, once it has a key.
     crypto: Mutex<Option<SrtpSdpContext>>,
-    remote: Mutex<Option<SocketAddr>>,
+    remote: Arc<Mutex<Option<SocketAddr>>>,
+    /// Transport-cc, once [`enable_transport_cc`](Self::enable_transport_cc).
+    cc: Arc<Mutex<Option<Receiving>>>,
+    /// Transport-cc feedback received (about what this phone sent).
+    cc_feedback: Arc<AtomicU64>,
     received: Arc<AtomicU64>,
     plis: Arc<AtomicU64>,
     seq: AtomicU64,
@@ -121,16 +147,25 @@ impl VideoLeg {
         let plis = Arc::new(AtomicU64::new(0));
         let by_ssrc = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let layer_by_ssrc = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let remote = Arc::new(Mutex::new(None));
+        let cc = Arc::new(Mutex::new(None));
+        let cc_feedback = Arc::new(AtomicU64::new(0));
         let tasks = [&rtp, &rtcp]
             .into_iter()
             .map(|socket| {
                 tokio::spawn(read(
                     Arc::clone(socket),
-                    Arc::clone(&keys),
-                    Arc::clone(&received),
-                    Arc::clone(&plis),
-                    Arc::clone(&by_ssrc),
-                    Arc::clone(&layer_by_ssrc),
+                    Reader {
+                        keys: Arc::clone(&keys),
+                        received: Arc::clone(&received),
+                        plis: Arc::clone(&plis),
+                        by_ssrc: Arc::clone(&by_ssrc),
+                        layer_by_ssrc: Arc::clone(&layer_by_ssrc),
+                        cc: Arc::clone(&cc),
+                        cc_feedback: Arc::clone(&cc_feedback),
+                        remote: Arc::clone(&remote),
+                        rtcp: Arc::clone(&rtcp),
+                    },
                 ))
             })
             .collect();
@@ -148,7 +183,9 @@ impl VideoLeg {
             layer_seq: Mutex::new(std::collections::HashMap::new()),
             packet_size: std::sync::atomic::AtomicUsize::new(0),
             crypto: Mutex::new(crypto),
-            remote: Mutex::new(None),
+            remote,
+            cc,
+            cc_feedback,
             received,
             plis,
             seq: AtomicU64::new(0),
@@ -195,6 +232,12 @@ impl VideoLeg {
             s.push_str(&format!("a=simulcast:send {}\r\n", rids.join(";")));
         }
         drop(simulcast);
+        if self.cc.lock().unwrap().is_some() {
+            s.push_str(&format!(
+                "a=extmap:{TCC_EXT_ID} {}\r\na=rtcp-fb:{VIDEO_PT} transport-cc\r\n",
+                forge_rtp::transport_cc::TRANSPORT_CC_URI
+            ));
+        }
         if let Some(c) = &*self.crypto.lock().unwrap() {
             s.push_str(&format!(
                 "a=crypto:{} {} {}\r\n",
@@ -390,6 +433,48 @@ impl VideoLeg {
         Ok(())
     }
 
+    /// Offer transport-cc on this section and write feedback for what
+    /// arrives numbered under it. Before the section is offered.
+    pub fn enable_transport_cc(&self) {
+        self.cc
+            .lock()
+            .unwrap()
+            .get_or_insert_with(Receiving::default);
+    }
+
+    /// Shape what this phone receives to `rate_bps` (a 64 KB queue, 20 ms
+    /// one way), or stop shaping (`None`). Needs transport-cc.
+    pub fn shape(&self, rate_bps: Option<u64>) {
+        if let Some(r) = self.cc.lock().unwrap().as_mut() {
+            match (rate_bps, r.link.as_mut()) {
+                (Some(bps), Some(link)) => link.set_rate(bps),
+                (Some(bps), None) => {
+                    r.link = Some(forge_bwe::testing::Bottleneck::new(
+                        bps,
+                        64 * 1024,
+                        Duration::from_millis(20),
+                    ))
+                }
+                (None, _) => r.link = None,
+            }
+        }
+    }
+
+    /// Transport-cc feedback sent, packets the shaped link dropped, and
+    /// padding-only packets (probes) seen.
+    pub fn transport_cc_stats(&self) -> (u64, u64, u64) {
+        self.cc
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or((0, 0, 0), |r| (r.feedback_sent, r.dropped, r.padding))
+    }
+
+    /// Transport-cc feedback received about what this phone sent.
+    pub fn transport_cc_feedback_received(&self) -> u64 {
+        self.cc_feedback.load(Ordering::Relaxed)
+    }
+
     /// Tell the far end what this phone can take: a REMB
     /// (draft-alvestrand-rmcat-remb) of `kbps`.
     pub async fn send_remb(&self, kbps: u32) -> Result<()> {
@@ -486,14 +571,89 @@ impl Drop for VideoLeg {
 }
 
 /// Read one socket: RTP from this harness counted, PLIs counted.
-async fn read(
-    socket: Arc<UdpSocket>,
+/// What a section's reading task shares with it.
+struct Reader {
     keys: Arc<Mutex<Keys>>,
     received: Arc<AtomicU64>,
     plis: Arc<AtomicU64>,
     by_ssrc: Arc<Mutex<std::collections::HashMap<u32, u64>>>,
     layer_by_ssrc: Arc<Mutex<std::collections::HashMap<u32, String>>>,
-) {
+    cc: Arc<Mutex<Option<Receiving>>>,
+    cc_feedback: Arc<AtomicU64>,
+    remote: Arc<Mutex<Option<SocketAddr>>>,
+    rtcp: Arc<UdpSocket>,
+}
+
+impl Reader {
+    /// Transport-cc for one arriving RTP packet: through the shaped link,
+    /// noted by the writer. `false` when the link dropped it. Feedback
+    /// that is due goes out.
+    async fn transport_cc(&self, plain: &[u8]) -> bool {
+        let feedback = {
+            let mut cc = self.cc.lock().unwrap();
+            let Some(r) = cc.as_mut() else {
+                return true;
+            };
+            let Ok(p) = forge_rtp::RtpPacket::parse(bytes::Bytes::copy_from_slice(plain)) else {
+                return true;
+            };
+            if p.payload.is_empty() && p.header.padding() {
+                r.padding += 1;
+            }
+            let now = std::time::Instant::now();
+            let at = match r.link.as_mut() {
+                // UDP and IP on the wire too.
+                Some(link) => match link.send(plain.len() + 28, now) {
+                    Some(at) => at,
+                    None => {
+                        r.dropped += 1;
+                        return false;
+                    }
+                },
+                None => now,
+            };
+            if let Some(seq) = forge_rtp::transport_cc::transport_sequence(&p, TCC_EXT_ID) {
+                r.writer.on_packet(seq, at);
+            }
+            let fb = r.writer.poll(now);
+            if fb.is_some() {
+                r.feedback_sent += 1;
+            }
+            fb
+        };
+        if let Some(fb) = feedback {
+            let packet = forge_rtp::RtcpPacket::TransportFeedback(forge_rtp::RtpFeedback {
+                sender_ssrc: SSRC,
+                media_ssrc: 0,
+                kind: forge_rtp::rtcp::TransportFeedback::TransportCc(fb),
+            })
+            .to_bytes();
+            let out = match &mut *self.keys.lock().unwrap() {
+                Keys::Keyed(ctx) => ctx.protect_rtcp(&packet).ok(),
+                Keys::Plain => Some(packet),
+                Keys::Mine(_) => None,
+            };
+            let to = *self.remote.lock().unwrap();
+            if let (Some(out), Some(to)) = (out, to) {
+                let _ = self
+                    .rtcp
+                    .send_to(&out, SocketAddr::new(to.ip(), to.port() + 1))
+                    .await;
+            }
+        }
+        true
+    }
+}
+
+async fn read(socket: Arc<UdpSocket>, r: Reader) {
+    let Reader {
+        ref keys,
+        ref received,
+        ref plis,
+        ref by_ssrc,
+        ref layer_by_ssrc,
+        ..
+    } = r;
     let mut buf = vec![0u8; 2048];
     loop {
         let Ok((n, _)) = socket.recv_from(&mut buf).await else {
@@ -520,7 +680,19 @@ async fn read(
             if plain.len() >= 2 && plain[1] == 206 && plain[0] & 0x1f == 1 {
                 plis.fetch_add(1, Ordering::Relaxed);
             }
+            for p in forge_rtp::RtcpPacket::parse_compound(&plain) {
+                if let forge_rtp::RtcpPacket::TransportFeedback(forge_rtp::RtpFeedback {
+                    kind: forge_rtp::rtcp::TransportFeedback::TransportCc(_),
+                    ..
+                }) = p
+                {
+                    r.cc_feedback.fetch_add(1, Ordering::Relaxed);
+                }
+            }
         } else if plain.len() > 12 && plain[1] & 0x7f == VIDEO_PT {
+            if !r.transport_cc(&plain).await {
+                continue;
+            }
             // After the header: the payload as sent, behind its codec's
             // first bytes when it was sent as frames.
             let head = &plain[12..plain.len().min(12 + 48)];

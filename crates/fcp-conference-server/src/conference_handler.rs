@@ -4500,6 +4500,7 @@ impl ConferenceCallHandler {
             } else {
                 0
             },
+            transport_cc: true,
         };
         let probe = match kind {
             StreamKind::Camera => {
@@ -5346,6 +5347,7 @@ impl ConferenceCallHandler {
                 nack: section.feedback,
                 remote_crypto: None,
                 simulcast: None,
+                transport_cc: None,
             },
             settings: plan.settings.clone(),
             stats: Arc::new(VideoLegStats::default()),
@@ -5542,12 +5544,14 @@ impl ConferenceCallHandler {
                     codecs: &trunk_codecs,
                     srtp: video_answer_srtp.as_ref().map(|(_, sdp)| sdp),
                     simulcast: 0,
+                    transport_cc: true,
                 }),
                 content_pair.map(|cp| VideoAnswer {
                     rtp_port: cp.rtp_port,
                     codecs: &trunk_codecs,
                     srtp: content_answer_srtp.as_ref().map(|(_, sdp)| sdp),
                     simulcast: 0,
+                    transport_cc: true,
                 }),
                 None,
             ),
@@ -6486,12 +6490,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 codecs: &video_codecs,
                 srtp: video_srtp_sdp.as_ref(),
                 simulcast: SIMULCAST_LAYERS,
+                transport_cc: true,
             }),
             content_pair.map(|cp| VideoAnswer {
                 rtp_port: cp.rtp_port,
                 codecs: &video_codecs,
                 srtp: content_srtp_sdp.as_ref(),
                 simulcast: 0,
+                transport_cc: true,
             }),
             bfcp_answer,
         );
@@ -8240,12 +8246,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 codecs: &video_codec,
                 srtp: video_srtp_sdp.as_ref(),
                 simulcast: SIMULCAST_LAYERS,
+                transport_cc: true,
             }),
             session.content.as_ref().map(|leg| VideoAnswer {
                 rtp_port: leg.port_pair.rtp_port,
                 codecs: &content_codec,
                 srtp: content_srtp_sdp.as_ref(),
                 simulcast: 0,
+                transport_cc: true,
             }),
             bfcp_answer,
         );
@@ -8401,12 +8409,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         codecs: &video_codec,
                         srtp: None,
                         simulcast: SIMULCAST_LAYERS,
+                        transport_cc: true,
                     }),
                     session.content.as_ref().map(|leg| VideoAnswer {
                         rtp_port: leg.port_pair.rtp_port,
                         codecs: &content_codec,
                         srtp: None,
                         simulcast: 0,
+                        transport_cc: true,
                     }),
                     bfcp_answer,
                 )

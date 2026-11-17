@@ -197,6 +197,9 @@ struct Inner {
     /// The simulcast layers its calls' video sends
     /// ([`Phone::set_video_simulcast`]).
     video_simulcast: std::sync::Mutex<Vec<(&'static str, u32)>>,
+    /// Whether its calls' video offers transport-cc
+    /// ([`Phone::set_video_transport_cc`]).
+    video_transport_cc: std::sync::atomic::AtomicBool,
     /// Every REGISTER this phone has been sent, in order — a carrier's
     /// registrar, for a test that asks who registered and as whom.
     registrations: std::sync::Mutex<Vec<SeenRegistration>>,
@@ -281,6 +284,12 @@ impl Inner {
                 let layers = self.video_simulcast.lock().unwrap().clone();
                 if !layers.is_empty() {
                     leg.set_simulcast(&layers);
+                }
+                if self
+                    .video_transport_cc
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    leg.enable_transport_cc();
                 }
                 Some(Arc::new(leg))
             }
@@ -731,6 +740,14 @@ impl Phone {
         *self.inner.video_simulcast.lock().unwrap() = layers.to_vec();
     }
 
+    /// Offer transport-cc on the calls this phone places, and write
+    /// feedback for what arrives ([`crate::video::VideoLeg::enable_transport_cc`]).
+    pub fn set_video_transport_cc(&self, on: bool) {
+        self.inner
+            .video_transport_cc
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// A phone behind NAT: bound at `bind`, it names `advertised` in its
     /// Contact and SDP, an address it cannot be reached at — what a phone
     /// naming its LAN address, or loopback, does from behind a router.
@@ -946,6 +963,7 @@ impl Phone {
             video: std::sync::Mutex::new(None),
             video_codec: std::sync::Mutex::new(crate::video::VideoCodec::H264),
             video_simulcast: std::sync::Mutex::new(Vec::new()),
+            video_transport_cc: std::sync::atomic::AtomicBool::new(false),
         });
 
         let handler: Arc<dyn UasRequestHandler> = Arc::new(Handler(Arc::clone(&inner)));

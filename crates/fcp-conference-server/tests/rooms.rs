@@ -1785,6 +1785,111 @@ async fn a_remb_cut_pauses_a_viewer_s_streams_and_its_roster_says_so() {
     stack.finish().await;
 }
 
+/// A viewer that carries transport-cc (`docs/TRANSPORT_CC.md`, R5c): the
+/// room numbers what it sends him and spends what his feedback says, with
+/// no REMB at all. His link narrowed to under both streams pauses the
+/// second; opened again, the room's probes find the room and bring it
+/// back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_viewer_s_feedback_alone_pauses_a_stream_on_a_narrow_link_and_probes_bring_it_back() {
+    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    forwarding_meeting(&stack, serde_json::json!({})).await;
+    let alice = stack.phone("alice").await;
+    let carol = stack.phone("carol").await;
+    let bob = stack.phone("bob").await;
+    bob.set_video_transport_cc(true);
+    let alice_call = join_forwarding(&stack, &alice, true).await;
+    let carol_call = join_forwarding(&stack, &carol, true).await;
+    let bob_call = join_forwarding(&stack, &bob, true).await;
+    stack.wait_participants(3).await;
+    // About 300 kb/s each: a 1200-byte frame 30 times a second.
+    for call in [&alice_call, &carol_call] {
+        call.video().unwrap().set_packet_size(1200);
+    }
+    let alice_id = stack.participant_named("alice").await;
+    let carol_id = stack.participant_named("carol").await;
+    let bob_id = stack.participant_named("bob").await;
+    let view = format!(
+        r#"{{"streams":[{{"participant":"{alice_id}","priority":1}},{{"participant":"{carol_id}","priority":2}}]}}"#
+    );
+    assert_eq!(send_view(&bob_call, &view).await, 200);
+    let bob_video = bob_call.video().unwrap();
+
+    // Pump both senders until `done` holds of Bob's forwarded section.
+    let until = |what: &'static str, secs: u64, done: fn(&serde_json::Value) -> bool| {
+        let (stack, alice_call, carol_call, bob_id) = (&stack, &alice_call, &carol_call, &bob_id);
+        async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+            loop {
+                let fwd = stack.participant(bob_id).await["video"]["forwarded"].clone();
+                if done(&fwd) {
+                    return fwd;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    stack.fail_with_logs(&format!("never: {what}; {fwd}")).await;
+                }
+                for _ in 0..3 {
+                    for call in [alice_call, carol_call] {
+                        call.video().unwrap().send_frames(1, 30).await.unwrap();
+                    }
+                    tokio::time::sleep(Duration::from_millis(33)).await;
+                }
+            }
+        }
+    };
+    let playing = |f: &serde_json::Value| {
+        f["streams"]
+            .as_array()
+            .is_some_and(|s| s.len() == 2 && s.iter().all(|s| s["paused"] == false))
+    };
+
+    let fwd = until("both streams on Bob's feedback", 20, |f| {
+        f["estimate"] == "transport_cc"
+            && f["streams"]
+                .as_array()
+                .is_some_and(|s| s.len() == 2 && s.iter().all(|s| s["paused"] == false))
+    })
+    .await;
+    assert_eq!(fwd["remb_kbps"], 0, "no REMB: {fwd}");
+    assert!(playing(&fwd));
+    let (feedback, _, _) = bob_video.transport_cc_stats();
+    assert!(feedback > 0, "Bob wrote feedback");
+
+    // Narrowed to under both: the delay and loss it causes bring the
+    // estimate down until Carol, the second priority, is paused.
+    bob_video.shape(Some(400_000));
+    let fwd = until("Carol paused on the narrow link", 30, |f| {
+        f["streams"]
+            .as_array()
+            .is_some_and(|s| s.len() == 2 && s[0]["paused"] == false && s[1]["paused"] == true)
+    })
+    .await;
+    assert_eq!(fwd["estimate"], "transport_cc", "{fwd}");
+    let (_, dropped, _) = bob_video.transport_cc_stats();
+    eprintln!("narrowed: {fwd} ({dropped} dropped)");
+
+    // Opened again: the room probes, and Carol comes back.
+    let (_, _, probes_before) = bob_video.transport_cc_stats();
+    bob_video.shape(None);
+    until("Carol back once the room has probed", 40, |f| {
+        f["streams"]
+            .as_array()
+            .is_some_and(|s| s.len() == 2 && s.iter().all(|s| s["paused"] == false))
+    })
+    .await;
+    let (_, _, probes) = bob_video.transport_cc_stats();
+    assert!(probes > probes_before, "the way back was probed");
+
+    for call in [&alice_call, &carol_call, &bob_call] {
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
+    stack.finish().await;
+}
+
 /// A recorded forwarding room (`docs/FORWARDING_ROOMS.md` §8 Q9, R3b):
 /// every caller is forwarded, but the recording takes the composite, so
 /// the room still decodes and encodes for it.

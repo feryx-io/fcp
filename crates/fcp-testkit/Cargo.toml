@@ -60,5 +60,6 @@ sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
 sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
 sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
 forge-rtp = { path = "../../external/forge-media/crates/forge-rtp" }
+forge-bwe = { path = "../../external/forge-media/crates/forge-bwe" }
 forge-codecs = { path = "../../external/forge-media/crates/forge-codecs" }
 forge-dtmf = { path = "../../external/forge-media/crates/forge-dtmf" }

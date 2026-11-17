@@ -2,6 +2,8 @@
 
 Status: agreed 2026-11-16, every recommendation. R5a done (forge-media
 v2026.11.16.3: forge-bwe 0.1.0, forge-rtp 0.8.0); the decision point passed (§5.1).
+R5b done (forge-media v2026.11.16.4: forge-conference 0.17.0, forge-webrtc 0.11.0).
+R5c1 done (v0.25.575–576).
 This is phase R5 of `docs/FORWARDING_ROOMS.md`, which
 asks for this note before any code is written (§5, §8 Q7).
 
@@ -174,24 +176,45 @@ phone that does not offer it goes on with REMB.
 ### 3.4 The gateway
 
 The gateway ends the browser's transport: one BUNDLE carrying audio and K video
-transceivers. A transport-wide sequence must be numbered by whoever sends on that
-transport, so the room's numbers cannot pass through.
+transceivers. A transport-wide sequence is numbered by whoever sends on a
+transport, so the room's numbers cannot pass through as they are. Instead, the
+gateway **translates**: it numbers each hop itself and turns each side's feedback
+into the other side's numbers. That makes the room the sender for the whole
+path, as an SFU that ends a browser's connection is (Jitsi Videobridge, Zoom's
+and Webex's media servers). The room estimates from the room all the way to the
+browser, and its probes (§3.2) reach the browser.
+
+This revises question 5 (§6), agreed 2026-11-16 as "end it and tell the room by
+REMB". Building it showed that a gateway estimate without probing repeats §5.1's
+defect: held near what reaches the browser, a browser viewer stays at 180p after
+a dip. The gateway cannot probe on its own, because the browser's stream
+sequence numbers are the room's. The revision was agreed the same day.
 
 **Toward the browser (downlink):**
-- The gateway stamps what it sends, runs a `SendSideEstimator` on the browser's
-  feedback, and probes.
-- It sends the room a REMB carrying that estimate, as it relays the browser's
-  REMB today. The room's allocator does not need to know that a browser is
-  behind it.
-- The hop from gateway to room is a SIP section inside the cluster, so it
-  negotiates nothing new.
+- The gateway's SIP section to the room negotiates transport-cc, so the room
+  numbers what it sends there.
+- The gateway numbers each video packet it sends the browser on the BUNDLE, and
+  remembers which room number each of its own numbers carried.
+- The browser's FMT 15 is rewritten into the room's numbers and sent to the room
+  on that SIP section:
+  - each packet keeps the arrival time the browser reported;
+  - a room number that never reached the gateway is reported lost;
+  - packets the gateway itself sent (none carry video today) are left out.
+- The room's padding probes cross like any other packet of the stream.
 
 **From the browser (uplink):**
-- The gateway runs a `FeedbackWriter` for the browser's packets.
-- Chrome then estimates its own sending rate and fits its simulcast to it.
+- The browser numbers what it sends on the BUNDLE: audio, the camera's layers
+  and the screen share in one sequence.
+- The gateway numbers each video packet again on the SIP section it goes to the
+  room by, so the room sees one gapless sequence per section.
+- It turns the room's feedback back into the browser's numbers.
+- Chrome then estimates its uplink from what the room reported, and fits its
+  simulcast to it.
 
 forge-webrtc keeps `transport-cc` in its answers and offers the extension under
-a fixed id beside `sdes:mid` and the rid extension.
+a fixed id beside `sdes:mid` and the rid extension (R5b). The translator is the
+gateway's (`fcp-webrtc-gateway`); whatever forge-webrtc needs so that a packet's
+extension can be read and written on the way through comes with R5c2.
 
 ### 3.5 Anvil
 
@@ -243,19 +266,39 @@ a fixed id beside `sdes:mid` and the rid extension.
   - forge-webrtc offering and keeping transport-cc.
   - Tests in forge-conference: a viewer behind a `Bottleneck` paused and resumed
     by feedback alone, and a probe raising the estimate.
-- **R5c: FCP.**
-  - The conference server's SDP and video JSON: `estimate` (`remb`,
-    `transport_cc` or `none`) and the send-side estimate per viewer.
-  - The call manager relay proved to carry the extension and FMT 15.
-  - The gateway's downlink estimator and REMB to the room, and its feedback for
-    the browser's uplink.
-  - The test kit's phone gains a `FeedbackWriter` and a shaped link
-    (`fcp_testkit::shape`, a UDP relay with a rate and a queue).
-  - Tests:
-    - `rooms.rs`: a viewer behind a shaped link loses its streams, then gets them
-      back.
+- **R5c: FCP**, in two parts.
+  - **R5c1: the conference server and the test kit.**
+    - fcp-media's answer keeps transport-cc when the section offers both its
+      extension and `a=rtcp-fb:<pt> transport-cc`, under the offer's id
+      (`VideoAnswer::transport_cc`, `NegotiatedVideo::transport_cc`).
+    - The conference server answers it on every camera and content section and
+      wires the id into the room:
+      - a forwarding viewer's `ForwardRequest`;
+      - the composite subscriber's numbering;
+      - the sender's own feedback.
+    - The trunk keeps it off.
+    - The video JSON's `forwarded` says `estimate` (`transport_cc`, `remb` or
+      `none`), `budget_kbps` and `transport_cc_kbps`.
+    - The test kit's phone offers it (`Phone::set_video_transport_cc`) and
+      writes feedback.
+      - Its receive side can be shaped (`VideoLeg::shape`): each arriving
+        packet passes forge-bwe's `Bottleneck`, which drops it or dates its
+        arrival.
+      - That is all a sender's estimate reads, and it is deterministic, so it
+        stands in for the UDP relay first planned here.
+    - `rooms.rs`'s
+      `a_viewer_s_feedback_alone_pauses_a_stream_on_a_narrow_link_and_probes_bring_it_back`:
+      - A viewer with no REMB at all is forwarded two people of about
+        300 kb/s each.
+      - Narrowed to 400 kb/s, the second priority is paused at an estimate of
+        about 345 kb/s.
+      - Opened again, probes bring it back, in about 12 s in all.
+  - **R5c2: the gateway, the call manager and the browser.**
+    - The call manager relay proved to carry the extension and FMT 15.
+    - The gateway's translator, both ways (§3.4).
+    - The gateway's SIP section negotiating transport-cc with the room.
     - Playwright: Chromium negotiates transport-cc through the gateway, and the
-      gateway's REMB to the room follows the browser's feedback.
+      room's estimate for the browser follows the browser's feedback.
 - **R5d: Anvil.** `forge-bwe` in place of `bwe.rs`, transport-cc offered, feedback
   written, and the uplink estimated from the room's feedback, proved against the
   stack.
@@ -336,6 +379,10 @@ Each has a recommendation; all nine were agreed on 2026-11-16.
 5. **The gateway: end the browser's transport-cc or pass it through?**
    *Recommendation:* end it. The gateway numbers the browser's BUNDLE, so it must
    estimate that hop itself. It tells the room by REMB, as it does today.
+   **Revised 2026-11-16: translate.** The gateway numbers each hop and rewrites
+   each side's feedback into the other's numbers, so the room estimates and
+   probes the whole path to a browser (§3.4). A gateway estimate without probes
+   would repeat §5.1's defect for every browser.
 6. **The uplink: should the room and the gateway write feedback for what they
    receive?** *Recommendation:* yes. It is the same writer at the cost of a
    packet every 100 ms per source, and it is the first estimate a client gets of

@@ -602,6 +602,13 @@ Each phase is one PR in its repository.
     simulation: after a dip, a REMB viewer never sees past the 180p it
     receives, while transport-cc's probes find the raised capacity
     (`TRANSPORT_CC.md` §5.1). The decision point passed.
+  - **R5b done (forge-media v2026.11.16.4).** Transport-cc in the room:
+    numbering, the send-side budget, probes, and feedback for senders.
+    forge-webrtc negotiates it.
+  - **R5c1 done (v0.25.575–576).** The conference server answers transport-cc
+    and wires it into the room. The test kit's phone shapes its own receive
+    side, and a viewer with no REMB is paused on a narrow link and brought back
+    by probes.
 - **R7: forwarding across nodes** (FCP). Trunks as forwarding subscribers, with
   sources named across nodes in the roster.
   - **Done (v0.25.570–571, forge-media v2026.11.16.2: forge-conference 0.16.2).** As
