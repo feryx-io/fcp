@@ -208,7 +208,10 @@ pub fn rewrite_feedback(packet: &RtcpPacket, sender: u32, media: u32) -> Option<
                 media_ssrc: media,
                 kind: TransportFeedback::Nack(entries.clone()),
             })),
-            TransportFeedback::Other { .. } => None,
+            // Transport-cc is about one transport's numbering: the
+            // browser's is the gateway's, never the room's (TRANSPORT_CC.md
+            // §3.4).
+            TransportFeedback::TransportCc(_) | TransportFeedback::Other { .. } => None,
         },
         RtcpPacket::PayloadFeedback(fb) => {
             let kind = match &fb.kind {
