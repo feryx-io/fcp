@@ -190,6 +190,16 @@ pub struct Meeting {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub panelists: Vec<String>,
 
+    /// Questions from the audience (`docs/WEBINARS.md` §2.5): `off`,
+    /// `moderated` (seen by the room once a host publishes them) or
+    /// `open`. Unset is `moderated` in a webinar and `off` in a meeting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qa: Option<String>,
+
+    /// Whether a question may be asked without the asker's name.
+    #[serde(default)]
+    pub qa_anonymous: bool,
+
     /// Whether guests must enter a PIN to join
     pub require_guest_pin: bool,
 
@@ -327,6 +337,19 @@ impl Meeting {
         self.kind == "webinar"
     }
 
+    /// How questions are taken in this meeting's room: its `qa`, else
+    /// `moderated` for a webinar and `off` for a meeting.
+    pub fn qa_mode(&self) -> crate::qa::QaMode {
+        self.qa
+            .as_deref()
+            .and_then(crate::qa::QaMode::parse)
+            .unwrap_or(if self.is_webinar() {
+                crate::qa::QaMode::Moderated
+            } else {
+                crate::qa::QaMode::Off
+            })
+    }
+
     /// Validate the kind, the panelist PIN and the panelists: the kind is
     /// known, the three PINs differ (one PIN, one role), and the
     /// panelists are distinct and at most [`MAX_PANELISTS`].
@@ -340,6 +363,11 @@ impl Meeting {
             }
             if self.host_pin.as_deref() == Some(pin) || self.guest_pin.as_deref() == Some(pin) {
                 return Err("panelist_pin must differ from host_pin and guest_pin".to_string());
+            }
+        }
+        if let Some(qa) = self.qa.as_deref() {
+            if crate::qa::QaMode::parse(qa).is_none() {
+                return Err("qa must be one of off, moderated, open".to_string());
             }
         }
         if self.panelists.len() > MAX_PANELISTS {
@@ -422,6 +450,8 @@ mod tests {
             kind: default_meeting_kind(),
             panelist_pin: None,
             panelists: Vec::new(),
+            qa: None,
+            qa_anonymous: false,
             video_codecs: vec![VideoCodec::Vp8, VideoCodec::H264, VideoCodec::Av1],
             created_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
             updated_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),

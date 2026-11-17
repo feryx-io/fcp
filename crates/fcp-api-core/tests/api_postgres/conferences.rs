@@ -542,6 +542,35 @@ async fn a_host_controls_their_room_from_their_own_session() {
             "DELETE",
             "/conferences/8402/participants/p1/stage",
         ),
+        // Questions (`docs/WEBINARS.md` §2.5, W3.2): every one, and moving one.
+        (
+            Method::GET,
+            format!("{base}/questions"),
+            None,
+            "GET",
+            "/conferences/8402/questions",
+        ),
+        (
+            Method::POST,
+            format!("{base}/questions/q-1/publish"),
+            None,
+            "POST",
+            "/conferences/8402/questions/q-1/publish",
+        ),
+        (
+            Method::POST,
+            format!("{base}/questions/q-1/answer"),
+            Some(json!({ "text": "In May.", "live": false })),
+            "POST",
+            "/conferences/8402/questions/q-1/answer",
+        ),
+        (
+            Method::POST,
+            format!("{base}/questions/q-1/dismiss"),
+            None,
+            "POST",
+            "/conferences/8402/questions/q-1/dismiss",
+        ),
     ];
     for (method, path, body, up_method, up_path) in &controls {
         let res = app.send_as(&olga, method.clone(), path, body.clone()).await;
@@ -638,6 +667,100 @@ async fn a_host_controls_their_room_from_their_own_session() {
         .await;
     assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.text);
     assert_eq!(seen.lock().unwrap().len(), before + 1);
+
+    // Anyone of the tenant asks, upvotes and reads the questions by their
+    // call; publishing, answering and dismissing, and every question
+    // without a call, stay a host's (or a panelist's).
+    let before = seen.lock().unwrap().len();
+    let res = app
+        .send_as(
+            &pete,
+            Method::POST,
+            &format!("{base}/questions"),
+            Some(json!({ "call_id": " call-1 ", "text": "Why?", "anonymous": true })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    let last = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(last.path, "/conferences/8402/questions");
+    assert_eq!(
+        last.body,
+        json!({ "call_id": "call-1", "text": "Why?", "anonymous": true })
+    );
+    let res = app
+        .send_as(
+            &pete,
+            Method::POST,
+            &format!("{base}/questions/q-1/upvote"),
+            Some(json!({ "call_id": "call-1", "on": true })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["path"], "/conferences/8402/questions/q-1/upvote");
+    let res = app
+        .send_as(
+            &pete,
+            Method::GET,
+            &format!("{base}/questions?call_id=call-1"),
+            None,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["path"], "/conferences/8402/questions");
+    for (method, path, body) in [
+        (Method::GET, format!("{base}/questions"), None),
+        (Method::POST, format!("{base}/questions/q-1/publish"), None),
+        (
+            Method::POST,
+            format!("{base}/questions/q-1/answer"),
+            Some(json!({ "live": true })),
+        ),
+        (Method::POST, format!("{base}/questions/q-1/dismiss"), None),
+    ] {
+        let res = app.send_as(&pete, method.clone(), &path, body).await;
+        assert_eq!(
+            res.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path}: {}",
+            res.text
+        );
+    }
+    let res = app
+        .send_as(
+            &pete,
+            Method::POST,
+            &format!("{base}/questions"),
+            Some(json!({ "call_id": "", "text": "Why?" })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.text);
+    assert_eq!(seen.lock().unwrap().len(), before + 3);
+
+    // A webinar's panelist moderates its questions, and no more.
+    app.create_user_with_role("pam", "end_user").await;
+    new_meeting(
+        &app,
+        app.tenant_a,
+        "8404",
+        json!({ "kind": "webinar", "owner_id": "olga", "panelists": ["pam"] }),
+    )
+    .await;
+    let pam = session(&app, "pam").await;
+    let webinar = "/api/v1/me/conferences/live/8404";
+    let res = app
+        .send_as(
+            &pam,
+            Method::POST,
+            &format!("{webinar}/questions/q-1/publish"),
+            None,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["path"], "/conferences/8404/questions/q-1/publish");
+    let res = app
+        .send_as(&pam, Method::DELETE, &format!("{webinar}/hands"), None)
+        .await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.text);
     app.finish().await;
 }
 

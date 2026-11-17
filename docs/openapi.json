@@ -20942,6 +20942,320 @@
         }
       }
     },
+    "/api/v1/me/conferences/live/{room}/questions": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/conferences/live/:room/questions — the room's questions\n(`docs/WEBINARS.md` §2.5): as the participant on `call_id` sees them\n(any user of the room's tenant, the call naming whose view it is), or\nevery one for a host or panelist.",
+        "operationId": "self_service_my_live_conference_questions",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "call_id",
+            "in": "path",
+            "description": "The app's call in the room (its `X-FCP-Call-Id`): the questions as\nthat participant sees them. Without it, every question, for a host\nor panelist.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/conferences/live/:room/questions — ask a question from an app\nin the room. Any user of the room's tenant may; the call names the\nasker. 403 when the room takes no questions.",
+        "operationId": "self_service_my_live_conference_ask",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskQuestionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "201": {
+            "description": "The question as the asker sees it",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/questions/{qid}/upvote": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/conferences/live/:room/questions/:qid/upvote — upvote another's\nquestion from an app in the room, or take the upvote back.",
+        "operationId": "self_service_my_live_conference_upvote",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "qid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpvoteQuestionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/questions/{qid}/publish": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/conferences/live/:room/questions/:qid/publish — a host or\npanelist shows a question to the room.",
+        "operationId": "self_service_my_live_conference_publish_question",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "qid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The question as a host sees it",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/questions/{qid}/answer": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/conferences/live/:room/questions/:qid/answer — a host or\npanelist answers a question in text, aloud (`live`), or both. A written\nanswer to a question not published is seen by its asker alone.",
+        "operationId": "self_service_my_live_conference_answer_question",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "qid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnswerQuestionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The question as a host sees it",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/questions/{qid}/dismiss": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/conferences/live/:room/questions/:qid/dismiss — a host or\npanelist dismisses a question.",
+        "operationId": "self_service_my_live_conference_dismiss_question",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "qid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The question as a host sees it",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/cluster/nodes": {
       "get": {
         "tags": [
@@ -21373,6 +21687,23 @@
           }
         }
       },
+      "AnswerQuestionRequest": {
+        "type": "object",
+        "description": "The body of `POST /me/conferences/live/:room/questions/:qid/answer`.",
+        "properties": {
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A written answer, at most 1000 characters."
+          },
+          "live": {
+            "type": "boolean",
+            "description": "Answered aloud."
+          }
+        }
+      },
       "ApiTokenResponse": {
         "type": "object",
         "description": "Response model for an API token (never includes a hash).",
@@ -21683,6 +22014,28 @@
           "client_id": {
             "type": "string",
             "description": "The app that asked."
+          }
+        }
+      },
+      "AskQuestionRequest": {
+        "type": "object",
+        "description": "The body of `POST /me/conferences/live/:room/questions`.",
+        "required": [
+          "call_id",
+          "text"
+        ],
+        "properties": {
+          "call_id": {
+            "type": "string",
+            "description": "The app's call in the room: the `X-FCP-Call-Id` its 200 OK named."
+          },
+          "text": {
+            "type": "string",
+            "description": "The question, at most 500 characters."
+          },
+          "anonymous": {
+            "type": "boolean",
+            "description": "Asked without the asker's name, where the meeting allows it."
           }
         }
       },
@@ -25092,6 +25445,17 @@
               "type": "string"
             },
             "description": "A webinar's panelists: users of the tenant, by username or id\n(kept by id)."
+          },
+          "qa": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Questions from the audience: `off`, `moderated` or `open`; unset is\n`moderated` in a webinar and `off` in a meeting."
+          },
+          "qa_anonymous": {
+            "type": "boolean",
+            "description": "Whether a question may be asked without the asker's name."
           }
         }
       },
@@ -29619,6 +29983,7 @@
           "video_mode",
           "kind",
           "panelists",
+          "qa_anonymous",
           "created_at",
           "updated_at"
         ],
@@ -29790,6 +30155,17 @@
               "type": "string"
             },
             "description": "A webinar's panelists, users by id."
+          },
+          "qa": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Questions from the audience: `off`, `moderated` or `open`; unset is\n`moderated` in a webinar and `off` in a meeting."
+          },
+          "qa_anonymous": {
+            "type": "boolean",
+            "description": "Whether a question may be asked without the asker's name."
           },
           "created_at": {
             "type": "string",
@@ -34108,6 +34484,7 @@
                 "video_mode",
                 "kind",
                 "panelists",
+                "qa_anonymous",
                 "created_at",
                 "updated_at"
               ],
@@ -34279,6 +34656,17 @@
                     "type": "string"
                   },
                   "description": "A webinar's panelists, users by id."
+                },
+                "qa": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Questions from the audience: `off`, `moderated` or `open`; unset is\n`moderated` in a webinar and `off` in a meeting."
+                },
+                "qa_anonymous": {
+                  "type": "boolean",
+                  "description": "Whether a question may be asked without the asker's name."
                 },
                 "created_at": {
                   "type": "string",
@@ -45050,6 +45438,19 @@
             "items": {
               "type": "string"
             }
+          },
+          "qa": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`off`, `moderated` or `open`; `null` goes back to the kind's default."
+          },
+          "qa_anonymous": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         }
       },
@@ -46564,6 +46965,24 @@
           }
         }
       },
+      "UpvoteQuestionRequest": {
+        "type": "object",
+        "description": "The body of `POST /me/conferences/live/:room/questions/:qid/upvote`.",
+        "required": [
+          "call_id",
+          "on"
+        ],
+        "properties": {
+          "call_id": {
+            "type": "string",
+            "description": "The app's call in the room."
+          },
+          "on": {
+            "type": "boolean",
+            "description": "Give the upvote (`true`) or take it back."
+          }
+        }
+      },
       "UsageResponse": {
         "type": "object",
         "description": "Usage aggregation response.",
@@ -47439,6 +47858,10 @@
               "conference.hand_lowered",
               "conference.stage_joined",
               "conference.stage_left",
+              "conference.question_asked",
+              "conference.question_published",
+              "conference.question_answered",
+              "conference.question_dismissed",
               "queue.caller_enqueued",
               "queue.caller_dequeued",
               "queue.caller_abandoned",

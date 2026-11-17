@@ -1473,9 +1473,11 @@ async fn a_browser_s_feedback_is_the_room_s_estimate_through_the_gateway() {
 /// The audience's voice through the gateway (`docs/WEBINARS.md` §2.5): a
 /// browser in a webinar raises its hand with `POST /v1/rooms/{id}/hand`,
 /// the room has it, and when a host brings it to the stage the room's
-/// `fcp-qa` INFO shows on the session as `qa`.
+/// `fcp-qa` INFO shows on the session as `qa`. It asks a question with
+/// `POST /v1/rooms/{id}/questions`, and the room's word of it shows as
+/// `qa.questions`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_browser_raises_its_hand_and_is_told_it_is_on_the_stage() {
+async fn a_browser_raises_its_hand_is_brought_to_the_stage_and_asks() {
     let Some(db) = TestDatabase::create().await else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
@@ -1500,7 +1502,9 @@ async fn a_browser_raises_its_hand_and_is_told_it_is_on_the_stage() {
         browser.wait_state(&gw, "connected", A_WHILE).await?;
         let session = format!("/v1/rooms/{}", browser.id);
         let (_, info) = gw.api("GET", &session, &browser.token, None).await?;
-        if info["qa"] != serde_json::json!({ "hand": false, "on_stage": false }) {
+        if info["qa"]
+            != serde_json::json!({ "hand": false, "on_stage": false, "moderates": false, "questions": [] })
+        {
             return Err(format!("a new session's qa: {info}"));
         }
 
@@ -1540,11 +1544,59 @@ async fn a_browser_raises_its_hand_and_is_told_it_is_on_the_stage() {
         let deadline = tokio::time::Instant::now() + SOON;
         loop {
             let (_, info) = gw.api("GET", &session, &browser.token, None).await?;
-            if info["qa"] == serde_json::json!({ "hand": false, "on_stage": true }) {
+            if info["qa"]["hand"] == false && info["qa"]["on_stage"] == true {
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(format!("never told it is on the stage: {info}"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // A question (W3.2): asked through the gateway, and the room's word
+        // of it kept on the session. What is not a question's is refused.
+        let (code, body) = gw
+            .api(
+                "POST",
+                &format!("{session}/questions"),
+                &browser.token,
+                Some(r#"{"op":"ask","text":"Is this on?"}"#),
+            )
+            .await?;
+        if code != 204 {
+            return Err(format!("the question answered {code}: {body}"));
+        }
+        let (code, _) = gw
+            .api(
+                "POST",
+                &format!("{session}/questions"),
+                &browser.token,
+                Some(r#"{"op":"hand","raised":true}"#),
+            )
+            .await?;
+        if code != 400 {
+            return Err(format!("a hand by the questions route answered {code}"));
+        }
+        let (code, _) = gw
+            .api(
+                "POST",
+                &format!("{session}/questions"),
+                &browser.token,
+                Some(r#"{"op":"dismiss","id":"q-none"}"#),
+            )
+            .await?;
+        if code != 403 {
+            return Err(format!("an attendee's dismiss answered {code}"));
+        }
+        let deadline = tokio::time::Instant::now() + SOON;
+        loop {
+            let (_, info) = gw.api("GET", &session, &browser.token, None).await?;
+            let q = &info["qa"]["questions"][0];
+            if q["text"] == "Is this on?" && q["mine"] == true {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!("never told of its question: {info}"));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

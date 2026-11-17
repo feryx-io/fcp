@@ -62,6 +62,8 @@ class UpdateMeetingRequest:
             kind (None | str | Unset):
             panelist_pin (None | str | Unset):
             panelists (list[str] | None | Unset):
+            qa (None | str | Unset): `off`, `moderated` or `open`; `null` goes back to the kind's default.
+            qa_anonymous (bool | None | Unset):
      """
 
     name: None | str | Unset = UNSET
@@ -99,6 +101,8 @@ class UpdateMeetingRequest:
     kind: None | str | Unset = UNSET
     panelist_pin: None | str | Unset = UNSET
     panelists: list[str] | None | Unset = UNSET
+    qa: None | str | Unset = UNSET
+    qa_anonymous: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -327,6 +331,18 @@ class UpdateMeetingRequest:
         else:
             panelists = self.panelists
 
+        qa: None | str | Unset
+        if isinstance(self.qa, Unset):
+            qa = UNSET
+        else:
+            qa = self.qa
+
+        qa_anonymous: bool | None | Unset
+        if isinstance(self.qa_anonymous, Unset):
+            qa_anonymous = UNSET
+        else:
+            qa_anonymous = self.qa_anonymous
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -402,6 +418,10 @@ class UpdateMeetingRequest:
             field_dict["panelist_pin"] = panelist_pin
         if panelists is not UNSET:
             field_dict["panelists"] = panelists
+        if qa is not UNSET:
+            field_dict["qa"] = qa
+        if qa_anonymous is not UNSET:
+            field_dict["qa_anonymous"] = qa_anonymous
 
         return field_dict
 
@@ -783,6 +803,26 @@ class UpdateMeetingRequest:
         panelists = _parse_panelists(d.pop("panelists", UNSET))
 
 
+        def _parse_qa(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        qa = _parse_qa(d.pop("qa", UNSET))
+
+
+        def _parse_qa_anonymous(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        qa_anonymous = _parse_qa_anonymous(d.pop("qa_anonymous", UNSET))
+
+
         update_meeting_request = cls(
             name=name,
             guest_pin=guest_pin,
@@ -819,6 +859,8 @@ class UpdateMeetingRequest:
             kind=kind,
             panelist_pin=panelist_pin,
             panelists=panelists,
+            qa=qa,
+            qa_anonymous=qa_anonymous,
         )
 
 

@@ -49,6 +49,12 @@
   .tile .label { position: absolute; left: 6px; bottom: 6px; right: 44px; padding: 2px 8px; border-radius: 4px; background: rgba(0,0,0,.6); color: #fff; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tile .pin { position: absolute; right: 6px; bottom: 6px; padding: 2px 8px; font-size: 12px; background: rgba(0,0,0,.6); }
   .tile.pinned .pin { background: var(--accent); }
+  .qa { margin-top: 12px; }
+  .qa ol { padding-left: 20px; }
+  .qa li { margin: 6px 0; }
+  .qa li .meta { opacity: 0.7; font-size: 0.9em; }
+  .qa li .answer { margin-left: 12px; font-style: italic; }
+  .qa li button { margin-left: 6px; padding: 2px 8px; font-size: 0.85em; }
 </style>
 </head>
 <body>
@@ -85,6 +91,15 @@
       <div class="status" id="call-status"></div>
     </div>
     <div class="share" id="share-status"></div>
+    <div class="qa hidden" id="qa">
+      <h3>Questions</h3>
+      <ol id="questions"></ol>
+      <div class="row">
+        <div><input type="text" id="question" maxlength="500" placeholder="Ask a question" autocomplete="off"></div>
+        <div style="flex: 0 0 auto"><label><input type="checkbox" id="anonymous"> Anonymously</label></div>
+        <div style="flex: 0 0 auto"><button id="ask" class="secondary">Ask</button></div>
+      </div>
+    </div>
     <audio id="audio" autoplay></audio>
   </section>
 
@@ -357,6 +372,7 @@
       if (info.content) noticesSeen = info.content.notices || 0;
       showForwarding(info.forwarding || null);
       showHand(info.qa || null);
+      showQuestions(info.qa || null);
       // A host stopped the share, or the room refused it: stop sending.
       // Only a verdict newer than this share counts; an earlier one is history.
       if (screen && info.content && noticesSeen > noticesAtShare && (info.content.state === 'refused' || info.content.state === 'released')) stopSharing('the room ended it');
@@ -627,6 +643,70 @@
       log(`hand: ${e.message}`);
     }
   }
+
+  // Questions (docs/WEBINARS.md §2.5): as the room says this participant
+  // sees them, kept by the gateway from the room's fcp-qa INFOs. Asking,
+  // upvoting and a host's publish/answer/dismiss go to the room the same way.
+  let questionsSeen = '';
+  function showQuestions(qa) {
+    const list = (qa && qa.questions) || [];
+    $('qa').classList.toggle('hidden', !qa);
+    const key = JSON.stringify([list, qa && qa.moderates]);
+    if (key === questionsSeen) return;
+    questionsSeen = key;
+    const ol = $('questions');
+    ol.replaceChildren();
+    for (const q of list) {
+      const li = document.createElement('li');
+      const text = document.createElement('span');
+      text.textContent = q.text;
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      const notes = [q.asker || 'Anonymous', `${q.upvotes} ▲`];
+      if (q.mine) notes.push('yours');
+      if (!q.published) notes.push('not published');
+      if (q.status === 'answered') notes.push(q.answered_live ? 'answered live' : 'answered');
+      meta.textContent = ` — ${notes.join(' · ')}`;
+      li.append(text, meta);
+      const button = (label, op) => {
+        const b = document.createElement('button');
+        b.className = 'secondary';
+        b.textContent = label;
+        b.addEventListener('click', () => sendQuestion(op));
+        li.append(b);
+      };
+      if (!q.mine) button(q.upvoted ? 'Unvote' : 'Upvote', { op: 'upvote', id: q.id, on: !q.upvoted });
+      if (qa.moderates) {
+        if (!q.published) button('Publish', { op: 'publish', id: q.id });
+        button('Answered live', { op: 'answer', id: q.id, live: true });
+        button('Dismiss', { op: 'dismiss', id: q.id });
+      }
+      if (q.answer) {
+        const a = document.createElement('div');
+        a.className = 'answer';
+        a.textContent = q.answer;
+        li.append(a);
+      }
+      ol.append(li);
+    }
+  }
+  async function sendQuestion(message) {
+    if (!session) return;
+    try {
+      await call('POST', `/v1/rooms/${session.id}/questions`, message, session.token);
+      refresh();
+    } catch (e) {
+      log(`question: ${e.message}`);
+    }
+  }
+  async function ask() {
+    const text = $('question').value.trim();
+    if (!text) return;
+    await sendQuestion({ op: 'ask', text, anonymous: $('anonymous').checked });
+    $('question').value = '';
+  }
+  $('ask').addEventListener('click', ask);
+  $('question').addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(); });
 
   $('join').addEventListener('click', join);
   $('hand').addEventListener('click', toggleHand);

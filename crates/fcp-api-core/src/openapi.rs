@@ -490,6 +490,12 @@ use utoipa::{Modify, OpenApi};
         crate::v1::me_conferences_live::lower_hands,
         crate::v1::me_conferences_live::stage_on,
         crate::v1::me_conferences_live::stage_off,
+        crate::v1::me_conferences_live::questions,
+        crate::v1::me_conferences_live::ask,
+        crate::v1::me_conferences_live::upvote,
+        crate::v1::me_conferences_live::publish_question,
+        crate::v1::me_conferences_live::answer_question,
+        crate::v1::me_conferences_live::dismiss_question,
     )
 )]
 pub struct ApiDoc;

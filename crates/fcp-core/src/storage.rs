@@ -3732,6 +3732,7 @@ pub struct DynStorage {
     emergency_store: Option<Arc<dyn crate::e911::EmergencyStore>>,
     compliance_store: Option<Arc<dyn crate::compliance::ComplianceStore>>,
     recording_store: Option<Arc<dyn crate::recording::RecordingStore>>,
+    question_store: Option<Arc<dyn crate::qa::QuestionStore>>,
     call_recording_store: Option<Arc<dyn crate::recording::CallRecordingStore>>,
     subject_data_store: Option<Arc<dyn crate::subject_request::SubjectDataStore>>,
     subject_erase_store: Option<Arc<dyn crate::subject_erasure::SubjectEraseStore>>,
@@ -3835,6 +3836,7 @@ impl DynStorage {
             device_capture_store: None,
             provisioning_store: None,
             recording_store: None,
+            question_store: None,
             call_recording_store: None,
         }
     }
@@ -3928,6 +3930,7 @@ impl DynStorage {
             device_capture_store: None,
             provisioning_store: None,
             recording_store: None,
+            question_store: None,
             call_recording_store: None,
         }
     }
@@ -4130,6 +4133,18 @@ impl DynStorage {
     /// The conference recording registry, when one is attached.
     pub fn recording_store(&self) -> Option<&Arc<dyn crate::recording::RecordingStore>> {
         self.recording_store.as_ref()
+    }
+
+    /// Attach where questions asked in a room are kept
+    /// (`docs/WEBINARS.md` §2.5).
+    pub fn with_question_store(mut self, store: Arc<dyn crate::qa::QuestionStore>) -> Self {
+        self.question_store = Some(store);
+        self
+    }
+
+    /// Where questions are kept, when a store is attached.
+    pub fn question_store(&self) -> Option<&Arc<dyn crate::qa::QuestionStore>> {
+        self.question_store.as_ref()
     }
 
     /// Attach the call recording registry (`docs/COMPLIANCE_FOLLOWUPS.md`

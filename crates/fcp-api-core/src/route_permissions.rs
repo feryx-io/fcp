@@ -159,6 +159,28 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
         "/me/conferences/live/:room/participants/:pid/stage",
         Open,
     ),
+    (GET, "/me/conferences/live/:room/questions", Open),
+    (POST, "/me/conferences/live/:room/questions", Open),
+    (
+        POST,
+        "/me/conferences/live/:room/questions/:qid/upvote",
+        Open,
+    ),
+    (
+        POST,
+        "/me/conferences/live/:room/questions/:qid/publish",
+        Open,
+    ),
+    (
+        POST,
+        "/me/conferences/live/:room/questions/:qid/answer",
+        Open,
+    ),
+    (
+        POST,
+        "/me/conferences/live/:room/questions/:qid/dismiss",
+        Open,
+    ),
     (GET, "/me/api-tokens", Open),
     (POST, "/me/api-tokens", Open),
     (DELETE, "/me/api-tokens/:id", Open),

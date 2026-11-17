@@ -1323,6 +1323,46 @@ pub enum ConferenceEvent {
         timestamp: SystemTime,
     },
 
+    /// A question was asked in a room (`docs/WEBINARS.md` §2.5). The text
+    /// is not carried: it is the room's, read through its questions.
+    QuestionAsked {
+        room_number: String,
+        question_id: String,
+        participant_id: String,
+        anonymous: bool,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A host or panelist showed a question to the room.
+    QuestionPublished {
+        room_number: String,
+        question_id: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A host or panelist answered a question, in text or aloud (`live`).
+    QuestionAnswered {
+        room_number: String,
+        question_id: String,
+        live: bool,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A host or panelist dismissed a question.
+    QuestionDismissed {
+        room_number: String,
+        question_id: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// Conference room was locked
     RoomLocked {
         room_number: String,
@@ -2104,6 +2144,10 @@ impl PlatformEvent {
         "conference.hand_lowered",
         "conference.stage_joined",
         "conference.stage_left",
+        "conference.question_asked",
+        "conference.question_published",
+        "conference.question_answered",
+        "conference.question_dismissed",
         "queue.caller_enqueued",
         "queue.caller_dequeued",
         "queue.caller_abandoned",
@@ -2275,6 +2319,10 @@ impl PlatformEvent {
                 ConferenceEvent::HandLowered { .. } => "conference.hand_lowered",
                 ConferenceEvent::StageJoined { .. } => "conference.stage_joined",
                 ConferenceEvent::StageLeft { .. } => "conference.stage_left",
+                ConferenceEvent::QuestionAsked { .. } => "conference.question_asked",
+                ConferenceEvent::QuestionPublished { .. } => "conference.question_published",
+                ConferenceEvent::QuestionAnswered { .. } => "conference.question_answered",
+                ConferenceEvent::QuestionDismissed { .. } => "conference.question_dismissed",
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { .. } => "queue.caller_enqueued",
@@ -2417,7 +2465,11 @@ impl PlatformEvent {
                 | ConferenceEvent::HandRaised { tenant_id, .. }
                 | ConferenceEvent::HandLowered { tenant_id, .. }
                 | ConferenceEvent::StageJoined { tenant_id, .. }
-                | ConferenceEvent::StageLeft { tenant_id, .. } => Some(tenant_id),
+                | ConferenceEvent::StageLeft { tenant_id, .. }
+                | ConferenceEvent::QuestionAsked { tenant_id, .. }
+                | ConferenceEvent::QuestionPublished { tenant_id, .. }
+                | ConferenceEvent::QuestionAnswered { tenant_id, .. }
+                | ConferenceEvent::QuestionDismissed { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { tenant_id, .. }
@@ -2800,7 +2852,11 @@ impl ConferenceEvent {
             | ConferenceEvent::HandRaised { timestamp, .. }
             | ConferenceEvent::HandLowered { timestamp, .. }
             | ConferenceEvent::StageJoined { timestamp, .. }
-            | ConferenceEvent::StageLeft { timestamp, .. } => *timestamp,
+            | ConferenceEvent::StageLeft { timestamp, .. }
+            | ConferenceEvent::QuestionAsked { timestamp, .. }
+            | ConferenceEvent::QuestionPublished { timestamp, .. }
+            | ConferenceEvent::QuestionAnswered { timestamp, .. }
+            | ConferenceEvent::QuestionDismissed { timestamp, .. } => *timestamp,
         }
     }
 }

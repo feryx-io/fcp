@@ -4,8 +4,8 @@ Status: agreed 2026-11-17: every recommendation, except that chat is in (§2.5,
 §6 Q5). W1 is done (v0.25.582–583, forge-media v2026.11.17): the roles and the shared
 audience mix, measured at 1,000 and 2,000 attendees on one node (§5). W2 is done
 (v0.25.584–585, forge-media v2026.11.17.1): the audience's video and roster, measured
-at 1,000 and 2,000 watching (§5). W3 is in two parts: W3.1, hands and the stage, is
-done (v0.25.586–587, forge-media v2026.11.17.2); W3.2, Q&A, is next.
+at 1,000 and 2,000 watching (§5). W3 is done: W3.1, hands and the stage (v0.25.586–587,
+forge-media v2026.11.17.2), and W3.2, Q&A (v0.25.588).
 
 A webinar is a meeting with a stage and an audience:
 - a few people speak and are seen;
@@ -506,8 +506,56 @@ For an audience that is not on FCP at all.
     - **Not kept across a move:** a participant migrated off a draining node
       arrives with their hand down. A SIP client that asked for `fcp-qa` and
       did not come by a token is not told after a move either.
-  - **W3.2: Q&A.** Questions, upvotes, answers and moderation over the same
-    package.
+  - **W3.2: Q&A.** **Done** (v0.25.588). As built:
+    - **The setting.** A meeting's `qa` is `off`, `moderated` or `open`;
+      unset is `moderated` in a webinar and `off` in a meeting.
+      `qa_anonymous` lets a question go without the asker's name
+      (migration 142, `Meeting::qa_mode`).
+    - **Asking.** Anyone in the room asks (at most 500 characters, 50 a
+      person and 2,000 a sitting) and upvotes another's question they can
+      see, never their own:
+      - an `fcp-qa` INFO, `{"op":"ask","text":…,"anonymous":…}` or
+        `{"op":"upvote","id":…,"on":…}`;
+      - the app's `POST /me/conferences/live/{room}/questions` and
+        `…/questions/{qid}/upvote`, by call, as the hand is;
+      - the browser's `POST /v1/rooms/{id}/questions` on the gateway (the
+        `fcp-qa` message as the body), and the join page's Questions panel.
+    - **Moderating.** A host or panelist publishes, answers (in text, `live`
+      for aloud, or both) and dismisses:
+      - by INFO (`publish`, `answer`, `dismiss`), refused 403 from anyone
+        else;
+      - by `/me/conferences/live/{room}/questions/{qid}/{publish|answer|dismiss}`
+        for the meeting's owner, a host token, a panelist token, or a
+        webinar's named panelist;
+      - and `GET …/questions` lists every question for them. With
+        `?call_id=` it lists what that participant sees.
+    - **Who sees what.** A host or panelist sees every question; anyone else
+      the published ones and their own. In an `open` room a question is
+      published as it is asked. A written answer to a question nobody else
+      sees reaches its asker alone. A dismissed question drops out of
+      everyone's list.
+    - **Being told.** A participant who asked for `fcp-qa` is sent the
+      questions they may see as they change, coalesced into
+      `{"op":"questions","questions":[…]}` once a second, in bodies of at
+      most 8 KB. One who joins a room with questions is sent all they may
+      see. Each question says, for them, `mine` and `upvoted`. A dismissed
+      question is sent once more, `dismissed`, to those who saw it. The
+      gateway keeps the list as `qa.questions` on the session, with
+      `qa.moderates` from the join token's role, for the page.
+    - **Kept.** A room's questions live on the node holding it, for one
+      sitting, from its first participant to its last. Each is a
+      `webinar_questions` row (`fcp_core::qa::QuestionStore`), written as it
+      changes, with upvotes at most once a second and the rest at the
+      sitting's end. Anonymous questions keep no name.
+    - **Events:** `conference.question_asked` (without the text),
+      `conference.question_published`, `conference.question_answered`
+      (`live`) and `conference.question_dismissed`.
+    - **Not yet:**
+      - questions on a room's other nodes: a cascaded room's questions are
+        each node's own until W5;
+      - questions under retention, holds and subject requests, and in the
+        attendance report (W4);
+      - questions surviving a migration off a draining node.
 - **W3b: chat** (FCP), for every room.
   - `conference_chat` (migration) under retention, holds and subject requests.
   - The `fcp-chat` INFO package, relayed by the call manager and the gateway.

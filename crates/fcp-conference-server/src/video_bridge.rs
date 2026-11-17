@@ -1771,6 +1771,8 @@ mod tests {
             kind: fcp_core::meeting::default_meeting_kind(),
             panelist_pin: None,
             panelists: Vec::new(),
+            qa: None,
+            qa_anonymous: false,
             created_at: now,
             updated_at: now,
         }
