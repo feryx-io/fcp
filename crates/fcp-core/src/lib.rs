@@ -49,6 +49,7 @@ pub mod presence_status;
 pub mod prompt;
 pub mod provisioning;
 pub mod push;
+pub mod qa;
 pub mod queue_config;
 pub mod recording;
 pub mod region;
@@ -155,6 +156,16 @@ pub const CONTENT_INFO_TYPE: &str = "application/vnd.fcp.content+json";
 pub const VIEW_INFO_PACKAGE: &str = "fcp-view";
 /// The body of a [`VIEW_INFO_PACKAGE`] INFO.
 pub const VIEW_INFO_TYPE: &str = "application/vnd.fcp.view+json";
+
+/// The info package (RFC 6086) of the audience's voice in a room
+/// (`docs/WEBINARS.md` §2.5): a participant raises or lowers their hand
+/// in an INFO of [`QA_INFO_TYPE`] ([`qa::QaMessage`]), and one whose
+/// INVITE said `Recv-Info: fcp-qa` is told when a host lowers their hand
+/// or brings them to the stage. The room's answer says `Recv-Info: fcp-qa`
+/// to a participant that asked.
+pub const QA_INFO_PACKAGE: &str = "fcp-qa";
+/// The body of a [`QA_INFO_PACKAGE`] INFO.
+pub const QA_INFO_TYPE: &str = "application/vnd.fcp.qa+json";
 
 /// Whether an INVITE's `Recv-Info` headers name `package` (RFC 6086 §5.2.2:
 /// a comma-separated list, the header repeatable).

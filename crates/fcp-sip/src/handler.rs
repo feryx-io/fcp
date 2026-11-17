@@ -5178,11 +5178,14 @@ impl SipMessageHandler {
             .get_call(call_id)
             .is_some_and(|c| c.conference_room.is_some());
         let recv: Vec<&str> = room_answer.headers().get_all("Recv-Info").collect();
-        if is_room && fcp_core::recv_info_has(&recv, fcp_core::VIEW_INFO_PACKAGE) {
-            let _ = response.headers_mut().push(
-                SmolStr::new("Recv-Info"),
-                SmolStr::new(fcp_core::VIEW_INFO_PACKAGE),
-            );
+        // The views a forwarding room takes, and the audience's voice
+        // (`docs/WEBINARS.md` §2.5).
+        for package in [fcp_core::VIEW_INFO_PACKAGE, fcp_core::QA_INFO_PACKAGE] {
+            if is_room && fcp_core::recv_info_has(&recv, package) {
+                let _ = response
+                    .headers_mut()
+                    .push(SmolStr::new("Recv-Info"), SmolStr::new(package));
+            }
         }
     }
 
@@ -13497,17 +13500,18 @@ impl SipMessageHandler {
         use crate::conference_relay as relay;
         // What it is, and whether it comes from the phone: the phone
         // subscribes and sends its views; the room notifies and tells the
-        // floor.
+        // floor; the audience's voice goes either way (`None`).
         let from_phone = match request.method() {
-            Method::Subscribe if relay::is_roster(request) => true,
-            Method::Notify if relay::is_roster(request) => false,
-            Method::Info if relay::is_view_info(request) => true,
-            Method::Info if relay::is_floor_info(request) => false,
+            Method::Subscribe if relay::is_roster(request) => Some(true),
+            Method::Notify if relay::is_roster(request) => Some(false),
+            Method::Info if relay::is_view_info(request) => Some(true),
+            Method::Info if relay::is_floor_info(request) => Some(false),
+            Method::Info if relay::is_qa_info(request) => None,
             _ => return None,
         };
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request).ok()?;
         call.conference_room.as_ref()?;
-        if from_phone != is_a_leg {
+        if from_phone.is_some_and(|from_phone| from_phone != is_a_leg) {
             return None;
         }
         Some(self.relay_conference(request, &call, is_a_leg).await)

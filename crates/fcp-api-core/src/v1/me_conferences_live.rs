@@ -428,3 +428,177 @@ pub async fn stop_content(
     )
     .await
 }
+
+/// The body of `POST /me/conferences/live/:room/hand`.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub struct OwnHandRequest {
+    /// The call the app is in the room on: the `X-FCP-Call-Id` its 200 OK
+    /// named. Knowing it is what makes the hand the caller's.
+    pub call_id: String,
+    pub raised: bool,
+}
+
+/// POST /me/conferences/live/:room/hand — raise or lower one's own hand
+/// (`docs/WEBINARS.md` §2.5), from an app in the room. Any user of the
+/// room's tenant may; the call names whose hand it is.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/conferences/live/{room}/hand",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_hand",
+    params(("room" = String, Path)),
+    request_body = OwnHandRequest,
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn own_hand(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    Path(room): Path<String>,
+    Json(req): Json<OwnHandRequest>,
+) -> Result<Proxied, ApiError> {
+    if req.call_id.trim().is_empty() {
+        return Err(ApiError::BadRequest("call_id is required".into()));
+    }
+    let tenant = crate::v1::self_service::resolve_tenant_from_claims(&claims, &state);
+    let meeting = scoped_meeting(&state, &tenant, &room).await?;
+    forward(
+        &state,
+        &meeting,
+        reqwest::Method::POST,
+        &format!("/conferences/{room}/hand"),
+        Some(serde_json::json!({ "call_id": req.call_id.trim(), "raised": req.raised })),
+    )
+    .await
+}
+
+/// DELETE /me/conferences/live/:room/participants/:pid/hand — a host
+/// lowers one hand.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/me/conferences/live/{room}/participants/{pid}/hand",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_lower_hand",
+    params(("room" = String, Path), ("pid" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn lower_hand(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    headers: HeaderMap,
+    Path((room, pid)): Path<(String, String)>,
+) -> Result<Proxied, ApiError> {
+    check_segment(&pid, "participant id")?;
+    let path = format!("/participants/{pid}/hand");
+    as_host(
+        &state,
+        &claims,
+        &headers,
+        &room,
+        reqwest::Method::DELETE,
+        &path,
+        None,
+    )
+    .await
+}
+
+/// DELETE /me/conferences/live/:room/hands — a host lowers every hand.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/me/conferences/live/{room}/hands",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_lower_hands",
+    params(("room" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn lower_hands(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    headers: HeaderMap,
+    Path(room): Path<String>,
+) -> Result<Proxied, ApiError> {
+    as_host(
+        &state,
+        &claims,
+        &headers,
+        &room,
+        reqwest::Method::DELETE,
+        "/hands",
+        None,
+    )
+    .await
+}
+
+/// POST /me/conferences/live/:room/participants/:pid/stage — a host
+/// brings a webinar's attendee to the stage.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/conferences/live/{room}/participants/{pid}/stage",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_stage_on",
+    params(("room" = String, Path), ("pid" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn stage_on(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    headers: HeaderMap,
+    Path((room, pid)): Path<(String, String)>,
+) -> Result<Proxied, ApiError> {
+    check_segment(&pid, "participant id")?;
+    let path = format!("/participants/{pid}/stage");
+    as_host(
+        &state,
+        &claims,
+        &headers,
+        &room,
+        reqwest::Method::POST,
+        &path,
+        None,
+    )
+    .await
+}
+
+/// DELETE /me/conferences/live/:room/participants/:pid/stage — a host
+/// sends an attendee back to the audience.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/me/conferences/live/{room}/participants/{pid}/stage",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_stage_off",
+    params(("room" = String, Path), ("pid" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn stage_off(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    headers: HeaderMap,
+    Path((room, pid)): Path<(String, String)>,
+) -> Result<Proxied, ApiError> {
+    check_segment(&pid, "participant id")?;
+    let path = format!("/participants/{pid}/stage");
+    as_host(
+        &state,
+        &claims,
+        &headers,
+        &room,
+        reqwest::Method::DELETE,
+        &path,
+        None,
+    )
+    .await
+}

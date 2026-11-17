@@ -142,6 +142,23 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
         Open,
     ),
     (POST, "/me/conferences/live/:room/video/content/stop", Open),
+    (POST, "/me/conferences/live/:room/hand", Open),
+    (
+        DELETE,
+        "/me/conferences/live/:room/participants/:pid/hand",
+        Open,
+    ),
+    (DELETE, "/me/conferences/live/:room/hands", Open),
+    (
+        POST,
+        "/me/conferences/live/:room/participants/:pid/stage",
+        Open,
+    ),
+    (
+        DELETE,
+        "/me/conferences/live/:room/participants/:pid/stage",
+        Open,
+    ),
     (GET, "/me/api-tokens", Open),
     (POST, "/me/api-tokens", Open),
     (DELETE, "/me/api-tokens/:id", Open),

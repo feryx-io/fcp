@@ -47,6 +47,11 @@ pub struct Member {
     pub paused: bool,
     /// A host has put the spotlight on them.
     pub spotlight: bool,
+    /// Their hand is up (`fcp:hand`, `docs/WEBINARS.md` §2.5).
+    pub hand: bool,
+    /// A webinar's attendee (role `attendee`), listed because their hand
+    /// is up.
+    pub attendee: bool,
 }
 
 /// The SSRCs a forwarding room sends a member to this subscriber on:
@@ -210,6 +215,8 @@ struct UserBuild {
     speaking: bool,
     presenting: bool,
     spotlight: bool,
+    hand: bool,
+    attendee: bool,
     paused: bool,
     sources: Sources,
     /// The media element being read.
@@ -242,6 +249,8 @@ impl UserBuild {
             presenting: self.presenting,
             paused: self.paused,
             spotlight: self.spotlight,
+            hand: self.hand,
+            attendee: self.attendee,
         };
         (self.id, Some((member, self.sources)))
     }
@@ -355,7 +364,10 @@ fn end(
             }
         }
         ("display-text", Some("user")) => u.name = value.to_string(),
-        ("entry", Some("roles")) => u.host |= value.eq_ignore_ascii_case("host"),
+        ("entry", Some("roles")) => {
+            u.host |= value.eq_ignore_ascii_case("host");
+            u.attendee |= value.eq_ignore_ascii_case("attendee");
+        }
         ("type", Some("media")) => {
             if let Some(m) = u.media.as_mut() {
                 m.kind = value.to_ascii_lowercase();
@@ -421,6 +433,8 @@ fn end(
         ("speaking", _) => u.speaking = value.eq_ignore_ascii_case("true"),
         ("presenting", _) => u.presenting = value.eq_ignore_ascii_case("true"),
         ("spotlight", _) => u.spotlight = value.eq_ignore_ascii_case("true"),
+        // Since when; that it is there is what a reader needs.
+        ("hand", _) => u.hand = !value.is_empty(),
         _ => {}
     }
 }
