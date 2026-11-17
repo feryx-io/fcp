@@ -595,6 +595,9 @@ Each phase is one PR in its repository.
 - **R5: transport-cc** (forge-media, FCP, anvil). A send-side estimator in the room
   and the extension negotiated. Anvil and browsers send its feedback. The allocator
   takes the faster estimate. Its own design note comes first, after R3's numbers.
+  - **Designed (v0.25.572): `docs/TRANSPORT_CC.md`.** A shared `forge-bwe` crate,
+    measured in simulation before the room is wired (R5a–R5d, with a decision
+    point after R5a).
 - **R7: forwarding across nodes** (FCP). Trunks as forwarding subscribers, with
   sources named across nodes in the roster.
   - **Done (v0.25.570–571, forge-media v2026.11.16.2: forge-conference 0.16.2).** As
