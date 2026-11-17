@@ -1336,3 +1336,136 @@ async fn the_join_page_draws_a_forwarding_room_and_pins_one_large() {
     conference.stop().await;
     db.drop_db().await;
 }
+
+/// Transport-cc to a browser (`docs/TRANSPORT_CC.md` §3.4, R5c2), in
+/// Chromium: a browser that joins a forwarding room negotiates transport-cc
+/// with the gateway, the gateway with the room, and the room's estimate
+/// for the browser comes from the browser's own feedback, renumbered by
+/// the gateway — not from a REMB. A phone sends video for it to be
+/// forwarded. Runs where [`a_browser_s_camera_reaches_the_room_as_simulcast`]
+/// does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_s_feedback_is_the_room_s_estimate_through_the_gateway() {
+    let Ok(playwright) = std::env::var("FCP_TEST_PLAYWRIGHT") else {
+        eprintln!("skipped: FCP_TEST_PLAYWRIGHT is not set");
+        return;
+    };
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    seed.meeting_with(
+        ROOM,
+        serde_json::json!({
+            "video_enabled": true,
+            "video_codecs": ["H264", "VP8"],
+            "video_mode": "auto",
+            "video_passthrough": "off",
+        }),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (conference, conf_sip, conf_http) = conference_server_http(db.url(), dir.path()).await;
+    let mut gw = Gateway::start_as("e2e-webrtc-gw", None, 0, conf_sip, None, true).await;
+
+    // Carol's phone sends video for the room to forward to the browser.
+    let carol = Phone::new("carol", "x", REALM, conf_sip)
+        .await
+        .expect("a phone");
+    carol.enable_video(fcp_testkit::video::VideoMode::Plain);
+    let call = carol.call(ROOM).await.expect("carol calls the room");
+    call.answered(SOON).await.expect("the room answers carol");
+    let carol_video = call.video().expect("carol has video");
+    carol_video.set_packet_size(1000);
+
+    let script = dir.path().join("join.js");
+    std::fs::write(&script, JOIN_IN_CHROMIUM).unwrap();
+    let url = format!(
+        "http://127.0.0.1:{}/join?room={ROOM}&name=web&video=true&streams=4&autojoin=true&token={}",
+        gw.http,
+        join_token(&seed, "web"),
+    );
+    let mut chromium = tokio::process::Command::new(
+        std::env::var("FCP_TEST_NODE").unwrap_or_else(|_| "node".into()),
+    )
+    .arg(&script)
+    .env("PW", &playwright)
+    .env("URL", &url)
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .kill_on_drop(true)
+    .spawn()
+    .expect("node runs");
+
+    let scenario = async {
+        let deadline = tokio::time::Instant::now() + A_WHILE * 2;
+        let mut last = serde_json::Value::Null;
+        while tokio::time::Instant::now() < deadline {
+            // Half a second of Carol's camera between looks.
+            for _ in 0..15 {
+                let _ = carol_video.send_frames(1, 30).await;
+                tokio::time::sleep(Duration::from_millis(33)).await;
+            }
+            let tenant = seed.tenant_id.to_string();
+            let Ok((200, body)) = http_request(
+                "GET",
+                &loopback(conf_http, &format!("/conferences/{ROOM}/stats")),
+                &[("x-fcp-tenant-id", &tenant)],
+                None,
+            )
+            .await
+            else {
+                continue;
+            };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) else {
+                continue;
+            };
+            let forwarded = json["participants"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find_map(|p| {
+                    let f = &p["video"]["forwarded"];
+                    f.is_object().then(|| f.clone())
+                });
+            last = json;
+            let Some(f) = forwarded else { continue };
+            if f["estimate"] == "transport_cc"
+                && f["transport_cc_kbps"].as_u64().is_some_and(|k| k > 0)
+            {
+                if f["remb_kbps"] != 0 {
+                    // Chromium sends no REMB once transport-cc is agreed.
+                    return Err(format!("a REMB as well: {f}"));
+                }
+                return Ok(f);
+            }
+        }
+        Err(format!(
+            "the room never estimated from the browser's feedback: {last}"
+        ))
+    }
+    .await;
+    drop(chromium.stdin.take());
+    let out = tokio::time::timeout(SOON, chromium.wait_with_output()).await;
+    match scenario {
+        Ok(f) => eprintln!("the browser's viewer: {f:#}"),
+        Err(why) => {
+            let page = match out {
+                Ok(Ok(o)) => format!(
+                    "{}\n{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                ),
+                _ => "chromium did not stop".to_string(),
+            };
+            let logs = gw.logs().await;
+            let conf = conference.kill().await;
+            panic!("{why}\n--- page\n{page}\n--- gateway\n{logs}\n--- conference\n{conf}");
+        }
+    }
+    gw.service.take().unwrap().stop().await;
+    conference.stop().await;
+    db.drop_db().await;
+}

@@ -22,6 +22,7 @@
 //! (`docs/DISTRIBUTED_CONFERENCING.md`, phase 5c). The relay takes it
 //! between packets; the browser side is untouched.
 
+use crate::transport_cc::{Downlink, Section};
 use bytes::{Bytes, BytesMut};
 use forge_rtp::rtcp::{PayloadFeedback, PsFeedback, RtpFeedback, TransportFeedback};
 use forge_rtp::{RtcpPacket, RtpPacket, RtpSocketPair, SrtpContext};
@@ -52,6 +53,9 @@ pub struct SipVideoLeg {
     pub srtp: Option<Arc<Mutex<SrtpContext>>>,
     /// The video payload type on the SIP side.
     pub payload_type: u8,
+    /// The transport-cc extension's id, when the room kept it: what it
+    /// sends here is numbered under it (`docs/TRANSPORT_CC.md` §3.4).
+    pub transport_cc: Option<u8>,
 }
 
 /// The SIP leg.
@@ -80,6 +84,9 @@ pub struct BrowserLeg {
     /// onto them. Empty: the room's one picture goes out on `video`.
     pub streams: Vec<Option<(VideoSender, u8)>>,
     pub forwarding: Option<Arc<std::sync::Mutex<Forwarding>>>,
+    /// The transport-cc extension's id on the browser's connection, when
+    /// it agreed one.
+    pub transport_cc: Option<u8>,
     /// How long the browser may send nothing at all — no RTP, no RTCP —
     /// before it is taken as gone. A live browser reports every second or
     /// so even with its tracks muted; the peer connection itself does not
@@ -350,6 +357,13 @@ pub async fn run_relay(
         .forwarding
         .clone()
         .filter(|_| !browser.streams.is_empty());
+    // Transport-cc (`docs/TRANSPORT_CC.md` §3.4): the room's packets
+    // renumbered for the browser's connection and its feedback turned back
+    // into the room's numbers; the browser's own packets reported on here.
+    let mut down = browser.transport_cc.map(Downlink::new);
+    let mut up = browser
+        .transport_cc
+        .map(|_| forge_bwe::FeedbackWriter::new());
     let mut last_browser_activity = Instant::now();
     let mut liveness = tokio::time::interval(Duration::from_secs(1));
     liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -363,6 +377,9 @@ pub async fn run_relay(
                 sip = new_leg;
                 sip_video_ssrc = None;
                 sip_content_ssrc = None;
+                if let Some(d) = down.as_mut() {
+                    d.reset_room();
+                }
                 if let Some(f) = &forwarding {
                     f.lock().unwrap_or_else(|e| e.into_inner()).clear();
                 }
@@ -418,6 +435,7 @@ pub async fn run_relay(
                         {
                             browser_video_ssrcs.push(ssrc);
                         }
+                        uplink_feedback(&mut up, browser.transport_cc, &pkt, &browser, our_video_ssrc).await;
                         video_to_sip(video, &pkt, &stats, &stats.video_to_sip, "video").await;
                     }
                     PeerEvent::ContentRtp(pkt) => {
@@ -427,12 +445,44 @@ pub async fn run_relay(
                         };
                         browser_content_ssrc = Some(pkt.header.ssrc);
                         stats.content_last_from_browser_ms.store(unix_ms(), Ordering::Relaxed);
+                        uplink_feedback(&mut up, browser.transport_cc, &pkt, &browser, our_video_ssrc).await;
                         video_to_sip(content, &pkt, &stats, &stats.content_to_sip, "content").await;
                     }
                     // The browser's sections for a forwarding room only
                     // receive: nothing arrives on them.
                     PeerEvent::StreamRtp(..) => {}
                     PeerEvent::Rtcp(packets) => {
+                        // Transport-cc feedback, in the room's numbers, to
+                        // each section it is about.
+                        if let Some(d) = down.as_mut() {
+                            for p in &packets {
+                                let RtcpPacket::TransportFeedback(RtpFeedback {
+                                    kind: TransportFeedback::TransportCc(fb),
+                                    ..
+                                }) = p
+                                else {
+                                    continue;
+                                };
+                                for (section, translated) in d.translate(fb) {
+                                    let leg = match section {
+                                        Section::Camera => sip.video.as_ref(),
+                                        Section::Content => sip.content.as_ref(),
+                                    };
+                                    if let Some(leg) = leg {
+                                        let sender = match section {
+                                            Section::Camera => browser_video_ssrc,
+                                            Section::Content => browser_content_ssrc,
+                                        };
+                                        let packet = RtcpPacket::TransportFeedback(RtpFeedback {
+                                            sender_ssrc: sender.unwrap_or(0),
+                                            media_ssrc: 0,
+                                            kind: TransportFeedback::TransportCc(translated),
+                                        });
+                                        feedback_to_sip(leg, &[packet], &stats).await;
+                                    }
+                                }
+                            }
+                        }
                         // Feedback about what we send the browser on each
                         // section goes to that section's far end; a REMB,
                         // which is about the whole transport, to the camera's.
@@ -521,11 +571,11 @@ pub async fn run_relay(
                     Err(e) => return RelayEnd::SipSocketError(format!("video: {e}")),
                 };
                 if let (Some(video), Some(f)) = (&sip.video, &forwarding) {
-                    stream_to_browser(video, &browser.streams, f, raw, &stats).await;
+                    stream_to_browser(video, &browser.streams, f, raw, &stats, down.as_mut()).await;
                     continue;
                 }
                 let (Some(video), Some((sender, browser_pt))) = (&sip.video, &browser.video) else { continue };
-                if let Some(ssrc) = video_to_browser(video, sender, *browser_pt, raw, &stats, &stats.video_to_browser, "video").await {
+                if let Some(ssrc) = video_to_browser(video, sender, *browser_pt, raw, &stats, &stats.video_to_browser, "video", down.as_mut().map(|d| (d, Section::Camera))).await {
                     sip_video_ssrc = Some(ssrc);
                 }
             }
@@ -546,7 +596,7 @@ pub async fn run_relay(
                     Err(e) => return RelayEnd::SipSocketError(format!("content: {e}")),
                 };
                 let (Some(content), Some((sender, browser_pt))) = (&sip.content, &browser.content) else { continue };
-                if let Some(ssrc) = video_to_browser(content, sender, *browser_pt, raw, &stats, &stats.content_to_browser, "content").await {
+                if let Some(ssrc) = video_to_browser(content, sender, *browser_pt, raw, &stats, &stats.content_to_browser, "content", down.as_mut().map(|d| (d, Section::Content))).await {
                     sip_content_ssrc = Some(ssrc);
                 }
             }
@@ -621,9 +671,50 @@ async fn video_to_sip(
     }
 }
 
+/// The room's transport-cc number on `out` exchanged for the browser
+/// connection's, when both sides carry it.
+fn renumber(out: Bytes, leg: &SipVideoLeg, down: Option<(&mut Downlink, Section)>) -> Bytes {
+    match (down, leg.transport_cc) {
+        (Some((d, section)), Some(ext)) => d.forward(out, section, ext),
+        _ => out,
+    }
+}
+
+/// Transport-cc feedback for one of the browser's packets, sent when it
+/// is due.
+async fn uplink_feedback(
+    up: &mut Option<forge_bwe::FeedbackWriter>,
+    ext: Option<u8>,
+    pkt: &RtpPacket,
+    browser: &BrowserLeg,
+    ours: Option<u32>,
+) {
+    let (Some(writer), Some(ext)) = (up.as_mut(), ext) else {
+        return;
+    };
+    let Some(seq) = forge_rtp::transport_cc::transport_sequence(pkt, ext) else {
+        return;
+    };
+    let now = std::time::Instant::now();
+    writer.on_packet(seq, now);
+    let Some(fb) = writer.poll(now) else { return };
+    let Some((sender, _)) = browser.video.as_ref().or(browser.content.as_ref()) else {
+        return;
+    };
+    let packet = RtcpPacket::TransportFeedback(RtpFeedback {
+        sender_ssrc: ours.unwrap_or(0),
+        media_ssrc: pkt.header.ssrc,
+        kind: TransportFeedback::TransportCc(fb),
+    });
+    if let Err(e) = sender.send_rtcp(&[packet]).await {
+        trace!(error = %e, "transport-cc feedback to the browser failed");
+    }
+}
+
 /// A SIP section's packet to the browser: unprotected, re-tagged, sent
 /// under the peer connection's SSRC for the section. Returns the SIP
 /// side's SSRC when the packet was forwarded.
+#[allow(clippy::too_many_arguments)]
 async fn video_to_browser(
     leg: &SipVideoLeg,
     sender: &VideoSender,
@@ -632,6 +723,7 @@ async fn video_to_browser(
     stats: &RelayStats,
     counter: &AtomicU64,
     what: &str,
+    down: Option<(&mut Downlink, Section)>,
 ) -> Option<u32> {
     let plain = unprotect(&leg.srtp, &raw, false, stats).await?;
     if plain.len() < 12 || (plain[1] & 0x7f) != leg.payload_type {
@@ -639,7 +731,7 @@ async fn video_to_browser(
         return None;
     }
     let ssrc = ssrc_of(&plain);
-    let out = retag(&plain, browser_pt).freeze();
+    let out = renumber(retag(&plain, browser_pt).freeze(), leg, down);
     match sender.send_packet(out).await {
         Ok(()) => {
             counter.fetch_add(1, Ordering::Relaxed);
@@ -657,6 +749,7 @@ async fn stream_to_browser(
     forwarding: &std::sync::Mutex<Forwarding>,
     raw: Bytes,
     stats: &RelayStats,
+    down: Option<&mut Downlink>,
 ) {
     let Some(plain) = unprotect(&leg.srtp, &raw, false, stats).await else {
         return;
@@ -676,10 +769,12 @@ async fn stream_to_browser(
         stats.dropped.fetch_add(1, Ordering::Relaxed);
         return;
     };
-    match sender
-        .send_packet(retag(&plain, *browser_pt).freeze())
-        .await
-    {
+    let out = renumber(
+        retag(&plain, *browser_pt).freeze(),
+        leg,
+        down.map(|d| (d, Section::Camera)),
+    );
+    match sender.send_packet(out).await {
         Ok(()) => {
             stats.streams_to_browser.fetch_add(1, Ordering::Relaxed);
         }

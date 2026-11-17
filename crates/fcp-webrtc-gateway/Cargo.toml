@@ -31,6 +31,7 @@ forge-core = { path = "../../external/forge-media/crates/forge-core" }
 forge-webrtc = { path = "../../external/forge-media/crates/forge-webrtc" }
 forge-engine = { path = "../../external/forge-media/crates/forge-engine" }
 forge-rtp = { path = "../../external/forge-media/crates/forge-rtp" }
+forge-bwe = { path = "../../external/forge-media/crates/forge-bwe" }
 forge-conference = { path = "../../external/forge-media/crates/forge-conference" }
 
 # SIP stack from siphon-rs
@@ -70,6 +71,7 @@ serde_json = { workspace = true }
 # Utilities
 async-trait = "0.1"
 bytes = { workspace = true }
+rand = "0.8"
 dashmap = "6"
 socket2 = "0.5"
 uuid = { workspace = true }

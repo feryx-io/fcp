@@ -3732,6 +3732,82 @@ async fn a_phones_views_cross_the_call_manager_to_a_forwarding_room() {
     stack.finish().await;
 }
 
+/// Transport-cc crosses the call manager (`docs/TRANSPORT_CC.md` §3.3):
+/// the anchored video relay carries a room's numbered packets to the
+/// phone with their header extension, and the phone's transport-cc
+/// feedback back to the room, both untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transport_cc_crosses_the_call_manager_to_a_room_and_back() {
+    let room_port = free_port();
+    let extra =
+        format!("[b2bua]\nconference_server_uri = \"sip:conference@127.0.0.1:{room_port}\"\n");
+    let Some(stack) = Stack::start_with(&extra, 40).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack.seed.meeting("8000", None, None).await;
+    let room = Phone::bound_to(
+        &format!("127.0.0.1:{room_port}"),
+        "conference",
+        "x",
+        REALM,
+        stack.sip,
+    )
+    .await
+    .expect("the stand-in room binds");
+    room.enable_video(fcp_testkit::video::VideoMode::Plain);
+    room.set_video_transport_cc(true);
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let alice_phone = stack.phone(&alice).await;
+    alice_phone.enable_video(fcp_testkit::video::VideoMode::Plain);
+    alice_phone.set_video_transport_cc(true);
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+
+    let alice_call = alice_phone.call("8000").await.unwrap();
+    let Some(incoming) = room.incoming(SOON).await else {
+        stack
+            .fail("the call manager did not ring the room", &alice_phone)
+            .await;
+    };
+    let offered = String::from_utf8_lossy(incoming.body()).to_string();
+    assert!(
+        offered.contains(forge_rtp::transport_cc::TRANSPORT_CC_URI)
+            && offered.contains("transport-cc"),
+        "the anchored offer keeps transport-cc: {offered}"
+    );
+    let room_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+    let (room_video, alice_video) = (room_call.video().unwrap(), alice_call.video().unwrap());
+
+    // The room's numbered packets reach Alice, and her feedback reaches
+    // the room.
+    let deadline = tokio::time::Instant::now() + SOON;
+    loop {
+        room_video.send(5).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let (sent, _, _) = alice_video.transport_cc_stats();
+        if sent > 0 && room_video.transport_cc_feedback_received() > 0 {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            stack
+                .fail(
+                    &format!(
+                        "transport-cc did not cross: Alice got {} packets and wrote {sent} feedback, the room heard {}",
+                        alice_video.received(),
+                        room_video.transport_cc_feedback_received()
+                    ),
+                    &alice_phone,
+                )
+                .await;
+        }
+    }
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(room_call.ended(SOON).await);
+    stack.finish().await;
+}
+
 /// A phone in a room through the call manager (`docs/SOFTPHONE_VIDEO.md`
 /// §2.6, F2b), against a stand-in conference node: the INVITE takes the
 /// join link's token and `Recv-Info: fcp-content` to the room; a roster

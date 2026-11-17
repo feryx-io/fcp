@@ -4973,6 +4973,7 @@ impl ConferenceCallHandler {
                 feedback: true,
                 srtp: video_srtp.as_ref().map(|o| &o.sdp),
                 simulcast: None,
+                transport_cc: None,
             }),
             _ => None,
         };
@@ -5007,6 +5008,7 @@ impl ConferenceCallHandler {
                 feedback: true,
                 srtp: content_srtp.as_ref().map(|o| &o.sdp),
                 simulcast: None,
+                transport_cc: None,
             }),
             _ => None,
         };

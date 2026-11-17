@@ -533,6 +533,10 @@ pub struct VideoOfferSection<'a> {
     /// the layers' id. The gateway passes on what a browser agreed to send
     /// it, under the browser's own id, so the packets cross unchanged.
     pub simulcast: Option<&'a forge_sdp::SimulcastLayers>,
+    /// Offer transport-cc under this extension id (`a=extmap` and
+    /// `a=rtcp-fb:<pt> transport-cc`, `docs/TRANSPORT_CC.md` §3.4); needs
+    /// `feedback`.
+    pub transport_cc: Option<u8>,
 }
 
 /// The `a=label` an offered content section carries (RFC 4574), by which
@@ -634,6 +638,16 @@ pub fn construct_offer(opts: &OfferOptions<'_>) -> Result<String> {
             for fb in ["nack", "nack pli", "ccm fir", "goog-remb"] {
                 video = video
                     .add_attribute("rtcp-fb", &format!("{pt} {fb}"))
+                    .map_err(sdp_err)?;
+            }
+            if let Some(id) = v.transport_cc {
+                video = video
+                    .add_attribute("rtcp-fb", &format!("{pt} transport-cc"))
+                    .map_err(sdp_err)?
+                    .add_attribute(
+                        "extmap",
+                        &format!("{id} {}", forge_rtp::transport_cc::TRANSPORT_CC_URI),
+                    )
                     .map_err(sdp_err)?;
             }
         }
@@ -772,6 +786,9 @@ pub struct VideoOffer {
     /// The peer offers to send on it (`sendrecv` or `sendonly`): for a
     /// shared screen, that it is sharing or about to.
     pub sends: bool,
+    /// The transport-cc extension's id, when the section carries both it
+    /// and `transport-cc` feedback.
+    pub transport_cc: Option<u8>,
 }
 
 /// The video sections of an offer a conference cares about (RFC 4796):
@@ -808,6 +825,11 @@ fn video_offer_of(
         label: forge_sdp::label(m).map(str::to_string),
         stream,
         sends: matches!(forge_sdp::direction_of(m), "sendrecv" | "sendonly"),
+        transport_cc: transport_cc_ext(sdp, m).filter(|_| {
+            m.rtcp_fb_iter()
+                .iter()
+                .any(|f| f.kind == "transport-cc" && f.param.is_none())
+        }),
     }
 }
 
@@ -2338,6 +2360,7 @@ mod tests {
                 feedback: true,
                 srtp: Some(&video_key.sdp),
                 simulcast: None,
+                transport_cc: None,
             }),
             content: None,
         })
