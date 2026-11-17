@@ -212,9 +212,20 @@ fn subscription_json(
 
 /// What a forwarding subscriber is being sent (`docs/FORWARDING_ROOMS.md`
 /// §2.1): each stream — whose, which layer, whether held back — and the
-/// budget its REMB gives the allocator.
+/// budget the allocator spends: the send-side estimate while transport-cc
+/// feedback arrives, else the REMB (`docs/TRANSPORT_CC.md` §3.2).
 fn viewer_json(json: &mut serde_json::Value, v: &forge_conference::video::VideoViewerInfo) {
+    let estimate = if v.transport_cc_kbps.is_some() {
+        "transport_cc"
+    } else if v.remb_kbps > 0 {
+        "remb"
+    } else {
+        "none"
+    };
     json["forwarded"] = serde_json::json!({
+        "estimate": estimate,
+        "budget_kbps": v.budget_kbps,
+        "transport_cc_kbps": v.transport_cc_kbps,
         "remb_kbps": v.remb_kbps,
         "packets_sent": v.packets_sent,
         "packets_dropped": v.packets_dropped,
@@ -821,6 +832,13 @@ pub fn attach_video(
         warn!(participant = %participant_id, error = %e, "could not add video source");
         return None;
     }
+    // Feedback for what the caller sends, when their section kept
+    // transport-cc: their own uplink's estimate.
+    video.set_source_transport_cc(
+        participant_id,
+        StreamKind::Camera,
+        leg.negotiated.transport_cc,
+    );
     // A caller with a content section of their own — attached first, so
     // it is known here — gets people on this section and the slides on
     // the other; a caller with one section gets the composite, which
@@ -835,6 +853,10 @@ pub fn attach_video(
                 codec: leg.negotiated.codec,
                 profile: leg.negotiated.fmtp.clone().unwrap_or_default(),
                 payload_type: leg.negotiated.payload_type,
+                // Transport-cc, when the section kept it: the room numbers
+                // what it sends, reads the feedback and probes
+                // (`docs/TRANSPORT_CC.md` §3.2).
+                transport_cc: leg.negotiated.transport_cc,
             },
         ) {
             Ok(f) => f,
@@ -882,6 +904,13 @@ pub fn attach_video(
             return None;
         }
     };
+    // The composite numbered for transport-cc, its estimate the ladder's
+    // budget, when the section kept it.
+    video.set_subscriber_transport_cc(
+        participant_id,
+        StreamKind::Camera,
+        leg.negotiated.transport_cc,
+    );
     Some(run_video_bridge(
         video,
         participant_id.to_string(),
@@ -926,6 +955,11 @@ pub fn attach_content(
         warn!(participant = %participant_id, error = %e, "could not add content source");
         return None;
     }
+    video.set_source_transport_cc(
+        participant_id,
+        StreamKind::Content,
+        leg.negotiated.transport_cc,
+    );
     if !may_share {
         video.set_participant_content_enabled(participant_id, false);
     }
@@ -951,6 +985,11 @@ pub fn attach_content(
             return None;
         }
     };
+    video.set_subscriber_transport_cc(
+        participant_id,
+        StreamKind::Content,
+        leg.negotiated.transport_cc,
+    );
     Some(run_video_bridge(
         video,
         participant_id.to_string(),
@@ -998,6 +1037,9 @@ pub fn attach_trunk_video(
                 codec: leg.negotiated.codec,
                 profile: leg.negotiated.fmtp.clone().unwrap_or_default(),
                 payload_type: leg.negotiated.payload_type,
+                // A trunk estimates nothing: the egress budget prices it
+                // (`docs/TRANSPORT_CC.md` §3.3).
+                transport_cc: None,
             },
         ) {
             Ok(f) => f,
@@ -1889,6 +1931,7 @@ mod tests {
             nack: false,
             remote_crypto: None,
             simulcast: None,
+            transport_cc: None,
         };
         let pli = RtcpPacket::PayloadFeedback(PsFeedback::pli(1, 2));
         let mut seq = 0;
@@ -2144,6 +2187,7 @@ mod tests {
                     codecs: &[forge_core::VideoCodec::VP8],
                     srtp: None,
                     simulcast: 3,
+                    transport_cc: true,
                 }),
                 content: None,
                 bfcp: None,
@@ -2168,6 +2212,7 @@ mod tests {
             nack: true,
             remote_crypto: None,
             simulcast: None,
+            transport_cc: None,
         };
         let mut tasks = Vec::new();
         for (pid, srv, pair, simulcast) in [
@@ -2341,6 +2386,7 @@ mod tests {
             nack: true,
             remote_crypto: None,
             simulcast: None,
+            transport_cc: None,
         };
         // Content legs are attached before camera legs, as the handler
         // does, so a two-section phone's main section is the cameras.
@@ -2757,6 +2803,7 @@ mod tests {
             nack: true,
             remote_crypto: None,
             simulcast: None,
+            transport_cc: None,
         };
         let mut legs = Vec::new();
         for (pid, srv, pair) in [
@@ -3191,6 +3238,7 @@ mod tests {
                 nack: true,
                 remote_crypto: None,
                 simulcast: None,
+                transport_cc: None,
             },
             settings: settings.clone(),
             stats: Arc::new(VideoLegStats::default()),
@@ -3314,6 +3362,7 @@ mod tests {
             nack: true,
             remote_crypto: None,
             simulcast: None,
+            transport_cc: None,
         };
         let leg = |socket: &Arc<RtpSocketPair>, port: u16| VideoLeg {
             kind: StreamKind::Content,

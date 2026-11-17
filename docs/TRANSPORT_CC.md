@@ -2,6 +2,8 @@
 
 Status: agreed 2026-11-16, every recommendation. R5a done (forge-media
 v2026.11.16.3: forge-bwe 0.1.0, forge-rtp 0.8.0); the decision point passed (§5.1).
+R5b done (forge-media v2026.11.16.4: forge-conference 0.17.0, forge-webrtc 0.11.0).
+R5c1 done (v0.25.575–576).
 This is phase R5 of `docs/FORWARDING_ROOMS.md`, which
 asks for this note before any code is written (§5, §8 Q7).
 
@@ -243,17 +245,37 @@ a fixed id beside `sdes:mid` and the rid extension.
   - forge-webrtc offering and keeping transport-cc.
   - Tests in forge-conference: a viewer behind a `Bottleneck` paused and resumed
     by feedback alone, and a probe raising the estimate.
-- **R5c: FCP.**
-  - The conference server's SDP and video JSON: `estimate` (`remb`,
-    `transport_cc` or `none`) and the send-side estimate per viewer.
-  - The call manager relay proved to carry the extension and FMT 15.
-  - The gateway's downlink estimator and REMB to the room, and its feedback for
-    the browser's uplink.
-  - The test kit's phone gains a `FeedbackWriter` and a shaped link
-    (`fcp_testkit::shape`, a UDP relay with a rate and a queue).
-  - Tests:
-    - `rooms.rs`: a viewer behind a shaped link loses its streams, then gets them
-      back.
+- **R5c: FCP**, in two parts.
+  - **R5c1: the conference server and the test kit.**
+    - fcp-media's answer keeps transport-cc when the section offers both its
+      extension and `a=rtcp-fb:<pt> transport-cc`, under the offer's id
+      (`VideoAnswer::transport_cc`, `NegotiatedVideo::transport_cc`).
+    - The conference server answers it on every camera and content section and
+      wires the id into the room:
+      - a forwarding viewer's `ForwardRequest`;
+      - the composite subscriber's numbering;
+      - the sender's own feedback.
+    - The trunk keeps it off.
+    - The video JSON's `forwarded` says `estimate` (`transport_cc`, `remb` or
+      `none`), `budget_kbps` and `transport_cc_kbps`.
+    - The test kit's phone offers it (`Phone::set_video_transport_cc`) and
+      writes feedback.
+      - Its receive side can be shaped (`VideoLeg::shape`): each arriving
+        packet passes forge-bwe's `Bottleneck`, which drops it or dates its
+        arrival.
+      - That is all a sender's estimate reads, and it is deterministic, so it
+        stands in for the UDP relay first planned here.
+    - `rooms.rs`'s
+      `a_viewer_s_feedback_alone_pauses_a_stream_on_a_narrow_link_and_probes_bring_it_back`:
+      - A viewer with no REMB at all is forwarded two people of about
+        300 kb/s each.
+      - Narrowed to 400 kb/s, the second priority is paused at an estimate of
+        about 345 kb/s.
+      - Opened again, probes bring it back, in about 12 s in all.
+  - **R5c2: the gateway, the call manager and the browser.**
+    - The call manager relay proved to carry the extension and FMT 15.
+    - The gateway's downlink estimator and REMB to the room, and its feedback
+      for the browser's uplink.
     - Playwright: Chromium negotiates transport-cc through the gateway, and the
       gateway's REMB to the room follows the browser's feedback.
 - **R5d: Anvil.** `forge-bwe` in place of `bwe.rs`, transport-cc offered, feedback

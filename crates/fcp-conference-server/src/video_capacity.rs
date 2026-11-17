@@ -1609,6 +1609,7 @@ mod tests {
             codec: VideoCodec::VP8,
             profile: String::new(),
             payload_type: 97,
+            transport_cc: None,
         };
         let _a = video.forward("alice", forward.clone()).unwrap();
         let _b = video.forward("bob", forward.clone()).unwrap();
