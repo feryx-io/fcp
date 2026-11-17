@@ -1,6 +1,8 @@
 # Transport-cc for forwarding rooms (R5)
 
-Status: proposed 2026-11-16. This is phase R5 of `docs/FORWARDING_ROOMS.md`, which
+Status: agreed 2026-11-16, every recommendation. R5a done (forge-media
+v2026.11.16.3: forge-bwe 0.1.0, forge-rtp 0.8.0); the decision point passed (§5.1).
+This is phase R5 of `docs/FORWARDING_ROOMS.md`, which
 asks for this note before any code is written (§5, §8 Q7).
 
 ## 1. Where we are
@@ -261,9 +263,63 @@ a fixed id beside `sdes:mid` and the rid extension.
 R5a comes first. R5b and R5c follow only if the decision point passes. R5d
 follows R5a either way.
 
+### 5.1 What R5a found
+
+`forge-bwe/tests/simulation.rs` models one viewer of a forwarding room:
+
+- Three people, each at 150, 500 or 1,500 kb/s, so seven steps from 485 kb/s
+  to 4.7 Mb/s on the wire.
+- The allocator's rule: down at once, up only once the budget has covered the
+  next step for 3 s.
+- A link with a 64 KB drop-tail queue and a 25 ms one-way delay.
+- REMB runs at Anvil's cadence: an estimate every 200 ms, sent each second or
+  at once on a 3% fall.
+- Transport-cc writes feedback every 100 ms. It probes at 1.25× the next step
+  when the budget covers half of it. A proven probe halves the 3 s wait.
+
+| Scenario | Measure | REMB | Transport-cc |
+|---|---|---|---|
+| 2.5 → 0.6 Mb/s | sending under capacity | 1.1 s | 0.6 s |
+| | peak queue delay | 873 ms | 666 ms |
+| 0.6 → 2.5 Mb/s | estimate at 90% | never | 11.9 s |
+| | sending 1.5 Mb/s | never | 9.2 s |
+| 2.5 Mb/s, 2% loss | mean sending | 1,567 kb/s | 1,568 kb/s |
+| 2.5 Mb/s, steady (10–30 s) | step changes | 0 | 0 |
+| a 1 Mb/s flow joins | sending under 1.5 Mb/s | 1.5 s | 0.6 s |
+| | mean sending after | 1,258 kb/s | 1,218 kb/s |
+
+**After a dip, a REMB viewer never recovers.**
+- Its estimate is held to 1.5× what arrives plus 50 kb/s. That is 755 kb/s
+  while three 180p streams arrive, and the next step needs 800 kb/s.
+- So a REMB viewer that falls to 180p stays there for the rest of the
+  meeting, however much the path frees up.
+- With one person it is worse still: 150 kb/s to 500 kb/s is more than 3×.
+- This is §2's first limit, and it is a defect of forwarding rooms today, not
+  only a slower recovery.
+
+**Transport-cc's probes find the raised capacity in about 9 s.** Going down, it
+is 1.8× as fast with a shallower queue. That misses the first margin (2×) and
+passes the second, so **R5 goes on.**
+
+Three things in the core came out of the measurement, and are in R5a:
+
+- **Repeated decreases.** While overuse lasts, the rate comes down again every
+  300 ms rather than once per episode. Without this, both estimators waited
+  for loss on a falling link.
+- **Probes stay out of the delay trend.** A probe is meant to fill the path
+  for a moment, so its own queue is its result and not overuse. Before this
+  change, each probe cut the rate it was testing, and the room stepped up and
+  down every few seconds.
+- **Backoff.** A probe that falls short of its target waits twice as long
+  before trying that target again, up to 30 s.
+
+Steps are priced at their wire rate, headers included. That is what an
+estimator measures and what the room's measured layer rates are. A step
+priced without headers fills a link exactly at its nominal rate.
+
 ## 6. Questions
 
-Each has a recommendation.
+Each has a recommendation; all nine were agreed on 2026-11-16.
 
 1. **Transport-cc or RFC 8888 feedback?** *Recommendation:* transport-cc. Every
    browser sends it, and RFC 8888 is behind a flag in Chrome. The crate keeps the

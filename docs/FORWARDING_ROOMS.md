@@ -598,6 +598,10 @@ Each phase is one PR in its repository.
   - **Designed (v0.25.572): `docs/TRANSPORT_CC.md`.** A shared `forge-bwe` crate,
     measured in simulation before the room is wired (R5a–R5d, with a decision
     point after R5a).
+  - **R5a done (v0.25.573–574, forge-media v2026.11.16.3).** `forge-bwe` and the
+    simulation: after a dip, a REMB viewer never sees past the 180p it
+    receives, while transport-cc's probes find the raised capacity
+    (`TRANSPORT_CC.md` §5.1). The decision point passed.
 - **R7: forwarding across nodes** (FCP). Trunks as forwarding subscribers, with
   sources named across nodes in the roster.
   - **Done (v0.25.570–571, forge-media v2026.11.16.2: forge-conference 0.16.2).** As
