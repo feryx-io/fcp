@@ -404,6 +404,9 @@ struct SipShape {
     audio_pt: u8,
     video: Option<NegotiatedVideo>,
     content: Option<NegotiatedVideo>,
+    /// The browser agreed transport-cc: the SIP side offers it too, so the
+    /// gateway can translate between them.
+    transport_cc: bool,
 }
 
 /// A SIP offer built for a shape: the SDP and what it was built from.
@@ -941,6 +944,9 @@ impl SessionManager {
                 // A forwarding room's people, each on a track of the
                 // browser's own, fixed for the session.
                 streams,
+                // Translated to the room's numbers and back
+                // (`docs/TRANSPORT_CC.md` §3.4).
+                transport_cc: true,
                 ..VideoConfig::default()
             }),
             transport: TransportConfig {
@@ -1120,6 +1126,7 @@ impl SessionManager {
             video_sender,
             content_sender,
             browser_te,
+            browser_tcc,
         ) = {
             let guard = peer.lock().await;
             let (codec, pt) = guard.negotiated_codec();
@@ -1149,6 +1156,7 @@ impl SessionManager {
                 video_sender,
                 content_sender,
                 te,
+                guard.transport_cc_extension(),
             )
         };
         if !matches!(
@@ -1190,6 +1198,7 @@ impl SessionManager {
             audio_pt,
             video: video.clone(),
             content: content.clone(),
+            transport_cc: browser_tcc.is_some(),
         };
         let sip_offer = match self.build_sip_offer(&id, &shape).await {
             Ok(o) => o,
@@ -1368,6 +1377,7 @@ impl SessionManager {
                 Vec::new()
             },
             forwarding: forwarding.clone(),
+            transport_cc: browser_tcc,
         };
         // Whose stream is whose: the room's roster, in the call.
         if forwarding.is_some() {
@@ -1476,7 +1486,10 @@ impl SessionManager {
             encoding_name: codec_name.to_string(),
             clock_rate: 8000,
         }];
-        fn section_of(o: &OfferedVideo) -> VideoOfferSection<'_> {
+        let tcc = shape
+            .transport_cc
+            .then_some(crate::transport_cc::SIP_EXTENSION_ID);
+        fn section_of(o: &OfferedVideo, tcc: Option<u8>) -> VideoOfferSection<'_> {
             VideoOfferSection {
                 rtp_port: o.ports.rtp_port,
                 payload_type: o.negotiated.payload_type,
@@ -1486,10 +1499,11 @@ impl SessionManager {
                 srtp: o.srtp.as_ref().map(|s| &s.sdp),
                 // The browser's layers, sent on as they are (§2.7).
                 simulcast: o.negotiated.simulcast.as_ref(),
+                transport_cc: tcc,
             }
         }
-        let video_section = offered_video.as_ref().map(section_of);
-        let content_section = offered_content.as_ref().map(section_of);
+        let video_section = offered_video.as_ref().map(|o| section_of(o, tcc));
+        let content_section = offered_content.as_ref().map(|o| section_of(o, tcc));
         let built = construct_offer(&OfferOptions {
             server_ip: &self.cfg.public_ip,
             origin_id: &id[5..13.min(id.len())],
@@ -2466,6 +2480,7 @@ async fn open_video_section(
             socket: Arc::new(socket),
             srtp: ctx.map(|c| Arc::new(Mutex::new(c))),
             payload_type: pt,
+            transport_cc: section.transport_cc,
         },
         VideoSummary {
             codec: offered.negotiated.codec.sdp_name().to_string(),

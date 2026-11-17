@@ -609,6 +609,11 @@ Each phase is one PR in its repository.
     and wires it into the room. The test kit's phone shapes its own receive
     side, and a viewer with no REMB is paused on a narrow link and brought back
     by probes.
+  - **R5c2 done (v0.25.578).** The gateway translates transport-cc. It
+    renumbers the room's packets for the browser's connection and rewrites the
+    browser's feedback into the room's numbers, so the room estimates and
+    probes the whole path. It writes the browser's uplink feedback itself.
+    Proved through the call manager's relay and in Chromium.
 - **R7: forwarding across nodes** (FCP). Trunks as forwarding subscribers, with
   sources named across nodes in the roster.
   - **Done (v0.25.570–571, forge-media v2026.11.16.2: forge-conference 0.16.2).** As

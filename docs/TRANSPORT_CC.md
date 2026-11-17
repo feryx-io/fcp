@@ -3,7 +3,7 @@
 Status: agreed 2026-11-16, every recommendation. R5a done (forge-media
 v2026.11.16.3: forge-bwe 0.1.0, forge-rtp 0.8.0); the decision point passed (§5.1).
 R5b done (forge-media v2026.11.16.4: forge-conference 0.17.0, forge-webrtc 0.11.0).
-R5c1 done (v0.25.575–576).
+R5c1 done (v0.25.575–577). R5c2 done (v0.25.578).
 This is phase R5 of `docs/FORWARDING_ROOMS.md`, which
 asks for this note before any code is written (§5, §8 Q7).
 
@@ -203,12 +203,15 @@ sequence numbers are the room's. The revision was agreed the same day.
 - The room's padding probes cross like any other packet of the stream.
 
 **From the browser (uplink):**
-- The browser numbers what it sends on the BUNDLE: audio, the camera's layers
-  and the screen share in one sequence.
-- The gateway numbers each video packet again on the SIP section it goes to the
-  room by, so the room sees one gapless sequence per section.
-- It turns the room's feedback back into the browser's numbers.
-- Chrome then estimates its uplink from what the room reported, and fits its
+- The browser numbers what it sends on the BUNDLE: the camera's layers and the
+  screen share in one sequence.
+- The gateway reports on those packets itself (`forge_bwe::FeedbackWriter`). It
+  is the far end of the browser's connection, and the hop from the gateway to
+  the room is inside the cluster.
+- Translating this direction would be wrong. Each SIP section's feedback covers
+  only that section's packets, so a camera report would name the screen share's
+  interleaved packets as lost.
+- Chrome then estimates its uplink from what the gateway reported, and fits its
   simulcast to it.
 
 forge-webrtc keeps `transport-cc` in its answers and offers the extension under
@@ -294,11 +297,30 @@ extension can be read and written on the way through comes with R5c2.
         about 345 kb/s.
       - Opened again, probes bring it back, in about 12 s in all.
   - **R5c2: the gateway, the call manager and the browser.**
-    - The call manager relay proved to carry the extension and FMT 15.
-    - The gateway's translator, both ways (§3.4).
-    - The gateway's SIP section negotiating transport-cc with the room.
-    - Playwright: Chromium negotiates transport-cc through the gateway, and the
-      room's estimate for the browser follows the browser's feedback.
+    - **Negotiation:**
+      - the browser's peer offers transport-cc (`VideoConfig::transport_cc`);
+      - when the browser agrees it, the gateway's SIP offer carries it under the
+        gateway's own id, 5 (`VideoOfferSection::transport_cc`);
+      - the room's answer is read back (`VideoOffer::transport_cc`).
+    - **The translator (`fcp_webrtc_gateway::transport_cc::Downlink`):**
+      - takes the room's number off each packet going to the browser and puts
+        its own on, remembering which was which;
+      - rewrites the browser's FMT 15 into each SIP section's room numbers;
+      - reports a room number that never reached the gateway as lost;
+      - resets when the SIP leg is swapped (migration).
+    - **Uplink:** the gateway writes the browser's feedback itself (§3.4).
+    - **Tests:**
+      - `relay.rs`'s
+        `transport_cc_is_renumbered_for_the_browser_and_its_feedback_comes_back_in_the_room_s_numbers`
+        uses two forge-webrtc peers and the room's sockets.
+      - `calls.rs`'s `transport_cc_crosses_the_call_manager_to_a_room_and_back`:
+        the anchored offer keeps transport-cc, and numbered packets and feedback
+        cross the call manager's video relay untouched.
+      - `rooms.rs`'s
+        `a_browser_s_feedback_is_the_room_s_estimate_through_the_gateway`: in
+        Chromium, the browser's viewer in a forwarding room says
+        `estimate: transport_cc` with no REMB. Once transport-cc is agreed,
+        Chromium sends none.
 - **R5d: Anvil.** `forge-bwe` in place of `bwe.rs`, transport-cc offered, feedback
   written, and the uplink estimated from the room's feedback, proved against the
   stack.

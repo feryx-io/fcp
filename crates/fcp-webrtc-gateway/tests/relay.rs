@@ -262,11 +262,13 @@ async fn relay_case(srtp: bool) {
             socket: relay_video,
             srtp: video_srtp,
             payload_type: 121,
+            transport_cc: None,
         }),
         content: Some(SipVideoLeg {
             socket: relay_content,
             srtp: content_srtp,
             payload_type: 122,
+            transport_cc: None,
         }),
     };
     let video_sender = gateway.video_sender().unwrap();
@@ -284,6 +286,7 @@ async fn relay_case(srtp: bool) {
         inactivity_timeout: Duration::from_secs(30),
         streams: Vec::new(),
         forwarding: None,
+        transport_cc: None,
     };
     let stats = Arc::new(RelayStats::default());
     let stop = Arc::new(Notify::new());
@@ -619,6 +622,7 @@ async fn relay_ends_when_the_browser_closes() {
         inactivity_timeout: Duration::from_secs(2),
         streams: Vec::new(),
         forwarding: None,
+        transport_cc: None,
     };
     let stop = Arc::new(Notify::new());
     let (_swap_tx, swap_rx) = mpsc::channel(1);
@@ -679,6 +683,7 @@ async fn the_sip_leg_can_be_swapped_under_the_browser() {
         inactivity_timeout: Duration::from_secs(30),
         streams: Vec::new(),
         forwarding: None,
+        transport_cc: None,
     };
     let stats = Arc::new(RelayStats::default());
     let stop = Arc::new(Notify::new());
@@ -798,6 +803,7 @@ async fn a_forwarding_room_s_streams_ride_a_section_each() {
             socket: relay_video,
             srtp: None,
             payload_type: 121,
+            transport_cc: None,
         }),
         content: None,
     };
@@ -811,6 +817,7 @@ async fn a_forwarding_room_s_streams_ride_a_section_each() {
         inactivity_timeout: Duration::from_secs(30),
         streams: senders,
         forwarding: Some(forwarding.clone()),
+        transport_cc: None,
     };
     let stats = Arc::new(RelayStats::default());
     let stop = Arc::new(Notify::new());
@@ -909,6 +916,172 @@ async fn a_forwarding_room_s_streams_ride_a_section_each() {
     assert_eq!(snap.streams_to_browser, 2);
     assert_eq!(snap.video_to_browser, 0, "nothing on the camera's track");
     assert!(snap.dropped >= 1, "Cy had no section");
+
+    stop.notify_one();
+    assert_eq!(relay.await.unwrap(), RelayEnd::Stopped);
+}
+
+/// Transport-cc through the relay (`docs/TRANSPORT_CC.md` §3.4): the
+/// room's numbers on its section are exchanged for the browser
+/// connection's on the way out, and the browser's feedback comes back to
+/// the room in the room's numbers; the browser's own packets are reported
+/// on by the gateway itself.
+#[tokio::test]
+async fn transport_cc_is_renumbered_for_the_browser_and_its_feedback_comes_back_in_the_room_s_numbers(
+) {
+    use fcp_webrtc_gateway::transport_cc::SIP_EXTENSION_ID;
+    use forge_rtp::transport_cc::{stamp, transport_sequence};
+    init_tracing();
+    let cfg = || PeerConfig {
+        codecs: browser_audio_codecs(),
+        video: Some(VideoConfig {
+            codecs: vec![(VideoCodec::VP8, 96)],
+            direction: Direction::SendRecv,
+            transport_cc: true,
+            ..VideoConfig::default()
+        }),
+        ..PeerConfig::default()
+    };
+    let (gateway, browser, gw_events, mut br_events) = connected_pair_with(cfg(), cfg()).await;
+    let tcc = gateway
+        .transport_cc_extension()
+        .expect("transport-cc agreed");
+    assert_eq!(browser.transport_cc_extension(), Some(tcc));
+    let (_, browser_audio_pt) = gateway.negotiated_codec();
+    let (relay_audio, _far_audio) = socket_pair(0xB8).await;
+    let (relay_video, far_video) = socket_pair(0xA0).await;
+    let sip = SipLeg {
+        audio: SipAudioLeg {
+            socket: relay_audio,
+            srtp: None,
+            payload_type: 9,
+            telephone_event_pt: None,
+        },
+        video: Some(SipVideoLeg {
+            socket: relay_video,
+            srtp: None,
+            payload_type: 121,
+            transport_cc: Some(SIP_EXTENSION_ID),
+        }),
+        content: None,
+    };
+    let browser_leg = BrowserLeg {
+        events: gw_events,
+        audio: gateway.sender().unwrap(),
+        audio_payload_type: browser_audio_pt,
+        telephone_event_pt: None,
+        video: Some((gateway.video_sender().unwrap(), 96)),
+        content: None,
+        inactivity_timeout: Duration::from_secs(30),
+        streams: Vec::new(),
+        forwarding: None,
+        transport_cc: Some(tcc),
+    };
+    let stop = Arc::new(Notify::new());
+    let (_swap_tx, swap_rx) = mpsc::channel(1);
+    let relay = tokio::spawn(run_relay(
+        browser_leg,
+        sip,
+        Arc::new(RelayStats::default()),
+        stop.clone(),
+        swap_rx,
+    ));
+
+    // The room sends five packets numbered 1000..=1004 on its section.
+    for i in 0..5u16 {
+        let mut p = RtpPacket::build(
+            121,
+            40 + i,
+            9000,
+            0x0000_F00D,
+            Bytes::from(vec![7; 100]),
+            i == 4,
+        );
+        stamp(&mut p, SIP_EXTENSION_ID, 1000 + i);
+        send_rtp(&far_video, &None, &p).await;
+    }
+    let mut writer = forge_bwe::FeedbackWriter::new();
+    let mut ours = Vec::new();
+    while ours.len() < 5 {
+        let PeerEvent::VideoRtp(p) =
+            next_event(&mut br_events, |e| matches!(e, PeerEvent::VideoRtp(_))).await
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            transport_sequence(&p, SIP_EXTENSION_ID),
+            None,
+            "the room's number is not the browser's"
+        );
+        let seq = transport_sequence(&p, tcc).expect("numbered for the browser");
+        writer.on_packet(seq, std::time::Instant::now());
+        ours.push(seq);
+    }
+    for w in ours.windows(2) {
+        assert_eq!(w[1], w[0].wrapping_add(1));
+    }
+    let fb = writer.flush(std::time::Instant::now()).unwrap();
+    browser
+        .video_sender()
+        .unwrap()
+        .send_rtcp(&[RtcpPacket::TransportFeedback(RtpFeedback {
+            sender_ssrc: 1,
+            media_ssrc: 0,
+            kind: TransportFeedback::TransportCc(fb),
+        })])
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let room_fb = loop {
+        let (raw, _) = tokio::time::timeout_at(deadline, far_video.recv_rtcp())
+            .await
+            .expect("no transport-cc feedback reached the room")
+            .unwrap();
+        let found = RtcpPacket::parse_compound(&raw)
+            .into_iter()
+            .find_map(|p| match p {
+                RtcpPacket::TransportFeedback(RtpFeedback {
+                    kind: TransportFeedback::TransportCc(fb),
+                    ..
+                }) => Some(fb),
+                _ => None,
+            });
+        if let Some(fb) = found {
+            break fb;
+        }
+    };
+    assert_eq!(room_fb.base_sequence, 1000, "in the room's numbers");
+    let arrivals = room_fb.arrivals();
+    assert_eq!(arrivals.len(), 5);
+    assert!(arrivals.iter().all(|(_, a)| a.is_some()), "{arrivals:?}");
+
+    // The browser's own packets, numbered on its connection: the gateway
+    // reports on them to the browser.
+    let br_video = browser.video_sender().unwrap();
+    for i in 0..3u16 {
+        let mut p = RtpPacket::build(96, 70 + i, 9000, 0xB0B, Bytes::from(vec![1; 50]), i == 2);
+        stamp(&mut p, tcc, 300 + i);
+        br_video.send_packet(p.to_bytes().freeze()).await.unwrap();
+    }
+    let ev = next_event(&mut br_events, |e| {
+        matches!(e, PeerEvent::Rtcp(ps) if ps.iter().any(|p| matches!(p,
+            RtcpPacket::TransportFeedback(RtpFeedback { kind: TransportFeedback::TransportCc(_), .. }))))
+    })
+    .await;
+    let PeerEvent::Rtcp(ps) = ev else {
+        unreachable!()
+    };
+    let fb = ps
+        .iter()
+        .find_map(|p| match p {
+            RtcpPacket::TransportFeedback(RtpFeedback {
+                kind: TransportFeedback::TransportCc(fb),
+                ..
+            }) => Some(fb.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(fb.base_sequence, 300, "the browser's own numbers");
 
     stop.notify_one();
     assert_eq!(relay.await.unwrap(), RelayEnd::Stopped);

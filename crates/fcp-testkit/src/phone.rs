@@ -1962,6 +1962,13 @@ impl UasRequestHandler for Handler {
                 if let Err(e) = leg.set_remote(&offer) {
                     warn!(error = %e, "offer's video unusable");
                 }
+                if self
+                    .0
+                    .video_transport_cc
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    leg.enable_transport_cc();
+                }
                 Some(Arc::new(leg))
             }
             _ => None,

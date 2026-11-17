@@ -113,6 +113,8 @@ pub struct VideoLeg {
     cc: Arc<Mutex<Option<Receiving>>>,
     /// Transport-cc feedback received (about what this phone sent).
     cc_feedback: Arc<AtomicU64>,
+    /// The next transport-cc number this phone sends with.
+    tcc_seq: AtomicU64,
     received: Arc<AtomicU64>,
     plis: Arc<AtomicU64>,
     seq: AtomicU64,
@@ -186,6 +188,7 @@ impl VideoLeg {
             remote,
             cc,
             cc_feedback,
+            tcc_seq: AtomicU64::new(0),
             received,
             plis,
             seq: AtomicU64::new(0),
@@ -299,7 +302,7 @@ impl VideoLeg {
             packet.extend_from_slice(&SSRC.to_be_bytes());
             packet.extend_from_slice(b"fcp-video");
             packet.extend_from_slice(&seq.to_be_bytes());
-            let out = self.protect(&packet, false)?;
+            let out = self.protect(&self.numbered(packet), false)?;
             self.rtp.send_to(&out, to).await?;
         }
         Ok(())
@@ -342,7 +345,7 @@ impl VideoLeg {
                 // Zeros, which no rid begins with.
                 packet.resize(size, 0);
             }
-            let out = self.protect(&packet, false)?;
+            let out = self.protect(&self.numbered(packet), false)?;
             self.rtp.send_to(&out, to).await?;
         }
         Ok(())
@@ -426,7 +429,7 @@ impl VideoLeg {
                 packet.extend_from_slice(MARK);
                 packet.extend_from_slice(&seq.to_be_bytes());
                 packet.extend_from_slice(rid.as_bytes());
-                let out = self.protect(&packet, false)?;
+                let out = self.protect(&self.numbered(packet), false)?;
                 self.rtp.send_to(&out, to).await?;
             }
         }
@@ -512,6 +515,20 @@ impl VideoLeg {
             .send_to(&out, SocketAddr::new(to.ip(), to.port() + 1))
             .await?;
         Ok(())
+    }
+
+    /// `packet` numbered for transport-cc, when this section carries it:
+    /// a sender's numbers, which the far end reports on.
+    fn numbered(&self, packet: Vec<u8>) -> Vec<u8> {
+        if self.cc.lock().unwrap().is_none() {
+            return packet;
+        }
+        let Ok(mut p) = forge_rtp::RtpPacket::parse(bytes::Bytes::from(packet.clone())) else {
+            return packet;
+        };
+        let seq = self.tcc_seq.fetch_add(1, Ordering::Relaxed) as u16;
+        forge_rtp::transport_cc::stamp(&mut p, TCC_EXT_ID, seq);
+        p.to_bytes().to_vec()
     }
 
     fn protect(&self, packet: &[u8], rtcp: bool) -> Result<Vec<u8>> {
