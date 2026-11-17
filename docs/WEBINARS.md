@@ -1,6 +1,7 @@
 # Webinars and town halls
 
-Status: proposed 2026-11-16. Nothing here is built.
+Status: agreed 2026-11-17: every recommendation, except that chat is in (§2.5,
+§6 Q5). Nothing here is built.
 
 A webinar is a meeting with a stage and an audience:
 - a few people speak and are seen;
@@ -171,8 +172,31 @@ This also puts the 1,000-user cap out of reach: no document lists the audience.
     relays them.
 - **Moderation.** A meeting's `qa` is `off`, `moderated` (a question is seen by
   the audience only once a host publishes it) or `open`.
-- **No chat.** It is a different moderation problem at a town hall's scale, and
-  Q&A covers what the audience needs to say. It can follow as its own project.
+- **Chat.** Every room has it, meetings as well as webinars; a webinar adds its
+  scope and moderation (§6 Q5, agreed 2026-11-17).
+  - **Scope**, a meeting setting `chat`:
+    - `everyone`: an attendee posts to the room or privately to the hosts;
+    - `hosts`: an attendee posts to the hosts only;
+    - `off`.
+    Hosts and panelists always have a private channel of their own. In a
+    meeting, `everyone` is the default.
+  - **Moderation.** A host or panelist can delete any message, which is gone
+    for everyone, and mute one person's chat for the rest of the session.
+    Deleting and muting are recorded in the room's events
+    (`conference.chat_deleted`, `conference.chat_muted`).
+  - **The path.**
+    - An INFO package in the call (`fcp-chat`, JSON: post, delete, mute, and
+      the messages as they arrive), relayed by the call manager and the gateway
+      like `fcp-view` and `fcp-qa`.
+    - `/me/conferences/live/{room}/chat` for the app.
+    - A SIP client that does not ask for the package gets no chat.
+  - **Kept.** Messages are rows (`conference_chat`, per session, with sender,
+    scope, time and deletion). They are kept under the tenant's retention policy
+    (`docs/COMPLIANCE.md`), held by a legal hold, and found by a subject export
+    and erased by a subject erasure. They are exported with a webinar's
+    attendance.
+  - **Joining late.** A client joining late is sent the last 100 messages it may
+    see.
 
 ### 2.6 The webinar's life
 
@@ -269,7 +293,7 @@ For an audience that is not on FCP at all.
 
 ## 3. What this does not do
 
-- **Chat, polls, reactions and breakout rooms.**
+- **Polls, reactions and breakout rooms.**
 - **Simultaneous interpretation** (a second audio channel per language).
 - **Per-panelist tracks** in the recording or the stream out.
 - **More than 16 on the stage.** The stage is a meeting's size; the audience is
@@ -313,6 +337,11 @@ For an audience that is not on FCP at all.
     `/me/conferences/live/{room}/questions` routes, `conference.question_*`
     and `conference.hand_*` events.
   - The gateway relaying the package.
+- **W3b: chat** (FCP), for every room.
+  - `conference_chat` (migration) under retention, holds and subject requests.
+  - The `fcp-chat` INFO package, relayed by the call manager and the gateway.
+  - `/me/conferences/live/{room}/chat`, the meeting's `chat` scope, delete and
+    mute, and the events.
 - **W4: the webinar's life** (FCP).
   - Practice, go live, end.
   - The lobby let in gradually.
@@ -329,15 +358,17 @@ For an audience that is not on FCP at all.
     admin serving it.
 - **W7: RTMP push** (forge-media, FCP).
   - An AAC encoder, FLV, the RTMP client, and the meeting's sealed stream key.
-- **A7: Anvil.** The attendee's and the host's views (§2.9).
+- **A7: Anvil.** The attendee's and the host's views (§2.9), and chat in every
+  room.
 
-W1 and W2 come first. W3 and W4 follow in either order. W5 waits on W1's
-measurements to say when one node is not enough. W6 and W7 are independent of
-W3–W5, and A7 follows W3.
+W1 and W2 come first. W3, W3b and W4 follow in any order; W3b needs no webinar
+at all. W5 waits on W1's measurements to say when one node is not enough. W6 and
+W7 are independent of W3–W5, and A7 follows W3 and W3b.
 
 ## 6. Questions
 
-Each has a recommendation.
+Each has a recommendation. All were agreed on 2026-11-17 on their
+recommendations, except question 5, where chat was added.
 
 1. **A webinar as a kind of meeting, or a new resource?** *Recommendation:* a
    kind (`meeting.kind = webinar`). Room numbers, PINs, video settings,
@@ -356,6 +387,10 @@ Each has a recommendation.
    They are not moved between nodes; their voice crosses the edge's trunk.
 5. **Q&A, chat, or both?** *Recommendation:* Q&A first, moderated by default
    for a webinar. Chat at a town hall's size is a moderation project of its own.
+   **Agreed: both** (§2.5). Chat is in every room, meetings too, with a host-set
+   scope (`everyone`, `hosts` or `off`). It is moderated by a host deleting
+   messages and muting a person. It travels as an `fcp-chat` INFO package and
+   through `/me` routes, and is kept under the tenant's retention policy.
 6. **Attendees on the roster?** *Recommendation:* as a count, coalesced every
    2 s. A host pages through them by API.
 7. **Registration?** *Recommendation:* optional per webinar, with a token per
