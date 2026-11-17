@@ -3,7 +3,8 @@
 Status: agreed 2026-11-16, every recommendation. R5a done (forge-media
 v2026.11.16.3: forge-bwe 0.1.0, forge-rtp 0.8.0); the decision point passed (§5.1).
 R5b done (forge-media v2026.11.16.4: forge-conference 0.17.0, forge-webrtc 0.11.0).
-R5c1 done (v0.25.575–577). R5c2 done (v0.25.578).
+R5c1 done (v0.25.575–577). R5c2 done (v0.25.578). R5d done in Anvil (#100,
+v0.2.93). **R5 is complete.**
 This is phase R5 of `docs/FORWARDING_ROOMS.md`, which
 asks for this note before any code is written (§5, §8 Q7).
 
@@ -321,7 +322,10 @@ extension can be read and written on the way through comes with R5c2.
         Chromium, the browser's viewer in a forwarding room says
         `estimate: transport_cc` with no REMB. Once transport-cc is agreed,
         Chromium sends none.
-- **R5d: Anvil.** `forge-bwe` in place of `bwe.rs`, transport-cc offered, feedback
+- **R5d: Anvil. Done (anvil #100, v0.2.93).** As designed, except that the
+  shared screen's section does not offer transport-cc: its lines took a
+  simulcast room's INVITE over the 1,300 bytes past which SIP leaves UDP.
+  `forge-bwe` in place of `bwe.rs`, transport-cc offered, feedback
   written, and the uplink estimated from the room's feedback, proved against the
   stack.
 

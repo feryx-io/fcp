@@ -1,6 +1,6 @@
 # Forwarding rooms
 
-Designed 2026-11-13. FCP's video rooms mix (`docs/VIDEO_CONFERENCING.md`): the
+Designed 2026-11-13; every phase done by 2026-11-17 (§5). FCP's video rooms mix (`docs/VIDEO_CONFERENCING.md`): the
 server decodes every camera, composes one picture per layout and encodes it. Each
 participant sees that picture in the layout the host chose. `docs/SOFTPHONE_VIDEO.md`
 §6 left the next step out of its scope: rooms that **forward each participant's own
@@ -614,6 +614,11 @@ Each phase is one PR in its repository.
     browser's feedback into the room's numbers, so the room estimates and
     probes the whole path. It writes the browser's uplink feedback itself.
     Proved through the call manager's relay and in Chromium.
+  - **R5d done (anvil #100, v0.2.93).** Anvil's estimators come from
+    `forge-bwe`. On the camera's section it offers transport-cc, reports on
+    what arrives and numbers what it sends. The far end's feedback sets its
+    encoder target. **R5 is complete, and with it every phase of this
+    design.**
 - **R7: forwarding across nodes** (FCP). Trunks as forwarding subscribers, with
   sources named across nodes in the roster.
   - **Done (v0.25.570–571, forge-media v2026.11.16.2: forge-conference 0.16.2).** As
