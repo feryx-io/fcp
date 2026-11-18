@@ -15,6 +15,11 @@ use std::time::Duration;
 const BIN: &str = env!("CARGO_BIN_EXE_fcp-conference");
 const REALM: &str = "e2e.local";
 const SOON: Duration = Duration::from_secs(5);
+/// A video room's `[conference]`: the raw test codec, and the fixed cost
+/// table rather than a benchmark of a busy runner (a slow measurement once
+/// left a webinar no budget for its first join).
+const VIDEO: &str = "video_native_codecs_only = false\nvideo_benchmark_seconds = 0";
+
 const ROOM: &str = "8000";
 
 /// A running conference server on a fresh database.
@@ -1408,8 +1413,7 @@ fn src_id_of(roster: &str, pid: &str) -> Option<u32> {
 /// caller that did not ask gets the composite, and its INFO is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_caller_that_asks_is_forwarded_each_persons_stream_and_told_whose_it_is() {
-    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
-    else {
+    let Some(stack) = Stack::start_conference("", 60, VIDEO).await else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1625,8 +1629,7 @@ async fn forwarding_meeting(stack: &Stack, extra: serde_json::Value) {
 /// names her by.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_three_layer_sender_is_moved_between_her_layers_under_one_ssrc() {
-    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
-    else {
+    let Some(stack) = Stack::start_conference("", 60, VIDEO).await else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1724,8 +1727,7 @@ async fn a_three_layer_sender_is_moved_between_her_layers_under_one_ssrc() {
 /// brings them back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_remb_cut_pauses_a_viewer_s_streams_and_its_roster_says_so() {
-    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
-    else {
+    let Some(stack) = Stack::start_conference("", 60, VIDEO).await else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1830,8 +1832,7 @@ async fn a_remb_cut_pauses_a_viewer_s_streams_and_its_roster_says_so() {
 /// back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_viewer_s_feedback_alone_pauses_a_stream_on_a_narrow_link_and_probes_bring_it_back() {
-    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
-    else {
+    let Some(stack) = Stack::start_conference("", 60, VIDEO).await else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1934,8 +1935,7 @@ async fn a_viewer_s_feedback_alone_pauses_a_stream_on_a_narrow_link_and_probes_b
 #[cfg(all(feature = "recording-mp4", feature = "video-openh264"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recorded_forwarding_room_still_composes_for_its_recording() {
-    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
-    else {
+    let Some(stack) = Stack::start_conference("", 60, VIDEO).await else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1994,12 +1994,7 @@ async fn a_recorded_forwarding_room_still_composes_for_its_recording() {
 /// subscribed in his call — names them; and his view INFO reaches the room.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_forwarding_room_is_reached_through_the_call_manager() {
-    let Some(stack) = Stack::start_conference(
-        r#"trusted_edges = ["127.0.0.1"]"#,
-        60,
-        "video_native_codecs_only = false",
-    )
-    .await
+    let Some(stack) = Stack::start_conference(r#"trusted_edges = ["127.0.0.1"]"#, 60, VIDEO).await
     else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
@@ -2255,12 +2250,8 @@ async fn a_webinar_s_stage_is_heard_by_attendees_who_are_not() {
 /// count alone an update of its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_webinar_s_audience_watches_the_stage_and_is_counted_not_listed() {
-    let Some(stack) = Stack::start_conference(
-        "",
-        60,
-        "join_secret = \"join-s3cret\"\nvideo_native_codecs_only = false",
-    )
-    .await
+    let Some(stack) =
+        Stack::start_conference("", 60, &format!("join_secret = \"join-s3cret\"\n{VIDEO}")).await
     else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
