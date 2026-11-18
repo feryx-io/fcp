@@ -2685,7 +2685,8 @@ async fn an_attendee_raises_a_hand_and_a_host_brings_them_to_the_stage() {
 /// §2.5): Bob's `Recv-Info: fcp-qa` reaches the room and its answer
 /// reaches Bob, his hand INFO reaches the room, the room's word that he is
 /// on the stage reaches him, and so do his question and the room's word
-/// of it.
+/// of it, and his chat to the hosts (a webinar's default) and the room's
+/// word of it (W3b).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_attendee_s_hand_and_the_stage_cross_the_call_manager() {
     let Some(stack) = Stack::start_conference(r#"trusted_edges = ["127.0.0.1"]"#, 60, "").await
@@ -2705,7 +2706,13 @@ async fn an_attendee_s_hand_and_the_stage_cross_the_call_manager() {
         .unwrap();
     assert_eq!(bob.register().await.unwrap(), 200);
     let bob_call = bob
-        .call_with_headers(ROOM, &[("Recv-Info", fcp_core::QA_INFO_PACKAGE)])
+        .call_with_headers(
+            ROOM,
+            &[
+                ("Recv-Info", fcp_core::QA_INFO_PACKAGE),
+                ("Recv-Info", fcp_core::CHAT_INFO_PACKAGE),
+            ],
+        )
         .await
         .unwrap();
     if let Err(e) = bob_call.answered(SOON).await {
@@ -2760,6 +2767,20 @@ async fn an_attendee_s_hand_and_the_stage_cross_the_call_manager() {
     let told = questions_until(&bob, bob_call.call_id(), |q| !q.is_empty()).await;
     let q = told.values().next().unwrap();
     assert!(q.mine && q.text == "Can you hear me?", "{q:?}");
+
+    // Chat crosses as well. A webinar's attendee writes to the hosts, not
+    // the room.
+    assert_eq!(
+        send_chat(&bob_call, r#"{"op":"post","text":"Hi","to":"room"}"#).await,
+        403
+    );
+    assert_eq!(
+        send_chat(&bob_call, r#"{"op":"post","text":"Hi","to":"hosts"}"#).await,
+        200
+    );
+    let told = chat_until(&bob, bob_call.call_id(), |m, _| !m.is_empty()).await;
+    let m = told.values().next().unwrap();
+    assert!(m.mine && m.text == "Hi", "{m:?}");
 
     assert_eq!(bob_call.hangup().await.unwrap(), 200);
     stack.wait_participants(0).await;
@@ -3010,6 +3031,261 @@ async fn the_audience_asks_and_a_host_moderates_the_questions() {
     }
 
     for call in [&host_call, &ann_call, &ben_call] {
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
+    stack.wait_participants(0).await;
+    stack.finish().await;
+}
+
+/// An `fcp-chat` INFO from `call` with `body`: the room's answer.
+async fn send_chat(call: &fcp_testkit::Call, body: &str) -> u16 {
+    call.send_in_call(
+        sip_core::Method::Info,
+        &[
+            ("Info-Package", fcp_core::CHAT_INFO_PACKAGE),
+            ("Content-Type", fcp_core::CHAT_INFO_TYPE),
+        ],
+        body.as_bytes(),
+    )
+    .await
+    .unwrap()
+}
+
+/// `fcp-chat` INFOs `phone` is sent in `call_id` until the messages it has
+/// been told of (later news of a message replacing earlier) and whether it
+/// was muted satisfy `done`; those messages, by id, and the mute.
+async fn chat_until(
+    phone: &Phone,
+    call_id: &str,
+    done: impl Fn(&std::collections::BTreeMap<String, fcp_core::chat::ChatView>, bool) -> bool,
+) -> std::collections::BTreeMap<String, fcp_core::chat::ChatView> {
+    use fcp_core::chat::ChatMessage;
+    let mut seen = std::collections::BTreeMap::new();
+    let mut muted = false;
+    let deadline = tokio::time::Instant::now() + SOON;
+    while !done(&seen, muted) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never told it in {call_id}: {seen:?}, muted {muted}"
+        );
+        let told = match phone
+            .expect(SOON, |e| {
+                matches!(e, PhoneEvent::Info { call_id: c, package: Some(p), .. }
+                    if c == call_id && p == fcp_core::CHAT_INFO_PACKAGE)
+            })
+            .await
+        {
+            Some(PhoneEvent::Info { body, .. }) => {
+                ChatMessage::parse(body.as_bytes()).expect("an fcp-chat message")
+            }
+            _ => panic!("no fcp-chat INFO in {call_id}"),
+        };
+        match told {
+            ChatMessage::Messages { messages } => {
+                for m in messages {
+                    seen.insert(m.id.clone(), m);
+                }
+            }
+            ChatMessage::Muted { on } => muted = on,
+            other => panic!("the room sent {other:?}"),
+        }
+    }
+    seen
+}
+
+/// Chat in a meeting (`docs/WEBINARS.md` §2.5, W3b), where everyone may
+/// post. Ann posts to the room by INFO and everyone who asked is told; Ben
+/// writes to the hosts through the room's API and only the host is told.
+/// Ann deletes nothing; the host deletes her message and everyone told of
+/// it is told it is gone; the host mutes Ben, who is told and refused.
+/// Carl, joining late, is sent the backlog he may see, and the rows are
+/// kept with the deletion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn everyone_chats_and_a_host_deletes_and_mutes() {
+    let stack = stack_or_skip!();
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({ "host_pin": "9999", "guest_pin": "1111", "require_guest_pin": true }),
+        )
+        .await;
+    let chat = [("Recv-Info", fcp_core::CHAT_INFO_PACKAGE)];
+    let join = |name: &'static str, pin: &'static str| {
+        let stack = &stack;
+        async move {
+            let phone = stack.phone(name).await;
+            let call = phone.call_with_headers(ROOM, &chat).await.unwrap();
+            if let Err(e) = call.answered(SOON).await {
+                stack
+                    .fail(&format!("{name} was not admitted: {e}"), &phone)
+                    .await;
+            }
+            assert!(
+                call.answer_header("Recv-Info")
+                    .is_some_and(|v| v.contains(fcp_core::CHAT_INFO_PACKAGE)),
+                "the room says it sends {name} chat"
+            );
+            dial_digits(&call, pin).await;
+            (phone, call)
+        }
+    };
+    let (host, host_call) = join("hostess", "9999").await;
+    let (ann, ann_call) = join("ann", "1111").await;
+    let (ben, ben_call) = join("ben", "1111").await;
+    stack.wait_participants(3).await;
+    let host_id = stack.participant_named("hostess").await;
+    stack
+        .wait_participant(&host_id, |p| p["role"] == "host")
+        .await;
+    let ben_id = stack.participant_named("ben").await;
+
+    // Ann posts to the room: all three are told.
+    assert_eq!(
+        send_chat(&ann_call, r#"{"op":"post","text":"Hello all"}"#).await,
+        200
+    );
+    let mut anns_id = String::new();
+    for (phone, call, mine) in [
+        (&host, &host_call, false),
+        (&ann, &ann_call, true),
+        (&ben, &ben_call, false),
+    ] {
+        let told = chat_until(phone, call.call_id(), |m, _| !m.is_empty()).await;
+        let m = told.values().next().unwrap();
+        assert_eq!(m.text, "Hello all");
+        assert_eq!(m.mine, mine, "{m:?}");
+        assert!(m.sender.is_some() && !m.sender_moderates, "{m:?}");
+        anns_id = m.id.clone();
+    }
+
+    // Ben writes to the hosts through the room's API: only the host is told.
+    let (code, bens) = stack
+        .send(
+            "POST",
+            &format!("/conferences/{ROOM}/chat"),
+            Some(&format!(
+                r#"{{"call_id":"{}","text":"Can you share the slides?","to":"hosts"}}"#,
+                ben_call.call_id()
+            )),
+        )
+        .await;
+    assert_eq!(code, 201, "{bens}");
+    assert_eq!(bens["to"], "hosts");
+    let bens_id = bens["id"].as_str().unwrap().to_string();
+    chat_until(&host, host_call.call_id(), |m, _| m.contains_key(&bens_id)).await;
+    let as_ann = format!("/conferences/{ROOM}/chat?call_id={}", ann_call.call_id());
+    let (code, out) = stack.send("GET", &as_ann, None).await;
+    assert_eq!(code, 200, "{out}");
+    let ids: Vec<&str> = out["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![anns_id.as_str()], "Ann does not see Ben's: {out}");
+
+    // An attendee deletes and mutes nothing.
+    assert_eq!(
+        send_chat(&ann_call, &format!(r#"{{"op":"delete","id":"{anns_id}"}}"#)).await,
+        403
+    );
+    assert_eq!(
+        send_chat(
+            &ann_call,
+            &format!(r#"{{"op":"mute","participant_id":"{ben_id}","on":true}}"#)
+        )
+        .await,
+        403
+    );
+
+    // The host deletes Ann's: Ann and Ben are told it is gone.
+    assert_eq!(
+        send_chat(
+            &host_call,
+            &format!(r#"{{"op":"delete","id":"{anns_id}"}}"#)
+        )
+        .await,
+        200
+    );
+    for (phone, call) in [(&ann, &ann_call), (&ben, &ben_call)] {
+        let told = chat_until(phone, call.call_id(), |m, _| {
+            m.get(&anns_id).is_some_and(|m| m.deleted)
+        })
+        .await;
+        assert!(told[&anns_id].text.is_empty(), "deleted without its text");
+    }
+
+    // The host mutes Ben through the API: he is told, and refused.
+    let (code, out) = stack
+        .send(
+            "POST",
+            &format!("/conferences/{ROOM}/participants/{ben_id}/chat-mute"),
+            Some(r#"{"on":true}"#),
+        )
+        .await;
+    assert_eq!(code, 200, "{out}");
+    chat_until(&ben, ben_call.call_id(), |_, muted| muted).await;
+    assert_eq!(
+        send_chat(&ben_call, r#"{"op":"post","text":"Still here?"}"#).await,
+        403
+    );
+    // A host is not muted.
+    let (code, _) = stack
+        .send(
+            "POST",
+            &format!("/conferences/{ROOM}/participants/{host_id}/chat-mute"),
+            Some(r#"{"on":true}"#),
+        )
+        .await;
+    assert_eq!(code, 403);
+
+    // The host posts; Carl joins late and is sent what he may see: the
+    // host's, not Ann's deleted one or Ben's to the hosts.
+    assert_eq!(
+        send_chat(&host_call, r#"{"op":"post","text":"Welcome"}"#).await,
+        200
+    );
+    chat_until(&ann, ann_call.call_id(), |m, _| {
+        m.values().any(|m| m.text == "Welcome")
+    })
+    .await;
+    let (carl, carl_call) = join("carl", "1111").await;
+    stack.wait_participants(4).await;
+    let carls = chat_until(&carl, carl_call.call_id(), |m, _| !m.is_empty()).await;
+    let texts: Vec<&str> = carls.values().map(|m| m.text.as_str()).collect();
+    assert_eq!(texts, vec!["Welcome"], "{carls:?}");
+    assert!(carls.values().all(|m| m.sender_moderates));
+
+    // Kept: three rows, Ann's deleted by the host.
+    use fcp_core::chat::ChatStore;
+    let store =
+        fcp_storage_postgres::chat::PostgresChatStore::new(stack.seed.storage().pool().clone());
+    let deadline = tokio::time::Instant::now() + SOON;
+    loop {
+        let rows = store
+            .chat_of_room(&stack.seed.tenant_id, ROOM, 10)
+            .await
+            .unwrap();
+        let anns_row = rows.iter().find(|r| r.id == anns_id);
+        if rows.len() == 3
+            && anns_row.is_some_and(|r| {
+                r.deleted_at.is_some()
+                    && r.deleted_by.as_deref() == Some(host_id.as_str())
+                    && r.text == "Hello all"
+                    && r.sender_address.is_some()
+            })
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the rows never stood as the room does: {rows:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    for call in [&host_call, &ann_call, &ben_call, &carl_call] {
         assert_eq!(call.hangup().await.unwrap(), 200);
     }
     stack.wait_participants(0).await;

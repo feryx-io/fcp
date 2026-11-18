@@ -1802,6 +1802,17 @@ async fn main() -> Result<()> {
 
     // 24a2. Spawn DTMF dial-out request poller
     {
+        // Chat posted or deleted, sent to those who asked for it
+        // (`docs/WEBINARS.md` §2.5) a few times a second.
+        let chat_handler = Arc::clone(&conference_handler);
+        tokio::spawn(supervise_task("chat-flush", async move {
+            let mut tick = tokio::time::interval(conference_handler::CHAT_FLUSH);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                chat_handler.flush_chat();
+            }
+        }));
         let dialout_handler = Arc::clone(&conference_handler);
         let dialout_bridge = Arc::clone(&bridge);
         tokio::spawn(supervise_task("dtmf-dialout-poller", async move {

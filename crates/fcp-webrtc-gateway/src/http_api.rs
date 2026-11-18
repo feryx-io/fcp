@@ -281,6 +281,38 @@ async fn set_hand(
     }
 }
 
+/// `POST /v1/rooms/{id}/chat` — the browser posts, or (a host or
+/// panelist) deletes a message or mutes a participant
+/// (`docs/WEBINARS.md` §2.5). The body is the `fcp-chat` message, sent on
+/// to the room as an INFO; the session's `chat` follows the room's word.
+async fn send_chat(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(message): Json<fcp_core::chat::ChatMessage>,
+) -> Result<StatusCode, ApiError> {
+    use fcp_core::chat::ChatMessage;
+    if !matches!(
+        message,
+        ChatMessage::Post { .. } | ChatMessage::Delete { .. } | ChatMessage::Mute { .. }
+    ) {
+        return Err(SessionError::BadRequest("not a chat operation".into()).into());
+    }
+    if !state.sessions.exists(&id, true).await {
+        return Err(SessionError::NotFound(format!("room session '{id}' not found")).into());
+    }
+    match state.sessions.send_chat(&id, &message).await? {
+        200..=299 => Ok(StatusCode::NO_CONTENT),
+        400 => Err(SessionError::BadRequest("the room refused the message".into()).into()),
+        403 => Err(SessionError::Forbidden(
+            "the room does not allow it: chat off or muted, too many messages, or not a host's"
+                .into(),
+        )
+        .into()),
+        404 => Err(SessionError::NotFound("no such message or participant".into()).into()),
+        code => Err(SessionError::Internal(format!("the room answered the chat {code}")).into()),
+    }
+}
+
 /// `POST /v1/rooms/{id}/questions` — the browser asks, upvotes, or (a
 /// host or panelist) publishes, answers or dismisses a question
 /// (`docs/WEBINARS.md` §2.5). The body is the `fcp-qa` message, sent on to
@@ -475,6 +507,7 @@ pub fn routes(state: ApiState) -> Router {
         .route("/v1/rooms/{id}/view", post(set_view))
         .route("/v1/rooms/{id}/hand", post(set_hand))
         .route("/v1/rooms/{id}/questions", post(send_question))
+        .route("/v1/rooms/{id}/chat", post(send_chat))
         .route("/v1/calls", post(initiate_call).get(list_calls))
         .route("/v1/calls/{id}", get(get_call).delete(hangup_call))
         .route("/v1/calls/{id}/answer", post(answer))

@@ -282,10 +282,12 @@ pub enum ExportClass {
     NumberLists,
     /// The contacts the subject keeps (`docs/RECORD_AND_CONTACTS.md` §3).
     PersonalContacts,
+    /// Chat the subject posted in a room (`docs/WEBINARS.md` §2.5).
+    ConferenceChat,
 }
 
 impl ExportClass {
-    pub const ALL: [ExportClass; 29] = [
+    pub const ALL: [ExportClass; 30] = [
         ExportClass::Profile,
         ExportClass::ApiTokens,
         ExportClass::Devices,
@@ -315,6 +317,7 @@ impl ExportClass {
         ExportClass::WebhookDeliveries,
         ExportClass::NumberLists,
         ExportClass::PersonalContacts,
+        ExportClass::ConferenceChat,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -348,6 +351,7 @@ impl ExportClass {
             ExportClass::WebhookDeliveries => "webhook_deliveries",
             ExportClass::NumberLists => "number_lists",
             ExportClass::PersonalContacts => "personal_contacts",
+            ExportClass::ConferenceChat => "conference_chat",
         }
     }
 
@@ -362,6 +366,7 @@ impl ExportClass {
             ExportClass::SipTraces => Some(DataClass::SipTrace),
             ExportClass::FlowTraces => Some(DataClass::FlowTrace),
             ExportClass::AuditEvents => Some(DataClass::AuditEvent),
+            ExportClass::ConferenceChat => Some(DataClass::ConferenceChat),
             _ => None,
         }
     }

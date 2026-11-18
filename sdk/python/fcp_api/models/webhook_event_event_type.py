@@ -30,6 +30,8 @@ class WebhookEventEventType(StrEnum):
     COMPLIANCE_HOLD_RELEASED = "compliance.hold_released"
     COMPLIANCE_SUBJECT_REQUEST_COMPLETED = "compliance.subject_request_completed"
     CONFERENCE_ACTIVE_SPEAKER_CHANGED = "conference.active_speaker_changed"
+    CONFERENCE_CHAT_DELETED = "conference.chat_deleted"
+    CONFERENCE_CHAT_MUTED = "conference.chat_muted"
     CONFERENCE_CONTENT_STARTED = "conference.content_started"
     CONFERENCE_CONTENT_STOPPED = "conference.content_stopped"
     CONFERENCE_DIAL_OUT_FAILED = "conference.dial_out_failed"

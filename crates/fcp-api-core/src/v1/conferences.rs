@@ -94,6 +94,10 @@ pub struct MeetingResponse {
     pub qa: Option<String>,
     /// Whether a question may be asked without the asker's name.
     pub qa_anonymous: bool,
+    /// Chat in the room: `everyone`, `hosts` (an attendee posts to the
+    /// hosts only) or `off`; unset is `everyone` in a meeting and `hosts`
+    /// in a webinar.
+    pub chat: Option<String>,
     #[serde(with = "crate::time::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
@@ -145,6 +149,7 @@ impl From<Meeting> for MeetingResponse {
             panelists: m.panelists,
             qa: m.qa,
             qa_anonymous: m.qa_anonymous,
+            chat: m.chat,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -236,6 +241,10 @@ pub struct CreateMeetingRequest {
     /// Whether a question may be asked without the asker's name.
     #[serde(default)]
     pub qa_anonymous: bool,
+    /// Chat in the room: `everyone`, `hosts` or `off`; unset is
+    /// `everyone` in a meeting and `hosts` in a webinar.
+    #[serde(default)]
+    pub chat: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -415,6 +424,10 @@ pub struct UpdateMeetingRequest {
     #[serde(default, deserialize_with = "double_option")]
     pub qa: Option<Option<String>>,
     pub qa_anonymous: Option<bool>,
+    /// `everyone`, `hosts` or `off`; `null` goes back to the kind's
+    /// default.
+    #[serde(default, deserialize_with = "double_option")]
+    pub chat: Option<Option<String>>,
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
@@ -528,6 +541,7 @@ pub async fn create_meeting(
         panelists: panelists_of(&state, &tenant_id, &req.panelists).await?,
         qa: req.qa,
         qa_anonymous: req.qa_anonymous,
+        chat: req.chat,
         created_at: now,
         updated_at: now,
     };
@@ -730,6 +744,9 @@ pub async fn update_meeting(
     }
     if let Some(v) = req.qa_anonymous {
         meeting.qa_anonymous = v;
+    }
+    if let Some(v) = req.chat {
+        meeting.chat = v;
     }
     meeting
         .validate_video_settings()

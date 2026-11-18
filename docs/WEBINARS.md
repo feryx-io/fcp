@@ -5,7 +5,8 @@ Status: agreed 2026-11-17: every recommendation, except that chat is in (§2.5,
 audience mix, measured at 1,000 and 2,000 attendees on one node (§5). W2 is done
 (v0.25.584–585, forge-media v2026.11.17.1): the audience's video and roster, measured
 at 1,000 and 2,000 watching (§5). W3 is done: W3.1, hands and the stage (v0.25.586–587,
-forge-media v2026.11.17.2), and W3.2, Q&A (v0.25.588).
+forge-media v2026.11.17.2), and W3.2, Q&A (v0.25.588). W3b, chat in every room, is
+done (v0.25.591).
 
 A webinar is a meeting with a stage and an audience:
 - a few people speak and are seen;
@@ -561,6 +562,65 @@ For an audience that is not on FCP at all.
   - The `fcp-chat` INFO package, relayed by the call manager and the gateway.
   - `/me/conferences/live/{room}/chat`, the meeting's `chat` scope, delete and
     mute, and the events.
+  - **Done** (v0.25.591). As built:
+    - **The setting.** A meeting's `chat` is `everyone`, `hosts` or `off`;
+      unset is `everyone` in a meeting and `hosts` in a webinar (migration
+      143, `Meeting::chat_scope`, `fcp_core::chat::ChatScope::allows`).
+      Under `everyone` anyone posts to the room (`"to":"room"`) or privately
+      to its hosts and panelists (`"to":"hosts"`). Under `hosts` an attendee
+      or guest posts to the hosts only, and hosts and panelists post to the
+      room as well. Under `off` nobody posts to the room. Hosts and
+      panelists always have their own channel.
+    - **Posting.** Anyone in the room posts, at most 1,000 characters and
+      10 messages in 10 seconds (429, or 403 by INFO):
+      - by an `fcp-chat` INFO (`application/vnd.fcp.chat+json`),
+        `{"op":"post","text":…,"to":…}`;
+      - by the app's `POST /me/conferences/live/{room}/chat`, by call;
+      - by the browser's `POST /v1/rooms/{id}/chat` on the gateway (the
+        `fcp-chat` message as the body), and the join page's Chat panel.
+    - **Moderating.** A host or panelist deletes any message, which is then
+      gone for everyone. They mute a participant's chat for the rest of the
+      sitting (by participant id; another host or panelist is not muted):
+      - by INFO (`{"op":"delete","id":…}`,
+        `{"op":"mute","participant_id":…,"on":…}`), refused 403 from anyone
+        else;
+      - by `/me/conferences/live/{room}/chat/{mid}/delete` and
+        `…/participants/{pid}/chat-mute`, for those who moderate questions.
+        An optional `call_id` names the moderator's own call, so the room
+        records them as the one who deleted.
+      - `GET …/chat` gives them the last 100 messages; with `?call_id=` it
+        gives what that participant sees, and whether they are muted.
+    - **Who sees what.** A host or panelist sees every message; anyone else
+      sees the room's messages and their own.
+    - **Being told.** A participant who asked for `fcp-chat` (a browser
+      always does) is sent the messages they may see as they arrive:
+      - every 250 ms, as `{"op":"messages","messages":[…]}` in bodies of at
+        most 8 KB;
+      - the last 100 they may see when they join a room that has some;
+      - a deleted message once more, `deleted` and without its text, to
+        those who saw it;
+      - `{"op":"muted","on":…}` when they are muted or unmuted.
+
+      The gateway keeps the last 500 as `chat.messages` on the session,
+      with `chat.muted`.
+    - **Kept.** A room's chat lives on the node holding it for one sitting.
+      It keeps the last 2,000 messages in memory. Each message is a
+      `conference_chat` row (`fcp_core::chat::ChatStore`), written as it is
+      posted and again when deleted: the row keeps its text, with
+      `deleted_at` and `deleted_by`. The sender's From URI and name let a
+      subject request find it. The tenant's `conference_chat_retention_days`
+      deletes old rows. The `conference_chat` hold class holds them by the
+      sender's keys. Subject export (`conference_chat`) finds them, subject
+      erasure deletes them, and every deletion is logged (migration 144).
+    - **Events:** `conference.chat_deleted` (the sender, and `by`) and
+      `conference.chat_muted` (`on`, `by`). No event per message.
+    - **Not yet:**
+      - chat on a room's other nodes: a cascaded room's chat is each node's
+        own until W5;
+      - a mute that follows a person who leaves and joins again;
+      - chat in the attendance export (W4);
+      - the meeting's `chat` in the admin UI's meeting form (W4's webinar
+        pages).
 - **W4: the webinar's life** (FCP).
   - Practice, go live, end.
   - The lobby let in gradually.

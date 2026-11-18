@@ -4,6 +4,7 @@ class DataClass(StrEnum):
     AUDIT_EVENT = "audit_event"
     CALL_RECORDING = "call_recording"
     CDR = "cdr"
+    CONFERENCE_CHAT = "conference_chat"
     CONFERENCE_RECORDING = "conference_recording"
     DEVICE_CAPTURE = "device_capture"
     FLOW_TRACE = "flow_trace"

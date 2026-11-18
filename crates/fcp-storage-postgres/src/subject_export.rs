@@ -228,6 +228,14 @@ fn class_query(class: ExportClass) -> String {
                     NULL::text[] AS ids, false AS others
              FROM personal_contacts c WHERE tenant_id = $1 AND owner_user_id = ANY($5)"
         }
+        ExportClass::ConferenceChat => {
+            "SELECT id, 'ids' AS link, to_jsonb(c) AS data, sent_at AS at,
+                    NULL::text AS call_id, NULL::text AS file,
+                    array_remove(ARRAY[sender_address, sender_name], NULL) AS ids,
+                    false AS others
+             FROM conference_chat c
+             WHERE tenant_id = $1 AND fcp_conference_chat_keys(sender_address, sender_name) && $4"
+        }
         ExportClass::NumberLists => {
             "SELECT pn.id || ':' || x.list || ':' || x.entry AS id, 'ids' AS link,
                     jsonb_build_object('number', pn.e164, 'list', x.list, 'entry', x.entry) AS data,

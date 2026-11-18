@@ -1475,7 +1475,9 @@ async fn a_browser_s_feedback_is_the_room_s_estimate_through_the_gateway() {
 /// the room has it, and when a host brings it to the stage the room's
 /// `fcp-qa` INFO shows on the session as `qa`. It asks a question with
 /// `POST /v1/rooms/{id}/questions`, and the room's word of it shows as
-/// `qa.questions`.
+/// `qa.questions`. It chats with `POST /v1/rooms/{id}/chat` (W3b): to the
+/// hosts, as a webinar's attendee may, and the room's word of it shows as
+/// `chat.messages`; a host's mute shows as `chat.muted`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_browser_raises_its_hand_is_brought_to_the_stage_and_asks() {
     let Some(db) = TestDatabase::create().await else {
@@ -1506,6 +1508,9 @@ async fn a_browser_raises_its_hand_is_brought_to_the_stage_and_asks() {
             != serde_json::json!({ "hand": false, "on_stage": false, "moderates": false, "questions": [] })
         {
             return Err(format!("a new session's qa: {info}"));
+        }
+        if info["chat"] != serde_json::json!({ "muted": false, "messages": [] }) {
+            return Err(format!("a new session's chat: {info}"));
         }
 
         let (code, body) = gw
@@ -1597,6 +1602,89 @@ async fn a_browser_raises_its_hand_is_brought_to_the_stage_and_asks() {
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(format!("never told of its question: {info}"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // Chat (W3b): a webinar's attendee writes to the hosts, not the
+        // room, and the room's word of it is kept on the session.
+        let chat = format!("{session}/chat");
+        let (code, _) = gw
+            .api(
+                "POST",
+                &chat,
+                &browser.token,
+                Some(r#"{"op":"post","text":"Hi","to":"room"}"#),
+            )
+            .await?;
+        if code != 403 {
+            return Err(format!("an attendee's post to the room answered {code}"));
+        }
+        let (code, body) = gw
+            .api(
+                "POST",
+                &chat,
+                &browser.token,
+                Some(r#"{"op":"post","text":"Hi","to":"hosts"}"#),
+            )
+            .await?;
+        if code != 204 {
+            return Err(format!("the post answered {code}: {body}"));
+        }
+        let (code, _) = gw
+            .api(
+                "POST",
+                &chat,
+                &browser.token,
+                Some(r#"{"op":"muted","on":true}"#),
+            )
+            .await?;
+        if code != 400 {
+            return Err(format!("the room's own message answered {code}"));
+        }
+        let deadline = tokio::time::Instant::now() + SOON;
+        loop {
+            let (_, info) = gw.api("GET", &session, &browser.token, None).await?;
+            let m = &info["chat"]["messages"][0];
+            if m["text"] == "Hi" && m["mine"] == true && m["to"] == "hosts" {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!("never told of its message: {info}"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let (code, out) = conf(
+            "POST",
+            format!("/conferences/{ROOM}/participants/{pid}/chat-mute"),
+        )
+        .await?;
+        // The helper sends `{}`: the room wants `on`.
+        if code != 400 {
+            return Err(format!("a mute without on answered {code}: {out}"));
+        }
+        let (code, body) = http_request(
+            "POST",
+            &loopback(
+                conf_http,
+                &format!("/conferences/{ROOM}/participants/{pid}/chat-mute"),
+            ),
+            &[],
+            Some(r#"{"on":true}"#),
+        )
+        .await
+        .map_err(|e| format!("mute: {e}"))?;
+        if code != 200 {
+            return Err(format!("the mute answered {code}: {body}"));
+        }
+        let deadline = tokio::time::Instant::now() + SOON;
+        loop {
+            let (_, info) = gw.api("GET", &session, &browser.token, None).await?;
+            if info["chat"]["muted"] == true {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!("never told it is muted: {info}"));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

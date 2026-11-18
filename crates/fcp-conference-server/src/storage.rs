@@ -55,6 +55,11 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
         fcp_storage_postgres::questions::PostgresQuestionStore::new(storage.pool().clone()),
     );
 
+    // Chat in a room (`docs/WEBINARS.md` §2.5).
+    let chat_store: Arc<dyn fcp_core::chat::ChatStore> = Arc::new(
+        fcp_storage_postgres::chat::PostgresChatStore::new(storage.pool().clone()),
+    );
+
     info!("PostgreSQL storage initialized successfully");
     Ok(StorageResult {
         replica: fcp_storage_postgres::ReplicaHealth::of(storage.clone()),
@@ -63,7 +68,8 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
                 .with_prompt_store(prompt_store)
                 .with_recording_store(recording_store)
                 .with_compliance_store(compliance_store)
-                .with_question_store(question_store),
+                .with_question_store(question_store)
+                .with_chat_store(chat_store),
         ),
         config_store: storage,
     })

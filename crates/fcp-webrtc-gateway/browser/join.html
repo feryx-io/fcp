@@ -100,6 +100,15 @@
         <div style="flex: 0 0 auto"><button id="ask" class="secondary">Ask</button></div>
       </div>
     </div>
+    <div class="qa hidden" id="chat">
+      <h3>Chat</h3>
+      <ol id="messages"></ol>
+      <div class="row">
+        <div><input type="text" id="message" maxlength="1000" placeholder="Send a message" autocomplete="off"></div>
+        <div style="flex: 0 0 auto"><select id="to"><option value="room">Everyone</option><option value="hosts">Hosts</option></select></div>
+        <div style="flex: 0 0 auto"><button id="send" class="secondary">Send</button></div>
+      </div>
+    </div>
     <audio id="audio" autoplay></audio>
   </section>
 
@@ -373,6 +382,7 @@
       showForwarding(info.forwarding || null);
       showHand(info.qa || null);
       showQuestions(info.qa || null);
+      showChat(info.chat || null, !!(info.qa && info.qa.moderates));
       // A host stopped the share, or the room refused it: stop sending.
       // Only a verdict newer than this share counts; an earlier one is history.
       if (screen && info.content && noticesSeen > noticesAtShare && (info.content.state === 'refused' || info.content.state === 'released')) stopSharing('the room ended it');
@@ -705,6 +715,61 @@
     await sendQuestion({ op: 'ask', text, anonymous: $('anonymous').checked });
     $('question').value = '';
   }
+  // Chat (docs/WEBINARS.md §2.5): the messages this participant may see,
+  // kept by the gateway from the room's fcp-chat INFOs. A host or panelist
+  // deletes a message or mutes its sender the same way.
+  let chatSeen = '';
+  function showChat(chat, moderates) {
+    const list = (chat && chat.messages) || [];
+    $('chat').classList.toggle('hidden', !chat);
+    $('message').disabled = !!(chat && chat.muted);
+    $('message').placeholder = chat && chat.muted ? 'A host muted your chat' : 'Send a message';
+    const key = JSON.stringify([list, moderates]);
+    if (key === chatSeen) return;
+    chatSeen = key;
+    const ol = $('messages');
+    ol.replaceChildren();
+    for (const m of list) {
+      const li = document.createElement('li');
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      const who = m.mine ? 'You' : (m.sender || 'Someone');
+      meta.textContent = `${who}${m.to === 'hosts' ? ' (to hosts)' : ''}: `;
+      const text = document.createElement('span');
+      text.textContent = m.text;
+      li.append(meta, text);
+      const button = (label, op) => {
+        const b = document.createElement('button');
+        b.className = 'secondary';
+        b.textContent = label;
+        b.addEventListener('click', () => sendChat(op));
+        li.append(b);
+      };
+      if (moderates) {
+        button('Delete', { op: 'delete', id: m.id });
+        if (!m.mine && !m.sender_moderates) button('Mute', { op: 'mute', participant_id: m.sender_id, on: true });
+      }
+      ol.append(li);
+    }
+  }
+  async function sendChat(message) {
+    if (!session) return;
+    try {
+      await call('POST', `/v1/rooms/${session.id}/chat`, message, session.token);
+      refresh();
+    } catch (e) {
+      log(`chat: ${e.message}`);
+    }
+  }
+  async function send() {
+    const text = $('message').value.trim();
+    if (!text) return;
+    await sendChat({ op: 'post', text, to: $('to').value });
+    $('message').value = '';
+  }
+  $('send').addEventListener('click', send);
+  $('message').addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+
   $('ask').addEventListener('click', ask);
   $('question').addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(); });
 

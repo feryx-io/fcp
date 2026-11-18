@@ -6545,6 +6545,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/conferences/live/{room}/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /me/conferences/live/:room/chat — the room's last 100 messages
+         *     (`docs/WEBINARS.md` §2.5): as the participant on `call_id` sees them,
+         *     with whether their chat is muted (any user of the room's tenant, the
+         *     call naming whose view it is), or every one for a host or panelist.
+         */
+        get: operations["self_service_my_live_conference_chat"];
+        put?: never;
+        /**
+         * POST /me/conferences/live/:room/chat — post a message from an app in
+         *     the room. Any user of the room's tenant may; the call names the sender.
+         *     403 when the meeting's `chat` does not allow it or the sender is muted,
+         *     429 when they post too quickly.
+         */
+        post: operations["self_service_my_live_conference_post_chat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/conferences/live/{room}/chat/{mid}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/conferences/live/:room/chat/:mid/delete — a host or panelist
+         *     deletes a message, which is then gone for everyone.
+         */
+        post: operations["self_service_my_live_conference_delete_chat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/conferences/live/{room}/participants/{pid}/chat-mute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/conferences/live/:room/participants/:pid/chat-mute — a host or
+         *     panelist mutes a participant's chat for the rest of the sitting, or
+         *     unmutes it. A host or panelist is not muted.
+         */
+        post: operations["self_service_my_live_conference_mute_chat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cluster/nodes": {
         parameters: {
             query?: never;
@@ -7353,6 +7422,11 @@ export interface components {
             new_password: string;
         };
         /**
+         * @description Who a message is for.
+         * @enum {string}
+         */
+        ChatAudience: "room" | "hosts";
+        /**
          * @description The RFC 5139 civic address elements beyond city, state, postal code and
          *     country, which [`E911Address`] carries as fields of its own.
          */
@@ -7927,6 +8001,11 @@ export interface components {
             qa?: string | null;
             /** @description Whether a question may be asked without the asker's name. */
             qa_anonymous?: boolean;
+            /**
+             * @description Chat in the room: `everyone`, `hosts` or `off`; unset is
+             *     `everyone` in a meeting and `hosts` in a webinar.
+             */
+            chat?: string | null;
         };
         CreateNetworkRequest: {
             /** @description A range (`10.1.2.0/24`) or a single address. */
@@ -8213,7 +8292,7 @@ export interface components {
          * @description The classes of data a hold can cover.
          * @enum {string}
          */
-        DataClass: "cdr" | "call_recording" | "conference_recording" | "voicemail" | "sip_trace" | "flow_trace" | "audit_event" | "device_capture";
+        DataClass: "cdr" | "call_recording" | "conference_recording" | "voicemail" | "sip_trace" | "flow_trace" | "audit_event" | "device_capture" | "conference_chat";
         DeadLetterReport: {
             /** @description Whether this host reached the dead letters. */
             reached: boolean;
@@ -8245,6 +8324,14 @@ export interface components {
             expires_at: string;
             /** @description False once it has expired: the platform stops using it. */
             current: boolean;
+        };
+        /** @description The body of `POST /me/conferences/live/:room/chat/:mid/delete`. */
+        DeleteChatRequest: {
+            /**
+             * @description The moderator's own call in the room, when they are in it: the room
+             *     records them as the one who deleted it.
+             */
+            call_id?: string | null;
         };
         DeleteConfigResponse: {
             deleted: boolean;
@@ -9427,6 +9514,12 @@ export interface components {
             qa?: string | null;
             /** @description Whether a question may be asked without the asker's name. */
             qa_anonymous: boolean;
+            /**
+             * @description Chat in the room: `everyone`, `hosts` (an attendee posts to the
+             *     hosts only) or `off`; unset is `everyone` in a meeting and `hosts`
+             *     in a webinar.
+             */
+            chat?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -9472,6 +9565,13 @@ export interface components {
             item: string;
             path: string;
             reason: string;
+        };
+        /** @description The body of `POST /me/conferences/live/:room/participants/:pid/chat-mute`. */
+        MuteChatRequest: {
+            /** @description Mute (`true`) or unmute. */
+            on: boolean;
+            /** @description The moderator's own call in the room, when they are in it. */
+            call_id?: string | null;
         };
         /** @description How one of the user's calls went, by their phone: on `/me/calls`. */
         MyCallQuality: {
@@ -10904,6 +11004,12 @@ export interface components {
                 qa?: string | null;
                 /** @description Whether a question may be asked without the asker's name. */
                 qa_anonymous: boolean;
+                /**
+                 * @description Chat in the room: `everyone`, `hosts` (an attendee posts to the
+                 *     hosts only) or `off`; unset is `everyone` in a meeting and `hosts`
+                 *     in a webinar.
+                 */
+                chat?: string | null;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -11578,6 +11684,11 @@ export interface components {
                 conference_recordings_deleted: number;
                 /** Format: int64 */
                 voicemail_messages_deleted: number;
+                /**
+                 * Format: int64
+                 * @description Chat messages posted in rooms.
+                 */
+                conference_chat_deleted: number;
                 /** Format: int64 */
                 audit_events_deleted: number;
                 /** Format: int64 */
@@ -12474,6 +12585,11 @@ export interface components {
             audit_retention_days?: number | null;
             /** Format: int32 */
             voicemail_retention_days?: number | null;
+            /**
+             * Format: int32
+             * @description Chat in rooms older than this is deleted.
+             */
+            conference_chat_retention_days?: number | null;
             recording_consent: string;
             recording_consent_prompt_id?: string | null;
             /**
@@ -12505,6 +12621,18 @@ export interface components {
             configured: boolean;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description The body of `POST /me/conferences/live/:room/chat`. */
+        PostChatRequest: {
+            /** @description The app's call in the room: the `X-FCP-Call-Id` its 200 OK named. */
+            call_id: string;
+            /** @description The message, at most 1000 characters. */
+            text: string;
+            /**
+             * @description `room` (the default) or `hosts`: privately to the hosts and
+             *     panelists.
+             */
+            to?: components["schemas"]["ChatAudience"];
         };
         /** @description What others see of a person. */
         Presence: {
@@ -13131,6 +13259,11 @@ export interface components {
             conference_recordings_deleted: number;
             /** Format: int64 */
             voicemail_messages_deleted: number;
+            /**
+             * Format: int64
+             * @description Chat messages posted in rooms.
+             */
+            conference_chat_deleted: number;
             /** Format: int64 */
             audit_events_deleted: number;
             /** Format: int64 */
@@ -14568,6 +14701,11 @@ export interface components {
             /** @description `off`, `moderated` or `open`; `null` goes back to the kind's default. */
             qa?: string | null;
             qa_anonymous?: boolean | null;
+            /**
+             * @description `everyone`, `hosts` or `off`; `null` goes back to the kind's
+             *     default.
+             */
+            chat?: string | null;
         };
         /** @description Update message request. */
         UpdateMessageRequest: {
@@ -14662,6 +14800,8 @@ export interface components {
             audit_retention_days?: number | null;
             /** Format: int32 */
             voicemail_retention_days?: number | null;
+            /** Format: int32 */
+            conference_chat_retention_days?: number | null;
             recording_consent?: string | null;
             recording_consent_prompt_id?: string | null;
             recording_consent_on_failure?: string | null;
@@ -15191,7 +15331,7 @@ export interface components {
              * @description A name from `/api/v1/webhooks/event-types`, or `webhook.test`
              * @enum {string}
              */
-            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.quality_poor" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "conference.hand_raised" | "conference.hand_lowered" | "conference.stage_joined" | "conference.stage_left" | "conference.question_asked" | "conference.question_published" | "conference.question_answered" | "conference.question_dismissed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
+            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.quality_poor" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "conference.hand_raised" | "conference.hand_lowered" | "conference.stage_joined" | "conference.stage_left" | "conference.question_asked" | "conference.question_published" | "conference.question_answered" | "conference.question_dismissed" | "conference.chat_deleted" | "conference.chat_muted" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
             /**
              * Format: date-time
              * @description When the event happened, RFC 3339.
@@ -30735,6 +30875,161 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description The question as a host sees it */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_live_conference_chat: {
+        parameters: {
+            query?: {
+                /**
+                 * @description The app's call in the room (its `X-FCP-Call-Id`): the questions as
+                 *     that participant sees them. Without it, every question, for a host
+                 *     or panelist.
+                 */
+                call_id?: string;
+            };
+            header?: never;
+            path: {
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The conference server's answer, passed through */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_live_conference_post_chat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PostChatRequest"];
+            };
+        };
+        responses: {
+            /** @description The conference server's answer, passed through */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description The message as its sender sees it */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_live_conference_delete_chat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                room: string;
+                mid: string;
+            };
+            cookie?: never;
+        };
+        /** @description Optional */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteChatRequest"];
+            };
+        };
+        responses: {
+            /** @description The conference server's answer, passed through */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_live_conference_mute_chat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                room: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MuteChatRequest"];
+            };
+        };
+        responses: {
+            /** @description The conference server's answer, passed through */
             200: {
                 headers: {
                     [name: string]: unknown;

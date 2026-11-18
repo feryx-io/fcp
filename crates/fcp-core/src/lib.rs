@@ -9,6 +9,7 @@ pub mod cached_storage;
 pub mod call_quality;
 pub mod calling;
 pub mod cdr_archive;
+pub mod chat;
 pub mod class_of_service;
 pub mod codec;
 pub mod compliance;
@@ -166,6 +167,15 @@ pub const VIEW_INFO_TYPE: &str = "application/vnd.fcp.view+json";
 pub const QA_INFO_PACKAGE: &str = "fcp-qa";
 /// The body of a [`QA_INFO_PACKAGE`] INFO.
 pub const QA_INFO_TYPE: &str = "application/vnd.fcp.qa+json";
+
+/// The info package (RFC 6086) of chat in a room (`docs/WEBINARS.md`
+/// §2.5): a participant posts, and a host or panelist deletes and mutes, in
+/// an INFO of [`CHAT_INFO_TYPE`] ([`chat::ChatMessage`]); one whose INVITE
+/// said `Recv-Info: fcp-chat` is sent the messages they may see. The room's
+/// answer says `Recv-Info: fcp-chat` to a participant that asked.
+pub const CHAT_INFO_PACKAGE: &str = "fcp-chat";
+/// The body of a [`CHAT_INFO_PACKAGE`] INFO.
+pub const CHAT_INFO_TYPE: &str = "application/vnd.fcp.chat+json";
 
 /// Whether an INVITE's `Recv-Info` headers name `package` (RFC 6086 §5.2.2:
 /// a comma-separated list, the header repeatable).

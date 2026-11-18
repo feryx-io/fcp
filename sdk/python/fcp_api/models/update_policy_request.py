@@ -31,6 +31,7 @@ class UpdatePolicyRequest:
             recording_retention_days (int | None | Unset):
             audit_retention_days (int | None | Unset):
             voicemail_retention_days (int | None | Unset):
+            conference_chat_retention_days (int | None | Unset):
             recording_consent (None | str | Unset):
             recording_consent_prompt_id (None | str | Unset):
             recording_consent_on_failure (None | str | Unset):
@@ -46,6 +47,7 @@ class UpdatePolicyRequest:
     recording_retention_days: int | None | Unset = UNSET
     audit_retention_days: int | None | Unset = UNSET
     voicemail_retention_days: int | None | Unset = UNSET
+    conference_chat_retention_days: int | None | Unset = UNSET
     recording_consent: None | str | Unset = UNSET
     recording_consent_prompt_id: None | str | Unset = UNSET
     recording_consent_on_failure: None | str | Unset = UNSET
@@ -95,6 +97,12 @@ class UpdatePolicyRequest:
             voicemail_retention_days = UNSET
         else:
             voicemail_retention_days = self.voicemail_retention_days
+
+        conference_chat_retention_days: int | None | Unset
+        if isinstance(self.conference_chat_retention_days, Unset):
+            conference_chat_retention_days = UNSET
+        else:
+            conference_chat_retention_days = self.conference_chat_retention_days
 
         recording_consent: None | str | Unset
         if isinstance(self.recording_consent, Unset):
@@ -155,6 +163,8 @@ class UpdatePolicyRequest:
             field_dict["audit_retention_days"] = audit_retention_days
         if voicemail_retention_days is not UNSET:
             field_dict["voicemail_retention_days"] = voicemail_retention_days
+        if conference_chat_retention_days is not UNSET:
+            field_dict["conference_chat_retention_days"] = conference_chat_retention_days
         if recording_consent is not UNSET:
             field_dict["recording_consent"] = recording_consent
         if recording_consent_prompt_id is not UNSET:
@@ -237,6 +247,16 @@ class UpdatePolicyRequest:
         voicemail_retention_days = _parse_voicemail_retention_days(d.pop("voicemail_retention_days", UNSET))
 
 
+        def _parse_conference_chat_retention_days(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        conference_chat_retention_days = _parse_conference_chat_retention_days(d.pop("conference_chat_retention_days", UNSET))
+
+
         def _parse_recording_consent(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -314,6 +334,7 @@ class UpdatePolicyRequest:
             recording_retention_days=recording_retention_days,
             audit_retention_days=audit_retention_days,
             voicemail_retention_days=voicemail_retention_days,
+            conference_chat_retention_days=conference_chat_retention_days,
             recording_consent=recording_consent,
             recording_consent_prompt_id=recording_consent_prompt_id,
             recording_consent_on_failure=recording_consent_on_failure,

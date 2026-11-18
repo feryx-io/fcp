@@ -286,6 +286,24 @@ impl ConferenceCallHandler {
 
     /// Send `body`, an `fcp-qa` message, in the dialog of `call_id`.
     pub(super) async fn send_qa_body(self: Arc<Self>, call_id: String, body: String) {
+        self.send_package_body(
+            call_id,
+            fcp_core::QA_INFO_PACKAGE,
+            fcp_core::QA_INFO_TYPE,
+            body,
+        )
+        .await
+    }
+
+    /// Send `body`, an INFO of `package` and `content_type`, in the dialog
+    /// of `call_id`.
+    pub(super) async fn send_package_body(
+        self: Arc<Self>,
+        call_id: String,
+        package: &'static str,
+        content_type: &'static str,
+        body: String,
+    ) {
         // The INFO's CSeq is taken from the session's dialog as it is
         // cloned, so two sent at once (a hand and the stage) differ.
         let Some(mut dialog) = self.sessions.get_mut(&call_id).map(|mut s| {
@@ -299,20 +317,14 @@ impl ConferenceCallHandler {
             &dialog,
             sip_core::Method::Info,
             &[
-                (
-                    "Info-Package".to_string(),
-                    fcp_core::QA_INFO_PACKAGE.to_string(),
-                ),
-                (
-                    "Content-Type".to_string(),
-                    fcp_core::QA_INFO_TYPE.to_string(),
-                ),
+                ("Info-Package".to_string(), package.to_string()),
+                ("Content-Type".to_string(), content_type.to_string()),
             ],
             body.as_bytes(),
         ) {
             Ok(request) => request,
             Err(e) => {
-                warn!(call_id = %call_id, error = %e, "fcp-qa INFO could not be built");
+                warn!(call_id = %call_id, package, error = %e, "An INFO could not be built");
                 return;
             }
         };
@@ -325,10 +337,11 @@ impl ConferenceCallHandler {
             Ok(resp) if (200..300).contains(&resp.start_line().code()) => {}
             Ok(resp) => debug!(
                 call_id = %call_id,
+                package,
                 code = resp.start_line().code(),
-                "fcp-qa INFO refused"
+                "An INFO refused"
             ),
-            Err(e) => debug!(call_id = %call_id, error = %e, "fcp-qa INFO failed"),
+            Err(e) => debug!(call_id = %call_id, package, error = %e, "An INFO failed"),
         }
     }
 }

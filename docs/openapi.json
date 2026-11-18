@@ -21253,6 +21253,224 @@
         }
       }
     },
+    "/api/v1/me/conferences/live/{room}/chat": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/conferences/live/:room/chat — the room's last 100 messages\n(`docs/WEBINARS.md` §2.5): as the participant on `call_id` sees them,\nwith whether their chat is muted (any user of the room's tenant, the\ncall naming whose view it is), or every one for a host or panelist.",
+        "operationId": "self_service_my_live_conference_chat",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "call_id",
+            "in": "query",
+            "description": "The app's call in the room (its `X-FCP-Call-Id`): the questions as\nthat participant sees them. Without it, every question, for a host\nor panelist.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/conferences/live/:room/chat — post a message from an app in\nthe room. Any user of the room's tenant may; the call names the sender.\n403 when the meeting's `chat` does not allow it or the sender is muted,\n429 when they post too quickly.",
+        "operationId": "self_service_my_live_conference_post_chat",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "201": {
+            "description": "The message as its sender sees it",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/chat/{mid}/delete": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/conferences/live/:room/chat/:mid/delete — a host or panelist\ndeletes a message, which is then gone for everyone.",
+        "operationId": "self_service_my_live_conference_delete_chat",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Optional",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/participants/{pid}/chat-mute": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/conferences/live/:room/participants/:pid/chat-mute — a host or\npanelist mutes a participant's chat for the rest of the sitting, or\nunmutes it. A host or panelist is not muted.",
+        "operationId": "self_service_my_live_conference_mute_chat",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MuteChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/cluster/nodes": {
       "get": {
         "tags": [
@@ -23746,6 +23964,14 @@
           }
         }
       },
+      "ChatAudience": {
+        "type": "string",
+        "description": "Who a message is for.",
+        "enum": [
+          "room",
+          "hosts"
+        ]
+      },
       "CivicElements": {
         "type": "object",
         "description": "The RFC 5139 civic address elements beyond city, state, postal code and\ncountry, which [`E911Address`] carries as fields of its own.",
@@ -25453,6 +25679,13 @@
           "qa_anonymous": {
             "type": "boolean",
             "description": "Whether a question may be asked without the asker's name."
+          },
+          "chat": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Chat in the room: `everyone`, `hosts` or `off`; unset is\n`everyone` in a meeting and `hosts` in a webinar."
           }
         }
       },
@@ -26610,7 +26843,8 @@
           "sip_trace",
           "flow_trace",
           "audit_event",
-          "device_capture"
+          "device_capture",
+          "conference_chat"
         ]
       },
       "DeadLetterReport": {
@@ -26732,6 +26966,19 @@
           "current": {
             "type": "boolean",
             "description": "False once it has expired: the platform stops using it."
+          }
+        }
+      },
+      "DeleteChatRequest": {
+        "type": "object",
+        "description": "The body of `POST /me/conferences/live/:room/chat/:mid/delete`.",
+        "properties": {
+          "call_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The moderator's own call in the room, when they are in it: the room\nrecords them as the one who deleted it."
           }
         }
       },
@@ -30164,6 +30411,13 @@
             "type": "boolean",
             "description": "Whether a question may be asked without the asker's name."
           },
+          "chat": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Chat in the room: `everyone`, `hosts` (an attendee posts to the\nhosts only) or `off`; unset is `everyone` in a meeting and `hosts`\nin a webinar."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -30290,6 +30544,26 @@
           },
           "reason": {
             "type": "string"
+          }
+        }
+      },
+      "MuteChatRequest": {
+        "type": "object",
+        "description": "The body of `POST /me/conferences/live/:room/participants/:pid/chat-mute`.",
+        "required": [
+          "on"
+        ],
+        "properties": {
+          "on": {
+            "type": "boolean",
+            "description": "Mute (`true`) or unmute."
+          },
+          "call_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The moderator's own call in the room, when they are in it."
           }
         }
       },
@@ -34665,6 +34939,13 @@
                   "type": "boolean",
                   "description": "Whether a question may be asked without the asker's name."
                 },
+                "chat": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Chat in the room: `everyone`, `hosts` (an attendee posts to the\nhosts only) or `off`; unset is `everyone` in a meeting and `hosts`\nin a webinar."
+                },
                 "created_at": {
                   "type": "string",
                   "format": "date-time"
@@ -36828,6 +37109,7 @@
                 "recordings_deleted",
                 "conference_recordings_deleted",
                 "voicemail_messages_deleted",
+                "conference_chat_deleted",
                 "audit_events_deleted",
                 "total_deleted",
                 "errors"
@@ -36869,6 +37151,12 @@
                 "voicemail_messages_deleted": {
                   "type": "integer",
                   "format": "int64",
+                  "minimum": 0
+                },
+                "conference_chat_deleted": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Chat messages posted in rooms.",
                   "minimum": 0
                 },
                 "audit_events_deleted": {
@@ -39758,6 +40046,15 @@
             "format": "int32",
             "minimum": 0
           },
+          "conference_chat_retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Chat in rooms older than this is deleted.",
+            "minimum": 0
+          },
           "recording_consent": {
             "type": "string"
           },
@@ -39810,6 +40107,28 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "PostChatRequest": {
+        "type": "object",
+        "description": "The body of `POST /me/conferences/live/:room/chat`.",
+        "required": [
+          "call_id",
+          "text"
+        ],
+        "properties": {
+          "call_id": {
+            "type": "string",
+            "description": "The app's call in the room: the `X-FCP-Call-Id` its 200 OK named."
+          },
+          "text": {
+            "type": "string",
+            "description": "The message, at most 1000 characters."
+          },
+          "to": {
+            "$ref": "#/components/schemas/ChatAudience",
+            "description": "`room` (the default) or `hosts`: privately to the hosts and\npanelists."
           }
         }
       },
@@ -41506,6 +41825,7 @@
           "recordings_deleted",
           "conference_recordings_deleted",
           "voicemail_messages_deleted",
+          "conference_chat_deleted",
           "audit_events_deleted",
           "total_deleted",
           "errors"
@@ -41547,6 +41867,12 @@
           "voicemail_messages_deleted": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          },
+          "conference_chat_deleted": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Chat messages posted in rooms.",
             "minimum": 0
           },
           "audit_events_deleted": {
@@ -45448,6 +45774,13 @@
               "boolean",
               "null"
             ]
+          },
+          "chat": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`everyone`, `hosts` or `off`; `null` goes back to the kind's\ndefault."
           }
         }
       },
@@ -45793,6 +46126,14 @@
             "minimum": 0
           },
           "voicemail_retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "conference_chat_retention_days": {
             "type": [
               "integer",
               "null"
@@ -47859,6 +48200,8 @@
               "conference.question_published",
               "conference.question_answered",
               "conference.question_dismissed",
+              "conference.chat_deleted",
+              "conference.chat_muted",
               "queue.caller_enqueued",
               "queue.caller_dequeued",
               "queue.caller_abandoned",

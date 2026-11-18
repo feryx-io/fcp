@@ -38,6 +38,7 @@ const CLASSES: Array<{ value: DataClass; label: string }> = [
   { value: 'flow_trace', label: 'Flow traces' },
   { value: 'audit_event', label: 'Audit log' },
   { value: 'device_capture', label: 'App captures' },
+  { value: 'conference_chat', label: 'Conference chat' },
 ]
 
 const classLabel = (c: string) => CLASSES.find((k) => k.value === c)?.label ?? c
@@ -142,6 +143,7 @@ const RETENTION: Array<{ key: keyof CompliancePolicy & keyof UpdateCompliancePol
   { key: 'sip_trace_retention_days', label: 'SIP traces' },
   { key: 'flow_trace_retention_days', label: 'Flow traces' },
   { key: 'audit_retention_days', label: 'Audit log' },
+  { key: 'conference_chat_retention_days', label: 'Conference chat' },
 ]
 
 /** Blank is "keep forever" (null); otherwise whole days. */
@@ -332,6 +334,7 @@ function RetentionTab() {
       cell: ({ row }) => row.original.recordings_deleted + row.original.conference_recordings_deleted,
     },
     { accessorKey: 'voicemail_messages_deleted', header: 'Voicemail' },
+    { accessorKey: 'conference_chat_deleted', header: 'Chat' },
     {
       id: 'traces', header: 'Traces',
       cell: ({ row }) => row.original.sip_traces_deleted + row.original.flow_traces_deleted,

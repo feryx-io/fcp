@@ -73,6 +73,9 @@ class PageMeetingResponseDataItem:
             panelist_pin (None | str | Unset): A webinar's PIN for panelists.
             qa (None | str | Unset): Questions from the audience: `off`, `moderated` or `open`; unset is
                 `moderated` in a webinar and `off` in a meeting.
+            chat (None | str | Unset): Chat in the room: `everyone`, `hosts` (an attendee posts to the
+                hosts only) or `off`; unset is `everyone` in a meeting and `hosts`
+                in a webinar.
      """
 
     id: str
@@ -117,6 +120,7 @@ class PageMeetingResponseDataItem:
     exit_sound: None | str | Unset = UNSET
     panelist_pin: None | str | Unset = UNSET
     qa: None | str | Unset = UNSET
+    chat: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -267,6 +271,12 @@ class PageMeetingResponseDataItem:
         else:
             qa = self.qa
 
+        chat: None | str | Unset
+        if isinstance(self.chat, Unset):
+            chat = UNSET
+        else:
+            chat = self.chat
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -327,6 +337,8 @@ class PageMeetingResponseDataItem:
             field_dict["panelist_pin"] = panelist_pin
         if qa is not UNSET:
             field_dict["qa"] = qa
+        if chat is not UNSET:
+            field_dict["chat"] = chat
 
         return field_dict
 
@@ -538,6 +550,16 @@ class PageMeetingResponseDataItem:
         qa = _parse_qa(d.pop("qa", UNSET))
 
 
+        def _parse_chat(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        chat = _parse_chat(d.pop("chat", UNSET))
+
+
         page_meeting_response_data_item = cls(
             id=id,
             tenant_id=tenant_id,
@@ -581,6 +603,7 @@ class PageMeetingResponseDataItem:
             exit_sound=exit_sound,
             panelist_pin=panelist_pin,
             qa=qa,
+            chat=chat,
         )
 
 

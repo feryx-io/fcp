@@ -7778,6 +7778,7 @@ async fn compliance_policy_audit_log_export_and_retention() {
                 "sip_trace_retention_days": 30,
                 "flow_trace_retention_days": 30,
                 "audit_retention_days": 90,
+                "conference_chat_retention_days": 60,
                 "recording_consent": "announce",
                 "recording_consent_prompt_id": prompt_id
             })),
@@ -7786,6 +7787,7 @@ async fn compliance_policy_audit_log_export_and_retention() {
     assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
     assert_eq!(saved.json["configured"], true);
     assert_eq!(saved.json["cdr_retention_days"], 30);
+    assert_eq!(saved.json["conference_chat_retention_days"], 60);
     assert!(
         saved.json["recording_retention_days"].is_null(),
         "untouched stays forever"

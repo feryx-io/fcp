@@ -51,8 +51,10 @@ use crate::rooms::{RoomBridge, RoomKey};
 use crate::trunks::{self, TRUNK_NODE_HEADER, TRUNK_TENANT_HEADER};
 use futures::StreamExt;
 
+mod chat;
 mod hands;
 mod questions;
+pub use chat::{ChatError, CHAT_FLUSH};
 pub use hands::{HandBy, StageError};
 pub use questions::{Moderation, QaError};
 
@@ -230,6 +232,9 @@ pub struct ParticipantSession {
     /// the stage (`docs/WEBINARS.md` §2.5): the INVITE said
     /// `Recv-Info: fcp-qa`, or they came by a token (the gateway takes it).
     pub qa_notices: bool,
+    /// Sent the room's chat by INFO (`docs/WEBINARS.md` §2.5): the INVITE
+    /// said `Recv-Info: fcp-chat`, or they came by a token.
+    pub chat_notices: bool,
     /// Their hand is up, since then.
     pub hand: Option<SystemTime>,
     /// The BFCP ids the answer gave a room system that offered floor
@@ -392,6 +397,8 @@ pub struct ConferenceCallHandler {
     room_sessions: DashMap<RoomKey, Vec<String>>,
     /// Each room's questions for its sitting (`docs/WEBINARS.md` §2.5).
     qa_rooms: DashMap<RoomKey, questions::QaRoom>,
+    /// Each room's chat for its sitting (`docs/WEBINARS.md` §2.5).
+    chat_rooms: DashMap<RoomKey, chat::ChatRoom>,
     /// This node's cluster id: what peers see in our trunk INVITEs and in
     /// our certificate.
     node_id: String,
@@ -946,6 +953,7 @@ impl ConferenceCallHandler {
             trusted_edges: std::sync::RwLock::new(Default::default()),
             room_sessions: DashMap::new(),
             qa_rooms: DashMap::new(),
+            chat_rooms: DashMap::new(),
             node_id,
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),
@@ -3558,6 +3566,7 @@ impl ConferenceCallHandler {
                 floor_notices: false,
                 view_streams: false,
                 qa_notices: false,
+                chat_notices: false,
                 hand: None,
                 bfcp: None,
                 record: LegRecord::own(
@@ -3991,7 +4000,9 @@ impl ConferenceCallHandler {
             | ConferenceEvent::QuestionAsked { room_number, .. }
             | ConferenceEvent::QuestionPublished { room_number, .. }
             | ConferenceEvent::QuestionAnswered { room_number, .. }
-            | ConferenceEvent::QuestionDismissed { room_number, .. } => Some(room_number.clone()),
+            | ConferenceEvent::QuestionDismissed { room_number, .. }
+            | ConferenceEvent::ChatDeleted { room_number, .. }
+            | ConferenceEvent::ChatMuted { room_number, .. } => Some(room_number.clone()),
         };
 
         let platform_event = PlatformEvent::Conference(event);
@@ -4117,6 +4128,7 @@ impl ConferenceCallHandler {
                 // Publish MeetingEnded when last participant leaves
                 if room.participant_count() == 0 {
                     self.qa_closed(&key);
+                    self.chat_closed(&key);
                     self.publish_event(ConferenceEvent::MeetingEnded {
                         room_number: session.room_number.clone(),
                         tenant_id: session.tenant_id,
@@ -5959,6 +5971,7 @@ impl ConferenceCallHandler {
                 floor_notices: false,
                 view_streams: false,
                 qa_notices: false,
+                chat_notices: false,
                 hand: None,
                 bfcp: None,
                 record: LegRecord::own(
@@ -6324,6 +6337,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // Who is told about their hand and the stage the same way.
         let qa_notices = join.is_some()
             || fcp_core::recv_info_has(&recv_info, fcp_core::QA_INFO_PACKAGE)
+            || migrate.as_ref().is_some_and(|t| t.token_join);
+        // And sent the room's chat.
+        let chat_notices = join.is_some()
+            || fcp_core::recv_info_has(&recv_info, fcp_core::CHAT_INFO_PACKAGE)
             || migrate.as_ref().is_some_and(|t| t.token_join);
 
         // 1. Extract room number (the ticket's or the token's, when there is one)
@@ -6704,6 +6721,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let _ = response
                 .headers_mut()
                 .push("Recv-Info", fcp_core::QA_INFO_PACKAGE);
+        }
+        // And sent the room's chat.
+        if chat_notices {
+            let _ = response
+                .headers_mut()
+                .push("Recv-Info", fcp_core::CHAT_INFO_PACKAGE);
         }
 
         // 8b. RFC 4028: Add Session-Expires and Min-SE headers if session timers are enabled
@@ -7752,6 +7775,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     floor_notices,
                     view_streams,
                     qa_notices,
+                    chat_notices,
                     hand: None,
                     bfcp: bfcp_assignment.clone(),
                     record: LegRecord::from_request(request, None),
@@ -7759,6 +7783,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             );
             joining.undo_if_hung_up(self);
             self.qa_joined(&key, &meeting, &qa_call, qa_notices);
+            self.chat_joined(&key, &meeting, &qa_call, chat_notices);
 
             self.handler_latency.record(
                 &self.handler_latency.invite_count,
@@ -8071,6 +8096,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 floor_notices,
                 view_streams,
                 qa_notices,
+                chat_notices,
                 hand: None,
                 bfcp: bfcp_assignment.clone(),
                 record: LegRecord::from_request(
@@ -8081,6 +8107,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         );
         joining.undo_if_hung_up(self);
         self.qa_joined(&key, &meeting, &qa_call, qa_notices);
+        self.chat_joined(&key, &meeting, &qa_call, chat_notices);
 
         self.handler_latency.record(
             &self.handler_latency.invite_count,
@@ -8745,6 +8772,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let (key, pid) = (session.room_key(), session.participant_id.clone());
             drop(session);
             let (code, reason) = self.take_qa(&key, &pid, body);
+            return Ok(UserAgentServer::create_response(request, code, reason));
+        }
+        // Chat in the room (`docs/WEBINARS.md` §2.5).
+        if package.as_deref() == Some(fcp_core::CHAT_INFO_PACKAGE) {
+            let (key, pid) = (session.room_key(), session.participant_id.clone());
+            drop(session);
+            let (code, reason) = self.take_chat(&key, &pid, body);
             return Ok(UserAgentServer::create_response(request, code, reason));
         }
 

@@ -1363,6 +1363,32 @@ pub enum ConferenceEvent {
         timestamp: SystemTime,
     },
 
+    /// A host or panelist deleted a chat message (`docs/WEBINARS.md`
+    /// §2.5): `participant_id` sent it; `by` deleted it (a participant id,
+    /// or `None` through the API).
+    ChatDeleted {
+        room_number: String,
+        message_id: String,
+        participant_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A host or panelist muted (`on`) or unmuted a participant's chat.
+    ChatMuted {
+        room_number: String,
+        participant_id: String,
+        on: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// Conference room was locked
     RoomLocked {
         room_number: String,
@@ -2148,6 +2174,8 @@ impl PlatformEvent {
         "conference.question_published",
         "conference.question_answered",
         "conference.question_dismissed",
+        "conference.chat_deleted",
+        "conference.chat_muted",
         "queue.caller_enqueued",
         "queue.caller_dequeued",
         "queue.caller_abandoned",
@@ -2323,6 +2351,8 @@ impl PlatformEvent {
                 ConferenceEvent::QuestionPublished { .. } => "conference.question_published",
                 ConferenceEvent::QuestionAnswered { .. } => "conference.question_answered",
                 ConferenceEvent::QuestionDismissed { .. } => "conference.question_dismissed",
+                ConferenceEvent::ChatDeleted { .. } => "conference.chat_deleted",
+                ConferenceEvent::ChatMuted { .. } => "conference.chat_muted",
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { .. } => "queue.caller_enqueued",
@@ -2469,7 +2499,9 @@ impl PlatformEvent {
                 | ConferenceEvent::QuestionAsked { tenant_id, .. }
                 | ConferenceEvent::QuestionPublished { tenant_id, .. }
                 | ConferenceEvent::QuestionAnswered { tenant_id, .. }
-                | ConferenceEvent::QuestionDismissed { tenant_id, .. } => Some(tenant_id),
+                | ConferenceEvent::QuestionDismissed { tenant_id, .. }
+                | ConferenceEvent::ChatDeleted { tenant_id, .. }
+                | ConferenceEvent::ChatMuted { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { tenant_id, .. }
@@ -2856,7 +2888,9 @@ impl ConferenceEvent {
             | ConferenceEvent::QuestionAsked { timestamp, .. }
             | ConferenceEvent::QuestionPublished { timestamp, .. }
             | ConferenceEvent::QuestionAnswered { timestamp, .. }
-            | ConferenceEvent::QuestionDismissed { timestamp, .. } => *timestamp,
+            | ConferenceEvent::QuestionDismissed { timestamp, .. }
+            | ConferenceEvent::ChatDeleted { timestamp, .. }
+            | ConferenceEvent::ChatMuted { timestamp, .. } => *timestamp,
         }
     }
 }

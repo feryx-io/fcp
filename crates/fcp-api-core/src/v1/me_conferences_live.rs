@@ -917,3 +917,197 @@ pub async fn dismiss_question(
 ) -> Result<Proxied, ApiError> {
     as_moderator(&state, &claims, &headers, &room, &qid, "dismiss", None).await
 }
+
+/// GET /me/conferences/live/:room/chat — the room's last 100 messages
+/// (`docs/WEBINARS.md` §2.5): as the participant on `call_id` sees them,
+/// with whether their chat is muted (any user of the room's tenant, the
+/// call naming whose view it is), or every one for a host or panelist.
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/conferences/live/{room}/chat",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_chat",
+    params(("room" = String, Path), QuestionsQuery),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn chat(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    headers: HeaderMap,
+    Path(room): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<QuestionsQuery>,
+) -> Result<Proxied, ApiError> {
+    let call_id = q
+        .call_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty());
+    let meeting = match call_id {
+        Some(_) => {
+            let tenant = crate::v1::self_service::resolve_tenant_from_claims(&claims, &state);
+            scoped_meeting(&state, &tenant, &room).await?
+        }
+        None => moderated(&state, &claims, &headers, &room).await?,
+    };
+    let path = match call_id {
+        Some(c) => format!(
+            "/conferences/{room}/chat?call_id={}",
+            urlencoding::encode(c)
+        ),
+        None => format!("/conferences/{room}/chat"),
+    };
+    forward(&state, &meeting, reqwest::Method::GET, &path, None).await
+}
+
+/// The body of `POST /me/conferences/live/:room/chat`.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub struct PostChatRequest {
+    /// The app's call in the room: the `X-FCP-Call-Id` its 200 OK named.
+    pub call_id: String,
+    /// The message, at most 1000 characters.
+    pub text: String,
+    /// `room` (the default) or `hosts`: privately to the hosts and
+    /// panelists.
+    #[serde(default)]
+    pub to: fcp_core::chat::ChatAudience,
+}
+
+/// POST /me/conferences/live/:room/chat — post a message from an app in
+/// the room. Any user of the room's tenant may; the call names the sender.
+/// 403 when the meeting's `chat` does not allow it or the sender is muted,
+/// 429 when they post too quickly.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/conferences/live/{room}/chat",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_post_chat",
+    params(("room" = String, Path)),
+    request_body = PostChatRequest,
+    responses(
+        (status = 201, description = "The message as its sender sees it", body = serde_json::Value),
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn post_chat(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    Path(room): Path<String>,
+    Json(req): Json<PostChatRequest>,
+) -> Result<Proxied, ApiError> {
+    if req.call_id.trim().is_empty() {
+        return Err(ApiError::BadRequest("call_id is required".into()));
+    }
+    let tenant = crate::v1::self_service::resolve_tenant_from_claims(&claims, &state);
+    let meeting = scoped_meeting(&state, &tenant, &room).await?;
+    forward(
+        &state,
+        &meeting,
+        reqwest::Method::POST,
+        &format!("/conferences/{room}/chat"),
+        Some(serde_json::json!({
+            "call_id": req.call_id.trim(),
+            "text": req.text,
+            "to": req.to,
+        })),
+    )
+    .await
+}
+
+/// The body of `POST /me/conferences/live/:room/chat/:mid/delete`.
+#[derive(Debug, Default, serde::Deserialize, utoipa::ToSchema)]
+pub struct DeleteChatRequest {
+    /// The moderator's own call in the room, when they are in it: the room
+    /// records them as the one who deleted it.
+    #[serde(default)]
+    pub call_id: Option<String>,
+}
+
+/// POST /me/conferences/live/:room/chat/:mid/delete — a host or panelist
+/// deletes a message, which is then gone for everyone.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/conferences/live/{room}/chat/{mid}/delete",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_delete_chat",
+    params(("room" = String, Path), ("mid" = String, Path)),
+    request_body(content = DeleteChatRequest, description = "Optional"),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn delete_chat(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    headers: HeaderMap,
+    Path((room, mid)): Path<(String, String)>,
+    body: Option<Json<DeleteChatRequest>>,
+) -> Result<Proxied, ApiError> {
+    check_segment(&mid, "message id")?;
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let meeting = moderated(&state, &claims, &headers, &room).await?;
+    let out = forward(
+        &state,
+        &meeting,
+        reqwest::Method::POST,
+        &format!("/conferences/{room}/chat/{mid}/delete"),
+        Some(serde_json::json!({ "call_id": req.call_id })),
+    )
+    .await?;
+    if out.0.is_success() {
+        info!(room = %room, user = %claims.sub, message = %mid, "A chat message deleted");
+    }
+    Ok(out)
+}
+
+/// The body of `POST /me/conferences/live/:room/participants/:pid/chat-mute`.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub struct MuteChatRequest {
+    /// Mute (`true`) or unmute.
+    pub on: bool,
+    /// The moderator's own call in the room, when they are in it.
+    #[serde(default)]
+    pub call_id: Option<String>,
+}
+
+/// POST /me/conferences/live/:room/participants/:pid/chat-mute — a host or
+/// panelist mutes a participant's chat for the rest of the sitting, or
+/// unmutes it. A host or panelist is not muted.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/conferences/live/{room}/participants/{pid}/chat-mute",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_mute_chat",
+    params(("room" = String, Path), ("pid" = String, Path)),
+    request_body = MuteChatRequest,
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn mute_chat(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    headers: HeaderMap,
+    Path((room, pid)): Path<(String, String)>,
+    Json(req): Json<MuteChatRequest>,
+) -> Result<Proxied, ApiError> {
+    check_segment(&pid, "participant id")?;
+    let meeting = moderated(&state, &claims, &headers, &room).await?;
+    let out = forward(
+        &state,
+        &meeting,
+        reqwest::Method::POST,
+        &format!("/conferences/{room}/participants/{pid}/chat-mute"),
+        Some(serde_json::json!({ "on": req.on, "call_id": req.call_id })),
+    )
+    .await?;
+    if out.0.is_success() {
+        info!(room = %room, user = %claims.sub, participant = %pid, on = req.on, "A participant's chat muted");
+    }
+    Ok(out)
+}

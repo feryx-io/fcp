@@ -102,6 +102,15 @@ fn class_sql(class: DataClass) -> ClassSql {
             keys: "fcp_device_capture_keys(subject_keys, call_id)",
             call: "call_id",
         },
+        DataClass::ConferenceChat => ClassSql {
+            table: "conference_chat",
+            id: "id",
+            at: "sent_at",
+            tenant: "tenant_id = $1",
+            hold: "fcp_conference_chat_hold(tenant_id, sent_at, sender_address, sender_name)",
+            keys: "fcp_conference_chat_keys(sender_address, sender_name)",
+            call: "NULL::text",
+        },
     }
 }
 

@@ -21,7 +21,11 @@
 //!   `Recv-Info: fcp-qa` goes on to the room and the room's answer saying it
 //!   back on to the phone, and `fcp-qa` INFOs
 //!   (`application/vnd.fcp.qa+json`) go both ways — the phone's hand to the
-//!   room, the room's word of the hand and the stage to the phone.
+//!   room, the room's word of the hand and the stage to the phone;
+//! - chat in the room (W3b) the same way: `Recv-Info: fcp-chat` on to the
+//!   room and back, and `fcp-chat` INFOs (`application/vnd.fcp.chat+json`)
+//!   both ways — the phone's posts to the room, the room's messages to the
+//!   phone.
 //!
 //! The node's general in-dialog relay is not used for these: it opens a new
 //! subscription to the far leg's contact rather than sending in the dialog,
@@ -78,6 +82,7 @@ pub(crate) fn join_headers(
         fcp_core::CONTENT_INFO_PACKAGE,
         fcp_core::VIEW_INFO_PACKAGE,
         fcp_core::QA_INFO_PACKAGE,
+        fcp_core::CHAT_INFO_PACKAGE,
     ] {
         if fcp_core::recv_info_has(&recv, package) {
             headers.push(("Recv-Info", package.to_string()));
@@ -120,6 +125,15 @@ pub(crate) fn is_qa_info(request: &Request) -> bool {
         t.split(';')
             .next()
             .is_some_and(|t| t.trim().eq_ignore_ascii_case(fcp_core::QA_INFO_TYPE))
+    })
+}
+
+/// An INFO of chat in a room, either way.
+pub(crate) fn is_chat_info(request: &Request) -> bool {
+    request.headers().get("Content-Type").is_some_and(|t| {
+        t.split(';')
+            .next()
+            .is_some_and(|t| t.trim().eq_ignore_ascii_case(fcp_core::CHAT_INFO_TYPE))
     })
 }
 
@@ -222,6 +236,12 @@ mod tests {
         )));
         assert!(!is_qa_info(&request(
             "Content-Type: application/vnd.fcp.view+json\r\n"
+        )));
+        assert!(is_chat_info(&request(
+            "Content-Type: application/vnd.fcp.chat+json\r\n"
+        )));
+        assert!(!is_chat_info(&request(
+            "Content-Type: application/vnd.fcp.qa+json\r\n"
         )));
     }
 
