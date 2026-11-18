@@ -187,6 +187,28 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/conferences/:room_number/participants/:pid/stage",
             post(stage_on_handler).delete(stage_off_handler),
         )
+        // Questions (`docs/WEBINARS.md` §2.5, W3.2): asked and upvoted by
+        // a participant's call, moderated by a host through the API.
+        .route(
+            "/conferences/:room_number/questions",
+            get(list_questions_handler).post(ask_question_handler),
+        )
+        .route(
+            "/conferences/:room_number/questions/:qid/upvote",
+            post(upvote_question_handler),
+        )
+        .route(
+            "/conferences/:room_number/questions/:qid/publish",
+            post(publish_question_handler),
+        )
+        .route(
+            "/conferences/:room_number/questions/:qid/answer",
+            post(answer_question_handler),
+        )
+        .route(
+            "/conferences/:room_number/questions/:qid/dismiss",
+            post(dismiss_question_handler),
+        )
         .route("/conferences/:room_number/stats", get(room_stats_handler))
         .route("/conferences/:room_number/announce", post(announce_handler))
         // Video (design §12): status, layout, pin, spotlight, per-participant on/off
@@ -898,6 +920,8 @@ async fn create_meeting_handler(
         kind: payload.kind,
         panelist_pin: payload.panelist_pin,
         panelists: Vec::new(),
+        qa: None,
+        qa_anonymous: false,
         created_at: now,
         updated_at: now,
     };
@@ -1802,6 +1826,218 @@ async fn stage_handler(
         info!(action = if on { "stage_on" } else { "stage_off" }, room = %room_number, participant = %pid, "AUDIT: the stage changed via API");
     }
     stage_answer(result, &pid)
+}
+
+/// The answer for a question operation's error.
+fn qa_error(e: crate::conference_handler::QaError) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::from_u16(e.status()).unwrap_or(StatusCode::BAD_REQUEST),
+        Json(serde_json::json!({ "error": e.to_string() })),
+    )
+}
+
+/// The participant on `call_id` in `key`'s room, or the 404 to answer.
+fn participant_of_call(
+    state: &ConferenceState,
+    key: &crate::rooms::RoomKey,
+    call_id: &str,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    state
+        .conference_handler
+        .participant_by_call(key, call_id.trim())
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "no participant on that call in the room" })),
+            )
+        })
+}
+
+#[derive(Debug, Deserialize)]
+struct QuestionsQuery {
+    /// The call to see the questions as; none sees them as a host does.
+    call_id: Option<String>,
+}
+
+/// `GET /conferences/:room/questions[?call_id=]` — the room's questions,
+/// as the participant on that call sees them or as a host does.
+async fn list_questions_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Query(q): Query<QuestionsQuery>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let pid = match q.call_id.as_deref().filter(|c| !c.trim().is_empty()) {
+        Some(call_id) => match participant_of_call(&state, &key, call_id) {
+            Ok(pid) => Some(pid),
+            Err(err) => return err,
+        },
+        None => None,
+    };
+    match state.conference_handler.questions(&key, pid.as_deref()) {
+        Ok(questions) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "questions": questions })),
+        ),
+        Err(e) => qa_error(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AskRequest {
+    call_id: String,
+    text: String,
+    #[serde(default)]
+    anonymous: bool,
+}
+
+/// `POST /conferences/:room/questions` — the participant on `call_id`
+/// asks.
+async fn ask_question_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Json(req): Json<AskRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let pid = match participant_of_call(&state, &key, &req.call_id) {
+        Ok(pid) => pid,
+        Err(err) => return err,
+    };
+    match state
+        .conference_handler
+        .ask_question(&key, &pid, &req.text, req.anonymous)
+    {
+        Ok(view) => (StatusCode::CREATED, Json(serde_json::json!(view))),
+        Err(e) => qa_error(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpvoteRequest {
+    call_id: String,
+    on: bool,
+}
+
+/// `POST /conferences/:room/questions/:qid/upvote` — the participant on
+/// `call_id` upvotes a question or takes it back.
+async fn upvote_question_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, qid)): Path<(String, String)>,
+    Json(req): Json<UpvoteRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let pid = match participant_of_call(&state, &key, &req.call_id) {
+        Ok(pid) => pid,
+        Err(err) => return err,
+    };
+    match state
+        .conference_handler
+        .upvote_question(&key, &pid, &qid, req.on)
+    {
+        Ok(changed) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "question": qid, "changed": changed })),
+        ),
+        Err(e) => qa_error(e),
+    }
+}
+
+/// `POST /conferences/:room/questions/:qid/publish` — a host shows a
+/// question to the room.
+async fn publish_question_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, qid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    moderate_handler(
+        state,
+        headers,
+        room_number,
+        qid,
+        crate::conference_handler::Moderation::Publish,
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+struct AnswerRequest {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    live: bool,
+}
+
+/// `POST /conferences/:room/questions/:qid/answer` — a host answers, in
+/// text or aloud.
+async fn answer_question_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, qid)): Path<(String, String)>,
+    Json(req): Json<AnswerRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    moderate_handler(
+        state,
+        headers,
+        room_number,
+        qid,
+        crate::conference_handler::Moderation::Answer {
+            text: req.text.as_deref(),
+            live: req.live,
+        },
+    )
+    .await
+}
+
+/// `POST /conferences/:room/questions/:qid/dismiss` — a host dismisses a
+/// question.
+async fn dismiss_question_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, qid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    moderate_handler(
+        state,
+        headers,
+        room_number,
+        qid,
+        crate::conference_handler::Moderation::Dismiss,
+    )
+    .await
+}
+
+async fn moderate_handler(
+    state: Arc<ConferenceState>,
+    headers: HeaderMap,
+    room_number: String,
+    qid: String,
+    action: crate::conference_handler::Moderation<'_>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    match state
+        .conference_handler
+        .moderate_question(&key, None, &qid, action)
+    {
+        Ok(view) => {
+            info!(room = %room_number, question = %qid, ?action, "AUDIT: a question moderated via API");
+            (StatusCode::OK, Json(serde_json::json!(view)))
+        }
+        Err(e) => qa_error(e),
+    }
 }
 
 async fn room_stats_handler(

@@ -52,7 +52,9 @@ use crate::trunks::{self, TRUNK_NODE_HEADER, TRUNK_TENANT_HEADER};
 use futures::StreamExt;
 
 mod hands;
+mod questions;
 pub use hands::{HandBy, StageError};
+pub use questions::{Moderation, QaError};
 
 /// Fallback remote address used when SDP parsing fails to extract the caller's RTP endpoint.
 const UNKNOWN_REMOTE: SocketAddr =
@@ -388,6 +390,8 @@ pub struct ConferenceCallHandler {
     trusted_edges: std::sync::RwLock<fcp_sip::emergency::TrustedEdges>,
     /// Secondary index: room → Vec<call_id> for O(1) room-to-session lookups.
     room_sessions: DashMap<RoomKey, Vec<String>>,
+    /// Each room's questions for its sitting (`docs/WEBINARS.md` §2.5).
+    qa_rooms: DashMap<RoomKey, questions::QaRoom>,
     /// This node's cluster id: what peers see in our trunk INVITEs and in
     /// our certificate.
     node_id: String,
@@ -941,6 +945,7 @@ impl ConferenceCallHandler {
             trunk_srtp: std::sync::atomic::AtomicBool::new(true),
             trusted_edges: std::sync::RwLock::new(Default::default()),
             room_sessions: DashMap::new(),
+            qa_rooms: DashMap::new(),
             node_id,
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),
@@ -3982,7 +3987,11 @@ impl ConferenceCallHandler {
             | ConferenceEvent::HandRaised { room_number, .. }
             | ConferenceEvent::HandLowered { room_number, .. }
             | ConferenceEvent::StageJoined { room_number, .. }
-            | ConferenceEvent::StageLeft { room_number, .. } => Some(room_number.clone()),
+            | ConferenceEvent::StageLeft { room_number, .. }
+            | ConferenceEvent::QuestionAsked { room_number, .. }
+            | ConferenceEvent::QuestionPublished { room_number, .. }
+            | ConferenceEvent::QuestionAnswered { room_number, .. }
+            | ConferenceEvent::QuestionDismissed { room_number, .. } => Some(room_number.clone()),
         };
 
         let platform_event = PlatformEvent::Conference(event);
@@ -4107,6 +4116,7 @@ impl ConferenceCallHandler {
 
                 // Publish MeetingEnded when last participant leaves
                 if room.participant_count() == 0 {
+                    self.qa_closed(&key);
                     self.publish_event(ConferenceEvent::MeetingEnded {
                         room_number: session.room_number.clone(),
                         tenant_id: session.tenant_id,
@@ -7709,6 +7719,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             if let Some(a) = &bfcp_assignment {
                 self.bfcp.bind(&key, a.user_id, &room, &participant_id);
             }
+            let qa_call = call_id.clone();
             self.sessions.insert(
                 call_id.clone(),
                 ParticipantSession {
@@ -7747,6 +7758,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 },
             );
             joining.undo_if_hung_up(self);
+            self.qa_joined(&key, &meeting, &qa_call, qa_notices);
 
             self.handler_latency.record(
                 &self.handler_latency.invite_count,
@@ -8027,6 +8039,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         if let Some(a) = &bfcp_assignment {
             self.bfcp.bind(&key, a.user_id, &room, &participant_id);
         }
+        let qa_call = call_id.clone();
         self.sessions.insert(
             call_id.clone(),
             ParticipantSession {
@@ -8067,6 +8080,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             },
         );
         joining.undo_if_hung_up(self);
+        self.qa_joined(&key, &meeting, &qa_call, qa_notices);
 
         self.handler_latency.record(
             &self.handler_latency.invite_count,

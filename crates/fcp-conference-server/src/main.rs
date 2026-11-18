@@ -1807,6 +1807,10 @@ async fn main() -> Result<()> {
         tokio::spawn(supervise_task("dtmf-dialout-poller", async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
+                // Questions that changed, told to those who asked to be
+                // told (`docs/WEBINARS.md` §2.5), coalesced to once a second.
+                dialout_handler.flush_questions();
+
                 // Check each active room for pending requests
                 for room_id in dialout_bridge.list_rooms() {
                     if let Ok(room) = dialout_bridge.get_room(&room_id) {

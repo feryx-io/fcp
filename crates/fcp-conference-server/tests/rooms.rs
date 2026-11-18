@@ -15,6 +15,11 @@ use std::time::Duration;
 const BIN: &str = env!("CARGO_BIN_EXE_fcp-conference");
 const REALM: &str = "e2e.local";
 const SOON: Duration = Duration::from_secs(5);
+/// A video room's `[conference]`: the raw test codec, and the fixed cost
+/// table rather than a benchmark of a busy runner (a slow measurement once
+/// left a webinar no budget for its first join).
+const VIDEO: &str = "video_native_codecs_only = false\nvideo_benchmark_seconds = 0";
+
 const ROOM: &str = "8000";
 
 /// A running conference server on a fresh database.
@@ -1408,8 +1413,7 @@ fn src_id_of(roster: &str, pid: &str) -> Option<u32> {
 /// caller that did not ask gets the composite, and its INFO is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_caller_that_asks_is_forwarded_each_persons_stream_and_told_whose_it_is() {
-    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
-    else {
+    let Some(stack) = Stack::start_conference("", 60, VIDEO).await else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1625,8 +1629,7 @@ async fn forwarding_meeting(stack: &Stack, extra: serde_json::Value) {
 /// names her by.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_three_layer_sender_is_moved_between_her_layers_under_one_ssrc() {
-    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
-    else {
+    let Some(stack) = Stack::start_conference("", 60, VIDEO).await else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1724,8 +1727,7 @@ async fn a_three_layer_sender_is_moved_between_her_layers_under_one_ssrc() {
 /// brings them back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_remb_cut_pauses_a_viewer_s_streams_and_its_roster_says_so() {
-    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
-    else {
+    let Some(stack) = Stack::start_conference("", 60, VIDEO).await else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1830,8 +1832,7 @@ async fn a_remb_cut_pauses_a_viewer_s_streams_and_its_roster_says_so() {
 /// back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_viewer_s_feedback_alone_pauses_a_stream_on_a_narrow_link_and_probes_bring_it_back() {
-    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
-    else {
+    let Some(stack) = Stack::start_conference("", 60, VIDEO).await else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1934,8 +1935,7 @@ async fn a_viewer_s_feedback_alone_pauses_a_stream_on_a_narrow_link_and_probes_b
 #[cfg(all(feature = "recording-mp4", feature = "video-openh264"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recorded_forwarding_room_still_composes_for_its_recording() {
-    let Some(stack) = Stack::start_conference("", 60, "video_native_codecs_only = false").await
-    else {
+    let Some(stack) = Stack::start_conference("", 60, VIDEO).await else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1994,12 +1994,7 @@ async fn a_recorded_forwarding_room_still_composes_for_its_recording() {
 /// subscribed in his call — names them; and his view INFO reaches the room.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_forwarding_room_is_reached_through_the_call_manager() {
-    let Some(stack) = Stack::start_conference(
-        r#"trusted_edges = ["127.0.0.1"]"#,
-        60,
-        "video_native_codecs_only = false",
-    )
-    .await
+    let Some(stack) = Stack::start_conference(r#"trusted_edges = ["127.0.0.1"]"#, 60, VIDEO).await
     else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
@@ -2255,12 +2250,8 @@ async fn a_webinar_s_stage_is_heard_by_attendees_who_are_not() {
 /// count alone an update of its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_webinar_s_audience_watches_the_stage_and_is_counted_not_listed() {
-    let Some(stack) = Stack::start_conference(
-        "",
-        60,
-        "join_secret = \"join-s3cret\"\nvideo_native_codecs_only = false",
-    )
-    .await
+    let Some(stack) =
+        Stack::start_conference("", 60, &format!("join_secret = \"join-s3cret\"\n{VIDEO}")).await
     else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;
@@ -2692,8 +2683,9 @@ async fn an_attendee_raises_a_hand_and_a_host_brings_them_to_the_stage() {
 
 /// The audience's voice through the call manager (`docs/WEBINARS.md`
 /// §2.5): Bob's `Recv-Info: fcp-qa` reaches the room and its answer
-/// reaches Bob, his hand INFO reaches the room, and the room's word that
-/// he is on the stage reaches him.
+/// reaches Bob, his hand INFO reaches the room, the room's word that he is
+/// on the stage reaches him, and so do his question and the room's word
+/// of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_attendee_s_hand_and_the_stage_cross_the_call_manager() {
     let Some(stack) = Stack::start_conference(r#"trusted_edges = ["127.0.0.1"]"#, 60, "").await
@@ -2759,7 +2751,267 @@ async fn an_attendee_s_hand_and_the_stage_cross_the_call_manager() {
         .wait_participant(&bob_id, |p| p["listener"] == false && p["hand"].is_null())
         .await;
 
+    // A question crosses too: Bob's INFO to the room, and the room's word
+    // of it back to Bob.
+    assert_eq!(
+        send_qa(&bob_call, r#"{"op":"ask","text":"Can you hear me?"}"#).await,
+        200
+    );
+    let told = questions_until(&bob, bob_call.call_id(), |q| !q.is_empty()).await;
+    let q = told.values().next().unwrap();
+    assert!(q.mine && q.text == "Can you hear me?", "{q:?}");
+
     assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    stack.wait_participants(0).await;
+    stack.finish().await;
+}
+
+/// `fcp-qa` `questions` INFOs `phone` is sent in `call_id` until the
+/// questions it has been told of satisfy `done` (later news of a question
+/// replacing earlier); those questions, by id.
+async fn questions_until(
+    phone: &Phone,
+    call_id: &str,
+    done: impl Fn(&std::collections::BTreeMap<String, fcp_core::qa::QuestionView>) -> bool,
+) -> std::collections::BTreeMap<String, fcp_core::qa::QuestionView> {
+    let mut seen = std::collections::BTreeMap::new();
+    let deadline = tokio::time::Instant::now() + SOON;
+    while !done(&seen) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never told it in {call_id}: {seen:?}"
+        );
+        if let fcp_core::qa::QaMessage::Questions { questions } = qa_told(phone, call_id).await {
+            for q in questions {
+                seen.insert(q.id.clone(), q);
+            }
+        }
+    }
+    seen
+}
+
+/// Questions (`docs/WEBINARS.md` §2.5, W3.2). In a moderated webinar Ann
+/// asks by INFO and Ben anonymously through the room's API: each is told
+/// of their own, the host of both, and nobody else of either until the
+/// host publishes Ann's. Ben upvotes it and Ann is told; nobody upvotes
+/// their own, and an attendee moderates nothing. The host answers by INFO
+/// and dismisses Ben's through the API, and the rows are kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_audience_asks_and_a_host_moderates_the_questions() {
+    use fcp_core::qa::QuestionStatus;
+    let stack = stack_or_skip!();
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({ "kind": "webinar", "host_pin": "9999", "qa_anonymous": true }),
+        )
+        .await;
+    let qa = [("Recv-Info", fcp_core::QA_INFO_PACKAGE)];
+    let host = stack.phone("hostess").await;
+    let host_call = host.call_with_headers(ROOM, &qa).await.unwrap();
+    if let Err(e) = host_call.answered(SOON).await {
+        stack
+            .fail(&format!("the host was not admitted: {e}"), &host)
+            .await;
+    }
+    dial_digits(&host_call, "9999").await;
+    let ann = stack.phone("ann").await;
+    let ann_call = ann.call_with_headers(ROOM, &qa).await.unwrap();
+    if let Err(e) = ann_call.answered(SOON).await {
+        stack
+            .fail(&format!("Ann was not admitted: {e}"), &ann)
+            .await;
+    }
+    dial_digits(&ann_call, "").await;
+    let ben = stack.phone("ben").await;
+    let ben_call = ben.call_with_headers(ROOM, &qa).await.unwrap();
+    if let Err(e) = ben_call.answered(SOON).await {
+        stack
+            .fail(&format!("Ben was not admitted: {e}"), &ben)
+            .await;
+    }
+    dial_digits(&ben_call, "").await;
+    stack.wait_participants(3).await;
+    let host_id = stack.participant_named("hostess").await;
+    stack
+        .wait_participant(&host_id, |p| p["role"] == "host")
+        .await;
+
+    // Ann asks; the host and Ann are told, Ben sees nothing.
+    assert_eq!(
+        send_qa(&ann_call, r#"{"op":"ask","text":"When does it ship?"}"#).await,
+        200
+    );
+    let hosts = questions_until(&host, host_call.call_id(), |q| q.len() == 1).await;
+    let ann_q = hosts.values().next().unwrap().clone();
+    assert_eq!(ann_q.text, "When does it ship?");
+    assert!(ann_q.asker.is_some(), "asked with her name");
+    assert!(!ann_q.published && !ann_q.mine, "{ann_q:?}");
+    assert_eq!(ann_q.status, QuestionStatus::Pending);
+    let anns = questions_until(&ann, ann_call.call_id(), |q| q.contains_key(&ann_q.id)).await;
+    assert!(anns[&ann_q.id].mine);
+    let bens = |call: &fcp_testkit::Call| {
+        format!("/conferences/{ROOM}/questions?call_id={}", call.call_id())
+    };
+    let (code, out) = stack.send("GET", &bens(&ben_call), None).await;
+    assert_eq!(code, 200, "{out}");
+    assert_eq!(out["questions"], serde_json::json!([]), "not published");
+
+    // Ben asks anonymously through the room's API; his name is not on it.
+    let (code, ben_q) = stack
+        .send(
+            "POST",
+            &format!("/conferences/{ROOM}/questions"),
+            Some(&format!(
+                r#"{{"call_id":"{}","text":"Is there a recording?","anonymous":true}}"#,
+                ben_call.call_id()
+            )),
+        )
+        .await;
+    assert_eq!(code, 201, "{ben_q}");
+    assert!(ben_q["asker"].is_null() && ben_q["mine"] == true, "{ben_q}");
+    let ben_qid = ben_q["id"].as_str().unwrap().to_string();
+    questions_until(&host, host_call.call_id(), |q| q.contains_key(&ben_qid)).await;
+    // Not published, so Ben cannot upvote Ann's yet.
+    assert_eq!(
+        send_qa(
+            &ben_call,
+            &format!(r#"{{"op":"upvote","id":"{}","on":true}}"#, ann_q.id)
+        )
+        .await,
+        404
+    );
+    // An attendee moderates nothing.
+    assert_eq!(
+        send_qa(
+            &ann_call,
+            &format!(r#"{{"op":"publish","id":"{}"}}"#, ann_q.id)
+        )
+        .await,
+        403
+    );
+
+    // The host publishes Ann's: Ben is told of it.
+    let (code, out) = stack
+        .send(
+            "POST",
+            &format!("/conferences/{ROOM}/questions/{}/publish", ann_q.id),
+            None,
+        )
+        .await;
+    assert_eq!(code, 200, "{out}");
+    assert_eq!(out["published"], true);
+    let bens_told = questions_until(&ben, ben_call.call_id(), |q| {
+        q.get(&ann_q.id).is_some_and(|q| q.published)
+    })
+    .await;
+    assert!(!bens_told[&ann_q.id].mine);
+
+    // Ben upvotes it, Ann is told; nobody upvotes their own.
+    assert_eq!(
+        send_qa(
+            &ben_call,
+            &format!(r#"{{"op":"upvote","id":"{}","on":true}}"#, ann_q.id)
+        )
+        .await,
+        200
+    );
+    questions_until(&ann, ann_call.call_id(), |q| {
+        q.get(&ann_q.id).is_some_and(|q| q.upvotes == 1)
+    })
+    .await;
+    assert_eq!(
+        send_qa(
+            &ann_call,
+            &format!(r#"{{"op":"upvote","id":"{}","on":true}}"#, ann_q.id)
+        )
+        .await,
+        403
+    );
+
+    // The host answers by INFO: both are told.
+    assert_eq!(
+        send_qa(
+            &host_call,
+            &format!(r#"{{"op":"answer","id":"{}","text":"In May."}}"#, ann_q.id)
+        )
+        .await,
+        200
+    );
+    for (phone, call) in [(&ann, &ann_call), (&ben, &ben_call)] {
+        let told = questions_until(phone, call.call_id(), |q| {
+            q.get(&ann_q.id)
+                .is_some_and(|q| q.status == QuestionStatus::Answered)
+        })
+        .await;
+        assert_eq!(told[&ann_q.id].answer.as_deref(), Some("In May."));
+    }
+
+    // Ben's is dismissed: he is told, and it is gone from his list.
+    let (code, out) = stack
+        .send(
+            "POST",
+            &format!("/conferences/{ROOM}/questions/{ben_qid}/dismiss"),
+            None,
+        )
+        .await;
+    assert_eq!(code, 200, "{out}");
+    questions_until(&ben, ben_call.call_id(), |q| {
+        q.get(&ben_qid)
+            .is_some_and(|q| q.status == QuestionStatus::Dismissed)
+    })
+    .await;
+    let (_, out) = stack.send("GET", &bens(&ben_call), None).await;
+    let listed: Vec<&str> = out["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| q["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, vec![ann_q.id.as_str()], "{out}");
+    let (_, out) = stack
+        .send("GET", &format!("/conferences/{ROOM}/questions"), None)
+        .await;
+    assert_eq!(out["questions"].as_array().unwrap().len(), 2, "{out}");
+    let (code, _) = stack
+        .send(
+            "POST",
+            &format!("/conferences/{ROOM}/questions/q-none/publish"),
+            None,
+        )
+        .await;
+    assert_eq!(code, 404);
+
+    // Kept: the rows as they stand, upvotes counted.
+    use fcp_core::qa::QuestionStore;
+    let store = fcp_storage_postgres::questions::PostgresQuestionStore::new(
+        stack.seed.storage().pool().clone(),
+    );
+    let deadline = tokio::time::Instant::now() + SOON;
+    loop {
+        let rows = store
+            .questions_of_room(&stack.seed.tenant_id, ROOM, 10)
+            .await
+            .unwrap();
+        let ann_row = rows.iter().find(|r| r.id == ann_q.id);
+        let ben_row = rows.iter().find(|r| r.id == ben_qid);
+        if ann_row.is_some_and(|r| r.status == QuestionStatus::Answered && r.upvotes == 1)
+            && ben_row
+                .is_some_and(|r| r.status == QuestionStatus::Dismissed && r.asker_name.is_none())
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the rows never stood as the room does: {rows:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    for call in [&host_call, &ann_call, &ben_call] {
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
     stack.wait_participants(0).await;
     stack.finish().await;
 }

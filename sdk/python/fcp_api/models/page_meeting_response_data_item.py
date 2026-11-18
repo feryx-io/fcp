@@ -56,6 +56,7 @@ class PageMeetingResponseDataItem:
                 that asks for each person's own stream gets them instead).
             kind (str): `meeting` or `webinar` (`docs/WEBINARS.md` §2.1).
             panelists (list[str]): A webinar's panelists, users by id.
+            qa_anonymous (bool): Whether a question may be asked without the asker's name.
             created_at (datetime.datetime):
             updated_at (datetime.datetime):
             guest_pin (None | str | Unset):
@@ -70,6 +71,8 @@ class PageMeetingResponseDataItem:
             join_sound (None | str | Unset):
             exit_sound (None | str | Unset):
             panelist_pin (None | str | Unset): A webinar's PIN for panelists.
+            qa (None | str | Unset): Questions from the audience: `off`, `moderated` or `open`; unset is
+                `moderated` in a webinar and `off` in a meeting.
      """
 
     id: str
@@ -98,6 +101,7 @@ class PageMeetingResponseDataItem:
     video_mode: str
     kind: str
     panelists: list[str]
+    qa_anonymous: bool
     created_at: datetime.datetime
     updated_at: datetime.datetime
     guest_pin: None | str | Unset = UNSET
@@ -112,6 +116,7 @@ class PageMeetingResponseDataItem:
     join_sound: None | str | Unset = UNSET
     exit_sound: None | str | Unset = UNSET
     panelist_pin: None | str | Unset = UNSET
+    qa: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -177,6 +182,8 @@ class PageMeetingResponseDataItem:
         panelists = self.panelists
 
 
+
+        qa_anonymous = self.qa_anonymous
 
         created_at = self.created_at.isoformat()
 
@@ -254,6 +261,12 @@ class PageMeetingResponseDataItem:
         else:
             panelist_pin = self.panelist_pin
 
+        qa: None | str | Unset
+        if isinstance(self.qa, Unset):
+            qa = UNSET
+        else:
+            qa = self.qa
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -284,6 +297,7 @@ class PageMeetingResponseDataItem:
             "video_mode": video_mode,
             "kind": kind,
             "panelists": panelists,
+            "qa_anonymous": qa_anonymous,
             "created_at": created_at,
             "updated_at": updated_at,
         })
@@ -311,6 +325,8 @@ class PageMeetingResponseDataItem:
             field_dict["exit_sound"] = exit_sound
         if panelist_pin is not UNSET:
             field_dict["panelist_pin"] = panelist_pin
+        if qa is not UNSET:
+            field_dict["qa"] = qa
 
         return field_dict
 
@@ -379,6 +395,8 @@ class PageMeetingResponseDataItem:
 
         panelists = cast(list[str], d.pop("panelists"))
 
+
+        qa_anonymous = d.pop("qa_anonymous")
 
         created_at = datetime.datetime.fromisoformat(d.pop("created_at"))
 
@@ -510,6 +528,16 @@ class PageMeetingResponseDataItem:
         panelist_pin = _parse_panelist_pin(d.pop("panelist_pin", UNSET))
 
 
+        def _parse_qa(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        qa = _parse_qa(d.pop("qa", UNSET))
+
+
         page_meeting_response_data_item = cls(
             id=id,
             tenant_id=tenant_id,
@@ -537,6 +565,7 @@ class PageMeetingResponseDataItem:
             video_mode=video_mode,
             kind=kind,
             panelists=panelists,
+            qa_anonymous=qa_anonymous,
             created_at=created_at,
             updated_at=updated_at,
             guest_pin=guest_pin,
@@ -551,6 +580,7 @@ class PageMeetingResponseDataItem:
             join_sound=join_sound,
             exit_sound=exit_sound,
             panelist_pin=panelist_pin,
+            qa=qa,
         )
 
 

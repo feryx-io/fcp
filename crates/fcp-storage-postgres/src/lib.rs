@@ -51,6 +51,7 @@ mod presence_status;
 pub mod primary_health;
 pub mod prompt;
 mod provisioning;
+pub mod questions;
 pub mod recording;
 mod service_registry;
 pub mod sip_trace;
@@ -4464,7 +4465,7 @@ impl ConferenceStore for PostgresStorage {
                     video_enabled, video_layout, video_max_participants,
                     video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
                     video_content_share, video_content_layout, video_mode,
-                    kind, panelist_pin, panelists,
+                    kind, panelist_pin, panelists, qa, qa_anonymous,
                     created_at, updated_at
              FROM conference_meetings WHERE id = $1",
         )
@@ -4493,7 +4494,7 @@ impl ConferenceStore for PostgresStorage {
                     video_enabled, video_layout, video_max_participants,
                     video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
                     video_content_share, video_content_layout, video_mode,
-                    kind, panelist_pin, panelists,
+                    kind, panelist_pin, panelists, qa, qa_anonymous,
                     created_at, updated_at
              FROM conference_meetings WHERE tenant_id = $1 AND room_number = $2",
         )
@@ -4519,7 +4520,7 @@ impl ConferenceStore for PostgresStorage {
                     video_enabled, video_layout, video_max_participants,
                     video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
                     video_content_share, video_content_layout, video_mode,
-                    kind, panelist_pin, panelists,
+                    kind, panelist_pin, panelists, qa, qa_anonymous,
                     created_at, updated_at
              FROM conference_meetings WHERE tenant_id = $1 ORDER BY room_number",
         )
@@ -4551,7 +4552,7 @@ impl ConferenceStore for PostgresStorage {
                     video_enabled, video_layout, video_max_participants,
                     video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
                     video_content_share, video_content_layout, video_mode,
-                    kind, panelist_pin, panelists,
+                    kind, panelist_pin, panelists, qa, qa_anonymous,
                     created_at, updated_at
              FROM conference_meetings
              WHERE tenant_id = $1 AND owner_id = $2
@@ -4585,9 +4586,9 @@ impl ConferenceStore for PostgresStorage {
               video_enabled, video_layout, video_max_participants,
               video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
                     video_content_share, video_content_layout, video_mode,
-                    kind, panelist_pin, panelists,
+                    kind, panelist_pin, panelists, qa, qa_anonymous,
               created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
              ON CONFLICT (id) DO UPDATE SET
               tenant_id = EXCLUDED.tenant_id,
               room_number = EXCLUDED.room_number,
@@ -4626,6 +4627,8 @@ impl ConferenceStore for PostgresStorage {
               kind = EXCLUDED.kind,
               panelist_pin = EXCLUDED.panelist_pin,
               panelists = EXCLUDED.panelists,
+              qa = EXCLUDED.qa,
+              qa_anonymous = EXCLUDED.qa_anonymous,
               updated_at = EXCLUDED.updated_at",
         )
         .bind(meeting.id.to_string())
@@ -4666,6 +4669,8 @@ impl ConferenceStore for PostgresStorage {
         .bind(&meeting.kind)
         .bind(self.seal_opt(meeting.panelist_pin.as_deref())?)
         .bind(&meeting.panelists)
+        .bind(meeting.qa.as_deref())
+        .bind(meeting.qa_anonymous)
         .bind(created_at)
         .bind(updated_at)
         .execute(self.writes())
@@ -4743,6 +4748,8 @@ fn map_meeting_row_pg(row: sqlx::postgres::PgRow) -> Result<fcp_core::Meeting> {
             .unwrap_or_else(|_| fcp_core::meeting::default_meeting_kind()),
         panelist_pin: row.try_get("panelist_pin").unwrap_or(None),
         panelists: row.try_get("panelists").unwrap_or_default(),
+        qa: row.try_get("qa").unwrap_or(None),
+        qa_anonymous: row.try_get("qa_anonymous").unwrap_or(false),
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
     })

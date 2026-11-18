@@ -281,6 +281,44 @@ async fn set_hand(
     }
 }
 
+/// `POST /v1/rooms/{id}/questions` — the browser asks, upvotes, or (a
+/// host or panelist) publishes, answers or dismisses a question
+/// (`docs/WEBINARS.md` §2.5). The body is the `fcp-qa` message, sent on to
+/// the room as an INFO; the session's `qa.questions` follows the room's
+/// word.
+async fn send_question(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(message): Json<fcp_core::qa::QaMessage>,
+) -> Result<StatusCode, ApiError> {
+    use fcp_core::qa::QaMessage;
+    if !matches!(
+        message,
+        QaMessage::Ask { .. }
+            | QaMessage::Upvote { .. }
+            | QaMessage::Publish { .. }
+            | QaMessage::Answer { .. }
+            | QaMessage::Dismiss { .. }
+    ) {
+        return Err(SessionError::BadRequest("not a question's operation".into()).into());
+    }
+    if !state.sessions.exists(&id, true).await {
+        return Err(SessionError::NotFound(format!("room session '{id}' not found")).into());
+    }
+    match state.sessions.send_qa(&id, &message).await? {
+        200..=299 => Ok(StatusCode::NO_CONTENT),
+        400 => Err(SessionError::BadRequest("the room refused the question".into()).into()),
+        403 => Err(SessionError::Forbidden(
+            "the room does not allow it: no questions, or not a host's".into(),
+        )
+        .into()),
+        404 => Err(SessionError::NotFound("no such question".into()).into()),
+        code => {
+            Err(SessionError::Internal(format!("the room answered the question {code}")).into())
+        }
+    }
+}
+
 /// `POST /v1/{rooms|calls}/{id}/answer` — the browser's answer.
 async fn answer(
     State(state): State<ApiState>,
@@ -436,6 +474,7 @@ pub fn routes(state: ApiState) -> Router {
         .route("/v1/rooms/{id}/ice-candidate", post(ice_candidate))
         .route("/v1/rooms/{id}/view", post(set_view))
         .route("/v1/rooms/{id}/hand", post(set_hand))
+        .route("/v1/rooms/{id}/questions", post(send_question))
         .route("/v1/calls", post(initiate_call).get(list_calls))
         .route("/v1/calls/{id}", get(get_call).delete(hangup_call))
         .route("/v1/calls/{id}/answer", post(answer))

@@ -3,6 +3,7 @@
 from .add_member_request import AddMemberRequest
 from .agent_login_request import AgentLoginRequest
 from .agent_response import AgentResponse
+from .answer_question_request import AnswerQuestionRequest
 from .api_token_response import ApiTokenResponse
 from .app_client_request import AppClientRequest
 from .app_device_response import AppDeviceResponse
@@ -11,6 +12,7 @@ from .app_token_request import AppTokenRequest
 from .app_token_response import AppTokenResponse
 from .approve_request import ApproveRequest
 from .approve_response import ApproveResponse
+from .ask_question_request import AskQuestionRequest
 from .assign_flow_request import AssignFlowRequest
 from .assistant_view import AssistantView
 from .audit_entry_response import AuditEntryResponse
@@ -565,6 +567,7 @@ from .update_user_request import UpdateUserRequest
 from .update_voicemail_request import UpdateVoicemailRequest
 from .update_webhook_request import UpdateWebhookRequest
 from .upsert_rate_request import UpsertRateRequest
+from .upvote_question_request import UpvoteQuestionRequest
 from .usage_response import UsageResponse
 from .user_device_response import UserDeviceResponse
 from .user_identity_response import UserIdentityResponse
@@ -595,6 +598,7 @@ __all__ = (
     "AddMemberRequest",
     "AgentLoginRequest",
     "AgentResponse",
+    "AnswerQuestionRequest",
     "ApiTokenResponse",
     "AppClientRequest",
     "AppDeviceResponse",
@@ -603,6 +607,7 @@ __all__ = (
     "ApproveResponse",
     "AppTokenRequest",
     "AppTokenResponse",
+    "AskQuestionRequest",
     "AssignFlowRequest",
     "AssistantView",
     "AuditEntryResponse",
@@ -1157,6 +1162,7 @@ __all__ = (
     "UpdateVoicemailRequest",
     "UpdateWebhookRequest",
     "UpsertRateRequest",
+    "UpvoteQuestionRequest",
     "UsageResponse",
     "UserDeviceResponse",
     "UserIdentityResponse",

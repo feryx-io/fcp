@@ -236,25 +236,58 @@ impl FloorState {
 }
 
 /// The audience's voice as this session knows it (`docs/WEBINARS.md`
-/// §2.5): its hand, and whether a host has brought it to the stage, from
-/// what the browser asked and the room's `fcp-qa` INFOs.
+/// §2.5): its hand, whether a host has brought it to the stage, and the
+/// questions it may see, from what the browser asked and the room's
+/// `fcp-qa` INFOs.
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 pub struct QaState {
     pub hand: bool,
     pub on_stage: bool,
+    /// Whether the join token makes this participant a host or panelist,
+    /// who moderates questions. The room checks for itself; this is for
+    /// the page.
+    pub moderates: bool,
+    /// The room's questions as this participant sees them, in the order
+    /// asked; a dismissed one is dropped.
+    pub questions: Vec<fcp_core::qa::QuestionView>,
 }
+
+/// The most questions a session keeps: a room's most.
+const MAX_SESSION_QUESTIONS: usize = 2000;
 
 impl QaState {
     /// Take in a message from the room.
     pub fn apply(&mut self, message: &fcp_core::qa::QaMessage) {
-        match *message {
-            fcp_core::qa::QaMessage::Hand { raised } => self.hand = raised,
-            fcp_core::qa::QaMessage::Stage { on } => {
-                self.on_stage = on;
-                if on {
+        use fcp_core::qa::{QaMessage, QuestionStatus};
+        match message {
+            QaMessage::Hand { raised } => self.hand = *raised,
+            QaMessage::Stage { on } => {
+                self.on_stage = *on;
+                if *on {
                     self.hand = false;
                 }
             }
+            QaMessage::Questions { questions } => {
+                for q in questions {
+                    let at = self.questions.iter().position(|h| h.id == q.id);
+                    match (at, q.status == QuestionStatus::Dismissed) {
+                        (Some(i), true) => {
+                            self.questions.remove(i);
+                        }
+                        (Some(i), false) => self.questions[i] = q.clone(),
+                        (None, false) if self.questions.len() < MAX_SESSION_QUESTIONS => {
+                            self.questions.push(q.clone())
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // A participant's own requests; the room does not send them.
+            QaMessage::Ask { .. }
+            | QaMessage::Upvote { .. }
+            | QaMessage::Publish { .. }
+            | QaMessage::Answer { .. }
+            | QaMessage::Dismiss { .. } => {}
         }
     }
 }
@@ -1065,6 +1098,15 @@ impl SessionManager {
         conn: BrowserConnection,
     ) -> CreatedSession {
         let connection_id = conn.peer.lock().await.connection_id().to_string();
+        // A host's or panelist's token: the page offers them moderation.
+        let moderates = matches!(
+            &kind,
+            SessionKind::Room { join_token: Some(t), .. }
+                if fcp_core::JoinToken::peek_unverified(t).is_some_and(|t| matches!(
+                    t.role,
+                    fcp_core::JoinRole::Host | fcp_core::JoinRole::Panelist
+                ))
+        );
         let session = Session {
             id: id.clone(),
             connection_id,
@@ -1075,7 +1117,10 @@ impl SessionManager {
             video: None,
             content: None,
             floor: FloorState::default(),
-            qa: QaState::default(),
+            qa: QaState {
+                moderates,
+                ..QaState::default()
+            },
             srtp: false,
             sip_target: None,
             sip_call_id: None,
@@ -2269,7 +2314,13 @@ impl SessionManager {
         };
         let mut s = session.write().await;
         s.qa.apply(message);
-        info!(session = %s.id, hand = s.qa.hand, on_stage = s.qa.on_stage, "fcp-qa notice");
+        info!(
+            session = %s.id,
+            hand = s.qa.hand,
+            on_stage = s.qa.on_stage,
+            questions = s.qa.questions.len(),
+            "fcp-qa notice"
+        );
         true
     }
 
@@ -2426,6 +2477,24 @@ impl SessionManager {
     /// Raise or lower the browser's hand (`docs/WEBINARS.md` §2.5): an
     /// INFO in the `fcp-qa` package. The room's answer is returned.
     pub async fn set_hand(&self, id: &str, raised: bool) -> Result<u16, SessionError> {
+        let code = self
+            .send_qa(id, &fcp_core::qa::QaMessage::Hand { raised })
+            .await?;
+        if (200..300).contains(&code) {
+            if let Some(session) = self.sessions.get(id).map(|e| e.value().clone()) {
+                session.write().await.qa.hand = raised;
+            }
+        }
+        Ok(code)
+    }
+
+    /// Send the browser's `fcp-qa` message to the room: a hand or a
+    /// question (`docs/WEBINARS.md` §2.5). The room's answer is returned.
+    pub async fn send_qa(
+        &self,
+        id: &str,
+        message: &fcp_core::qa::QaMessage,
+    ) -> Result<u16, SessionError> {
         let session = self
             .sessions
             .get(id)
@@ -2437,7 +2506,7 @@ impl SessionManager {
                 .clone()
                 .ok_or_else(|| SessionError::NotFound(id.to_string()))?
         };
-        let body = fcp_core::qa::QaMessage::Hand { raised }.to_body();
+        let body = message.to_body();
         let request = in_dialog_request(
             &dialog,
             sip_core::Method::Info,
@@ -2456,15 +2525,12 @@ impl SessionManager {
                 .send_in_dialog_non_invite(&mut dialog, request),
         )
         .await
-        .map_err(|_| SessionError::Internal("the room did not answer the hand".into()))?
+        .map_err(|_| SessionError::Internal("the room did not answer".into()))?
         .map_err(|e| SessionError::Internal(format!("fcp-qa INFO: {e}")))?;
         let code = response.start_line().code();
         let mut s = session.write().await;
         if s.dialog.as_ref().is_some_and(|d| d.id() == dialog.id()) {
             s.dialog = Some(dialog);
-        }
-        if (200..300).contains(&code) {
-            s.qa.hand = raised;
         }
         Ok(code)
     }

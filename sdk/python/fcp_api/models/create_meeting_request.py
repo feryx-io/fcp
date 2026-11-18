@@ -63,6 +63,9 @@ class CreateMeetingRequest:
             panelist_pin (None | str | Unset): A webinar's PIN for panelists; it must differ from the others.
             panelists (list[str] | Unset): A webinar's panelists: users of the tenant, by username or id
                 (kept by id).
+            qa (None | str | Unset): Questions from the audience: `off`, `moderated` or `open`; unset is
+                `moderated` in a webinar and `off` in a meeting.
+            qa_anonymous (bool | Unset): Whether a question may be asked without the asker's name.
      """
 
     room_number: str
@@ -101,6 +104,8 @@ class CreateMeetingRequest:
     kind: str | Unset = UNSET
     panelist_pin: None | str | Unset = UNSET
     panelists: list[str] | Unset = UNSET
+    qa: None | str | Unset = UNSET
+    qa_anonymous: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -239,6 +244,14 @@ class CreateMeetingRequest:
 
 
 
+        qa: None | str | Unset
+        if isinstance(self.qa, Unset):
+            qa = UNSET
+        else:
+            qa = self.qa
+
+        qa_anonymous = self.qa_anonymous
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -314,6 +327,10 @@ class CreateMeetingRequest:
             field_dict["panelist_pin"] = panelist_pin
         if panelists is not UNSET:
             field_dict["panelists"] = panelists
+        if qa is not UNSET:
+            field_dict["qa"] = qa
+        if qa_anonymous is not UNSET:
+            field_dict["qa_anonymous"] = qa_anonymous
 
         return field_dict
 
@@ -501,6 +518,18 @@ class CreateMeetingRequest:
         panelists = cast(list[str], d.pop("panelists", UNSET))
 
 
+        def _parse_qa(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        qa = _parse_qa(d.pop("qa", UNSET))
+
+
+        qa_anonymous = d.pop("qa_anonymous", UNSET)
+
         create_meeting_request = cls(
             room_number=room_number,
             name=name,
@@ -538,6 +567,8 @@ class CreateMeetingRequest:
             kind=kind,
             panelist_pin=panelist_pin,
             panelists=panelists,
+            qa=qa,
+            qa_anonymous=qa_anonymous,
         )
 
 

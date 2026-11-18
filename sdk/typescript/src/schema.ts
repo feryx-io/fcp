@@ -6437,6 +6437,114 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/conferences/live/{room}/questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /me/conferences/live/:room/questions — the room's questions
+         *     (`docs/WEBINARS.md` §2.5): as the participant on `call_id` sees them
+         *     (any user of the room's tenant, the call naming whose view it is), or
+         *     every one for a host or panelist.
+         */
+        get: operations["self_service_my_live_conference_questions"];
+        put?: never;
+        /**
+         * POST /me/conferences/live/:room/questions — ask a question from an app
+         *     in the room. Any user of the room's tenant may; the call names the
+         *     asker. 403 when the room takes no questions.
+         */
+        post: operations["self_service_my_live_conference_ask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/conferences/live/{room}/questions/{qid}/upvote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/conferences/live/:room/questions/:qid/upvote — upvote another's
+         *     question from an app in the room, or take the upvote back.
+         */
+        post: operations["self_service_my_live_conference_upvote"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/conferences/live/{room}/questions/{qid}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/conferences/live/:room/questions/:qid/publish — a host or
+         *     panelist shows a question to the room.
+         */
+        post: operations["self_service_my_live_conference_publish_question"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/conferences/live/{room}/questions/{qid}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/conferences/live/:room/questions/:qid/answer — a host or
+         *     panelist answers a question in text, aloud (`live`), or both. A written
+         *     answer to a question not published is seen by its asker alone.
+         */
+        post: operations["self_service_my_live_conference_answer_question"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/conferences/live/{room}/questions/{qid}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /me/conferences/live/:room/questions/:qid/dismiss — a host or
+         *     panelist dismisses a question.
+         */
+        post: operations["self_service_my_live_conference_dismiss_question"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cluster/nodes": {
         parameters: {
             query?: never;
@@ -6579,6 +6687,13 @@ export interface components {
             /** Format: int32 */
             priority: number;
         };
+        /** @description The body of `POST /me/conferences/live/:room/questions/:qid/answer`. */
+        AnswerQuestionRequest: {
+            /** @description A written answer, at most 1000 characters. */
+            text?: string | null;
+            /** @description Answered aloud. */
+            live?: boolean;
+        };
         /** @description Response model for an API token (never includes a hash). */
         ApiTokenResponse: {
             id: string;
@@ -6688,6 +6803,15 @@ export interface components {
             redirect_url: string;
             /** @description The app that asked. */
             client_id: string;
+        };
+        /** @description The body of `POST /me/conferences/live/:room/questions`. */
+        AskQuestionRequest: {
+            /** @description The app's call in the room: the `X-FCP-Call-Id` its 200 OK named. */
+            call_id: string;
+            /** @description The question, at most 500 characters. */
+            text: string;
+            /** @description Asked without the asker's name, where the meeting allows it. */
+            anonymous?: boolean;
         };
         AssignFlowRequest: {
             /** @description The tenant the flow becomes. */
@@ -7796,6 +7920,13 @@ export interface components {
              *     (kept by id).
              */
             panelists?: string[];
+            /**
+             * @description Questions from the audience: `off`, `moderated` or `open`; unset is
+             *     `moderated` in a webinar and `off` in a meeting.
+             */
+            qa?: string | null;
+            /** @description Whether a question may be asked without the asker's name. */
+            qa_anonymous?: boolean;
         };
         CreateNetworkRequest: {
             /** @description A range (`10.1.2.0/24`) or a single address. */
@@ -9289,6 +9420,13 @@ export interface components {
             panelist_pin?: string | null;
             /** @description A webinar's panelists, users by id. */
             panelists: string[];
+            /**
+             * @description Questions from the audience: `off`, `moderated` or `open`; unset is
+             *     `moderated` in a webinar and `off` in a meeting.
+             */
+            qa?: string | null;
+            /** @description Whether a question may be asked without the asker's name. */
+            qa_anonymous: boolean;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -10759,6 +10897,13 @@ export interface components {
                 panelist_pin?: string | null;
                 /** @description A webinar's panelists, users by id. */
                 panelists: string[];
+                /**
+                 * @description Questions from the audience: `off`, `moderated` or `open`; unset is
+                 *     `moderated` in a webinar and `off` in a meeting.
+                 */
+                qa?: string | null;
+                /** @description Whether a question may be asked without the asker's name. */
+                qa_anonymous: boolean;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -14420,6 +14565,9 @@ export interface components {
             kind?: string | null;
             panelist_pin?: string | null;
             panelists?: string[] | null;
+            /** @description `off`, `moderated` or `open`; `null` goes back to the kind's default. */
+            qa?: string | null;
+            qa_anonymous?: boolean | null;
         };
         /** @description Update message request. */
         UpdateMessageRequest: {
@@ -14779,6 +14927,13 @@ export interface components {
             connect_fee?: number | null;
             description?: string | null;
         };
+        /** @description The body of `POST /me/conferences/live/:room/questions/:qid/upvote`. */
+        UpvoteQuestionRequest: {
+            /** @description The app's call in the room. */
+            call_id: string;
+            /** @description Give the upvote (`true`) or take it back. */
+            on: boolean;
+        };
         /** @description Usage aggregation response. */
         UsageResponse: {
             /** Format: int64 */
@@ -15036,7 +15191,7 @@ export interface components {
              * @description A name from `/api/v1/webhooks/event-types`, or `webhook.test`
              * @enum {string}
              */
-            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.quality_poor" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "conference.hand_raised" | "conference.hand_lowered" | "conference.stage_joined" | "conference.stage_left" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
+            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.quality_poor" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "conference.hand_raised" | "conference.hand_lowered" | "conference.stage_joined" | "conference.stage_left" | "conference.question_asked" | "conference.question_published" | "conference.question_answered" | "conference.question_dismissed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
             /**
              * Format: date-time
              * @description When the event happened, RFC 3339.
@@ -30362,6 +30517,224 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description The conference server's answer, passed through */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_live_conference_questions: {
+        parameters: {
+            query?: {
+                /**
+                 * @description The app's call in the room (its `X-FCP-Call-Id`): the questions as
+                 *     that participant sees them. Without it, every question, for a host
+                 *     or panelist.
+                 */
+                call_id?: string;
+            };
+            header?: never;
+            path: {
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The conference server's answer, passed through */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_live_conference_ask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AskQuestionRequest"];
+            };
+        };
+        responses: {
+            /** @description The conference server's answer, passed through */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description The question as the asker sees it */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_live_conference_upvote: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                room: string;
+                qid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpvoteQuestionRequest"];
+            };
+        };
+        responses: {
+            /** @description The conference server's answer, passed through */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_live_conference_publish_question: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                room: string;
+                qid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The question as a host sees it */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_live_conference_answer_question: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                room: string;
+                qid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnswerQuestionRequest"];
+            };
+        };
+        responses: {
+            /** @description The question as a host sees it */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_live_conference_dismiss_question: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                room: string;
+                qid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The question as a host sees it */
             200: {
                 headers: {
                     [name: string]: unknown;

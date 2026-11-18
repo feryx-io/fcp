@@ -233,8 +233,8 @@ impl ConferenceCallHandler {
         Ok(true)
     }
 
-    /// A participant's `fcp-qa` INFO: their own hand. The room alone says
-    /// who is on the stage.
+    /// A participant's `fcp-qa` INFO: their own hand, or a question. The
+    /// room alone says who is on the stage.
     pub(super) fn take_qa(
         &self,
         key: &RoomKey,
@@ -250,6 +250,18 @@ impl ConferenceCallHandler {
                 }
             }
             Ok(QaMessage::Stage { .. }) => (403, "Forbidden"),
+            Ok(message) => match self.take_question_info(key, participant_id, message) {
+                Ok(()) => (200, "OK"),
+                Err(e) => {
+                    debug!(participant = %participant_id, error = %e, "fcp-qa INFO refused");
+                    match e.status() {
+                        400 => (400, "Bad Request"),
+                        404 => (404, "Not Found"),
+                        429 => (403, "Forbidden"),
+                        _ => (403, "Forbidden"),
+                    }
+                }
+            },
             Err(e) => {
                 debug!(participant = %participant_id, error = %e, "fcp-qa INFO refused");
                 (400, "Bad Request")
@@ -269,6 +281,11 @@ impl ConferenceCallHandler {
     }
 
     async fn send_qa_info(self: Arc<Self>, call_id: String, message: QaMessage) {
+        self.send_qa_body(call_id, message.to_body()).await
+    }
+
+    /// Send `body`, an `fcp-qa` message, in the dialog of `call_id`.
+    pub(super) async fn send_qa_body(self: Arc<Self>, call_id: String, body: String) {
         // The INFO's CSeq is taken from the session's dialog as it is
         // cloned, so two sent at once (a hand and the stage) differ.
         let Some(mut dialog) = self.sessions.get_mut(&call_id).map(|mut s| {
@@ -291,7 +308,7 @@ impl ConferenceCallHandler {
                     fcp_core::QA_INFO_TYPE.to_string(),
                 ),
             ],
-            message.to_body().as_bytes(),
+            body.as_bytes(),
         ) {
             Ok(request) => request,
             Err(e) => {

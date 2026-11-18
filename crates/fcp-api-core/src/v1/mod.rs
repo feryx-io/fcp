@@ -358,6 +358,27 @@ pub fn router() -> Router<ApiState> {
             "/me/conferences/live/:room/participants/:pid/stage",
             post(me_conferences_live::stage_on).delete(me_conferences_live::stage_off),
         )
+        // Questions (`docs/WEBINARS.md` §2.5, W3.2)
+        .route(
+            "/me/conferences/live/:room/questions",
+            get(me_conferences_live::questions).post(me_conferences_live::ask),
+        )
+        .route(
+            "/me/conferences/live/:room/questions/:qid/upvote",
+            post(me_conferences_live::upvote),
+        )
+        .route(
+            "/me/conferences/live/:room/questions/:qid/publish",
+            post(me_conferences_live::publish_question),
+        )
+        .route(
+            "/me/conferences/live/:room/questions/:qid/answer",
+            post(me_conferences_live::answer_question),
+        )
+        .route(
+            "/me/conferences/live/:room/questions/:qid/dismiss",
+            post(me_conferences_live::dismiss_question),
+        )
         .route(
             "/me/conferences/:id/join-tokens",
             post(self_service::mint_my_join_token),

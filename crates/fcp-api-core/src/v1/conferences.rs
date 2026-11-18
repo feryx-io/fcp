@@ -89,6 +89,11 @@ pub struct MeetingResponse {
     pub panelist_pin: Option<String>,
     /// A webinar's panelists, users by id.
     pub panelists: Vec<String>,
+    /// Questions from the audience: `off`, `moderated` or `open`; unset is
+    /// `moderated` in a webinar and `off` in a meeting.
+    pub qa: Option<String>,
+    /// Whether a question may be asked without the asker's name.
+    pub qa_anonymous: bool,
     #[serde(with = "crate::time::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
@@ -138,6 +143,8 @@ impl From<Meeting> for MeetingResponse {
             kind: m.kind,
             panelist_pin: m.panelist_pin,
             panelists: m.panelists,
+            qa: m.qa,
+            qa_anonymous: m.qa_anonymous,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -222,6 +229,13 @@ pub struct CreateMeetingRequest {
     /// (kept by id).
     #[serde(default)]
     pub panelists: Vec<String>,
+    /// Questions from the audience: `off`, `moderated` or `open`; unset is
+    /// `moderated` in a webinar and `off` in a meeting.
+    #[serde(default)]
+    pub qa: Option<String>,
+    /// Whether a question may be asked without the asker's name.
+    #[serde(default)]
+    pub qa_anonymous: bool,
 }
 
 fn default_true() -> bool {
@@ -397,6 +411,10 @@ pub struct UpdateMeetingRequest {
     #[serde(default, deserialize_with = "double_option")]
     pub panelist_pin: Option<Option<String>>,
     pub panelists: Option<Vec<String>>,
+    /// `off`, `moderated` or `open`; `null` goes back to the kind's default.
+    #[serde(default, deserialize_with = "double_option")]
+    pub qa: Option<Option<String>>,
+    pub qa_anonymous: Option<bool>,
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
@@ -508,6 +526,8 @@ pub async fn create_meeting(
         kind: req.kind,
         panelist_pin: req.panelist_pin,
         panelists: panelists_of(&state, &tenant_id, &req.panelists).await?,
+        qa: req.qa,
+        qa_anonymous: req.qa_anonymous,
         created_at: now,
         updated_at: now,
     };
@@ -704,6 +724,12 @@ pub async fn update_meeting(
     }
     if let Some(v) = req.panelists {
         meeting.panelists = panelists_of(&state, &tenant.0, &v).await?;
+    }
+    if let Some(v) = req.qa {
+        meeting.qa = v;
+    }
+    if let Some(v) = req.qa_anonymous {
+        meeting.qa_anonymous = v;
     }
     meeting
         .validate_video_settings()
