@@ -30538,16 +30538,17 @@ export interface operations {
     };
     self_service_my_live_conference_questions: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                room: string;
+            query?: {
                 /**
                  * @description The app's call in the room (its `X-FCP-Call-Id`): the questions as
                  *     that participant sees them. Without it, every question, for a host
                  *     or panelist.
                  */
-                call_id: string | null;
+                call_id?: string;
+            };
+            header?: never;
+            path: {
+                room: string;
             };
             cookie?: never;
         };

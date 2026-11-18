@@ -20960,14 +20960,11 @@
           },
           {
             "name": "call_id",
-            "in": "path",
+            "in": "query",
             "description": "The app's call in the room (its `X-FCP-Call-Id`): the questions as\nthat participant sees them. Without it, every question, for a host\nor panelist.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],

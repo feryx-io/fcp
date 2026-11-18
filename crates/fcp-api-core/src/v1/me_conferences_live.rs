@@ -679,6 +679,7 @@ async fn as_moderator(
 
 /// The query of `GET /me/conferences/live/:room/questions`.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QuestionsQuery {
     /// The app's call in the room (its `X-FCP-Call-Id`): the questions as
     /// that participant sees them. Without it, every question, for a host
