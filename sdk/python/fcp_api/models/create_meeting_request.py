@@ -66,6 +66,8 @@ class CreateMeetingRequest:
             qa (None | str | Unset): Questions from the audience: `off`, `moderated` or `open`; unset is
                 `moderated` in a webinar and `off` in a meeting.
             qa_anonymous (bool | Unset): Whether a question may be asked without the asker's name.
+            chat (None | str | Unset): Chat in the room: `everyone`, `hosts` or `off`; unset is
+                `everyone` in a meeting and `hosts` in a webinar.
      """
 
     room_number: str
@@ -106,6 +108,7 @@ class CreateMeetingRequest:
     panelists: list[str] | Unset = UNSET
     qa: None | str | Unset = UNSET
     qa_anonymous: bool | Unset = UNSET
+    chat: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -252,6 +255,12 @@ class CreateMeetingRequest:
 
         qa_anonymous = self.qa_anonymous
 
+        chat: None | str | Unset
+        if isinstance(self.chat, Unset):
+            chat = UNSET
+        else:
+            chat = self.chat
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -331,6 +340,8 @@ class CreateMeetingRequest:
             field_dict["qa"] = qa
         if qa_anonymous is not UNSET:
             field_dict["qa_anonymous"] = qa_anonymous
+        if chat is not UNSET:
+            field_dict["chat"] = chat
 
         return field_dict
 
@@ -530,6 +541,16 @@ class CreateMeetingRequest:
 
         qa_anonymous = d.pop("qa_anonymous", UNSET)
 
+        def _parse_chat(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        chat = _parse_chat(d.pop("chat", UNSET))
+
+
         create_meeting_request = cls(
             room_number=room_number,
             name=name,
@@ -569,6 +590,7 @@ class CreateMeetingRequest:
             panelists=panelists,
             qa=qa,
             qa_anonymous=qa_anonymous,
+            chat=chat,
         )
 
 

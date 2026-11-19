@@ -60,6 +60,8 @@ pub struct PolicyResponse {
     pub recording_retention_days: Option<u32>,
     pub audit_retention_days: Option<u32>,
     pub voicemail_retention_days: Option<u32>,
+    /// Chat in rooms older than this is deleted.
+    pub conference_chat_retention_days: Option<u32>,
     pub recording_consent: String,
     pub recording_consent_prompt_id: Option<String>,
     /// `record` or `skip`: whether a recording goes ahead when its
@@ -97,6 +99,7 @@ impl PolicyResponse {
             recording_retention_days: p.recording_retention_days,
             audit_retention_days: p.audit_retention_days,
             voicemail_retention_days: p.voicemail_retention_days,
+            conference_chat_retention_days: p.conference_chat_retention_days,
             recording_consent: p.recording_consent.to_string(),
             recording_consent_prompt_id: p.recording_consent_prompt_id,
             recording_consent_on_failure: p.recording_consent_on_failure.as_str().to_string(),
@@ -126,6 +129,8 @@ pub struct UpdatePolicyRequest {
     pub audit_retention_days: Option<Option<u32>>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub voicemail_retention_days: Option<Option<u32>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub conference_chat_retention_days: Option<Option<u32>>,
     pub recording_consent: Option<String>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub recording_consent_prompt_id: Option<Option<String>>,
@@ -249,6 +254,10 @@ pub async fn update_policy(
         check_days("voicemail_retention_days", v)?;
         policy.voicemail_retention_days = v;
     }
+    if let Some(v) = req.conference_chat_retention_days {
+        check_days("conference_chat_retention_days", v)?;
+        policy.conference_chat_retention_days = v;
+    }
     if let Some(required) = req.cdr_archive_required {
         policy.cdr_archive_required = required;
     }
@@ -347,6 +356,8 @@ pub struct RetentionRunResponse {
     /// Conference recordings whose registry row the run removed.
     pub conference_recordings_deleted: u64,
     pub voicemail_messages_deleted: u64,
+    /// Chat messages posted in rooms.
+    pub conference_chat_deleted: u64,
     pub audit_events_deleted: u64,
     pub total_deleted: u64,
     pub errors: Vec<String>,
@@ -364,6 +375,7 @@ impl From<RetentionReport> for RetentionRunResponse {
             recordings_deleted: r.recordings_deleted,
             conference_recordings_deleted: r.conference_recordings_deleted,
             voicemail_messages_deleted: r.voicemail_messages_deleted,
+            conference_chat_deleted: r.conference_chat_deleted,
             audit_events_deleted: r.audit_events_deleted,
             errors: r.errors,
         }

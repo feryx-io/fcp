@@ -8,7 +8,7 @@
 use fcp_core::billing::{
     BalanceTransactionKind, BalanceTransactionRequest, BillingStore, RatePlan,
 };
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::{http_get, loopback};
 use fcp_testkit::{bins, free_port, Phone, Seed, Service, TestDatabase};
 use rust_decimal_macros::dec;
@@ -69,7 +69,7 @@ async fn start_call_manager(
 ) -> (Service, SocketAddr, u16) {
     let sip = free_port();
     let http = free_port();
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(40);
     let config = format!(
         r#"
 [service]

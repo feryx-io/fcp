@@ -1772,6 +1772,7 @@ mod tests {
             panelist_pin: None,
             panelists: Vec::new(),
             qa: None,
+            chat: None,
             qa_anonymous: false,
             created_at: now,
             updated_at: now,

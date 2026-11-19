@@ -379,6 +379,19 @@ pub fn router() -> Router<ApiState> {
             "/me/conferences/live/:room/questions/:qid/dismiss",
             post(me_conferences_live::dismiss_question),
         )
+        // Chat (`docs/WEBINARS.md` §2.5, W3b)
+        .route(
+            "/me/conferences/live/:room/chat",
+            get(me_conferences_live::chat).post(me_conferences_live::post_chat),
+        )
+        .route(
+            "/me/conferences/live/:room/chat/:mid/delete",
+            post(me_conferences_live::delete_chat),
+        )
+        .route(
+            "/me/conferences/live/:room/participants/:pid/chat-mute",
+            post(me_conferences_live::mute_chat),
+        )
         .route(
             "/me/conferences/:id/join-tokens",
             post(self_service::mint_my_join_token),

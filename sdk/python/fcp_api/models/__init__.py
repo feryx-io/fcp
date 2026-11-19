@@ -48,6 +48,7 @@ from .capture_response import CaptureResponse
 from .cdr_response import CdrResponse
 from .change_expired_password_request import ChangeExpiredPasswordRequest
 from .change_password_request import ChangePasswordRequest
+from .chat_audience import ChatAudience
 from .civic_elements import CivicElements
 from .claim_device_request import ClaimDeviceRequest
 from .claim_mapping import ClaimMapping
@@ -104,6 +105,7 @@ from .debug_call_info import DebugCallInfo
 from .debug_summary import DebugSummary
 from .declare_location_request import DeclareLocationRequest
 from .declared_location_response import DeclaredLocationResponse
+from .delete_chat_request import DeleteChatRequest
 from .delete_config_response import DeleteConfigResponse
 from .deletion_response import DeletionResponse
 from .destination_class import DestinationClass
@@ -206,6 +208,7 @@ from .message_response import MessageResponse
 from .mfa_ticket_request import MfaTicketRequest
 from .mint_join_token_request import MintJoinTokenRequest
 from .missing_file import MissingFile
+from .mute_chat_request import MuteChatRequest
 from .my_call_quality import MyCallQuality
 from .my_call_response import MyCallResponse
 from .my_executive import MyExecutive
@@ -401,6 +404,7 @@ from .phone_number_response import PhoneNumberResponse
 from .place_hold_request import PlaceHoldRequest
 from .play_request import PlayRequest
 from .policy_response import PolicyResponse
+from .post_chat_request import PostChatRequest
 from .presence import Presence
 from .presence_auth_policy import PresenceAuthPolicy
 from .presence_auth_policy_event_allow import PresenceAuthPolicyEventAllow
@@ -643,6 +647,7 @@ __all__ = (
     "CdrResponse",
     "ChangeExpiredPasswordRequest",
     "ChangePasswordRequest",
+    "ChatAudience",
     "CivicElements",
     "ClaimDeviceRequest",
     "ClaimMapping",
@@ -699,6 +704,7 @@ __all__ = (
     "DebugSummary",
     "DeclaredLocationResponse",
     "DeclareLocationRequest",
+    "DeleteChatRequest",
     "DeleteConfigResponse",
     "DeletionResponse",
     "DestinationClass",
@@ -801,6 +807,7 @@ __all__ = (
     "MfaTicketRequest",
     "MintJoinTokenRequest",
     "MissingFile",
+    "MuteChatRequest",
     "MyCallQuality",
     "MyCallResponse",
     "MyExecutive",
@@ -996,6 +1003,7 @@ __all__ = (
     "PlaceHoldRequest",
     "PlayRequest",
     "PolicyResponse",
+    "PostChatRequest",
     "Presence",
     "PresenceAuthPolicy",
     "PresenceAuthPolicyEventAllow",

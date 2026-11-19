@@ -244,8 +244,10 @@ pub struct HoldScope {
 ```
 
 `DataClass` is `cdr`, `call_recording`, `conference_recording`,
-`voicemail`, `sip_trace`, `flow_trace`, `audit_event`. An empty scope
-holds the whole tenant.
+`voicemail`, `sip_trace`, `flow_trace`, `audit_event`, `device_capture`
+(`docs/CALL_DIAGNOSTICS.md`) and `conference_chat` (chat in a room,
+`docs/WEBINARS.md` §2.5, migration 144). An empty scope holds the whole
+tenant.
 
 ### 5.2 Enforcement
 
@@ -337,6 +339,7 @@ requests past `due_at` are a metric (§9).
 | `cdrs` | Every matching record | Pseudonymise (§6.4); the recording as below |
 | Call and queue recordings (`call_recordings`) | Audio for matching calls | Delete |
 | Conference recordings | Audio of rooms the subject was recorded in (a participants column, §4) | Delete |
+| Chat in rooms (`conference_chat`, `docs/WEBINARS.md` §2.5) | Messages the subject posted, by where they called from and their name | Delete |
 | `sip_trace_messages` | Raw messages of matching calls | Delete |
 | `flow_execution_traces` | Traces of matching calls | Delete |
 | `registrations`, presence (presentities, subscriptions, policies, lists, history), Redis presence keys | Current state and history | Delete |

@@ -292,6 +292,46 @@ impl QaState {
     }
 }
 
+/// A room's chat as this session knows it (`docs/WEBINARS.md` §2.5): the
+/// messages it may see, oldest first, from the room's `fcp-chat` INFOs,
+/// and whether its own chat is muted.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct ChatState {
+    pub muted: bool,
+    /// The last [`MAX_SESSION_MESSAGES`]; a deleted one is dropped.
+    pub messages: Vec<fcp_core::chat::ChatView>,
+}
+
+/// The most messages a session keeps.
+const MAX_SESSION_MESSAGES: usize = 500;
+
+impl ChatState {
+    /// Take in a message from the room.
+    pub fn apply(&mut self, message: &fcp_core::chat::ChatMessage) {
+        use fcp_core::chat::ChatMessage;
+        match message {
+            ChatMessage::Muted { on } => self.muted = *on,
+            ChatMessage::Messages { messages } => {
+                for m in messages {
+                    let at = self.messages.iter().position(|h| h.id == m.id);
+                    match (at, m.deleted) {
+                        (Some(i), true) => {
+                            self.messages.remove(i);
+                        }
+                        (Some(i), false) => self.messages[i] = m.clone(),
+                        (None, false) => self.messages.push(m.clone()),
+                        (None, true) => {}
+                    }
+                }
+                let over = self.messages.len().saturating_sub(MAX_SESSION_MESSAGES);
+                self.messages.drain(..over);
+            }
+            // A participant's own requests; the room does not send them.
+            ChatMessage::Post { .. } | ChatMessage::Delete { .. } | ChatMessage::Mute { .. } => {}
+        }
+    }
+}
+
 /// What the conference server tells a session about the floor: the body
 /// of an `INFO` of type `application/vnd.fcp.content+json`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -385,6 +425,9 @@ pub struct SessionInfo {
     /// In a room: the browser's hand and whether it is on the stage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub qa: Option<QaState>,
+    /// In a room: its chat as this browser sees it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat: Option<ChatState>,
 }
 
 /// An ICE server a browser should use, as `RTCPeerConnection` takes it.
@@ -423,6 +466,7 @@ pub struct Session {
     pub content: Option<VideoSummary>,
     pub floor: FloorState,
     pub qa: QaState,
+    pub chat: ChatState,
     pub srtp: bool,
     pub sip_target: Option<String>,
     pub sip_call_id: Option<String>,
@@ -529,6 +573,7 @@ impl Session {
                 .as_ref()
                 .map(|f| f.lock().unwrap_or_else(|e| e.into_inner()).summary()),
             qa: self.kind.is_room().then(|| self.qa.clone()),
+            chat: self.kind.is_room().then(|| self.chat.clone()),
         }
     }
 
@@ -1121,6 +1166,7 @@ impl SessionManager {
                 moderates,
                 ..QaState::default()
             },
+            chat: ChatState::default(),
             srtp: false,
             sip_target: None,
             sip_call_id: None,
@@ -1932,6 +1978,10 @@ impl SessionManager {
                 headers
                     .push("Recv-Info", fcp_core::QA_INFO_PACKAGE)
                     .map_err(|e| format!("header: {e}"))?;
+                // Sent the room's chat.
+                headers
+                    .push("Recv-Info", fcp_core::CHAT_INFO_PACKAGE)
+                    .map_err(|e| format!("header: {e}"))?;
                 // Each person's own stream, where the room forwards.
                 if streams > 0 && video.is_some() {
                     headers
@@ -2324,6 +2374,27 @@ impl SessionManager {
         true
     }
 
+    /// The conference server sent `sip_call_id` chat. Returns whether it
+    /// was ours.
+    pub async fn chat_notice(
+        &self,
+        sip_call_id: &str,
+        message: &fcp_core::chat::ChatMessage,
+    ) -> bool {
+        let Some(session) = self.session_by_sip_call_id(sip_call_id) else {
+            return false;
+        };
+        let mut s = session.write().await;
+        s.chat.apply(message);
+        debug!(
+            session = %s.id,
+            muted = s.chat.muted,
+            messages = s.chat.messages.len(),
+            "fcp-chat notice"
+        );
+        true
+    }
+
     /// Subscribe to the room's roster inside the call, and keep the
     /// subscription up while the session lasts: its NOTIFYs say whose
     /// stream is on each of the browser's tracks ([`Self::roster_notice`]).
@@ -2495,6 +2566,40 @@ impl SessionManager {
         id: &str,
         message: &fcp_core::qa::QaMessage,
     ) -> Result<u16, SessionError> {
+        self.send_info(
+            id,
+            fcp_core::QA_INFO_PACKAGE,
+            fcp_core::QA_INFO_TYPE,
+            message.to_body(),
+        )
+        .await
+    }
+
+    /// Send the browser's `fcp-chat` message to the room: a post, or (a
+    /// host or panelist) a delete or a mute (`docs/WEBINARS.md` §2.5). The
+    /// room's answer is returned.
+    pub async fn send_chat(
+        &self,
+        id: &str,
+        message: &fcp_core::chat::ChatMessage,
+    ) -> Result<u16, SessionError> {
+        self.send_info(
+            id,
+            fcp_core::CHAT_INFO_PACKAGE,
+            fcp_core::CHAT_INFO_TYPE,
+            message.to_body(),
+        )
+        .await
+    }
+
+    /// Send `body` to the room as an INFO of `package` and `content_type`.
+    async fn send_info(
+        &self,
+        id: &str,
+        package: &str,
+        content_type: &str,
+        body: String,
+    ) -> Result<u16, SessionError> {
         let session = self
             .sessions
             .get(id)
@@ -2506,18 +2611,17 @@ impl SessionManager {
                 .clone()
                 .ok_or_else(|| SessionError::NotFound(id.to_string()))?
         };
-        let body = message.to_body();
         let request = in_dialog_request(
             &dialog,
             sip_core::Method::Info,
             &[
-                ("Info-Package", fcp_core::QA_INFO_PACKAGE.to_string()),
+                ("Info-Package", package.to_string()),
                 ("Content-Disposition", "Info-Package".to_string()),
-                ("Content-Type", fcp_core::QA_INFO_TYPE.to_string()),
+                ("Content-Type", content_type.to_string()),
             ],
             Some(body.into_bytes().into()),
         )
-        .map_err(|e| SessionError::Internal(format!("fcp-qa INFO: {e}")))?;
+        .map_err(|e| SessionError::Internal(format!("{package} INFO: {e}")))?;
         let response = tokio::time::timeout(
             SOON,
             self.uac
@@ -2526,7 +2630,7 @@ impl SessionManager {
         )
         .await
         .map_err(|_| SessionError::Internal("the room did not answer".into()))?
-        .map_err(|e| SessionError::Internal(format!("fcp-qa INFO: {e}")))?;
+        .map_err(|e| SessionError::Internal(format!("{package} INFO: {e}")))?;
         let code = response.start_line().code();
         let mut s = session.write().await;
         if s.dialog.as_ref().is_some_and(|d| d.id() == dialog.id()) {
@@ -2727,6 +2831,48 @@ fn _srtp_context_is_send(_: SrtpContext) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_s_chat_follows_the_room() {
+        use fcp_core::chat::{ChatAudience, ChatMessage, ChatView};
+        let view = |id: &str, deleted: bool| ChatView {
+            id: id.into(),
+            text: if deleted { String::new() } else { "hi".into() },
+            sender: None,
+            sender_id: "p".into(),
+            sender_moderates: false,
+            mine: false,
+            to: ChatAudience::Room,
+            deleted,
+            sent_at: "2026-11-18T10:00:00.000Z".into(),
+        };
+        let mut chat = ChatState::default();
+        chat.apply(&ChatMessage::Messages {
+            messages: vec![view("m-1", false), view("m-2", false), view("m-3", true)],
+        });
+        assert_eq!(
+            chat.messages.len(),
+            2,
+            "a deleted one never seen is not kept"
+        );
+        chat.apply(&ChatMessage::Messages {
+            messages: vec![view("m-1", true)],
+        });
+        assert_eq!(chat.messages.len(), 1);
+        assert_eq!(chat.messages[0].id, "m-2");
+        chat.apply(&ChatMessage::Muted { on: true });
+        assert!(chat.muted);
+        chat.apply(&ChatMessage::Messages {
+            messages: (0..MAX_SESSION_MESSAGES + 5)
+                .map(|i| view(&format!("n-{i}"), false))
+                .collect(),
+        });
+        assert_eq!(chat.messages.len(), MAX_SESSION_MESSAGES);
+        assert_eq!(
+            chat.messages.last().unwrap().id,
+            format!("n-{}", MAX_SESSION_MESSAGES + 4)
+        );
+    }
 
     #[test]
     fn room_numbers_follow_the_conference_servers_rules() {

@@ -17,7 +17,7 @@ use common::{
 };
 use fcp_core::storage::{CdrQuery, CdrStore};
 use fcp_testkit::cut::CutLink;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::{free_port, http_request, loopback, toml_path};
 use fcp_testkit::{bins, Phone, Service, TestDatabase};
 use std::net::SocketAddr;
@@ -248,7 +248,7 @@ async fn a_site_cut_off_from_its_cloud_goes_on_alone_and_catches_up_when_the_lin
             http: cloud_cm_http,
             db: cloud.db.url(),
             dir: &dir,
-            rtp_start: allocate_port_pair().rtp_port,
+            rtp_start: allocate_rtp_range(60),
             ..Default::default()
         }
         .render(),
@@ -257,7 +257,7 @@ async fn a_site_cut_off_from_its_cloud_goes_on_alone_and_catches_up_when_the_lin
     )
     .await;
     let sbc_cert = cloud.ca.node("fcp-sbc");
-    let sbc_rtp = allocate_port_pair().rtp_port;
+    let sbc_rtp = allocate_rtp_range(60);
     let sbc_config = format!(
         r#"[service]
 node_id = "cloud-sbc"
@@ -315,7 +315,7 @@ max_concurrent_calls = 0
             http: site_cm_http,
             db: site_db.url(),
             dir: &dir,
-            rtp_start: allocate_port_pair().rtp_port,
+            rtp_start: allocate_rtp_range(60),
             tls_ca: Some(&toml_path(&cloud.ca.ca_path)),
             redis_url: Some(&site_redis),
         }

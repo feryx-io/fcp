@@ -5180,7 +5180,11 @@ impl SipMessageHandler {
         let recv: Vec<&str> = room_answer.headers().get_all("Recv-Info").collect();
         // The views a forwarding room takes, and the audience's voice
         // (`docs/WEBINARS.md` §2.5).
-        for package in [fcp_core::VIEW_INFO_PACKAGE, fcp_core::QA_INFO_PACKAGE] {
+        for package in [
+            fcp_core::VIEW_INFO_PACKAGE,
+            fcp_core::QA_INFO_PACKAGE,
+            fcp_core::CHAT_INFO_PACKAGE,
+        ] {
             if is_room && fcp_core::recv_info_has(&recv, package) {
                 let _ = response
                     .headers_mut()
@@ -13507,6 +13511,7 @@ impl SipMessageHandler {
             Method::Info if relay::is_view_info(request) => Some(true),
             Method::Info if relay::is_floor_info(request) => Some(false),
             Method::Info if relay::is_qa_info(request) => None,
+            Method::Info if relay::is_chat_info(request) => None,
             _ => return None,
         };
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request).ok()?;

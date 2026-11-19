@@ -22,7 +22,7 @@ use fcp_core::storage::{
 };
 use fcp_core::{CallTarget, CallingSettings, CallingStore};
 use fcp_testkit::certs::ClusterCa;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::push::{StandInApns, APNS_TEAM, APNS_TOPIC};
 use fcp_testkit::seed::SeededUser;
 use fcp_testkit::smoke::{loopback, toml_path};
@@ -512,7 +512,7 @@ impl Stack {
         let apns_key = dir.path().join("apns.p8");
         std::fs::write(&apns_key, apns.config().key.unwrap()).unwrap();
         let (sip, sips, http, voicemail) = (free_port(), free_port(), free_port(), free_port());
-        let rtp_start = allocate_port_pair().rtp_port;
+        let rtp_start = allocate_rtp_range(60);
         let config = format!(
             r#"
 [service]

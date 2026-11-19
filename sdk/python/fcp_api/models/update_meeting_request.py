@@ -64,6 +64,8 @@ class UpdateMeetingRequest:
             panelists (list[str] | None | Unset):
             qa (None | str | Unset): `off`, `moderated` or `open`; `null` goes back to the kind's default.
             qa_anonymous (bool | None | Unset):
+            chat (None | str | Unset): `everyone`, `hosts` or `off`; `null` goes back to the kind's
+                default.
      """
 
     name: None | str | Unset = UNSET
@@ -103,6 +105,7 @@ class UpdateMeetingRequest:
     panelists: list[str] | None | Unset = UNSET
     qa: None | str | Unset = UNSET
     qa_anonymous: bool | None | Unset = UNSET
+    chat: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -343,6 +346,12 @@ class UpdateMeetingRequest:
         else:
             qa_anonymous = self.qa_anonymous
 
+        chat: None | str | Unset
+        if isinstance(self.chat, Unset):
+            chat = UNSET
+        else:
+            chat = self.chat
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -422,6 +431,8 @@ class UpdateMeetingRequest:
             field_dict["qa"] = qa
         if qa_anonymous is not UNSET:
             field_dict["qa_anonymous"] = qa_anonymous
+        if chat is not UNSET:
+            field_dict["chat"] = chat
 
         return field_dict
 
@@ -823,6 +834,16 @@ class UpdateMeetingRequest:
         qa_anonymous = _parse_qa_anonymous(d.pop("qa_anonymous", UNSET))
 
 
+        def _parse_chat(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        chat = _parse_chat(d.pop("chat", UNSET))
+
+
         update_meeting_request = cls(
             name=name,
             guest_pin=guest_pin,
@@ -861,6 +882,7 @@ class UpdateMeetingRequest:
             panelists=panelists,
             qa=qa,
             qa_anonymous=qa_anonymous,
+            chat=chat,
         )
 
 

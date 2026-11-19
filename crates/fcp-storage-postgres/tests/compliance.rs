@@ -2084,6 +2084,10 @@ async fn a_tenants_deletion_removes_every_row_and_then_the_tenant() {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query(&format!("INSERT INTO conference_chat (id, tenant_id, room_number, session_id, participant_id, text, sent_at) VALUES ('m-{ts}', '{ts}', '8001', 's', 'p', 'hi', now())"))
+            .execute(&pool)
+            .await
+            .unwrap();
         let mut room = Recording::starting(
             tenant,
             "8001",
@@ -2157,6 +2161,7 @@ async fn a_tenants_deletion_removes_every_row_and_then_the_tenant() {
         ("phone_numbers", "tenant_id"),
         ("admin_audit_log", "tenant_id"),
         ("conference_recordings", "tenant_id"),
+        ("conference_chat", "tenant_id"),
     ] {
         assert_eq!(
             count(format!(
@@ -2239,5 +2244,163 @@ async fn a_mailbox_written_while_its_greeting_is_stored_is_written() {
     let (written, greeted) = (writer.await.unwrap(), greeter.await.unwrap());
     assert!(written.is_empty(), "put_mailbox failed: {written:?}");
     assert!(greeted.is_empty(), "set_greeting failed: {greeted:?}");
+    db.finish().await;
+}
+
+/// Chat in a room (`docs/WEBINARS.md` §2.5): retention deletes an old
+/// message, a hold on its sender keeps theirs and refuses its deletion, an
+/// export finds it by where they called from, and an erasure removes it
+/// once the hold is released, logged.
+#[tokio::test]
+async fn chat_is_kept_held_found_and_erased_by_its_sender() {
+    use fcp_core::legal_hold::{
+        DataClass, HoldRelease, HoldScope, LegalHold, LegalHoldViolation, SubjectIdentifier,
+    };
+    use fcp_core::storage::TenantStore;
+    use fcp_core::subject_erasure::SubjectEraseStore;
+    use fcp_core::subject_request::{ExportClass, SubjectDataStore, SubjectScope};
+    let db = require_db!();
+    let tenant = fcp_core::Tenant::new("chatty".to_string());
+    let t = tenant.id;
+    db.pg.put_tenant(tenant).await.unwrap();
+    let pool = db.pg.pool().clone();
+    let post = |id: &'static str, address: &'static str, days: u64| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO conference_chat
+                    (id, tenant_id, room_number, session_id, participant_id, sender_name,
+                     sender_address, audience, text, sent_at)
+                 VALUES ($1, $2, '8001', 's1', $1, 'Someone', $3, 'room', 'hello', $4)",
+            )
+            .bind(id)
+            .bind(t.to_string())
+            .bind(address)
+            .bind(chrono::DateTime::<chrono::Utc>::from(days_ago(days)))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    post("m-subject", "sip:+14155550100@carrier.example", 40).await;
+    post("m-other", "sip:+442071234567@carrier.example", 40).await;
+    post("m-recent", "sip:+442071234567@carrier.example", 1).await;
+    let ids = || async {
+        sqlx::query_scalar::<_, String>("SELECT id FROM conference_chat ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+    };
+
+    let subjects = vec![SubjectIdentifier::Number {
+        number: "+14155550100".into(),
+    }];
+    let keys = fcp_core::legal_hold::expand_subjects(&db.storage, &t, &subjects)
+        .await
+        .unwrap();
+    let hold = LegalHold {
+        id: fcp_core::LegalHoldId::new(),
+        tenant_id: t,
+        matter: "Case 7".into(),
+        reason: None,
+        scope: HoldScope {
+            subjects,
+            classes: vec![DataClass::ConferenceChat],
+            ..Default::default()
+        },
+        subject_keys: keys.clone(),
+        created_by: "counsel".into(),
+        created_at: SystemTime::now(),
+        released: None,
+    };
+    db.compliance.place_hold(&hold).await.unwrap();
+
+    // Retention deletes the other old message and keeps the held one.
+    let mut policy = CompliancePolicy::defaults(t);
+    policy.conference_chat_retention_days = Some(30);
+    db.compliance.put_compliance_policy(&policy).await.unwrap();
+    assert_eq!(
+        db.compliance
+            .get_compliance_policy(&t)
+            .await
+            .unwrap()
+            .unwrap()
+            .conference_chat_retention_days,
+        Some(30)
+    );
+    let report = run_retention(&db.storage, &policy, "retention-test").await;
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.conference_chat_deleted, 1);
+    assert_eq!(
+        report.held.get("conference_chat"),
+        Some(&1),
+        "{:?}",
+        report.held
+    );
+    assert_eq!(ids().await, ["m-recent", "m-subject"]);
+    db.compliance.record_retention_run(&report).await.unwrap();
+    let runs = db.compliance.list_retention_runs(&t, 1).await.unwrap();
+    assert_eq!(runs[0].conference_chat_deleted, 1);
+    assert_eq!(
+        db.compliance
+            .hold_on(&t, DataClass::ConferenceChat, "m-subject")
+            .await
+            .unwrap(),
+        Some(hold.id)
+    );
+
+    // An export finds the subject's message by where they called from.
+    let scope = SubjectScope {
+        identifiers: vec!["+14155550100".into()],
+        keys: fcp_core::subject::keys("+14155550100"),
+        ..Default::default()
+    };
+    let page = db
+        .pg
+        .subject_rows(&t, ExportClass::ConferenceChat, &scope, None, 100)
+        .await
+        .unwrap();
+    let found: Vec<&str> = page.rows.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(found, ["m-subject"]);
+    assert_eq!(page.rows[0].data["text"], "hello");
+    assert!(!page.rows[0].others_heard);
+
+    // An erasure is refused while the hold stands, and goes once released.
+    let doomed = vec!["m-subject".to_string()];
+    let erase = || {
+        deleting_as(
+            Deleter::new(DeletionCause::Erasure, "erasure-test"),
+            db.pg
+                .delete_subject_rows(&t, ExportClass::ConferenceChat, &doomed),
+        )
+    };
+    let refused = erase().await.unwrap_err();
+    assert_eq!(
+        refused.downcast::<LegalHoldViolation>().unwrap().hold_id,
+        hold.id.to_string()
+    );
+    assert!(db
+        .compliance
+        .release_hold(
+            &t,
+            &hold.id,
+            &HoldRelease {
+                by: "counsel".into(),
+                at: SystemTime::now(),
+                reason: "settled".into(),
+            },
+        )
+        .await
+        .unwrap());
+    assert_eq!(erase().await.unwrap(), 1);
+    assert_eq!(ids().await, ["m-recent"]);
+    let logged: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM deletion_log WHERE class = 'conference_chat' AND tenant_id = $1",
+    )
+    .bind(t.to_string())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(logged, 2, "the retention run and the erasure");
     db.finish().await;
 }

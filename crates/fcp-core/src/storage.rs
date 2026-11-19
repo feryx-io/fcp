@@ -3733,6 +3733,7 @@ pub struct DynStorage {
     compliance_store: Option<Arc<dyn crate::compliance::ComplianceStore>>,
     recording_store: Option<Arc<dyn crate::recording::RecordingStore>>,
     question_store: Option<Arc<dyn crate::qa::QuestionStore>>,
+    chat_store: Option<Arc<dyn crate::chat::ChatStore>>,
     call_recording_store: Option<Arc<dyn crate::recording::CallRecordingStore>>,
     subject_data_store: Option<Arc<dyn crate::subject_request::SubjectDataStore>>,
     subject_erase_store: Option<Arc<dyn crate::subject_erasure::SubjectEraseStore>>,
@@ -3837,6 +3838,7 @@ impl DynStorage {
             provisioning_store: None,
             recording_store: None,
             question_store: None,
+            chat_store: None,
             call_recording_store: None,
         }
     }
@@ -3931,6 +3933,7 @@ impl DynStorage {
             provisioning_store: None,
             recording_store: None,
             question_store: None,
+            chat_store: None,
             call_recording_store: None,
         }
     }
@@ -4145,6 +4148,17 @@ impl DynStorage {
     /// Where questions are kept, when a store is attached.
     pub fn question_store(&self) -> Option<&Arc<dyn crate::qa::QuestionStore>> {
         self.question_store.as_ref()
+    }
+
+    /// Attach where chat in a room is kept (`docs/WEBINARS.md` §2.5).
+    pub fn with_chat_store(mut self, store: Arc<dyn crate::chat::ChatStore>) -> Self {
+        self.chat_store = Some(store);
+        self
+    }
+
+    /// Where chat is kept, when a store is attached.
+    pub fn chat_store(&self) -> Option<&Arc<dyn crate::chat::ChatStore>> {
+        self.chat_store.as_ref()
     }
 
     /// Attach the call recording registry (`docs/COMPLIANCE_FOLLOWUPS.md`

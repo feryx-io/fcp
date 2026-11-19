@@ -17,7 +17,7 @@ use common::{cloud_with_site_opts, CloudOptions};
 use fcp_core::storage::{
     CredentialStore, DeviceStore, LineBindingStore, PhoneNumberStore, SiteLocationStore,
 };
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::{free_port, http_request, loopback, toml_path};
 use fcp_testkit::{bins, Phone, Service, TestDatabase};
 use std::net::SocketAddr;
@@ -355,7 +355,7 @@ async fn calls_cross_a_sites_link_both_ways() {
             cloud_cm_http,
             cloud.db.url(),
             &dir,
-            allocate_port_pair().rtp_port,
+            allocate_rtp_range(60),
             None,
         ),
         &loopback(cloud_cm_http, "/health"),
@@ -366,7 +366,7 @@ async fn calls_cross_a_sites_link_both_ways() {
     // The cloud SBC: TLS from the test's CA, the cloud's database, the
     // call manager behind it as its one trunk.
     let sbc_cert = cloud.ca.node("fcp-sbc");
-    let sbc_rtp = allocate_port_pair().rtp_port;
+    let sbc_rtp = allocate_rtp_range(60);
     let sbc_config = format!(
         r#"[service]
 node_id = "cloud-sbc"
@@ -427,7 +427,7 @@ max_concurrent_calls = 0
             site_cm_http,
             site_db.url(),
             &dir,
-            allocate_port_pair().rtp_port,
+            allocate_rtp_range(60),
             Some(&toml_path(&cloud.ca.ca_path)),
         ),
         &loopback(site_cm_http, "/health"),

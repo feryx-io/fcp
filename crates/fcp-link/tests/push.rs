@@ -16,7 +16,7 @@ use fcp_core::storage::{
 };
 use fcp_core::{Device, DeviceType, Extension, ExtensionTarget, TenantId};
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::push::{StandInApns, APNS_TEAM, APNS_TOPIC};
 use fcp_testkit::smoke::{free_port, http_request, loopback, toml_path};
 use fcp_testkit::{bins, Phone, Service, TestDatabase};
@@ -113,7 +113,7 @@ endpoint = "{url}"
             http: cloud_cm_http,
             db: cloud.db.url(),
             dir: &dir,
-            rtp_start: allocate_port_pair().rtp_port,
+            rtp_start: allocate_rtp_range(60),
             ..Default::default()
         }
         .render(),
@@ -170,7 +170,7 @@ endpoint = "{url}"
         http: site_http,
         db: site_db.url(),
         dir: &dir,
-        rtp_start: allocate_port_pair().rtp_port,
+        rtp_start: allocate_rtp_range(60),
         ..Default::default()
     }
     .render()

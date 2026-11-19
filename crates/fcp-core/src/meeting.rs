@@ -200,6 +200,14 @@ pub struct Meeting {
     #[serde(default)]
     pub qa_anonymous: bool,
 
+    /// Chat in the room (`docs/WEBINARS.md` §2.5): `everyone` (anyone
+    /// posts to the room or to its hosts), `hosts` (an attendee or guest
+    /// posts to the hosts only) or `off`. Unset is `everyone` in a meeting
+    /// and `hosts` in a webinar. Hosts and panelists always have their own
+    /// channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<String>,
+
     /// Whether guests must enter a PIN to join
     pub require_guest_pin: bool,
 
@@ -350,6 +358,19 @@ impl Meeting {
             })
     }
 
+    /// Who may chat in this meeting's room: its `chat`, else `everyone`
+    /// in a meeting and `hosts` in a webinar.
+    pub fn chat_scope(&self) -> crate::chat::ChatScope {
+        self.chat
+            .as_deref()
+            .and_then(crate::chat::ChatScope::parse)
+            .unwrap_or(if self.is_webinar() {
+                crate::chat::ChatScope::Hosts
+            } else {
+                crate::chat::ChatScope::Everyone
+            })
+    }
+
     /// Validate the kind, the panelist PIN and the panelists: the kind is
     /// known, the three PINs differ (one PIN, one role), and the
     /// panelists are distinct and at most [`MAX_PANELISTS`].
@@ -368,6 +389,11 @@ impl Meeting {
         if let Some(qa) = self.qa.as_deref() {
             if crate::qa::QaMode::parse(qa).is_none() {
                 return Err("qa must be one of off, moderated, open".to_string());
+            }
+        }
+        if let Some(chat) = self.chat.as_deref() {
+            if crate::chat::ChatScope::parse(chat).is_none() {
+                return Err("chat must be one of everyone, hosts, off".to_string());
             }
         }
         if self.panelists.len() > MAX_PANELISTS {
@@ -451,6 +477,7 @@ mod tests {
             panelist_pin: None,
             panelists: Vec::new(),
             qa: None,
+            chat: None,
             qa_anonymous: false,
             video_codecs: vec![VideoCodec::Vp8, VideoCodec::H264, VideoCodec::Av1],
             created_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),

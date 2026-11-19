@@ -8,7 +8,7 @@
 //! refusals need no database; the located call is skipped without
 //! `FCP_TEST_DATABASE_URL`.
 
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::{http_request, loopback};
 use fcp_testkit::{bins, free_port, Phone, Seed, Service, TestDatabase};
 use forge_core::AudioCodec;
@@ -176,7 +176,7 @@ async fn call_manager(
 ) -> (Service, SocketAddr) {
     let sip = free_port();
     let http = free_port();
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(60);
     let config = format!(
         r#"
 [service]

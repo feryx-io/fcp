@@ -571,6 +571,28 @@ async fn a_host_controls_their_room_from_their_own_session() {
             "POST",
             "/conferences/8402/questions/q-1/dismiss",
         ),
+        // Chat (W3b): every message, deleting one, muting someone.
+        (
+            Method::GET,
+            format!("{base}/chat"),
+            None,
+            "GET",
+            "/conferences/8402/chat",
+        ),
+        (
+            Method::POST,
+            format!("{base}/chat/m-1/delete"),
+            None,
+            "POST",
+            "/conferences/8402/chat/m-1/delete",
+        ),
+        (
+            Method::POST,
+            format!("{base}/participants/p1/chat-mute"),
+            Some(json!({ "on": true })),
+            "POST",
+            "/conferences/8402/participants/p1/chat-mute",
+        ),
     ];
     for (method, path, body, up_method, up_path) in &controls {
         let res = app.send_as(&olga, method.clone(), path, body.clone()).await;
@@ -736,6 +758,68 @@ async fn a_host_controls_their_room_from_their_own_session() {
     assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.text);
     assert_eq!(seen.lock().unwrap().len(), before + 3);
 
+    // Anyone of the tenant posts and reads the chat by their call;
+    // deleting, muting, and every message without a call, stay a host's
+    // (or a panelist's).
+    let before = seen.lock().unwrap().len();
+    let res = app
+        .send_as(
+            &pete,
+            Method::POST,
+            &format!("{base}/chat"),
+            Some(json!({ "call_id": " call-1 ", "text": "Hi", "to": "hosts" })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    let last = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(last.path, "/conferences/8402/chat");
+    assert_eq!(
+        last.body,
+        json!({ "call_id": "call-1", "text": "Hi", "to": "hosts" })
+    );
+    let res = app
+        .send_as(
+            &pete,
+            Method::GET,
+            &format!("{base}/chat?call_id=call-1"),
+            None,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["path"], "/conferences/8402/chat");
+    for (method, path, body) in [
+        (Method::GET, format!("{base}/chat"), None),
+        (Method::POST, format!("{base}/chat/m-1/delete"), None),
+        (
+            Method::POST,
+            format!("{base}/participants/p1/chat-mute"),
+            Some(json!({ "on": true })),
+        ),
+    ] {
+        let res = app.send_as(&pete, method.clone(), &path, body).await;
+        assert_eq!(
+            res.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path}: {}",
+            res.text
+        );
+    }
+    let res = app
+        .send_as(
+            &pete,
+            Method::POST,
+            &format!("{base}/chat"),
+            Some(json!({ "call_id": "call-1", "text": "Hi", "to": "everyone" })),
+        )
+        .await;
+    assert_eq!(
+        res.status.as_u16() / 100,
+        4,
+        "an unknown audience: {}",
+        res.text
+    );
+    assert_eq!(seen.lock().unwrap().len(), before + 2);
+
     // A webinar's panelist moderates its questions, and no more.
     app.create_user_with_role("pam", "end_user").await;
     new_meeting(
@@ -757,6 +841,16 @@ async fn a_host_controls_their_room_from_their_own_session() {
         .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.text);
     assert_eq!(res.json["path"], "/conferences/8404/questions/q-1/publish");
+    let res = app
+        .send_as(
+            &pam,
+            Method::POST,
+            &format!("{webinar}/chat/m-1/delete"),
+            None,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["path"], "/conferences/8404/chat/m-1/delete");
     let res = app
         .send_as(&pam, Method::DELETE, &format!("{webinar}/hands"), None)
         .await;
@@ -807,6 +901,24 @@ async fn a_webinar_has_panelists_who_mint_their_own_tokens() {
         .await;
     assert_eq!(both.status, StatusCode::OK, "{}", both.text);
     assert_eq!(both.json["panelists"], json!([pam, olga]));
+
+    // Chat (W3b): unset is the kind's default; a scope is kept, an
+    // unknown one refused, and null goes back to the default.
+    assert_eq!(both.json["chat"], Value::Null);
+    let res = app
+        .admin(Method::PATCH, &path, Some(json!({ "chat": "everyone" })))
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["chat"], "everyone");
+    let res = app
+        .admin(Method::PATCH, &path, Some(json!({ "chat": "all" })))
+        .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.text);
+    let res = app
+        .admin(Method::PATCH, &path, Some(json!({ "chat": null })))
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["chat"], Value::Null);
 
     // The owner may change them too.
     let olga_s = session(&app, "olga").await;

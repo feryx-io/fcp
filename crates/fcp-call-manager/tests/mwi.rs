@@ -8,7 +8,7 @@
 use fcp_core::storage::{CredentialStore, LineBindingStore, PhoneNumberStore, VoicemailStore};
 use fcp_events::{EventPublisher, PlatformEvent, VoicemailEvent};
 use fcp_testkit::cluster::private_redis_url;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::loopback;
 use fcp_testkit::{free_port, Phone, PhoneEvent, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
@@ -22,7 +22,7 @@ const SOON: Duration = Duration::from_secs(5);
 async fn node(db: &str, redis: &str, dir: &std::path::Path) -> (Service, SocketAddr) {
     std::fs::create_dir_all(dir.join("voicemail")).unwrap();
     let (sip_port, http) = (free_port(), free_port());
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(20);
     let config = format!(
         r#"
 [service]

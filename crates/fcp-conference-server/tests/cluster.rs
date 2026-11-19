@@ -6,7 +6,7 @@
 //! `FCP_TEST_DATABASE_URL` and `FCP_TEST_REDIS_URL`; skipped otherwise.
 
 use fcp_testkit::cluster::{ClusterOptions, ConferenceCluster};
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::{http_get, http_request, loopback};
 use fcp_testkit::{bins, free_port, Phone, PhoneEvent, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
@@ -41,7 +41,7 @@ impl Cluster {
         // one participant per node.
         let cm_sip_port = free_port();
         let cm_http = free_port();
-        let rtp_start = allocate_port_pair().rtp_port;
+        let rtp_start = allocate_rtp_range(40);
         let config = format!(
             r#"
 [service]

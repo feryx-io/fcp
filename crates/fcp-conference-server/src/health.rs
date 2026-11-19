@@ -209,6 +209,20 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/conferences/:room_number/questions/:qid/dismiss",
             post(dismiss_question_handler),
         )
+        // Chat (`docs/WEBINARS.md` §2.5, W3b): posted by a participant's
+        // call, deleted and muted by a host or panelist.
+        .route(
+            "/conferences/:room_number/chat",
+            get(list_chat_handler).post(post_chat_handler),
+        )
+        .route(
+            "/conferences/:room_number/chat/:mid/delete",
+            post(delete_chat_handler),
+        )
+        .route(
+            "/conferences/:room_number/participants/:pid/chat-mute",
+            post(mute_chat_handler),
+        )
         .route("/conferences/:room_number/stats", get(room_stats_handler))
         .route("/conferences/:room_number/announce", post(announce_handler))
         // Video (design §12): status, layout, pin, spotlight, per-participant on/off
@@ -921,6 +935,7 @@ async fn create_meeting_handler(
         panelist_pin: payload.panelist_pin,
         panelists: Vec::new(),
         qa: None,
+        chat: None,
         qa_anonymous: false,
         created_at: now,
         updated_at: now,
@@ -2037,6 +2052,164 @@ async fn moderate_handler(
             (StatusCode::OK, Json(serde_json::json!(view)))
         }
         Err(e) => qa_error(e),
+    }
+}
+
+/// The answer for a chat operation's error.
+fn chat_error(e: crate::conference_handler::ChatError) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::from_u16(e.status()).unwrap_or(StatusCode::BAD_REQUEST),
+        Json(serde_json::json!({ "error": e.to_string() })),
+    )
+}
+
+/// The participant on `call_id` when one is named, else `None`.
+fn optional_participant(
+    state: &ConferenceState,
+    key: &crate::rooms::RoomKey,
+    call_id: Option<&str>,
+) -> Result<Option<String>, (StatusCode, Json<serde_json::Value>)> {
+    match call_id.filter(|c| !c.trim().is_empty()) {
+        Some(call_id) => participant_of_call(state, key, call_id).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// `GET /conferences/:room/chat[?call_id=]` — the room's last messages, as
+/// the participant on that call sees them (and whether they are muted) or
+/// as a host does.
+async fn list_chat_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Query(q): Query<QuestionsQuery>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let pid = match optional_participant(&state, &key, q.call_id.as_deref()) {
+        Ok(pid) => pid,
+        Err(err) => return err,
+    };
+    match state.conference_handler.chat(&key, pid.as_deref()) {
+        Ok((messages, muted)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "messages": messages, "muted": muted })),
+        ),
+        Err(e) => chat_error(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PostChatRequest {
+    call_id: String,
+    text: String,
+    #[serde(default)]
+    to: fcp_core::chat::ChatAudience,
+}
+
+/// `POST /conferences/:room/chat` — the participant on `call_id` posts.
+async fn post_chat_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Json(req): Json<PostChatRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let pid = match participant_of_call(&state, &key, &req.call_id) {
+        Ok(pid) => pid,
+        Err(err) => return err,
+    };
+    match state
+        .conference_handler
+        .post_chat(&key, &pid, &req.text, req.to)
+    {
+        Ok(view) => (StatusCode::CREATED, Json(serde_json::json!(view))),
+        Err(e) => chat_error(e),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ChatModerationRequest {
+    /// The moderator's own call, when they are in the room: the room checks
+    /// they moderate and records them. Without it the caller has been
+    /// checked by the API.
+    #[serde(default)]
+    call_id: Option<String>,
+    #[serde(default)]
+    on: Option<bool>,
+}
+
+/// `POST /conferences/:room/chat/:mid/delete` — a host or panelist
+/// deletes a message for everyone.
+async fn delete_chat_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, mid)): Path<(String, String)>,
+    body: Option<Json<ChatModerationRequest>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let by = match optional_participant(&state, &key, req.call_id.as_deref()) {
+        Ok(by) => by,
+        Err(err) => return err,
+    };
+    match state
+        .conference_handler
+        .delete_chat(&key, by.as_deref(), &mid)
+    {
+        Ok(changed) => {
+            info!(room = %room_number, message = %mid, by = ?by, "AUDIT: a chat message deleted via API");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "message": mid, "changed": changed })),
+            )
+        }
+        Err(e) => chat_error(e),
+    }
+}
+
+/// `POST /conferences/:room/participants/:pid/chat-mute` — a host or
+/// panelist mutes (`on`) or unmutes a participant's chat.
+async fn mute_chat_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid)): Path<(String, String)>,
+    Json(req): Json<ChatModerationRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let Some(on) = req.on else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "on is required" })),
+        );
+    };
+    let by = match optional_participant(&state, &key, req.call_id.as_deref()) {
+        Ok(by) => by,
+        Err(err) => return err,
+    };
+    match state
+        .conference_handler
+        .mute_chat(&key, by.as_deref(), &pid, on)
+    {
+        Ok(changed) => {
+            info!(room = %room_number, participant = %pid, on, by = ?by, "AUDIT: a participant's chat muted via API");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "participant_id": pid, "on": on, "changed": changed })),
+            )
+        }
+        Err(e) => chat_error(e),
     }
 }
 

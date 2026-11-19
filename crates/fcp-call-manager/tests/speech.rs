@@ -6,7 +6,7 @@
 //! asks, and not when it does not. Skipped without `FCP_TEST_DATABASE_URL`.
 
 use fcp_core::storage::{LineBindingStore, PhoneNumberStore, VoicemailStore};
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::loopback;
 use fcp_testkit::stt::ScriptedStt;
 use fcp_testkit::{free_port, Phone, Seed, Service, TestDatabase};
@@ -30,7 +30,7 @@ async fn a_message_is_transcribed_when_its_mailbox_asks() {
     let scripted = ScriptedStt::start("stt-token", &[(SPOKEN_HZ, SPOKEN)]).await;
     let sip_port = free_port();
     let http = free_port();
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(40);
     let dir = tempfile::tempdir().unwrap();
     let config = format!(
         r#"

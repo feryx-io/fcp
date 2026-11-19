@@ -120,6 +120,10 @@ pub struct CompliancePolicy {
     /// mailbox's own `retention_days`, when shorter, applies as well.
     #[serde(default)]
     pub voicemail_retention_days: Option<u32>,
+    /// Chat in a room (`docs/WEBINARS.md` §2.5) older than this is
+    /// deleted.
+    #[serde(default)]
+    pub conference_chat_retention_days: Option<u32>,
     /// Call detail records are deleted only once the CDR archive holds
     /// them, confirmed (`docs/CDR_PIPELINE.md` §13, phase 5): retention
     /// waits for the archiver rather than removing the only copy.
@@ -159,6 +163,7 @@ impl CompliancePolicy {
             recording_retention_days: None,
             audit_retention_days: None,
             voicemail_retention_days: None,
+            conference_chat_retention_days: None,
             cdr_archive_required: false,
             recording_consent: RecordingConsentMode::None,
             recording_consent_prompt_id: None,
@@ -178,6 +183,7 @@ impl CompliancePolicy {
             || self.recording_retention_days.is_some()
             || self.audit_retention_days.is_some()
             || self.voicemail_retention_days.is_some()
+            || self.conference_chat_retention_days.is_some()
     }
 }
 
@@ -637,6 +643,9 @@ pub struct RetentionReport {
     /// Voicemail messages, their audio queued for removal.
     #[serde(default)]
     pub voicemail_messages_deleted: u64,
+    /// Chat messages posted in rooms.
+    #[serde(default)]
+    pub conference_chat_deleted: u64,
     pub audit_events_deleted: u64,
     /// What legal holds kept past a window, by class.
     #[serde(default)]
@@ -657,6 +666,7 @@ impl RetentionReport {
             recordings_deleted: 0,
             conference_recordings_deleted: 0,
             voicemail_messages_deleted: 0,
+            conference_chat_deleted: 0,
             audit_events_deleted: 0,
             held: Default::default(),
             errors: Vec::new(),
@@ -670,6 +680,7 @@ impl RetentionReport {
             + self.recordings_deleted
             + self.conference_recordings_deleted
             + self.voicemail_messages_deleted
+            + self.conference_chat_deleted
             + self.audit_events_deleted
     }
 }
@@ -691,6 +702,17 @@ pub trait ComplianceStore: Send + Sync {
         tenant_id: &TenantId,
         before: SystemTime,
     ) -> anyhow::Result<u64>;
+
+    /// Delete a tenant's chat in rooms (`docs/WEBINARS.md` §2.5) posted
+    /// before `before`, leaving what a legal hold covers.
+    async fn delete_conference_chat_before(
+        &self,
+        tenant_id: &TenantId,
+        before: SystemTime,
+    ) -> anyhow::Result<u64> {
+        let _ = (tenant_id, before);
+        anyhow::bail!("this store keeps no chat")
+    }
 
     async fn record_retention_run(&self, report: &RetentionReport) -> anyhow::Result<()>;
 
@@ -975,6 +997,21 @@ async fn apply_retention(storage: &DynStorage, policy: &CompliancePolicy) -> Ret
         }
     }
 
+    if let Some(days) = policy.conference_chat_retention_days {
+        match storage.compliance_store() {
+            Some(store) => match store
+                .delete_conference_chat_before(&tenant, cutoff(now, days))
+                .await
+            {
+                Ok(n) => report.conference_chat_deleted = n,
+                Err(e) => report.errors.push(format!("conference chat: {e}")),
+            },
+            None => report
+                .errors
+                .push("conference chat: store not configured".to_string()),
+        }
+    }
+
     match cdr_retention_cutoff(storage, policy, now).await {
         Ok((cutoff, held)) => {
             if let Some(before) = cutoff {
@@ -1028,6 +1065,10 @@ async fn apply_retention(storage: &DynStorage, policy: &CompliancePolicy) -> Ret
                         policy.recording_retention_days,
                     ),
                     (DataClass::Voicemail, policy.voicemail_retention_days),
+                    (
+                        DataClass::ConferenceChat,
+                        policy.conference_chat_retention_days,
+                    ),
                     (DataClass::AuditEvent, policy.audit_retention_days),
                 ] {
                     let Some(days) = days else { continue };

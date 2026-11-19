@@ -32,6 +32,7 @@ class RetentionRunResponse:
             recordings_deleted (int):
             conference_recordings_deleted (int): Conference recordings whose registry row the run removed.
             voicemail_messages_deleted (int):
+            conference_chat_deleted (int): Chat messages posted in rooms.
             audit_events_deleted (int):
             total_deleted (int):
             errors (list[str]):
@@ -45,6 +46,7 @@ class RetentionRunResponse:
     recordings_deleted: int
     conference_recordings_deleted: int
     voicemail_messages_deleted: int
+    conference_chat_deleted: int
     audit_events_deleted: int
     total_deleted: int
     errors: list[str]
@@ -71,6 +73,8 @@ class RetentionRunResponse:
 
         voicemail_messages_deleted = self.voicemail_messages_deleted
 
+        conference_chat_deleted = self.conference_chat_deleted
+
         audit_events_deleted = self.audit_events_deleted
 
         total_deleted = self.total_deleted
@@ -91,6 +95,7 @@ class RetentionRunResponse:
             "recordings_deleted": recordings_deleted,
             "conference_recordings_deleted": conference_recordings_deleted,
             "voicemail_messages_deleted": voicemail_messages_deleted,
+            "conference_chat_deleted": conference_chat_deleted,
             "audit_events_deleted": audit_events_deleted,
             "total_deleted": total_deleted,
             "errors": errors,
@@ -122,6 +127,8 @@ class RetentionRunResponse:
 
         voicemail_messages_deleted = d.pop("voicemail_messages_deleted")
 
+        conference_chat_deleted = d.pop("conference_chat_deleted")
+
         audit_events_deleted = d.pop("audit_events_deleted")
 
         total_deleted = d.pop("total_deleted")
@@ -138,6 +145,7 @@ class RetentionRunResponse:
             recordings_deleted=recordings_deleted,
             conference_recordings_deleted=conference_recordings_deleted,
             voicemail_messages_deleted=voicemail_messages_deleted,
+            conference_chat_deleted=conference_chat_deleted,
             audit_events_deleted=audit_events_deleted,
             total_deleted=total_deleted,
             errors=errors,

@@ -148,11 +148,52 @@ pub fn allocate_port_pair() -> PortPair {
     allocate_port_pair_at(IpAddr::V4(Ipv4Addr::LOCALHOST))
 }
 
+/// RTP ranges handed to nodes by [`allocate_rtp_range`], as
+/// `(start, end)` inclusive. A node binds its range's ports only as
+/// calls need them, so a free check alone cannot keep two nodes' ranges
+/// apart: two ranges that overlapped once gave two nodes the same port
+/// for one call, and that call's audio went to the wrong node.
+static RESERVED: std::sync::Mutex<Vec<(u16, u16)>> = std::sync::Mutex::new(Vec::new());
+
+fn reserved(port: u16) -> bool {
+    RESERVED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|&(start, end)| (start..=end).contains(&port))
+}
+
+/// The start of an even RTP port range `start..=start + len` for a node's
+/// `rtp_port_start`/`rtp_port_end`: every port in it free on loopback now,
+/// and never overlapping another range (or pair) handed out in this
+/// process. Use it, not [`allocate_port_pair`], for a node's range.
+pub fn allocate_rtp_range(len: u16) -> u16 {
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let len = len + 1; // the RTCP port after the last RTP port
+    for _ in 0..200 {
+        let slots = (30000 - len) / 2;
+        let start = 30000 + (rand_u16() % slots) * 2;
+        let end = start + len;
+        let mut taken = RESERVED.lock().unwrap_or_else(|e| e.into_inner());
+        if taken.iter().any(|&(s, e)| start <= e && s <= end) {
+            continue;
+        }
+        if (start..=end).all(|p| std::net::UdpSocket::bind((ip, p)).is_ok()) {
+            taken.push((start, end));
+            return start;
+        }
+    }
+    panic!("no free RTP range of {len} ports on loopback after 200 attempts");
+}
+
 /// As [`allocate_port_pair`], free at `ip`.
 pub fn allocate_port_pair_at(ip: IpAddr) -> PortPair {
     for _ in 0..200 {
         // 30000–59998, even.
         let port = 30000 + (rand_u16() % 15000) * 2;
+        if reserved(port) || reserved(port + 1) {
+            continue;
+        }
         let rtp = std::net::UdpSocket::bind((ip, port));
         let rtcp = std::net::UdpSocket::bind((ip, port + 1));
         if rtp.is_ok() && rtcp.is_ok() {

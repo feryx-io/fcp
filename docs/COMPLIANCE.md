@@ -18,6 +18,7 @@ window is a number of days or `null` (keep forever, the default):
 | `flow_trace_retention_days` | Flow execution traces of the tenant's calls |
 | `recording_retention_days` | **Call recordings** by their rows (the file is removed after, and the record stops naming it) and **conference recordings**, which their own node deletes (see below) |
 | `voicemail_retention_days` | Voicemail messages, with their audio. A mailbox's own `retention_days`, when set, applies too |
+| `conference_chat_retention_days` | Chat posted in rooms (`docs/WEBINARS.md` §2.5), by when it was posted |
 | `audit_retention_days` | Admin audit events |
 
 Windows are applied independently and in an order that keeps referential
@@ -163,9 +164,11 @@ Every part but `matter` narrows the hold, and an empty part covers
 everything: no window holds all time, no subjects or calls hold everyone,
 no classes hold every class (`cdr`, `call_recording`,
 `conference_recording`, `voicemail`, `sip_trace`, `flow_trace`,
-`audit_event`). Data is dated by a record's start, a recording's start, a
-message's receipt, a trace's capture or an audit event's time, and `to` is
-exclusive. An item is covered by the subjects or the calls, either one.
+`audit_event`, `device_capture`, `conference_chat`). Data is dated by a
+record's start, a recording's start, a message's receipt, a trace's
+capture, an audit event's time or a chat message's posting, and `to` is
+exclusive. A chat message in a room (`docs/WEBINARS.md` §2.5) is its
+sender's by where they called from and the name the room showed. An item is covered by the subjects or the calls, either one.
 
 Subjects are matched in a canonical form, so `+1 (415) 555-0100`,
 `tel:+1-415-555-0100` and `sip:4155550100@pbx.example` are the same

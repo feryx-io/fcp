@@ -6,7 +6,7 @@
 //! carried it. Skipped without `FCP_TEST_DATABASE_URL`.
 
 use fcp_core::TenantId;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::seed::SeededUser;
 use fcp_testkit::smoke::loopback;
 use fcp_testkit::{free_port, Phone, Seed, Service, TestDatabase};
@@ -215,7 +215,7 @@ async fn spawn_node(
 ) -> (Service, SocketAddr, u16, tempfile::TempDir) {
     let sip_port = free_port();
     let http = free_port();
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(60);
     let dir = tempfile::tempdir().expect("tempdir");
     let trunks: String = platform.iter().map(|c| c.platform_trunk_toml()).collect();
     // A signing key of this node's own, so a trunk that asks for
