@@ -67,7 +67,7 @@ impl Sbc {
     async fn start(core: SocketAddr, rate_limit: bool) -> Self {
         let sip = free_port();
         let http = free_port();
-        let rtp = fcp_testkit::media::allocate_port_pair().rtp_port;
+        let rtp = fcp_testkit::media::allocate_rtp_range(100);
         let unused = SocketAddr::from((CARRIER, 9));
         let config = format!(
             r#"[service]

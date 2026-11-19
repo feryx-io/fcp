@@ -13,7 +13,7 @@ use fcp_loadgen::budget::Budget;
 use fcp_loadgen::profile::Profile;
 use fcp_loadgen::run::RunOptions;
 use fcp_loadgen::target::Target;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::loopback;
 use fcp_testkit::{bins, free_port, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
@@ -53,7 +53,7 @@ impl Node {
         }
         let sip_port = free_port();
         let http = free_port();
-        let rtp_start = allocate_port_pair().rtp_port;
+        let rtp_start = allocate_rtp_range(60);
         let dir = tempfile::tempdir().expect("tempdir");
         let config = format!(
             r#"

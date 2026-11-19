@@ -5,7 +5,7 @@
 //! `FCP_TEST_DATABASE_URL`.
 
 use fcp_testkit::certs::ClusterCa;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::{loopback, toml_path};
 use fcp_testkit::{free_port, Phone, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
@@ -30,7 +30,7 @@ async fn stack() -> Option<Stack> {
     let db = TestDatabase::create().await?;
     let seed = Seed::new(db.url(), REALM).await;
     let (sip, sips, http) = (free_port(), free_port(), free_port());
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(20);
     let dir = tempfile::tempdir().unwrap();
     let ca = ClusterCa::new(dir.path());
     let cert = ca.node("e2e-srtp");

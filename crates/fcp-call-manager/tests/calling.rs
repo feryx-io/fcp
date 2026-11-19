@@ -7,7 +7,7 @@
 
 use fcp_core::storage::{LineBindingStore, PhoneNumberStore, VoicemailStore};
 use fcp_core::{CallTarget, CallingSettings, CallingStore};
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::seed::SeededUser;
 use fcp_testkit::smoke::loopback;
 use fcp_testkit::{free_port, Phone, PhoneEvent, Seed, Service, TestDatabase};
@@ -54,7 +54,7 @@ impl Stack {
         let sip_port = free_port();
         let http = free_port();
         let voicemail_port = free_port();
-        let rtp_start = allocate_port_pair().rtp_port;
+        let rtp_start = allocate_rtp_range(40);
         let dir = tempfile::tempdir().expect("tempdir");
         let config = format!(
             r#"

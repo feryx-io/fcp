@@ -6,7 +6,7 @@
 
 use fcp_core::storage::{CallDisposition, CdrKind, HangupParty};
 use fcp_core::TenantId;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::{http_get, http_post, http_request, loopback};
 use fcp_testkit::{bins, free_port, Phone, PhoneEvent, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
@@ -65,7 +65,7 @@ impl Stack {
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
         let http = free_port();
-        let rtp_start = allocate_port_pair().rtp_port;
+        let rtp_start = allocate_rtp_range(120);
         let dir = tempfile::tempdir().expect("tempdir");
         let config = format!(
             r#"
@@ -129,7 +129,7 @@ format = "compact"
     async fn start_call_manager_with(&self, extra: &str) -> SocketAddr {
         let sip_port = free_port();
         let http = free_port();
-        let rtp_start = allocate_port_pair().rtp_port;
+        let rtp_start = allocate_rtp_range(120);
         let config = format!(
             r#"
 [service]

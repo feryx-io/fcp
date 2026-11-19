@@ -9,7 +9,7 @@
 //! `FCP_TEST_REDIS_URL`.
 
 use fcp_testkit::cluster::private_redis_url;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::seed::SeededUser;
 use fcp_testkit::smoke::{http_get, loopback};
 use fcp_testkit::{free_port, Phone, Seed, Service, TestDatabase};
@@ -34,7 +34,7 @@ impl Node {
     async fn start(name: &str, database_url: &str, registrar: &str, redis: Option<&str>) -> Self {
         let sip_port = free_port();
         let http = free_port();
-        let rtp_start = allocate_port_pair().rtp_port;
+        let rtp_start = allocate_rtp_range(40);
         let dir = tempfile::tempdir().expect("tempdir");
         let (redis_url, events) = match redis {
             Some(url) => (

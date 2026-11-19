@@ -6,7 +6,7 @@
 
 use fcp_core::storage::{CredentialStore, DeviceStore, Registration, RegistrationStore};
 use fcp_testkit::cluster::private_redis_url;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::push::{StandInApns, StandInFcm, APNS_TEAM, APNS_TOPIC, FCM_PROJECT};
 use fcp_testkit::smoke::loopback;
 use fcp_testkit::{free_port, Seed, Service, TestDatabase};
@@ -53,7 +53,7 @@ async fn a_device_is_sent_a_test_push_and_a_dead_token_is_let_go() {
     let fcm = StandInFcm::start().await;
     let seed = Seed::new(db.url(), REALM).await;
     let (sip_port, http) = (free_port(), free_port());
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(40);
     let dir = tempfile::tempdir().unwrap();
     // The keys in files, as an operator keeps them.
     let apns_key = dir.path().join("apns.p8");
@@ -295,7 +295,7 @@ async fn push_node(
     redis: Option<&str>,
 ) -> PushNode {
     let (sip, sips, http) = (free_port(), free_port(), free_port());
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(40);
     let cert = ca.node(name);
     let key = dir.join("apns.p8");
     std::fs::write(&key, apns.config().key.unwrap()).unwrap();

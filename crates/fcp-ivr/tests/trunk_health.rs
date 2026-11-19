@@ -9,7 +9,7 @@
 //! `FCP_TEST_DATABASE_URL` and `FCP_TEST_REDIS_URL`; skipped otherwise.
 
 use fcp_testkit::cluster::private_redis_url;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::{free_port, loopback, toml_path};
 use fcp_testkit::{Seed, Service, TestDatabase};
 use std::net::SocketAddr;
@@ -149,7 +149,7 @@ async fn only_the_call_manager_probes_a_trunk_and_the_ivr_follows_it() {
 
     let dir = fcp_testkit::smoke::temp_dir();
     let (cm_sip, cm_http) = (free_port(), free_port());
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(60);
     let cm_config = format!(
         r#"[service]
 node_id = "follow-cm"

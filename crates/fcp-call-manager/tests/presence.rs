@@ -17,7 +17,7 @@ use fcp_core::presence_status::{ChosenStatus, OwnStatus, PresenceStatusStore, St
 use fcp_core::storage::CredentialStore;
 use fcp_events::{EventPublisher, PlatformEvent, PresenceEvent};
 use fcp_testkit::cluster::private_redis_url;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::loopback;
 use fcp_testkit::{free_port, Phone, PhoneEvent, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
@@ -51,7 +51,7 @@ async fn a_phone_in_another_tenant_watches_a_colleagues_lamp() {
     };
     let seed = Seed::new(db.url(), REALM).await;
     let (sip_port, http) = (free_port(), free_port());
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(200);
     let dir = tempfile::tempdir().unwrap();
     let config = format!(
         r#"
@@ -225,7 +225,7 @@ async fn node_on_redis(
     extra: &str,
 ) -> (Service, SocketAddr) {
     let (sip_port, http) = (free_port(), free_port());
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(200);
     let config = format!(
         r#"
 [service]

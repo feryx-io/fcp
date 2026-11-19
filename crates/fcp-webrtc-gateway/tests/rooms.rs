@@ -11,7 +11,7 @@ use bytes::Bytes;
 use fcp_core::storage::{CdrKind, HangupParty};
 use fcp_core::{JoinRole, JoinToken};
 use fcp_testkit::cluster::{ClusterOptions, ConferenceCluster};
-use fcp_testkit::media::{allocate_port_pair, tone_frame, Codec, ToneDetector};
+use fcp_testkit::media::{allocate_rtp_range, tone_frame, Codec, ToneDetector};
 use fcp_testkit::smoke::{http_request, loopback};
 use fcp_testkit::{bins, free_port, Phone, Seed, Service, TestDatabase};
 use forge_core::AudioCodec;
@@ -444,7 +444,7 @@ async fn conference_server_with(
 ) -> (Service, SocketAddr, u16) {
     let sip = free_port();
     let http = free_port();
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(120);
     let config = format!(
         r#"
 [service]

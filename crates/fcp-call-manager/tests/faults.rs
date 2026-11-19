@@ -21,7 +21,7 @@ use fcp_core::calling::CallingSettings;
 use fcp_core::storage::CdrKind;
 use fcp_testkit::cluster::private_redis_url;
 use fcp_testkit::cut::CutLink;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::pg_pair::PgPair;
 use fcp_testkit::seed::SeededUser;
 use fcp_testkit::smoke::{http_get, loopback};
@@ -140,7 +140,7 @@ async fn start_service(
     http: u16,
     storage: &str,
 ) -> Service {
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(40);
     let cluster = redis
         .map(|url| {
             format!(

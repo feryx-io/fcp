@@ -11,7 +11,7 @@
 use fcp_core::e911::{EmergencyCallRecord, EmergencyKind};
 use fcp_core::storage::{LineBindingStore, PhoneNumberStore};
 use fcp_testkit::cut::CutLink;
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::seed::SeededUser;
 use fcp_testkit::smoke::{http_get, loopback};
 use fcp_testkit::{free_port, Phone, Seed, Service, TestDatabase};
@@ -159,7 +159,7 @@ impl Stack {
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
         let http = free_port();
-        let rtp_start = allocate_port_pair().rtp_port;
+        let rtp_start = allocate_rtp_range(60);
         let dir = tempfile::tempdir().expect("tempdir");
         let edges = trusted_edges
             .iter()

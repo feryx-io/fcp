@@ -12,7 +12,7 @@
 use axum::{extract::State, routing::post, Json, Router};
 use fcp_core::flow_trace::{FlowTraceEventType, FlowTraceQuery, FlowTraceStore};
 use fcp_core::storage::{LineBindingStore, PhoneNumberStore};
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::loopback;
 use fcp_testkit::stt::ScriptedStt;
 use fcp_testkit::{free_port, Phone, Seed, Service, TestDatabase};
@@ -425,7 +425,7 @@ impl Node {
         let events = EventSink::start().await;
         let sip_port = free_port();
         let http = free_port();
-        let rtp_start = allocate_port_pair().rtp_port;
+        let rtp_start = allocate_rtp_range(40);
         let dir = tempfile::tempdir().unwrap();
         let config = format!(
             r#"

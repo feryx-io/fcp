@@ -59,7 +59,7 @@ impl Stack {
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
         let http = free_port();
-        let rtp_start = fcp_testkit::media::allocate_port_pair().rtp_port;
+        let rtp_start = fcp_testkit::media::allocate_rtp_range(40);
         let dir = tempfile::tempdir().expect("tempdir");
         let config = format!(
             r#"

@@ -14,7 +14,7 @@
 //! on the `PATH` (`npm`, `uv`) or whose TypeScript dependencies are not
 //! installed is skipped, unless `FCP_SDK_TESTS=required`, as CI sets it.
 
-use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::media::allocate_rtp_range;
 use fcp_testkit::smoke::{self, free_port, loopback};
 use fcp_testkit::{Phone, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
@@ -87,7 +87,7 @@ fn run(name: &str, dir: &Path, tool: &str, args: &[&str], url: &str, call_id: &s
 async fn call_manager(db: &TestDatabase, dir: &Path) -> (Service, u16, SocketAddr) {
     let sip_port = free_port();
     let http = free_port();
-    let rtp_start = allocate_port_pair().rtp_port;
+    let rtp_start = allocate_rtp_range(40);
     let config = format!(
         r#"
 [service]

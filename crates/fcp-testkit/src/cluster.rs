@@ -5,7 +5,7 @@
 //! of the nodes is the scenario's own to start.
 
 use crate::certs::ClusterCa;
-use crate::media::allocate_port_pair;
+use crate::media::allocate_rtp_range;
 use crate::smoke::{http_get, loopback};
 use crate::{bins, free_port, Service};
 use std::net::SocketAddr;
@@ -205,7 +205,7 @@ impl ConferenceCluster {
             let sip = free_port();
             let tls = free_port();
             let http = free_port();
-            let rtp_start = allocate_port_pair().rtp_port;
+            let rtp_start = allocate_rtp_range(120);
             let config = format!(
                 r#"
 [service]
