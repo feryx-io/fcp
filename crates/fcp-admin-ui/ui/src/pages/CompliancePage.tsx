@@ -39,6 +39,8 @@ const CLASSES: Array<{ value: DataClass; label: string }> = [
   { value: 'audit_event', label: 'Audit log' },
   { value: 'device_capture', label: 'App captures' },
   { value: 'conference_chat', label: 'Conference chat' },
+  { value: 'webinar_question', label: 'Webinar questions' },
+  { value: 'webinar_registrant', label: 'Webinar registrations' },
 ]
 
 const classLabel = (c: string) => CLASSES.find((k) => k.value === c)?.label ?? c
@@ -144,6 +146,8 @@ const RETENTION: Array<{ key: keyof CompliancePolicy & keyof UpdateCompliancePol
   { key: 'flow_trace_retention_days', label: 'Flow traces' },
   { key: 'audit_retention_days', label: 'Audit log' },
   { key: 'conference_chat_retention_days', label: 'Conference chat' },
+  { key: 'webinar_question_retention_days', label: 'Webinar questions' },
+  { key: 'webinar_registrant_retention_days', label: 'Webinar registrations' },
 ]
 
 /** Blank is "keep forever" (null); otherwise whole days. */
@@ -335,6 +339,10 @@ function RetentionTab() {
     },
     { accessorKey: 'voicemail_messages_deleted', header: 'Voicemail' },
     { accessorKey: 'conference_chat_deleted', header: 'Chat' },
+    {
+      id: 'webinars', header: 'Webinars',
+      cell: ({ row }) => row.original.webinar_questions_deleted + row.original.webinar_registrants_deleted,
+    },
     {
       id: 'traces', header: 'Traces',
       cell: ({ row }) => row.original.sip_traces_deleted + row.original.flow_traces_deleted,

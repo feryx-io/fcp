@@ -548,6 +548,89 @@ impl ConferenceCallHandler {
         }
     }
 
+    /// The registration a join token names, when it stands: `Ok(None)` for
+    /// a token naming none that the meeting admits without; the reason
+    /// phrase to refuse with otherwise.
+    pub(super) async fn admit_registrant(
+        &self,
+        meeting: &Meeting,
+        token: &fcp_core::JoinToken,
+    ) -> Result<Option<String>, &'static str> {
+        let attendee = ConferenceRole::from_token(token.role, meeting) == ConferenceRole::Attendee;
+        let Some(id) = token.registrant.as_deref() else {
+            return if attendee && meeting.is_webinar() && meeting.registration {
+                Err("Registration Required")
+            } else {
+                Ok(None)
+            };
+        };
+        let Some(store) = self.storage.registrant_store() else {
+            warn!(room = %meeting.room_number, "A registrant's token, and no registrations to check it against");
+            return Err("Registration Unavailable");
+        };
+        match store.get_registrant(&meeting.tenant_id, id).await {
+            Ok(Some(r)) if r.meeting_id == meeting.id.to_string() && r.stands() => Ok(Some(r.id)),
+            Ok(Some(r)) if r.meeting_id == meeting.id.to_string() => Err("Registration Revoked"),
+            Ok(_) => Err("No Such Registration"),
+            Err(e) => {
+                warn!(room = %meeting.room_number, error = %e, "A registration could not be read");
+                Err("Registration Unavailable")
+            }
+        }
+    }
+
+    /// A page of `key`'s audience: its attendees (in the room, on the stage
+    /// from it, or in the lobby), by participant id, `limit` after
+    /// `after`, and how many there are. For a host who wants to find
+    /// someone (`docs/WEBINARS.md` §2.6); nobody is NOTIFYed the list.
+    pub fn audience_page(
+        &self,
+        key: &RoomKey,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Option<(Vec<serde_json::Value>, Option<String>, usize)> {
+        let room = self.bridge.get_room(key).ok()?;
+        let calls = self
+            .room_sessions
+            .get(key)
+            .map(|c| c.clone())
+            .unwrap_or_default();
+        let mut audience: Vec<serde_json::Value> = calls
+            .iter()
+            .filter_map(|c| {
+                let s = self.sessions.get(c)?;
+                if s.trunk_peer.is_some() || s.role != ConferenceRole::Attendee {
+                    return None;
+                }
+                let lobby = self.in_lobby(key, &s.participant_id);
+                let rfc3339 = |t: SystemTime| {
+                    chrono::DateTime::<chrono::Utc>::from(t)
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                };
+                Some(serde_json::json!({
+                    "participant_id": s.participant_id,
+                    "display_name": s.display_name,
+                    "caller_id": s.caller_id,
+                    "registrant": s.registrant,
+                    "joined_at": rfc3339(s.joined_at),
+                    "hand": s.hand.map(rfc3339),
+                    "lobby": lobby,
+                    "on_stage": !lobby && !room.is_listener(&s.participant_id),
+                }))
+            })
+            .collect();
+        let total = audience.len();
+        let id_of = |v: &serde_json::Value| v["participant_id"].as_str().unwrap_or("").to_string();
+        audience.sort_by_key(id_of);
+        let start = after.map_or(0, |a| audience.partition_point(|v| id_of(v).as_str() <= a));
+        let page: Vec<serde_json::Value> =
+            audience.into_iter().skip(start).take(limit + 1).collect();
+        let more = page.len() > limit;
+        let page: Vec<serde_json::Value> = page.into_iter().take(limit).collect();
+        let next = more.then(|| page.last().map(id_of)).flatten();
+        Some((page, next, total))
+    }
+
     fn keep_sitting(&self, sitting: Sitting) {
         let Some(store) = self.storage.sitting_store().cloned() else {
             return;

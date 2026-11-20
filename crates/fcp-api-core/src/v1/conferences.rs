@@ -98,6 +98,9 @@ pub struct MeetingResponse {
     /// hosts only) or `off`; unset is `everyone` in a meeting and `hosts`
     /// in a webinar.
     pub chat: Option<String>,
+    /// Whether a webinar's attendees must register: one is admitted only
+    /// by the token minted for their registration.
+    pub registration: bool,
     #[serde(with = "crate::time::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
@@ -150,6 +153,7 @@ impl From<Meeting> for MeetingResponse {
             qa: m.qa,
             qa_anonymous: m.qa_anonymous,
             chat: m.chat,
+            registration: m.registration,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -245,6 +249,9 @@ pub struct CreateMeetingRequest {
     /// `everyone` in a meeting and `hosts` in a webinar.
     #[serde(default)]
     pub chat: Option<String>,
+    /// Whether a webinar's attendees must register.
+    #[serde(default)]
+    pub registration: bool,
 }
 
 fn default_true() -> bool {
@@ -428,6 +435,7 @@ pub struct UpdateMeetingRequest {
     /// default.
     #[serde(default, deserialize_with = "double_option")]
     pub chat: Option<Option<String>>,
+    pub registration: Option<bool>,
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
@@ -542,6 +550,7 @@ pub async fn create_meeting(
         qa: req.qa,
         qa_anonymous: req.qa_anonymous,
         chat: req.chat,
+        registration: req.registration,
         created_at: now,
         updated_at: now,
     };
@@ -744,6 +753,9 @@ pub async fn update_meeting(
     }
     if let Some(v) = req.qa_anonymous {
         meeting.qa_anonymous = v;
+    }
+    if let Some(v) = req.registration {
+        meeting.registration = v;
     }
     if let Some(v) = req.chat {
         meeting.chat = v;

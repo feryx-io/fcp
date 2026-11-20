@@ -73,6 +73,10 @@ pub struct MigrationTicket {
     /// so the new node tells it too.
     #[serde(default)]
     pub token_join: bool,
+    /// The webinar registration they joined by (`docs/WEBINARS.md` §2.6),
+    /// carried so the new node records who they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registrant: Option<String>,
     /// The draining node's id.
     #[serde(rename = "from")]
     pub from_node: String,
@@ -172,6 +176,7 @@ mod tests {
             gain: 1.5,
             video: false,
             token_join: false,
+            registrant: None,
             from_node: "conf-a".into(),
             expires_at: MigrationTicket::expiry_from_now(),
             nonce: MigrationTicket::new_nonce(),

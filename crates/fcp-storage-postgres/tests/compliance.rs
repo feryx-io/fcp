@@ -2088,6 +2088,18 @@ async fn a_tenants_deletion_removes_every_row_and_then_the_tenant() {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query(&format!("INSERT INTO webinar_questions (id, tenant_id, room_number, session_id, participant_id, text, asked_at, updated_at) VALUES ('q-{ts}', '{ts}', '8001', 's', 'p', 'why?', now(), now())"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(&format!("INSERT INTO conference_meetings (id, tenant_id, room_number, name) VALUES ('meet-{ts}', '{ts}', '8001', 'Town hall')"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(&format!("INSERT INTO webinar_registrants (id, tenant_id, meeting_id, name, created_at) VALUES ('reg-{ts}', '{ts}', 'meet-{ts}', 'Ann', now())"))
+            .execute(&pool)
+            .await
+            .unwrap();
         let mut room = Recording::starting(
             tenant,
             "8001",
@@ -2162,6 +2174,8 @@ async fn a_tenants_deletion_removes_every_row_and_then_the_tenant() {
         ("admin_audit_log", "tenant_id"),
         ("conference_recordings", "tenant_id"),
         ("conference_chat", "tenant_id"),
+        ("webinar_questions", "tenant_id"),
+        ("webinar_registrants", "tenant_id"),
     ] {
         assert_eq!(
             count(format!(
@@ -2402,5 +2416,254 @@ async fn chat_is_kept_held_found_and_erased_by_its_sender() {
     .await
     .unwrap();
     assert_eq!(logged, 2, "the retention run and the erasure");
+    db.finish().await;
+}
+
+/// A webinar's questions and registrations (`docs/WEBINARS.md` §2.5–2.6):
+/// retention deletes old ones, a hold on the asker (by where they called
+/// from) or the registrant (by email) keeps theirs and refuses its
+/// deletion, an export finds them, and an erasure removes them once the
+/// hold is released, logged.
+#[tokio::test]
+async fn webinar_questions_and_registrations_are_kept_held_found_and_erased() {
+    use fcp_core::legal_hold::{
+        DataClass, HoldRelease, HoldScope, LegalHold, LegalHoldViolation, SubjectIdentifier,
+    };
+    use fcp_core::storage::TenantStore;
+    use fcp_core::subject_erasure::SubjectEraseStore;
+    use fcp_core::subject_request::{ExportClass, SubjectDataStore, SubjectScope};
+    let db = require_db!();
+    let tenant = fcp_core::Tenant::new("webinars".to_string());
+    let t = tenant.id;
+    db.pg.put_tenant(tenant).await.unwrap();
+    let pool = db.pg.pool().clone();
+    sqlx::query(
+        "INSERT INTO conference_meetings (id, tenant_id, room_number, name)
+         VALUES ('meet-1', $1, '8001', 'Town hall')",
+    )
+    .bind(t.to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let ask = |id: &'static str, address: &'static str, days: u64| {
+        let pool = pool.clone();
+        async move {
+            let at = chrono::DateTime::<chrono::Utc>::from(days_ago(days));
+            sqlx::query(
+                "INSERT INTO webinar_questions
+                    (id, tenant_id, room_number, session_id, participant_id, asker_name,
+                     asker_address, text, asked_at, updated_at)
+                 VALUES ($1, $2, '8001', 's1', $1, NULL, $3, 'when?', $4, $4)",
+            )
+            .bind(id)
+            .bind(t.to_string())
+            .bind(address)
+            .bind(at)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    let register = |id: &'static str, email: &'static str, days: u64| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO webinar_registrants (id, tenant_id, meeting_id, name, email, created_at)
+                 VALUES ($1, $2, 'meet-1', 'Someone', $3, $4)",
+            )
+            .bind(id)
+            .bind(t.to_string())
+            .bind(email)
+            .bind(chrono::DateTime::<chrono::Utc>::from(days_ago(days)))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    // The subject asked anonymously: no name, only where they called from.
+    ask("q-subject", "sip:+14155550100@carrier.example", 40).await;
+    ask("q-other", "sip:+442071234567@carrier.example", 40).await;
+    ask("q-recent", "sip:+442071234567@carrier.example", 1).await;
+    register("reg-subject", "ann@example.com", 40).await;
+    register("reg-other", "bob@example.com", 40).await;
+    register("reg-recent", "bob@example.com", 1).await;
+    let ids = |table: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>(&format!("SELECT id FROM {table} ORDER BY id"))
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    let subjects = vec![
+        SubjectIdentifier::Number {
+            number: "+14155550100".into(),
+        },
+        SubjectIdentifier::Email {
+            address: "ann@example.com".into(),
+        },
+    ];
+    let keys = fcp_core::legal_hold::expand_subjects(&db.storage, &t, &subjects)
+        .await
+        .unwrap();
+    let hold = LegalHold {
+        id: fcp_core::LegalHoldId::new(),
+        tenant_id: t,
+        matter: "Case 8".into(),
+        reason: None,
+        scope: HoldScope {
+            subjects,
+            classes: vec![DataClass::WebinarQuestion, DataClass::WebinarRegistrant],
+            ..Default::default()
+        },
+        subject_keys: keys.clone(),
+        created_by: "counsel".into(),
+        created_at: SystemTime::now(),
+        released: None,
+    };
+    db.compliance.place_hold(&hold).await.unwrap();
+
+    // Retention deletes the other old rows and keeps the held ones.
+    let mut policy = CompliancePolicy::defaults(t);
+    policy.webinar_question_retention_days = Some(30);
+    policy.webinar_registrant_retention_days = Some(30);
+    db.compliance.put_compliance_policy(&policy).await.unwrap();
+    let back = db
+        .compliance
+        .get_compliance_policy(&t)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(back.webinar_question_retention_days, Some(30));
+    assert_eq!(back.webinar_registrant_retention_days, Some(30));
+    let report = run_retention(&db.storage, &policy, "retention-test").await;
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.webinar_questions_deleted, 1);
+    assert_eq!(report.webinar_registrants_deleted, 1);
+    assert_eq!(
+        report.held.get("webinar_question"),
+        Some(&1),
+        "{:?}",
+        report.held
+    );
+    assert_eq!(
+        report.held.get("webinar_registrant"),
+        Some(&1),
+        "{:?}",
+        report.held
+    );
+    assert_eq!(ids("webinar_questions").await, ["q-recent", "q-subject"]);
+    assert_eq!(
+        ids("webinar_registrants").await,
+        ["reg-recent", "reg-subject"]
+    );
+    db.compliance.record_retention_run(&report).await.unwrap();
+    let runs = db.compliance.list_retention_runs(&t, 1).await.unwrap();
+    assert_eq!(runs[0].webinar_questions_deleted, 1);
+    assert_eq!(runs[0].webinar_registrants_deleted, 1);
+    assert_eq!(
+        db.compliance
+            .hold_on(&t, DataClass::WebinarQuestion, "q-subject")
+            .await
+            .unwrap(),
+        Some(hold.id)
+    );
+    assert_eq!(
+        db.compliance
+            .hold_on(&t, DataClass::WebinarRegistrant, "reg-subject")
+            .await
+            .unwrap(),
+        Some(hold.id)
+    );
+
+    // An export finds the anonymous question by its address, and the
+    // registration by its email.
+    let scope = SubjectScope {
+        identifiers: vec!["+14155550100".into(), "ann@example.com".into()],
+        keys: [
+            fcp_core::subject::keys("+14155550100"),
+            fcp_core::subject::keys("ann@example.com"),
+        ]
+        .concat(),
+        ..Default::default()
+    };
+    for (class, want) in [
+        (ExportClass::WebinarQuestions, "q-subject"),
+        (ExportClass::WebinarRegistrants, "reg-subject"),
+    ] {
+        let page = db
+            .pg
+            .subject_rows(&t, class, &scope, None, 100)
+            .await
+            .unwrap();
+        let found: Vec<&str> = page.rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(found, [want], "{class:?}");
+    }
+
+    // An erasure is refused while the hold stands, and goes once released.
+    let erase = |class: ExportClass, id: &'static str| {
+        let doomed = vec![id.to_string()];
+        let pg = &db.pg;
+        async move {
+            deleting_as(
+                Deleter::new(DeletionCause::Erasure, "erasure-test"),
+                pg.delete_subject_rows(&t, class, &doomed),
+            )
+            .await
+        }
+    };
+    let refused = erase(ExportClass::WebinarQuestions, "q-subject")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.downcast::<LegalHoldViolation>().unwrap().hold_id,
+        hold.id.to_string()
+    );
+    assert!(erase(ExportClass::WebinarRegistrants, "reg-subject")
+        .await
+        .is_err());
+    assert!(db
+        .compliance
+        .release_hold(
+            &t,
+            &hold.id,
+            &HoldRelease {
+                by: "counsel".into(),
+                at: SystemTime::now(),
+                reason: "settled".into(),
+            },
+        )
+        .await
+        .unwrap());
+    assert_eq!(
+        erase(ExportClass::WebinarQuestions, "q-subject")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        erase(ExportClass::WebinarRegistrants, "reg-subject")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(ids("webinar_questions").await, ["q-recent"]);
+    assert_eq!(ids("webinar_registrants").await, ["reg-recent"]);
+    for class in ["webinar_question", "webinar_registrant"] {
+        let logged: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM deletion_log WHERE class = $1 AND tenant_id = $2",
+        )
+        .bind(class)
+        .bind(t.to_string())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            logged >= 2,
+            "{class}: retention and erasure logged, {logged}"
+        );
+    }
     db.finish().await;
 }

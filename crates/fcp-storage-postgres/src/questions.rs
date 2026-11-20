@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const COLUMNS: &str = "id, tenant_id, meeting_id, room_number, session_id, participant_id, \
                        asker_name, text, status, published, upvotes, answer, answered_live, \
-                       asked_at, updated_at";
+                       asked_at, updated_at, asker_address";
 
 fn to_datetime(st: SystemTime) -> DateTime<Utc> {
     DateTime::<Utc>::from(st)
@@ -50,6 +50,7 @@ impl PostgresQuestionStore {
             session_id: row.try_get("session_id")?,
             participant_id: row.try_get("participant_id")?,
             asker_name: row.try_get("asker_name")?,
+            asker_address: row.try_get("asker_address")?,
             text: row.try_get("text")?,
             status: status_of(&status),
             published: row.try_get("published")?,
@@ -69,9 +70,10 @@ impl QuestionStore for PostgresQuestionStore {
     async fn put_question(&self, q: &Question) -> anyhow::Result<()> {
         sqlx::query(&format!(
             "INSERT INTO webinar_questions ({COLUMNS})
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
              ON CONFLICT (id) DO UPDATE SET
                asker_name = EXCLUDED.asker_name,
+               asker_address = EXCLUDED.asker_address,
                text = EXCLUDED.text,
                status = EXCLUDED.status,
                published = EXCLUDED.published,
@@ -95,6 +97,7 @@ impl QuestionStore for PostgresQuestionStore {
         .bind(q.answered_live)
         .bind(to_datetime(q.asked_at))
         .bind(to_datetime(q.updated_at))
+        .bind(q.asker_address.as_deref())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -113,6 +116,25 @@ impl QuestionStore for PostgresQuestionStore {
         ))
         .bind(tenant.to_string())
         .bind(room_number)
+        .bind(limit.min(i64::MAX as usize) as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(Self::row_to_question).collect()
+    }
+
+    async fn questions_of_session(
+        &self,
+        tenant: &TenantId,
+        session_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Question>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {COLUMNS} FROM webinar_questions
+             WHERE tenant_id = $1 AND session_id = $2
+             ORDER BY asked_at, id LIMIT $3"
+        ))
+        .bind(tenant.to_string())
+        .bind(session_id)
         .bind(limit.min(i64::MAX as usize) as i64)
         .fetch_all(&self.pool)
         .await?;

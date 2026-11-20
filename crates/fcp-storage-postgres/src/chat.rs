@@ -101,4 +101,23 @@ impl ChatStore for PostgresChatStore {
         .await?;
         rows.into_iter().map(Self::row_to_record).collect()
     }
+
+    async fn chat_of_session(
+        &self,
+        tenant: &TenantId,
+        session_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ChatRecord>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {COLUMNS} FROM conference_chat
+             WHERE tenant_id = $1 AND session_id = $2
+             ORDER BY sent_at, id LIMIT $3"
+        ))
+        .bind(tenant.to_string())
+        .bind(session_id)
+        .bind(limit.min(i64::MAX as usize) as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(Self::row_to_record).collect()
+    }
 }

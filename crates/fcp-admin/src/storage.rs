@@ -68,6 +68,18 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
     let dyn_st = DynStorage::from_all_in_one(storage.clone())
         .with_emergency_store(emergency_store as Arc<dyn fcp_core::e911::EmergencyStore>)
         .with_compliance_store(compliance_store as Arc<dyn fcp_core::compliance::ComplianceStore>)
+        .with_sitting_store(Arc::new(
+            fcp_storage_postgres::sittings::PostgresSittingStore::new(storage.pool().clone()),
+        ))
+        .with_registrant_store(Arc::new(
+            fcp_storage_postgres::sittings::PostgresRegistrantStore::new(storage.pool().clone()),
+        ))
+        .with_question_store(Arc::new(
+            fcp_storage_postgres::questions::PostgresQuestionStore::new(storage.pool().clone()),
+        ))
+        .with_chat_store(Arc::new(
+            fcp_storage_postgres::chat::PostgresChatStore::new(storage.pool().clone()),
+        ))
         .with_recording_store(
             recording_store.clone() as Arc<dyn fcp_core::recording::RecordingStore>
         )

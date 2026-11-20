@@ -208,6 +208,13 @@ pub struct Meeting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<String>,
 
+    /// Whether a webinar's attendees must register (`docs/WEBINARS.md`
+    /// §2.6): an attendee is admitted only by the join token minted for
+    /// their registration, never by the guest PIN, `#` or a guest token.
+    /// Ignored in a meeting.
+    #[serde(default)]
+    pub registration: bool,
+
     /// Whether guests must enter a PIN to join
     pub require_guest_pin: bool,
 
@@ -478,6 +485,7 @@ mod tests {
             panelists: Vec::new(),
             qa: None,
             chat: None,
+            registration: false,
             qa_anonymous: false,
             video_codecs: vec![VideoCodec::Vp8, VideoCodec::H264, VideoCodec::Av1],
             created_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),

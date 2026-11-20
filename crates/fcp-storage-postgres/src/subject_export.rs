@@ -236,6 +236,22 @@ fn class_query(class: ExportClass) -> String {
              FROM conference_chat c
              WHERE tenant_id = $1 AND fcp_conference_chat_keys(sender_address, sender_name) && $4"
         }
+        ExportClass::WebinarQuestions => {
+            "SELECT id, 'ids' AS link, to_jsonb(q) AS data, asked_at AS at,
+                    NULL::text AS call_id, NULL::text AS file,
+                    array_remove(ARRAY[asker_address, asker_name], NULL) AS ids,
+                    false AS others
+             FROM webinar_questions q
+             WHERE tenant_id = $1 AND fcp_conference_chat_keys(asker_address, asker_name) && $4"
+        }
+        ExportClass::WebinarRegistrants => {
+            "SELECT id, 'ids' AS link, to_jsonb(r) AS data, created_at AS at,
+                    NULL::text AS call_id, NULL::text AS file,
+                    array_remove(ARRAY[email, name], NULL) AS ids,
+                    false AS others
+             FROM webinar_registrants r
+             WHERE tenant_id = $1 AND fcp_conference_chat_keys(email, name) && $4"
+        }
         ExportClass::NumberLists => {
             "SELECT pn.id || ':' || x.list || ':' || x.entry AS id, 'ids' AS link,
                     jsonb_build_object('number', pn.e164, 'list', x.list, 'entry', x.entry) AS data,

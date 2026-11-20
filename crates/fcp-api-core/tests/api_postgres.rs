@@ -234,6 +234,24 @@ impl App {
                     .with_compliance_store(
                         Arc::clone(&compliance) as Arc<dyn fcp_core::compliance::ComplianceStore>
                     )
+                    .with_sitting_store(Arc::new(
+                        fcp_storage_postgres::sittings::PostgresSittingStore::new(
+                            storage.pool().clone(),
+                        ),
+                    ))
+                    .with_registrant_store(Arc::new(
+                        fcp_storage_postgres::sittings::PostgresRegistrantStore::new(
+                            storage.pool().clone(),
+                        ),
+                    ))
+                    .with_question_store(Arc::new(
+                        fcp_storage_postgres::questions::PostgresQuestionStore::new(
+                            storage.pool().clone(),
+                        ),
+                    ))
+                    .with_chat_store(Arc::new(
+                        fcp_storage_postgres::chat::PostgresChatStore::new(storage.pool().clone()),
+                    ))
                     .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
                         as Arc<dyn fcp_core::prompt::PromptStore>)
                     .with_recording_store(Arc::new(PostgresRecordingStore::new(
@@ -7779,6 +7797,8 @@ async fn compliance_policy_audit_log_export_and_retention() {
                 "flow_trace_retention_days": 30,
                 "audit_retention_days": 90,
                 "conference_chat_retention_days": 60,
+                "webinar_question_retention_days": 45,
+                "webinar_registrant_retention_days": 120,
                 "recording_consent": "announce",
                 "recording_consent_prompt_id": prompt_id
             })),
@@ -7788,6 +7808,8 @@ async fn compliance_policy_audit_log_export_and_retention() {
     assert_eq!(saved.json["configured"], true);
     assert_eq!(saved.json["cdr_retention_days"], 30);
     assert_eq!(saved.json["conference_chat_retention_days"], 60);
+    assert_eq!(saved.json["webinar_question_retention_days"], 45);
+    assert_eq!(saved.json["webinar_registrant_retention_days"], 120);
     assert!(
         saved.json["recording_retention_days"].is_null(),
         "untouched stays forever"

@@ -41,6 +41,10 @@ class PolicyResponse:
             audit_retention_days (int | None | Unset):
             voicemail_retention_days (int | None | Unset):
             conference_chat_retention_days (int | None | Unset): Chat in rooms older than this is deleted.
+            webinar_question_retention_days (int | None | Unset): Webinar questions older than this (by when asked) are
+                deleted.
+            webinar_registrant_retention_days (int | None | Unset): Webinar registrations older than this (by when made) are
+                deleted.
             recording_consent_prompt_id (None | str | Unset):
             recording_notice_interval_secs (int | None | Unset): A notice tone every this many seconds while a call is
                 recorded.
@@ -63,6 +67,8 @@ class PolicyResponse:
     audit_retention_days: int | None | Unset = UNSET
     voicemail_retention_days: int | None | Unset = UNSET
     conference_chat_retention_days: int | None | Unset = UNSET
+    webinar_question_retention_days: int | None | Unset = UNSET
+    webinar_registrant_retention_days: int | None | Unset = UNSET
     recording_consent_prompt_id: None | str | Unset = UNSET
     recording_notice_interval_secs: int | None | Unset = UNSET
     cdr_archived_before: int | None | Unset = UNSET
@@ -131,6 +137,18 @@ class PolicyResponse:
         else:
             conference_chat_retention_days = self.conference_chat_retention_days
 
+        webinar_question_retention_days: int | None | Unset
+        if isinstance(self.webinar_question_retention_days, Unset):
+            webinar_question_retention_days = UNSET
+        else:
+            webinar_question_retention_days = self.webinar_question_retention_days
+
+        webinar_registrant_retention_days: int | None | Unset
+        if isinstance(self.webinar_registrant_retention_days, Unset):
+            webinar_registrant_retention_days = UNSET
+        else:
+            webinar_registrant_retention_days = self.webinar_registrant_retention_days
+
         recording_consent_prompt_id: None | str | Unset
         if isinstance(self.recording_consent_prompt_id, Unset):
             recording_consent_prompt_id = UNSET
@@ -176,6 +194,10 @@ class PolicyResponse:
             field_dict["voicemail_retention_days"] = voicemail_retention_days
         if conference_chat_retention_days is not UNSET:
             field_dict["conference_chat_retention_days"] = conference_chat_retention_days
+        if webinar_question_retention_days is not UNSET:
+            field_dict["webinar_question_retention_days"] = webinar_question_retention_days
+        if webinar_registrant_retention_days is not UNSET:
+            field_dict["webinar_registrant_retention_days"] = webinar_registrant_retention_days
         if recording_consent_prompt_id is not UNSET:
             field_dict["recording_consent_prompt_id"] = recording_consent_prompt_id
         if recording_notice_interval_secs is not UNSET:
@@ -279,6 +301,26 @@ class PolicyResponse:
         conference_chat_retention_days = _parse_conference_chat_retention_days(d.pop("conference_chat_retention_days", UNSET))
 
 
+        def _parse_webinar_question_retention_days(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        webinar_question_retention_days = _parse_webinar_question_retention_days(d.pop("webinar_question_retention_days", UNSET))
+
+
+        def _parse_webinar_registrant_retention_days(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        webinar_registrant_retention_days = _parse_webinar_registrant_retention_days(d.pop("webinar_registrant_retention_days", UNSET))
+
+
         def _parse_recording_consent_prompt_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -325,6 +367,8 @@ class PolicyResponse:
             audit_retention_days=audit_retention_days,
             voicemail_retention_days=voicemail_retention_days,
             conference_chat_retention_days=conference_chat_retention_days,
+            webinar_question_retention_days=webinar_question_retention_days,
+            webinar_registrant_retention_days=webinar_registrant_retention_days,
             recording_consent_prompt_id=recording_consent_prompt_id,
             recording_notice_interval_secs=recording_notice_interval_secs,
             cdr_archived_before=cdr_archived_before,

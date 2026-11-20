@@ -245,9 +245,11 @@ pub struct HoldScope {
 
 `DataClass` is `cdr`, `call_recording`, `conference_recording`,
 `voicemail`, `sip_trace`, `flow_trace`, `audit_event`, `device_capture`
-(`docs/CALL_DIAGNOSTICS.md`) and `conference_chat` (chat in a room,
-`docs/WEBINARS.md` §2.5, migration 144). An empty scope holds the whole
-tenant.
+(`docs/CALL_DIAGNOSTICS.md`), `conference_chat` (chat in a room,
+`docs/WEBINARS.md` §2.5, migration 144), and `webinar_question` and
+`webinar_registrant` (a webinar's questions and registrations,
+`docs/WEBINARS.md` §2.5–2.6, migration 147). An empty scope holds the
+whole tenant.
 
 ### 5.2 Enforcement
 
@@ -340,6 +342,8 @@ requests past `due_at` are a metric (§9).
 | Call and queue recordings (`call_recordings`) | Audio for matching calls | Delete |
 | Conference recordings | Audio of rooms the subject was recorded in (a participants column, §4) | Delete |
 | Chat in rooms (`conference_chat`, `docs/WEBINARS.md` §2.5) | Messages the subject posted, by where they called from and their name | Delete |
+| Webinar questions (`webinar_questions`, `docs/WEBINARS.md` §2.5) | Questions the subject asked, by where they called from and their name | Delete |
+| Webinar registrations (`webinar_registrants`, `docs/WEBINARS.md` §2.6) | The subject's registrations, by email and name | Delete |
 | `sip_trace_messages` | Raw messages of matching calls | Delete |
 | `flow_execution_traces` | Traces of matching calls | Delete |
 | `registrations`, presence (presentities, subscriptions, policies, lists, history), Redis presence keys | Current state and history | Delete |

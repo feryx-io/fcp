@@ -1201,3 +1201,35 @@ pub async fn end_webinar(
     )
     .await
 }
+
+/// GET /me/conferences/live/:room/audience — a page of a webinar's
+/// attendees, for a host who wants to find someone.
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/conferences/live/{room}/audience",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_audience",
+    params(("room" = String, Path), crate::page::PageQuery),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn audience(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    headers: HeaderMap,
+    Path(room): Path<String>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Proxied, ApiError> {
+    let meeting = hosted(&state, &claims, &headers, &room).await?;
+    page.limit()?;
+    forward(
+        &state,
+        &meeting,
+        reqwest::Method::GET,
+        &crate::v1::conferences_live::audience_path(&room, &page),
+        None,
+    )
+    .await
+}

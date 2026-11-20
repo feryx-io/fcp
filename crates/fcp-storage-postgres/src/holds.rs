@@ -111,6 +111,24 @@ fn class_sql(class: DataClass) -> ClassSql {
             keys: "fcp_conference_chat_keys(sender_address, sender_name)",
             call: "NULL::text",
         },
+        DataClass::WebinarQuestion => ClassSql {
+            table: "webinar_questions",
+            id: "id",
+            at: "asked_at",
+            tenant: "tenant_id = $1",
+            hold: "fcp_webinar_question_hold(tenant_id, asked_at, asker_address, asker_name)",
+            keys: "fcp_conference_chat_keys(asker_address, asker_name)",
+            call: "NULL::text",
+        },
+        DataClass::WebinarRegistrant => ClassSql {
+            table: "webinar_registrants",
+            id: "id",
+            at: "created_at",
+            tenant: "tenant_id = $1",
+            hold: "fcp_webinar_registrant_hold(tenant_id, created_at, email, name)",
+            keys: "fcp_conference_chat_keys(email, name)",
+            call: "NULL::text",
+        },
     }
 }
 

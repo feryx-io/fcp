@@ -3519,3 +3519,106 @@ async fn a_meeting_s_sitting_is_live_and_has_no_webinar_controls() {
     stack.wait_participants(0).await;
     stack.finish().await;
 }
+
+/// Registration (`docs/WEBINARS.md` §2.6, W4.2). A webinar that requires
+/// it admits an attendee only by a registrant's token: a standing
+/// registration is let in, a revoked one, a guest token and the `#` of a
+/// plain phone are not. The audience by page lists who is in, by their
+/// registration, and their leg's record names the sitting and the
+/// registration.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_webinar_that_requires_registration_admits_its_registrants_alone() {
+    let Some(stack) = Stack::start_conference("", 60, "join_secret = \"join-s3cret\"").await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({ "kind": "webinar", "host_pin": "9999", "registration": true }),
+        )
+        .await;
+    let ann_reg = stack.seed.registrant(ROOM, "Ann", false).await;
+    let ben_reg = stack.seed.registrant(ROOM, "Ben", true).await;
+    let token = |name: &str, registrant: Option<&str>| {
+        let t = fcp_core::JoinToken::new(
+            stack.seed.tenant_id,
+            ROOM,
+            name,
+            fcp_core::JoinRole::Attendee,
+            Duration::from_secs(600),
+        );
+        match registrant {
+            Some(r) => t.for_registrant(r),
+            None => t,
+        }
+        .mint(b"join-s3cret")
+    };
+
+    let host = stack.phone("hostess").await;
+    let host_call = join(&stack, &host).await;
+    dial_digits(&host_call, "9999").await;
+    go_live(&stack).await;
+
+    // Ann's registration stands: in.
+    let ann = stack.phone("ann").await;
+    let ann_call = ann
+        .call_with_headers(ROOM, &[("X-FCP-Join", &token("Ann", Some(&ann_reg)))])
+        .await
+        .unwrap();
+    if let Err(e) = ann_call.answered(SOON).await {
+        stack
+            .fail(&format!("Ann was not admitted: {e}"), &ann)
+            .await;
+    }
+    // Ben's was revoked; Carl has a token naming no registration.
+    for (name, registrant) in [("ben", Some(ben_reg.as_str())), ("carl", None)] {
+        let phone = stack.phone(name).await;
+        let call = phone
+            .call_with_headers(ROOM, &[("X-FCP-Join", &token(name, registrant))])
+            .await
+            .unwrap();
+        assert_eq!(call.failed(SOON).await, Some(403), "{name}");
+    }
+    // Dan dials in and presses #, as an attendee would without a token.
+    let dan = stack.phone("dan").await;
+    let dan_call = join(&stack, &dan).await;
+    dial_digits(&dan_call, "").await;
+    assert!(dan_call.ended(SOON).await, "Dan is let go");
+    stack.wait_participants(2).await;
+
+    // The audience by page: Ann, by her registration.
+    let (code, page) = stack
+        .get(&format!("/conferences/{ROOM}/audience?limit=10"))
+        .await;
+    assert_eq!(code, 200, "{page}");
+    assert_eq!(page["total"], 1, "{page}");
+    assert_eq!(page["data"][0]["registrant"], ann_reg.as_str(), "{page}");
+    assert_eq!(page["data"][0]["lobby"], false, "{page}");
+    assert!(page["next_cursor"].is_null(), "{page}");
+    let (_, sitting) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+    let sitting_id = sitting["id"].as_str().unwrap().to_string();
+
+    assert_eq!(ann_call.hangup().await.unwrap(), 200);
+    assert_eq!(host_call.hangup().await.unwrap(), 200);
+    stack.wait_participants(0).await;
+    let records = stack
+        .seed
+        .cdrs(
+            Some(fcp_core::storage::CdrKind::Conference),
+            // The host's and Ann's: Dan was let go before he joined.
+            2,
+            Duration::from_secs(10),
+        )
+        .await;
+    let anns = records
+        .iter()
+        .filter_map(|r| r.custom_data.as_ref())
+        .find(|c| c["registrant"] == ann_reg.as_str())
+        .unwrap_or_else(|| panic!("no record names Ann's registration: {records:#?}"));
+    assert_eq!(anns["sitting_id"], sitting_id.as_str(), "{anns}");
+    assert_eq!(anns["role"], "attendee", "{anns}");
+    assert_eq!(anns["lobby"], false, "{anns}");
+    stack.finish().await;
+}

@@ -87,20 +87,24 @@ pub fn treatment(class: ExportClass, cdrs: CdrErasure) -> Treatment {
         | WebhookDeliveries
         | NumberLists
         | PersonalContacts
-        | ConferenceChat => Treatment::Delete,
+        | ConferenceChat
+        | WebinarQuestions
+        | WebinarRegistrants => Treatment::Delete,
     }
 }
 
 /// The order an erasure acts in: records first (they name the calls), what
 /// hangs off the calls next, a mailbox's contents before the mailbox, the
 /// user last.
-pub const ERASURE_ORDER: [ExportClass; 30] = [
+pub const ERASURE_ORDER: [ExportClass; 32] = [
     ExportClass::Cdrs,
     ExportClass::CallRecordings,
     ExportClass::SipTraces,
     ExportClass::FlowTraces,
     ExportClass::ConferenceRecordings,
     ExportClass::ConferenceChat,
+    ExportClass::WebinarQuestions,
+    ExportClass::WebinarRegistrants,
     ExportClass::VoicemailMessages,
     ExportClass::VoicemailGreetings,
     ExportClass::Mailboxes,

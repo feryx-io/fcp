@@ -82,6 +82,11 @@ pub struct JoinToken {
     pub expires_at: u64,
     /// Random, so two tokens for the same room differ.
     pub nonce: String,
+    /// The webinar registration this token was minted for
+    /// (`docs/WEBINARS.md` §2.6): the room admits it while the registration
+    /// stands, and says who joined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registrant: Option<String>,
 }
 
 /// Why a token was refused.
@@ -106,6 +111,10 @@ pub const JOIN_TOKEN_VERSION: u8 = 1;
 
 /// The longest lifetime the admin API will mint.
 pub const MAX_JOIN_TOKEN_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The longest lifetime of a webinar registrant's token: they register
+/// ahead of the day. Revoking the registration stops it sooner.
+pub const MAX_REGISTRANT_TOKEN_TTL: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 
 pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
@@ -168,7 +177,14 @@ impl JoinToken {
             role,
             expires_at: unix_now().saturating_add(ttl.as_secs()),
             nonce: uuid::Uuid::new_v4().simple().to_string()[..16].to_string(),
+            registrant: None,
         }
+    }
+
+    /// This token, for the webinar registration `id`.
+    pub fn for_registrant(mut self, id: impl Into<String>) -> Self {
+        self.registrant = Some(id.into());
+        self
     }
 
     /// Sign with `secret` into the wire form.

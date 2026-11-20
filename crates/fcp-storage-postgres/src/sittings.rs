@@ -1,9 +1,11 @@
-//! PostgreSQL implementation of [`SittingStore`]: a room's sittings
-//! (`conference_sittings`, migration 145, `docs/WEBINARS.md` §2.6).
+//! PostgreSQL implementations of [`SittingStore`] — a room's sittings
+//! (`conference_sittings`, migration 145) — and [`RegistrantStore`] — a
+//! webinar's registrations (`webinar_registrants`, migration 146) —
+//! (`docs/WEBINARS.md` §2.6).
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use fcp_core::webinar::{Sitting, SittingStore};
+use fcp_core::webinar::{Registrant, RegistrantStore, Sitting, SittingStore};
 use fcp_core::TenantId;
 use sqlx::{Pool, Postgres, Row};
 use std::str::FromStr;
@@ -105,5 +107,110 @@ impl SittingStore for PostgresSittingStore {
         .fetch_optional(&self.pool)
         .await?;
         row.map(Self::row_to_sitting).transpose()
+    }
+}
+
+const REGISTRANT_COLUMNS: &str = "id, tenant_id, meeting_id, name, email, created_at, revoked_at";
+
+#[derive(Clone)]
+pub struct PostgresRegistrantStore {
+    pool: Pool<Postgres>,
+}
+
+impl PostgresRegistrantStore {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+
+    fn row_to_registrant(row: sqlx::postgres::PgRow) -> anyhow::Result<Registrant> {
+        let tenant: String = row.try_get("tenant_id")?;
+        let created_at: DateTime<Utc> = row.try_get("created_at")?;
+        let revoked_at: Option<DateTime<Utc>> = row.try_get("revoked_at")?;
+        Ok(Registrant {
+            id: row.try_get("id")?,
+            tenant_id: TenantId::from_str(&tenant)
+                .map_err(|e| anyhow::anyhow!("invalid tenant id {tenant}: {e}"))?,
+            meeting_id: row.try_get("meeting_id")?,
+            name: row.try_get("name")?,
+            email: row.try_get("email")?,
+            created_at: from_datetime(created_at),
+            revoked_at: revoked_at.map(from_datetime),
+        })
+    }
+}
+
+#[async_trait]
+impl RegistrantStore for PostgresRegistrantStore {
+    async fn put_registrant(&self, r: &Registrant) -> anyhow::Result<()> {
+        sqlx::query(&format!(
+            "INSERT INTO webinar_registrants ({REGISTRANT_COLUMNS})
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (id) DO UPDATE SET
+               name = EXCLUDED.name,
+               email = EXCLUDED.email,
+               revoked_at = EXCLUDED.revoked_at"
+        ))
+        .bind(&r.id)
+        .bind(r.tenant_id.to_string())
+        .bind(&r.meeting_id)
+        .bind(&r.name)
+        .bind(r.email.as_deref())
+        .bind(to_datetime(r.created_at))
+        .bind(r.revoked_at.map(to_datetime))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_registrant(
+        &self,
+        tenant: &TenantId,
+        id: &str,
+    ) -> anyhow::Result<Option<Registrant>> {
+        let row = sqlx::query(&format!(
+            "SELECT {REGISTRANT_COLUMNS} FROM webinar_registrants
+             WHERE tenant_id = $1 AND id = $2"
+        ))
+        .bind(tenant.to_string())
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(Self::row_to_registrant).transpose()
+    }
+
+    async fn registrants_of_meeting(
+        &self,
+        tenant: &TenantId,
+        meeting_id: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<(Vec<Registrant>, u64)> {
+        // Keyset over (created_at, id), from the registration `after`.
+        let rows = sqlx::query(&format!(
+            "SELECT {REGISTRANT_COLUMNS} FROM webinar_registrants r
+             WHERE tenant_id = $1 AND meeting_id = $2
+               AND ($3::TEXT IS NULL OR (created_at, id) > (
+                     SELECT created_at, id FROM webinar_registrants
+                     WHERE tenant_id = $1 AND id = $3))
+             ORDER BY created_at, id LIMIT $4"
+        ))
+        .bind(tenant.to_string())
+        .bind(meeting_id)
+        .bind(after)
+        .bind(limit.min(i64::MAX as usize) as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        let total: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM webinar_registrants WHERE tenant_id = $1 AND meeting_id = $2",
+        )
+        .bind(tenant.to_string())
+        .bind(meeting_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let list = rows
+            .into_iter()
+            .map(Self::row_to_registrant)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok((list, total.max(0) as u64))
     }
 }

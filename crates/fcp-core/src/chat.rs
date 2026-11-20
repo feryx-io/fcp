@@ -199,6 +199,14 @@ pub trait ChatStore: Send + Sync {
         room_number: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<ChatRecord>>;
+    /// One sitting's messages in the tenant, oldest first, at most `limit`
+    /// (`docs/WEBINARS.md` §2.6: a webinar's attendance).
+    async fn chat_of_session(
+        &self,
+        tenant: &crate::TenantId,
+        session_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ChatRecord>>;
 }
 
 impl ChatMessage {

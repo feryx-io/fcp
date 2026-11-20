@@ -593,6 +593,13 @@ async fn a_host_controls_their_room_from_their_own_session() {
             "POST",
             "/conferences/8402/webinar/end",
         ),
+        (
+            Method::GET,
+            format!("{base}/audience?limit=5&cursor=p1"),
+            None,
+            "GET",
+            "/conferences/8402/audience",
+        ),
         // Chat (W3b): every message, deleting one, muting someone.
         (
             Method::GET,
@@ -1038,12 +1045,247 @@ async fn an_administrator_takes_a_webinar_live_and_ends_it() {
             res.text
         );
     }
+    // The audience by page, its paging passed on.
+    let res = app
+        .admin(
+            Method::GET,
+            "/api/v1/conferences/live/8410/audience?limit=5&cursor=p1",
+            None,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["path"], "/conferences/8410/audience");
+    let res = app
+        .admin(
+            Method::GET,
+            "/api/v1/conferences/live/8410/audience?limit=0",
+            None,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.text);
     {
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 3);
+        assert_eq!(seen.len(), 4);
         assert!(seen
             .iter()
             .all(|up| up.tenant.as_deref() == Some(app.tenant_a.to_string().as_str())));
+    }
+    app.finish().await;
+}
+
+/// A webinar's registrations and attendance (`docs/WEBINARS.md` §2.6,
+/// W4.2). An administrator registers two people, each handed an attendee
+/// token naming their registration; lists them a page at a time; mints a
+/// token again and revokes a registration, after which none is minted for
+/// it. A sitting's attendance is read back from the conference legs that
+/// name it, with who of the registered came, its peak, its questions and
+/// its chat. A meeting has sittings but no registrations, and another
+/// tenant's webinar is not found.
+#[tokio::test]
+async fn a_webinar_s_registrants_and_attendance() {
+    use fcp_core::webinar::{Sitting, SittingStore};
+    let app = require_app!().with_join_secret();
+    let id = new_meeting(
+        &app,
+        app.tenant_a,
+        "8420",
+        json!({ "kind": "webinar", "registration": true }),
+    )
+    .await;
+    let meeting_path = format!("/api/v1/conferences/meetings/{id}");
+    let res = app.admin(Method::GET, &meeting_path, None).await;
+    assert_eq!(res.json["registration"], true, "{}", res.text);
+    let base = format!("{meeting_path}/registrants");
+
+    let mut regs = Vec::new();
+    for (name, email) in [("Ann", Some("ann@example.com")), ("Ben", None)] {
+        let res = app
+            .admin(
+                Method::POST,
+                &base,
+                Some(json!({ "name": name, "email": email })),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+        let token = fcp_core::JoinToken::verify(
+            res.json["token"]["token"].as_str().unwrap(),
+            b"join-s3cret",
+        )
+        .unwrap();
+        let rid = res.json["registrant"]["id"].as_str().unwrap().to_string();
+        assert_eq!(token.registrant.as_deref(), Some(rid.as_str()));
+        assert_eq!(token.role, fcp_core::JoinRole::Attendee);
+        assert_eq!(token.display_name, name);
+        regs.push(rid);
+    }
+    for body in [
+        json!({ "name": "" }),
+        json!({ "name": "Cy", "email": "nope" }),
+        json!({ "name": "Cy", "ttl_secs": 0 }),
+    ] {
+        let res = app.admin(Method::POST, &base, Some(body.clone())).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{body}: {}", res.text);
+    }
+    let page = app
+        .admin(Method::GET, &format!("{base}?limit=1"), None)
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    assert_eq!(page.body["total"], 2, "{}", page.text);
+    assert_eq!(page.json[0]["id"], regs[0].as_str());
+    let cursor = page.body["next_cursor"].as_str().unwrap();
+    let next = app
+        .admin(
+            Method::GET,
+            &format!("{base}?limit=1&cursor={cursor}"),
+            None,
+        )
+        .await;
+    assert_eq!(next.json[0]["id"], regs[1].as_str(), "{}", next.text);
+    assert!(next.body["next_cursor"].is_null());
+    let one = app
+        .admin(Method::GET, &format!("{base}/{}", regs[0]), None)
+        .await;
+    assert_eq!(one.json["email"], "ann@example.com", "{}", one.text);
+
+    let again = app
+        .admin(
+            Method::POST,
+            &format!("{base}/{}/token", regs[0]),
+            Some(json!({ "ttl_secs": 3600 })),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::CREATED, "{}", again.text);
+    let revoked = app
+        .admin(Method::DELETE, &format!("{base}/{}", regs[1]), None)
+        .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.text);
+    assert!(revoked.json["revoked_at"].is_string(), "{}", revoked.text);
+    let res = app
+        .admin(Method::POST, &format!("{base}/{}/token", regs[1]), None)
+        .await;
+    assert_eq!(res.status, StatusCode::CONFLICT, "{}", res.text);
+
+    // One sitting: Ann came twice, a host was on the stage, Ben never did.
+    let sitting = Sitting {
+        id: "sit-w42".into(),
+        tenant_id: app.tenant_a,
+        meeting_id: Some(id.clone()),
+        room_number: "8420".into(),
+        kind: "webinar".into(),
+        started_at: SystemTime::now() - Duration::from_secs(3600),
+        live_at: Some(SystemTime::now() - Duration::from_secs(3000)),
+        ended_at: Some(SystemTime::now() - Duration::from_secs(600)),
+        ended_by: Some("api".into()),
+    };
+    fcp_storage_postgres::sittings::PostgresSittingStore::new(app.storage.pool().clone())
+        .put_sitting(&sitting)
+        .await
+        .unwrap();
+    let ago = |s: u64| SystemTime::now() - Duration::from_secs(s);
+    let leg = |pid: &str, role: &str, registrant: Option<&str>, from: u64, to: u64, lobby: bool| {
+        fcp_cdr::RecordBuilder::new(
+            fcp_core::storage::CdrKind::Conference,
+            fcp_core::CallId::new(),
+            app.tenant_a,
+        )
+        .from(format!("sip:{pid}@example.com"), Some(pid.to_string()))
+        .to("conference:8420".to_string(), None)
+        .started_at(ago(from))
+        .answered_at(Some(ago(from)))
+        .ended_at(Some(ago(to)))
+        .custom_data(Some(json!({
+            "participant_id": pid,
+            "role": role,
+            "registrant": registrant,
+            "sitting_id": "sit-w42",
+            "lobby": lobby,
+        })))
+        .build()
+    };
+    use fcp_core::storage::CdrStore;
+    for record in [
+        leg("host", "host", None, 3400, 700, false),
+        leg("ann1", "attendee", Some(&regs[0]), 2900, 2000, false),
+        leg("ann2", "attendee", Some(&regs[0]), 1900, 1000, false),
+        leg("wait", "attendee", None, 3300, 3200, true),
+    ] {
+        app.storage.insert_cdr(record).await.unwrap();
+    }
+    // Another sitting's leg is not this one's.
+    let mut other = leg("x", "attendee", None, 100, 50, false);
+    other.custom_data = Some(json!({ "sitting_id": "sit-other", "role": "attendee" }));
+    app.storage.insert_cdr(other).await.unwrap();
+
+    let sittings = app
+        .admin(Method::GET, &format!("{meeting_path}/sittings"), None)
+        .await;
+    assert_eq!(sittings.status, StatusCode::OK, "{}", sittings.text);
+    assert_eq!(sittings.json[0]["id"], "sit-w42");
+    assert_eq!(sittings.json[0]["ended_by"], "api");
+    for path in [
+        format!("{meeting_path}/attendance"),
+        format!("{meeting_path}/attendance?sitting=sit-w42"),
+    ] {
+        let report = app.admin(Method::GET, &path, None).await;
+        assert_eq!(report.status, StatusCode::OK, "{path}: {}", report.text);
+        let r = &report.json;
+        assert_eq!(r["sitting"]["id"], "sit-w42", "{r}");
+        assert_eq!(r["legs"].as_array().unwrap().len(), 4, "{r}");
+        assert_eq!(r["attendees"], 2, "the host and Ann: {r}");
+        assert_eq!(r["peak"], 2, "{r}");
+        let ann = r["registrants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == regs[0].as_str())
+            .unwrap();
+        assert_eq!(ann["attended"], true, "{r}");
+        assert_eq!(ann["attended_secs"], 1800, "{r}");
+        let ben = r["registrants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == regs[1].as_str())
+            .unwrap();
+        assert_eq!(ben["attended"], false, "{r}");
+        assert!(ben["revoked_at"].is_string(), "{r}");
+    }
+    let res = app
+        .admin(
+            Method::GET,
+            &format!("{meeting_path}/attendance?sitting=nope"),
+            None,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.text);
+
+    // A meeting has no registrations; another tenant's webinar is not found.
+    let plain = new_meeting(&app, app.tenant_a, "8421", json!({})).await;
+    let res = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/conferences/meetings/{plain}/registrants"),
+            Some(json!({ "name": "Ann" })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CONFLICT, "{}", res.text);
+    let theirs = new_meeting(&app, app.tenant_b, "8422", json!({ "kind": "webinar" })).await;
+    for (method, path) in [
+        (
+            Method::GET,
+            format!("/api/v1/conferences/meetings/{theirs}/registrants"),
+        ),
+        (
+            Method::GET,
+            format!("/api/v1/conferences/meetings/{theirs}/attendance"),
+        ),
+        (
+            Method::GET,
+            format!("/api/v1/conferences/meetings/{theirs}/sittings"),
+        ),
+    ] {
+        let res = app.admin(method, &path, None).await;
+        assert_eq!(res.status, StatusCode::NOT_FOUND, "{path}: {}", res.text);
     }
     app.finish().await;
 }
