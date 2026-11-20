@@ -1398,6 +1398,8 @@ async fn main() -> Result<()> {
             /// Membership's active-call counter: the load this node
             /// advertises, read by every heartbeat.
             active_calls: Arc<std::sync::atomic::AtomicUsize>,
+            /// Live cluster members, to find a webinar's stage.
+            members: Arc<dashmap::DashMap<String, fcp_cluster::ClusterMember>>,
         }
         #[async_trait::async_trait]
         impl conference_handler::RoomRegistry for RedisRoomRegistry {
@@ -1413,6 +1415,63 @@ async fn main() -> Result<()> {
                         warn!(error = %e, room = %room_number, "Conference registry lock lookup failed; room starts unlocked");
                         false
                     }
+                }
+            }
+
+            async fn claim_stage(
+                &self,
+                tenant_id: &str,
+                room_number: &str,
+            ) -> conference_handler::StageClaim {
+                use conference_handler::StageClaim;
+                let record = match self.registry.room(tenant_id, room_number).await {
+                    Ok(record) => record,
+                    Err(e) => {
+                        warn!(error = %e, room = %room_number, "Conference registry read failed; the webinar's stage is left alone");
+                        return StageClaim::Unknown;
+                    }
+                };
+                let me = self.registry.node_id().to_string();
+                let alive = |id: &str| {
+                    self.members.get(id).is_some_and(|m| {
+                        m.node_type == fcp_cluster::CONFERENCE_NODE_TYPE && !m.draining
+                    })
+                };
+                // A stage that stopped hosting the room, left the cluster
+                // or is draining has gone, and is taken from it.
+                let gone = match record.stage.as_deref() {
+                    Some(stage) if stage == me => None,
+                    Some(stage) if record.live_stage().is_some() && alive(stage) => {
+                        return match self.members.get(stage) {
+                            Some(m) => StageClaim::Elsewhere(Box::new(m.value().clone())),
+                            None => StageClaim::Unknown,
+                        };
+                    }
+                    other => other.map(str::to_string),
+                };
+                match self
+                    .registry
+                    .claim_stage(tenant_id, room_number, gone.as_deref())
+                    .await
+                {
+                    Ok(holder) if holder == me => {
+                        info!(room = %room_number, taken_from = gone.as_deref().unwrap_or("-"), "This node is the webinar's stage");
+                        StageClaim::Mine
+                    }
+                    Ok(holder) => match self.members.get(&holder) {
+                        Some(m) => StageClaim::Elsewhere(Box::new(m.value().clone())),
+                        None => StageClaim::Unknown,
+                    },
+                    Err(e) => {
+                        warn!(error = %e, room = %room_number, "The webinar's stage could not be claimed");
+                        StageClaim::Unknown
+                    }
+                }
+            }
+
+            async fn release_stage(&self, tenant_id: &str, room_number: &str) {
+                if let Err(e) = self.registry.release_stage(tenant_id, room_number).await {
+                    warn!(error = %e, room = %room_number, "The webinar's stage could not be given up");
                 }
             }
 
@@ -1443,6 +1502,7 @@ async fn main() -> Result<()> {
             registry: registry.clone(),
             trunks: trunk_manager,
             active_calls: cm.active_calls_counter(),
+            members: Arc::clone(cm.members_map()),
         }));
 
         let refresh_handler = Arc::clone(&conference_handler);

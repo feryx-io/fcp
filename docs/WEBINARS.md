@@ -764,6 +764,110 @@ For an audience that is not on FCP at all.
   - Edge nodes on one-way trunks from the stage, placement for attendees, and
     promotion across a trunk.
   - Measured with fcp-loadgen across two and three nodes, to 5,000 attendees.
+  - **The plan** (written 2026-11-19 from the code). In four parts, each
+    with its own PR.
+    - **What is there.** Placement (`fcp_cluster::choose_conference_node`)
+      keeps a room on the fullest hosting node under
+      `conference_node_capacity`, then spreads it to the least-loaded node,
+      preferring the caller's region. Every two nodes hosting a room are
+      trunked (the lower node id dials). A trunk is a contributor in each
+      room's mixer and carries its node's own callers only
+      (`audio_bridge.rs`: every trunk is left out of a trunk's mix). Hands,
+      questions, chat, the sitting and the lobby are each node's own.
+      Placement knows nothing of roles: the call manager places a caller
+      before the PIN, and a token names its role only to the room.
+    - **Decisions** (each follows §2.7 and question 8):
+      1. **The stage is a field of the room's registry hash**
+         (`__stage`, the node id), claimed by the first host or panelist to
+         join a webinar while no live node holds it (`HSETNX`, or replacing
+         a stage node gone from membership). The stage gives it up when its
+         sitting ends or the room is destroyed. A meeting never has one, so
+         nothing changes for meetings.
+      2. **Placement of a webinar's callers** (`choose_webinar_node`, given
+         the meeting's kind with its video need): the stage while it hosts
+         fewer than `conference_webinar_stage_share` (percent, default 50)
+         of `conference_node_capacity`, then today's rule over every other
+         node, so edges pack in the caller's region. Capacity 0 keeps the
+         whole webinar on one node, as today. With no stage yet, today's
+         rule.
+      3. **A host or panelist who lands on an edge is moved to the stage**
+         by the drain's migration: a REFER with a signed ticket, executed by
+         whoever holds the leg. The ticket gains `panelist`, so the role
+         survives the move. Attendees are never moved: a promoted attendee's
+         voice crosses their edge's trunk (§2.7).
+      4. **Trunks form a tree.** An edge trunks with the stage only; the
+         stage with every edge. The lower node id still dials.
+      5. **The stage is the hub.** The stage's trunk to an edge carries the
+         whole room except that edge's own trunk: the stage's people and
+         every other edge's promoted attendees. An edge's trunk carries its
+         own contributors, which are its promoted attendees alone, since
+         listeners contribute nothing. So audio never loops: only the hub
+         relays, and never back down the trunk it came from.
+      6. **The stage holds the webinar.** The sitting, its phase, questions
+         and chat are the stage's. An edge forwards what its people send
+         (a hand, a question, an upvote, a chat post) to the stage over the
+         internal routes under `cluster.secret`. It tells its people what
+         the stage announces: the phase, the questions and chat each may
+         see, and a lowered hand. An edge lets its own lobby in at its own
+         `lobby_admit_per_sec` when the stage goes live, and ends when the
+         stage ends. The sitting's id is the stage's, so questions, chat and
+         attendance read as one sitting.
+      7. **Video to an edge** is the stage's composite once over the
+         forwarding trunk (R7). The edge's audience is served it by
+         passthrough (`PassthroughMode::On` for an edge's audience), so an
+         edge encodes nothing.
+    - **W5.1: the tree.** Decisions 1–5: the stage in the registry, webinar
+      placement, a host moved to the stage, the tree's trunks and the hub
+      mix. **Done** (v0.25.597). As built:
+      - **The stage.** `ConferenceRegistry::claim_stage` and
+        `release_stage` (Lua scripts over the room's hash);
+        `RoomRecord::stage` and `live_stage`. A stage is live while its node
+        is among the room's fresh hosts. A claim takes it from a holder
+        that is not live, has left membership, or is draining. A host or
+        panelist joining a webinar claims it
+        (`conference_handler/stage.rs`). The stage is given up when the
+        room's sitting closes on its node.
+      - **Placement.** `fcp_cluster::choose_webinar_node`, used by the
+        call manager for a webinar's callers (the selector now takes
+        `webinar`) under `[b2bua] conference_webinar_stage_share` (default
+        50). The WebRTC gateway does not load the meeting, so it places by
+        a stage in the registry at the same default share.
+      - **A host on an edge** is referred to the stage (`refer_to_node`,
+        tried for five seconds while their leg's dialog confirms). The
+        ticket already brought a webinar's non-attendee back as a panelist.
+      - **Trunks.** The trunk manager reads the room's record: an edge
+        trunks with the stage alone (`trunks::tree_peers`), and it marks the
+        room on this node `stage` or `edge` (`webinar_node` on
+        `GET /conferences/{room}`). The trunk's audio bridge takes the
+        stage's flag: on the stage, a trunk's mix is the whole room but that
+        trunk.
+      - **Fixed:**
+        - an edge's stage is always empty, so an edge no longer ends its
+          webinar after `webinar_stage_grace_secs`;
+        - a webinar's lobby counts towards the registry, and letting it in
+          updates the registry. Before, an edge whose attendees all came
+          through the lobby never published them, so placement could not
+          see them and the edge was never trunked.
+      - **Proved** by `cluster.rs`
+        `a_webinar_over_three_nodes_is_a_stage_and_its_edges`, on three
+        nodes at a capacity of 1:
+        - the host claims the stage, and the two attendees land on an edge
+          each;
+        - each edge is trunked to the stage alone, and the stage to both;
+        - the stage is heard on both edges;
+        - an attendee promoted on one edge is heard on the stage and, through
+          it, on the other edge;
+        - a panelist placed on an edge is moved to the stage and heard.
+
+        Until W5.2, each node's phase is its own, so the test takes every
+        node live.
+    - **W5.2: the webinar across nodes.** Decision 6: phase, lobby, hands,
+      questions and chat through the stage; the roster's audience count as
+      the sum over the edges.
+    - **W5.3: video to edges.** Decision 7, and what forge-conference needs
+      for it, if anything.
+    - **W5.4: measured.** `fcp-loadgen` across two and three nodes, to 5,000
+      attendees: CPU and egress per node, and the trunk's cost.
 - **W6: HLS** (forge-media, FCP).
   - CMAF segments from forge-mp4, the playlist, the bucket or directory, and the
     admin serving it.

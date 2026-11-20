@@ -1413,6 +1413,9 @@ async fn get_conference_handler(
                         .map(recording_json),
                     "node_id": state.conference_handler.node_id(),
                     "trunks": trunks,
+                    // `stage` or `edge` of a webinar across nodes
+                    // (`docs/WEBINARS.md` §2.7).
+                    "webinar_node": state.conference_handler.webinar_node(&key),
                     "video": crate::video_bridge::room_video_json(&room),
                     "audience": crate::conference_handler::audience_json(&room),
                 })),

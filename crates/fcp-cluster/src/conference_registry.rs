@@ -36,6 +36,31 @@ pub const CONFERENCE_NODE_TYPE: &str = "conference";
 /// Hash field holding the room-wide lock flag. Not a node id.
 const LOCKED_FIELD: &str = "__locked";
 
+/// Hash field naming a webinar's stage node (`docs/WEBINARS.md` §2.7): the
+/// node holding its hosts and panelists, to which every other node hosting
+/// the room (an edge) is trunked. A meeting never has one.
+const STAGE_FIELD: &str = "__stage";
+
+/// Take the stage when nobody holds it, or when the holder is the one the
+/// caller judged gone (`ARGV[2]`, empty for none). Answers the holder.
+const CLAIM_STAGE_SCRIPT: &str = r#"
+local cur = redis.call('HGET', KEYS[1], ARGV[3])
+if cur == false or cur == ARGV[2] then
+  redis.call('HSET', KEYS[1], ARGV[3], ARGV[1])
+  redis.call('EXPIRE', KEYS[1], ARGV[4])
+  return ARGV[1]
+end
+return cur
+"#;
+
+/// Give the stage up, only if this node holds it.
+const RELEASE_STAGE_SCRIPT: &str = r#"
+if redis.call('HGET', KEYS[1], ARGV[2]) == ARGV[1] then
+  return redis.call('HDEL', KEYS[1], ARGV[2])
+end
+return 0
+"#;
+
 /// One node hosting a room.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConferenceHost {
@@ -50,6 +75,18 @@ pub struct RoomRecord {
     pub hosts: Vec<ConferenceHost>,
     /// Room-wide lock flag (see [`ConferenceRegistry::set_locked`]).
     pub locked: bool,
+    /// The node claiming a webinar's stage, as written: see
+    /// [`RoomRecord::live_stage`] for whether it still holds the room.
+    pub stage: Option<String>,
+}
+
+impl RoomRecord {
+    /// The stage, while it is among the room's fresh hosts. A stage whose
+    /// node stopped publishing the room has gone, and may be taken.
+    pub fn live_stage(&self) -> Option<&ConferenceHost> {
+        let stage = self.stage.as_deref()?;
+        self.hosts.iter().find(|h| h.node_id == stage)
+    }
 }
 
 /// Seconds since the Unix epoch.
@@ -84,6 +121,8 @@ fn parse_room_hash(raw: Vec<(String, String)>, now: u64, stale_after_secs: u64) 
     for (field, value) in raw {
         if field == LOCKED_FIELD {
             record.locked = value == "1";
+        } else if field == STAGE_FIELD {
+            record.stage = (!value.is_empty()).then_some(value);
         } else if !field.starts_with("__") {
             if let Some(participants) = parse_host_value(&value, now, stale_after_secs) {
                 record.hosts.push(ConferenceHost {
@@ -185,6 +224,43 @@ impl ConferenceRegistry {
             tenant_id,
             room_number, locked, "Conference registry lock flag updated"
         );
+        Ok(())
+    }
+
+    /// Take a webinar's stage for this node (`docs/WEBINARS.md` §2.7) when
+    /// nobody holds it, or when `gone` holds it: a stage the caller found
+    /// no longer hosting the room or alive. Answers the node holding the
+    /// stage afterwards, this one when the claim won.
+    pub async fn claim_stage(
+        &self,
+        tenant_id: &str,
+        room_number: &str,
+        gone: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let key = self.room_key(tenant_id, room_number);
+        let mut conn = self.storage.connection();
+        let holder: String = redis::Script::new(CLAIM_STAGE_SCRIPT)
+            .key(&key)
+            .arg(&self.node_id)
+            .arg(gone.unwrap_or(""))
+            .arg(STAGE_FIELD)
+            .arg(self.ttl_secs as i64)
+            .invoke_async(&mut conn)
+            .await?;
+        debug!(tenant_id, room_number, holder = %holder, node = %self.node_id, "Webinar stage claimed");
+        Ok(holder)
+    }
+
+    /// Give up a webinar's stage, if this node holds it.
+    pub async fn release_stage(&self, tenant_id: &str, room_number: &str) -> anyhow::Result<()> {
+        let key = self.room_key(tenant_id, room_number);
+        let mut conn = self.storage.connection();
+        let _: i64 = redis::Script::new(RELEASE_STAGE_SCRIPT)
+            .key(&key)
+            .arg(&self.node_id)
+            .arg(STAGE_FIELD)
+            .invoke_async(&mut conn)
+            .await?;
         Ok(())
     }
 
@@ -404,6 +480,58 @@ pub fn choose_conference_node(
     least_loaded_open(&live)
 }
 
+/// Pick the node a new caller of a webinar should be sent to
+/// (`docs/WEBINARS.md` §2.7). The caller's role is not known yet: the PIN,
+/// or the token, is read by the room.
+///
+/// - With a live stage (its node hosting the room, alive and not draining):
+///   the stage while it hosts fewer than `stage_share_percent` of
+///   `capacity`, else [`choose_conference_node`] over every other node, so
+///   edges fill as rooms do, in the caller's region first. The stage again
+///   when there is no other node. `capacity` 0 keeps the whole webinar on
+///   the stage.
+/// - Without one: [`choose_conference_node`], as for any room. The first
+///   host or panelist to join claims the node they land on as the stage.
+///
+/// A host or panelist placed on an edge is moved to the stage by the room.
+pub fn choose_webinar_node(
+    record: &RoomRecord,
+    members: &[ClusterMember],
+    capacity: usize,
+    stage_share_percent: u8,
+    local_region: Option<&str>,
+    video: Option<&VideoNeed>,
+) -> Option<ClusterMember> {
+    let stage = record.live_stage().and_then(|host| {
+        members
+            .iter()
+            .find(|m| {
+                m.node_id == host.node_id && m.node_type == CONFERENCE_NODE_TYPE && !m.draining
+            })
+            .map(|m| (host, m))
+    });
+    let Some((stage_host, stage_member)) = stage else {
+        return choose_conference_node(&record.hosts, members, capacity, local_region, video);
+    };
+    let share = capacity * usize::from(stage_share_percent.min(100)) / 100;
+    if capacity == 0 || stage_host.participants < share {
+        return Some(stage_member.clone());
+    }
+    let edges: Vec<ConferenceHost> = record
+        .hosts
+        .iter()
+        .filter(|h| h.node_id != stage_host.node_id)
+        .cloned()
+        .collect();
+    let others: Vec<ClusterMember> = members
+        .iter()
+        .filter(|m| m.node_id != stage_host.node_id)
+        .cloned()
+        .collect();
+    choose_conference_node(&edges, &others, capacity, local_region, video)
+        .or_else(|| Some(stage_member.clone()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,6 +692,81 @@ mod tests {
             node_id: id.to_string(),
             participants: n,
         }
+    }
+
+    fn webinar(hosts: Vec<ConferenceHost>, stage: Option<&str>) -> RoomRecord {
+        RoomRecord {
+            hosts,
+            locked: false,
+            stage: stage.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn the_stage_is_read_from_the_room_and_live_only_while_it_hosts() {
+        let record = parse_room_hash(raw(&[("conf-a", "3@100"), ("__stage", "conf-a")]), 100, 60);
+        assert_eq!(record.stage.as_deref(), Some("conf-a"));
+        assert_eq!(record.live_stage().map(|h| h.participants), Some(3));
+        assert_eq!(record.hosts.len(), 1, "the stage field is not a host");
+        // The stage's own entry went stale: the stage has gone.
+        let record = parse_room_hash(
+            raw(&[
+                ("conf-a", "3@10"),
+                ("conf-b", "1@100"),
+                ("__stage", "conf-a"),
+            ]),
+            100,
+            60,
+        );
+        assert!(record.live_stage().is_none());
+    }
+
+    #[test]
+    fn a_webinar_fills_its_stage_to_its_share_then_its_edges() {
+        let members = vec![
+            member("conf-a", "conference", 0),
+            member("conf-b", "conference", 0),
+            member("conf-c", "conference", 5),
+        ];
+        // Under half of 100 on the stage: the stage, though it is busiest.
+        let record = webinar(vec![host("conf-a", 49)], Some("conf-a"));
+        let pick = choose_webinar_node(&record, &members, 100, 50, None, None).unwrap();
+        assert_eq!(pick.node_id, "conf-a");
+        // At its share: the least-loaded other node becomes an edge.
+        let record = webinar(vec![host("conf-a", 50)], Some("conf-a"));
+        let pick = choose_webinar_node(&record, &members, 100, 50, None, None).unwrap();
+        assert_eq!(pick.node_id, "conf-b");
+        // An edge already hosting fills before another is opened.
+        let record = webinar(vec![host("conf-a", 50), host("conf-c", 20)], Some("conf-a"));
+        let pick = choose_webinar_node(&record, &members, 100, 50, None, None).unwrap();
+        assert_eq!(pick.node_id, "conf-c");
+        // Capacity 0 keeps the whole webinar on the stage.
+        let record = webinar(vec![host("conf-a", 5_000)], Some("conf-a"));
+        let pick = choose_webinar_node(&record, &members, 0, 50, None, None).unwrap();
+        assert_eq!(pick.node_id, "conf-a");
+        // No other node: the stage overfills.
+        let alone = vec![member("conf-a", "conference", 0)];
+        let record = webinar(vec![host("conf-a", 80)], Some("conf-a"));
+        let pick = choose_webinar_node(&record, &alone, 100, 50, None, None).unwrap();
+        assert_eq!(pick.node_id, "conf-a");
+    }
+
+    #[test]
+    fn a_webinar_without_a_live_stage_is_placed_as_any_room() {
+        let members = vec![
+            member("conf-a", "conference", 0),
+            member("conf-b", "conference", 0),
+        ];
+        // An attendee early in the lobby: today's rule keeps the room together.
+        let record = webinar(vec![host("conf-b", 3)], None);
+        let pick = choose_webinar_node(&record, &members, 100, 50, None, None).unwrap();
+        assert_eq!(pick.node_id, "conf-b");
+        // A stage that is draining is no stage.
+        let mut draining = members.clone();
+        draining[0].draining = true;
+        let record = webinar(vec![host("conf-a", 3), host("conf-b", 1)], Some("conf-a"));
+        let pick = choose_webinar_node(&record, &draining, 100, 50, None, None).unwrap();
+        assert_eq!(pick.node_id, "conf-b");
     }
 
     #[test]

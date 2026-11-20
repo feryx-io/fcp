@@ -215,6 +215,8 @@ impl Default for SbcConfig {
                 voicemail_server_uri: None,
                 conference_server_uri: None,
                 conference_node_capacity: 0,
+                conference_webinar_stage_share:
+                    fcp_b2bua_core::session::default_webinar_stage_share(),
                 conference_migration: true,
             },
             admission: AdmissionConfig::default(),

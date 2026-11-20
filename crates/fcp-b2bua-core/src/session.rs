@@ -168,6 +168,12 @@ pub struct B2buaConfig {
     #[serde(default)]
     pub conference_node_capacity: usize,
 
+    /// Percent of `conference_node_capacity` a webinar's stage node takes
+    /// of its attendees before the rest go to edge nodes
+    /// (`docs/WEBINARS.md` §2.7). Default: 50.
+    #[serde(default = "default_webinar_stage_share")]
+    pub conference_webinar_stage_share: u8,
+
     /// When a conference node drains, execute the REFER it sends on a
     /// conference call's B-leg — a fresh B-leg to the node it names, the
     /// caller re-INVITEd, the old leg dropped — instead of relaying it to
@@ -175,6 +181,10 @@ pub struct B2buaConfig {
     /// up when the node finishes draining. Default: true.
     #[serde(default = "default_true")]
     pub conference_migration: bool,
+}
+
+pub fn default_webinar_stage_share() -> u8 {
+    50
 }
 
 impl Default for B2buaConfig {
@@ -192,6 +202,7 @@ impl Default for B2buaConfig {
             voicemail_server_uri: None,
             conference_server_uri: None,
             conference_node_capacity: 0,
+            conference_webinar_stage_share: default_webinar_stage_share(),
             conference_migration: true,
         }
     }
@@ -284,6 +295,7 @@ mod tests {
             voicemail_server_uri: None,
             conference_server_uri: None,
             conference_node_capacity: 0,
+            conference_webinar_stage_share: default_webinar_stage_share(),
             conference_migration: true,
         };
         let session = B2buaSession::with_config(call_id, config.clone());
@@ -333,6 +345,7 @@ mod tests {
             voicemail_server_uri: None,
             conference_server_uri: None,
             conference_node_capacity: 0,
+            conference_webinar_stage_share: default_webinar_stage_share(),
             conference_migration: true,
         };
         let json = serde_json::to_string(&cfg).unwrap();

@@ -133,8 +133,11 @@ pub async fn run_audio_bridge(
     dtmf_locked_samples: Option<Arc<Vec<i16>>>,
     dtmf_unlocked_samples: Option<Arc<Vec<i16>>>,
     _dtmf_ending_samples: Option<Arc<Vec<i16>>>,
-    is_trunk: bool,
+    // `Some` for an inter-node trunk; the flag is whether this node is the
+    // hub of the room's trunks: a webinar's stage (`docs/WEBINARS.md` §2.7).
+    trunk_hub: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) {
+    let is_trunk = trunk_hub.is_some();
     let span = info_span!(
         "audio_bridge",
         participant = %participant_id,
@@ -465,7 +468,20 @@ pub async fn run_audio_bridge(
                 // On the stage (or promoted to it): no audience feed.
                 audience = None;
                 let mix_start = Instant::now();
-                let mix_result = if is_trunk {
+                let hub = trunk_hub
+                    .as_ref()
+                    .is_some_and(|h| h.load(Ordering::Relaxed));
+                let mix_result = if hub {
+                    // The stage of a webinar is the hub of a tree: an edge
+                    // is trunked to it alone, so the stage sends each edge
+                    // the whole room but that edge's own trunk — its people
+                    // and every other edge's promoted attendees. Only the
+                    // hub relays, and never back down the trunk it came
+                    // from, so nothing loops.
+                    Ok(room.mix_frame_filtered(|id| {
+                        id != participant_id && id != AUDIO_FEEDBACK_PARTICIPANT_ID
+                    }))
+                } else if is_trunk {
                     // A trunk carries this node's local callers only: not
                     // the other trunks (the peers mix those themselves,
                     // and a mesh must never echo audio back) and not the

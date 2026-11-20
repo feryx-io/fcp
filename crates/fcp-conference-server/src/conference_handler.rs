@@ -54,10 +54,12 @@ use futures::StreamExt;
 mod chat;
 mod hands;
 mod questions;
+mod stage;
 mod webinar;
 pub use chat::{ChatError, CHAT_FLUSH};
 pub use hands::{HandBy, StageError};
 pub use questions::{Moderation, QaError};
+pub use stage::StageClaim;
 pub use webinar::WebinarError;
 
 /// Fallback remote address used when SDP parsing fails to extract the caller's RTP endpoint.
@@ -319,6 +321,15 @@ pub trait RoomRegistry: Send + Sync {
     /// advertises as its load in cluster membership, so placement's
     /// "least-loaded conference node" can tell the nodes apart.
     fn node_callers_changed(&self, _total: usize) {}
+
+    /// Claim a webinar's stage for this node (`docs/WEBINARS.md` §2.7)
+    /// unless a live node holds it.
+    async fn claim_stage(&self, _tenant_id: &str, _room_number: &str) -> StageClaim {
+        StageClaim::Alone
+    }
+
+    /// Give up a webinar's stage, if this node holds it.
+    async fn release_stage(&self, _tenant_id: &str, _room_number: &str) {}
 }
 
 /// What a room hears when the tenant asks for a recording announcement
@@ -405,6 +416,12 @@ pub struct ConferenceCallHandler {
     chat_rooms: DashMap<RoomKey, chat::ChatRoom>,
     /// Each room's sitting, and a webinar's phase and lobby (§2.6).
     sittings: DashMap<RoomKey, webinar::RoomSitting>,
+    /// Rooms whose trunks this node is the hub of: a webinar's stage
+    /// (`docs/WEBINARS.md` §2.7). Read by each trunk's audio bridge.
+    stage_hubs: DashMap<RoomKey, Arc<std::sync::atomic::AtomicBool>>,
+    /// Rooms whose webinar has its stage on another node: this one is an
+    /// edge.
+    stage_edges: DashMap<RoomKey, ()>,
     /// This node's cluster id: what peers see in our trunk INVITEs and in
     /// our certificate.
     node_id: String,
@@ -961,6 +978,8 @@ impl ConferenceCallHandler {
             qa_rooms: DashMap::new(),
             chat_rooms: DashMap::new(),
             sittings: DashMap::new(),
+            stage_hubs: DashMap::new(),
+            stage_edges: DashMap::new(),
             node_id,
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),
@@ -1040,9 +1059,13 @@ impl ConferenceCallHandler {
     /// callers only, not the `__…` virtual participants (audio feedback,
     /// AI, inter-node trunks).
     pub fn countable_participants(&self, key: &RoomKey) -> usize {
+        // A webinar's lobby counts: placement fills a node by who it holds,
+        // and an edge whose attendees wait still needs its trunk to the
+        // stage when the lobby is let in.
         self.room_participants(key)
             .map(|ids| ids.iter().filter(|id| !id.starts_with("__")).count())
             .unwrap_or(0)
+            + self.lobby_count(key)
     }
 
     /// Push this node's current participant count for a room to the
@@ -2403,6 +2426,9 @@ impl ConferenceCallHandler {
             "video": video_bridge::room_video_json(&room),
             "audience": audience_json(&room),
             "sitting": self.sitting_json(key),
+            // A webinar across nodes (`docs/WEBINARS.md` §2.7): this node
+            // is its `stage` or an `edge`; null on one node or a meeting.
+            "webinar_node": self.webinar_node(key),
         }))
     }
 
@@ -3534,7 +3560,7 @@ impl ConferenceCallHandler {
             self.dtmf_locked_samples.clone(),
             self.dtmf_unlocked_samples.clone(),
             self.dtmf_ending_samples.clone(),
-            false,
+            None,
         ));
 
         // 12. Store session
@@ -5934,7 +5960,7 @@ impl ConferenceCallHandler {
             None,
             None,
             None,
-            true,
+            Some(self.stage_hub(&RoomKey::new(leg.tenant_id, leg.room_number.clone()))),
         ));
 
         // The peer's composite as one tile here, and this node's callers
@@ -7322,6 +7348,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             self.release_ports(port_pair, pending_video.as_ref().map(|v| v.port_pair));
             return Ok(());
         }
+        // A webinar's host or panelist belongs on its stage (§2.7): claimed
+        // for this node, or they are moved to the node that holds it.
+        if meeting.is_webinar() {
+            self.take_the_stage(&key, &call_id, role);
+        }
         // An attendee of a webinar that requires registration who came by
         // the guest PIN or `#` is let go: their way in is their own token.
         if migrate.is_none() && listener && registrant.is_none() && meeting.registration {
@@ -7425,6 +7456,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 // The lobby is the handler's, not the room's: a host
                 // joining in practice does not let it in.
                 self.lobby_enter(&key, &participant_id);
+                self.sync_room_registry(&key);
             } else if !room.waiting_participants().contains(&participant_id) {
                 // Handler-level enforcement: manually insert into waiting list.
                 // Use a low-level DashMap insert via a helper if available, or
@@ -7805,7 +7837,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 wait_locked_samples.clone(),
                                 wait_unlocked_samples.clone(),
                                 wait_ending_samples.clone(),
-                                false,
+                                None,
                             );
                             match (video, content) {
                                 (Some(video), Some(content)) => {
@@ -8120,7 +8152,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             self.dtmf_locked_samples.clone(),
             self.dtmf_unlocked_samples.clone(),
             self.dtmf_ending_samples.clone(),
-            false,
+            None,
         ));
 
         // 18b. Spawn the video bridges beside it: the camera's and the
@@ -8376,7 +8408,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 };
                 let reinvite_stats = Arc::clone(&session.stats);
                 let reinvite_is_host = session.is_host;
-                let reinvite_is_trunk = session.trunk_peer.is_some();
+                let reinvite_trunk_hub = session
+                    .trunk_peer
+                    .is_some()
+                    .then(|| self.stage_hub(&session.room_key()));
                 let reinvite_te_pt = session.te_pt;
                 let reinvite_dtmf_clock_rate =
                     find_telephone_event_clock_rate(&offered_codecs, sdp_offer);
@@ -8414,7 +8449,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         reinvite_locked,
                         reinvite_unlocked,
                         reinvite_ending,
-                        reinvite_is_trunk,
+                        reinvite_trunk_hub,
                     )
                     .await;
                 });
