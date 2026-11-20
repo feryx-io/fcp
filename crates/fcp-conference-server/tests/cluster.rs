@@ -962,11 +962,22 @@ async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
     .await;
 
     // Two attendees, each on an edge of their own. Each waits in their
+
     // edge's lobby until the edge hears the stage is live.
     let mut attendees = Vec::new();
     for (name, ext) in [("ann", "1002"), ("ben", "1003")] {
         let phone = cluster.registered_phone(name, ext).await;
-        let call = phone.call(ROOM).await.unwrap();
+        // Told the questions and chat they may see (W5.2b).
+        let call = phone
+            .call_with_headers(
+                ROOM,
+                &[
+                    ("Recv-Info", fcp_core::QA_INFO_PACKAGE),
+                    ("Recv-Info", fcp_core::CHAT_INFO_PACKAGE),
+                ],
+            )
+            .await
+            .unwrap();
         if let Err(e) = call.answered(A_WHILE).await {
             cluster
                 .fail(&format!("{name} was not admitted: {e}"), &phone)
@@ -1017,6 +1028,7 @@ async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
     .await;
 
     // The edges are on the stage's sitting, and the stage hears of each
+
     // edge's audience.
     let sitting = webinar(&cluster.nodes.nodes[stage]).await["id"]
         .as_str()
@@ -1083,6 +1095,166 @@ async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
     })
     .await;
 
+    // Questions and chat through the stage (W5.2b). Ann asks on her edge;
+
+    // the stage holds the question, and an edge's moderator view is the
+
+    // stage's.
+    let (ann, ann_call) = (&attendees[0].0, &attendees[0].1);
+    let (ben, ben_call) = (&attendees[1].0, &attendees[1].1);
+    assert_eq!(
+        send_qa(ann_call, r#"{"op":"ask","text":"When does it ship?"}"#).await,
+        200
+    );
+    let questions_on = |node: usize| {
+        let http = cluster.nodes.nodes[node].http;
+        async move {
+            let (code, body) = http_get(&loopback(http, &format!("/conferences/{ROOM}/questions")))
+                .await
+                .unwrap();
+            assert_eq!(code, 200, "{body}");
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()
+        }
+    };
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    let qid = loop {
+        let q = questions_on(stage).await;
+        if let Some(id) = q["questions"][0]["id"].as_str() {
+            assert_eq!(q["questions"][0]["text"], "When does it ship?", "{q:#}");
+            break id.to_string();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the stage never had Ann's question: {q:#}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let from_edge = questions_on(ben_node).await;
+    assert_eq!(
+        from_edge["questions"][0]["id"],
+        qid.as_str(),
+        "{from_edge:#}"
+    );
+    assert_eq!(from_edge["node"], stage_id.as_str(), "{from_edge:#}");
+
+    // Published from Ben's edge (done on the stage), Ben is told of it,
+
+    // and his upvote is counted on the stage.
+    let (code, body) = http_request(
+        "POST",
+        &loopback(
+            cluster.nodes.nodes[ben_node].http,
+            &format!("/conferences/{ROOM}/questions/{qid}/publish"),
+        ),
+        &[],
+        Some("{}"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "published through an edge: {body}");
+    questions_until(ben, ben_call.call_id(), |q| {
+        q.iter().any(|v| v.id == qid && v.published && !v.mine)
+    })
+    .await;
+    assert_eq!(
+        send_qa(
+            ben_call,
+            &format!(r#"{{"op":"upvote","id":"{qid}","on":true}}"#)
+        )
+        .await,
+        200
+    );
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        let q = questions_on(stage).await;
+        if q["questions"][0]["upvotes"] == 1 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Ben's upvote never counted: {q:#}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // Ann sees her own question published and upvoted on her edge.
+    questions_until(ann, ann_call.call_id(), |q| {
+        q.iter()
+            .any(|v| v.id == qid && v.mine && v.published && v.upvotes == 1)
+    })
+    .await;
+
+    // Chat: Ann writes to the hosts from her edge, and the stage holds it.
+    assert_eq!(
+        send_chat(
+            ann_call,
+            r#"{"op":"post","text":"Hello hosts","to":"hosts"}"#
+        )
+        .await,
+        200
+    );
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        let (code, body) = http_get(&loopback(
+            cluster.nodes.nodes[stage].http,
+            &format!("/conferences/{ROOM}/chat"),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(code, 200, "{body}");
+        if body.contains("Hello hosts") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the stage never had Ann's message: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // The host writes to the room: Ben is told on his edge, and Ann's
+
+    // private message never reaches him.
+    assert_eq!(
+        send_chat(
+            &host_call,
+            r#"{"op":"post","text":"Welcome, everyone","to":"room"}"#
+        )
+        .await,
+        200
+    );
+    let seen = chat_until(ben, ben_call.call_id(), |m, _| {
+        m.values().any(|v| v.text == "Welcome, everyone")
+    })
+    .await;
+    assert!(
+        seen.values().all(|v| v.text != "Hello hosts"),
+        "Ben was told of Ann's message to the hosts: {seen:?}"
+    );
+
+    // The stage mutes Ann: her edge tells her, and refuses her next post.
+    let (code, body) = http_request(
+        "POST",
+        &loopback(
+            cluster.nodes.nodes[stage].http,
+            &format!("/conferences/{ROOM}/participants/{ann_pid}/chat-mute"),
+        ),
+        &[],
+        Some(r#"{"on":true}"#),
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "the stage mutes Ann on her edge: {body}");
+    chat_until(ann, ann_call.call_id(), |_, muted| muted).await;
+    assert_eq!(
+        send_chat(
+            ann_call,
+            r#"{"op":"post","text":"Still here?","to":"hosts"}"#
+        )
+        .await,
+        403
+    );
+
     // The stage is heard on both edges.
     host_call.media().play_tone(440.0, 6000);
     for (phone, call, _, _) in &attendees {
@@ -1097,6 +1269,7 @@ async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
     }
 
     // The host brings Ann up from the stage's node: she is heard on the
+
     // stage, and through it on Ben's edge.
     post_until_ok(
         &cluster.nodes.nodes[stage],
@@ -1157,11 +1330,19 @@ async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
     }
 
     // Ended from an edge: the edge asks the stage, and every node ends.
-    post_until_ok(
-        &cluster.nodes.nodes[ben_node],
-        &format!("/conferences/{ROOM}/webinar/end"),
+    if tokio::time::timeout(
+        A_WHILE,
+        post_until_ok(
+            &cluster.nodes.nodes[ben_node],
+            &format!("/conferences/{ROOM}/webinar/end"),
+        ),
     )
-    .await;
+    .await
+    .is_err()
+    {
+        let ben = &attendees[1].0;
+        cluster.fail("ending from an edge hung", ben).await;
+    }
     if !attendees[1].1.ended(A_WHILE).await {
         let ben = &attendees[1].0;
         cluster
@@ -1208,4 +1389,105 @@ async fn webinar_when(
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+/// An `fcp-qa` INFO from `call` with `body`: the room's answer.
+async fn send_qa(call: &fcp_testkit::Call, body: &str) -> u16 {
+    call.send_in_call(
+        sip_core::Method::Info,
+        &[
+            ("Info-Package", fcp_core::QA_INFO_PACKAGE),
+            ("Content-Type", fcp_core::QA_INFO_TYPE),
+        ],
+        body.as_bytes(),
+    )
+    .await
+    .unwrap()
+}
+
+/// An `fcp-chat` INFO from `call` with `body`: the room's answer.
+async fn send_chat(call: &fcp_testkit::Call, body: &str) -> u16 {
+    call.send_in_call(
+        sip_core::Method::Info,
+        &[
+            ("Info-Package", fcp_core::CHAT_INFO_PACKAGE),
+            ("Content-Type", fcp_core::CHAT_INFO_TYPE),
+        ],
+        body.as_bytes(),
+    )
+    .await
+    .unwrap()
+}
+
+/// `fcp-qa` INFOs `phone` is sent in `call_id` until the questions it was
+/// told of (later news of a question replacing earlier) satisfy `done`.
+async fn questions_until(
+    phone: &Phone,
+    call_id: &str,
+    done: impl Fn(&[fcp_core::qa::QuestionView]) -> bool,
+) -> Vec<fcp_core::qa::QuestionView> {
+    use fcp_core::qa::QaMessage;
+    let mut seen: std::collections::BTreeMap<String, fcp_core::qa::QuestionView> =
+        std::collections::BTreeMap::new();
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        let now: Vec<_> = seen.values().cloned().collect();
+        if done(&now) {
+            return now;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never told it in {call_id}: {now:?}"
+        );
+        if let Some(PhoneEvent::Info { body, .. }) = phone
+            .expect(SOON, |e| {
+                matches!(e, PhoneEvent::Info { call_id: c, package: Some(p), .. }
+                    if c == call_id && p == fcp_core::QA_INFO_PACKAGE)
+            })
+            .await
+        {
+            if let Ok(QaMessage::Questions { questions }) = QaMessage::parse(body.as_bytes()) {
+                for q in questions {
+                    seen.insert(q.id.clone(), q);
+                }
+            }
+        }
+    }
+}
+
+/// `fcp-chat` INFOs `phone` is sent in `call_id` until the messages it was
+/// told of and whether it is muted satisfy `done`.
+async fn chat_until(
+    phone: &Phone,
+    call_id: &str,
+    done: impl Fn(&std::collections::BTreeMap<String, fcp_core::chat::ChatView>, bool) -> bool,
+) -> std::collections::BTreeMap<String, fcp_core::chat::ChatView> {
+    use fcp_core::chat::ChatMessage;
+    let mut seen = std::collections::BTreeMap::new();
+    let mut muted = false;
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    while !done(&seen, muted) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never told it in {call_id}: {seen:?}, muted {muted}"
+        );
+        if let Some(PhoneEvent::Info { body, .. }) = phone
+            .expect(SOON, |e| {
+                matches!(e, PhoneEvent::Info { call_id: c, package: Some(p), .. }
+                    if c == call_id && p == fcp_core::CHAT_INFO_PACKAGE)
+            })
+            .await
+        {
+            match ChatMessage::parse(body.as_bytes()) {
+                Ok(ChatMessage::Messages { messages }) => {
+                    for m in messages {
+                        seen.insert(m.id.clone(), m);
+                    }
+                }
+                Ok(ChatMessage::Muted { on }) => muted = on,
+                _ => {}
+            }
+        }
+    }
+    seen
 }

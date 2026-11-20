@@ -1796,6 +1796,21 @@ async fn main() -> Result<()> {
                                     )
                                     .await;
                             }
+                            // Each edge's own share of the questions and chat.
+                            let path = format!("/conferences/{}/webinar/qa-news", key.room);
+                            for (edge, qa) in handler.qa_news_for_edges(&key) {
+                                if let Ok(body) = serde_json::to_value(&qa) {
+                                    let _ = control
+                                        .send_to_node(
+                                            &edge,
+                                            &tenant,
+                                            reqwest::Method::POST,
+                                            &path,
+                                            Some(body),
+                                        )
+                                        .await;
+                                }
+                            }
                         }
                         Some(conference_handler::TreeNews::Edge { stage, news }) => {
                             let path = format!("/conferences/{}/webinar/edge-news", key.room);

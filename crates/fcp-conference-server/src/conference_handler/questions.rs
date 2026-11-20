@@ -16,13 +16,14 @@
 //! `fcp-qa` INFO a second (`{"op":"questions",…}`), and all of them when
 //! they join a room that has some.
 
+use super::stage::{EdgeOpKind, MirroredQuestion};
 use super::{ConferenceCallHandler, ConferenceRole, RoomKey};
 use fcp_core::qa::{
     QaMessage, QaMode, Question, QuestionStatus, QuestionView, MAX_ANSWER_CHARS, MAX_QUESTION_CHARS,
 };
 use fcp_core::Meeting;
 use fcp_events::ConferenceEvent;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 use tracing::{debug, info, warn};
 
@@ -32,6 +33,8 @@ pub const MAX_QUESTIONS_PER_PARTICIPANT: usize = 50;
 pub const MAX_QUESTIONS_PER_ROOM: usize = 2000;
 /// The largest `questions` INFO body sent: the rest go in the next one.
 const MAX_QUESTIONS_BODY: usize = 8 * 1024;
+/// The most questions a stage sends an edge at once; the rest follow.
+const MIRRORED_PER_NEWS: usize = 200;
 
 /// Why a question could not be asked or moved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,8 +80,28 @@ impl std::error::Error for QaError {}
 /// One question held by its room.
 struct Held {
     kept: Question,
-    /// Who upvoted it, by participant id.
+    /// Who upvoted it, by participant id. On an edge of a webinar's tree,
+    /// only the edge's own people.
     upvoters: HashSet<String>,
+    /// On an edge, the upvotes the stage counted.
+    remote_upvotes: Option<u32>,
+    /// The room's change number when it last changed.
+    rev: u64,
+}
+
+impl Held {
+    fn new(kept: Question) -> Self {
+        Self {
+            kept,
+            upvoters: HashSet::new(),
+            remote_upvotes: None,
+            rev: 0,
+        }
+    }
+
+    fn upvotes(&self) -> u32 {
+        self.remote_upvotes.unwrap_or(self.upvoters.len() as u32)
+    }
 }
 
 /// A room's questions for one sitting.
@@ -92,6 +115,12 @@ pub(super) struct QaRoom {
     dirty: HashSet<String>,
     /// Calls owed every question they may see: they joined since.
     fresh: HashSet<String>,
+    /// Counts changes, for a webinar's edges to follow (§2.7).
+    rev: u64,
+    /// On a stage: the node of each asker or upvoter on an edge.
+    remote: HashMap<String, String>,
+    /// On an edge: how far it has the stage's questions.
+    seen_rev: u64,
 }
 
 impl QaRoom {
@@ -104,7 +133,21 @@ impl QaRoom {
             questions: Vec::new(),
             dirty: HashSet::new(),
             fresh: HashSet::new(),
+            rev: 0,
+            remote: HashMap::new(),
+            seen_rev: 0,
         }
+    }
+
+    /// Question `id` changed: told at the next flush, and numbered for the
+    /// edges.
+    fn touch(&mut self, id: &str) {
+        self.rev += 1;
+        let rev = self.rev;
+        if let Some(q) = self.find(id) {
+            q.rev = rev;
+        }
+        self.dirty.insert(id.to_string());
     }
 
     fn find(&mut self, id: &str) -> Option<&mut Held> {
@@ -152,7 +195,7 @@ impl Viewer<'_> {
             mine: self.mine(q),
             status: q.kept.status,
             published: q.kept.published,
-            upvotes: q.upvoters.len() as u32,
+            upvotes: q.upvotes(),
             upvoted: self.pid.is_some_and(|p| q.upvoters.contains(p)),
             answer: q.kept.answer.clone(),
             answered_live: q.kept.answered_live,
@@ -295,37 +338,41 @@ impl ConferenceCallHandler {
             {
                 return Err(QaError::TooMany);
             }
-            let held = Held {
-                kept: Question {
-                    id: format!("q-{}", uuid::Uuid::new_v4()),
-                    tenant_id: key.tenant,
-                    meeting_id: room.meeting_id.clone(),
-                    room_number: key.room.clone(),
-                    session_id: room.session_id.clone(),
-                    participant_id: participant_id.to_string(),
-                    asker_name: if anonymous { None } else { display_name },
-                    asker_address,
-                    text: text.to_string(),
-                    status: QuestionStatus::Pending,
-                    published: room.mode == QaMode::Open,
-                    upvotes: 0,
-                    answer: None,
-                    answered_live: false,
-                    asked_at: now,
-                    updated_at: now,
-                },
-                upvoters: HashSet::new(),
-            };
+            let held = Held::new(Question {
+                id: format!("q-{}", uuid::Uuid::new_v4()),
+                tenant_id: key.tenant,
+                meeting_id: room.meeting_id.clone(),
+                room_number: key.room.clone(),
+                session_id: room.session_id.clone(),
+                participant_id: participant_id.to_string(),
+                asker_name: if anonymous { None } else { display_name },
+                asker_address,
+                text: text.to_string(),
+                status: QuestionStatus::Pending,
+                published: room.mode == QaMode::Open,
+                upvotes: 0,
+                answer: None,
+                answered_live: false,
+                asked_at: now,
+                updated_at: now,
+            });
             let view = Viewer {
                 pid: Some(participant_id),
                 moderates,
             }
             .view(&held);
             let kept = held.kept.clone();
-            room.dirty.insert(kept.id.clone());
             room.questions.push(held);
+            room.touch(&kept.id);
             (kept, view)
         };
+        // On an edge of a webinar's tree the stage holds the question: it is
+        // shown here at once, and kept and announced there (§2.7).
+        if self.is_edge(key) {
+            debug!(room = %key.room, participant = %participant_id, question = %kept.id, "A question asked on an edge");
+            self.queue_edge_op(key, EdgeOpKind::Ask { question: kept });
+            return Ok(view);
+        }
         info!(room = %key.room, participant = %participant_id, question = %kept.id, anonymous, "A question asked");
         self.publish_event(ConferenceEvent::QuestionAsked {
             room_number: key.room.clone(),
@@ -371,8 +418,23 @@ impl ConferenceCallHandler {
         } else {
             q.upvoters.remove(participant_id)
         };
+        // An edge counts its own upvote at once; the stage's count follows.
         if changed {
-            room.dirty.insert(id.to_string());
+            if let Some(n) = q.remote_upvotes.as_mut() {
+                *n = if on { *n + 1 } else { n.saturating_sub(1) };
+            }
+            room.touch(id);
+        }
+        drop(room);
+        if changed && self.is_edge(key) {
+            self.queue_edge_op(
+                key,
+                EdgeOpKind::Upvote {
+                    participant_id: participant_id.to_string(),
+                    id: id.to_string(),
+                    on,
+                },
+            );
         }
         Ok(changed)
     }
@@ -462,7 +524,7 @@ impl ConferenceCallHandler {
             }
             .view(q);
             if event.is_some() {
-                room.dirty.insert(id.to_string());
+                room.touch(id);
             }
             (kept, view, event)
         };
@@ -621,12 +683,15 @@ impl ConferenceCallHandler {
     /// A held question's row with its upvotes counted.
     fn counted(q: &Held) -> Question {
         let mut kept = q.kept.clone();
-        kept.upvotes = q.upvoters.len() as u32;
+        kept.upvotes = q.upvotes();
         kept
     }
 
     /// Write `questions` as they now are, when there is a store.
-    fn keep_questions(&self, questions: Vec<Question>) {
+    fn keep_questions(&self, mut questions: Vec<Question>) {
+        // An edge's questions are a mirror of its stage's, which the stage
+        // keeps (§2.7).
+        questions.retain(|q| !self.is_edge(&RoomKey::new(q.tenant_id, q.room_number.clone())));
         if questions.is_empty() {
             return;
         }
@@ -662,12 +727,171 @@ pub enum Moderation<'a> {
 }
 
 impl Moderation<'_> {
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         match self {
             Moderation::Publish => "publish",
             Moderation::Answer { .. } => "answer",
             Moderation::Dismiss => "dismiss",
         }
+    }
+}
+
+/// A webinar's questions across its tree (`docs/WEBINARS.md` §2.7, W5.2b):
+/// the stage holds them, and each edge mirrors what its people may see.
+impl ConferenceCallHandler {
+    /// On a stage: an edge's person asked `question`.
+    pub(super) fn qa_from_edge(
+        &self,
+        key: &RoomKey,
+        node: &str,
+        mut question: Question,
+    ) -> Result<(), QaError> {
+        let now = SystemTime::now();
+        {
+            let mut room = self.qa_rooms.get_mut(key).ok_or(QaError::Off)?;
+            if room.mode == QaMode::Off {
+                return Err(QaError::Off);
+            }
+            if room.questions.iter().any(|q| q.kept.id == question.id) {
+                return Ok(());
+            }
+            let pid = question.participant_id.clone();
+            if room.questions.len() >= MAX_QUESTIONS_PER_ROOM
+                || room
+                    .questions
+                    .iter()
+                    .filter(|q| q.kept.participant_id == pid)
+                    .count()
+                    >= MAX_QUESTIONS_PER_PARTICIPANT
+            {
+                return Err(QaError::TooMany);
+            }
+            // The stage's rules, whatever the edge thought.
+            question.session_id = room.session_id.clone();
+            question.meeting_id = room.meeting_id.clone();
+            question.tenant_id = key.tenant;
+            question.room_number = key.room.clone();
+            question.status = QuestionStatus::Pending;
+            question.published = room.mode == QaMode::Open;
+            question.answer = None;
+            question.answered_live = false;
+            question.upvotes = 0;
+            question.updated_at = now;
+            room.remote.insert(pid, node.to_string());
+            let id = question.id.clone();
+            room.questions.push(Held::new(question.clone()));
+            room.touch(&id);
+        }
+        info!(room = %key.room, participant = %question.participant_id, question = %question.id, edge = %node, anonymous = question.asker_name.is_none(), "A question asked on an edge");
+        self.publish_event(ConferenceEvent::QuestionAsked {
+            room_number: key.room.clone(),
+            question_id: question.id.clone(),
+            participant_id: question.participant_id.clone(),
+            anonymous: question.asker_name.is_none(),
+            tenant_id: key.tenant,
+            timestamp: now,
+        });
+        self.keep_questions(vec![question]);
+        Ok(())
+    }
+
+    /// On a stage: an edge's person upvoted question `id` (`on`) or took
+    /// it back.
+    pub(super) fn upvote_from_edge(
+        &self,
+        key: &RoomKey,
+        node: &str,
+        participant_id: &str,
+        id: &str,
+        on: bool,
+    ) -> Result<(), QaError> {
+        let mut room = self.qa_rooms.get_mut(key).ok_or(QaError::NotFound)?;
+        room.remote
+            .insert(participant_id.to_string(), node.to_string());
+        let q = room.find(id).ok_or(QaError::NotFound)?;
+        if q.kept.participant_id == participant_id {
+            return Err(QaError::Refused("one's own question is not upvoted"));
+        }
+        if q.kept.status == QuestionStatus::Dismissed || !q.kept.published {
+            return Err(QaError::Refused("the question cannot be upvoted"));
+        }
+        let changed = if on {
+            q.upvoters.insert(participant_id.to_string())
+        } else {
+            q.upvoters.remove(participant_id)
+        };
+        if changed {
+            room.touch(id);
+        }
+        Ok(())
+    }
+
+    /// On a stage: what edge `node` lacks of `key`'s questions since
+    /// `since`, the published ones and its people's own, oldest change
+    /// first, and how far that goes.
+    pub(super) fn qa_for_edge(
+        &self,
+        key: &RoomKey,
+        node: &str,
+        since: u64,
+    ) -> (Vec<MirroredQuestion>, u64) {
+        let Some(room) = self.qa_rooms.get(key) else {
+            return (Vec::new(), since);
+        };
+        let mut changed: Vec<&Held> = room
+            .questions
+            .iter()
+            .filter(|q| q.rev > since)
+            .filter(|q| {
+                q.kept.published
+                    || room.remote.get(&q.kept.participant_id).map(String::as_str) == Some(node)
+            })
+            .collect();
+        changed.sort_by_key(|q| q.rev);
+        let upto = if changed.len() > MIRRORED_PER_NEWS {
+            changed.truncate(MIRRORED_PER_NEWS);
+            changed.last().map_or(room.rev, |q| q.rev)
+        } else {
+            room.rev
+        };
+        let out = changed
+            .into_iter()
+            .map(|q| MirroredQuestion {
+                question: Self::counted(q),
+                rev: q.rev,
+            })
+            .collect();
+        (out, upto)
+    }
+
+    /// On an edge: the stage's questions as they now are, and how far.
+    /// Its people are told at the next flush.
+    pub(super) fn qa_mirror(&self, key: &RoomKey, questions: Vec<MirroredQuestion>, upto: u64) {
+        let Some(mut room) = self.qa_rooms.get_mut(key) else {
+            return;
+        };
+        for m in questions {
+            let id = m.question.id.clone();
+            let upvotes = m.question.upvotes;
+            match room.find(&id) {
+                Some(q) => {
+                    q.kept = m.question;
+                    q.remote_upvotes = Some(upvotes);
+                }
+                None => {
+                    let mut held = Held::new(m.question);
+                    held.remote_upvotes = Some(upvotes);
+                    room.questions.push(held);
+                }
+            }
+            room.touch(&id);
+        }
+        room.seen_rev = room.seen_rev.max(upto);
+    }
+
+    /// On an edge: how far it has the stage's questions.
+    pub(super) fn qa_seen(&self, key: &RoomKey) -> u64 {
+        self.qa_rooms.get(key).map_or(0, |r| r.seen_rev)
     }
 }
 

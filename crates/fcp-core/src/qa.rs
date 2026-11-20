@@ -184,7 +184,9 @@ pub struct QuestionView {
 }
 
 /// A question as it is kept (`webinar_questions`), one sitting of a room.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Serialized between the nodes of a webinar's tree (`docs/WEBINARS.md`
+/// §2.7), never by the API.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Question {
     pub id: String,
     pub tenant_id: crate::TenantId,

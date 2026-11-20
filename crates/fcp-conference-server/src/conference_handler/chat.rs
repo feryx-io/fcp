@@ -14,6 +14,7 @@
 //! INFO each [`CHAT_FLUSH`] (`{"op":"messages",…}`), and the last
 //! [`CHAT_BACKLOG`] when they join a room that has some.
 
+use super::stage::{EdgeOpKind, MirroredMessage};
 use super::{ConferenceCallHandler, ConferenceRole, RoomKey};
 use fcp_core::chat::{
     ChatAudience, ChatMessage, ChatRecord, ChatScope, ChatView, CHAT_BACKLOG, MAX_CHAT_CHARS,
@@ -35,6 +36,8 @@ const MAX_POSTS_PER_WINDOW: usize = 10;
 const POST_WINDOW: Duration = Duration::from_secs(10);
 /// The largest `messages` INFO body sent: the rest go in the next one.
 const MAX_MESSAGES_BODY: usize = 8 * 1024;
+/// The most messages a stage sends an edge at once; the rest follow.
+const MIRRORED_PER_NEWS: usize = 500;
 
 /// Why a message could not be posted, deleted or a participant muted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +83,8 @@ impl std::error::Error for ChatError {}
 struct Held {
     kept: ChatRecord,
     sender_moderates: bool,
+    /// The room's change number when it last changed.
+    rev: u64,
 }
 
 /// A room's chat for one sitting.
@@ -96,6 +101,12 @@ pub(super) struct ChatRoom {
     muted: HashSet<String>,
     /// Each participant's recent posts, for the rate limit.
     posts: HashMap<String, VecDeque<Instant>>,
+    /// Counts changes, for a webinar's edges to follow (§2.7).
+    rev: u64,
+    /// On a stage: the node of each sender on an edge.
+    remote: HashMap<String, String>,
+    /// On an edge: how far it has the stage's chat.
+    seen_rev: u64,
 }
 
 impl ChatRoom {
@@ -114,7 +125,31 @@ impl ChatRoom {
             fresh: HashSet::new(),
             muted: HashSet::new(),
             posts: HashMap::new(),
+            rev: 0,
+            remote: HashMap::new(),
+            seen_rev: 0,
         }
+    }
+
+    /// Message `id` was posted or changed: told at the next flush, and
+    /// numbered for the edges.
+    fn touch(&mut self, id: &str) {
+        self.rev += 1;
+        let rev = self.rev;
+        if let Some(m) = self.find(id) {
+            m.rev = rev;
+        }
+        self.changed.push(id.to_string());
+    }
+
+    /// Hold `held`, the oldest let go past [`MAX_HELD_MESSAGES`].
+    fn hold(&mut self, held: Held) {
+        let id = held.kept.id.clone();
+        self.messages.push_back(held);
+        while self.messages.len() > MAX_HELD_MESSAGES {
+            self.messages.pop_front();
+        }
+        self.touch(&id);
     }
 
     fn find(&mut self, id: &str) -> Option<&mut Held> {
@@ -321,6 +356,7 @@ impl ConferenceCallHandler {
                     deleted_by: None,
                 },
                 sender_moderates: moderates,
+                rev: 0,
             };
             let view = Viewer {
                 pid: Some(participant_id),
@@ -328,14 +364,16 @@ impl ConferenceCallHandler {
             }
             .view(&held);
             let kept = held.kept.clone();
-            room.changed.push(kept.id.clone());
-            room.messages.push_back(held);
-            while room.messages.len() > MAX_HELD_MESSAGES {
-                room.messages.pop_front();
-            }
+            room.hold(held);
             (kept, view)
         };
         debug!(room = %key.room, participant = %participant_id, message = %kept.id, to = to.as_str(), "A chat message posted");
+        // On an edge of a webinar's tree the stage holds the chat: shown
+        // here at once, kept there (§2.7).
+        if self.is_edge(key) {
+            self.queue_edge_op(key, EdgeOpKind::Post { message: kept });
+            return Ok(view);
+        }
         self.keep_chat(vec![kept]);
         Ok(view)
     }
@@ -360,7 +398,7 @@ impl ConferenceCallHandler {
             m.kept.deleted_at = Some(now);
             m.kept.deleted_by = by.map(str::to_string);
             let kept = m.kept.clone();
-            room.changed.push(id.to_string());
+            room.touch(id);
             kept
         };
         info!(room = %key.room, message = %id, by = ?by, "A chat message deleted");
@@ -386,9 +424,19 @@ impl ConferenceCallHandler {
         on: bool,
     ) -> Result<bool, ChatError> {
         self.check_chat_moderator(key, by)?;
-        let (call_id, moderates) = self
-            .chat_participant(key, participant_id)
-            .ok_or(ChatError::NotFound)?;
+        // Someone on an edge of a webinar's tree who has posted is muted
+        // here, and their edge told (§2.7).
+        let (call_id, moderates) = match self.chat_participant(key, participant_id) {
+            Some(found) => (Some(found.0), found.1),
+            None if self
+                .chat_rooms
+                .get(key)
+                .is_some_and(|r| r.remote.contains_key(participant_id)) =>
+            {
+                (None, false)
+            }
+            None => return Err(ChatError::NotFound),
+        };
         if moderates && on {
             return Err(ChatError::Refused("a host or panelist is not muted"));
         }
@@ -412,8 +460,10 @@ impl ConferenceCallHandler {
             tenant_id: key.tenant,
             timestamp: SystemTime::now(),
         });
-        if self.sessions.get(&call_id).is_some_and(|s| s.chat_notices) {
-            self.tell_chat_body(&call_id, ChatMessage::Muted { on }.to_body());
+        if let Some(call_id) = call_id {
+            if self.sessions.get(&call_id).is_some_and(|s| s.chat_notices) {
+                self.tell_chat_body(&call_id, ChatMessage::Muted { on }.to_body());
+            }
         }
         Ok(true)
     }
@@ -569,7 +619,13 @@ impl ConferenceCallHandler {
     }
 
     /// Write `messages` as they now are, when there is a store.
-    fn keep_chat(&self, messages: Vec<ChatRecord>) {
+    fn keep_chat(&self, mut messages: Vec<ChatRecord>) {
+        // An edge's chat is a mirror of its stage's, which the stage keeps
+        // (§2.7).
+        messages.retain(|m| !self.is_edge(&RoomKey::new(m.tenant_id, m.room_number.clone())));
+        if messages.is_empty() {
+            return;
+        }
         let Some(store) = self.storage.chat_store().cloned() else {
             return;
         };
@@ -604,6 +660,139 @@ impl ConferenceCallHandler {
     }
 }
 
+/// A webinar's chat across its tree (`docs/WEBINARS.md` §2.7, W5.2b): the
+/// stage holds it, and each edge mirrors what its people may see.
+impl ConferenceCallHandler {
+    /// On a stage: an edge's person posted `message`.
+    pub(super) fn chat_from_edge(
+        &self,
+        key: &RoomKey,
+        node: &str,
+        mut message: ChatRecord,
+    ) -> Result<(), ChatError> {
+        {
+            let mut room = self.chat_rooms.get_mut(key).ok_or(ChatError::NotFound)?;
+            if room.messages.iter().any(|m| m.kept.id == message.id) {
+                return Ok(());
+            }
+            let pid = message.participant_id.clone();
+            if !room.scope.allows(false, message.audience) {
+                return Err(ChatError::Off);
+            }
+            if room.muted.contains(&pid) {
+                return Err(ChatError::Refused("their chat is muted"));
+            }
+            message.session_id = room.session_id.clone();
+            message.meeting_id = room.meeting_id.clone();
+            message.tenant_id = key.tenant;
+            message.room_number = key.room.clone();
+            message.deleted_at = None;
+            message.deleted_by = None;
+            room.remote.insert(pid, node.to_string());
+            room.hold(Held {
+                kept: message.clone(),
+                sender_moderates: false,
+                rev: 0,
+            });
+        }
+        debug!(room = %key.room, participant = %message.participant_id, message = %message.id, edge = %node, "A chat message posted on an edge");
+        self.keep_chat(vec![message]);
+        Ok(())
+    }
+
+    /// On a stage: what edge `node` lacks of `key`'s chat since `since`
+    /// (the room's messages and its people's own), oldest change first, how
+    /// far that goes, and which of its people are muted.
+    pub(super) fn chat_for_edge(
+        &self,
+        key: &RoomKey,
+        node: &str,
+        since: u64,
+    ) -> (Vec<MirroredMessage>, u64, Vec<String>) {
+        let Some(room) = self.chat_rooms.get(key) else {
+            return (Vec::new(), since, Vec::new());
+        };
+        let theirs = |pid: &str| room.remote.get(pid).map(String::as_str) == Some(node);
+        let mut changed: Vec<&Held> = room
+            .messages
+            .iter()
+            .filter(|m| m.rev > since)
+            .filter(|m| m.kept.audience == ChatAudience::Room || theirs(&m.kept.participant_id))
+            .collect();
+        changed.sort_by_key(|m| m.rev);
+        let upto = if changed.len() > MIRRORED_PER_NEWS {
+            changed.truncate(MIRRORED_PER_NEWS);
+            changed.last().map_or(room.rev, |m| m.rev)
+        } else {
+            room.rev
+        };
+        let out = changed
+            .into_iter()
+            .map(|m| MirroredMessage {
+                message: m.kept.clone(),
+                sender_moderates: m.sender_moderates,
+                rev: m.rev,
+            })
+            .collect();
+        let mut muted: Vec<String> = room.muted.iter().filter(|p| theirs(p)).cloned().collect();
+        muted.sort();
+        (out, upto, muted)
+    }
+
+    /// On an edge: the stage's chat as it now is, how far, and which of
+    /// this edge's people are muted. Its people are told at the next flush,
+    /// and of a mute at once.
+    pub(super) fn chat_mirror(
+        &self,
+        key: &RoomKey,
+        messages: Vec<MirroredMessage>,
+        upto: u64,
+        muted: Vec<String>,
+    ) {
+        let muted: HashSet<String> = muted.into_iter().collect();
+        let flipped: Vec<(String, bool)> = {
+            let Some(mut room) = self.chat_rooms.get_mut(key) else {
+                return;
+            };
+            for m in messages {
+                let id = m.message.id.clone();
+                match room.find(&id) {
+                    Some(held) => {
+                        held.kept = m.message;
+                        held.sender_moderates = m.sender_moderates;
+                        room.touch(&id);
+                    }
+                    None => room.hold(Held {
+                        kept: m.message,
+                        sender_moderates: m.sender_moderates,
+                        rev: 0,
+                    }),
+                }
+            }
+            room.seen_rev = room.seen_rev.max(upto);
+            let mut flipped: Vec<(String, bool)> = muted
+                .difference(&room.muted)
+                .map(|p| (p.clone(), true))
+                .collect();
+            flipped.extend(room.muted.difference(&muted).map(|p| (p.clone(), false)));
+            room.muted = muted;
+            flipped
+        };
+        for (pid, on) in flipped {
+            if let Some((call_id, _)) = self.chat_participant(key, &pid) {
+                if self.sessions.get(&call_id).is_some_and(|s| s.chat_notices) {
+                    self.tell_chat_body(&call_id, ChatMessage::Muted { on }.to_body());
+                }
+            }
+        }
+    }
+
+    /// On an edge: how far it has the stage's chat.
+    pub(super) fn chat_seen(&self, key: &RoomKey) -> u64 {
+        self.chat_rooms.get(key).map_or(0, |r| r.seen_rev)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,6 +815,7 @@ mod tests {
                 deleted_by: None,
             },
             sender_moderates: false,
+            rev: 0,
         }
     }
 
@@ -706,6 +896,9 @@ mod tests {
             fresh: HashSet::new(),
             muted: HashSet::new(),
             posts: HashMap::new(),
+            rev: 0,
+            remote: HashMap::new(),
+            seen_rev: 0,
         };
         let t = Instant::now();
         for _ in 0..MAX_POSTS_PER_WINDOW {

@@ -913,13 +913,53 @@ For an audience that is not on FCP at all.
         - **Not yet:** the audience by page
           (`GET /conferences/{room}/audience`) lists the node's own
           attendees only.
-      - **W5.2b: questions and chat through the stage.** The stage holds
-        both. An edge forwards what its people ask, upvote and post. The
-        stage tells each edge the public list (published questions, the
-        room's chat) and what each of the edge's people alone may see (their
-        own questions and upvotes, their private messages to the hosts,
-        whether they are muted). The edge mirrors that, and tells its people
-        as the stage tells its own.
+      - **W5.2b: questions and chat through the stage.** **Done**
+        (v0.25.599). As built:
+        - **The stage holds both.** An edge's person asks, upvotes and
+          posts on their edge as before: the edge checks it against the
+          meeting, shows it to them at once, and queues it. The queue rides
+          the edge's news as numbered ops (`EdgeOp`: ask, upvote, post).
+          The stage applies each op once and in order, keeps the row,
+          publishes the event, and acknowledges the last op it applied.
+          The edge holds an op until it is acknowledged, so a lost request
+          is sent again, not lost.
+        - **Each edge mirrors its share.** The stage numbers every change
+          to a question or message. Once a second it sends each edge it has
+          heard from a `QaNews` on `…/webinar/qa-news`:
+          - the changes since the edge last had them: published questions
+            and the room's chat, and the edge's people's own questions and
+            private messages, at most 200 questions and 500 messages at a
+            time;
+          - how far that goes;
+          - which of the edge's people are muted.
+
+          The edge keeps that in its own rooms and tells its people from
+          them as before (`mine` and `upvoted` from its own record). It
+          tells a newly muted person at once and refuses their posts. It
+          never writes a question or message row; the stage does.
+        - **Moderation is the stage's.** At an edge, `GET …/questions` and
+          `GET …/chat` without a call (a moderator's view), and publish,
+          answer, dismiss, delete and chat-mute, are done on the stage
+          (internal copies of the same routes). The stage mutes someone on
+          an edge who has posted.
+        - `fcp_core::qa::Question` and `fcp_core::chat::ChatRecord` are
+          now serialised between nodes, never by the API.
+        - **Proved** by the three-node test:
+          - Ann asks on her edge, and the stage has the question;
+          - the moderator's view through Ben's edge is the stage's;
+          - published from Ben's edge, the question reaches Ben, and his
+            upvote is counted on the stage;
+          - Ann sees her question published with one upvote;
+          - Ann's message to the hosts reaches the stage and not Ben, and the
+            host's message to the room reaches Ben;
+          - the stage mutes Ann, her edge tells her, and her next post is
+            refused (403).
+        - **Not yet:**
+          - a question an edge showed that the stage then refused (the
+            meeting's questions turned off meanwhile, or the limits)
+            stays on the edge, pending;
+          - a moderator joined at an edge rather than moved to the stage
+            does not moderate there.
     - **W5.3: video to edges.** Decision 7, and what forge-conference needs
       for it, if anything.
     - **W5.4: measured.** `fcp-loadgen` across two and three nodes, to 5,000

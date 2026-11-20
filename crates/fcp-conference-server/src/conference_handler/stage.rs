@@ -57,8 +57,9 @@ pub struct StageNews {
 }
 
 /// What an edge tells its stage, once a second: how many are in its
-/// audience and its lobby, whose hands are up, and its attendees brought to
-/// the stage.
+/// audience and its lobby, whose hands are up, its attendees brought to the
+/// stage, what its people asked, upvoted and posted (until the stage says
+/// it has them), and how far it has the stage's questions and chat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EdgeNews {
     pub node: String,
@@ -69,7 +70,80 @@ pub struct EdgeNews {
     pub hands: Vec<TreeMember>,
     #[serde(default)]
     pub stage: Vec<TreeMember>,
+    #[serde(default)]
+    pub ops: Vec<EdgeOp>,
+    #[serde(default)]
+    pub questions_seen: u64,
+    #[serde(default)]
+    pub chat_seen: u64,
 }
+
+/// Something one of an edge's people did, which the stage carries out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EdgeOpKind {
+    /// A question, as the edge made it (its id, asker and time).
+    Ask { question: fcp_core::qa::Question },
+    Upvote {
+        participant_id: String,
+        id: String,
+        on: bool,
+    },
+    /// A chat message, as the edge made it.
+    Post { message: fcp_core::chat::ChatRecord },
+}
+
+/// An edge's op, numbered so the stage applies each once and in order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeOp {
+    pub seq: u64,
+    pub op: EdgeOpKind,
+}
+
+/// A question as the stage holds it, for an edge's mirror.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MirroredQuestion {
+    /// Its upvotes counted.
+    pub question: fcp_core::qa::Question,
+    pub rev: u64,
+}
+
+/// A chat message as the stage holds it, for an edge's mirror.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MirroredMessage {
+    pub message: fcp_core::chat::ChatRecord,
+    #[serde(default)]
+    pub sender_moderates: bool,
+    pub rev: u64,
+}
+
+/// What a stage tells one edge of its questions and chat, once a second:
+/// the last op of the edge's it applied, what changed since the edge last
+/// had (published questions and the room's chat, and the edge's people's
+/// own), how far that goes, and which of the edge's people are muted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QaNews {
+    pub node: String,
+    pub acked: u64,
+    #[serde(default)]
+    pub questions: Vec<MirroredQuestion>,
+    pub questions_upto: u64,
+    #[serde(default)]
+    pub chat: Vec<MirroredMessage>,
+    pub chat_upto: u64,
+    #[serde(default)]
+    pub muted: Vec<String>,
+}
+
+/// An edge's ops not yet acknowledged by its stage.
+#[derive(Debug, Default)]
+pub(super) struct Outbox {
+    next_seq: u64,
+    ops: std::collections::VecDeque<EdgeOp>,
+}
+
+/// At most this many ops go to the stage at once; the rest wait a second.
+const OPS_PER_NEWS: usize = 500;
 
 /// Where a tree's news goes: from a stage to every edge, or from an edge to
 /// its stage.
@@ -290,6 +364,8 @@ impl ConferenceCallHandler {
         self.former_stages.remove(key);
         self.stage_news.remove(key);
         self.edge_news.retain(|(k, _), _| k != key);
+        self.tree_acked.retain(|(k, _), _| k != key);
+        self.tree_outbox.remove(key);
         let held = self
             .stage_hubs
             .remove(key)
@@ -340,9 +416,17 @@ impl ConferenceCallHandler {
             }))
         } else if let Some(stage) = self.stage_of(key) {
             let roster = self.local_roster(key)?;
+            let ops = self
+                .tree_outbox
+                .get(key)
+                .map(|o| o.ops.iter().take(OPS_PER_NEWS).cloned().collect())
+                .unwrap_or_default();
             Some(TreeNews::Edge {
                 stage,
                 news: EdgeNews {
+                    ops,
+                    questions_seen: self.qa_seen(key),
+                    chat_seen: self.chat_seen(key),
                     node: self.node_id.clone(),
                     audience: roster.audience,
                     lobby: self.lobby_count(key),
@@ -384,12 +468,109 @@ impl ConferenceCallHandler {
 
     /// An edge of `key` sent its news. Kept for the stage's rosters.
     /// Refused (`false`) where this node is not the stage.
-    pub fn apply_edge_news(&self, key: &RoomKey, news: EdgeNews) -> bool {
+    pub fn apply_edge_news(&self, key: &RoomKey, mut news: EdgeNews) -> bool {
         if !self.is_stage(key) {
             return false;
         }
+        let ops = std::mem::take(&mut news.ops);
+        let mut acked = self
+            .tree_acked
+            .get(&(key.clone(), news.node.clone()))
+            .map_or(0, |a| *a);
+        for op in ops {
+            if op.seq <= acked {
+                continue;
+            }
+            acked = op.seq;
+            match op.op {
+                EdgeOpKind::Ask { question } => {
+                    if let Err(e) = self.qa_from_edge(key, &news.node, question) {
+                        tracing::debug!(room = %key.room, edge = %news.node, error = %e, "An edge's question refused");
+                    }
+                }
+                EdgeOpKind::Upvote {
+                    participant_id,
+                    id,
+                    on,
+                } => {
+                    if let Err(e) = self.upvote_from_edge(key, &news.node, &participant_id, &id, on)
+                    {
+                        tracing::debug!(room = %key.room, edge = %news.node, error = %e, "An edge's upvote refused");
+                    }
+                }
+                EdgeOpKind::Post { message } => {
+                    if let Err(e) = self.chat_from_edge(key, &news.node, message) {
+                        tracing::debug!(room = %key.room, edge = %news.node, error = %e, "An edge's chat message refused");
+                    }
+                }
+            }
+        }
+        self.tree_acked
+            .insert((key.clone(), news.node.clone()), acked);
         self.edge_news
             .insert((key.clone(), news.node.clone()), (news, Instant::now()));
+        true
+    }
+
+    /// One of this edge's people did `op`: kept until the stage has it.
+    pub(super) fn queue_edge_op(&self, key: &RoomKey, op: EdgeOpKind) {
+        let mut outbox = self.tree_outbox.entry(key.clone()).or_default();
+        outbox.next_seq += 1;
+        let seq = outbox.next_seq;
+        outbox.ops.push_back(EdgeOp { seq, op });
+    }
+
+    /// What this stage tells each edge it has heard from of `key`'s
+    /// questions and chat.
+    pub fn qa_news_for_edges(&self, key: &RoomKey) -> Vec<(String, QaNews)> {
+        if !self.is_stage(key) {
+            return Vec::new();
+        }
+        let edges: Vec<(String, u64, u64)> = self
+            .edge_news
+            .iter()
+            .filter(|e| &e.key().0 == key)
+            .map(|e| {
+                let (news, _) = e.value();
+                (news.node.clone(), news.questions_seen, news.chat_seen)
+            })
+            .collect();
+        edges
+            .into_iter()
+            .map(|(node, questions_seen, chat_seen)| {
+                let (questions, questions_upto) = self.qa_for_edge(key, &node, questions_seen);
+                let (chat, chat_upto, muted) = self.chat_for_edge(key, &node, chat_seen);
+                let acked = self
+                    .tree_acked
+                    .get(&(key.clone(), node.clone()))
+                    .map_or(0, |a| *a);
+                let news = QaNews {
+                    node: self.node_id.clone(),
+                    acked,
+                    questions,
+                    questions_upto,
+                    chat,
+                    chat_upto,
+                    muted,
+                };
+                (node, news)
+            })
+            .collect()
+    }
+
+    /// The stage of `key` sent this edge its questions and chat. Refused
+    /// (`false`) where this node is not that stage's edge.
+    pub fn apply_qa_news(&self, key: &RoomKey, news: QaNews) -> bool {
+        if self.stage_of(key).as_deref() != Some(news.node.as_str()) {
+            return false;
+        }
+        if let Some(mut outbox) = self.tree_outbox.get_mut(key) {
+            while outbox.ops.front().is_some_and(|o| o.seq <= news.acked) {
+                outbox.ops.pop_front();
+            }
+        }
+        self.qa_mirror(key, news.questions, news.questions_upto);
+        self.chat_mirror(key, news.chat, news.chat_upto, news.muted);
         true
     }
 
