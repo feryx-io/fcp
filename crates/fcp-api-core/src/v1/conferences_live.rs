@@ -475,3 +475,96 @@ mod tests {
         assert!(!valid_segment(&"9".repeat(129)));
     }
 }
+
+/// GET /conferences/live/:room/webinar — the room's sitting and a webinar's phase (`docs/WEBINARS.md` §2.6).
+#[utoipa::path(
+    get,
+    path = "/api/v1/conferences/live/{room}/webinar",
+    tag = "conferences_live",
+    operation_id = "conferences_live_webinar",
+    params(("room" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn webinar(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    Path(room): Path<String>,
+) -> Result<Proxied, ApiError> {
+    let meeting = scoped_meeting(&state, &tenant.0, &room).await?;
+    let out = forward(
+        &state,
+        &meeting,
+        reqwest::Method::GET,
+        &format!("/conferences/{room}/webinar"),
+        None,
+    )
+    .await?;
+    Ok(out)
+}
+
+/// POST /conferences/live/:room/webinar/live — Webinar taken live: the lobby is let in.
+#[utoipa::path(
+    post,
+    path = "/api/v1/conferences/live/{room}/webinar/live",
+    tag = "conferences_live",
+    operation_id = "conferences_live_go_live",
+    params(("room" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn go_live(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    Path(room): Path<String>,
+) -> Result<Proxied, ApiError> {
+    let meeting = scoped_meeting(&state, &tenant.0, &room).await?;
+    let out = forward(
+        &state,
+        &meeting,
+        reqwest::Method::POST,
+        &format!("/conferences/{room}/webinar/live"),
+        None,
+    )
+    .await?;
+    if out.0.is_success() {
+        info!(room = %room, "Webinar taken live");
+    }
+    Ok(out)
+}
+
+/// POST /conferences/live/:room/webinar/end — Webinar ended: everyone is released.
+#[utoipa::path(
+    post,
+    path = "/api/v1/conferences/live/{room}/webinar/end",
+    tag = "conferences_live",
+    operation_id = "conferences_live_end_webinar",
+    params(("room" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn end_webinar(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    Path(room): Path<String>,
+) -> Result<Proxied, ApiError> {
+    let meeting = scoped_meeting(&state, &tenant.0, &room).await?;
+    let out = forward(
+        &state,
+        &meeting,
+        reqwest::Method::POST,
+        &format!("/conferences/{room}/webinar/end"),
+        None,
+    )
+    .await?;
+    if out.0.is_success() {
+        info!(room = %room, "Webinar ended");
+    }
+    Ok(out)
+}

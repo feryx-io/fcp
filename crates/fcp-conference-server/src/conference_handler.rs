@@ -54,9 +54,11 @@ use futures::StreamExt;
 mod chat;
 mod hands;
 mod questions;
+mod webinar;
 pub use chat::{ChatError, CHAT_FLUSH};
 pub use hands::{HandBy, StageError};
 pub use questions::{Moderation, QaError};
+pub use webinar::WebinarError;
 
 /// Fallback remote address used when SDP parsing fails to extract the caller's RTP endpoint.
 const UNKNOWN_REMOTE: SocketAddr =
@@ -399,6 +401,8 @@ pub struct ConferenceCallHandler {
     qa_rooms: DashMap<RoomKey, questions::QaRoom>,
     /// Each room's chat for its sitting (`docs/WEBINARS.md` §2.5).
     chat_rooms: DashMap<RoomKey, chat::ChatRoom>,
+    /// Each room's sitting, and a webinar's phase and lobby (§2.6).
+    sittings: DashMap<RoomKey, webinar::RoomSitting>,
     /// This node's cluster id: what peers see in our trunk INVITEs and in
     /// our certificate.
     node_id: String,
@@ -954,6 +958,7 @@ impl ConferenceCallHandler {
             room_sessions: DashMap::new(),
             qa_rooms: DashMap::new(),
             chat_rooms: DashMap::new(),
+            sittings: DashMap::new(),
             node_id,
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),
@@ -2394,6 +2399,7 @@ impl ConferenceCallHandler {
             "participants": participants,
             "video": video_bridge::room_video_json(&room),
             "audience": audience_json(&room),
+            "sitting": self.sitting_json(key),
         }))
     }
 
@@ -3674,6 +3680,9 @@ impl ConferenceCallHandler {
 
         let kicked = call_ids.len();
 
+        // A webinar in it ends, unless a host or its empty stage ended it.
+        self.sitting_destroyed(key, "api");
+
         // Send BYE and remove each session
         for call_id in &call_ids {
             if let Some(session) = self.sessions.get(call_id) {
@@ -3699,6 +3708,9 @@ impl ConferenceCallHandler {
 
         // Delete the room
         let _ = self.bridge.delete_room(key);
+        self.qa_closed(key);
+        self.chat_closed(key);
+        self.sitting_closed(key);
 
         // Clean up associated state
         self.dtmf_handlers.remove(key);
@@ -4002,7 +4014,9 @@ impl ConferenceCallHandler {
             | ConferenceEvent::QuestionAnswered { room_number, .. }
             | ConferenceEvent::QuestionDismissed { room_number, .. }
             | ConferenceEvent::ChatDeleted { room_number, .. }
-            | ConferenceEvent::ChatMuted { room_number, .. } => Some(room_number.clone()),
+            | ConferenceEvent::ChatMuted { room_number, .. }
+            | ConferenceEvent::WebinarLive { room_number, .. }
+            | ConferenceEvent::WebinarEnded { room_number, .. } => Some(room_number.clone()),
         };
 
         let platform_event = PlatformEvent::Conference(event);
@@ -4121,14 +4135,20 @@ impl ConferenceCallHandler {
                 });
             }
 
+            // Out of a webinar's lobby, if they were waiting in it.
+            self.lobby_leave(&key, &session.participant_id);
+
             // Remove from forge-conference room
             if let Ok(room) = self.bridge.get_room(&key) {
                 let _ = room.remove_participant(&session.participant_id);
+                // Nobody in the room, and nobody waiting to be let in.
+                let empty = room.participant_count() == 0 && !self.lobby_waits(&key);
 
                 // Publish MeetingEnded when last participant leaves
-                if room.participant_count() == 0 {
+                if empty {
                     self.qa_closed(&key);
                     self.chat_closed(&key);
+                    self.sitting_closed(&key);
                     self.publish_event(ConferenceEvent::MeetingEnded {
                         room_number: session.room_number.clone(),
                         tenant_id: session.tenant_id,
@@ -4137,9 +4157,7 @@ impl ConferenceCallHandler {
                 }
 
                 // Auto-destroy empty rooms if configured
-                if room.participant_count() == 0
-                    && self.conference_config.read().auto_destroy_empty_rooms
-                {
+                if empty && self.conference_config.read().auto_destroy_empty_rooms {
                     let room_number = session.room_number.clone();
                     let bridge = Arc::clone(&self.bridge);
                     let storage = Arc::clone(&self.storage);
@@ -7264,6 +7282,20 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let is_host = role == ConferenceRole::Host;
         let listener = role == ConferenceRole::Attendee;
 
+        // The room's sitting begins with its first caller (§2.6). A
+        // webinar that is ending takes nobody; one in practice keeps an
+        // attendee in the lobby until it goes live.
+        self.sitting_begin(&key, &meeting);
+        if migrate.is_none() && self.sitting_ended(&key) {
+            info!(room = %room_number, participant = %participant_id, "The webinar has ended: the caller is let go");
+            if let Err(e) = self.uac.bye(&dialog).await {
+                warn!(error = %e, "Failed to send BYE after the webinar ended");
+            }
+            self.release_ports(port_pair, pending_video.as_ref().map(|v| v.port_pair));
+            return Ok(());
+        }
+        let lobby = migrate.is_none() && listener && self.lobby_holds(&key);
+
         // 15. Add participant to room (enforces capacity/locked/wait-for-moderator)
         //
         // Defense-in-depth: check the meeting's wait_for_moderator flag directly
@@ -7282,7 +7314,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // Determine if the participant should wait for a moderator.
         // Check the meeting config directly (handler-level) as the authoritative source.
-        let should_wait = if migrate.is_none()
+        let should_wait = if lobby {
+            true
+        } else if migrate.is_none()
             && meeting.wait_for_moderator
             && !is_host
             && room.host_count() == 0
@@ -7349,7 +7383,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             // Ensure participant is in waiting_participants (add_participant may
             // have added them if it returned WaitingForModerator, or we may need
             // to add them here if the handler-level check pre-empted add_participant).
-            if !room.waiting_participants().contains(&participant_id) {
+            if lobby {
+                // The lobby is the handler's, not the room's: a host
+                // joining in practice does not let it in.
+                self.lobby_enter(&key, &participant_id);
+            } else if !room.waiting_participants().contains(&participant_id) {
                 // Handler-level enforcement: manually insert into waiting list.
                 // Use a low-level DashMap insert via a helper if available, or
                 // call add_participant which will do it for us (it will return
@@ -7386,7 +7424,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let wait_stats = Arc::new(AudioStats::new());
             let wait_stats_clone = Arc::clone(&wait_stats);
             let wait_srtp = srtp_context.clone();
-            let max_wait_secs = conf.max_wait_for_moderator_secs;
+            let max_wait_secs = if lobby {
+                conf.lobby_max_wait_secs
+            } else {
+                conf.max_wait_for_moderator_secs
+            };
             let announcement_interval_secs = conf.moh_announcement_interval_secs;
             let wait_uac = Arc::clone(&self.uac);
             // The handler itself, for the auto-record check once a
@@ -7575,6 +7617,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
                             // Remove from room (handles waiting list cleanup)
                             let _ = bridge_room.remove_participant(&pid);
+                            if let Some(h) = &wait_handler {
+                                h.lobby_leave(&rkey, &pid);
+                            }
 
                             // Send BYE to disconnect the SIP call
                             if let Err(e) = wait_uac.bye(&wait_dialog).await {
@@ -7595,10 +7640,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         }
                     }
 
-                    // Check if we're still in the waiting list
+                    // Check if we're still in the waiting list, or in a
+                    // webinar's lobby.
                     let still_waiting = bridge_room
                         .waiting_participants()
-                        .contains(&bridge_participant);
+                        .contains(&bridge_participant)
+                        || wait_handler
+                            .as_ref()
+                            .is_some_and(|h| h.in_lobby(&rkey, &bridge_participant));
 
                     if !still_waiting {
                         // Stop MOH playback — moderator arrived or we were removed
@@ -7630,7 +7679,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                             let _ = event_bus.publish(event).await;
 
                             // Auto-record check after moderator releases waiting participants
-                            if !bridge_room.is_recording() {
+                            // (a webinar records once it is live).
+                            if !bridge_room.is_recording()
+                                && wait_handler
+                                    .as_ref()
+                                    .is_none_or(|h| h.sitting_records(&rkey))
+                            {
                                 if let Some(cfg) = bridge_room.get_effective_config() {
                                     if cfg.min_recording_participants > 0
                                         && bridge_room.participant_count()
@@ -7743,6 +7797,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 self.bfcp.bind(&key, a.user_id, &room, &participant_id);
             }
             let qa_call = call_id.clone();
+            let qa_pid = participant_id.clone();
             self.sessions.insert(
                 call_id.clone(),
                 ParticipantSession {
@@ -7784,6 +7839,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             joining.undo_if_hung_up(self);
             self.qa_joined(&key, &meeting, &qa_call, qa_notices);
             self.chat_joined(&key, &meeting, &qa_call, chat_notices);
+            self.webinar_joined(&key, &qa_call, &qa_pid);
 
             self.handler_latency.record(
                 &self.handler_latency.invite_count,
@@ -7854,7 +7910,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         });
 
         // Auto-record: start recording when participant threshold is reached
-        if !room.is_recording() {
+        // (a webinar in practice records nothing).
+        if !room.is_recording() && self.sitting_records(&key) {
             if let Some(cfg) = room.get_effective_config() {
                 if cfg.min_recording_participants > 0
                     && room.participant_count() >= cfg.min_recording_participants
@@ -8065,6 +8122,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             self.bfcp.bind(&key, a.user_id, &room, &participant_id);
         }
         let qa_call = call_id.clone();
+        let qa_pid = participant_id.clone();
         self.sessions.insert(
             call_id.clone(),
             ParticipantSession {
@@ -8108,6 +8166,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         joining.undo_if_hung_up(self);
         self.qa_joined(&key, &meeting, &qa_call, qa_notices);
         self.chat_joined(&key, &meeting, &qa_call, chat_notices);
+        self.webinar_joined(&key, &qa_call, &qa_pid);
 
         self.handler_latency.record(
             &self.handler_latency.invite_count,

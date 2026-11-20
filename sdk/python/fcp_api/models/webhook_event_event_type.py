@@ -60,6 +60,8 @@ class WebhookEventEventType(StrEnum):
     CONFERENCE_VIDEO_LAYOUT_CHANGED = "conference.video_layout_changed"
     CONFERENCE_VIDEO_OVERLOAD = "conference.video_overload"
     CONFERENCE_VIDEO_STATE_CHANGED = "conference.video_state_changed"
+    CONFERENCE_WEBINAR_ENDED = "conference.webinar_ended"
+    CONFERENCE_WEBINAR_LIVE = "conference.webinar_live"
     DEVICE_FIRMWARE_BEHIND = "device.firmware_behind"
     DEVICE_PUSH_FAILED = "device.push_failed"
     EMERGENCY_NOTIFICATION_FAILED = "emergency.notification_failed"

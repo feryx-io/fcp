@@ -2149,6 +2149,7 @@ async fn a_webinar_s_stage_is_heard_by_attendees_who_are_not() {
     let host = stack.phone("hostess").await;
     let host_call = join(&stack, &host).await;
     dial_digits(&host_call, "9999").await;
+    go_live(&stack).await;
     let panelist = stack.phone("panelist").await;
     let panelist_call = join(&stack, &panelist).await;
     dial_digits(&panelist_call, "5555").await;
@@ -2300,6 +2301,7 @@ async fn a_webinar_s_audience_watches_the_stage_and_is_counted_not_listed() {
         }
     };
     let (host, host_call) = join_as("Hostess", fcp_core::JoinRole::Host, true).await;
+    go_live(&stack).await;
     let (_panelist, panelist_call) = join_as("Panelist", fcp_core::JoinRole::Panelist, true).await;
     let (_ann, ann_call) = join_as("Ann", fcp_core::JoinRole::Guest, true).await;
     let (_ben, ben_call) = join_as("Ben", fcp_core::JoinRole::Attendee, true).await;
@@ -2418,8 +2420,19 @@ async fn send_qa(call: &fcp_testkit::Call, body: &str) -> u16 {
     .unwrap()
 }
 
-/// The next `fcp-qa` INFO `phone` is sent in `call_id`.
+/// The next `fcp-qa` INFO `phone` is sent in `call_id`, a webinar's
+/// phase aside (see [`phase_told`]).
 async fn qa_told(phone: &Phone, call_id: &str) -> fcp_core::qa::QaMessage {
+    loop {
+        match any_qa_told(phone, call_id).await {
+            fcp_core::qa::QaMessage::Webinar { .. } => continue,
+            message => return message,
+        }
+    }
+}
+
+/// The next `fcp-qa` INFO `phone` is sent in `call_id`.
+async fn any_qa_told(phone: &Phone, call_id: &str) -> fcp_core::qa::QaMessage {
     match phone
         .expect(SOON, |e| {
             matches!(e, PhoneEvent::Info { call_id: c, package: Some(p), .. }
@@ -2431,6 +2444,36 @@ async fn qa_told(phone: &Phone, call_id: &str) -> fcp_core::qa::QaMessage {
             fcp_core::qa::QaMessage::parse(body.as_bytes()).expect("an fcp-qa message")
         }
         _ => panic!("no fcp-qa INFO in {call_id}"),
+    }
+}
+
+/// The next webinar phase `phone` is told in `call_id`, and whether it
+/// waits in the lobby.
+async fn phase_told(phone: &Phone, call_id: &str) -> (fcp_core::webinar::WebinarPhase, bool) {
+    loop {
+        if let fcp_core::qa::QaMessage::Webinar { phase, lobby } = any_qa_told(phone, call_id).await
+        {
+            return (phase, lobby);
+        }
+    }
+}
+
+/// Take the room's webinar live through the API, once its sitting has
+/// begun (the first caller is past their PIN).
+async fn go_live(stack: &Stack) {
+    let deadline = tokio::time::Instant::now() + SOON;
+    loop {
+        let (code, out) = stack
+            .post(&format!("/conferences/{ROOM}/webinar/live"))
+            .await;
+        if code == 200 {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the webinar never went live: {code} {out}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -2467,6 +2510,7 @@ async fn an_attendee_raises_a_hand_and_a_host_brings_them_to_the_stage() {
     let host = stack.phone("hostess").await;
     let host_call = join(&stack, &host).await;
     dial_digits(&host_call, "9999").await;
+    go_live(&stack).await;
     // Ann's client takes the package; Ben is a plain phone.
     let ann = stack.phone("ann").await;
     let ann_call = ann
@@ -2726,6 +2770,8 @@ async fn an_attendee_s_hand_and_the_stage_cross_the_call_manager() {
             .is_some_and(|v| v.contains(fcp_core::QA_INFO_PACKAGE)),
         "the room's answer reached Bob"
     );
+    // Bob waits in the lobby until the webinar goes live.
+    go_live(&stack).await;
     stack.wait_participants(1).await;
     let bob_id = stack.participant_named("bob").await;
     stack
@@ -2837,6 +2883,7 @@ async fn the_audience_asks_and_a_host_moderates_the_questions() {
             .await;
     }
     dial_digits(&host_call, "9999").await;
+    go_live(&stack).await;
     let ann = stack.phone("ann").await;
     let ann_call = ann.call_with_headers(ROOM, &qa).await.unwrap();
     if let Err(e) = ann_call.answered(SOON).await {
@@ -3288,6 +3335,187 @@ async fn everyone_chats_and_a_host_deletes_and_mutes() {
     for call in [&host_call, &ann_call, &ben_call, &carl_call] {
         assert_eq!(call.hangup().await.unwrap(), 200);
     }
+    stack.wait_participants(0).await;
+    stack.finish().await;
+}
+
+/// A webinar's life (`docs/WEBINARS.md` §2.6, W4). In practice the host is
+/// in the room and the attendees wait in the lobby, told so, hearing
+/// nothing of the stage, and nothing is recorded. The host's `*95` takes
+/// it live: the lobby is let in, told, hears the stage, and the meeting's
+/// recording starts. A host ends it through the API and everyone is
+/// released; a caller after that starts a new sitting. Live, a stage left
+/// empty past the grace period ends the webinar by itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_webinar_practices_goes_live_and_ends() {
+    let Some(stack) = Stack::start_conference("", 60, "webinar_stage_grace_secs = 1").await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({ "kind": "webinar", "host_pin": "9999", "auto_record": true }),
+        )
+        .await;
+    let qa = [("Recv-Info", fcp_core::QA_INFO_PACKAGE)];
+    use fcp_core::webinar::WebinarPhase;
+
+    let host = stack.phone("hostess").await;
+    let host_call = host.call_with_headers(ROOM, &qa).await.unwrap();
+    if let Err(e) = host_call.answered(SOON).await {
+        stack
+            .fail(&format!("the host was not admitted: {e}"), &host)
+            .await;
+    }
+    dial_digits(&host_call, "9999").await;
+    assert_eq!(
+        phase_told(&host, host_call.call_id()).await,
+        (WebinarPhase::Practice, false)
+    );
+    let ann = stack.phone("ann").await;
+    let ann_call = ann.call_with_headers(ROOM, &qa).await.unwrap();
+    if let Err(e) = ann_call.answered(SOON).await {
+        stack
+            .fail(&format!("Ann was not answered: {e}"), &ann)
+            .await;
+    }
+    dial_digits(&ann_call, "").await;
+    assert_eq!(
+        phase_told(&ann, ann_call.call_id()).await,
+        (WebinarPhase::Practice, true),
+        "Ann is told she waits in the lobby"
+    );
+    let ben = stack.phone("ben").await;
+    let ben_call = join(&stack, &ben).await;
+    dial_digits(&ben_call, "").await;
+
+    // Two in the lobby, out of the room.
+    let deadline = tokio::time::Instant::now() + SOON;
+    let sitting = loop {
+        let (code, sitting) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+        assert_eq!(code, 200, "{sitting}");
+        if sitting["lobby"] == 2 {
+            break sitting;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{sitting}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(sitting["phase"], "practice", "{sitting}");
+    assert_eq!(sitting["kind"], "webinar", "{sitting}");
+    assert!(sitting["live_at"].is_null(), "{sitting}");
+    let first_sitting = sitting["id"].as_str().unwrap().to_string();
+    assert_eq!(stack.participants().await.len(), 1, "the host alone");
+    let (_, room) = stack.get(&format!("/conferences/{ROOM}")).await;
+    assert_eq!(
+        room["is_recording"], false,
+        "practice is not recorded: {room}"
+    );
+    host_call.media().play_tone(440.0, 1500);
+    assert!(
+        !ann_call.media().heard(440, Duration::from_secs(2)).await,
+        "the lobby hears the stage"
+    );
+
+    // *95: live.
+    for d in ['*', '9', '5'] {
+        host_call.media().send_dtmf(d);
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(
+        phase_told(&ann, ann_call.call_id()).await,
+        (WebinarPhase::Live, false),
+        "Ann is let in and told"
+    );
+    stack.wait_participants(3).await;
+    let (_, sitting) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+    assert_eq!(
+        (&sitting["phase"], &sitting["lobby"]),
+        (&serde_json::json!("live"), &serde_json::json!(0)),
+        "{sitting}"
+    );
+    assert!(sitting["live_at"].is_string(), "{sitting}");
+    let ann_id = stack.participant_named("ann").await;
+    stack
+        .wait_participant(&ann_id, |p| {
+            p["role"] == "attendee" && p["listener"] == true
+        })
+        .await;
+    host_call.media().play_tone(550.0, 2000);
+    for (who, call) in [("Ann", &ann_call), ("Ben", &ben_call)] {
+        assert!(call.media().heard(550, SOON).await, "{who} hears the host");
+    }
+    let deadline = tokio::time::Instant::now() + SOON;
+    loop {
+        let (_, room) = stack.get(&format!("/conferences/{ROOM}")).await;
+        if room["is_recording"] == true {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "going live did not record: {room}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Live twice is no change; a host's *95 again neither.
+    let (code, out) = stack
+        .post(&format!("/conferences/{ROOM}/webinar/live"))
+        .await;
+    assert_eq!((code, &out["changed"]), (200, &serde_json::json!(false)));
+
+    // A host ends it: everyone is released.
+    let (code, out) = stack
+        .post(&format!("/conferences/{ROOM}/webinar/end"))
+        .await;
+    assert_eq!(code, 200, "{out}");
+    assert_eq!(out["released"], 3, "{out}");
+    for (who, call) in [("host", &host_call), ("Ann", &ann_call), ("Ben", &ben_call)] {
+        assert!(call.ended(SOON).await, "{who} is released");
+    }
+    let (code, _) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+    assert_eq!(code, 404, "the sitting is over");
+
+    // A new sitting, taken live through the API. The host leaves: past
+    // the grace period, the webinar ends by itself.
+    let host_call = join(&stack, &host).await;
+    dial_digits(&host_call, "9999").await;
+    go_live(&stack).await;
+    let ben_call = join(&stack, &ben).await;
+    dial_digits(&ben_call, "").await;
+    stack.wait_participants(2).await;
+    let (_, sitting) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+    assert_ne!(sitting["id"], first_sitting.as_str(), "{sitting}");
+    assert_eq!(host_call.hangup().await.unwrap(), 200);
+    assert!(
+        ben_call.ended(Duration::from_secs(8)).await,
+        "an empty stage ends the webinar"
+    );
+    stack.wait_participants(0).await;
+    stack.finish().await;
+}
+
+/// A meeting's room has a sitting too, live from its start, with no lobby,
+/// and a webinar's controls are refused there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_meeting_s_sitting_is_live_and_has_no_webinar_controls() {
+    let stack = stack_or_skip!();
+    stack.seed.meeting(ROOM, None, None).await;
+    let alice = stack.phone("alice").await;
+    let call = join(&stack, &alice).await;
+    stack.wait_participants(1).await;
+    let (code, sitting) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+    assert_eq!(code, 200, "{sitting}");
+    assert_eq!(sitting["kind"], "meeting", "{sitting}");
+    assert_eq!(sitting["phase"], "live", "{sitting}");
+    assert!(sitting["live_at"].is_string(), "{sitting}");
+    for op in ["live", "end"] {
+        let (code, out) = stack
+            .post(&format!("/conferences/{ROOM}/webinar/{op}"))
+            .await;
+        assert_eq!(code, 409, "{op}: {out}");
+    }
+    assert_eq!(call.hangup().await.unwrap(), 200);
     stack.wait_participants(0).await;
     stack.finish().await;
 }

@@ -99,9 +99,9 @@ pub(super) struct ChatRoom {
 }
 
 impl ChatRoom {
-    fn new(meeting: &Meeting) -> Self {
+    fn new(meeting: &Meeting, session_id: String) -> Self {
         Self {
-            session_id: uuid::Uuid::new_v4().to_string(),
+            session_id,
             meeting_id: Some(meeting.id.to_string()),
             scope: meeting.chat_scope(),
             messages: VecDeque::new(),
@@ -234,7 +234,7 @@ impl ConferenceCallHandler {
         let mut room = self
             .chat_rooms
             .entry(key.clone())
-            .or_insert_with(|| ChatRoom::new(meeting));
+            .or_insert_with(|| ChatRoom::new(meeting, self.sitting_id(key)));
         room.scope = meeting.chat_scope();
         if chat_notices && !room.messages.is_empty() {
             room.fresh.insert(call_id.to_string());

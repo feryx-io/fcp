@@ -6,7 +6,8 @@ audience mix, measured at 1,000 and 2,000 attendees on one node (§5). W2 is don
 (v0.25.584–585, forge-media v2026.11.17.1): the audience's video and roster, measured
 at 1,000 and 2,000 watching (§5). W3 is done: W3.1, hands and the stage (v0.25.586–587,
 forge-media v2026.11.17.2), and W3.2, Q&A (v0.25.588). W3b, chat in every room, is
-done (v0.25.591).
+done (v0.25.591). W4.1, the webinar's life (practice, live, ended, and the lobby), is
+done (v0.25.593–594, forge-media v2026.11.19).
 
 A webinar is a meeting with a stage and an audience:
 - a few people speak and are seen;
@@ -621,13 +622,69 @@ For an audience that is not on FCP at all.
       - chat in the attendance export (W4);
       - the meeting's `chat` in the admin UI's meeting form (W4's webinar
         pages).
-- **W4: the webinar's life** (FCP).
+- **W4: the webinar's life** (FCP), in three parts.
   - Practice, go live, end.
   - The lobby let in gradually.
   - Registration with tokens per registrant (`webinar_registrants`) and
     revocation.
   - The attendance report from CDRs.
   - The admin UI's webinar pages.
+  - **W4.1: practice, live, ended, and the lobby.** **Done** (v0.25.593–594,
+    forge-media v2026.11.19: forge-conference 0.21.0's `*95`). As built:
+    - **The sitting.** Every room, meetings too, has one per run on its
+      node: from its first caller (past their PIN) to its last, the lobby
+      included. Its id is the `session_id` of that run's questions and
+      chat, which before each made their own. It is a
+      `conference_sittings` row (migration 145,
+      `fcp_core::webinar::SittingStore`), written as it begins, goes live
+      and ends: `kind`, `started_at`, `live_at` (a meeting's is its start),
+      `ended_at` and `ended_by` (a host's participant id, `host` for `*00`,
+      `api`, `stage_left`, or nothing when its last caller left). A later
+      write never clears what an earlier one set. The room's JSON has it as
+      `sitting` (`id`, `kind`, `phase`, `started_at`, `live_at`, `lobby`).
+    - **Practice.** A webinar's sitting begins in practice. The stage
+      (hosts, panelists) is in the room and hears itself. An attendee who
+      arrives, by PIN, `#` or token, waits in the **lobby**: answered, on
+      the conference's wait announcement and hold music, and not in the
+      room at all (not mixed, not on a roster, not counted). The lobby is
+      the conference server's, not forge-conference's waiting room, so a
+      host joining does not let it in. Nothing is recorded, whatever
+      `auto_record` says. An attendee waits at most `[conference]
+      lobby_max_wait_secs` (7200; 0 is unlimited). A migrant is never put
+      in the lobby.
+    - **Going live.** A host's `*95` (forge-conference's host command
+      `go_live`: queued on the room and taken within a second, as `*4` is),
+      `POST /conferences/{room}/webinar/live` on the node, the admin's
+      `POST /api/v1/conferences/live/{room}/webinar/live` (`conference_manage`)
+      or a host's `POST /api/v1/me/conferences/live/{room}/webinar/live`.
+      The lobby is let in oldest first at `[conference]
+      lobby_admit_per_sec` (50), each as a listener; their waiting task
+      sees it within half a second and starts their bridges. One the room
+      cannot take (full) is sent a BYE. Recording starts if the meeting
+      records. Live twice is no change (`changed: false`); a meeting is 409.
+    - **Ending.** A host ends it: `*00`, `POST …/webinar/end` on the node,
+      the admin's or a host's route. Everyone, the lobby included, hears
+      the ending announcement and is sent a BYE, and the sitting is over:
+      the next caller begins a new one. While live, a stage with nobody on
+      it (no host, panelist or promoted attendee) for `[conference]
+      webinar_stage_grace_secs` (120) ends the webinar the same way
+      (`stage_left`), so a host whose call drops has that long to call back.
+      In practice an empty stage ends nothing: the lobby goes on waiting.
+      A caller who arrives while a webinar is being ended is let go.
+    - **Being told.** A participant who asked for `fcp-qa` is sent
+      `{"op":"webinar","phase":…,"lobby":…}` when they join, when it goes
+      live (one in the lobby is told only as they are let in, so the two
+      cannot cross) and when it ends. The room refuses the message from a
+      participant (403). The gateway keeps `qa.webinar` and `qa.lobby` on a
+      session, and the join page says "waiting for the webinar to start".
+    - `GET /conferences/{room}/webinar` on the node, and the admin's and a
+      host's `GET …/webinar`, give the sitting.
+    - **Events:** `conference.webinar_live` (`sitting_id`, `by`) and
+      `conference.webinar_ended` (`sitting_id`, `by`).
+    - **Not yet:** registration, the attendance report and the audience by
+      page (W4.2); the admin UI's webinar pages, with the meeting's `chat`
+      in its form (W4.3); a lobby across a migration (a migrant is admitted
+      as it was).
 - **W5: a stage and its edges** (FCP).
   - Edge nodes on one-way trunks from the stage, placement for attendees, and
     promotion across a trunk.

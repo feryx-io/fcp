@@ -1111,3 +1111,93 @@ pub async fn mute_chat(
     }
     Ok(out)
 }
+
+/// GET /me/conferences/live/:room/webinar — the room's sitting: its phase, when it went live, and who waits in the lobby (`docs/WEBINARS.md` §2.6).
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/conferences/live/{room}/webinar",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_webinar",
+    params(("room" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn webinar(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    headers: HeaderMap,
+    Path(room): Path<String>,
+) -> Result<Proxied, ApiError> {
+    as_host(
+        &state,
+        &claims,
+        &headers,
+        &room,
+        reqwest::Method::GET,
+        "/webinar",
+        None,
+    )
+    .await
+}
+
+/// POST /me/conferences/live/:room/webinar/live — a host takes the webinar live: the lobby is let in.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/conferences/live/{room}/webinar/live",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_go_live",
+    params(("room" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn go_live(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    headers: HeaderMap,
+    Path(room): Path<String>,
+) -> Result<Proxied, ApiError> {
+    as_host(
+        &state,
+        &claims,
+        &headers,
+        &room,
+        reqwest::Method::POST,
+        "/webinar/live",
+        None,
+    )
+    .await
+}
+
+/// POST /me/conferences/live/:room/webinar/end — a host ends the webinar: everyone is released.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/conferences/live/{room}/webinar/end",
+    tag = "self_service",
+    operation_id = "self_service_my_live_conference_end_webinar",
+    params(("room" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn end_webinar(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    headers: HeaderMap,
+    Path(room): Path<String>,
+) -> Result<Proxied, ApiError> {
+    as_host(
+        &state,
+        &claims,
+        &headers,
+        &room,
+        reqwest::Method::POST,
+        "/webinar/end",
+        None,
+    )
+    .await
+}

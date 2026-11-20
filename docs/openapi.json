@@ -20124,6 +20124,123 @@
         }
       }
     },
+    "/api/v1/conferences/live/{room}/webinar": {
+      "get": {
+        "tags": [
+          "conferences_live"
+        ],
+        "summary": "GET /conferences/live/:room/webinar — the room's sitting and a webinar's phase (`docs/WEBINARS.md` §2.6).",
+        "operationId": "conferences_live_webinar",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conferences/live/{room}/webinar/live": {
+      "post": {
+        "tags": [
+          "conferences_live"
+        ],
+        "summary": "POST /conferences/live/:room/webinar/live — Webinar taken live: the lobby is let in.",
+        "operationId": "conferences_live_go_live",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conferences/live/{room}/webinar/end": {
+      "post": {
+        "tags": [
+          "conferences_live"
+        ],
+        "summary": "POST /conferences/live/:room/webinar/end — Webinar ended: everyone is released.",
+        "operationId": "conferences_live_end_webinar",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/conferences/live/{room}/video/content-layout": {
       "put": {
         "tags": [
@@ -20913,6 +21030,123 @@
           },
           {
             "name": "pid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/webinar": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/conferences/live/:room/webinar — the room's sitting: its phase, when it went live, and who waits in the lobby (`docs/WEBINARS.md` §2.6).",
+        "operationId": "self_service_my_live_conference_webinar",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/webinar/live": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/conferences/live/:room/webinar/live — a host takes the webinar live: the lobby is let in.",
+        "operationId": "self_service_my_live_conference_go_live",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/webinar/end": {
+      "post": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "POST /me/conferences/live/:room/webinar/end — a host ends the webinar: everyone is released.",
+        "operationId": "self_service_my_live_conference_end_webinar",
+        "parameters": [
+          {
+            "name": "room",
             "in": "path",
             "required": true,
             "schema": {
@@ -48202,6 +48436,8 @@
               "conference.question_dismissed",
               "conference.chat_deleted",
               "conference.chat_muted",
+              "conference.webinar_live",
+              "conference.webinar_ended",
               "queue.caller_enqueued",
               "queue.caller_dequeued",
               "queue.caller_abandoned",

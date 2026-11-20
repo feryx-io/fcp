@@ -143,6 +143,9 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     ),
     (POST, "/me/conferences/live/:room/video/content/stop", Open),
     (POST, "/me/conferences/live/:room/hand", Open),
+    (GET, "/me/conferences/live/:room/webinar", Open),
+    (POST, "/me/conferences/live/:room/webinar/live", Open),
+    (POST, "/me/conferences/live/:room/webinar/end", Open),
     (
         DELETE,
         "/me/conferences/live/:room/participants/:pid/hand",
@@ -776,6 +779,21 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (
         PUT,
         "/conferences/live/:room/video/content-layout",
+        Needs(ConferenceManage),
+    ),
+    (
+        GET,
+        "/conferences/live/:room/webinar",
+        Needs(ConferenceRead),
+    ),
+    (
+        POST,
+        "/conferences/live/:room/webinar/live",
+        Needs(ConferenceManage),
+    ),
+    (
+        POST,
+        "/conferences/live/:room/webinar/end",
         Needs(ConferenceManage),
     ),
     (

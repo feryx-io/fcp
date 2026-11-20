@@ -1389,6 +1389,30 @@ pub enum ConferenceEvent {
         timestamp: SystemTime,
     },
 
+    /// A host took a webinar live: its lobby is let in (`docs/WEBINARS.md`
+    /// §2.6). `by` is the host's participant id, or `None` through the API.
+    WebinarLive {
+        room_number: String,
+        sitting_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A webinar ended: a host ended it (`by` their participant id, or
+    /// `api`), or its stage was empty for the grace period while live
+    /// (`stage_left`). Everyone in it is released.
+    WebinarEnded {
+        room_number: String,
+        sitting_id: String,
+        by: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// Conference room was locked
     RoomLocked {
         room_number: String,
@@ -2176,6 +2200,8 @@ impl PlatformEvent {
         "conference.question_dismissed",
         "conference.chat_deleted",
         "conference.chat_muted",
+        "conference.webinar_live",
+        "conference.webinar_ended",
         "queue.caller_enqueued",
         "queue.caller_dequeued",
         "queue.caller_abandoned",
@@ -2353,6 +2379,8 @@ impl PlatformEvent {
                 ConferenceEvent::QuestionDismissed { .. } => "conference.question_dismissed",
                 ConferenceEvent::ChatDeleted { .. } => "conference.chat_deleted",
                 ConferenceEvent::ChatMuted { .. } => "conference.chat_muted",
+                ConferenceEvent::WebinarLive { .. } => "conference.webinar_live",
+                ConferenceEvent::WebinarEnded { .. } => "conference.webinar_ended",
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { .. } => "queue.caller_enqueued",
@@ -2501,7 +2529,9 @@ impl PlatformEvent {
                 | ConferenceEvent::QuestionAnswered { tenant_id, .. }
                 | ConferenceEvent::QuestionDismissed { tenant_id, .. }
                 | ConferenceEvent::ChatDeleted { tenant_id, .. }
-                | ConferenceEvent::ChatMuted { tenant_id, .. } => Some(tenant_id),
+                | ConferenceEvent::ChatMuted { tenant_id, .. }
+                | ConferenceEvent::WebinarLive { tenant_id, .. }
+                | ConferenceEvent::WebinarEnded { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { tenant_id, .. }
@@ -2890,7 +2920,9 @@ impl ConferenceEvent {
             | ConferenceEvent::QuestionAnswered { timestamp, .. }
             | ConferenceEvent::QuestionDismissed { timestamp, .. }
             | ConferenceEvent::ChatDeleted { timestamp, .. }
-            | ConferenceEvent::ChatMuted { timestamp, .. } => *timestamp,
+            | ConferenceEvent::ChatMuted { timestamp, .. }
+            | ConferenceEvent::WebinarLive { timestamp, .. }
+            | ConferenceEvent::WebinarEnded { timestamp, .. } => *timestamp,
         }
     }
 }

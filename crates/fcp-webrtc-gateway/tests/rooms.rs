@@ -1503,9 +1503,36 @@ async fn a_browser_raises_its_hand_is_brought_to_the_stage_and_asks() {
         let browser = Browser::join(&gw, &join_token(&seed, "web"), "web").await?;
         browser.wait_state(&gw, "connected", A_WHILE).await?;
         let session = format!("/v1/rooms/{}", browser.id);
-        let (_, info) = gw.api("GET", &session, &browser.token, None).await?;
+        // It waits in the lobby, and is told so, until the webinar goes
+        // live (W4).
+        let deadline = tokio::time::Instant::now() + SOON;
+        loop {
+            let (_, info) = gw.api("GET", &session, &browser.token, None).await?;
+            if info["qa"]["webinar"] == "practice" && info["qa"]["lobby"] == true {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!("never told it waits in the lobby: {info}"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let (code, out) = conf("POST", format!("/conferences/{ROOM}/webinar/live")).await?;
+        if code != 200 {
+            return Err(format!("going live answered {code}: {out}"));
+        }
+        let deadline = tokio::time::Instant::now() + SOON;
+        let info = loop {
+            let (_, info) = gw.api("GET", &session, &browser.token, None).await?;
+            if info["qa"]["webinar"] == "live" && info["qa"]["lobby"] == false {
+                break info;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!("never let in from the lobby: {info}"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
         if info["qa"]
-            != serde_json::json!({ "hand": false, "on_stage": false, "moderates": false, "questions": [] })
+            != serde_json::json!({ "hand": false, "on_stage": false, "moderates": false, "questions": [], "webinar": "live", "lobby": false })
         {
             return Err(format!("a new session's qa: {info}"));
         }

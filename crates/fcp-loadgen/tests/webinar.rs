@@ -34,7 +34,7 @@
 
 use fcp_loadgen::sampler::Sampler;
 use fcp_testkit::media::allocate_port_pair;
-use fcp_testkit::smoke::{http_get, loopback};
+use fcp_testkit::smoke::{http_get, http_request, loopback};
 use fcp_testkit::{bins, free_port, Phone, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -178,6 +178,20 @@ format = "compact"
         .expect("the host is admitted");
     if webinar {
         dial(&host_call, "9999").await;
+        // Live at once: the audience is let in as it joins, no lobby
+        // (`docs/WEBINARS.md` §2.6).
+        let path = format!("/conferences/{ROOM}/webinar/live");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (code, _) = http_request("POST", &loopback(http, &path), &[], Some("{}"))
+                .await
+                .expect("go live");
+            if code == 200 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the webinar never went live");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
     // The rest of the stage, on camera, by panelist token (a guest's in a
     // meeting).
