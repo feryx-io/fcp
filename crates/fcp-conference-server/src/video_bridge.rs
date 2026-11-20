@@ -332,6 +332,13 @@ pub fn room_video_json(room: &ConferenceRoom) -> serde_json::Value {
         "active_speaker": st.active_speaker,
         "fps": st.fps,
         "target_fps": st.target_fps,
+        // When a subscriber is sent one source's own stream (§5.6): `on` on
+        // a webinar's edge (`docs/WEBINARS.md` §2.7).
+        "passthrough": match video.settings().passthrough {
+            forge_conference::video::PassthroughMode::Off => "off",
+            forge_conference::video::PassthroughMode::Auto => "auto",
+            forge_conference::video::PassthroughMode::On => "on",
+        },
         "resolution": st.resolution.to_string(),
         // The device the room is placed on; each output, flavor and
         // source says where it actually runs (§15.7).

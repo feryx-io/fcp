@@ -960,8 +960,33 @@ For an audience that is not on FCP at all.
             stays on the edge, pending;
           - a moderator joined at an edge rather than moved to the stage
             does not moderate there.
-    - **W5.3: video to edges.** Decision 7, and what forge-conference needs
-      for it, if anything.
+    - **W5.3: video to edges.** Decision 7. **Done** (v0.25.600–601,
+      forge-media v2026.11.20: forge-conference 0.22.0's
+      `VideoRoom::set_passthrough`). As built:
+      - **An edge forwards the stage's composite.** The trunk already
+        carries the stage's composite as one tile. A node learns it is an
+        edge after its video room exists, so it now turns passthrough `on`
+        then, and puts the meeting's own mode back if it stops being one.
+        The trunk manager checks this on every pass, so a room whose video
+        starts later is covered too. The audience's view on an edge is that
+        one tile, so each attendee is sent the stage's packets as they
+        arrive, under their own SSRC. The edge encodes nothing for them,
+        and the stage's labels and layout are what they see.
+      - An attendee brought to the stage on an edge, with their camera on,
+        is a second tile there: while they are up, the edge composes as any
+        room does.
+      - A forwarding room (`video_mode = auto`) is unchanged: its attendees
+        are forwarding viewers, and R7's trunk forwards each person.
+      - `passthrough` in the room's video JSON.
+      - **Proved:**
+        - forge-conference's
+          `passthrough_turned_on_forwards_an_audience_its_one_source_and_off_composes_again`
+          shows the mechanism, on frames that decode;
+        - `cluster.rs` `a_video_webinar_s_edge_forwards_the_stage_s_composite`
+          shows the node: the edge turns passthrough on, the stage keeps
+          `auto`, and the edge's attendee is sent video from the stage. The
+          test kit's frames do not decode, so this test cannot show the
+          fast path itself; W5.4 measures it.
     - **W5.4: measured.** `fcp-loadgen` across two and three nodes, to 5,000
       attendees: CPU and egress per node, and the trunk's cost.
 - **W6: HLS** (forge-media, FCP).
