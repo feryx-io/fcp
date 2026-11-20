@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, Pencil, Trash2, Phone, PhoneOutgoing, ArrowUp, X, Video, Link as LinkIcon } from 'lucide-react'
+import { MoreHorizontal, Plus, Pencil, Trash2, Phone, PhoneOutgoing, ArrowUp, X, Video, Link as LinkIcon, Radio } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -26,6 +26,7 @@ type VideoCodecName = NonNullable<CreateMeetingRequest['video_codecs']>[number]
 import { useTenantListFilter } from '@/components/TenantSelector'
 import { LiveVideoDialog } from '@/components/LiveVideoDialog'
 import { JoinLinkDialog } from '@/components/JoinLinkDialog'
+import { WebinarDialog } from '@/components/WebinarDialog'
 
 const createSchema = z.object({
   room_number: z.string().min(1, 'Room number is required').regex(/^\d+$/, 'Must be numeric'),
@@ -64,6 +65,10 @@ const createSchema = z.object({
   kind: z.enum(['meeting', 'webinar']).optional(),
   panelist_pin: z.string().regex(/^\d*$/, 'Digits only').optional(),
   panelists: z.array(z.string()).optional(),
+  qa: z.enum(['default', 'off', 'moderated', 'open']).optional(),
+  qa_anonymous: z.boolean().optional(),
+  chat: z.enum(['default', 'everyone', 'hosts', 'off']).optional(),
+  registration: z.boolean().optional(),
 })
 
 const editSchema = z.object({
@@ -101,6 +106,10 @@ const editSchema = z.object({
   kind: z.enum(['meeting', 'webinar']).optional(),
   panelist_pin: z.string().regex(/^\d*$/, 'Digits only').optional(),
   panelists: z.array(z.string()).optional(),
+  qa: z.enum(['default', 'off', 'moderated', 'open']).optional(),
+  qa_anonymous: z.boolean().optional(),
+  chat: z.enum(['default', 'everyone', 'hosts', 'off']).optional(),
+  registration: z.boolean().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -209,6 +218,7 @@ export function ConferencesPage() {
   const [dialOutResult, setDialOutResult] = useState<string | null>(null)
   const [liveVideoRoom, setLiveVideoRoom] = useState<string | null>(null)
   const [joinLinkMeeting, setJoinLinkMeeting] = useState<MeetingResponse | null>(null)
+  const [webinarMeeting, setWebinarMeeting] = useState<MeetingResponse | null>(null)
   const queryClient = useQueryClient()
 
   const { data: rawItems = [], isLoading } = useQuery({
@@ -310,6 +320,9 @@ export function ConferencesPage() {
             {m.default_locked && (
               <Badge variant="secondary" className="text-xs">Locked</Badge>
             )}
+            {m.registration && (
+              <Badge variant="secondary" className="text-xs">Registration</Badge>
+            )}
             {m.permanent && (
               <Badge variant="secondary" className="text-xs">Permanent</Badge>
             )}
@@ -355,6 +368,11 @@ export function ConferencesPage() {
             <DropdownMenuItem onClick={() => setJoinLinkMeeting(row.original)}>
               <LinkIcon className="mr-2 h-4 w-4" /> Join in browser
             </DropdownMenuItem>
+            {row.original.kind === 'webinar' && (
+              <DropdownMenuItem onClick={() => setWebinarMeeting(row.original)}>
+                <Radio className="mr-2 h-4 w-4" /> Webinar
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               onClick={() => toggleMutation.mutate({ id: row.original.id, enabled: !row.original.enabled })}
             >
@@ -400,6 +418,7 @@ export function ConferencesPage() {
       <EditDialog item={editItem} onOpenChange={(open) => { if (!open) setEditItem(null) }} onSubmit={(data) => { if (editItem) updateMutation.mutate({ id: editItem.id, data }) }} isPending={updateMutation.isPending} promptList={promptList} userList={userList} />
 
       <LiveVideoDialog room={liveVideoRoom} onOpenChange={(open) => { if (!open) setLiveVideoRoom(null) }} />
+      <WebinarDialog meeting={webinarMeeting} onOpenChange={(open) => { if (!open) setWebinarMeeting(null) }} />
       <JoinLinkDialog meeting={joinLinkMeeting} onOpenChange={(open) => { if (!open) setJoinLinkMeeting(null) }} mint={joinTokens.mint} />
 
       {/* Dial-Out Dialog */}
@@ -480,7 +499,7 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
     defaultValues: {
       enabled: true, require_guest_pin: false, wait_for_moderator: false, auto_record: false, default_locked: false, permanent: false, max_participants: 0,
       video_enabled: false, video_layout: 'grid', video_max_participants: 16, video_max_resolution: '720p', video_fps: 15, video_exclude_self: false, video_passthrough: 'auto', video_mode: 'mix', video_content_share: 'anyone', video_content_layout: 'presentation', video_codecs: DEFAULT_VIDEO_CODECS,
-      kind: 'meeting', panelists: [],
+      kind: 'meeting', panelists: [], qa: 'default', qa_anonymous: false, chat: 'default', registration: false,
     },
   })
 
@@ -522,6 +541,10 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
       kind: data.kind,
       panelist_pin: data.kind === 'webinar' ? data.panelist_pin || undefined : undefined,
       panelists: data.kind === 'webinar' ? data.panelists : [],
+      qa: data.qa && data.qa !== 'default' ? data.qa : undefined,
+      qa_anonymous: data.qa_anonymous,
+      chat: data.chat && data.chat !== 'default' ? data.chat : undefined,
+      registration: data.kind === 'webinar' ? data.registration : false,
     })
     reset()
   }
@@ -566,6 +589,17 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
             panelists={watch('panelists') ?? []}
             onPanelists={(v) => setValue('panelists', v)}
             userList={userList}
+          />
+          <AudienceFields
+            kind={watch('kind') ?? 'meeting'}
+            qa={watch('qa') ?? 'default'}
+            onQa={(v) => setValue('qa', v)}
+            qaAnonymous={watch('qa_anonymous') ?? false}
+            onQaAnonymous={(v) => setValue('qa_anonymous', v)}
+            chat={watch('chat') ?? 'default'}
+            onChat={(v) => setValue('chat', v)}
+            registration={watch('registration') ?? false}
+            onRegistration={(v) => setValue('registration', v)}
           />
 
           <div>
@@ -820,6 +854,10 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
       kind: (item.kind as 'meeting' | 'webinar') ?? 'meeting',
       panelist_pin: item.panelist_pin || '',
       panelists: item.panelists ?? [],
+      qa: (item.qa as 'off' | 'moderated' | 'open' | null | undefined) ?? 'default',
+      qa_anonymous: item.qa_anonymous ?? false,
+      chat: (item.chat as 'everyone' | 'hosts' | 'off' | null | undefined) ?? 'default',
+      registration: item.registration ?? false,
     })
   }
 
@@ -856,6 +894,10 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
     if (data.kind !== undefined) update.kind = data.kind
     if (data.panelist_pin !== undefined) update.panelist_pin = data.panelist_pin || null
     if (data.panelists !== undefined) update.panelists = data.panelists
+    if (data.qa !== undefined) update.qa = data.qa === 'default' ? null : data.qa
+    if (data.qa_anonymous !== undefined) update.qa_anonymous = data.qa_anonymous
+    if (data.chat !== undefined) update.chat = data.chat === 'default' ? null : data.chat
+    if (data.registration !== undefined) update.registration = data.registration
     if (data.video_content_share !== undefined) update.video_content_share = data.video_content_share
     if (data.video_content_layout !== undefined) update.video_content_layout = data.video_content_layout
     if (data.video_codecs !== undefined) update.video_codecs = data.video_codecs as VideoCodecName[]
@@ -896,6 +938,17 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
             panelists={watch('panelists') ?? []}
             onPanelists={(v) => setValue('panelists', v)}
             userList={userList}
+          />
+          <AudienceFields
+            kind={watch('kind') ?? 'meeting'}
+            qa={watch('qa') ?? 'default'}
+            onQa={(v) => setValue('qa', v)}
+            qaAnonymous={watch('qa_anonymous') ?? false}
+            onQaAnonymous={(v) => setValue('qa_anonymous', v)}
+            chat={watch('chat') ?? 'default'}
+            onChat={(v) => setValue('chat', v)}
+            registration={watch('registration') ?? false}
+            onRegistration={(v) => setValue('registration', v)}
           />
 
           <div>
@@ -1151,6 +1204,69 @@ function WebinarFields({ kind, onKind, pinField, pinError, panelists, onPanelist
             </p>
           </div>
         </>
+      )}
+    </div>
+  )
+}
+
+type QaChoice = 'default' | 'off' | 'moderated' | 'open'
+type ChatChoice = 'default' | 'everyone' | 'hosts' | 'off'
+
+/** The audience's voice and a webinar's registration (`docs/WEBINARS.md`
+ * §2.5–2.6): questions and chat for every room, unset meaning the kind's
+ * default; whether a webinar admits registrants alone. */
+function AudienceFields({ kind, qa, onQa, qaAnonymous, onQaAnonymous, chat, onChat, registration, onRegistration }: {
+  kind: 'meeting' | 'webinar'
+  qa: QaChoice
+  onQa: (v: QaChoice) => void
+  qaAnonymous: boolean
+  onQaAnonymous: (v: boolean) => void
+  chat: ChatChoice
+  onChat: (v: ChatChoice) => void
+  registration: boolean
+  onRegistration: (v: boolean) => void
+}) {
+  const webinar = kind === 'webinar'
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <Label>Questions</Label>
+          <Select value={qa} onValueChange={(v) => onQa(v as QaChoice)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="default">Default ({webinar ? 'moderated' : 'off'})</SelectItem>
+              <SelectItem value="off">Off</SelectItem>
+              <SelectItem value="moderated">Moderated — shown once published</SelectItem>
+              <SelectItem value="open">Open — shown as asked</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label>Chat</Label>
+          <Select value={chat} onValueChange={(v) => onChat(v as ChatChoice)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="default">Default ({webinar ? 'to the hosts' : 'everyone'})</SelectItem>
+              <SelectItem value="everyone">Everyone — to the room or the hosts</SelectItem>
+              <SelectItem value="hosts">To the hosts only</SelectItem>
+              <SelectItem value="off">Off</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="flex items-center justify-between">
+        <Label>Anonymous questions</Label>
+        <Switch checked={qaAnonymous} onCheckedChange={onQaAnonymous} aria-label="Anonymous questions" />
+      </div>
+      {webinar && (
+        <div className="flex items-center justify-between">
+          <div>
+            <Label>Require registration</Label>
+            <p className="text-xs text-muted-foreground">Attendees join only by the link minted for their registration.</p>
+          </div>
+          <Switch checked={registration} onCheckedChange={onRegistration} aria-label="Require registration" />
+        </div>
       )}
     </div>
   )
