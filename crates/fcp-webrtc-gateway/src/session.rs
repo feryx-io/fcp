@@ -250,6 +250,11 @@ pub struct QaState {
     /// The room's questions as this participant sees them, in the order
     /// asked; a dismissed one is dropped.
     pub questions: Vec<fcp_core::qa::QuestionView>,
+    /// A webinar's phase (W4), once the room has said; `None` in a meeting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webinar: Option<fcp_core::webinar::WebinarPhase>,
+    /// Whether this participant is waiting in a webinar's lobby.
+    pub lobby: bool,
 }
 
 /// The most questions a session keeps: a room's most.
@@ -281,6 +286,10 @@ impl QaState {
                         _ => {}
                     }
                 }
+            }
+            QaMessage::Webinar { phase, lobby } => {
+                self.webinar = Some(*phase);
+                self.lobby = *lobby;
             }
             // A participant's own requests; the room does not send them.
             QaMessage::Ask { .. }

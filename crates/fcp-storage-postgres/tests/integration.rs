@@ -2890,3 +2890,79 @@ async fn calling_settings_round_trip() {
         .is_none());
     db.finish().await;
 }
+
+/// A room's sittings (`docs/WEBINARS.md` §2.6, migration 145): written as
+/// they begin, go live and end, a later write never undoing an earlier
+/// one, and read back per meeting newest first and by id in the tenant.
+#[tokio::test]
+async fn sittings_are_kept_as_they_move_and_read_back_per_meeting() {
+    use fcp_core::webinar::{Sitting, SittingStore};
+    use std::time::{Duration, UNIX_EPOCH};
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    let b = tenant("b");
+    s.put_tenant(a.clone()).await.unwrap();
+    s.put_tenant(b.clone()).await.unwrap();
+    let store = fcp_storage_postgres::sittings::PostgresSittingStore::new(s.pool().clone());
+    let at = |secs: u64| UNIX_EPOCH + Duration::from_secs(1_800_000_000 + secs);
+
+    let mut first = Sitting {
+        id: "sit-1".into(),
+        tenant_id: a.id,
+        meeting_id: Some("meeting-1".into()),
+        room_number: "8001".into(),
+        kind: "webinar".into(),
+        started_at: at(0),
+        live_at: None,
+        ended_at: None,
+        ended_by: None,
+    };
+    store.put_sitting(&first).await.unwrap();
+    first.live_at = Some(at(60));
+    store.put_sitting(&first).await.unwrap();
+    // A write that knows less (one that raced) keeps what is known.
+    let stale = Sitting {
+        live_at: None,
+        ..first.clone()
+    };
+    store.put_sitting(&stale).await.unwrap();
+    first.ended_at = Some(at(3600));
+    first.ended_by = Some("api".into());
+    store.put_sitting(&first).await.unwrap();
+    let second = Sitting {
+        id: "sit-2".into(),
+        started_at: at(7200),
+        live_at: None,
+        ended_at: None,
+        ended_by: None,
+        ..first.clone()
+    };
+    store.put_sitting(&second).await.unwrap();
+
+    let back = store.get_sitting(&a.id, "sit-1").await.unwrap().unwrap();
+    assert_eq!(back, first);
+    let list = store
+        .sittings_of_meeting(&a.id, "meeting-1", 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        list.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        ["sit-2", "sit-1"]
+    );
+    assert_eq!(
+        store
+            .sittings_of_meeting(&a.id, "meeting-1", 1)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    // Another tenant sees none of it.
+    assert!(store.get_sitting(&b.id, "sit-1").await.unwrap().is_none());
+    assert!(store
+        .sittings_of_meeting(&b.id, "meeting-1", 10)
+        .await
+        .unwrap()
+        .is_empty());
+}

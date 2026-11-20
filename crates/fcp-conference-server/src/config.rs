@@ -784,6 +784,23 @@ pub struct ConferenceSection {
     #[serde(default = "default_max_wait_for_moderator_secs")]
     pub max_wait_for_moderator_secs: u64,
 
+    /// How many attendees waiting in a webinar's lobby are let in each
+    /// second once it goes live (`docs/WEBINARS.md` §2.6), so a thousand
+    /// do not join the mixer in one frame. Default: 50.
+    #[serde(default = "default_lobby_admit_per_sec")]
+    pub lobby_admit_per_sec: u32,
+
+    /// The longest an attendee waits in a webinar's lobby before being
+    /// let go, in seconds. Default: 7200. Set 0 for unlimited.
+    #[serde(default = "default_lobby_max_wait_secs")]
+    pub lobby_max_wait_secs: u64,
+
+    /// How long a live webinar's stage may be empty (no host, panelist or
+    /// promoted attendee) before the webinar ends, in seconds: a host
+    /// whose call drops has this long to call back. Default: 120.
+    #[serde(default = "default_webinar_stage_grace_secs")]
+    pub webinar_stage_grace_secs: u64,
+
     /// Interval (seconds) between repeating the wait-for-moderator announcement.
     /// The announcement plays once, then hold music (or silence) plays for this
     /// duration before the announcement repeats. Default: 30.
@@ -967,6 +984,18 @@ fn default_max_wait_for_moderator_secs() -> u64 {
     300
 }
 
+fn default_lobby_admit_per_sec() -> u32 {
+    50
+}
+
+fn default_lobby_max_wait_secs() -> u64 {
+    7200
+}
+
+fn default_webinar_stage_grace_secs() -> u64 {
+    120
+}
+
 fn default_moh_announcement_interval_secs() -> u64 {
     30
 }
@@ -1038,6 +1067,9 @@ impl Default for ConferenceSection {
             bfcp_bind: None,
             announcements_dir: default_announcements_dir(),
             max_wait_for_moderator_secs: default_max_wait_for_moderator_secs(),
+            lobby_admit_per_sec: default_lobby_admit_per_sec(),
+            lobby_max_wait_secs: default_lobby_max_wait_secs(),
+            webinar_stage_grace_secs: default_webinar_stage_grace_secs(),
             moh_announcement_interval_secs: default_moh_announcement_interval_secs(),
             max_invite_rate_per_ip: default_max_invite_rate(),
             session_expires_secs: default_session_expires_secs(),

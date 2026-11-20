@@ -95,9 +95,9 @@ pub(super) struct QaRoom {
 }
 
 impl QaRoom {
-    fn new(meeting: &Meeting) -> Self {
+    fn new(meeting: &Meeting, session_id: String) -> Self {
         Self {
-            session_id: uuid::Uuid::new_v4().to_string(),
+            session_id,
             meeting_id: Some(meeting.id.to_string()),
             mode: meeting.qa_mode(),
             anonymous_allowed: meeting.qa_anonymous,
@@ -208,7 +208,7 @@ impl ConferenceCallHandler {
         let mut room = self
             .qa_rooms
             .entry(key.clone())
-            .or_insert_with(|| QaRoom::new(meeting));
+            .or_insert_with(|| QaRoom::new(meeting, self.sitting_id(key)));
         room.mode = meeting.qa_mode();
         room.anonymous_allowed = meeting.qa_anonymous;
         if qa_notices && !room.questions.is_empty() {
@@ -524,9 +524,10 @@ impl ConferenceCallHandler {
             QaMessage::Dismiss { id } => self
                 .moderate_question(key, Some(participant_id), &id, Moderation::Dismiss)
                 .map(|_| ()),
-            QaMessage::Hand { .. } | QaMessage::Stage { .. } | QaMessage::Questions { .. } => {
-                Err(QaError::Refused("only the room sends that"))
-            }
+            QaMessage::Hand { .. }
+            | QaMessage::Stage { .. }
+            | QaMessage::Questions { .. }
+            | QaMessage::Webinar { .. } => Err(QaError::Refused("only the room sends that")),
         }
     }
 

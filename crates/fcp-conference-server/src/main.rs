@@ -1821,6 +1821,12 @@ async fn main() -> Result<()> {
                 // Questions that changed, told to those who asked to be
                 // told (`docs/WEBINARS.md` §2.5), coalesced to once a second.
                 dialout_handler.flush_questions();
+                // A live webinar whose stage stayed empty ends (§2.6).
+                let grace = dialout_handler
+                    .conference_config
+                    .read()
+                    .webinar_stage_grace_secs;
+                dialout_handler.end_empty_stages(Duration::from_secs(grace));
 
                 // Check each active room for pending requests
                 for room_id in dialout_bridge.list_rooms() {
@@ -1830,6 +1836,8 @@ async fn main() -> Result<()> {
                             let handler = Arc::clone(&dialout_handler);
                             let rn = room_id.clone();
                             let ending_samples = handler.dtmf_ending_samples.clone();
+                            // A webinar ends by a host's hand (§2.6).
+                            handler.sitting_destroyed(&rn, "host");
                             tokio::spawn(async move {
                                 info!(room = %rn, "Processing end-conference request");
                                 // Play ending announcement to each participant's RTP socket
@@ -1847,6 +1855,11 @@ async fn main() -> Result<()> {
                                 }
                             });
                             continue;
+                        }
+
+                        // A host's `*95`: the webinar goes live (§2.6).
+                        for pid in room.drain_go_live_requests() {
+                            dialout_handler.take_go_live(&room_id, &pid);
                         }
 
                         // A hand raised or lowered by `*4` (`docs/WEBINARS.md`

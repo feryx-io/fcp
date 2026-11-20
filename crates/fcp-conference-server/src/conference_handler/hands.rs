@@ -249,7 +249,7 @@ impl ConferenceCallHandler {
                     Err(StageError::NotFound) => (481, "Call/Transaction Does Not Exist"),
                 }
             }
-            Ok(QaMessage::Stage { .. }) => (403, "Forbidden"),
+            Ok(QaMessage::Stage { .. } | QaMessage::Webinar { .. }) => (403, "Forbidden"),
             Ok(message) => match self.take_question_info(key, participant_id, message) {
                 Ok(()) => (200, "OK"),
                 Err(e) => {
@@ -271,7 +271,7 @@ impl ConferenceCallHandler {
 
     /// Tell the participant on `call_id`, when they asked to be told
     /// (`Recv-Info: fcp-qa`), what the room did.
-    fn tell_qa(&self, call_id: &str, message: QaMessage) {
+    pub(super) fn tell_qa(&self, call_id: &str, message: QaMessage) {
         let asked = self.sessions.get(call_id).is_some_and(|s| s.qa_notices);
         let Some(me) = self.me().filter(|_| asked) else {
             return;

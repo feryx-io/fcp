@@ -187,6 +187,20 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/conferences/:room_number/participants/:pid/stage",
             post(stage_on_handler).delete(stage_off_handler),
         )
+        // A webinar's life (`docs/WEBINARS.md` §2.6, W4): its sitting and
+        // phase, taken live and ended by a host through the API.
+        .route(
+            "/conferences/:room_number/webinar",
+            get(webinar_status_handler),
+        )
+        .route(
+            "/conferences/:room_number/webinar/live",
+            post(webinar_live_handler),
+        )
+        .route(
+            "/conferences/:room_number/webinar/end",
+            post(webinar_end_handler),
+        )
         // Questions (`docs/WEBINARS.md` §2.5, W3.2): asked and upvoted by
         // a participant's call, moderated by a host through the API.
         .route(
@@ -1722,6 +1736,83 @@ fn stage_answer(
             StatusCode::CONFLICT,
             Json(serde_json::json!({ "error": e.to_string() })),
         ),
+    }
+}
+
+/// The answer to a webinar operation that failed.
+fn webinar_refusal(
+    e: crate::conference_handler::WebinarError,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::from_u16(e.status()).unwrap_or(StatusCode::CONFLICT),
+        Json(serde_json::json!({ "error": e.to_string() })),
+    )
+}
+
+/// `GET /conferences/:room/webinar` — the room's sitting: its id, kind,
+/// phase, when it started and went live, and how many wait in the lobby.
+async fn webinar_status_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    match state.conference_handler.sitting_json(&key) {
+        Some(sitting) => (StatusCode::OK, Json(sitting)),
+        None => webinar_refusal(crate::conference_handler::WebinarError::NotFound),
+    }
+}
+
+/// `POST /conferences/:room/webinar/live` — a host takes the webinar live:
+/// the lobby is let in and recording starts if the meeting records.
+async fn webinar_live_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    match state.conference_handler.go_live(&key, None) {
+        Ok(changed) => {
+            info!(action = "webinar_live", room = %room_number, changed, "AUDIT: webinar taken live via API");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "changed": changed,
+                    "sitting": state.conference_handler.sitting_json(&key),
+                })),
+            )
+        }
+        Err(e) => webinar_refusal(e),
+    }
+}
+
+/// `POST /conferences/:room/webinar/end` — a host ends the webinar:
+/// everyone hears the ending announcement and is released.
+async fn webinar_end_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let sitting = state.conference_handler.sitting_json(&key);
+    match state.conference_handler.end_webinar(&key, "api").await {
+        Ok(released) => {
+            info!(action = "webinar_end", room = %room_number, released, "AUDIT: webinar ended via API");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "released": released, "sitting": sitting })),
+            )
+        }
+        Err(e) => webinar_refusal(e),
     }
 }
 

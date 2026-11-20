@@ -43,6 +43,15 @@
 //! A host or panelist sees every question; anyone else the published ones
 //! and their own. A dismissed question is sent once more, `dismissed`, to
 //! those who saw it, so they can drop it.
+//!
+//! A webinar's phase (W4, [`crate::webinar`]). The room tells each
+//! participant who asked when they join and as it changes, and whether
+//! they are waiting in the lobby:
+//!
+//! ```json
+//! { "op": "webinar", "phase": "practice", "lobby": true }
+//! { "op": "webinar", "phase": "live", "lobby": false }
+//! ```
 
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +90,13 @@ pub enum QaMessage {
     /// The room's word of the questions that changed, as they are for the
     /// participant told. Only the room sends it.
     Questions { questions: Vec<QuestionView> },
+    /// A webinar's phase, and whether the participant told is waiting in
+    /// the lobby. Only the room sends it.
+    Webinar {
+        phase: crate::webinar::WebinarPhase,
+        #[serde(default)]
+        lobby: bool,
+    },
 }
 
 /// How a room takes questions (a meeting's `qa`).

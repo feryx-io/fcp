@@ -182,6 +182,9 @@
     const parts = [`<b class="${stateClass(info.state)}">${state}</b>`];
     if (info.audio_codec) parts.push(`audio ${info.audio_codec}${info.srtp ? ' (SRTP)' : ''}`);
     if (info.video) parts.push(`video ${info.video.codec}`); else if (info.state === 'connected') parts.push('audio only');
+    // A webinar's phase (W4): waiting in its lobby, or ended.
+    if (info.qa && info.qa.lobby) parts.push('waiting for the webinar to start');
+    else if (info.qa && info.qa.webinar === 'ended') parts.push('the webinar has ended');
     if (info.stats) {
       const s = info.stats;
       parts.push(`↑${s.audio_to_sip + s.video_to_sip + (s.content_to_sip || 0)} ↓${s.audio_to_browser + s.video_to_browser + (s.content_to_browser || 0) + (s.streams_to_browser || 0)} packets`);

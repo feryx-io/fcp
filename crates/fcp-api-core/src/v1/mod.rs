@@ -358,6 +358,19 @@ pub fn router() -> Router<ApiState> {
             "/me/conferences/live/:room/participants/:pid/stage",
             post(me_conferences_live::stage_on).delete(me_conferences_live::stage_off),
         )
+        // A webinar's life (`docs/WEBINARS.md` §2.6, W4)
+        .route(
+            "/me/conferences/live/:room/webinar",
+            get(me_conferences_live::webinar),
+        )
+        .route(
+            "/me/conferences/live/:room/webinar/live",
+            post(me_conferences_live::go_live),
+        )
+        .route(
+            "/me/conferences/live/:room/webinar/end",
+            post(me_conferences_live::end_webinar),
+        )
         // Questions (`docs/WEBINARS.md` §2.5, W3.2)
         .route(
             "/me/conferences/live/:room/questions",
@@ -1227,6 +1240,18 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/conferences/live/:room/video/content-layout",
             put(conferences_live::set_content_layout),
+        )
+        .route(
+            "/conferences/live/:room/webinar",
+            get(conferences_live::webinar),
+        )
+        .route(
+            "/conferences/live/:room/webinar/live",
+            post(conferences_live::go_live),
+        )
+        .route(
+            "/conferences/live/:room/webinar/end",
+            post(conferences_live::end_webinar),
         )
         .route(
             "/conferences/live/:room/dial-out",

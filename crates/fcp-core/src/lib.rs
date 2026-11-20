@@ -80,6 +80,7 @@ pub mod trunk;
 pub mod trunk_report;
 pub mod video_view;
 pub mod voicemail;
+pub mod webinar;
 
 // Re-export commonly used types
 pub use crate::cached_storage::{

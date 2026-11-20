@@ -571,6 +571,28 @@ async fn a_host_controls_their_room_from_their_own_session() {
             "POST",
             "/conferences/8402/questions/q-1/dismiss",
         ),
+        // A webinar's life (W4): its sitting, going live, ending.
+        (
+            Method::GET,
+            format!("{base}/webinar"),
+            None,
+            "GET",
+            "/conferences/8402/webinar",
+        ),
+        (
+            Method::POST,
+            format!("{base}/webinar/live"),
+            None,
+            "POST",
+            "/conferences/8402/webinar/live",
+        ),
+        (
+            Method::POST,
+            format!("{base}/webinar/end"),
+            None,
+            "POST",
+            "/conferences/8402/webinar/end",
+        ),
         // Chat (W3b): every message, deleting one, muting someone.
         (
             Method::GET,
@@ -790,6 +812,9 @@ async fn a_host_controls_their_room_from_their_own_session() {
     for (method, path, body) in [
         (Method::GET, format!("{base}/chat"), None),
         (Method::POST, format!("{base}/chat/m-1/delete"), None),
+        // Going live and ending are a host's alone.
+        (Method::POST, format!("{base}/webinar/live"), None),
+        (Method::POST, format!("{base}/webinar/end"), None),
         (
             Method::POST,
             format!("{base}/participants/p1/chat-mute"),
@@ -981,5 +1006,44 @@ async fn a_webinar_has_panelists_who_mint_their_own_tokens() {
         .await;
     assert_eq!(attendee.status, StatusCode::CREATED, "{}", attendee.text);
     assert_eq!(attendee.json["role"], "attendee");
+    app.finish().await;
+}
+
+/// A webinar's life (`docs/WEBINARS.md` §2.6, W4): an administrator reads
+/// the room's sitting, takes it live and ends it on the node holding it,
+/// for the meeting's tenant; another tenant's room is not found.
+#[tokio::test]
+async fn an_administrator_takes_a_webinar_live_and_ends_it() {
+    let (url, seen) = mock_conference_server().await;
+    let Some(app) = App::with_conference_server(&url).await else {
+        return;
+    };
+    new_meeting(&app, app.tenant_a, "8410", json!({ "kind": "webinar" })).await;
+    new_meeting(&app, app.tenant_b, "8411", json!({ "kind": "webinar" })).await;
+    for (method, op, up_path) in [
+        (Method::GET, "", "/conferences/8410/webinar"),
+        (Method::POST, "/live", "/conferences/8410/webinar/live"),
+        (Method::POST, "/end", "/conferences/8410/webinar/end"),
+    ] {
+        let path = format!("/api/v1/conferences/live/8410/webinar{op}");
+        let res = app.admin(method.clone(), &path, None).await;
+        assert_eq!(res.status, StatusCode::OK, "{method} {path}: {}", res.text);
+        assert_eq!(res.json["path"], up_path);
+        let path = format!("/api/v1/conferences/live/8411/webinar{op}");
+        let res = app.admin(method.clone(), &path, None).await;
+        assert_eq!(
+            res.status,
+            StatusCode::NOT_FOUND,
+            "{method} {path}: {}",
+            res.text
+        );
+    }
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert!(seen
+            .iter()
+            .all(|up| up.tenant.as_deref() == Some(app.tenant_a.to_string().as_str())));
+    }
     app.finish().await;
 }
