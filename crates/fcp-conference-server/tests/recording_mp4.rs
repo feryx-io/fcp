@@ -65,6 +65,7 @@ async fn an_audio_only_recording_is_opus_in_mp4() {
             container: RecordingFormat::Mp4,
             video: None,
             audio_bitrate: 32_000,
+            hls_segment_ms: None,
         },
     )
     .expect("the recorder starts");
@@ -107,6 +108,70 @@ async fn an_audio_only_recording_is_opus_in_mp4() {
     // covers video keyframes, so an audio-only file has none.
     assert!(summary.duration_ms <= 1_100, "{}", summary.duration_ms);
     assert!(!summary.mfra);
+}
+
+/// The files of an HLS stream's directory, as a player would fetch them:
+/// the playlist, then the init segment and each segment it names, joined.
+fn fetch_stream(dir: &std::path::Path) -> (String, Vec<u8>, Vec<u64>) {
+    let playlist = std::fs::read_to_string(dir.join("index.m3u8")).expect("a playlist");
+    let mut whole = std::fs::read(dir.join("init.mp4")).expect("an init segment");
+    let mut durations = Vec::new();
+    let mut lines = playlist.lines();
+    while let Some(line) = lines.next() {
+        if let Some(d) = line.strip_prefix("#EXTINF:") {
+            let secs: f64 = d.trim_end_matches(',').parse().unwrap();
+            durations.push((secs * 1000.0).round() as u64);
+            let name = lines.next().expect("a segment after its EXTINF");
+            whole.extend(std::fs::read(dir.join(name)).expect("the segment"));
+        }
+    }
+    (playlist, whole, durations)
+}
+
+/// A webinar streamed as HLS (`docs/WEBINARS.md` W6.2), audio alone: the
+/// recorder cuts the mix into segments of the target, and the playlist ends
+/// when the stream stops.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_audio_only_stream_is_opus_in_cmaf_segments() {
+    let dir = tempfile::tempdir().unwrap();
+    let stream = dir.path().join("sitting-1");
+    let room = room("hls-audio");
+    room.add_participant("alice", true).unwrap();
+    let recorder = Recorder::start(
+        "hls-1",
+        &room,
+        RecorderSettings {
+            path: stream.clone(),
+            container: RecordingFormat::Mp4,
+            video: None,
+            audio_bitrate: 32_000,
+            hls_segment_ms: Some(1_000),
+        },
+    )
+    .expect("the stream starts");
+    speak(&room, "alice", 175).await; // three and a half seconds
+    let live = std::fs::read_to_string(stream.join("index.m3u8")).expect("a live playlist");
+    assert!(!live.contains("#EXT-X-ENDLIST"), "{live}");
+    let outcome = recorder.stop().await;
+    assert!(outcome.audio_frames >= 150, "{outcome:?}");
+
+    let (playlist, whole, durations) = fetch_stream(&stream);
+    assert!(playlist.ends_with("#EXT-X-ENDLIST\n"), "{playlist}");
+    assert!(durations.len() >= 3, "{playlist}");
+    for d in &durations[..durations.len() - 1] {
+        assert_eq!(*d, 1_000, "{playlist}");
+    }
+    let summary = forge_mp4::read_summary(&whole).unwrap();
+    assert_eq!(summary.fragments.len(), durations.len());
+    let audio = summary.track(TrackKind::Audio).expect("an audio track");
+    assert_eq!(audio.codec, "Opus");
+    let samples: u32 = summary
+        .fragments
+        .iter()
+        .filter_map(|f| f.traf(AUDIO_TRACK))
+        .map(|t| t.samples)
+        .sum();
+    assert_eq!(samples as u64, outcome.audio_frames);
 }
 
 #[cfg(feature = "video-openh264")]
@@ -153,6 +218,7 @@ mod video {
                     max_kbps: None,
                 }),
                 audio_bitrate: 32_000,
+                hls_segment_ms: None,
             },
         )
         .expect("the recorder starts");
@@ -228,6 +294,69 @@ mod video {
         assert!(summary.mfra, "a clean stop writes the random-access index");
         assert!(summary.access_points >= 1, "a keyframe to seek to");
     }
+
+    /// A video webinar streamed as HLS: the room keys every ten seconds,
+    /// and the stream asks for a keyframe each segment, so it is cut about
+    /// every two, every segment starting on one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stream_asks_for_a_keyframe_each_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let stream = dir.path().join("sitting-v");
+        let room = room("hls-video");
+        room.add_participant("alice", true).unwrap();
+        let backend = VideoBackend::new(forge_video_codecs::default_registry(), CodecPool::new(2));
+        room.enable_video(
+            VideoRoomSettings {
+                layout: Layout::Grid,
+                resolution: Resolution::new(320, 180),
+                fps: 15,
+                codecs: vec![VideoCodec::H264],
+                keyframe_interval: Duration::from_secs(10),
+                ..VideoRoomSettings::default()
+            },
+            &backend,
+        );
+        let recorder = Recorder::start(
+            "hls-v",
+            &room,
+            RecorderSettings {
+                path: stream.clone(),
+                container: RecordingFormat::Mp4,
+                video: Some(VideoSettings {
+                    codec: VideoCodec::H264,
+                    resolution: None,
+                    max_kbps: None,
+                }),
+                audio_bitrate: 32_000,
+                hls_segment_ms: Some(2_000),
+            },
+        )
+        .expect("the stream starts");
+        speak(&room, "alice", 350).await; // seven seconds
+        let outcome = recorder.stop().await;
+        assert!(outcome.video_frames >= 60, "{outcome:?}");
+
+        let (playlist, whole, durations) = fetch_stream(&stream);
+        assert!(playlist.ends_with("#EXT-X-ENDLIST\n"), "{playlist}");
+        assert!(
+            durations.len() >= 3,
+            "cut about every two seconds, not at the room's ten: {playlist}"
+        );
+        for d in &durations[..durations.len() - 1] {
+            assert!((1_800..=2_600).contains(d), "{playlist}");
+        }
+        let summary = forge_mp4::read_summary(&whole).unwrap();
+        let track = summary.track(TrackKind::Video).expect("a video track");
+        assert_eq!(track.codec, "avc1");
+        for f in &summary.fragments {
+            let v = f.traf(VIDEO_TRACK).expect("video in every segment");
+            assert!(
+                v.keyframes >= 1,
+                "every segment starts on a keyframe: {v:?}"
+            );
+        }
+        assert_eq!(summary.video_samples(), outcome.video_frames);
+    }
 }
 
 /// On the box (design §15.9, block 9b): a room placed on the GPU named
@@ -291,6 +420,7 @@ mod device {
                     max_kbps: None,
                 }),
                 audio_bitrate: 64_000,
+                hls_segment_ms: None,
             },
         )
         .expect("the recorder starts");

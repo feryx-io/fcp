@@ -4471,7 +4471,7 @@ impl ConferenceStore for PostgresStorage {
                     video_enabled, video_layout, video_max_participants,
                     video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
                     video_content_share, video_content_layout, video_mode,
-                    kind, panelist_pin, panelists, qa, qa_anonymous, chat, registration,
+                    kind, panelist_pin, panelists, qa, qa_anonymous, chat, registration, streaming,
                     created_at, updated_at
              FROM conference_meetings WHERE id = $1",
         )
@@ -4500,7 +4500,7 @@ impl ConferenceStore for PostgresStorage {
                     video_enabled, video_layout, video_max_participants,
                     video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
                     video_content_share, video_content_layout, video_mode,
-                    kind, panelist_pin, panelists, qa, qa_anonymous, chat, registration,
+                    kind, panelist_pin, panelists, qa, qa_anonymous, chat, registration, streaming,
                     created_at, updated_at
              FROM conference_meetings WHERE tenant_id = $1 AND room_number = $2",
         )
@@ -4526,7 +4526,7 @@ impl ConferenceStore for PostgresStorage {
                     video_enabled, video_layout, video_max_participants,
                     video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
                     video_content_share, video_content_layout, video_mode,
-                    kind, panelist_pin, panelists, qa, qa_anonymous, chat, registration,
+                    kind, panelist_pin, panelists, qa, qa_anonymous, chat, registration, streaming,
                     created_at, updated_at
              FROM conference_meetings WHERE tenant_id = $1 ORDER BY room_number",
         )
@@ -4558,7 +4558,7 @@ impl ConferenceStore for PostgresStorage {
                     video_enabled, video_layout, video_max_participants,
                     video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
                     video_content_share, video_content_layout, video_mode,
-                    kind, panelist_pin, panelists, qa, qa_anonymous, chat, registration,
+                    kind, panelist_pin, panelists, qa, qa_anonymous, chat, registration, streaming,
                     created_at, updated_at
              FROM conference_meetings
              WHERE tenant_id = $1 AND owner_id = $2
@@ -4593,8 +4593,8 @@ impl ConferenceStore for PostgresStorage {
               video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
                     video_content_share, video_content_layout, video_mode,
                     kind, panelist_pin, panelists, qa, qa_anonymous,
-              created_at, updated_at, chat, registration)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44)
+              created_at, updated_at, chat, registration, streaming)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45)
              ON CONFLICT (id) DO UPDATE SET
               tenant_id = EXCLUDED.tenant_id,
               room_number = EXCLUDED.room_number,
@@ -4637,6 +4637,7 @@ impl ConferenceStore for PostgresStorage {
               qa_anonymous = EXCLUDED.qa_anonymous,
               chat = EXCLUDED.chat,
               registration = EXCLUDED.registration,
+              streaming = EXCLUDED.streaming,
               updated_at = EXCLUDED.updated_at",
         )
         .bind(meeting.id.to_string())
@@ -4683,6 +4684,7 @@ impl ConferenceStore for PostgresStorage {
         .bind(updated_at)
         .bind(meeting.chat.as_deref())
         .bind(meeting.registration)
+        .bind(&meeting.streaming)
         .execute(self.writes())
         .await?;
 
@@ -4762,6 +4764,7 @@ fn map_meeting_row_pg(row: sqlx::postgres::PgRow) -> Result<fcp_core::Meeting> {
         qa_anonymous: row.try_get("qa_anonymous").unwrap_or(false),
         chat: row.try_get("chat").unwrap_or(None),
         registration: row.try_get("registration").unwrap_or(false),
+        streaming: row.try_get("streaming").unwrap_or(None),
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
     })

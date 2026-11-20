@@ -8344,6 +8344,8 @@ export interface components {
             chat?: string | null;
             /** @description Whether a webinar's attendees must register. */
             registration?: boolean;
+            /** @description A webinar streamed out while it is live: `hls` or `off`. */
+            streaming?: string | null;
         };
         CreateNetworkRequest: {
             /** @description A range (`10.1.2.0/24`) or a single address. */
@@ -9863,6 +9865,8 @@ export interface components {
              *     by the token minted for their registration.
              */
             registration: boolean;
+            /** @description A webinar streamed out while it is live: `hls`, or `off` (unset). */
+            streaming?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -11358,6 +11362,8 @@ export interface components {
                  *     by the token minted for their registration.
                  */
                 registration: boolean;
+                /** @description A webinar streamed out while it is live: `hls`, or `off` (unset). */
+                streaming?: string | null;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -15211,6 +15217,8 @@ export interface components {
              */
             chat?: string | null;
             registration?: boolean | null;
+            /** @description `hls` or `off`; `null` is off. */
+            streaming?: string | null;
         };
         /** @description Update message request. */
         UpdateMessageRequest: {

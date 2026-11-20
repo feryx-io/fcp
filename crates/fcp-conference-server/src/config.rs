@@ -801,6 +801,12 @@ pub struct ConferenceSection {
     #[serde(default = "default_webinar_stage_grace_secs")]
     pub webinar_stage_grace_secs: u64,
 
+    /// A webinar streamed out as HLS (`docs/WEBINARS.md` §2.8): the stage
+    /// streams a webinar whose meeting asks for it (`streaming = "hls"`)
+    /// while it is live.
+    #[serde(default)]
+    pub hls: HlsSection,
+
     /// Interval (seconds) between repeating the wait-for-moderator announcement.
     /// The announcement plays once, then hold music (or silence) plays for this
     /// duration before the announcement repeats. Default: 30.
@@ -996,6 +1002,39 @@ fn default_webinar_stage_grace_secs() -> u64 {
     120
 }
 
+/// `[conference.hls]`: streaming a webinar out as HLS.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HlsSection {
+    /// Whether this node streams at all. A build without the
+    /// `recording-mp4` feature cannot, and says so at startup. Default:
+    /// false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Each segment's target length in seconds; a segment ends at the first
+    /// keyframe past it. Default: 2.
+    #[serde(default = "default_hls_segment_secs")]
+    pub segment_secs: u64,
+    /// Where each sitting's stream is written, in a directory named for
+    /// the sitting. Default: `hls` under `recordings_dir`.
+    #[serde(default)]
+    pub dir: Option<String>,
+}
+
+impl Default for HlsSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            segment_secs: default_hls_segment_secs(),
+            dir: None,
+        }
+    }
+}
+
+fn default_hls_segment_secs() -> u64 {
+    2
+}
+
 fn default_moh_announcement_interval_secs() -> u64 {
     30
 }
@@ -1070,6 +1109,7 @@ impl Default for ConferenceSection {
             lobby_admit_per_sec: default_lobby_admit_per_sec(),
             lobby_max_wait_secs: default_lobby_max_wait_secs(),
             webinar_stage_grace_secs: default_webinar_stage_grace_secs(),
+            hls: HlsSection::default(),
             moh_announcement_interval_secs: default_moh_announcement_interval_secs(),
             max_invite_rate_per_ip: default_max_invite_rate(),
             session_expires_secs: default_session_expires_secs(),

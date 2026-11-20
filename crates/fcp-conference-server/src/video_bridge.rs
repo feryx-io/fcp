@@ -1782,6 +1782,7 @@ mod tests {
             chat: None,
             qa_anonymous: false,
             registration: false,
+            streaming: None,
             created_at: now,
             updated_at: now,
         }

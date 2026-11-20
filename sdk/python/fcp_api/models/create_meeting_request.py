@@ -69,6 +69,7 @@ class CreateMeetingRequest:
             chat (None | str | Unset): Chat in the room: `everyone`, `hosts` or `off`; unset is
                 `everyone` in a meeting and `hosts` in a webinar.
             registration (bool | Unset): Whether a webinar's attendees must register.
+            streaming (None | str | Unset): A webinar streamed out while it is live: `hls` or `off`.
      """
 
     room_number: str
@@ -111,6 +112,7 @@ class CreateMeetingRequest:
     qa_anonymous: bool | Unset = UNSET
     chat: None | str | Unset = UNSET
     registration: bool | Unset = UNSET
+    streaming: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -265,6 +267,12 @@ class CreateMeetingRequest:
 
         registration = self.registration
 
+        streaming: None | str | Unset
+        if isinstance(self.streaming, Unset):
+            streaming = UNSET
+        else:
+            streaming = self.streaming
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -348,6 +356,8 @@ class CreateMeetingRequest:
             field_dict["chat"] = chat
         if registration is not UNSET:
             field_dict["registration"] = registration
+        if streaming is not UNSET:
+            field_dict["streaming"] = streaming
 
         return field_dict
 
@@ -559,6 +569,16 @@ class CreateMeetingRequest:
 
         registration = d.pop("registration", UNSET)
 
+        def _parse_streaming(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        streaming = _parse_streaming(d.pop("streaming", UNSET))
+
+
         create_meeting_request = cls(
             room_number=room_number,
             name=name,
@@ -600,6 +620,7 @@ class CreateMeetingRequest:
             qa_anonymous=qa_anonymous,
             chat=chat,
             registration=registration,
+            streaming=streaming,
         )
 
 

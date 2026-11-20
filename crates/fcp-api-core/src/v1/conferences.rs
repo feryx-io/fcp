@@ -101,6 +101,8 @@ pub struct MeetingResponse {
     /// Whether a webinar's attendees must register: one is admitted only
     /// by the token minted for their registration.
     pub registration: bool,
+    /// A webinar streamed out while it is live: `hls`, or `off` (unset).
+    pub streaming: Option<String>,
     #[serde(with = "crate::time::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
@@ -154,6 +156,7 @@ impl From<Meeting> for MeetingResponse {
             qa_anonymous: m.qa_anonymous,
             chat: m.chat,
             registration: m.registration,
+            streaming: m.streaming,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -252,6 +255,9 @@ pub struct CreateMeetingRequest {
     /// Whether a webinar's attendees must register.
     #[serde(default)]
     pub registration: bool,
+    /// A webinar streamed out while it is live: `hls` or `off`.
+    #[serde(default)]
+    pub streaming: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -436,6 +442,9 @@ pub struct UpdateMeetingRequest {
     #[serde(default, deserialize_with = "double_option")]
     pub chat: Option<Option<String>>,
     pub registration: Option<bool>,
+    /// `hls` or `off`; `null` is off.
+    #[serde(default, deserialize_with = "double_option")]
+    pub streaming: Option<Option<String>>,
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
@@ -551,6 +560,7 @@ pub async fn create_meeting(
         qa_anonymous: req.qa_anonymous,
         chat: req.chat,
         registration: req.registration,
+        streaming: req.streaming,
         created_at: now,
         updated_at: now,
     };
@@ -756,6 +766,9 @@ pub async fn update_meeting(
     }
     if let Some(v) = req.registration {
         meeting.registration = v;
+    }
+    if let Some(v) = req.streaming {
+        meeting.streaming = v;
     }
     if let Some(v) = req.chat {
         meeting.chat = v;

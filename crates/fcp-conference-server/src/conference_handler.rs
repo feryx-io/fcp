@@ -55,6 +55,7 @@ mod chat;
 mod hands;
 mod questions;
 mod stage;
+mod stream;
 mod webinar;
 pub use chat::{ChatError, CHAT_FLUSH};
 pub use hands::{HandBy, StageError};
@@ -436,6 +437,8 @@ pub struct ConferenceCallHandler {
     tree_outbox: DashMap<RoomKey, stage::Outbox>,
     /// On a stage: the last op of each edge's it applied.
     tree_acked: DashMap<(RoomKey, String), u64>,
+    /// Webinars streamed out as HLS from this node (§2.8).
+    streams: DashMap<RoomKey, stream::ActiveStream>,
     /// When an attendee's join last paid for the audience's composite: the
     /// joins after it, until the budget is recomputed, do not pay again.
     audience_encode_held: DashMap<RoomKey, Instant>,
@@ -1007,6 +1010,7 @@ impl ConferenceCallHandler {
             tree_acked: DashMap::new(),
             edge_passthrough_was: DashMap::new(),
             audience_encode_held: DashMap::new(),
+            streams: DashMap::new(),
             node_id,
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),
@@ -2844,6 +2848,7 @@ impl ConferenceCallHandler {
                             max_kbps: None,
                         }),
                         audio_bitrate: conf.recording_audio_bitrate,
+                        hls_segment_ms: None,
                     };
                     RecordingWriter::Media(crate::recording::Recorder::start(
                         &record.id.to_string(),

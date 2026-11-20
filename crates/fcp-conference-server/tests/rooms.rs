@@ -3622,3 +3622,99 @@ async fn a_webinar_that_requires_registration_admits_its_registrants_alone() {
     assert_eq!(anns["lobby"], false, "{anns}");
     stack.finish().await;
 }
+
+/// A webinar streamed out as HLS (`docs/WEBINARS.md` §2.8, W6.2): nothing
+/// in practice; from going live, a live playlist of segments a player can
+/// fetch from the node; and when the webinar ends, the playlist ends too.
+#[cfg(feature = "recording-mp4")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_live_webinar_is_streamed_as_hls_until_it_ends() {
+    let Some(stack) =
+        Stack::start_conference("", 60, "hls = { enabled = true, segment_secs = 1 }").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({ "kind": "webinar", "host_pin": "9999", "streaming": "hls" }),
+        )
+        .await;
+    let host = stack.phone("hostess").await;
+    let host_call = join(&stack, &host).await;
+    dial_digits(&host_call, "9999").await;
+    stack.wait_participants(1).await;
+    // In practice: no stream.
+    let (code, w) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+    assert_eq!(code, 200, "{w}");
+    assert!(w["stream"].is_null(), "nothing streams in practice: {w}");
+
+    go_live(&stack).await;
+    host_call.media().play_tone(440.0, 8000);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let playlist_path = loop {
+        let (_, w) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+        if let Some(p) = w["stream"]["playlist"].as_str() {
+            assert_eq!(w["stream"]["sitting"], w["id"], "the sitting's stream: {w}");
+            break p.to_string();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never streamed: {w}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let fetch = |path: String| async move {
+        fcp_testkit::smoke::http_get(&loopback(stack.http, &path))
+            .await
+            .expect("the node answers")
+    };
+    // Segments of a second each, as a player sees them.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let live = loop {
+        let (code, body) = fetch(playlist_path.clone()).await;
+        if code == 200 && body.matches("#EXTINF:").count() >= 3 {
+            break body;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the playlist never grew: {code} {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    assert!(live.contains("#EXT-X-PLAYLIST-TYPE:EVENT"), "{live}");
+    assert!(
+        !live.contains("#EXT-X-ENDLIST"),
+        "live until it ends: {live}"
+    );
+    let base = playlist_path.trim_end_matches("index.m3u8").to_string();
+    let (code, init) = fetch(format!("{base}init.mp4")).await;
+    assert_eq!(code, 200);
+    assert!(init.len() > 16, "an init segment");
+    let (code, seg) = fetch(format!("{base}seg-1.m4s")).await;
+    assert_eq!(code, 200, "{seg}");
+    let (code, _) = fetch(format!("{base}..%2Fsecret")).await;
+    assert_ne!(code, 200, "only a stream's own files are served");
+
+    // Ended: the playlist ends, and stays for replay.
+    let (code, out) = stack
+        .post(&format!("/conferences/{ROOM}/webinar/end"))
+        .await;
+    assert_eq!(code, 200, "{out}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let (code, body) = fetch(playlist_path.clone()).await;
+        if code == 200 && body.ends_with("#EXT-X-ENDLIST\n") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the playlist never ended: {code} {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let _ = host_call.hangup().await;
+    stack.finish().await;
+}

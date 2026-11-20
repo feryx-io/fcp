@@ -215,6 +215,12 @@ pub struct Meeting {
     #[serde(default)]
     pub registration: bool,
 
+    /// A webinar streamed out (`docs/WEBINARS.md` §2.8): `hls` streams it
+    /// as HLS while it is live, `off` (or unset) does not. Ignored in a
+    /// meeting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streaming: Option<String>,
+
     /// Whether guests must enter a PIN to join
     pub require_guest_pin: bool,
 
@@ -367,6 +373,11 @@ impl Meeting {
 
     /// Who may chat in this meeting's room: its `chat`, else `everyone`
     /// in a meeting and `hosts` in a webinar.
+    /// Whether this webinar is streamed out as HLS while it is live.
+    pub fn streams_hls(&self) -> bool {
+        self.is_webinar() && self.streaming.as_deref() == Some("hls")
+    }
+
     pub fn chat_scope(&self) -> crate::chat::ChatScope {
         self.chat
             .as_deref()
@@ -396,6 +407,11 @@ impl Meeting {
         if let Some(qa) = self.qa.as_deref() {
             if crate::qa::QaMode::parse(qa).is_none() {
                 return Err("qa must be one of off, moderated, open".to_string());
+            }
+        }
+        if let Some(streaming) = self.streaming.as_deref() {
+            if !matches!(streaming, "off" | "hls") {
+                return Err("streaming must be one of off, hls".to_string());
             }
         }
         if let Some(chat) = self.chat.as_deref() {
@@ -486,6 +502,7 @@ mod tests {
             qa: None,
             chat: None,
             registration: false,
+            streaming: None,
             qa_anonymous: false,
             video_codecs: vec![VideoCodec::Vp8, VideoCodec::H264, VideoCodec::Av1],
             created_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),

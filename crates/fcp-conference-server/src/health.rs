@@ -302,6 +302,8 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/recordings/:filename",
             get(download_recording_handler).delete(delete_recording_handler),
         )
+        // A webinar's HLS stream (`docs/WEBINARS.md` §2.8, W6.2).
+        .route("/hls/:sitting/:file", get(hls_file_handler))
 }
 
 /// Routes peer conference nodes call to apply a control operation on
@@ -1016,6 +1018,7 @@ async fn create_meeting_handler(
         chat: None,
         qa_anonymous: false,
         registration: false,
+        streaming: None,
         created_at: now,
         updated_at: now,
     };
@@ -4897,6 +4900,62 @@ async fn local_download(state: &ConferenceState, filename: &str) -> axum::respon
         StatusCode::OK,
         [("content-type", content_type)],
         Body::from_stream(stream),
+    )
+        .into_response()
+}
+
+/// `GET /hls/{sitting}/{file}` — a file of a webinar's HLS stream on this
+/// node: its playlist (`index.m3u8`, never cached), its init segment or a
+/// segment (`seg-<n>.m4s`, never changed once written). Any other name is
+/// refused.
+async fn hls_file_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path((sitting, file)): Path<(String, String)>,
+) -> axum::response::Response {
+    use crate::recording::hls;
+    let sitting_ok = !sitting.is_empty()
+        && sitting.len() <= 64
+        && sitting
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if !sitting_ok || !hls::is_stream_file(&file) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": "Invalid stream file" }),
+        );
+    }
+    let path = state
+        .conference_handler
+        .hls_dir()
+        .join(&sitting)
+        .join(&file);
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                serde_json::json!({ "error": "No such stream file" }),
+            );
+        }
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "error": format!("Failed to read the stream: {e}") }),
+            );
+        }
+    };
+    let cache = if file == hls::PLAYLIST {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
+    };
+    (
+        StatusCode::OK,
+        [
+            ("content-type", hls::content_type(&file)),
+            ("cache-control", cache),
+        ],
+        Body::from(bytes),
     )
         .into_response()
 }
