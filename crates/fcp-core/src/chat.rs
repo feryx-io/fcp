@@ -163,7 +163,9 @@ pub struct ChatView {
 }
 
 /// A message as it is kept (`conference_chat`), one sitting of a room.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Serialized between the nodes of a webinar's tree (`docs/WEBINARS.md`
+/// §2.7), never by the API.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatRecord {
     pub id: String,
     pub tenant_id: crate::TenantId,

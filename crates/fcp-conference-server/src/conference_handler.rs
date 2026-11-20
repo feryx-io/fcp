@@ -59,7 +59,7 @@ mod webinar;
 pub use chat::{ChatError, CHAT_FLUSH};
 pub use hands::{HandBy, StageError};
 pub use questions::{Moderation, QaError};
-pub use stage::{EdgeNews, StageClaim, StageNews, TreeNews};
+pub use stage::{EdgeNews, QaNews, StageClaim, StageNews, TreeNews};
 pub use webinar::WebinarError;
 
 /// Fallback remote address used when SDP parsing fails to extract the caller's RTP endpoint.
@@ -432,6 +432,10 @@ pub struct ConferenceCallHandler {
     edge_news: DashMap<(RoomKey, String), (stage::EdgeNews, Instant)>,
     /// A stage's last news, its webinar ended, waiting to be told.
     tree_endings: DashMap<RoomKey, stage::StageNews>,
+    /// On an edge: what its people did that its stage has not yet taken.
+    tree_outbox: DashMap<RoomKey, stage::Outbox>,
+    /// On a stage: the last op of each edge's it applied.
+    tree_acked: DashMap<(RoomKey, String), u64>,
     /// This node's cluster id: what peers see in our trunk INVITEs and in
     /// our certificate.
     node_id: String,
@@ -994,6 +998,8 @@ impl ConferenceCallHandler {
             stage_news: DashMap::new(),
             edge_news: DashMap::new(),
             tree_endings: DashMap::new(),
+            tree_outbox: DashMap::new(),
+            tree_acked: DashMap::new(),
             node_id,
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),

@@ -429,6 +429,41 @@ fn internal_router(state: Arc<ConferenceState>) -> Router<Arc<ConferenceState>> 
             "/internal/conferences/:room_number/webinar/edge-news",
             post(internal_edge_news_handler),
         )
+        .route(
+            "/internal/conferences/:room_number/webinar/qa-news",
+            post(internal_qa_news_handler),
+        )
+        // An edge's moderation and moderator views, done on its stage
+        // (`docs/WEBINARS.md` §2.7): the public handlers, which find no
+        // stage above the stage and so never forward again.
+        .route(
+            "/internal/conferences/:room_number/questions",
+            get(list_questions_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/questions/:qid/publish",
+            post(publish_question_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/questions/:qid/answer",
+            post(answer_question_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/questions/:qid/dismiss",
+            post(dismiss_question_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/chat",
+            get(list_chat_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/chat/:mid/delete",
+            post(delete_chat_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/participants/:pid/chat-mute",
+            post(mute_chat_handler),
+        )
         .route_layer(middleware::from_fn_with_state(
             state,
             require_cluster_secret,
@@ -1862,16 +1897,29 @@ async fn to_the_stage(
     key: &RoomKey,
     op: &str,
 ) -> Option<(StatusCode, Json<serde_json::Value>)> {
+    to_the_stage_at(
+        state,
+        key,
+        reqwest::Method::POST,
+        &format!("/conferences/{}/webinar/{op}", key.room),
+        None,
+    )
+    .await
+}
+
+/// `method path` (with its query, and `body`) done on the stage when this
+/// node is an edge of `key`'s webinar.
+async fn to_the_stage_at(
+    state: &ConferenceState,
+    key: &RoomKey,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Option<(StatusCode, Json<serde_json::Value>)> {
     let stage = state.conference_handler.stage_of(key)?;
     let control = state.control.as_ref()?;
     let outcome = control
-        .send_to_node(
-            &stage,
-            &key.tenant.to_string(),
-            reqwest::Method::POST,
-            &format!("/conferences/{}/webinar/{op}", key.room),
-            None,
-        )
+        .send_to_node(&stage, &key.tenant.to_string(), method, path, body)
         .await?;
     let status = outcome
         .status
@@ -1947,6 +1995,28 @@ async fn internal_stage_news_handler(
         Err(err) => return err,
     };
     if state.conference_handler.apply_stage_news(&key, news) {
+        (StatusCode::OK, Json(serde_json::json!({ "applied": true })))
+    } else {
+        (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "this node is not an edge of that stage" })),
+        )
+    }
+}
+
+/// `POST /internal/conferences/:room/webinar/qa-news` — the stage of a
+/// webinar this node is an edge of sends its questions and chat.
+async fn internal_qa_news_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Json(news): Json<crate::conference_handler::QaNews>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    if state.conference_handler.apply_qa_news(&key, news) {
         (StatusCode::OK, Json(serde_json::json!({ "applied": true })))
     } else {
         (
@@ -2273,6 +2343,20 @@ async fn list_questions_handler(
         },
         None => None,
     };
+    // A moderator's view of a webinar's questions is its stage's (§2.7).
+    if pid.is_none() {
+        if let Some(answer) = to_the_stage_at(
+            &state,
+            &key,
+            reqwest::Method::GET,
+            &format!("/conferences/{room_number}/questions"),
+            None,
+        )
+        .await
+        {
+            return answer;
+        }
+    }
     match state.conference_handler.questions(&key, pid.as_deref()) {
         Ok(questions) => (
             StatusCode::OK,
@@ -2423,6 +2507,27 @@ async fn moderate_handler(
         Ok(key) => key,
         Err(err) => return err,
     };
+    // A webinar's questions are its stage's (§2.7).
+    let body = match action {
+        crate::conference_handler::Moderation::Answer { text, live } => {
+            Some(serde_json::json!({ "text": text, "live": live }))
+        }
+        _ => None,
+    };
+    if let Some(answer) = to_the_stage_at(
+        &state,
+        &key,
+        reqwest::Method::POST,
+        &format!(
+            "/conferences/{room_number}/questions/{qid}/{}",
+            action.name()
+        ),
+        body,
+    )
+    .await
+    {
+        return answer;
+    }
     match state
         .conference_handler
         .moderate_question(&key, None, &qid, action)
@@ -2472,6 +2577,20 @@ async fn list_chat_handler(
         Ok(pid) => pid,
         Err(err) => return err,
     };
+    // A moderator's view of a webinar's chat is its stage's (§2.7).
+    if pid.is_none() {
+        if let Some(answer) = to_the_stage_at(
+            &state,
+            &key,
+            reqwest::Method::GET,
+            &format!("/conferences/{room_number}/chat"),
+            None,
+        )
+        .await
+        {
+            return answer;
+        }
+    }
     match state.conference_handler.chat(&key, pid.as_deref()) {
         Ok((messages, muted)) => (
             StatusCode::OK,
@@ -2537,6 +2656,18 @@ async fn delete_chat_handler(
         Err(err) => return err,
     };
     let req = body.map(|Json(b)| b).unwrap_or_default();
+    // A webinar's chat is its stage's (§2.7).
+    if let Some(answer) = to_the_stage_at(
+        &state,
+        &key,
+        reqwest::Method::POST,
+        &format!("/conferences/{room_number}/chat/{mid}/delete"),
+        Some(serde_json::json!({ "call_id": req.call_id })),
+    )
+    .await
+    {
+        return answer;
+    }
     let by = match optional_participant(&state, &key, req.call_id.as_deref()) {
         Ok(by) => by,
         Err(err) => return err,
@@ -2574,6 +2705,18 @@ async fn mute_chat_handler(
             Json(serde_json::json!({ "error": "on is required" })),
         );
     };
+    // A webinar's chat is its stage's (§2.7).
+    if let Some(answer) = to_the_stage_at(
+        &state,
+        &key,
+        reqwest::Method::POST,
+        &format!("/conferences/{room_number}/participants/{pid}/chat-mute"),
+        Some(serde_json::json!({ "call_id": req.call_id, "on": on })),
+    )
+    .await
+    {
+        return answer;
+    }
     let by = match optional_participant(&state, &key, req.call_id.as_deref()) {
         Ok(by) => by,
         Err(err) => return err,
