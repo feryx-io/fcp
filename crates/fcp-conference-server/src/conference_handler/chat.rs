@@ -99,6 +99,11 @@ pub(super) struct ChatRoom {
 }
 
 impl ChatRoom {
+    /// Take the stage's sitting as this room's (`docs/WEBINARS.md` §2.7).
+    pub(super) fn set_session_id(&mut self, id: &str) {
+        self.session_id = id.to_string();
+    }
+
     fn new(meeting: &Meeting, session_id: String) -> Self {
         Self {
             session_id,

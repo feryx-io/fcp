@@ -401,6 +401,34 @@ fn internal_router(state: Arc<ConferenceState>) -> Router<Arc<ConferenceState>> 
             "/internal/conferences/:room_number/video/content-layout",
             put(internal_content_layout_handler),
         )
+        .route(
+            "/internal/conferences/:room_number/participants/:pid/stage",
+            post(internal_stage_on_handler).delete(internal_stage_off_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/participants/:pid/hand",
+            delete(internal_lower_hand_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/hands",
+            delete(internal_lower_hands_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/webinar/live",
+            post(internal_webinar_live_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/webinar/end",
+            post(internal_webinar_end_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/webinar/stage-news",
+            post(internal_stage_news_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/webinar/edge-news",
+            post(internal_edge_news_handler),
+        )
         .route_layer(middleware::from_fn_with_state(
             state,
             require_cluster_secret,
@@ -1782,6 +1810,9 @@ async fn webinar_live_handler(
         Ok(key) => key,
         Err(err) => return err,
     };
+    if let Some(answer) = to_the_stage(&state, &key, "live").await {
+        return answer;
+    }
     match state.conference_handler.go_live(&key, None) {
         Ok(changed) => {
             info!(action = "webinar_live", room = %room_number, changed, "AUDIT: webinar taken live via API");
@@ -1808,6 +1839,9 @@ async fn webinar_end_handler(
         Ok(key) => key,
         Err(err) => return err,
     };
+    if let Some(answer) = to_the_stage(&state, &key, "end").await {
+        return answer;
+    }
     let sitting = state.conference_handler.sitting_json(&key);
     match state.conference_handler.end_webinar(&key, "api").await {
         Ok(released) => {
@@ -1818,6 +1852,129 @@ async fn webinar_end_handler(
             )
         }
         Err(e) => webinar_refusal(e),
+    }
+}
+
+/// On an edge of a webinar's tree (§2.7), a webinar operation is the
+/// stage's: forwarded there, its answer handed back. `None` elsewhere.
+async fn to_the_stage(
+    state: &ConferenceState,
+    key: &RoomKey,
+    op: &str,
+) -> Option<(StatusCode, Json<serde_json::Value>)> {
+    let stage = state.conference_handler.stage_of(key)?;
+    let control = state.control.as_ref()?;
+    let outcome = control
+        .send_to_node(
+            &stage,
+            &key.tenant.to_string(),
+            reqwest::Method::POST,
+            &format!("/conferences/{}/webinar/{op}", key.room),
+            None,
+        )
+        .await?;
+    let status = outcome
+        .status
+        .and_then(|s| StatusCode::from_u16(s).ok())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut body = outcome.body;
+    if let Some(map) = body.as_object_mut() {
+        map.insert("node".into(), stage.into());
+    }
+    Some((status, Json(body)))
+}
+
+/// `POST /internal/conferences/:room/webinar/live` — an edge forwards a
+/// request to take the webinar live to its stage.
+async fn internal_webinar_live_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    match state.conference_handler.go_live(&key, None) {
+        Ok(changed) => {
+            info!(action = "webinar_live", room = %room_number, changed, from = %forwarded_from(&headers), "AUDIT: webinar taken live on behalf of an edge");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "changed": changed,
+                    "sitting": state.conference_handler.sitting_json(&key),
+                })),
+            )
+        }
+        Err(e) => webinar_refusal(e),
+    }
+}
+
+/// `POST /internal/conferences/:room/webinar/end` — an edge forwards a
+/// request to end the webinar to its stage.
+async fn internal_webinar_end_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let sitting = state.conference_handler.sitting_json(&key);
+    match state.conference_handler.end_webinar(&key, "api").await {
+        Ok(released) => {
+            info!(action = "webinar_end", room = %room_number, released, from = %forwarded_from(&headers), "AUDIT: webinar ended on behalf of an edge");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "released": released, "sitting": sitting })),
+            )
+        }
+        Err(e) => webinar_refusal(e),
+    }
+}
+
+/// `POST /internal/conferences/:room/webinar/stage-news` — the stage of a
+/// webinar this node is an edge of says how it stands.
+async fn internal_stage_news_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Json(news): Json<crate::conference_handler::StageNews>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    if state.conference_handler.apply_stage_news(&key, news) {
+        (StatusCode::OK, Json(serde_json::json!({ "applied": true })))
+    } else {
+        (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "this node is not an edge of that stage" })),
+        )
+    }
+}
+
+/// `POST /internal/conferences/:room/webinar/edge-news` — an edge of a
+/// webinar whose stage is here says how it stands.
+async fn internal_edge_news_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Json(news): Json<crate::conference_handler::EdgeNews>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    if state.conference_handler.apply_edge_news(&key, news) {
+        (StatusCode::OK, Json(serde_json::json!({ "applied": true })))
+    } else {
+        (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "this node is not the stage" })),
+        )
     }
 }
 
@@ -1901,6 +2058,26 @@ async fn lower_hand_handler(
     headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    lower_hand(state, headers, room_number, pid, true).await
+}
+
+/// `DELETE /internal/conferences/:room/participants/:pid/hand` — a peer's
+/// host lowers the hand of an attendee here.
+async fn internal_lower_hand_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    lower_hand(state, headers, room_number, pid, false).await
+}
+
+async fn lower_hand(
+    state: Arc<ConferenceState>,
+    headers: HeaderMap,
+    room_number: String,
+    pid: String,
+    forward: bool,
+) -> (StatusCode, Json<serde_json::Value>) {
     let key = match room_key(&state, &headers, &room_number).await {
         Ok(key) => key,
         Err(err) => return err,
@@ -1913,6 +2090,17 @@ async fn lower_hand_handler(
     );
     if matches!(result, Ok(true)) {
         info!(action = "lower_hand", room = %room_number, participant = %pid, "AUDIT: hand lowered via API");
+    }
+    if forward && matches!(result, Err(crate::conference_handler::StageError::NotFound)) {
+        return wherever_it_is(
+            &state,
+            &key,
+            Err((StatusCode::NOT_FOUND, result.unwrap_err().to_string())),
+            reqwest::Method::DELETE,
+            &format!("/conferences/{room_number}/participants/{pid}/hand"),
+            None,
+        )
+        .await;
     }
     stage_answer(result, &pid)
 }
@@ -1929,6 +2117,31 @@ async fn lower_hands_handler(
     };
     let lowered = state.conference_handler.lower_hands(&key);
     info!(action = "lower_hands", room = %room_number, lowered, "AUDIT: hands lowered via API");
+    // Every node of a webinar's tree lowers its own.
+    let (_, body) = room_wide(
+        &state,
+        &key,
+        Ok(serde_json::json!({ "lowered": lowered })),
+        reqwest::Method::DELETE,
+        &format!("/conferences/{room_number}/hands"),
+        None,
+    )
+    .await;
+    (StatusCode::OK, Json(body))
+}
+
+/// `DELETE /internal/conferences/:room/hands` — a peer's host lowers every
+/// hand here.
+async fn internal_lower_hands_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let lowered = state.conference_handler.lower_hands(&key);
     (
         StatusCode::OK,
         Json(serde_json::json!({ "lowered": lowered })),
@@ -1942,7 +2155,7 @@ async fn stage_on_handler(
     headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    stage_handler(state, headers, room_number, pid, true).await
+    stage_handler(state, headers, room_number, pid, true, true).await
 }
 
 /// `DELETE /conferences/:room/participants/:pid/stage` — send them back.
@@ -1951,7 +2164,7 @@ async fn stage_off_handler(
     headers: HeaderMap,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    stage_handler(state, headers, room_number, pid, false).await
+    stage_handler(state, headers, room_number, pid, false, true).await
 }
 
 async fn stage_handler(
@@ -1960,6 +2173,7 @@ async fn stage_handler(
     room_number: String,
     pid: String,
     on: bool,
+    forward: bool,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let key = match room_key(&state, &headers, &room_number).await {
         Ok(key) => key,
@@ -1969,7 +2183,44 @@ async fn stage_handler(
     if matches!(result, Ok(true)) {
         info!(action = if on { "stage_on" } else { "stage_off" }, room = %room_number, participant = %pid, "AUDIT: the stage changed via API");
     }
+    // An attendee on another node of a webinar's tree (§2.7) is brought up
+    // there.
+    if forward && matches!(result, Err(crate::conference_handler::StageError::NotFound)) {
+        let method = if on {
+            reqwest::Method::POST
+        } else {
+            reqwest::Method::DELETE
+        };
+        return wherever_it_is(
+            &state,
+            &key,
+            Err((StatusCode::NOT_FOUND, result.unwrap_err().to_string())),
+            method,
+            &format!("/conferences/{room_number}/participants/{pid}/stage"),
+            None,
+        )
+        .await;
+    }
     stage_answer(result, &pid)
+}
+
+/// `POST /internal/conferences/:room/participants/:pid/stage` — a peer's
+/// host brings an attendee here to the stage.
+async fn internal_stage_on_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    stage_handler(state, headers, room_number, pid, true, false).await
+}
+
+/// `DELETE /internal/conferences/:room/participants/:pid/stage`.
+async fn internal_stage_off_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    stage_handler(state, headers, room_number, pid, false, false).await
 }
 
 /// The answer for a question operation's error.

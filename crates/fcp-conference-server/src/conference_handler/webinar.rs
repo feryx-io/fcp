@@ -154,9 +154,105 @@ impl ConferenceCallHandler {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
     }
 
+    /// This node is an edge of `key`'s webinar, and the stage says its
+    /// sitting is `sitting_id` in `phase` (`docs/WEBINARS.md` §2.7). The
+    /// edge's sitting becomes the stage's: its id (so questions, chat and
+    /// the record name one sitting) and its phase. Going live lets the
+    /// lobby in, and ending ends the edge. Quietly: the stage publishes the
+    /// events, keeps the row and records.
+    pub(super) fn follow_stage(&self, key: &RoomKey, sitting_id: &str, phase: WebinarPhase) {
+        let (old_id, let_in, now) = {
+            let Some(mut s) = self.sittings.get_mut(key) else {
+                return;
+            };
+            if !s.webinar || sitting_id.is_empty() {
+                return;
+            }
+            let old_id = (s.kept.id != sitting_id)
+                .then(|| std::mem::replace(&mut s.kept.id, sitting_id.to_string()));
+            let mut let_in = false;
+            let now = match (s.phase, phase) {
+                (WebinarPhase::Practice, WebinarPhase::Live) => {
+                    s.phase = WebinarPhase::Live;
+                    s.kept.live_at = Some(SystemTime::now());
+                    let_in = !s.letting_in && !s.waiting.is_empty();
+                    if let_in {
+                        s.letting_in = true;
+                    }
+                    Some(WebinarPhase::Live)
+                }
+                (WebinarPhase::Practice | WebinarPhase::Live, WebinarPhase::Ended) => {
+                    s.phase = WebinarPhase::Ended;
+                    s.kept.ended_by = Some("stage".to_string());
+                    Some(WebinarPhase::Ended)
+                }
+                _ => None,
+            };
+            (old_id, let_in, now)
+        };
+        if let Some(old) = old_id {
+            info!(room = %key.room, sitting = %sitting_id, was = %old, "An edge took the stage's sitting");
+            if let Some(mut q) = self.qa_rooms.get_mut(key) {
+                q.set_session_id(sitting_id);
+            }
+            if let Some(mut c) = self.chat_rooms.get_mut(key) {
+                c.set_session_id(sitting_id);
+            }
+            // The row it wrote before it knew it was an edge.
+            if let Some(store) = self.storage.sitting_store().cloned() {
+                let tenant = key.tenant;
+                tokio::spawn(async move {
+                    if let Err(e) = store.delete_sitting(&tenant, &old).await {
+                        warn!(sitting = %old, error = %e, "An edge's own sitting could not be forgotten");
+                    }
+                });
+            }
+        }
+        let Some(now) = now else {
+            return;
+        };
+        info!(room = %key.room, sitting = %sitting_id, phase = now.as_str(), "An edge followed the stage");
+        self.tell_phase(key, now);
+        let Some(me) = self.me() else {
+            return;
+        };
+        let key = key.clone();
+        match now {
+            WebinarPhase::Live if let_in => {
+                tokio::spawn(async move { me.let_in_lobby(key).await });
+            }
+            WebinarPhase::Ended => {
+                tokio::spawn(async move {
+                    me.end_with_announcement(&key).await;
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// The sitting's id and phase, for a webinar's stage to tell its edges.
+    pub(super) fn sitting_news(&self, key: &RoomKey) -> Option<(String, WebinarPhase)> {
+        self.sittings
+            .get(key)
+            .filter(|s| s.webinar)
+            .map(|s| (s.kept.id.clone(), s.phase))
+    }
+
     /// The sitting's phase and id, for the room's JSON.
     pub fn sitting_json(&self, key: &RoomKey) -> Option<serde_json::Value> {
-        self.sittings.get(key).map(|s| s.json())
+        let mut json = self.sittings.get(key).map(|s| s.json())?;
+        if let Some(tree) = self.tree_json(key) {
+            // The lobby is every node's: an edge's waits for the stage too.
+            let elsewhere = tree["edges"]
+                .as_array()
+                .map(|e| e.iter().filter_map(|e| e["lobby"].as_u64()).sum::<u64>())
+                .unwrap_or(0);
+            if let Some(lobby) = json["lobby"].as_u64() {
+                json["lobby"] = (lobby + elsewhere).into();
+            }
+            json["tree"] = tree;
+        }
+        Some(json)
     }
 
     /// The phase of `key`'s sitting, when it has one.
@@ -425,6 +521,9 @@ impl ConferenceCallHandler {
             timestamp: SystemTime::now(),
         });
         self.tell_phase(key, WebinarPhase::Ended);
+        // A stage's edges end with it: told now, before its room empties
+        // and it is a stage no more.
+        self.queue_tree_ending(key);
         true
     }
 
@@ -641,6 +740,13 @@ impl ConferenceCallHandler {
     }
 
     fn keep_sitting(&self, sitting: Sitting) {
+        // An edge's sitting is the stage's, which the stage keeps.
+        if self.is_edge(&RoomKey::new(
+            sitting.tenant_id,
+            sitting.room_number.clone(),
+        )) {
+            return;
+        }
         let Some(store) = self.storage.sitting_store().cloned() else {
             return;
         };

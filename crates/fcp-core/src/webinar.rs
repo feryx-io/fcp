@@ -86,6 +86,9 @@ pub trait SittingStore: Send + Sync {
     ) -> anyhow::Result<Vec<Sitting>>;
     /// One sitting in the tenant.
     async fn get_sitting(&self, tenant: &TenantId, id: &str) -> anyhow::Result<Option<Sitting>>;
+    /// Forget a sitting that turned out to be part of another: an edge's,
+    /// once it learns the stage's (`docs/WEBINARS.md` §2.7).
+    async fn delete_sitting(&self, tenant: &TenantId, id: &str) -> anyhow::Result<()>;
 }
 
 #[cfg(test)]

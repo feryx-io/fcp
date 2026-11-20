@@ -906,12 +906,15 @@ fn trunk_peers(room: &serde_json::Value) -> Vec<String> {
     peers
 }
 
-/// A webinar over three nodes is a tree (`docs/WEBINARS.md` §2.7, W5.1).
-/// The first host claims the stage. With the stage at its share (capacity
-/// 1, half of it: none), attendees go to two edges, each trunked to the
-/// stage alone. The stage is heard on both edges; an attendee promoted on
-/// one edge is heard on the stage and, through the stage, on the other
-/// edge. A panelist placed on an edge is moved to the stage.
+/// A webinar over three nodes is a tree (`docs/WEBINARS.md` §2.7, W5.1 and
+/// W5.2a). The first host claims the stage. With the stage at its share
+/// (capacity 1, half of it: none), attendees go to two edges, each trunked
+/// to the stage alone, and wait in their edge's lobby until the edge hears
+/// the stage is live. The edges take the stage's sitting, and the stage
+/// hears each edge's audience and hands. The stage is heard on both edges;
+/// an attendee brought up from the stage's node is heard on the stage and,
+/// through it, on the other edge. A panelist placed on an edge is moved to
+/// the stage. Ending from an edge ends every node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
     let Some(mut cluster) = Cluster::start_with(ClusterOptions {
@@ -935,7 +938,7 @@ async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
         )
         .await;
 
-    // The host claims the node they land on as the stage.
+    // The host claims the node they land on as the stage, and takes it live.
     let host = cluster.registered_phone("hostess", "1001").await;
     let host_call = host.call(ROOM).await.unwrap();
     if let Err(e) = host_call.answered(A_WHILE).await {
@@ -958,7 +961,8 @@ async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
     )
     .await;
 
-    // Two attendees, each on an edge of their own.
+    // Two attendees, each on an edge of their own. Each waits in their
+    // edge's lobby until the edge hears the stage is live.
     let mut attendees = Vec::new();
     for (name, ext) in [("ann", "1002"), ("ben", "1003")] {
         let phone = cluster.registered_phone(name, ext).await;
@@ -969,28 +973,15 @@ async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
                 .await;
         }
         dial_digits(&call, "").await;
-        // Each node's phase is its own until W5.2: an edge's lobby is let
-        // in when that edge is taken live.
-        let deadline = tokio::time::Instant::now() + A_WHILE;
-        let (node, pid) = loop {
-            for n in &cluster.nodes.nodes {
-                let _ = http_request(
-                    "POST",
-                    &loopback(n.http, &format!("/conferences/{ROOM}/webinar/live")),
-                    &[],
-                    Some("{}"),
-                )
-                .await;
-            }
-            if let Some(x) = cluster
-                .nodes
-                .where_is(ROOM, name, Duration::from_millis(500))
-                .await
-            {
-                break x;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                cluster.fail(&format!("{name} is on no node"), &phone).await;
+        let (node, pid) = match cluster.where_is(name).await {
+            Some(x) => x,
+            None => {
+                cluster
+                    .fail(
+                        &format!("{name} is on no node, or still in a lobby"),
+                        &phone,
+                    )
+                    .await
             }
         };
         if node == stage {
@@ -1006,13 +997,12 @@ async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
     // The tree: each edge trunked to the stage alone, the stage to both.
     let stage_id = cluster.nodes.nodes[stage].id.clone();
     for edge in [ann_node, ben_node] {
-        let r = room_when(
+        room_when(
             &cluster.nodes.nodes[edge],
             "an edge trunked to the stage",
             |r| r["webinar_node"] == "edge" && trunk_peers(r) == vec![stage_id.clone()],
         )
         .await;
-        assert_eq!(trunk_peers(&r), vec![stage_id.clone()]);
     }
     let mut edge_ids = vec![
         cluster.nodes.nodes[ann_node].id.clone(),
@@ -1024,6 +1014,73 @@ async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
         "the stage trunked to both edges",
         |r| trunk_peers(r) == edge_ids,
     )
+    .await;
+
+    // The edges are on the stage's sitting, and the stage hears of each
+    // edge's audience.
+    let sitting = webinar(&cluster.nodes.nodes[stage]).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for edge in [ann_node, ben_node] {
+        let w = webinar_when(
+            &cluster.nodes.nodes[edge],
+            "an edge on the stage's sitting",
+            |w| w["id"] == sitting.as_str(),
+        )
+        .await;
+        assert_eq!(w["phase"], "live", "{w:#}");
+        assert_eq!(w["tree"]["role"], "edge", "{w:#}");
+    }
+    webinar_when(
+        &cluster.nodes.nodes[stage],
+        "the stage hearing both edges' audience",
+        |w| {
+            w["tree"]["edges"]
+                .as_array()
+                .is_some_and(|e| e.len() == 2 && e.iter().all(|e| e["audience"] == 1))
+        },
+    )
+    .await;
+
+    // Ann raises her hand on her edge: the stage sees it, and lowers it.
+    let ann_pid = attendees[0].3.clone();
+    for d in ['*', '4'] {
+        attendees[0].1.media().send_dtmf(d);
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let hands = |w: &serde_json::Value| -> Vec<String> {
+        w["tree"]["edges"]
+            .as_array()
+            .map(|e| {
+                e.iter()
+                    .flat_map(|e| e["hands"].as_array().cloned().unwrap_or_default())
+                    .filter_map(|h| h.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    webinar_when(
+        &cluster.nodes.nodes[stage],
+        "Ann's hand seen on the stage",
+        |w| hands(w).contains(&ann_pid),
+    )
+    .await;
+    let (code, body) = http_request(
+        "DELETE",
+        &loopback(
+            cluster.nodes.nodes[stage].http,
+            &format!("/conferences/{ROOM}/participants/{ann_pid}/hand"),
+        ),
+        &[],
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "the stage lowers Ann's hand on her edge: {body}");
+    webinar_when(&cluster.nodes.nodes[stage], "Ann's hand lowered", |w| {
+        hands(w).is_empty()
+    })
     .await;
 
     // The stage is heard on both edges.
@@ -1039,11 +1096,10 @@ async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
         }
     }
 
-    // Ann is brought to the stage on her edge: heard on the stage, and
-    // through it on Ben's edge.
-    let ann_pid = attendees[0].3.clone();
+    // The host brings Ann up from the stage's node: she is heard on the
+    // stage, and through it on Ben's edge.
     post_until_ok(
-        &cluster.nodes.nodes[ann_node],
+        &cluster.nodes.nodes[stage],
         &format!("/conferences/{ROOM}/participants/{ann_pid}/stage"),
     )
     .await;
@@ -1100,8 +1156,56 @@ async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
         cluster.fail("Ben does not hear the panelist", ben).await;
     }
 
-    for call in [&host_call, &panelist_call, &attendees[0].1, &attendees[1].1] {
+    // Ended from an edge: the edge asks the stage, and every node ends.
+    post_until_ok(
+        &cluster.nodes.nodes[ben_node],
+        &format!("/conferences/{ROOM}/webinar/end"),
+    )
+    .await;
+    if !attendees[1].1.ended(A_WHILE).await {
+        let ben = &attendees[1].0;
+        cluster
+            .fail("Ben's edge did not end with the stage", ben)
+            .await;
+    }
+    if !host_call.ended(A_WHILE).await {
+        cluster.fail("the stage did not end", &host).await;
+    }
+    for call in [&panelist_call, &attendees[0].1] {
         let _ = call.hangup().await;
     }
     cluster.finish().await;
+}
+
+/// `GET /conferences/{room}/webinar` on `node`.
+async fn webinar(node: &fcp_testkit::cluster::Node) -> serde_json::Value {
+    let (code, body) = http_get(&loopback(
+        node.http,
+        &format!("/conferences/{ROOM}/webinar"),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "webinar on {}: {body}", node.id);
+    serde_json::from_str(&body).unwrap()
+}
+
+/// The webinar on `node`, once `done` holds.
+async fn webinar_when(
+    node: &fcp_testkit::cluster::Node,
+    what: &str,
+    done: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        let w = webinar(node).await;
+        if done(&w) {
+            return w;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what} on {}: {w:#}",
+            node.id
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }

@@ -1752,6 +1752,72 @@ async fn main() -> Result<()> {
         );
     }
 
+    // 20c. A webinar across nodes (docs/WEBINARS.md §2.7): its stage tells
+    // each edge the sitting, phase, stage and audience once a second, and
+    // each edge tells the stage its audience, hands and promoted attendees.
+    if let Some(control) = cluster_control.clone() {
+        let handler = Arc::clone(&conference_handler);
+        tokio::spawn(supervise_task("webinar-tree", async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(1));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                // A node that said nothing for a few seconds has gone.
+                handler.expire_tree_news(Duration::from_secs(5));
+                // A stage that ended tells its edges first: it may be gone
+                // from its own room already.
+                for (key, news) in handler.take_tree_endings() {
+                    let path = format!("/conferences/{}/webinar/stage-news", key.room);
+                    if let Ok(body) = serde_json::to_value(&news) {
+                        let _ = control
+                            .broadcast(
+                                &key.tenant.to_string(),
+                                &key.room,
+                                reqwest::Method::POST,
+                                &path,
+                                Some(body),
+                            )
+                            .await;
+                    }
+                }
+                for key in handler.tree_rooms() {
+                    let tenant = key.tenant.to_string();
+                    match handler.tree_news(&key) {
+                        Some(conference_handler::TreeNews::Stage(news)) => {
+                            let path = format!("/conferences/{}/webinar/stage-news", key.room);
+                            if let Ok(body) = serde_json::to_value(&news) {
+                                let _ = control
+                                    .broadcast(
+                                        &tenant,
+                                        &key.room,
+                                        reqwest::Method::POST,
+                                        &path,
+                                        Some(body),
+                                    )
+                                    .await;
+                            }
+                        }
+                        Some(conference_handler::TreeNews::Edge { stage, news }) => {
+                            let path = format!("/conferences/{}/webinar/edge-news", key.room);
+                            if let Ok(body) = serde_json::to_value(&news) {
+                                let _ = control
+                                    .send_to_node(
+                                        &stage,
+                                        &tenant,
+                                        reqwest::Method::POST,
+                                        &path,
+                                        Some(body),
+                                    )
+                                    .await;
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }));
+    }
+
     // 21. Spawn HTTP server (conference API)
     let events_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let conf_state = Arc::new(health::ConferenceState {

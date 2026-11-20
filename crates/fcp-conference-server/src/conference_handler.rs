@@ -59,7 +59,7 @@ mod webinar;
 pub use chat::{ChatError, CHAT_FLUSH};
 pub use hands::{HandBy, StageError};
 pub use questions::{Moderation, QaError};
-pub use stage::StageClaim;
+pub use stage::{EdgeNews, StageClaim, StageNews, TreeNews};
 pub use webinar::WebinarError;
 
 /// Fallback remote address used when SDP parsing fails to extract the caller's RTP endpoint.
@@ -420,8 +420,18 @@ pub struct ConferenceCallHandler {
     /// (`docs/WEBINARS.md` §2.7). Read by each trunk's audio bridge.
     stage_hubs: DashMap<RoomKey, Arc<std::sync::atomic::AtomicBool>>,
     /// Rooms whose webinar has its stage on another node: this one is an
-    /// edge.
-    stage_edges: DashMap<RoomKey, ()>,
+    /// edge. The stage's node id.
+    stage_edges: DashMap<RoomKey, String>,
+    /// The stage each room here was last an edge of, and when it stopped
+    /// being one: a stage that ends releases its claim before its last
+    /// news arrives, and that news must still end the edge.
+    former_stages: DashMap<RoomKey, (String, Instant)>,
+    /// What each stage this node is an edge of last said.
+    stage_news: DashMap<RoomKey, (stage::StageNews, Instant)>,
+    /// What each edge of a stage here last said, by the edge's node id.
+    edge_news: DashMap<(RoomKey, String), (stage::EdgeNews, Instant)>,
+    /// A stage's last news, its webinar ended, waiting to be told.
+    tree_endings: DashMap<RoomKey, stage::StageNews>,
     /// This node's cluster id: what peers see in our trunk INVITEs and in
     /// our certificate.
     node_id: String,
@@ -980,6 +990,10 @@ impl ConferenceCallHandler {
             sittings: DashMap::new(),
             stage_hubs: DashMap::new(),
             stage_edges: DashMap::new(),
+            former_stages: DashMap::new(),
+            stage_news: DashMap::new(),
+            edge_news: DashMap::new(),
+            tree_endings: DashMap::new(),
             node_id,
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),
@@ -3232,8 +3246,10 @@ impl ConferenceCallHandler {
         })?;
 
         // Send BYE before cleaning up
-        if let Some(session) = self.sessions.get(&call_id) {
-            if let Err(e) = self.uac.bye(&session.dialog).await {
+        // The dialog is cloned so no session guard is held across the BYE.
+        let dialog = self.sessions.get(&call_id).map(|s| s.dialog.clone());
+        if let Some(dialog) = dialog {
+            if let Err(e) = self.uac.bye(&dialog).await {
                 warn!(call_id = %call_id, error = %e, "Failed to send BYE for kicked participant");
             }
         }
@@ -3715,11 +3731,13 @@ impl ConferenceCallHandler {
 
         // Send BYE and remove each session
         for call_id in &call_ids {
-            if let Some(session) = self.sessions.get(call_id) {
-                if let Err(e) = self.uac.bye(&session.dialog).await {
+            // No session guard across the BYE: whatever answers it may need
+            // the session's shard, and a blocked shard stalls a worker.
+            let dialog = self.sessions.get(call_id).map(|s| s.dialog.clone());
+            if let Some(dialog) = dialog {
+                if let Err(e) = self.uac.bye(&dialog).await {
                     warn!(call_id = %call_id, error = %e, "Failed to send BYE for destroy");
                 }
-                drop(session);
             }
             self.remove_session_for(
                 call_id,
@@ -3934,17 +3952,19 @@ impl ConferenceCallHandler {
             .collect();
 
         for call_id in &expired {
-            if let Some(session) = self.sessions.get(call_id) {
+            let dialog = self.sessions.get(call_id).map(|session| {
                 warn!(
                     call_id = %call_id,
                     room = %session.room_number,
                     elapsed_secs = session.last_refreshed.elapsed().as_secs(),
                     "Session expired (no refresh), sending BYE"
                 );
-                if let Err(e) = self.uac.bye(&session.dialog).await {
+                session.dialog.clone()
+            });
+            if let Some(dialog) = dialog {
+                if let Err(e) = self.uac.bye(&dialog).await {
                     warn!(call_id = %call_id, error = %e, "Failed to send BYE for expired session");
                 }
-                drop(session);
             }
             self.remove_session_for(
                 call_id,
@@ -9583,6 +9603,13 @@ impl ConferenceCallHandler {
     /// camera, speaking and presenting; `None` when the room is gone.
     /// Callers on a peer node are not listed (their node has them).
     fn roster_of(&self, key: &RoomKey) -> Option<crate::roster::Roster> {
+        let roster = self.local_roster(key)?;
+        Some(self.tree_roster(key, roster))
+    }
+
+    /// The roster of `key` as this node alone knows it: its own callers and
+    /// the people of the peers it forwards with.
+    fn local_roster(&self, key: &RoomKey) -> Option<crate::roster::Roster> {
         let room = self.bridge.get_room(key).ok()?;
         let video = room.video();
         let speaker = video.as_ref().and_then(|v| v.active_speaker());

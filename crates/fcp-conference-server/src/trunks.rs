@@ -262,10 +262,7 @@ impl TrunkManager {
                 .live_stage()
                 .map(|h| h.node_id.clone())
                 .filter(|id| *id == self.node_id || is_conference(id));
-            self.handler.set_stage_node(
-                &room,
-                stage.as_deref().map(|id| id == self.node_id.as_str()),
-            );
+            self.handler.set_stage_node(&room, stage.as_deref());
             tree_peers(&self.node_id, stage.as_deref(), peers)
         };
 
