@@ -145,6 +145,10 @@ pub enum StageClaim {
 const MOVE_ATTEMPTS: usize = 10;
 /// The pause between attempts: the leg's dialog may still be confirming.
 const MOVE_RETRY: Duration = Duration::from_millis(500);
+/// How long an edge that lost its stage still takes that stage's word that
+/// the webinar ended: the stage tells its edges on its next tick, after it
+/// has released the stage.
+const FORMER_STAGE_GRACE: Duration = Duration::from_secs(10);
 
 impl ConferenceCallHandler {
     /// The flag a trunk's audio bridge reads to know this node is the hub
@@ -196,11 +200,20 @@ impl ConferenceCallHandler {
         let was = self.stage_hub(key).swap(on, Ordering::Relaxed);
         let edge = stage.is_some() && !on;
         let was_edge = match stage.filter(|_| edge) {
-            Some(stage) => self
-                .stage_edges
-                .insert(key.clone(), stage.to_string())
-                .is_some(),
-            None => self.stage_edges.remove(key).is_some(),
+            Some(stage) => {
+                self.former_stages.remove(key);
+                self.stage_edges
+                    .insert(key.clone(), stage.to_string())
+                    .is_some()
+            }
+            None => match self.stage_edges.remove(key) {
+                Some((_, former)) => {
+                    self.former_stages
+                        .insert(key.clone(), (former, Instant::now()));
+                    true
+                }
+                None => false,
+            },
         };
         if was != on || was_edge != edge {
             info!(room = %key.room, stage = on, edge, "This node's part in a webinar changed");
@@ -263,9 +276,18 @@ impl ConferenceCallHandler {
         }
     }
 
+    /// Whether this node stopped being an edge of `stage` for `key` within
+    /// [`FORMER_STAGE_GRACE`].
+    fn was_edge_of(&self, key: &RoomKey, stage: &str) -> bool {
+        self.former_stages
+            .get(key)
+            .is_some_and(|f| f.0 == stage && f.1.elapsed() < FORMER_STAGE_GRACE)
+    }
+
     /// `key`'s room has ended on this node: give the stage up.
     pub(super) fn leave_the_stage(&self, key: &RoomKey) {
         self.stage_edges.remove(key);
+        self.former_stages.remove(key);
         self.stage_news.remove(key);
         self.edge_news.retain(|(k, _), _| k != key);
         let held = self
@@ -346,6 +368,13 @@ impl ConferenceCallHandler {
     /// not that stage's edge: a stale stage still announcing.
     pub fn apply_stage_news(&self, key: &RoomKey, news: StageNews) -> bool {
         if self.stage_of(key).as_deref() != Some(news.node.as_str()) {
+            // A stage that ended released its claim at once, so this edge
+            // may have stopped following it before its last news came.
+            if news.phase == WebinarPhase::Ended && self.was_edge_of(key, &news.node) {
+                self.former_stages.remove(key);
+                self.follow_stage(key, &news.sitting_id, news.phase);
+                return true;
+            }
             return false;
         }
         self.follow_stage(key, &news.sitting_id, news.phase);

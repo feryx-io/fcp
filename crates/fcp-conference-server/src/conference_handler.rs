@@ -422,6 +422,10 @@ pub struct ConferenceCallHandler {
     /// Rooms whose webinar has its stage on another node: this one is an
     /// edge. The stage's node id.
     stage_edges: DashMap<RoomKey, String>,
+    /// The stage each room here was last an edge of, and when it stopped
+    /// being one: a stage that ends releases its claim before its last
+    /// news arrives, and that news must still end the edge.
+    former_stages: DashMap<RoomKey, (String, Instant)>,
     /// What each stage this node is an edge of last said.
     stage_news: DashMap<RoomKey, (stage::StageNews, Instant)>,
     /// What each edge of a stage here last said, by the edge's node id.
@@ -986,6 +990,7 @@ impl ConferenceCallHandler {
             sittings: DashMap::new(),
             stage_hubs: DashMap::new(),
             stage_edges: DashMap::new(),
+            former_stages: DashMap::new(),
             stage_news: DashMap::new(),
             edge_news: DashMap::new(),
             tree_endings: DashMap::new(),
