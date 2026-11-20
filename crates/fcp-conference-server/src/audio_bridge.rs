@@ -755,6 +755,19 @@ fn execute_dtmf_command(
                 gain_delta: 0.0,
             }
         }
+        DtmfCommand::GoLive => {
+            // Whether the room is a webinar, and live, is the handler's:
+            // it takes a host's press from the room (`docs/WEBINARS.md`
+            // §2.6).
+            if is_host {
+                room.request_go_live(participant_id);
+            }
+            DtmfResult {
+                should_leave: false,
+                feedback: None,
+                gain_delta: 0.0,
+            }
+        }
         DtmfCommand::Leave => {
             info!(participant = %participant_id, "DTMF leave requested");
             DtmfResult {
