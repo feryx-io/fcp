@@ -436,6 +436,8 @@ pub struct ConferenceCallHandler {
     tree_outbox: DashMap<RoomKey, stage::Outbox>,
     /// On a stage: the last op of each edge's it applied.
     tree_acked: DashMap<(RoomKey, String), u64>,
+    /// On an edge: the room's passthrough mode before it became one.
+    edge_passthrough_was: DashMap<RoomKey, forge_conference::video::PassthroughMode>,
     /// This node's cluster id: what peers see in our trunk INVITEs and in
     /// our certificate.
     node_id: String,
@@ -1000,6 +1002,7 @@ impl ConferenceCallHandler {
             tree_endings: DashMap::new(),
             tree_outbox: DashMap::new(),
             tree_acked: DashMap::new(),
+            edge_passthrough_was: DashMap::new(),
             node_id,
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),

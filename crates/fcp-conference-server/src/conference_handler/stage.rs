@@ -292,6 +292,30 @@ impl ConferenceCallHandler {
         if was != on || was_edge != edge {
             info!(room = %key.room, stage = on, edge, "This node's part in a webinar changed");
         }
+        // Each pass: the room's video may start after the node became an
+        // edge.
+        self.edge_passthrough(key, edge);
+    }
+
+    /// An edge's audience is sent the stage's composite as it arrives over
+    /// the trunk, already labelled, rather than having it drawn and encoded
+    /// again here (W5.3): passthrough on while this node is an edge, and the
+    /// meeting's own mode again when it is not.
+    fn edge_passthrough(&self, key: &RoomKey, edge: bool) {
+        use forge_conference::video::PassthroughMode;
+        let Some(video) = self.bridge.get_room(key).ok().and_then(|r| r.video()) else {
+            return;
+        };
+        if edge {
+            let was = video.settings().passthrough;
+            if was != PassthroughMode::On {
+                self.edge_passthrough_was.entry(key.clone()).or_insert(was);
+                video.set_passthrough(PassthroughMode::On);
+                info!(room = %key.room, "An edge forwards its audience the stage's composite");
+            }
+        } else if let Some((_, was)) = self.edge_passthrough_was.remove(key) {
+            video.set_passthrough(was);
+        }
     }
 
     /// A host or panelist of a webinar has joined `key` as `call_id`: claim
@@ -362,6 +386,7 @@ impl ConferenceCallHandler {
     pub(super) fn leave_the_stage(&self, key: &RoomKey) {
         self.stage_edges.remove(key);
         self.former_stages.remove(key);
+        self.edge_passthrough_was.remove(key);
         self.stage_news.remove(key);
         self.edge_news.retain(|(k, _), _| k != key);
         self.tree_acked.retain(|(k, _), _| k != key);

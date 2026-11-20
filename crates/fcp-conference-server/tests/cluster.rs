@@ -1491,3 +1491,117 @@ async fn chat_until(
     }
     seen
 }
+
+/// A video webinar's edge forwards its audience the stage's composite
+/// (`docs/WEBINARS.md` §2.7, W5.3): the host claims the stage on one node,
+/// an attendee joins the other, and that node, an edge, turns passthrough
+/// on while the stage keeps the meeting's own. The attendee is sent video
+/// from the stage across the trunk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_video_webinar_s_edge_forwards_the_stage_s_composite() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    seed.meeting_with(
+        ROOM,
+        serde_json::json!({
+            "kind": "webinar",
+            "video_enabled": true,
+            "video_codecs": ["VP8"],
+        }),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut nodes) = ConferenceCluster::start(
+        db.url(),
+        dir.path(),
+        ClusterOptions {
+            join_secret: Some("join-s3cret".into()),
+            conference_extra: "video_native_codecs_only = false\n".into(),
+            ..ClusterOptions::default()
+        },
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_REDIS_URL is not set");
+        db.drop_db().await;
+        return;
+    };
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let token = |name: &str, role: fcp_core::JoinRole| {
+        fcp_core::JoinToken::new(seed.tenant_id, ROOM, name, role, Duration::from_secs(600))
+            .mint(b"join-s3cret")
+    };
+    let join = |node: SocketAddr, name: &'static str, role: fcp_core::JoinRole| {
+        let token = token(name, role);
+        async move {
+            let phone = Phone::new(name, "x", REALM, node)
+                .await
+                .expect("phone binds");
+            phone.enable_video(fcp_testkit::video::VideoMode::Plain);
+            phone.set_video_codec(fcp_testkit::video::VideoCodec::Vp8);
+            let call = phone
+                .call_with_headers(ROOM, &[("X-FCP-Join", &token)])
+                .await
+                .expect("INVITE sent");
+            call.answered(A_WHILE)
+                .await
+                .unwrap_or_else(|e| panic!("{name} was not admitted: {e}"));
+            (phone, call)
+        }
+    };
+    let (_host, host_call) = join(nodes.nodes[0].sip, "hostess", fcp_core::JoinRole::Host).await;
+    room_when(&nodes.nodes[0], "the stage", |r| {
+        r["webinar_node"] == "stage"
+    })
+    .await;
+    post_until_ok(
+        &nodes.nodes[0],
+        &format!("/conferences/{ROOM}/webinar/live"),
+    )
+    .await;
+    let (_ann, ann_call) = join(nodes.nodes[1].sip, "ann", fcp_core::JoinRole::Guest).await;
+    room_when(&nodes.nodes[1], "an edge", |r| r["webinar_node"] == "edge").await;
+
+    let video_of = |node: usize| {
+        let n = &nodes.nodes[node];
+        async move { room_video(n).await.unwrap_or_default() }
+    };
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        let (edge, stage) = (video_of(1).await, video_of(0).await);
+        if edge["video"]["passthrough"] == "on" {
+            assert_eq!(
+                stage["video"]["passthrough"], "auto",
+                "the stage keeps the meeting's"
+            );
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let logs = nodes.kill_all().await;
+            panic!("the edge never turned passthrough on: {edge:#}\n{logs}");
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // The host's camera reaches Ann through the stage's composite.
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        let _ = host_call.video().expect("video").send_frames(1, 10).await;
+        if ann_call.video().expect("video").received_any().0 > 0 {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let logs = nodes.kill_all().await;
+            panic!("Ann was sent no video from the stage\n{logs}");
+        }
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    }
+
+    let _ = host_call.hangup().await;
+    let _ = ann_call.hangup().await;
+    nodes.stop_all().await;
+    db.drop_db().await;
+}
