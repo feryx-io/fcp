@@ -110,6 +110,11 @@ impl QaRoom {
     fn find(&mut self, id: &str) -> Option<&mut Held> {
         self.questions.iter_mut().find(|q| q.kept.id == id)
     }
+
+    /// Take the stage's sitting as this room's (`docs/WEBINARS.md` §2.7).
+    pub(super) fn set_session_id(&mut self, id: &str) {
+        self.session_id = id.to_string();
+    }
 }
 
 /// Who a question is being shown to.

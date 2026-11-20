@@ -108,6 +108,15 @@ impl SittingStore for PostgresSittingStore {
         .await?;
         row.map(Self::row_to_sitting).transpose()
     }
+
+    async fn delete_sitting(&self, tenant: &TenantId, id: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM conference_sittings WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant.to_string())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 const REGISTRANT_COLUMNS: &str = "id, tenant_id, meeting_id, name, email, created_at, revoked_at";

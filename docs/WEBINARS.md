@@ -861,9 +861,65 @@ For an audience that is not on FCP at all.
 
         Until W5.2, each node's phase is its own, so the test takes every
         node live.
-    - **W5.2: the webinar across nodes.** Decision 6: phase, lobby, hands,
-      questions and chat through the stage; the roster's audience count as
-      the sum over the edges.
+    - **W5.2: the webinar across nodes.** Decision 6, in two parts.
+      - **W5.2a: its life, hands and roster.** **Done** (v0.25.598). As
+        built (`conference_handler/stage.rs`):
+        - **News, once a second** (main.rs's `webinar-tree` task, under
+          `cluster.secret`):
+          - The stage sends each edge its `StageNews` on
+            `POST /internal/conferences/{room}/webinar/stage-news`: the
+            sitting's id and phase, the stage's members (its own and every
+            edge's promoted attendees), and the audience counted over every
+            node.
+          - Each edge sends the stage its `EdgeNews` on
+            `…/webinar/edge-news`: its audience, its lobby, its raised hands
+            and its promoted attendees.
+          - News unheard for 5 s is dropped. A node takes news only in its
+            own part: an edge from its stage, the stage from an edge.
+        - **The sitting.** An edge takes the stage's sitting id
+          (`follow_stage`): questions and chat take it too, so attendance
+          reads one sitting. The row it wrote before it knew it was an edge
+          is deleted (`SittingStore::delete_sitting`). An edge keeps no
+          sitting row, publishes no `conference.webinar_*` event, and never
+          records: the stage does all three.
+        - **The phase.** An edge goes live when its stage does, letting its
+          own lobby in at its own `lobby_admit_per_sec`. It ends when the
+          stage ends, with the ending announcement. A stage that ends queues
+          its last news, so its edges hear it even once the stage's room has
+          emptied. `POST /conferences/{room}/webinar/live` and `…/end` sent
+          to an edge are forwarded to the stage, and the stage's answer is
+          returned.
+        - **Rosters.** The stage's rosters count every edge's audience,
+          list every edge's raised hands for the stage, and list promoted
+          attendees wherever they are. An edge's rosters list the stage's
+          members and the whole audience.
+        - **Hands and the stage across nodes.** A host's `DELETE
+          …/participants/{pid}/hand`, and `POST`/`DELETE
+          …/participants/{pid}/stage`, for an attendee on another node go
+          there (`wherever_it_is`, new internal routes). `DELETE …/hands`
+          lowers every node's hands.
+        - **The webinar's JSON** (`GET /conferences/{room}/webinar`) gains a
+          `tree` object: on the stage, each edge's audience, lobby, hands and
+          promoted attendees; on an edge, its stage and whether it has heard
+          from it. On the stage, `lobby` counts every node's.
+        - **Proved** by the three-node test, which no longer takes each node
+          live:
+          - the edges are on the stage's sitting and live with it, and the
+            stage hears each edge's audience;
+          - a hand raised by `*4` on an edge is seen on the stage, and the
+            stage lowers it;
+          - the host brings an edge's attendee up from the stage's node;
+          - ending the webinar from an edge ends every node.
+        - **Not yet:** the audience by page
+          (`GET /conferences/{room}/audience`) lists the node's own
+          attendees only.
+      - **W5.2b: questions and chat through the stage.** The stage holds
+        both. An edge forwards what its people ask, upvote and post. The
+        stage tells each edge the public list (published questions, the
+        room's chat) and what each of the edge's people alone may see (their
+        own questions and upvotes, their private messages to the hosts,
+        whether they are muted). The edge mirrors that, and tells its people
+        as the stage tells its own.
     - **W5.3: video to edges.** Decision 7, and what forge-conference needs
       for it, if anything.
     - **W5.4: measured.** `fcp-loadgen` across two and three nodes, to 5,000

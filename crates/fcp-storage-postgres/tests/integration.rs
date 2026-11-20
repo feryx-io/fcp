@@ -2965,4 +2965,10 @@ async fn sittings_are_kept_as_they_move_and_read_back_per_meeting() {
         .await
         .unwrap()
         .is_empty());
+    // An edge forgets the sitting it began before it knew the stage's,
+    // and only in its own tenant.
+    store.delete_sitting(&b.id, "sit-2").await.unwrap();
+    assert!(store.get_sitting(&a.id, "sit-2").await.unwrap().is_some());
+    store.delete_sitting(&a.id, "sit-2").await.unwrap();
+    assert!(store.get_sitting(&a.id, "sit-2").await.unwrap().is_none());
 }

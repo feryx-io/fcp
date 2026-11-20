@@ -59,7 +59,7 @@ mod webinar;
 pub use chat::{ChatError, CHAT_FLUSH};
 pub use hands::{HandBy, StageError};
 pub use questions::{Moderation, QaError};
-pub use stage::StageClaim;
+pub use stage::{EdgeNews, StageClaim, StageNews, TreeNews};
 pub use webinar::WebinarError;
 
 /// Fallback remote address used when SDP parsing fails to extract the caller's RTP endpoint.
@@ -420,8 +420,14 @@ pub struct ConferenceCallHandler {
     /// (`docs/WEBINARS.md` §2.7). Read by each trunk's audio bridge.
     stage_hubs: DashMap<RoomKey, Arc<std::sync::atomic::AtomicBool>>,
     /// Rooms whose webinar has its stage on another node: this one is an
-    /// edge.
-    stage_edges: DashMap<RoomKey, ()>,
+    /// edge. The stage's node id.
+    stage_edges: DashMap<RoomKey, String>,
+    /// What each stage this node is an edge of last said.
+    stage_news: DashMap<RoomKey, (stage::StageNews, Instant)>,
+    /// What each edge of a stage here last said, by the edge's node id.
+    edge_news: DashMap<(RoomKey, String), (stage::EdgeNews, Instant)>,
+    /// A stage's last news, its webinar ended, waiting to be told.
+    tree_endings: DashMap<RoomKey, stage::StageNews>,
     /// This node's cluster id: what peers see in our trunk INVITEs and in
     /// our certificate.
     node_id: String,
@@ -980,6 +986,9 @@ impl ConferenceCallHandler {
             sittings: DashMap::new(),
             stage_hubs: DashMap::new(),
             stage_edges: DashMap::new(),
+            stage_news: DashMap::new(),
+            edge_news: DashMap::new(),
+            tree_endings: DashMap::new(),
             node_id,
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),
@@ -9583,6 +9592,13 @@ impl ConferenceCallHandler {
     /// camera, speaking and presenting; `None` when the room is gone.
     /// Callers on a peer node are not listed (their node has them).
     fn roster_of(&self, key: &RoomKey) -> Option<crate::roster::Roster> {
+        let roster = self.local_roster(key)?;
+        Some(self.tree_roster(key, roster))
+    }
+
+    /// The roster of `key` as this node alone knows it: its own callers and
+    /// the people of the peers it forwards with.
+    fn local_roster(&self, key: &RoomKey) -> Option<crate::roster::Roster> {
         let room = self.bridge.get_room(key).ok()?;
         let video = room.video();
         let speaker = video.as_ref().and_then(|v| v.active_speaker());
