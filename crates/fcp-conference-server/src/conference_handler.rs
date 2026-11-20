@@ -3246,8 +3246,10 @@ impl ConferenceCallHandler {
         })?;
 
         // Send BYE before cleaning up
-        if let Some(session) = self.sessions.get(&call_id) {
-            if let Err(e) = self.uac.bye(&session.dialog).await {
+        // The dialog is cloned so no session guard is held across the BYE.
+        let dialog = self.sessions.get(&call_id).map(|s| s.dialog.clone());
+        if let Some(dialog) = dialog {
+            if let Err(e) = self.uac.bye(&dialog).await {
                 warn!(call_id = %call_id, error = %e, "Failed to send BYE for kicked participant");
             }
         }
@@ -3729,11 +3731,13 @@ impl ConferenceCallHandler {
 
         // Send BYE and remove each session
         for call_id in &call_ids {
-            if let Some(session) = self.sessions.get(call_id) {
-                if let Err(e) = self.uac.bye(&session.dialog).await {
+            // No session guard across the BYE: whatever answers it may need
+            // the session's shard, and a blocked shard stalls a worker.
+            let dialog = self.sessions.get(call_id).map(|s| s.dialog.clone());
+            if let Some(dialog) = dialog {
+                if let Err(e) = self.uac.bye(&dialog).await {
                     warn!(call_id = %call_id, error = %e, "Failed to send BYE for destroy");
                 }
-                drop(session);
             }
             self.remove_session_for(
                 call_id,
@@ -3948,17 +3952,19 @@ impl ConferenceCallHandler {
             .collect();
 
         for call_id in &expired {
-            if let Some(session) = self.sessions.get(call_id) {
+            let dialog = self.sessions.get(call_id).map(|session| {
                 warn!(
                     call_id = %call_id,
                     room = %session.room_number,
                     elapsed_secs = session.last_refreshed.elapsed().as_secs(),
                     "Session expired (no refresh), sending BYE"
                 );
-                if let Err(e) = self.uac.bye(&session.dialog).await {
+                session.dialog.clone()
+            });
+            if let Some(dialog) = dialog {
+                if let Err(e) = self.uac.bye(&dialog).await {
                     warn!(call_id = %call_id, error = %e, "Failed to send BYE for expired session");
                 }
-                drop(session);
             }
             self.remove_session_for(
                 call_id,
