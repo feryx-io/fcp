@@ -377,6 +377,7 @@ mod tests {
             gain: 1.0,
             video: true,
             token_join: false,
+            registrant: None,
             from_node: "a".into(),
             expires_at: MigrationTicket::expiry_from_now(),
             nonce: MigrationTicket::new_nonce(),

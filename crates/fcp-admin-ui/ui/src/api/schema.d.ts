@@ -5989,6 +5989,113 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conferences/meetings/{id}/registrants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /conferences/meetings/:id/registrants — a webinar's registrations,
+         *     oldest first.
+         */
+        get: operations["registrants"];
+        put?: never;
+        /**
+         * POST /conferences/meetings/:id/registrants — register a person for a
+         *     webinar: their registration and attendee token.
+         */
+        post: operations["register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conferences/meetings/{id}/registrants/{rid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /conferences/meetings/:id/registrants/:rid — one registration. */
+        get: operations["registrant"];
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /conferences/meetings/:id/registrants/:rid — revoke a
+         *     registration: its token is refused from now on. Someone already in
+         *     the room stays until a host removes them.
+         */
+        delete: operations["revoke_registrant"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conferences/meetings/{id}/registrants/{rid}/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /conferences/meetings/:id/registrants/:rid/token — mint a
+         *     registrant's attendee token again (the old one keeps working until it
+         *     expires or the registration is revoked).
+         */
+        post: operations["registrant_token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conferences/meetings/{id}/sittings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /conferences/meetings/:id/sittings — each run of the meeting's
+         *     room, newest first.
+         */
+        get: operations["sittings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conferences/meetings/{id}/attendance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /conferences/meetings/:id/attendance — who registered for and came
+         *     to one sitting of the meeting's room, with its questions and chat.
+         */
+        get: operations["attendance"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conferences/live/{room}/video": {
         parameters: {
             query?: never;
@@ -6173,6 +6280,27 @@ export interface paths {
         put?: never;
         /** POST /conferences/live/:room/webinar/end — Webinar ended: everyone is released. */
         post: operations["conferences_live_end_webinar"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conferences/live/{room}/audience": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /conferences/live/:room/audience — a page of a webinar's attendees,
+         *     by participant id: in the room, on the stage, or in the lobby
+         *     (`docs/WEBINARS.md` §2.6).
+         */
+        get: operations["conferences_live_audience"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6533,6 +6661,26 @@ export interface paths {
         put?: never;
         /** POST /me/conferences/live/:room/webinar/end — a host ends the webinar: everyone is released. */
         post: operations["self_service_my_live_conference_end_webinar"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/conferences/live/{room}/audience": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /me/conferences/live/:room/audience — a page of a webinar's
+         *     attendees, for a host who wants to find someone.
+         */
+        get: operations["self_service_my_live_conference_audience"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6991,6 +7139,92 @@ export interface components {
         AssistantView: {
             user_id: string;
             opted_in: boolean;
+        };
+        /** @description One leg of a sitting, from its record. */
+        AttendanceLeg: {
+            participant_id?: string | null;
+            name?: string | null;
+            /** @description Where they called from. */
+            from: string;
+            /** @description `host`, `panelist`, `attendee` or `guest`. */
+            role?: string | null;
+            /** @description The registration they came by. */
+            registrant?: string | null;
+            /** Format: date-time */
+            joined_at: string;
+            /** Format: date-time */
+            left_at?: string | null;
+            /** Format: int64 */
+            duration_secs: number;
+            /** @description They left from the lobby, never let in. */
+            lobby: boolean;
+            /**
+             * Format: int32
+             * @description Questions they asked, and chat messages they posted, in the sitting.
+             */
+            questions: number;
+            /** Format: int32 */
+            messages: number;
+        };
+        /** @description A chat message of the sitting, as kept. */
+        AttendanceMessage: {
+            id: string;
+            participant_id: string;
+            sender?: string | null;
+            /** @description `room` or `hosts`. */
+            audience: components["schemas"]["ChatAudience"];
+            text: string;
+            /** Format: date-time */
+            sent_at: string;
+            /** Format: date-time */
+            deleted_at?: string | null;
+        };
+        /** @description A question of the sitting, as kept. */
+        AttendanceQuestion: {
+            id: string;
+            participant_id: string;
+            asker?: string | null;
+            text: string;
+            status: components["schemas"]["QuestionStatus"];
+            published: boolean;
+            /** Format: int32 */
+            upvotes: number;
+            answer?: string | null;
+            answered_live: boolean;
+            /** Format: date-time */
+            asked_at: string;
+        };
+        /** @description A registration and whether they came. */
+        AttendanceRegistrant: components["schemas"]["RegistrantResponse"] & {
+            attended: boolean;
+            /**
+             * Format: int64
+             * @description Their time in the room across legs (the lobby aside).
+             */
+            attended_secs: number;
+        };
+        /** @description Who came to one sitting. */
+        AttendanceResponse: {
+            sitting: components["schemas"]["SittingResponse"];
+            /**
+             * Format: int64
+             * @description Distinct people in the room (by registration, else by where they
+             *     called from), the lobby aside.
+             */
+            attendees: number;
+            /**
+             * Format: int64
+             * @description The most legs in the room at once.
+             */
+            peak: number;
+            legs: components["schemas"]["AttendanceLeg"][];
+            /**
+             * @description A webinar's registrations, each with whether they came; empty for a
+             *     meeting.
+             */
+            registrants: components["schemas"]["AttendanceRegistrant"][];
+            questions: components["schemas"]["AttendanceQuestion"][];
+            messages: components["schemas"]["AttendanceMessage"][];
         };
         AuditEntryResponse: {
             /** Format: int64 */
@@ -8108,6 +8342,8 @@ export interface components {
              *     `everyone` in a meeting and `hosts` in a webinar.
              */
             chat?: string | null;
+            /** @description Whether a webinar's attendees must register. */
+            registration?: boolean;
         };
         CreateNetworkRequest: {
             /** @description A range (`10.1.2.0/24`) or a single address. */
@@ -8394,7 +8630,7 @@ export interface components {
          * @description The classes of data a hold can cover.
          * @enum {string}
          */
-        DataClass: "cdr" | "call_recording" | "conference_recording" | "voicemail" | "sip_trace" | "flow_trace" | "audit_event" | "device_capture" | "conference_chat";
+        DataClass: "cdr" | "call_recording" | "conference_recording" | "voicemail" | "sip_trace" | "flow_trace" | "audit_event" | "device_capture" | "conference_chat" | "webinar_question" | "webinar_registrant";
         DeadLetterReport: {
             /** @description Whether this host reached the dead letters. */
             reached: boolean;
@@ -9622,6 +9858,11 @@ export interface components {
              *     in a webinar.
              */
             chat?: string | null;
+            /**
+             * @description Whether a webinar's attendees must register: one is admitted only
+             *     by the token minted for their registration.
+             */
+            registration: boolean;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -11112,6 +11353,11 @@ export interface components {
                  *     in a webinar.
                  */
                 chat?: string | null;
+                /**
+                 * @description Whether a webinar's attendees must register: one is admitted only
+                 *     by the token minted for their registration.
+                 */
+                registration: boolean;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -11740,6 +11986,29 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_RegistrantResponse: {
+            data: {
+                id: string;
+                meeting_id: string;
+                name: string;
+                email?: string | null;
+                /** Format: date-time */
+                created_at: string;
+                /**
+                 * Format: date-time
+                 * @description When it was revoked: its token is refused.
+                 */
+                revoked_at?: string | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_RegistrationResponse: {
             data: {
                 aor: string;
@@ -11791,6 +12060,16 @@ export interface components {
                  * @description Chat messages posted in rooms.
                  */
                 conference_chat_deleted: number;
+                /**
+                 * Format: int64
+                 * @description Questions asked in webinars.
+                 */
+                webinar_questions_deleted: number;
+                /**
+                 * Format: int64
+                 * @description Webinar registrations.
+                 */
+                webinar_registrants_deleted: number;
                 /** Format: int64 */
                 audit_events_deleted: number;
                 /** Format: int64 */
@@ -11984,6 +12263,41 @@ export interface components {
                  */
                 trunk_id?: string | null;
                 registrations?: components["schemas"]["SiteRegistrationsView"] | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_SittingResponse: {
+            data: {
+                id: string;
+                room_number: string;
+                /** @description The meeting's kind when it began. */
+                kind: string;
+                /** Format: date-time */
+                started_at: string;
+                /**
+                 * Format: date-time
+                 * @description When it went live; a meeting's is its start, a webinar that never
+                 *     went live has none.
+                 */
+                live_at?: string | null;
+                /**
+                 * Format: date-time
+                 * @description When it ended; none while it runs (or when its node stopped
+                 *     before it could say).
+                 */
+                ended_at?: string | null;
+                /**
+                 * @description Who ended a webinar: a host's participant id, `host`, `api` or
+                 *     `stage_left`; none when its last caller left.
+                 */
+                ended_by?: string | null;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -12692,6 +13006,16 @@ export interface components {
              * @description Chat in rooms older than this is deleted.
              */
             conference_chat_retention_days?: number | null;
+            /**
+             * Format: int32
+             * @description Webinar questions older than this (by when asked) are deleted.
+             */
+            webinar_question_retention_days?: number | null;
+            /**
+             * Format: int32
+             * @description Webinar registrations older than this (by when made) are deleted.
+             */
+            webinar_registrant_retention_days?: number | null;
             recording_consent: string;
             recording_consent_prompt_id?: string | null;
             /**
@@ -13060,6 +13384,11 @@ export interface components {
             account_id?: string | null;
             profile?: string | null;
         };
+        /**
+         * @description Where a question is.
+         * @enum {string}
+         */
+        QuestionStatus: "pending" | "answered" | "dismissed";
         /** @description Queue config response. */
         QueueConfigResponse: {
             id: string;
@@ -13280,6 +13609,43 @@ export interface components {
              */
             by_column: unknown[][];
         };
+        /** @description `POST …/registrants` body. */
+        RegisterRequest: {
+            /** @description The name the room shows them by (at most 64 characters). */
+            name: string;
+            email?: string | null;
+            /**
+             * Format: int64
+             * @description The token's lifetime in seconds: thirty days by default, ninety at
+             *     most.
+             */
+            ttl_secs?: number | null;
+        };
+        /** @description A registration and the token minted for it. */
+        RegisteredResponse: {
+            registrant: components["schemas"]["RegistrantResponse"];
+            /** @description The attendee token naming the registration. */
+            token: components["schemas"]["JoinTokenResponse"];
+        };
+        /** @description A registration as the API shows it. */
+        RegistrantResponse: {
+            id: string;
+            meeting_id: string;
+            name: string;
+            email?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description When it was revoked: its token is refused.
+             */
+            revoked_at?: string | null;
+        };
+        /** @description `POST …/registrants/:rid/token` body. */
+        RegistrantTokenRequest: {
+            /** Format: int64 */
+            ttl_secs?: number | null;
+        };
         /** @description Registration response. */
         RegistrationResponse: {
             aor: string;
@@ -13366,6 +13732,16 @@ export interface components {
              * @description Chat messages posted in rooms.
              */
             conference_chat_deleted: number;
+            /**
+             * Format: int64
+             * @description Questions asked in webinars.
+             */
+            webinar_questions_deleted: number;
+            /**
+             * Format: int64
+             * @description Webinar registrations.
+             */
+            webinar_registrants_deleted: number;
             /** Format: int64 */
             audit_events_deleted: number;
             /** Format: int64 */
@@ -13766,6 +14142,32 @@ export interface components {
             enrollment_token: string;
             /** Format: date-time */
             enrollment_token_expires_at: string;
+        };
+        /** @description One sitting of a meeting's room as the API shows it. */
+        SittingResponse: {
+            id: string;
+            room_number: string;
+            /** @description The meeting's kind when it began. */
+            kind: string;
+            /** Format: date-time */
+            started_at: string;
+            /**
+             * Format: date-time
+             * @description When it went live; a meeting's is its start, a webinar that never
+             *     went live has none.
+             */
+            live_at?: string | null;
+            /**
+             * Format: date-time
+             * @description When it ended; none while it runs (or when its node stopped
+             *     before it could say).
+             */
+            ended_at?: string | null;
+            /**
+             * @description Who ended a webinar: a host's participant id, `host`, `api` or
+             *     `stage_left`; none when its last caller left.
+             */
+            ended_by?: string | null;
         };
         /** @description The SIP account the app registers with. */
         SoftphoneAccount: {
@@ -14808,6 +15210,7 @@ export interface components {
              *     default.
              */
             chat?: string | null;
+            registration?: boolean | null;
         };
         /** @description Update message request. */
         UpdateMessageRequest: {
@@ -14904,6 +15307,10 @@ export interface components {
             voicemail_retention_days?: number | null;
             /** Format: int32 */
             conference_chat_retention_days?: number | null;
+            /** Format: int32 */
+            webinar_question_retention_days?: number | null;
+            /** Format: int32 */
+            webinar_registrant_retention_days?: number | null;
             recording_consent?: string | null;
             recording_consent_prompt_id?: string | null;
             recording_consent_on_failure?: string | null;
@@ -29938,6 +30345,243 @@ export interface operations {
             };
         };
     };
+    registrants: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_RegistrantResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Registered */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegisteredResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    registrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                rid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistrantResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    revoke_registrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                rid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistrantResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    registrant_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                rid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegistrantTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description Minted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JoinTokenResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    sittings: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SittingResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    attendance: {
+        parameters: {
+            query?: {
+                /** @description The sitting; the newest when absent. */
+                sitting?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttendanceResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     conferences_live_video_status: {
         parameters: {
             query?: never;
@@ -30259,6 +30903,40 @@ export interface operations {
     conferences_live_end_webinar: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The conference server's answer, passed through */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    conferences_live_audience: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path: {
                 room: string;
@@ -30936,6 +31614,40 @@ export interface operations {
     self_service_my_live_conference_end_webinar: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The conference server's answer, passed through */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_live_conference_audience: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path: {
                 room: string;

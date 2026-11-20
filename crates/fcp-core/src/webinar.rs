@@ -108,3 +108,72 @@ mod tests {
         assert_eq!(WebinarPhase::parse("scheduled"), None);
     }
 }
+
+/// One person registered for a webinar (`webinar_registrants`): they join
+/// by the attendee token minted for them, which names this registration,
+/// and the room admits it only while the registration is not revoked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Registrant {
+    /// `reg-<uuid>`.
+    pub id: String,
+    pub tenant_id: TenantId,
+    pub meeting_id: String,
+    /// The name the room shows them by.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    pub created_at: SystemTime,
+    /// When a host or administrator revoked it: their token is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<SystemTime>,
+}
+
+impl Registrant {
+    /// A new registration for `meeting_id`.
+    pub fn new(
+        tenant_id: TenantId,
+        meeting_id: impl Into<String>,
+        name: impl Into<String>,
+        email: Option<String>,
+    ) -> Self {
+        Self {
+            id: format!("reg-{}", uuid::Uuid::new_v4()),
+            tenant_id,
+            meeting_id: meeting_id.into(),
+            name: name.into(),
+            email,
+            created_at: SystemTime::now(),
+            revoked_at: None,
+        }
+    }
+
+    /// Whether their token is still admitted.
+    pub fn stands(&self) -> bool {
+        self.revoked_at.is_none()
+    }
+}
+
+/// The most registrants one webinar may have.
+pub const MAX_REGISTRANTS: usize = 10_000;
+
+/// Where webinar registrations are kept.
+#[async_trait::async_trait]
+pub trait RegistrantStore: Send + Sync {
+    /// Write a registration as it now is.
+    async fn put_registrant(&self, registrant: &Registrant) -> anyhow::Result<()>;
+    /// One registration in the tenant.
+    async fn get_registrant(
+        &self,
+        tenant: &TenantId,
+        id: &str,
+    ) -> anyhow::Result<Option<Registrant>>;
+    /// A meeting's registrations, oldest first: at most `limit` after the
+    /// registration `after` (by id, in that order), and how many it has.
+    async fn registrants_of_meeting(
+        &self,
+        tenant: &TenantId,
+        meeting_id: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<(Vec<Registrant>, u64)>;
+}

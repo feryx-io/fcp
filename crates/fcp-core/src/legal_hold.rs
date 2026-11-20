@@ -30,10 +30,14 @@ pub enum DataClass {
     DeviceCapture,
     /// Chat in a room (`docs/WEBINARS.md` §2.5).
     ConferenceChat,
+    /// A question asked in a webinar (`docs/WEBINARS.md` §2.5).
+    WebinarQuestion,
+    /// A registration for a webinar (`docs/WEBINARS.md` §2.6).
+    WebinarRegistrant,
 }
 
 impl DataClass {
-    pub const ALL: [DataClass; 9] = [
+    pub const ALL: [DataClass; 11] = [
         DataClass::Cdr,
         DataClass::CallRecording,
         DataClass::ConferenceRecording,
@@ -43,6 +47,8 @@ impl DataClass {
         DataClass::AuditEvent,
         DataClass::DeviceCapture,
         DataClass::ConferenceChat,
+        DataClass::WebinarQuestion,
+        DataClass::WebinarRegistrant,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -56,6 +62,8 @@ impl DataClass {
             DataClass::AuditEvent => "audit_event",
             DataClass::DeviceCapture => "device_capture",
             DataClass::ConferenceChat => "conference_chat",
+            DataClass::WebinarQuestion => "webinar_question",
+            DataClass::WebinarRegistrant => "webinar_registrant",
         }
     }
 

@@ -70,6 +70,7 @@ pub mod user_devices;
 pub mod users;
 pub mod voicemail;
 pub mod webhooks;
+pub mod webinars;
 
 use crate::state::ApiState;
 use axum::{
@@ -370,6 +371,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/me/conferences/live/:room/webinar/end",
             post(me_conferences_live::end_webinar),
+        )
+        .route(
+            "/me/conferences/live/:room/audience",
+            get(me_conferences_live::audience),
         )
         // Questions (`docs/WEBINARS.md` §2.5, W3.2)
         .route(
@@ -1204,6 +1209,27 @@ pub fn router() -> Router<ApiState> {
             "/conferences/meetings/:id/join-tokens",
             post(conferences::mint_join_token),
         )
+        // A webinar's registrations and attendance (`docs/WEBINARS.md` §2.6)
+        .route(
+            "/conferences/meetings/:id/registrants",
+            get(webinars::registrants).post(webinars::register),
+        )
+        .route(
+            "/conferences/meetings/:id/registrants/:rid",
+            get(webinars::registrant).delete(webinars::revoke_registrant),
+        )
+        .route(
+            "/conferences/meetings/:id/registrants/:rid/token",
+            post(webinars::registrant_token),
+        )
+        .route(
+            "/conferences/meetings/:id/sittings",
+            get(webinars::sittings),
+        )
+        .route(
+            "/conferences/meetings/:id/attendance",
+            get(webinars::attendance),
+        )
         // Live conference controls, proxied to the conference server
         .route(
             "/conferences/live/:room/video",
@@ -1252,6 +1278,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/conferences/live/:room/webinar/end",
             post(conferences_live::end_webinar),
+        )
+        .route(
+            "/conferences/live/:room/audience",
+            get(conferences_live::audience),
         )
         .route(
             "/conferences/live/:room/dial-out",

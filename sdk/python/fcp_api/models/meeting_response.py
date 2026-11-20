@@ -57,6 +57,8 @@ class MeetingResponse:
             kind (str): `meeting` or `webinar` (`docs/WEBINARS.md` §2.1).
             panelists (list[str]): A webinar's panelists, users by id.
             qa_anonymous (bool): Whether a question may be asked without the asker's name.
+            registration (bool): Whether a webinar's attendees must register: one is admitted only
+                by the token minted for their registration.
             created_at (datetime.datetime):
             updated_at (datetime.datetime):
             guest_pin (None | str | Unset):
@@ -105,6 +107,7 @@ class MeetingResponse:
     kind: str
     panelists: list[str]
     qa_anonymous: bool
+    registration: bool
     created_at: datetime.datetime
     updated_at: datetime.datetime
     guest_pin: None | str | Unset = UNSET
@@ -188,6 +191,8 @@ class MeetingResponse:
 
 
         qa_anonymous = self.qa_anonymous
+
+        registration = self.registration
 
         created_at = self.created_at.isoformat()
 
@@ -308,6 +313,7 @@ class MeetingResponse:
             "kind": kind,
             "panelists": panelists,
             "qa_anonymous": qa_anonymous,
+            "registration": registration,
             "created_at": created_at,
             "updated_at": updated_at,
         })
@@ -409,6 +415,8 @@ class MeetingResponse:
 
 
         qa_anonymous = d.pop("qa_anonymous")
+
+        registration = d.pop("registration")
 
         created_at = datetime.datetime.fromisoformat(d.pop("created_at"))
 
@@ -588,6 +596,7 @@ class MeetingResponse:
             kind=kind,
             panelists=panelists,
             qa_anonymous=qa_anonymous,
+            registration=registration,
             created_at=created_at,
             updated_at=updated_at,
             guest_pin=guest_pin,

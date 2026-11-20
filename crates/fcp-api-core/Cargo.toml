@@ -82,6 +82,7 @@ async-trait = "0.1"
 saml = ["dep:samael", "dep:openssl", "dep:flate2", "dep:quick-xml"]
 
 [dev-dependencies]
+fcp-cdr = { path = "../fcp-cdr" }
 fcp-testkit = { path = "../fcp-testkit" }
 # Every response the Postgres suite sees is checked against the OpenAPI
 # contract (docs/DEVELOPER_SURFACE.md §3, phase 3).

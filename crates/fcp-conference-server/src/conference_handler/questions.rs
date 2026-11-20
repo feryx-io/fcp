@@ -265,6 +265,12 @@ impl ConferenceCallHandler {
             .sessions
             .get(&call_id)
             .and_then(|s| s.display_name.clone().or_else(|| s.caller_id.clone()));
+        // Where they called from, kept even for an anonymous question so
+        // a hold or a subject request finds it (`docs/COMPLIANCE.md`).
+        let asker_address = self
+            .sessions
+            .get(&call_id)
+            .map(|s| s.record.from_uri.clone());
         let now = SystemTime::now();
         let (kept, view) = {
             let mut room = self.qa_rooms.get_mut(key).ok_or(QaError::Off)?;
@@ -293,6 +299,7 @@ impl ConferenceCallHandler {
                     session_id: room.session_id.clone(),
                     participant_id: participant_id.to_string(),
                     asker_name: if anonymous { None } else { display_name },
+                    asker_address,
                     text: text.to_string(),
                     status: QuestionStatus::Pending,
                     published: room.mode == QaMode::Open,

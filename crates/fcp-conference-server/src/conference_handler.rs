@@ -239,6 +239,8 @@ pub struct ParticipantSession {
     pub chat_notices: bool,
     /// Their hand is up, since then.
     pub hand: Option<SystemTime>,
+    /// The webinar registration they joined by (`docs/WEBINARS.md` §2.6).
+    pub registrant: Option<String>,
     /// The BFCP ids the answer gave a room system that offered floor
     /// control (§15.6, 7e).
     pub bfcp: Option<BfcpAssignment>,
@@ -1246,6 +1248,7 @@ impl ConferenceCallHandler {
                 gain: meta.as_ref().map(|m| m.gain).unwrap_or(1.0),
                 video: video_on,
                 token_join: s.floor_notices,
+                registrant: s.registrant.clone(),
                 from_node: self.node_id.clone(),
                 expires_at: MigrationTicket::expiry_from_now(),
                 nonce: MigrationTicket::new_nonce(),
@@ -3574,6 +3577,7 @@ impl ConferenceCallHandler {
                 qa_notices: false,
                 chat_notices: false,
                 hand: None,
+                registrant: None,
                 bfcp: None,
                 record: LegRecord::own(
                     format!("conference:{room_number}"),
@@ -4289,6 +4293,12 @@ impl ConferenceCallHandler {
             "content": session.content.is_some(),
             "migrated_from": session.record.migrated_from,
             "migrated_to": migrated_to,
+            // Attendance (`docs/WEBINARS.md` §2.6): the run of the room,
+            // and the registration they came by.
+            "sitting_id": self.sitting_id(&session.room_key()),
+            "registrant": session.registrant,
+            // Left from a webinar's lobby, never let in.
+            "lobby": self.in_lobby(&session.room_key(), &session.participant_id),
         })))
         .build();
         writer.write(record);
@@ -5991,6 +6001,7 @@ impl ConferenceCallHandler {
                 qa_notices: false,
                 chat_notices: false,
                 hand: None,
+                registrant: None,
                 bfcp: None,
                 record: LegRecord::own(
                     format!("trunk:{}", leg.peer_node),
@@ -6392,6 +6403,23 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             handle.send_final(reject).await;
             return Ok(());
         }
+
+        // A webinar registrant's token stands while their registration
+        // does; a webinar that requires registration admits an attendee
+        // by token only by one (`docs/WEBINARS.md` §2.6).
+        let registrant = match (&migrate, &join) {
+            (None, Some(token)) => match self.admit_registrant(&meeting, token).await {
+                Ok(r) => r,
+                Err(why) => {
+                    info!(%peer, room = %room_number, why, "A registrant's token refused");
+                    let reject = UserAgentServer::create_response(request, 403, why);
+                    handle.send_final(reject).await;
+                    return Ok(());
+                }
+            },
+            (Some(ticket), _) => ticket.registrant.clone(),
+            _ => None,
+        };
 
         // Snapshot config for use throughout this method (avoids holding lock across awaits)
         let conf = self.conference_config.read().clone();
@@ -7294,6 +7322,16 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             self.release_ports(port_pair, pending_video.as_ref().map(|v| v.port_pair));
             return Ok(());
         }
+        // An attendee of a webinar that requires registration who came by
+        // the guest PIN or `#` is let go: their way in is their own token.
+        if migrate.is_none() && listener && registrant.is_none() && meeting.registration {
+            info!(room = %room_number, participant = %participant_id, "The webinar requires registration: the caller is let go");
+            if let Err(e) = self.uac.bye(&dialog).await {
+                warn!(error = %e, "Failed to send BYE to an unregistered attendee");
+            }
+            self.release_ports(port_pair, pending_video.as_ref().map(|v| v.port_pair));
+            return Ok(());
+        }
         let lobby = migrate.is_none() && listener && self.lobby_holds(&key);
 
         // 15. Add participant to room (enforces capacity/locked/wait-for-moderator)
@@ -7832,6 +7870,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     qa_notices,
                     chat_notices,
                     hand: None,
+                    registrant: registrant.clone(),
                     bfcp: bfcp_assignment.clone(),
                     record: LegRecord::from_request(request, None),
                 },
@@ -8156,6 +8195,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 qa_notices,
                 chat_notices,
                 hand: None,
+                registrant: registrant.clone(),
                 bfcp: bfcp_assignment.clone(),
                 record: LegRecord::from_request(
                     request,

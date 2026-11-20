@@ -401,16 +401,24 @@ async fn seed_tenant_b(app: &App) -> Seeded {
         "/sites",
         make_in_b(app, "/api/v1/sites", json!({"name": "bravo-site"}), "id").await,
     );
-    ids.insert(
-        "/conferences/meetings",
-        make_in_b(
-            app,
-            "/api/v1/conferences/meetings",
-            json!({"room_number": "2800", "name": "Bravo room", "owner_id": user_id}),
-            "id",
-        )
-        .await,
-    );
+    // A webinar, so its registrations are routes to probe.
+    let meeting = make_in_b(
+        app,
+        "/api/v1/conferences/meetings",
+        json!({"room_number": "2800", "name": "Bravo room", "owner_id": user_id, "kind": "webinar"}),
+        "id",
+    )
+    .await;
+    {
+        use fcp_core::webinar::{Registrant, RegistrantStore};
+        let r = Registrant::new(app.tenant_b, meeting.clone(), "Bravo registrant", None);
+        fcp_storage_postgres::sittings::PostgresRegistrantStore::new(app.storage.pool().clone())
+            .put_registrant(&r)
+            .await
+            .unwrap();
+        ids.insert("/conferences/meetings/:id/registrants", r.id);
+    }
+    ids.insert("/conferences/meetings", meeting);
     ids.insert(
         "/compliance/holds",
         make_in_b(

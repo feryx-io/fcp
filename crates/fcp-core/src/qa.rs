@@ -196,6 +196,9 @@ pub struct Question {
     pub participant_id: String,
     /// `None` when asked anonymously or nameless.
     pub asker_name: Option<String>,
+    /// Where the asker called from (their From URI), for a subject request
+    /// or a legal hold to find them by; kept for an anonymous question too.
+    pub asker_address: Option<String>,
     pub text: String,
     pub status: QuestionStatus,
     pub published: bool,
@@ -216,6 +219,14 @@ pub trait QuestionStore: Send + Sync {
         &self,
         tenant: &crate::TenantId,
         room_number: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Question>>;
+    /// One sitting's questions in the tenant, oldest first, at most
+    /// `limit` (`docs/WEBINARS.md` §2.6: a webinar's attendance).
+    async fn questions_of_session(
+        &self,
+        tenant: &crate::TenantId,
+        session_id: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<Question>>;
 }

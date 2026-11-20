@@ -62,6 +62,10 @@ pub struct PolicyResponse {
     pub voicemail_retention_days: Option<u32>,
     /// Chat in rooms older than this is deleted.
     pub conference_chat_retention_days: Option<u32>,
+    /// Webinar questions older than this (by when asked) are deleted.
+    pub webinar_question_retention_days: Option<u32>,
+    /// Webinar registrations older than this (by when made) are deleted.
+    pub webinar_registrant_retention_days: Option<u32>,
     pub recording_consent: String,
     pub recording_consent_prompt_id: Option<String>,
     /// `record` or `skip`: whether a recording goes ahead when its
@@ -100,6 +104,8 @@ impl PolicyResponse {
             audit_retention_days: p.audit_retention_days,
             voicemail_retention_days: p.voicemail_retention_days,
             conference_chat_retention_days: p.conference_chat_retention_days,
+            webinar_question_retention_days: p.webinar_question_retention_days,
+            webinar_registrant_retention_days: p.webinar_registrant_retention_days,
             recording_consent: p.recording_consent.to_string(),
             recording_consent_prompt_id: p.recording_consent_prompt_id,
             recording_consent_on_failure: p.recording_consent_on_failure.as_str().to_string(),
@@ -131,6 +137,10 @@ pub struct UpdatePolicyRequest {
     pub voicemail_retention_days: Option<Option<u32>>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub conference_chat_retention_days: Option<Option<u32>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub webinar_question_retention_days: Option<Option<u32>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub webinar_registrant_retention_days: Option<Option<u32>>,
     pub recording_consent: Option<String>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub recording_consent_prompt_id: Option<Option<String>>,
@@ -258,6 +268,14 @@ pub async fn update_policy(
         check_days("conference_chat_retention_days", v)?;
         policy.conference_chat_retention_days = v;
     }
+    if let Some(v) = req.webinar_question_retention_days {
+        check_days("webinar_question_retention_days", v)?;
+        policy.webinar_question_retention_days = v;
+    }
+    if let Some(v) = req.webinar_registrant_retention_days {
+        check_days("webinar_registrant_retention_days", v)?;
+        policy.webinar_registrant_retention_days = v;
+    }
     if let Some(required) = req.cdr_archive_required {
         policy.cdr_archive_required = required;
     }
@@ -358,6 +376,10 @@ pub struct RetentionRunResponse {
     pub voicemail_messages_deleted: u64,
     /// Chat messages posted in rooms.
     pub conference_chat_deleted: u64,
+    /// Questions asked in webinars.
+    pub webinar_questions_deleted: u64,
+    /// Webinar registrations.
+    pub webinar_registrants_deleted: u64,
     pub audit_events_deleted: u64,
     pub total_deleted: u64,
     pub errors: Vec<String>,
@@ -376,6 +398,8 @@ impl From<RetentionReport> for RetentionRunResponse {
             conference_recordings_deleted: r.conference_recordings_deleted,
             voicemail_messages_deleted: r.voicemail_messages_deleted,
             conference_chat_deleted: r.conference_chat_deleted,
+            webinar_questions_deleted: r.webinar_questions_deleted,
+            webinar_registrants_deleted: r.webinar_registrants_deleted,
             audit_events_deleted: r.audit_events_deleted,
             errors: r.errors,
         }

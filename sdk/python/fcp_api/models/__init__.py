@@ -15,6 +15,11 @@ from .approve_response import ApproveResponse
 from .ask_question_request import AskQuestionRequest
 from .assign_flow_request import AssignFlowRequest
 from .assistant_view import AssistantView
+from .attendance_leg import AttendanceLeg
+from .attendance_message import AttendanceMessage
+from .attendance_question import AttendanceQuestion
+from .attendance_registrant import AttendanceRegistrant
+from .attendance_response import AttendanceResponse
 from .audit_entry_response import AuditEntryResponse
 from .audit_entry_response_new_value import AuditEntryResponseNewValue
 from .audit_entry_response_old_value_type_0 import AuditEntryResponseOldValueType0
@@ -353,6 +358,8 @@ from .page_recording_response import PageRecordingResponse
 from .page_recording_response_data_item import PageRecordingResponseDataItem
 from .page_redirection_account_response import PageRedirectionAccountResponse
 from .page_redirection_account_response_data_item import PageRedirectionAccountResponseDataItem
+from .page_registrant_response import PageRegistrantResponse
+from .page_registrant_response_data_item import PageRegistrantResponseDataItem
 from .page_registration_response import PageRegistrationResponse
 from .page_registration_response_data_item import PageRegistrationResponseDataItem
 from .page_retention_run_response import PageRetentionRunResponse
@@ -369,6 +376,8 @@ from .page_session_response_data_item import PageSessionResponseDataItem
 from .page_site_response import PageSiteResponse
 from .page_site_response_data_item import PageSiteResponseDataItem
 from .page_site_response_data_item_versions import PageSiteResponseDataItemVersions
+from .page_sitting_response import PageSittingResponse
+from .page_sitting_response_data_item import PageSittingResponseDataItem
 from .page_subject_request_response import PageSubjectRequestResponse
 from .page_subject_request_response_data_item import PageSubjectRequestResponseDataItem
 from .page_subscription_info import PageSubscriptionInfo
@@ -426,6 +435,7 @@ from .purge_response import PurgeResponse
 from .push_result_response import PushResultResponse
 from .push_test_response import PushTestResponse
 from .put_redirection_account_request import PutRedirectionAccountRequest
+from .question_status import QuestionStatus
 from .queue_config_response import QueueConfigResponse
 from .queue_response import QueueResponse
 from .queue_stats_response import QueueStatsResponse
@@ -444,6 +454,10 @@ from .redirection_service import RedirectionService
 from .redirection_state import RedirectionState
 from .redirection_sync_response import RedirectionSyncResponse
 from .reencrypt_report import ReencryptReport
+from .register_request import RegisterRequest
+from .registered_response import RegisteredResponse
+from .registrant_response import RegistrantResponse
+from .registrant_token_request import RegistrantTokenRequest
 from .registration_response import RegistrationResponse
 from .release_hold_request import ReleaseHoldRequest
 from .render_device_request import RenderDeviceRequest
@@ -486,6 +500,7 @@ from .site_response import SiteResponse
 from .site_response_versions import SiteResponseVersions
 from .site_status import SiteStatus
 from .site_with_token_response import SiteWithTokenResponse
+from .sitting_response import SittingResponse
 from .softphone_account import SoftphoneAccount
 from .softphone_capture import SoftphoneCapture
 from .softphone_config import SoftphoneConfig
@@ -614,6 +629,11 @@ __all__ = (
     "AskQuestionRequest",
     "AssignFlowRequest",
     "AssistantView",
+    "AttendanceLeg",
+    "AttendanceMessage",
+    "AttendanceQuestion",
+    "AttendanceRegistrant",
+    "AttendanceResponse",
     "AuditEntryResponse",
     "AuditEntryResponseNewValue",
     "AuditEntryResponseOldValueType0",
@@ -952,6 +972,8 @@ __all__ = (
     "PageRecordingResponseDataItem",
     "PageRedirectionAccountResponse",
     "PageRedirectionAccountResponseDataItem",
+    "PageRegistrantResponse",
+    "PageRegistrantResponseDataItem",
     "PageRegistrationResponse",
     "PageRegistrationResponseDataItem",
     "PageRetentionRunResponse",
@@ -968,6 +990,8 @@ __all__ = (
     "PageSiteResponse",
     "PageSiteResponseDataItem",
     "PageSiteResponseDataItemVersions",
+    "PageSittingResponse",
+    "PageSittingResponseDataItem",
     "PageSubjectRequestResponse",
     "PageSubjectRequestResponseDataItem",
     "PageSubscriptionInfo",
@@ -1025,6 +1049,7 @@ __all__ = (
     "PushResultResponse",
     "PushTestResponse",
     "PutRedirectionAccountRequest",
+    "QuestionStatus",
     "QueueConfigResponse",
     "QueueResponse",
     "QueueStatsResponse",
@@ -1043,6 +1068,10 @@ __all__ = (
     "RedirectionSyncResponse",
     "RedirectRequest",
     "ReencryptReport",
+    "RegisteredResponse",
+    "RegisterRequest",
+    "RegistrantResponse",
+    "RegistrantTokenRequest",
     "RegistrationResponse",
     "ReleaseHoldRequest",
     "RenderDeviceRequest",
@@ -1085,6 +1114,7 @@ __all__ = (
     "SiteResponseVersions",
     "SiteStatus",
     "SiteWithTokenResponse",
+    "SittingResponse",
     "SoftphoneAccount",
     "SoftphoneCapture",
     "SoftphoneConfig",

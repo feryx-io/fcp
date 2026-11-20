@@ -10,6 +10,8 @@ class DataClass(StrEnum):
     FLOW_TRACE = "flow_trace"
     SIP_TRACE = "sip_trace"
     VOICEMAIL = "voicemail"
+    WEBINAR_QUESTION = "webinar_question"
+    WEBINAR_REGISTRANT = "webinar_registrant"
 
     def __str__(self) -> str:
         return str(self.value)

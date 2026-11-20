@@ -86,6 +86,7 @@ impl ComplianceStore for PostgresComplianceStore {
             "SELECT cdr_retention_days, sip_trace_retention_days, flow_trace_retention_days,
                     recording_retention_days, audit_retention_days, voicemail_retention_days,
                     conference_chat_retention_days, cdr_archive_required,
+                    webinar_question_retention_days, webinar_registrant_retention_days,
                     recording_consent, recording_consent_prompt_id, updated_at,
                     recording_consent_on_failure, recording_notice_interval_secs,
                     subject_request_days, cdr_erasure
@@ -112,6 +113,8 @@ impl ComplianceStore for PostgresComplianceStore {
             audit_retention_days: days("audit_retention_days")?,
             voicemail_retention_days: days("voicemail_retention_days")?,
             conference_chat_retention_days: days("conference_chat_retention_days")?,
+            webinar_question_retention_days: days("webinar_question_retention_days")?,
+            webinar_registrant_retention_days: days("webinar_registrant_retention_days")?,
             cdr_archive_required: row.try_get("cdr_archive_required")?,
             recording_consent: if consent == "announce" {
                 RecordingConsentMode::Announce
@@ -143,8 +146,10 @@ impl ComplianceStore for PostgresComplianceStore {
                  recording_consent, recording_consent_prompt_id, updated_at, cdr_archive_required,
                  voicemail_retention_days, recording_consent_on_failure,
                  recording_notice_interval_secs, subject_request_days, cdr_erasure,
-                 conference_chat_retention_days)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                 conference_chat_retention_days, webinar_question_retention_days,
+                 webinar_registrant_retention_days)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                     $17, $18)
              ON CONFLICT (tenant_id) DO UPDATE SET
                 cdr_retention_days = EXCLUDED.cdr_retention_days,
                 sip_trace_retention_days = EXCLUDED.sip_trace_retention_days,
@@ -160,7 +165,9 @@ impl ComplianceStore for PostgresComplianceStore {
                 recording_notice_interval_secs = EXCLUDED.recording_notice_interval_secs,
                 subject_request_days = EXCLUDED.subject_request_days,
                 cdr_erasure = EXCLUDED.cdr_erasure,
-                conference_chat_retention_days = EXCLUDED.conference_chat_retention_days",
+                conference_chat_retention_days = EXCLUDED.conference_chat_retention_days,
+                webinar_question_retention_days = EXCLUDED.webinar_question_retention_days,
+                webinar_registrant_retention_days = EXCLUDED.webinar_registrant_retention_days",
         )
         .bind(policy.tenant_id.to_string())
         .bind(days(policy.cdr_retention_days))
@@ -178,6 +185,8 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(policy.subject_request_days as i32)
         .bind(policy.cdr_erasure.as_str())
         .bind(days(policy.conference_chat_retention_days))
+        .bind(days(policy.webinar_question_retention_days))
+        .bind(days(policy.webinar_registrant_retention_days))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -309,13 +318,51 @@ impl ComplianceStore for PostgresComplianceStore {
         .await?)
     }
 
+    async fn delete_webinar_questions_before(
+        &self,
+        tenant_id: &TenantId,
+        before: SystemTime,
+    ) -> anyhow::Result<u64> {
+        Ok(crate::deletion::execute(
+            &self.pool,
+            sqlx::query(
+                "DELETE FROM webinar_questions
+                 WHERE tenant_id = $1 AND asked_at < $2
+                   AND fcp_webinar_question_hold(tenant_id, asked_at, asker_address, asker_name)
+                       IS NULL",
+            )
+            .bind(tenant_id.to_string())
+            .bind(to_datetime(before)),
+        )
+        .await?)
+    }
+
+    async fn delete_webinar_registrants_before(
+        &self,
+        tenant_id: &TenantId,
+        before: SystemTime,
+    ) -> anyhow::Result<u64> {
+        Ok(crate::deletion::execute(
+            &self.pool,
+            sqlx::query(
+                "DELETE FROM webinar_registrants
+                 WHERE tenant_id = $1 AND created_at < $2
+                   AND fcp_webinar_registrant_hold(tenant_id, created_at, email, name) IS NULL",
+            )
+            .bind(tenant_id.to_string())
+            .bind(to_datetime(before)),
+        )
+        .await?)
+    }
+
     async fn record_retention_run(&self, report: &RetentionReport) -> anyhow::Result<()> {
         sqlx::query(
             "INSERT INTO retention_runs
                 (tenant_id, ran_at, cdrs_deleted, sip_traces_deleted, flow_traces_deleted,
                  recordings_deleted, conference_recordings_deleted, audit_events_deleted,
-                 errors, voicemail_messages_deleted, held, conference_chat_deleted)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                 errors, voicemail_messages_deleted, held, conference_chat_deleted,
+                 webinar_questions_deleted, webinar_registrants_deleted)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(report.tenant_id.to_string())
         .bind(to_datetime(report.ran_at))
@@ -329,6 +376,8 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(report.voicemail_messages_deleted as i64)
         .bind(serde_json::to_value(&report.held)?)
         .bind(report.conference_chat_deleted as i64)
+        .bind(report.webinar_questions_deleted as i64)
+        .bind(report.webinar_registrants_deleted as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -664,7 +713,8 @@ impl ComplianceStore for PostgresComplianceStore {
         let rows = sqlx::query(
             "SELECT ran_at, cdrs_deleted, sip_traces_deleted, flow_traces_deleted,
                     recordings_deleted, conference_recordings_deleted, audit_events_deleted,
-                    errors, voicemail_messages_deleted, held, conference_chat_deleted
+                    errors, voicemail_messages_deleted, held, conference_chat_deleted,
+                    webinar_questions_deleted, webinar_registrants_deleted
              FROM retention_runs WHERE tenant_id = $1
              ORDER BY ran_at DESC, id DESC LIMIT $2",
         )
@@ -689,6 +739,8 @@ impl ComplianceStore for PostgresComplianceStore {
                     conference_recordings_deleted: n("conference_recordings_deleted")?,
                     voicemail_messages_deleted: n("voicemail_messages_deleted")?,
                     conference_chat_deleted: n("conference_chat_deleted")?,
+                    webinar_questions_deleted: n("webinar_questions_deleted")?,
+                    webinar_registrants_deleted: n("webinar_registrants_deleted")?,
                     held: serde_json::from_value(row.try_get("held")?).unwrap_or_default(),
                     audit_events_deleted: n("audit_events_deleted")?,
                     errors: row.try_get("errors")?,

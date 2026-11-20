@@ -66,6 +66,7 @@ class UpdateMeetingRequest:
             qa_anonymous (bool | None | Unset):
             chat (None | str | Unset): `everyone`, `hosts` or `off`; `null` goes back to the kind's
                 default.
+            registration (bool | None | Unset):
      """
 
     name: None | str | Unset = UNSET
@@ -106,6 +107,7 @@ class UpdateMeetingRequest:
     qa: None | str | Unset = UNSET
     qa_anonymous: bool | None | Unset = UNSET
     chat: None | str | Unset = UNSET
+    registration: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -352,6 +354,12 @@ class UpdateMeetingRequest:
         else:
             chat = self.chat
 
+        registration: bool | None | Unset
+        if isinstance(self.registration, Unset):
+            registration = UNSET
+        else:
+            registration = self.registration
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -433,6 +441,8 @@ class UpdateMeetingRequest:
             field_dict["qa_anonymous"] = qa_anonymous
         if chat is not UNSET:
             field_dict["chat"] = chat
+        if registration is not UNSET:
+            field_dict["registration"] = registration
 
         return field_dict
 
@@ -844,6 +854,16 @@ class UpdateMeetingRequest:
         chat = _parse_chat(d.pop("chat", UNSET))
 
 
+        def _parse_registration(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        registration = _parse_registration(d.pop("registration", UNSET))
+
+
         update_meeting_request = cls(
             name=name,
             guest_pin=guest_pin,
@@ -883,6 +903,7 @@ class UpdateMeetingRequest:
             qa=qa,
             qa_anonymous=qa_anonymous,
             chat=chat,
+            registration=registration,
         )
 
 

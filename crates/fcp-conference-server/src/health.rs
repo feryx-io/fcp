@@ -201,6 +201,7 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/conferences/:room_number/webinar/end",
             post(webinar_end_handler),
         )
+        .route("/conferences/:room_number/audience", get(audience_handler))
         // Questions (`docs/WEBINARS.md` §2.5, W3.2): asked and upvoted by
         // a participant's call, moderated by a host through the API.
         .route(
@@ -951,6 +952,7 @@ async fn create_meeting_handler(
         qa: None,
         chat: None,
         qa_anonymous: false,
+        registration: false,
         created_at: now,
         updated_at: now,
     };
@@ -1813,6 +1815,39 @@ async fn webinar_end_handler(
             )
         }
         Err(e) => webinar_refusal(e),
+    }
+}
+
+/// `?limit=&cursor=` of the audience.
+#[derive(Debug, Deserialize)]
+struct AudienceQuery {
+    limit: Option<usize>,
+    cursor: Option<String>,
+}
+
+/// `GET /conferences/:room/audience` — a page of the room's attendees, by
+/// participant id: in the room, on the stage, or in the lobby.
+async fn audience_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Query(q): Query<AudienceQuery>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let key = match room_key(&state, &headers, &room_number).await {
+        Ok(key) => key,
+        Err(err) => return err,
+    };
+    let limit = q.limit.unwrap_or(100).clamp(1, 1000);
+    match state.conference_handler.audience_page(
+        &key,
+        q.cursor.as_deref().filter(|c| !c.is_empty()),
+        limit,
+    ) {
+        Some((data, next_cursor, total)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "data": data, "next_cursor": next_cursor, "total": total })),
+        ),
+        None => webinar_refusal(crate::conference_handler::WebinarError::NotFound),
     }
 }
 

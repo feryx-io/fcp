@@ -68,6 +68,7 @@ class CreateMeetingRequest:
             qa_anonymous (bool | Unset): Whether a question may be asked without the asker's name.
             chat (None | str | Unset): Chat in the room: `everyone`, `hosts` or `off`; unset is
                 `everyone` in a meeting and `hosts` in a webinar.
+            registration (bool | Unset): Whether a webinar's attendees must register.
      """
 
     room_number: str
@@ -109,6 +110,7 @@ class CreateMeetingRequest:
     qa: None | str | Unset = UNSET
     qa_anonymous: bool | Unset = UNSET
     chat: None | str | Unset = UNSET
+    registration: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -261,6 +263,8 @@ class CreateMeetingRequest:
         else:
             chat = self.chat
 
+        registration = self.registration
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -342,6 +346,8 @@ class CreateMeetingRequest:
             field_dict["qa_anonymous"] = qa_anonymous
         if chat is not UNSET:
             field_dict["chat"] = chat
+        if registration is not UNSET:
+            field_dict["registration"] = registration
 
         return field_dict
 
@@ -551,6 +557,8 @@ class CreateMeetingRequest:
         chat = _parse_chat(d.pop("chat", UNSET))
 
 
+        registration = d.pop("registration", UNSET)
+
         create_meeting_request = cls(
             room_number=room_number,
             name=name,
@@ -591,6 +599,7 @@ class CreateMeetingRequest:
             qa=qa,
             qa_anonymous=qa_anonymous,
             chat=chat,
+            registration=registration,
         )
 
 

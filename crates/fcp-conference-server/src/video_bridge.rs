@@ -1774,6 +1774,7 @@ mod tests {
             qa: None,
             chat: None,
             qa_anonymous: false,
+            registration: false,
             created_at: now,
             updated_at: now,
         }

@@ -406,6 +406,28 @@ impl Seed {
         }
     }
 
+    /// Register `name` for the webinar in room `room` (`docs/WEBINARS.md`
+    /// §2.6), revoked at once when `revoked`: the registration's id, for a
+    /// join token to name.
+    pub async fn registrant(&self, room: &str, name: &str, revoked: bool) -> String {
+        use fcp_core::webinar::{Registrant, RegistrantStore};
+        let meeting = self
+            .storage
+            .get_meeting_by_room_number(&self.tenant_id, room)
+            .await
+            .expect("read the meeting")
+            .expect("a meeting in the room");
+        let mut r = Registrant::new(self.tenant_id, meeting.id.to_string(), name, None);
+        if revoked {
+            r.revoked_at = Some(SystemTime::now());
+        }
+        fcp_storage_postgres::sittings::PostgresRegistrantStore::new(self.storage.pool().clone())
+            .put_registrant(&r)
+            .await
+            .expect("seed a registrant");
+        r.id
+    }
+
     /// Run one SQL statement against the test database, for a scenario
     /// that has to break something on purpose (the CDR pipeline's outage
     /// test takes the table away and gives it back).

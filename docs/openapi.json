@@ -19770,6 +19770,376 @@
         }
       }
     },
+    "/api/v1/conferences/meetings/{id}/registrants": {
+      "get": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "GET /conferences/meetings/:id/registrants — a webinar's registrations,\noldest first.",
+        "operationId": "registrants",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_RegistrantResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "POST /conferences/meetings/:id/registrants — register a person for a\nwebinar: their registration and attendee token.",
+        "operationId": "register",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisteredResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conferences/meetings/{id}/registrants/{rid}": {
+      "get": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "GET /conferences/meetings/:id/registrants/:rid — one registration.",
+        "operationId": "registrant",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrantResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "DELETE /conferences/meetings/:id/registrants/:rid — revoke a\nregistration: its token is refused from now on. Someone already in\nthe room stays until a host removes them.",
+        "operationId": "revoke_registrant",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrantResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conferences/meetings/{id}/registrants/{rid}/token": {
+      "post": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "POST /conferences/meetings/:id/registrants/:rid/token — mint a\nregistrant's attendee token again (the old one keeps working until it\nexpires or the registration is revoked).",
+        "operationId": "registrant_token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegistrantTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Minted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinTokenResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conferences/meetings/{id}/sittings": {
+      "get": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "GET /conferences/meetings/:id/sittings — each run of the meeting's\nroom, newest first.",
+        "operationId": "sittings",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SittingResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conferences/meetings/{id}/attendance": {
+      "get": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "GET /conferences/meetings/:id/attendance — who registered for and came\nto one sitting of the meeting's room, with its questions and chat.",
+        "operationId": "attendance",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sitting",
+            "in": "query",
+            "description": "The sitting; the newest when absent.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttendanceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/conferences/live/{room}/video": {
       "get": {
         "tags": [
@@ -20214,6 +20584,62 @@
             "name": "room",
             "in": "path",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conferences/live/{room}/audience": {
+      "get": {
+        "tags": [
+          "conferences_live"
+        ],
+        "summary": "GET /conferences/live/:room/audience — a page of a webinar's attendees,\nby participant id: in the room, on the stage, or in the lobby\n(`docs/WEBINARS.md` §2.6).",
+        "operationId": "conferences_live_audience",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -21149,6 +21575,62 @@
             "name": "room",
             "in": "path",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conference server's answer, passed through",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/live/{room}/audience": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/conferences/live/:room/audience — a page of a webinar's\nattendees, for a host who wants to find someone.",
+        "operationId": "self_service_my_live_conference_audience",
+        "parameters": [
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -22512,6 +22994,260 @@
           },
           "opted_in": {
             "type": "boolean"
+          }
+        }
+      },
+      "AttendanceLeg": {
+        "type": "object",
+        "description": "One leg of a sitting, from its record.",
+        "required": [
+          "from",
+          "joined_at",
+          "duration_secs",
+          "lobby",
+          "questions",
+          "messages"
+        ],
+        "properties": {
+          "participant_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from": {
+            "type": "string",
+            "description": "Where they called from."
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`host`, `panelist`, `attendee` or `guest`."
+          },
+          "registrant": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The registration they came by."
+          },
+          "joined_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "left_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "duration_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "lobby": {
+            "type": "boolean",
+            "description": "They left from the lobby, never let in."
+          },
+          "questions": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Questions they asked, and chat messages they posted, in the sitting.",
+            "minimum": 0
+          },
+          "messages": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "AttendanceMessage": {
+        "type": "object",
+        "description": "A chat message of the sitting, as kept.",
+        "required": [
+          "id",
+          "participant_id",
+          "audience",
+          "text",
+          "sent_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "participant_id": {
+            "type": "string"
+          },
+          "sender": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "audience": {
+            "$ref": "#/components/schemas/ChatAudience",
+            "description": "`room` or `hosts`."
+          },
+          "text": {
+            "type": "string"
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deleted_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "AttendanceQuestion": {
+        "type": "object",
+        "description": "A question of the sitting, as kept.",
+        "required": [
+          "id",
+          "participant_id",
+          "text",
+          "status",
+          "published",
+          "upvotes",
+          "answered_live",
+          "asked_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "participant_id": {
+            "type": "string"
+          },
+          "asker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/QuestionStatus"
+          },
+          "published": {
+            "type": "boolean"
+          },
+          "upvotes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "answer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "answered_live": {
+            "type": "boolean"
+          },
+          "asked_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AttendanceRegistrant": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RegistrantResponse"
+          },
+          {
+            "type": "object",
+            "required": [
+              "attended",
+              "attended_secs"
+            ],
+            "properties": {
+              "attended": {
+                "type": "boolean"
+              },
+              "attended_secs": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Their time in the room across legs (the lobby aside).",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "A registration and whether they came."
+      },
+      "AttendanceResponse": {
+        "type": "object",
+        "description": "Who came to one sitting.",
+        "required": [
+          "sitting",
+          "attendees",
+          "peak",
+          "legs",
+          "registrants",
+          "questions",
+          "messages"
+        ],
+        "properties": {
+          "sitting": {
+            "$ref": "#/components/schemas/SittingResponse"
+          },
+          "attendees": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct people in the room (by registration, else by where they\ncalled from), the lobby aside.",
+            "minimum": 0
+          },
+          "peak": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The most legs in the room at once.",
+            "minimum": 0
+          },
+          "legs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttendanceLeg"
+            }
+          },
+          "registrants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttendanceRegistrant"
+            },
+            "description": "A webinar's registrations, each with whether they came; empty for a\nmeeting."
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttendanceQuestion"
+            }
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttendanceMessage"
+            }
           }
         }
       },
@@ -25920,6 +26656,10 @@
               "null"
             ],
             "description": "Chat in the room: `everyone`, `hosts` or `off`; unset is\n`everyone` in a meeting and `hosts` in a webinar."
+          },
+          "registration": {
+            "type": "boolean",
+            "description": "Whether a webinar's attendees must register."
           }
         }
       },
@@ -27078,7 +27818,9 @@
           "flow_trace",
           "audit_event",
           "device_capture",
-          "conference_chat"
+          "conference_chat",
+          "webinar_question",
+          "webinar_registrant"
         ]
       },
       "DeadLetterReport": {
@@ -30462,6 +31204,7 @@
           "kind",
           "panelists",
           "qa_anonymous",
+          "registration",
           "created_at",
           "updated_at"
         ],
@@ -30651,6 +31394,10 @@
               "null"
             ],
             "description": "Chat in the room: `everyone`, `hosts` (an attendee posts to the\nhosts only) or `off`; unset is `everyone` in a meeting and `hosts`\nin a webinar."
+          },
+          "registration": {
+            "type": "boolean",
+            "description": "Whether a webinar's attendees must register: one is admitted only\nby the token minted for their registration."
           },
           "created_at": {
             "type": "string",
@@ -34990,6 +35737,7 @@
                 "kind",
                 "panelists",
                 "qa_anonymous",
+                "registration",
                 "created_at",
                 "updated_at"
               ],
@@ -35179,6 +35927,10 @@
                     "null"
                   ],
                   "description": "Chat in the room: `everyone`, `hosts` (an attendee posts to the\nhosts only) or `off`; unset is `everyone` in a meeting and `hosts`\nin a webinar."
+                },
+                "registration": {
+                  "type": "boolean",
+                  "description": "Whether a webinar's attendees must register: one is admitted only\nby the token minted for their registration."
                 },
                 "created_at": {
                   "type": "string",
@@ -37240,6 +37992,73 @@
           }
         }
       },
+      "Page_RegistrantResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A registration as the API shows it.",
+              "required": [
+                "id",
+                "meeting_id",
+                "name",
+                "created_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "meeting_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "revoked_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "When it was revoked: its token is refused."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_RegistrationResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -37344,6 +38163,8 @@
                 "conference_recordings_deleted",
                 "voicemail_messages_deleted",
                 "conference_chat_deleted",
+                "webinar_questions_deleted",
+                "webinar_registrants_deleted",
                 "audit_events_deleted",
                 "total_deleted",
                 "errors"
@@ -37391,6 +38212,18 @@
                   "type": "integer",
                   "format": "int64",
                   "description": "Chat messages posted in rooms.",
+                  "minimum": 0
+                },
+                "webinar_questions_deleted": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Questions asked in webinars.",
+                  "minimum": 0
+                },
+                "webinar_registrants_deleted": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Webinar registrations.",
                   "minimum": 0
                 },
                 "audit_events_deleted": {
@@ -38021,6 +38854,83 @@
                       "type": "null"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_SittingResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One sitting of a meeting's room as the API shows it.",
+              "required": [
+                "id",
+                "room_number",
+                "kind",
+                "started_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "room_number": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "The meeting's kind when it began."
+                },
+                "started_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "live_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "When it went live; a meeting's is its start, a webinar that never\nwent live has none."
+                },
+                "ended_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "When it ended; none while it runs (or when its node stopped\nbefore it could say)."
+                },
+                "ended_by": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Who ended a webinar: a host's participant id, `host`, `api` or\n`stage_left`; none when its last caller left."
                 }
               }
             }
@@ -40289,6 +41199,24 @@
             "description": "Chat in rooms older than this is deleted.",
             "minimum": 0
           },
+          "webinar_question_retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Webinar questions older than this (by when asked) are deleted.",
+            "minimum": 0
+          },
+          "webinar_registrant_retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Webinar registrations older than this (by when made) are deleted.",
+            "minimum": 0
+          },
           "recording_consent": {
             "type": "string"
           },
@@ -41175,6 +42103,15 @@
           }
         }
       },
+      "QuestionStatus": {
+        "type": "string",
+        "description": "Where a question is.",
+        "enum": [
+          "pending",
+          "answered",
+          "dismissed"
+        ]
+      },
       "QueueConfigResponse": {
         "type": "object",
         "description": "Queue config response.",
@@ -41859,6 +42796,106 @@
           }
         }
       },
+      "RegisterRequest": {
+        "type": "object",
+        "description": "`POST …/registrants` body.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name the room shows them by (at most 64 characters)."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ttl_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The token's lifetime in seconds: thirty days by default, ninety at\nmost.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "RegisteredResponse": {
+        "type": "object",
+        "description": "A registration and the token minted for it.",
+        "required": [
+          "registrant",
+          "token"
+        ],
+        "properties": {
+          "registrant": {
+            "$ref": "#/components/schemas/RegistrantResponse"
+          },
+          "token": {
+            "$ref": "#/components/schemas/JoinTokenResponse",
+            "description": "The attendee token naming the registration."
+          }
+        }
+      },
+      "RegistrantResponse": {
+        "type": "object",
+        "description": "A registration as the API shows it.",
+        "required": [
+          "id",
+          "meeting_id",
+          "name",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "meeting_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was revoked: its token is refused."
+          }
+        }
+      },
+      "RegistrantTokenRequest": {
+        "type": "object",
+        "description": "`POST …/registrants/:rid/token` body.",
+        "properties": {
+          "ttl_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "RegistrationResponse": {
         "type": "object",
         "description": "Registration response.",
@@ -42060,6 +43097,8 @@
           "conference_recordings_deleted",
           "voicemail_messages_deleted",
           "conference_chat_deleted",
+          "webinar_questions_deleted",
+          "webinar_registrants_deleted",
           "audit_events_deleted",
           "total_deleted",
           "errors"
@@ -42107,6 +43146,18 @@
             "type": "integer",
             "format": "int64",
             "description": "Chat messages posted in rooms.",
+            "minimum": 0
+          },
+          "webinar_questions_deleted": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Questions asked in webinars.",
+            "minimum": 0
+          },
+          "webinar_registrants_deleted": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Webinar registrations.",
             "minimum": 0
           },
           "audit_events_deleted": {
@@ -43205,6 +44256,55 @@
           }
         ],
         "description": "A site just made, or a new token for one: the token, shown this once."
+      },
+      "SittingResponse": {
+        "type": "object",
+        "description": "One sitting of a meeting's room as the API shows it.",
+        "required": [
+          "id",
+          "room_number",
+          "kind",
+          "started_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "room_number": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "The meeting's kind when it began."
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "live_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it went live; a meeting's is its start, a webinar that never\nwent live has none."
+          },
+          "ended_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it ended; none while it runs (or when its node stopped\nbefore it could say)."
+          },
+          "ended_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who ended a webinar: a host's participant id, `host`, `api` or\n`stage_left`; none when its last caller left."
+          }
+        }
       },
       "SoftphoneAccount": {
         "type": "object",
@@ -46015,6 +47115,12 @@
               "null"
             ],
             "description": "`everyone`, `hosts` or `off`; `null` goes back to the kind's\ndefault."
+          },
+          "registration": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         }
       },
@@ -46368,6 +47474,22 @@
             "minimum": 0
           },
           "conference_chat_retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "webinar_question_retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "webinar_registrant_retention_days": {
             "type": [
               "integer",
               "null"

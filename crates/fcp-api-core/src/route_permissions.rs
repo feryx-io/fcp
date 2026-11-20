@@ -146,6 +146,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/me/conferences/live/:room/webinar", Open),
     (POST, "/me/conferences/live/:room/webinar/live", Open),
     (POST, "/me/conferences/live/:room/webinar/end", Open),
+    (GET, "/me/conferences/live/:room/audience", Open),
     (
         DELETE,
         "/me/conferences/live/:room/participants/:pid/hand",
@@ -740,6 +741,41 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
         "/conferences/meetings/:id/join-tokens",
         Needs(ConferenceManage),
     ),
+    (
+        GET,
+        "/conferences/meetings/:id/registrants",
+        Needs(ConferenceRead),
+    ),
+    (
+        POST,
+        "/conferences/meetings/:id/registrants",
+        Needs(ConferenceManage),
+    ),
+    (
+        GET,
+        "/conferences/meetings/:id/registrants/:rid",
+        Needs(ConferenceRead),
+    ),
+    (
+        DELETE,
+        "/conferences/meetings/:id/registrants/:rid",
+        Needs(ConferenceManage),
+    ),
+    (
+        POST,
+        "/conferences/meetings/:id/registrants/:rid/token",
+        Needs(ConferenceManage),
+    ),
+    (
+        GET,
+        "/conferences/meetings/:id/sittings",
+        Needs(ConferenceRead),
+    ),
+    (
+        GET,
+        "/conferences/meetings/:id/attendance",
+        Needs(ConferenceRead),
+    ),
     (GET, "/conferences/live/:room/video", Needs(ConferenceRead)),
     (
         PUT,
@@ -795,6 +831,11 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
         POST,
         "/conferences/live/:room/webinar/end",
         Needs(ConferenceManage),
+    ),
+    (
+        GET,
+        "/conferences/live/:room/audience",
+        Needs(ConferenceRead),
     ),
     (
         POST,

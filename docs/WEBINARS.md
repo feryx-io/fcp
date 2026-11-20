@@ -7,7 +7,8 @@ audience mix, measured at 1,000 and 2,000 attendees on one node (§5). W2 is don
 at 1,000 and 2,000 watching (§5). W3 is done: W3.1, hands and the stage (v0.25.586–587,
 forge-media v2026.11.17.2), and W3.2, Q&A (v0.25.588). W3b, chat in every room, is
 done (v0.25.591). W4.1, the webinar's life (practice, live, ended, and the lobby), is
-done (v0.25.593–594, forge-media v2026.11.19).
+done (v0.25.593–594, forge-media v2026.11.19), and W4.2, registration, attendance
+and the audience by page (v0.25.595).
 
 A webinar is a meeting with a stage and an audience:
 - a few people speak and are seen;
@@ -556,7 +557,7 @@ For an audience that is not on FCP at all.
       - questions on a room's other nodes: a cascaded room's questions are
         each node's own until W5;
       - questions under retention, holds and subject requests, and in the
-        attendance report (W4);
+        attendance report (W4, done in W4.2);
       - questions surviving a migration off a draining node.
 - **W3b: chat** (FCP), for every room.
   - `conference_chat` (migration) under retention, holds and subject requests.
@@ -619,7 +620,7 @@ For an audience that is not on FCP at all.
       - chat on a room's other nodes: a cascaded room's chat is each node's
         own until W5;
       - a mute that follows a person who leaves and joins again;
-      - chat in the attendance export (W4);
+      - chat in the attendance export (W4, done in W4.2);
       - the meeting's `chat` in the admin UI's meeting form (W4's webinar
         pages).
 - **W4: the webinar's life** (FCP), in three parts.
@@ -685,6 +686,61 @@ For an audience that is not on FCP at all.
       page (W4.2); the admin UI's webinar pages, with the meeting's `chat`
       in its form (W4.3); a lobby across a migration (a migrant is admitted
       as it was).
+  - **W4.2: registration, attendance and the audience by page.** **Done**
+    (v0.25.595). As built:
+    - **Registration.** A webinar's `registration` (migration 146) says an
+      attendee is admitted only by a registrant's token. An administrator
+      registers a person, `POST
+      /api/v1/conferences/meetings/{id}/registrants` (`name`, `email`,
+      `ttl_secs`), and is handed the registration and an attendee token
+      naming it (`JoinToken::registrant`), with the join link when the
+      gateway's URL is known. A registrant's token lives 30 days by
+      default, 90 at most (`MAX_REGISTRANT_TOKEN_TTL`). Registrations are
+      `webinar_registrants` rows (`fcp_core::webinar::RegistrantStore`), at
+      most 10,000 a webinar, gone with the meeting. `GET …/registrants`
+      pages them oldest first, `GET …/registrants/{rid}` reads one, `POST
+      …/registrants/{rid}/token` mints another token and `DELETE
+      …/registrants/{rid}` revokes it.
+    - **At the room.** A token naming a registration is admitted while the
+      registration stands and is the meeting's; otherwise 403 (`Registration
+      Revoked`, `No Such Registration`). In a webinar that requires
+      registration an attendee's token naming none is refused (403
+      `Registration Required`) and an attendee by the guest PIN or `#` is
+      let go after it. Hosts and panelists come in as before. Revoking
+      stops the next join; someone already in stays until a host removes
+      them. The registration moves with a migrated leg.
+    - **The record.** Each conference leg's CDR now names its `sitting_id`,
+      its `registrant`, and whether it left from the `lobby`, beside the
+      `role` it had.
+    - **Attendance.** `GET /api/v1/conferences/meetings/{id}/sittings`
+      pages a meeting's sittings, newest first. `GET …/attendance?sitting=`
+      (the newest by default) reads one back: each leg from its record
+      (who, from where, role, registration, joined, left, how long, lobby,
+      questions asked and messages posted), the distinct attendees, the
+      peak in the room at once, each registration with whether they came
+      and for how long, and the sitting's questions and chat.
+      `CdrQuery::custom_data` finds the legs (`custom_data @>`, the GIN
+      index); `QuestionStore::questions_of_session` and
+      `ChatStore::chat_of_session` the rest.
+    - **The audience by page.** `GET /conferences/{room}/audience` on the
+      node, the admin's `GET /api/v1/conferences/live/{room}/audience`
+      (`conference_read`) and a host's `GET
+      /api/v1/me/conferences/live/{room}/audience`: the room's attendees by
+      participant id (`limit`, `cursor`), each with their name, caller,
+      registration, when they joined, their hand, and whether they are in
+      the lobby or on the stage.
+    - **Compliance** (migration 147, `docs/COMPLIANCE.md`). Questions and
+      registrations are kept under the tenant's retention policy
+      (`webinar_question_retention_days` by `asked_at`,
+      `webinar_registrant_retention_days` by `created_at`), held by the
+      `webinar_question` hold class (the asker's address and name: a
+      question now keeps `asker_address`, so an anonymous one is found too)
+      and `webinar_registrant` (their email and name), found by a subject
+      export and deleted by a subject erasure, every deletion logged. A
+      meeting whose registration is held cannot be deleted until the hold
+      is released (registrations go with their meeting).
+    - **Not yet:** a registrant registering themselves (a public form);
+      hands in the attendance report (a hand is not kept).
 - **W5: a stage and its edges** (FCP).
   - Edge nodes on one-way trunks from the stage, placement for attendees, and
     promotion across a trunk.

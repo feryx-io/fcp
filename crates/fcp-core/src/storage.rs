@@ -1569,6 +1569,9 @@ pub struct CdrQuery {
     /// (`crate::subject::keys`): a person's calls. The keys lean towards
     /// matching; narrow with a `SubjectMatcher`.
     pub subject_keys: Option<Vec<String>>,
+    /// Records whose `custom_data` contains this JSON object (Postgres's
+    /// `@>`): a conference sitting's legs by `{"sitting_id": …}`.
+    pub custom_data: Option<serde_json::Value>,
 }
 
 /// A position in a record listing, newest first: the last record of a page
@@ -3735,6 +3738,7 @@ pub struct DynStorage {
     question_store: Option<Arc<dyn crate::qa::QuestionStore>>,
     chat_store: Option<Arc<dyn crate::chat::ChatStore>>,
     sitting_store: Option<Arc<dyn crate::webinar::SittingStore>>,
+    registrant_store: Option<Arc<dyn crate::webinar::RegistrantStore>>,
     call_recording_store: Option<Arc<dyn crate::recording::CallRecordingStore>>,
     subject_data_store: Option<Arc<dyn crate::subject_request::SubjectDataStore>>,
     subject_erase_store: Option<Arc<dyn crate::subject_erasure::SubjectEraseStore>>,
@@ -3841,6 +3845,7 @@ impl DynStorage {
             question_store: None,
             chat_store: None,
             sitting_store: None,
+            registrant_store: None,
             call_recording_store: None,
         }
     }
@@ -3937,6 +3942,7 @@ impl DynStorage {
             question_store: None,
             chat_store: None,
             sitting_store: None,
+            registrant_store: None,
             call_recording_store: None,
         }
     }
@@ -4173,6 +4179,21 @@ impl DynStorage {
     /// Where sittings are kept, when a store is attached.
     pub fn sitting_store(&self) -> Option<&Arc<dyn crate::webinar::SittingStore>> {
         self.sitting_store.as_ref()
+    }
+
+    /// Attach where webinar registrations are kept (`docs/WEBINARS.md`
+    /// §2.6).
+    pub fn with_registrant_store(
+        mut self,
+        store: Arc<dyn crate::webinar::RegistrantStore>,
+    ) -> Self {
+        self.registrant_store = Some(store);
+        self
+    }
+
+    /// Where registrations are kept, when a store is attached.
+    pub fn registrant_store(&self) -> Option<&Arc<dyn crate::webinar::RegistrantStore>> {
+        self.registrant_store.as_ref()
     }
 
     /// Attach the call recording registry (`docs/COMPLIANCE_FOLLOWUPS.md`

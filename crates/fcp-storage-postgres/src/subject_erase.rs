@@ -82,6 +82,8 @@ fn target(class: ExportClass) -> Option<Target> {
         DeclaredLocations => t("declared_locations", "tenant_id = $1", "user_id", false),
         PersonalContacts => t("personal_contacts", "tenant_id = $1", "id", false),
         ConferenceChat => t("conference_chat", "tenant_id = $1", "id", true),
+        WebinarQuestions => t("webinar_questions", "tenant_id = $1", "id", true),
+        WebinarRegistrants => t("webinar_registrants", "tenant_id = $1", "id", true),
         AuditEvents => t("admin_audit_log", "tenant_id = $1", "id::text", true),
         ConfigChanges => t("config_audit_log", "tenant_id = $1", "id::text", false),
         WebhookDeliveries => t(

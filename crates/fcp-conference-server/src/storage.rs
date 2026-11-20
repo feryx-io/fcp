@@ -75,7 +75,12 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
                 .with_compliance_store(compliance_store)
                 .with_question_store(question_store)
                 .with_chat_store(chat_store)
-                .with_sitting_store(sitting_store),
+                .with_sitting_store(sitting_store)
+                .with_registrant_store(Arc::new(
+                    fcp_storage_postgres::sittings::PostgresRegistrantStore::new(
+                        storage.pool().clone(),
+                    ),
+                )),
         ),
         config_store: storage,
     })

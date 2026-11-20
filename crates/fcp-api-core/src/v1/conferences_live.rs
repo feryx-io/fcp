@@ -568,3 +568,49 @@ pub async fn end_webinar(
     }
     Ok(out)
 }
+
+/// The node's audience path for `room` with `?limit=&cursor=`.
+pub(crate) fn audience_path(room: &str, page: &crate::page::PageQuery) -> String {
+    let mut path = format!("/conferences/{room}/audience");
+    let mut sep = '?';
+    if let Some(limit) = page.limit {
+        path.push_str(&format!("{sep}limit={limit}"));
+        sep = '&';
+    }
+    if let Some(cursor) = page.cursor.as_deref().filter(|c| !c.is_empty()) {
+        path.push_str(&format!("{sep}cursor={}", urlencoding::encode(cursor)));
+    }
+    path
+}
+
+/// GET /conferences/live/:room/audience — a page of a webinar's attendees,
+/// by participant id: in the room, on the stage, or in the lobby
+/// (`docs/WEBINARS.md` §2.6).
+#[utoipa::path(
+    get,
+    path = "/api/v1/conferences/live/{room}/audience",
+    tag = "conferences_live",
+    operation_id = "conferences_live_audience",
+    params(("room" = String, Path), crate::page::PageQuery),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn audience(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    Path(room): Path<String>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Proxied, ApiError> {
+    let meeting = scoped_meeting(&state, &tenant.0, &room).await?;
+    page.limit()?;
+    forward(
+        &state,
+        &meeting,
+        reqwest::Method::GET,
+        &audience_path(&room, &page),
+        None,
+    )
+    .await
+}
