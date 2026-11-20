@@ -157,6 +157,16 @@ pub fn plan_trunks(
     plan
 }
 
+/// The peers a node trunks with: every one in a mesh; in a webinar's tree
+/// (a `stage` that is not this node), the stage alone. The stage trunks
+/// with every edge.
+pub fn tree_peers(my_node: &str, stage: Option<&str>, peers: Vec<String>) -> Vec<String> {
+    match stage {
+        Some(stage) if stage != my_node => peers.into_iter().filter(|p| p == stage).collect(),
+        _ => peers,
+    }
+}
+
 type TrunkKey = (String, String, String);
 
 /// Keeps this node's trunks in step with the conference registry.
@@ -225,25 +235,38 @@ impl TrunkManager {
         let hosting: Vec<String> = if local == 0 {
             Vec::new()
         } else {
-            match self.registry.peers(tenant_id, room_number).await {
-                Ok(peers) => peers
-                    .into_iter()
-                    .filter(|host| host.participants > 0)
-                    .map(|host| host.node_id)
-                    .filter(|id| {
-                        self.members
-                            .get(id)
-                            .map(|m| m.node_type == CONFERENCE_NODE_TYPE)
-                            .unwrap_or(false)
-                    })
-                    .collect(),
+            let record = match self.registry.room(tenant_id, room_number).await {
+                Ok(record) => record,
                 Err(e) => {
                     // Keep what we have rather than tear trunks down on a
                     // registry hiccup; the next pass sees the truth.
                     warn!(room = %room_number, error = %e, "Conference registry read failed; trunks left as they are");
                     return;
                 }
-            }
+            };
+            let is_conference = |id: &str| {
+                self.members
+                    .get(id)
+                    .map(|m| m.node_type == CONFERENCE_NODE_TYPE)
+                    .unwrap_or(false)
+            };
+            let peers: Vec<String> = record
+                .hosts
+                .iter()
+                .filter(|host| host.node_id != self.node_id && host.participants > 0)
+                .map(|host| host.node_id.clone())
+                .filter(|id| is_conference(id))
+                .collect();
+            // A webinar with a stage is a tree (`docs/WEBINARS.md` §2.7).
+            let stage = record
+                .live_stage()
+                .map(|h| h.node_id.clone())
+                .filter(|id| *id == self.node_id || is_conference(id));
+            self.handler.set_stage_node(
+                &room,
+                stage.as_deref().map(|id| id == self.node_id.as_str()),
+            );
+            tree_peers(&self.node_id, stage.as_deref(), peers)
         };
 
         let plan = plan_trunks(&self.node_id, local, &hosting, &trunked);
@@ -334,6 +357,22 @@ impl TrunkManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_webinar_s_edges_trunk_to_its_stage_alone() {
+        let peers = || vec!["b".to_string(), "c".to_string(), "s".to_string()];
+        // No stage: a mesh.
+        assert_eq!(tree_peers("a", None, peers()), peers());
+        // On an edge: the stage only, whichever side dials.
+        assert_eq!(tree_peers("a", Some("s"), peers()), vec!["s".to_string()]);
+        // On the stage: every edge.
+        assert_eq!(
+            tree_peers("s", Some("s"), vec!["a".into(), "b".into()]),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        // An edge whose stage is not hosting it yet trunks with nobody.
+        assert!(tree_peers("a", Some("s"), vec!["b".into()]).is_empty());
+    }
 
     fn ids(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()

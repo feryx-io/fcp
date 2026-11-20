@@ -8,6 +8,12 @@
 
 use tracing::{debug, warn};
 
+/// What a webinar's stage takes of `capacity` before its attendees go to
+/// edges: the call manager's default (`[b2bua]
+/// conference_webinar_stage_share`).
+#[cfg(feature = "storage-redis")]
+const WEBINAR_STAGE_SHARE_PERCENT: u8 = 50;
+
 /// A static conference host: `host`, `host:port`, or a `sip:` URI whose
 /// host part is used.
 fn static_host(configured: &str) -> Option<String> {
@@ -83,27 +89,41 @@ impl ConferencePlacement {
     pub async fn host_for(&self, room_number: &str, video_codecs: &[String]) -> Option<String> {
         #[cfg(feature = "storage-redis")]
         if let Some(cluster) = &self.cluster {
-            let hosts = match &cluster.tenant_id {
-                Some(tenant) => match cluster.registry.hosts(tenant, room_number).await {
-                    Ok(hosts) => hosts,
+            let record = match &cluster.tenant_id {
+                Some(tenant) => match cluster.registry.room(tenant, room_number).await {
+                    Ok(record) => record,
                     Err(e) => {
                         warn!(room = %room_number, error = %e, "conference registry lookup failed; placing by load");
-                        Vec::new()
+                        fcp_cluster::RoomRecord::default()
                     }
                 },
-                None => Vec::new(),
+                None => fcp_cluster::RoomRecord::default(),
             };
             let members: Vec<fcp_cluster::ClusterMember> =
                 cluster.members.iter().map(|m| m.value().clone()).collect();
             let need = (!video_codecs.is_empty())
                 .then(|| fcp_cluster::VideoNeed::of(video_codecs.to_vec()));
-            if let Some(pick) = fcp_cluster::choose_conference_node(
-                &hosts,
-                &members,
-                cluster.capacity,
-                cluster.region.as_deref(),
-                need.as_ref(),
-            ) {
+            // A room with a stage is a webinar (`docs/WEBINARS.md` §2.7):
+            // its attendees go to its edges once the stage has its share.
+            let pick = if record.stage.is_some() {
+                fcp_cluster::choose_webinar_node(
+                    &record,
+                    &members,
+                    cluster.capacity,
+                    WEBINAR_STAGE_SHARE_PERCENT,
+                    cluster.region.as_deref(),
+                    need.as_ref(),
+                )
+            } else {
+                fcp_cluster::choose_conference_node(
+                    &record.hosts,
+                    &members,
+                    cluster.capacity,
+                    cluster.region.as_deref(),
+                    need.as_ref(),
+                )
+            };
+            if let Some(pick) = pick {
                 debug!(room = %room_number, node = %pick.node_id, host = %pick.sip_address, "room placed by cluster");
                 return Some(pick.sip_address.to_string());
             }

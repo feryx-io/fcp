@@ -216,9 +216,12 @@ impl ConferenceCallHandler {
 
     /// Whether anyone waits in `key`'s lobby.
     pub(super) fn lobby_waits(&self, key: &RoomKey) -> bool {
-        self.sittings
-            .get(key)
-            .is_some_and(|s| !s.waiting.is_empty())
+        self.lobby_count(key) > 0
+    }
+
+    /// How many wait in `key`'s lobby.
+    pub(super) fn lobby_count(&self, key: &RoomKey) -> usize {
+        self.sittings.get(key).map_or(0, |s| s.waiting.len())
     }
 
     /// The participant on `call_id` joined: tell them, if they asked, the
@@ -384,6 +387,8 @@ impl ConferenceCallHandler {
             }
             tokio::time::sleep(gap).await;
         }
+        // The registry counted them waiting; this keeps it exact.
+        self.sync_room_registry(&key);
         info!(room = %key.room, admitted, "The lobby let in");
     }
 
@@ -469,16 +474,20 @@ impl ConferenceCallHandler {
         s.kept.ended_at = Some(SystemTime::now());
         info!(room = %key.room, sitting = %s.kept.id, phase = s.phase.as_str(), "A sitting ended");
         self.keep_sitting(s.kept);
+        self.leave_the_stage(key);
     }
 
     /// The live webinars whose stage has been empty past `grace`: each is
     /// ended (`stage_left`). Called once a second.
     pub fn end_empty_stages(&self, grace: Duration) {
+        // An edge's stage is always empty: its webinar ends with the
+        // stage's (`docs/WEBINARS.md` §2.7).
         let live: Vec<RoomKey> = self
             .sittings
             .iter()
             .filter(|s| s.webinar && s.phase == WebinarPhase::Live)
             .map(|s| s.key().clone())
+            .filter(|key| !self.is_edge(key))
             .collect();
         let now = Instant::now();
         for key in live {

@@ -24,8 +24,8 @@ pub mod view;
 pub use call_leases::{CallLeases, LeaseSubject, DEFAULT_LEASE_TTL_SECS};
 pub use call_registry::CallRegistry;
 pub use conference_registry::{
-    choose_conference_node, ConferenceHost, ConferenceRegistry, RoomRecord, VideoNeed,
-    CONFERENCE_NODE_TYPE, DEFAULT_JOIN_EGRESS_KBPS,
+    choose_conference_node, choose_webinar_node, ConferenceHost, ConferenceRegistry, RoomRecord,
+    VideoNeed, CONFERENCE_NODE_TYPE, DEFAULT_JOIN_EGRESS_KBPS,
 };
 pub use fcp_core::transport::advertised_address;
 pub use line_appearances::LineAppearances;

@@ -146,3 +146,38 @@ async fn dead_node_entries_go_stale_while_others_keep_the_room() {
     // conf-b (60 s tolerance) still sees the raw entry as fresh enough.
     assert_eq!(b.hosts("t1", "8000").await.unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn a_webinar_s_stage_is_claimed_once_taken_from_a_gone_holder_and_released() {
+    let Some((a, b)) = two_nodes().await else {
+        return;
+    };
+    a.set_participants("t1", "7000", 1).await.unwrap();
+    assert_eq!(a.claim_stage("t1", "7000", None).await.unwrap(), "conf-a");
+    // B finds it held and is told by whom.
+    assert_eq!(b.claim_stage("t1", "7000", None).await.unwrap(), "conf-a");
+    let room = b.room("t1", "7000").await.unwrap();
+    assert_eq!(room.stage.as_deref(), Some("conf-a"));
+    assert_eq!(
+        room.live_stage().map(|h| h.node_id.as_str()),
+        Some("conf-a")
+    );
+    assert_eq!(room.hosts.len(), 1, "the stage is not a host");
+    // B may release only its own stage.
+    b.release_stage("t1", "7000").await.unwrap();
+    assert_eq!(
+        b.room("t1", "7000").await.unwrap().stage.as_deref(),
+        Some("conf-a")
+    );
+    // B judged A gone: the claim takes it from A, and only from A.
+    assert_eq!(
+        b.claim_stage("t1", "7000", Some("conf-x")).await.unwrap(),
+        "conf-a"
+    );
+    assert_eq!(
+        b.claim_stage("t1", "7000", Some("conf-a")).await.unwrap(),
+        "conf-b"
+    );
+    b.release_stage("t1", "7000").await.unwrap();
+    assert!(a.room("t1", "7000").await.unwrap().stage.is_none());
+}

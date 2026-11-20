@@ -10,7 +10,10 @@
 //! `docs/MULTI_REGION.md` and `docs/VIDEO_CONFERENCING.md` §9.3.
 
 use dashmap::DashMap;
-use fcp_cluster::{choose_conference_node, ClusterMember, ConferenceRegistry, VideoNeed};
+use fcp_cluster::{
+    choose_conference_node, choose_webinar_node, ClusterMember, ConferenceRegistry, RoomRecord,
+    VideoNeed,
+};
 use fcp_core::TenantId;
 use fcp_sip::ConferenceVideoNeed;
 use std::sync::Arc;
@@ -20,6 +23,9 @@ pub struct ClusterConferenceSelector {
     registry: ConferenceRegistry,
     members: Arc<DashMap<String, ClusterMember>>,
     capacity: usize,
+    /// Percent of `capacity` a webinar's stage takes of its attendees
+    /// before they go to edges (`docs/WEBINARS.md` §2.7).
+    stage_share_percent: u8,
     /// This node's region: participants it places are joining from here.
     local_region: Option<String>,
     /// Every address a participant was placed on: a conference node's,
@@ -38,9 +44,21 @@ impl ClusterConferenceSelector {
             registry,
             members,
             capacity,
+            stage_share_percent: DEFAULT_STAGE_SHARE_PERCENT,
             local_region,
             placed_on: DashMap::new(),
         }
+    }
+}
+
+/// What a webinar's stage takes of `conference_node_capacity` unless told.
+pub const DEFAULT_STAGE_SHARE_PERCENT: u8 = 50;
+
+impl ClusterConferenceSelector {
+    /// Set the stage's share (`[b2bua] conference_webinar_stage_share`).
+    pub fn with_stage_share_percent(mut self, percent: u8) -> Self {
+        self.stage_share_percent = percent.min(100);
+        self
     }
 }
 
@@ -51,27 +69,40 @@ impl fcp_sip::ConferenceNodeSelector for ClusterConferenceSelector {
         tenant_id: &TenantId,
         room_number: &str,
         video: Option<&ConferenceVideoNeed>,
+        webinar: bool,
     ) -> Option<String> {
-        let hosts = match self
+        let record = match self
             .registry
-            .hosts(&tenant_id.to_string(), room_number)
+            .room(&tenant_id.to_string(), room_number)
             .await
         {
-            Ok(h) => h,
+            Ok(r) => r,
             Err(e) => {
                 warn!(error = %e, room = %room_number, "Conference registry lookup failed; placing by load only");
-                Vec::new()
+                RoomRecord::default()
             }
         };
+        let hosts = &record.hosts;
         let members: Vec<ClusterMember> = self.members.iter().map(|e| e.value().clone()).collect();
         let need = video.map(|v| VideoNeed::of(v.codecs.clone()));
-        let pick = choose_conference_node(
-            &hosts,
-            &members,
-            self.capacity,
-            self.local_region.as_deref(),
-            need.as_ref(),
-        )?;
+        let pick = if webinar {
+            choose_webinar_node(
+                &record,
+                &members,
+                self.capacity,
+                self.stage_share_percent,
+                self.local_region.as_deref(),
+                need.as_ref(),
+            )
+        } else {
+            choose_conference_node(
+                hosts,
+                &members,
+                self.capacity,
+                self.local_region.as_deref(),
+                need.as_ref(),
+            )
+        }?;
         debug!(
             room = %room_number,
             node = %pick.node_id,
@@ -80,6 +111,8 @@ impl fcp_sip::ConferenceNodeSelector for ClusterConferenceSelector {
             node_region = pick.region.as_deref().unwrap_or("-"),
             local_region = self.local_region.as_deref().unwrap_or("-"),
             hosting = hosts.len(),
+            webinar,
+            stage = record.stage.as_deref().unwrap_or("-"),
             capacity = self.capacity,
             "Conference participant placed"
         );

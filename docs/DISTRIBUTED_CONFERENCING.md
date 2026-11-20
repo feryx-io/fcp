@@ -87,6 +87,12 @@ conference_server_uri = "sip:conference@10.0.0.20:5074"   # fallback only
 conference_node_capacity = 100                              # after phase 2
 ```
 
+A webinar spread over nodes is a tree rather than a mesh: a stage node and
+its edges (`docs/WEBINARS.md` §2.7). The stage takes attendees until it
+holds `conference_webinar_stage_share` percent of `conference_node_capacity`
+(default 50), and the rest go to edges as any room spreads. Edges trunk to
+the stage alone.
+
 Conference nodes advertise themselves in cluster membership with node type
 `conference` (the `[service] service_type`) and their SIP address — the
 `[sip] udp_bind` with an unspecified IP replaced by `local_ip`, so a node

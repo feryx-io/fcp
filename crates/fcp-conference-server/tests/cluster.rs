@@ -30,11 +30,14 @@ struct Cluster {
 
 impl Cluster {
     async fn start() -> Option<Self> {
+        Self::start_with(ClusterOptions::default()).await
+    }
+
+    async fn start_with(opts: ClusterOptions) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let dir = tempfile::tempdir().expect("tempdir");
-        let nodes =
-            ConferenceCluster::start(db.url(), dir.path(), ClusterOptions::default()).await?;
+        let nodes = ConferenceCluster::start(db.url(), dir.path(), opts).await?;
         let suffix = uuid::Uuid::new_v4().simple().to_string()[..6].to_string();
 
         // The call manager: cluster-aware placement, a room spread past
@@ -837,4 +840,268 @@ async fn a_forwarding_room_on_two_nodes_forwards_each_person_across_the_trunk() 
     }
     nodes.stop_all().await;
     db.drop_db().await;
+}
+
+/// Digits as RFC 2833, `#` to finish.
+async fn dial_digits(call: &fcp_testkit::Call, pin: &str) {
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for d in pin.chars().chain(std::iter::once('#')) {
+        call.media().send_dtmf(d);
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// `POST path` on a node until it answers 200 (the room may not be there
+/// yet); the body.
+async fn post_until_ok(node: &fcp_testkit::cluster::Node, path: &str) -> String {
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        let (code, body) = http_request("POST", &loopback(node.http, path), &[], Some("{}"))
+            .await
+            .unwrap();
+        if code == 200 {
+            return body;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "POST {path} on {}: {code} {body}",
+            node.id
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// What the room's JSON on `node` says of `field`, once `done` holds.
+async fn room_when(
+    node: &fcp_testkit::cluster::Node,
+    what: &str,
+    done: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        if let Some(r) = node.room(ROOM).await {
+            if done(&r) {
+                return r;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("{what} on {}: {r:#}", node.id);
+            }
+        } else if tokio::time::Instant::now() >= deadline {
+            panic!("{what} on {}: no room", node.id);
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn trunk_peers(room: &serde_json::Value) -> Vec<String> {
+    let mut peers: Vec<String> = room["trunks"]
+        .as_array()
+        .map(|t| {
+            t.iter()
+                .filter_map(|p| p["peer"].as_str().or(p.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    peers.sort();
+    peers
+}
+
+/// A webinar over three nodes is a tree (`docs/WEBINARS.md` §2.7, W5.1).
+/// The first host claims the stage. With the stage at its share (capacity
+/// 1, half of it: none), attendees go to two edges, each trunked to the
+/// stage alone. The stage is heard on both edges; an attendee promoted on
+/// one edge is heard on the stage and, through the stage, on the other
+/// edge. A panelist placed on an edge is moved to the stage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_webinar_over_three_nodes_is_a_stage_and_its_edges() {
+    let Some(mut cluster) = Cluster::start_with(ClusterOptions {
+        nodes: 3,
+        ..ClusterOptions::default()
+    })
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL or FCP_TEST_REDIS_URL is not set");
+        return;
+    };
+    cluster
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({
+                "kind": "webinar",
+                "host_pin": "9999",
+                "panelist_pin": "5555",
+            }),
+        )
+        .await;
+
+    // The host claims the node they land on as the stage.
+    let host = cluster.registered_phone("hostess", "1001").await;
+    let host_call = host.call(ROOM).await.unwrap();
+    if let Err(e) = host_call.answered(A_WHILE).await {
+        cluster
+            .fail(&format!("the host was not admitted: {e}"), &host)
+            .await;
+    }
+    dial_digits(&host_call, "9999").await;
+    let (stage, _) = match cluster.where_is("hostess").await {
+        Some(x) => x,
+        None => cluster.fail("the host is on no node", &host).await,
+    };
+    room_when(&cluster.nodes.nodes[stage], "the stage", |r| {
+        r["webinar_node"] == "stage"
+    })
+    .await;
+    post_until_ok(
+        &cluster.nodes.nodes[stage],
+        &format!("/conferences/{ROOM}/webinar/live"),
+    )
+    .await;
+
+    // Two attendees, each on an edge of their own.
+    let mut attendees = Vec::new();
+    for (name, ext) in [("ann", "1002"), ("ben", "1003")] {
+        let phone = cluster.registered_phone(name, ext).await;
+        let call = phone.call(ROOM).await.unwrap();
+        if let Err(e) = call.answered(A_WHILE).await {
+            cluster
+                .fail(&format!("{name} was not admitted: {e}"), &phone)
+                .await;
+        }
+        dial_digits(&call, "").await;
+        // Each node's phase is its own until W5.2: an edge's lobby is let
+        // in when that edge is taken live.
+        let deadline = tokio::time::Instant::now() + A_WHILE;
+        let (node, pid) = loop {
+            for n in &cluster.nodes.nodes {
+                let _ = http_request(
+                    "POST",
+                    &loopback(n.http, &format!("/conferences/{ROOM}/webinar/live")),
+                    &[],
+                    Some("{}"),
+                )
+                .await;
+            }
+            if let Some(x) = cluster
+                .nodes
+                .where_is(ROOM, name, Duration::from_millis(500))
+                .await
+            {
+                break x;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                cluster.fail(&format!("{name} is on no node"), &phone).await;
+            }
+        };
+        if node == stage {
+            cluster
+                .fail(&format!("{name} was placed on the stage"), &phone)
+                .await;
+        }
+        attendees.push((phone, call, node, pid));
+    }
+    let (ann_node, ben_node) = (attendees[0].2, attendees[1].2);
+    assert_ne!(ann_node, ben_node, "the edges are two nodes");
+
+    // The tree: each edge trunked to the stage alone, the stage to both.
+    let stage_id = cluster.nodes.nodes[stage].id.clone();
+    for edge in [ann_node, ben_node] {
+        let r = room_when(
+            &cluster.nodes.nodes[edge],
+            "an edge trunked to the stage",
+            |r| r["webinar_node"] == "edge" && trunk_peers(r) == vec![stage_id.clone()],
+        )
+        .await;
+        assert_eq!(trunk_peers(&r), vec![stage_id.clone()]);
+    }
+    let mut edge_ids = vec![
+        cluster.nodes.nodes[ann_node].id.clone(),
+        cluster.nodes.nodes[ben_node].id.clone(),
+    ];
+    edge_ids.sort();
+    room_when(
+        &cluster.nodes.nodes[stage],
+        "the stage trunked to both edges",
+        |r| trunk_peers(r) == edge_ids,
+    )
+    .await;
+
+    // The stage is heard on both edges.
+    host_call.media().play_tone(440.0, 6000);
+    for (phone, call, _, _) in &attendees {
+        if !call.media().heard(440, Duration::from_secs(10)).await {
+            cluster
+                .fail(
+                    &format!("{} does not hear the stage", phone.username),
+                    phone,
+                )
+                .await;
+        }
+    }
+
+    // Ann is brought to the stage on her edge: heard on the stage, and
+    // through it on Ben's edge.
+    let ann_pid = attendees[0].3.clone();
+    post_until_ok(
+        &cluster.nodes.nodes[ann_node],
+        &format!("/conferences/{ROOM}/participants/{ann_pid}/stage"),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    attendees[0].1.media().play_tone(880.0, 6000);
+    if !host_call.media().heard(880, Duration::from_secs(10)).await {
+        cluster
+            .fail("the host does not hear Ann from her edge", &host)
+            .await;
+    }
+    if !attendees[1]
+        .1
+        .media()
+        .heard(880, Duration::from_secs(10))
+        .await
+    {
+        let ben = &attendees[1].0;
+        cluster
+            .fail("Ben does not hear Ann through the stage", ben)
+            .await;
+    }
+
+    // A panelist placed on an edge ends up on the stage.
+    let panelist = cluster.registered_phone("panelist", "1004").await;
+    let panelist_call = panelist.call(ROOM).await.unwrap();
+    if let Err(e) = panelist_call.answered(A_WHILE).await {
+        cluster
+            .fail(&format!("the panelist was not admitted: {e}"), &panelist)
+            .await;
+    }
+    dial_digits(&panelist_call, "5555").await;
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        if let Some((node, _)) = cluster.nodes.where_is(ROOM, "panelist", SOON).await {
+            if node == stage {
+                break;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            cluster
+                .fail("the panelist was not moved to the stage", &panelist)
+                .await;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panelist_call.media().play_tone(660.0, 6000);
+    if !attendees[1]
+        .1
+        .media()
+        .heard(660, Duration::from_secs(10))
+        .await
+    {
+        let ben = &attendees[1].0;
+        cluster.fail("Ben does not hear the panelist", ben).await;
+    }
+
+    for call in [&host_call, &panelist_call, &attendees[0].1, &attendees[1].1] {
+        let _ = call.hangup().await;
+    }
+    cluster.finish().await;
 }

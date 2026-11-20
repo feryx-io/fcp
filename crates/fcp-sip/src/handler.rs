@@ -298,11 +298,14 @@ pub enum RouteResolution {
 pub trait ConferenceNodeSelector: Send + Sync {
     /// `video` carries the meeting's video codecs when it allows video, so
     /// the selector can prefer a node with video capacity for them.
+    /// `webinar` places by the webinar's stage and edges
+    /// (`docs/WEBINARS.md` §2.7).
     async fn select_conference_node(
         &self,
         tenant_id: &fcp_core::TenantId,
         room_number: &str,
         video: Option<&ConferenceVideoNeed>,
+        webinar: bool,
     ) -> Option<String>;
 
     /// Whether `host` (a `host:port` this selector placed a caller on) was
@@ -1181,10 +1184,11 @@ impl SipMessageHandler {
         tenant_id: &fcp_core::TenantId,
         room_number: &str,
         video: Option<&ConferenceVideoNeed>,
+        webinar: bool,
     ) -> Option<String> {
         if let Some(selector) = &self.conference_node_selector {
             if let Some(host) = selector
-                .select_conference_node(tenant_id, room_number, video)
+                .select_conference_node(tenant_id, room_number, video, webinar)
                 .await
             {
                 return Some(host);
@@ -6122,6 +6126,7 @@ impl SipMessageHandler {
                                                         &meeting.tenant_id,
                                                         room_number,
                                                         ConferenceVideoNeed::of(&meeting).as_ref(),
+                                                        meeting.is_webinar(),
                                                     )
                                                     .await;
                                                 if let Some(host) = conf_host.as_deref() {
@@ -7106,6 +7111,7 @@ impl SipMessageHandler {
                                                 &meeting.tenant_id,
                                                 extension_number,
                                                 ConferenceVideoNeed::of(&meeting).as_ref(),
+                                                meeting.is_webinar(),
                                             )
                                             .await;
                                         if let Some(host) = conf_host.as_deref() {
@@ -7224,6 +7230,7 @@ impl SipMessageHandler {
                                             &tenant_id,
                                             extension_number,
                                             ConferenceVideoNeed::of(&meeting).as_ref(),
+                                            meeting.is_webinar(),
                                         )
                                         .await;
                                     if let Some(host) = conf_host.as_deref() {
@@ -19521,7 +19528,9 @@ impl SipMessageHandler {
                 continue;
             };
             let new_host = selector
-                .select_conference_node(&call.tenant_id, &room, None)
+                // As any room: a webinar whose stage has gone has no stage
+                // to place by, and the next host to join claims one.
+                .select_conference_node(&call.tenant_id, &room, None, false)
                 .await
                 .filter(|h| *h != host);
             let target = new_host
