@@ -1370,3 +1370,64 @@ export const joinTokens = {
   mint: (id: string, body: MintJoinTokenRequest) =>
     apiClient.post<JoinTokenResponse>(`/conferences/meetings/${encodeURIComponent(id)}/join-tokens`, body),
 }
+
+// A webinar's life, registrations and attendance (`docs/WEBINARS.md` §2.6).
+export type RegistrantResponse = components['schemas']['RegistrantResponse']
+export type RegisteredResponse = components['schemas']['RegisteredResponse']
+export type RegisterRequest = components['schemas']['RegisterRequest']
+export type SittingResponse = components['schemas']['SittingResponse']
+export type AttendanceResponse = components['schemas']['AttendanceResponse']
+
+/** The room's sitting as its node tells it. */
+export interface LiveSitting {
+  id: string
+  kind: string
+  phase: 'practice' | 'live' | 'ended'
+  started_at: string
+  live_at: string | null
+  lobby: number
+}
+
+/** One attendee as the node lists them. */
+export interface AudienceMember {
+  participant_id: string
+  display_name: string | null
+  caller_id: string | null
+  registrant: string | null
+  joined_at: string
+  hand: string | null
+  lobby: boolean
+  on_stage: boolean
+}
+
+export interface AudiencePage {
+  data: AudienceMember[]
+  next_cursor: string | null
+  total: number
+}
+
+const meetingPath = (id: string) => `/conferences/meetings/${encodeURIComponent(id)}`
+
+export const webinars = {
+  /** The room's sitting now; 404 while nobody is in it. */
+  sitting: (room: string) => apiClient.get<LiveSitting>(`${liveRoom(room)}/webinar`),
+  goLive: (room: string) =>
+    apiClient.post<{ changed: boolean; sitting: LiveSitting | null }>(`${liveRoom(room)}/webinar/live`),
+  end: (room: string) => apiClient.post<{ released: number }>(`${liveRoom(room)}/webinar/end`),
+  audience: (room: string, cursor?: string | null, limit = 50) =>
+    apiClient.get<AudiencePage>(
+      `${liveRoom(room)}/audience?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+    ),
+  registrants: (id: string) => apiClient.getAll<RegistrantResponse>(`${meetingPath(id)}/registrants`),
+  register: (id: string, body: RegisterRequest) =>
+    apiClient.post<RegisteredResponse>(`${meetingPath(id)}/registrants`, body),
+  revoke: (id: string, rid: string) =>
+    apiClient.delete<RegistrantResponse>(`${meetingPath(id)}/registrants/${encodeURIComponent(rid)}`),
+  token: (id: string, rid: string) =>
+    apiClient.post<JoinTokenResponse>(`${meetingPath(id)}/registrants/${encodeURIComponent(rid)}/token`, {}),
+  sittings: (id: string) => apiClient.getAll<SittingResponse>(`${meetingPath(id)}/sittings`),
+  attendance: (id: string, sitting?: string) =>
+    apiClient.get<AttendanceResponse>(
+      `${meetingPath(id)}/attendance${sitting ? `?sitting=${encodeURIComponent(sitting)}` : ''}`,
+    ),
+}

@@ -175,6 +175,10 @@ auth_token = "{TOKEN}"
 [storage]
 database_url = "{db}"
 
+# A webinar's registrants are handed join tokens (webinars.spec.ts).
+[conference]
+join_secret = "ui-join-s3cret"
+
 # The webhook form's test points at loopback.
 [webhooks]
 allow_private_targets = true

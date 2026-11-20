@@ -8,7 +8,8 @@ at 1,000 and 2,000 watching (§5). W3 is done: W3.1, hands and the stage (v0.25.
 forge-media v2026.11.17.2), and W3.2, Q&A (v0.25.588). W3b, chat in every room, is
 done (v0.25.591). W4.1, the webinar's life (practice, live, ended, and the lobby), is
 done (v0.25.593–594, forge-media v2026.11.19), and W4.2, registration, attendance
-and the audience by page (v0.25.595).
+and the audience by page (v0.25.595), and W4.3, the admin UI's webinar pages
+(v0.25.596): W4 is complete.
 
 A webinar is a meeting with a stage and an audience:
 - a few people speak and are seen;
@@ -621,8 +622,7 @@ For an audience that is not on FCP at all.
         own until W5;
       - a mute that follows a person who leaves and joins again;
       - chat in the attendance export (W4, done in W4.2);
-      - the meeting's `chat` in the admin UI's meeting form (W4's webinar
-        pages).
+      - the meeting's `chat` in the admin UI's meeting form (done in W4.3).
 - **W4: the webinar's life** (FCP), in three parts.
   - Practice, go live, end.
   - The lobby let in gradually.
@@ -682,10 +682,8 @@ For an audience that is not on FCP at all.
       host's `GET …/webinar`, give the sitting.
     - **Events:** `conference.webinar_live` (`sitting_id`, `by`) and
       `conference.webinar_ended` (`sitting_id`, `by`).
-    - **Not yet:** registration, the attendance report and the audience by
-      page (W4.2); the admin UI's webinar pages, with the meeting's `chat`
-      in its form (W4.3); a lobby across a migration (a migrant is admitted
-      as it was).
+    - **Not yet:** a lobby across a migration (a migrant is admitted as it
+      was).
   - **W4.2: registration, attendance and the audience by page.** **Done**
     (v0.25.595). As built:
     - **Registration.** A webinar's `registration` (migration 146) says an
@@ -741,6 +739,27 @@ For an audience that is not on FCP at all.
       is released (registrations go with their meeting).
     - **Not yet:** a registrant registering themselves (a public form);
       hands in the attendance report (a hand is not kept).
+  - **W4.3: the admin UI's webinar pages.** **Done** (v0.25.596). As
+    built:
+    - **The meeting's form** (Conference Bridges, create and edit): Questions
+      (the kind's default, off, moderated, open), Chat (the kind's default,
+      everyone, to the hosts only, off), anonymous questions, and for a
+      webinar "Require registration". A webinar row shows a Registration
+      badge.
+    - **A webinar's dialog** (the row's Webinar action), in three tabs:
+      - **Live:** the sitting's phase (practice, live, ended), when it
+        started and went live, how many wait in the lobby, Go live and End,
+        and the audience a page at a time (name, caller, joined, lobby,
+        stage or audience, hand). Followed every few seconds while there is
+        a sitting.
+      - **Registrants:** register a person (name, email) and copy the link
+        handed back, mint a new link, revoke.
+      - **Attendance:** a sitting chosen from the meeting's sittings, its
+        attendees, peak, registered and came, questions and messages; each
+        leg, each registration with whether they came, the questions and
+        chat; the legs as CSV and the whole report as JSON.
+    - `e2e/webinars.spec.ts` drives the form, the registrants and the empty
+      attendance in a browser; the UI suite's admin has a `join_secret`.
 - **W5: a stage and its edges** (FCP).
   - Edge nodes on one-way trunks from the stage, placement for attendees, and
     promotion across a trunk.
