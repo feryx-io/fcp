@@ -574,6 +574,7 @@ impl ConferenceCallHandler {
         info!(room = %key.room, sitting = %s.kept.id, phase = s.phase.as_str(), "A sitting ended");
         self.keep_sitting(s.kept);
         self.leave_the_stage(key);
+        self.audience_encode_held.remove(key);
     }
 
     /// The live webinars whose stage has been empty past `grace`: each is

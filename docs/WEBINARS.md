@@ -988,7 +988,64 @@ For an audience that is not on FCP at all.
           test kit's frames do not decode, so this test cannot show the
           fast path itself; W5.4 measures it.
     - **W5.4: measured.** `fcp-loadgen` across two and three nodes, to 5,000
-      attendees: CPU and egress per node, and the trunk's cost.
+      attendees: CPU and egress per node, and the trunk's cost. **Done**
+      (v0.25.602). As built:
+      - `fcp-loadgen/tests/webinar_tree.rs` (`what_a_tree_costs`,
+        `#[ignore]`d):
+        - `FCP_LOADGEN_NODES`, `FCP_LOADGEN_ATTENDEES` and
+          `FCP_LOADGEN_VIDEO` shape the run;
+        - the host's token claims node 0 as the stage, and attendees dial
+          the edges straight by guest token, split evenly;
+        - each node's CPU and memory are sampled, with what each edge's
+          audience is sent.
+      - The test kit's cluster takes `sip_extra`, `rtp_ports`,
+        `first_node_rtp_ports` and `log_level`. The attendees' phones bind
+        127.0.0.2, so thousands of their sockets leave the nodes' ports
+        alone.
+      - **Measured** (release, `video-vpx`, plain RTP; the nodes and every
+        phone on one 12-core box, so these are upper bounds):
+
+        | Nodes | Attendees | Video | Stage CPU | Each edge's CPU | Delivered |
+        |---|---|---|---|---|---|
+        | 2 | 2,000 (one edge) | — | 1.6% of a core | 78.3% | 100% |
+        | 3 | 2,000 (1,000 an edge) | — | 2.3% | 37.0%, 39.8% | 100% |
+        | 3 | 5,000 (2,500 an edge) | — | 2.7% | 135.8%, 139.1% | 100% |
+        | 3 | 2,000 (1,000 an edge) | the composite | 19.1% (the host's camera, its composite and two trunks' video) | 68.0%, 70.6%, 40 Mb/s out each | 100% |
+
+        - **A trunk costs the stage about 0.4% of a core** with its audio
+          (1.6% with one edge, 2.3% with two, 2.7% with two edges of
+          2,500). The stage's load is its own people, whatever the
+          audience's size.
+        - **An edge costs what a node holding that audience alone costs.**
+          Its 1,000 at 37–40% compares with W1's 29.8% for one node. Its
+          2,500 at about 137% is a little above linear: the run's 5,000
+          phones share the box's 12 cores with three nodes.
+        - So 5,000 attendees take three nodes at about one and a half cores
+          on each edge, and each further 2,500 is one more edge. The limit
+          per edge is its link before its CPU: 2,500 attendees is about
+          3 Mb/s of audio but 300 Mb/s and more of 720p video (W2).
+        - The test kit's frames do not decode, so an edge's composite of
+          the stage's tile is drawn empty and encoded rather than passed
+          through (3 encoders on each edge in the video run). The fast path
+          is shown in forge-conference (W5.3), and its saving there is the
+          encode a flavor costs. Measuring it end to end needs decodable
+          frames from the stage.
+        - Five thousand watching (four edges) does not fit on one box:
+          their ranges outrun loopback's 30,000 test ports. It needs the
+          nodes on machines of their own.
+      - **Fixed while measuring.** An attendee's video join was priced with
+        the audience composite's encode whenever no composite was running
+        yet:
+        - on an edge, which encodes nothing for its audience: every join
+          there was charged an encode, and an edge refused its audience
+          after about 36 joins (503, "Video budget exhausted");
+        - in a burst: every join before the budget's next recompute (every
+          5 s) paid the encode again.
+
+        Now an edge charges an attendee their picture's egress alone.
+        Elsewhere the first join pays for the composite and the joins in
+        the next 10 s do not (`audience_join_cost`'s `composite_paid`).
+  - **W5 is complete.**
 - **W6: HLS** (forge-media, FCP).
   - CMAF segments from forge-mp4, the playlist, the bucket or directory, and the
     admin serving it.

@@ -165,6 +165,15 @@ pub struct ClusterOptions {
     pub join_secret: Option<String>,
     /// More `[conference]` lines on every node, as written.
     pub conference_extra: String,
+    /// More `[sip]` lines on every node, as written.
+    pub sip_extra: String,
+    /// RTP ports each node takes (120): a load run needs thousands.
+    pub rtp_ports: u16,
+    /// The first node's RTP ports instead, when it needs fewer: a
+    /// webinar's stage with its audience on the other nodes.
+    pub first_node_rtp_ports: Option<u16>,
+    /// The nodes' log level (`info`).
+    pub log_level: String,
 }
 
 impl Default for ClusterOptions {
@@ -173,6 +182,10 @@ impl Default for ClusterOptions {
             nodes: 2,
             join_secret: None,
             conference_extra: String::new(),
+            sip_extra: String::new(),
+            rtp_ports: 120,
+            first_node_rtp_ports: None,
+            log_level: "info".to_string(),
         }
     }
 }
@@ -205,7 +218,11 @@ impl ConferenceCluster {
             let sip = free_port();
             let tls = free_port();
             let http = free_port();
-            let rtp_start = allocate_rtp_range(120);
+            let rtp_ports = match opts.first_node_rtp_ports {
+                Some(ports) if i == 0 => ports,
+                _ => opts.rtp_ports,
+            };
+            let rtp_start = allocate_rtp_range(rtp_ports);
             let config = format!(
                 r#"
 [service]
@@ -226,6 +243,7 @@ local_uri = "sip:conference@127.0.0.1:{sip}"
 # believes what they say. Inter-node trunks need no listing: they prove
 # themselves with a client certificate.
 trusted_edges = ["127.0.0.1"]
+{sip_extra}
 
 [storage]
 database_url = "{db}"
@@ -250,15 +268,17 @@ trunk_reconcile_interval_secs = 1
 migration_timeout_secs = 10
 
 [logging]
-level = "info"
+level = "{log_level}"
 format = "compact"
 "#,
+                sip_extra = opts.sip_extra,
+                log_level = opts.log_level,
                 cert = cert.cert_path.display(),
                 key = cert.key_path.display(),
                 ca = ca.ca_path.display(),
                 db = database_url,
                 redis = redis_url,
-                rtp_end = rtp_start + 120,
+                rtp_end = rtp_start + rtp_ports,
                 dir = dir.display(),
                 secret = CLUSTER_SECRET,
                 extra = opts.conference_extra,
