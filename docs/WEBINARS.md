@@ -1303,8 +1303,24 @@ For an audience that is not on FCP at all.
             holder with CORS;
           - `fcp-cdr/tests/s3.rs` `puts_bytes_with_their_content_type_and_cache_control`
             against Garage.
-      - **W6.3d: the admin UI's Stream tab.** Its state, a link minted, and
-        the replay.
+      - **W6.3d: the admin UI's Stream tab.** **Done** (v0.25.608). As
+        built:
+        - **The meeting's form:** "Stream out as HLS" for a webinar (the
+          meeting's `streaming`), and a "Streamed" badge in the list.
+        - **The webinar's dialog, Stream:**
+          - the state (not streamed, waiting to go live, live, ended), with
+            its start, end and length;
+          - a viewer link minted for an hour, a day or a week, the playlist's
+            full URL shown to copy;
+          - the replay: the stream downloaded as one MP4 through its
+            recording.
+          - There is no player in the dialog. A browser other than Safari
+            needs hls.js to play HLS, and the link is meant for a player of
+            the audience's own.
+        - **Proved:** `e2e/webinars.spec.ts`. Streaming is turned on in the
+          form and the API shows it. The Stream tab waits to go live. The
+          link it mints is the meeting's playlist, and the admin answers it
+          404 (nothing streamed) rather than 401.
 - **W7: RTMP push** (forge-media, FCP).
   - An AAC encoder, FLV, the RTMP client, and the meeting's sealed stream key.
 - **A7: Anvil.** The attendee's and the host's views (§2.9), and chat in every
