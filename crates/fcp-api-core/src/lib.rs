@@ -410,12 +410,6 @@ pub fn create_router_with(
                 "/provision/:key/firmware/:image/:file",
                 axum::routing::get(v1::provisioning::serve_firmware),
             )
-            // A webinar's stream to a link's holder (`docs/WEBINARS.md`
-            // §2.8): the link in the path is the credential.
-            .route(
-                "/api/v1/conferences/meetings/:id/stream/:token/:file",
-                axum::routing::get(v1::webinar_stream::serve),
-            )
             // A brand's assets, public by hash (`docs/BRANDING.md` §6).
             .route(
                 "/brand/v1/assets/:sha256",
@@ -427,6 +421,17 @@ pub fn create_router_with(
                 "/.well-known/fcp-provisioning",
                 axum::routing::get(v1::softphone::well_known),
             ),
+    );
+    // A webinar's stream to a link's holder (`docs/WEBINARS.md` §2.8): the
+    // link in the path is the credential. An operation of the API, so its
+    // calls are logged as the others' are.
+    router = router.merge(
+        Router::new()
+            .route(
+                "/api/v1/conferences/meetings/:id/stream/:token/:file",
+                axum::routing::get(v1::webinar_stream::serve),
+            )
+            .layer(middleware::from_fn(route_log::record)),
     );
     // `/api/v1/health` says `ok` and a version and nothing else; it is
     // what a load balancer or the API gateway probes, and a probe carries
