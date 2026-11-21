@@ -16,6 +16,9 @@ const REALM: &str = "e2e.local";
 const ROOM: &str = "8000";
 const SOON: Duration = Duration::from_secs(5);
 const A_WHILE: Duration = Duration::from_secs(20);
+/// Video on a test node: any codec, and admission priced by the fixed table
+/// rather than a start-up benchmark a busy runner makes small.
+const VIDEO: &str = "video_native_codecs_only = false\nvideo_benchmark_seconds = 0\n";
 
 /// The cluster: the testkit's two conference nodes and a call manager
 /// on one database.
@@ -696,7 +699,7 @@ async fn a_forwarding_room_on_two_nodes_forwards_each_person_across_the_trunk() 
         db.url(),
         dir.path(),
         ClusterOptions {
-            conference_extra: "video_native_codecs_only = false\n".into(),
+            conference_extra: VIDEO.into(),
             ..ClusterOptions::default()
         },
     )
@@ -1519,7 +1522,7 @@ async fn a_video_webinar_s_edge_forwards_the_stage_s_composite() {
         dir.path(),
         ClusterOptions {
             join_secret: Some("join-s3cret".into()),
-            conference_extra: "video_native_codecs_only = false\n".into(),
+            conference_extra: VIDEO.into(),
             ..ClusterOptions::default()
         },
     )

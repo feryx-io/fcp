@@ -436,6 +436,9 @@ pub struct ConferenceCallHandler {
     tree_outbox: DashMap<RoomKey, stage::Outbox>,
     /// On a stage: the last op of each edge's it applied.
     tree_acked: DashMap<(RoomKey, String), u64>,
+    /// When an attendee's join last paid for the audience's composite: the
+    /// joins after it, until the budget is recomputed, do not pay again.
+    audience_encode_held: DashMap<RoomKey, Instant>,
     /// On an edge: the room's passthrough mode before it became one.
     edge_passthrough_was: DashMap<RoomKey, forge_conference::video::PassthroughMode>,
     /// This node's cluster id: what peers see in our trunk INVITEs and in
@@ -1003,6 +1006,7 @@ impl ConferenceCallHandler {
             tree_outbox: DashMap::new(),
             tree_acked: DashMap::new(),
             edge_passthrough_was: DashMap::new(),
+            audience_encode_held: DashMap::new(),
             node_id,
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),
@@ -6164,6 +6168,11 @@ fn unix_ms() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+/// How long one attendee's payment for the audience's composite covers the
+/// joins after it: past the budget's recompute (every 5 s), which then sees
+/// the composite running.
+const AUDIENCE_ENCODE_HOLD: Duration = Duration::from_secs(10);
+
 /// BYEs in flight at once during shutdown.
 const SHUTDOWN_BYE_CONCURRENCY: usize = 32;
 
@@ -6563,9 +6572,28 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 .ok()
                 .and_then(|room| room.video());
             // An attendee is priced at what they watch (`docs/WEBINARS.md`
-            // §2.3).
+            // §2.3). The audience's composite is encoded once: on a
+            // webinar's edge not at all (the stage's is forwarded, §2.7),
+            // and a burst of joins pays for it once, not once each before
+            // the next recompute sees the first.
             let cost = if known_attendee {
-                capacity.audience_join_cost(settings, codecs, room_video.as_deref(), view_streams)
+                let paid = self.is_edge(&key)
+                    || self
+                        .audience_encode_held
+                        .get(&key)
+                        .is_some_and(|at| at.elapsed() < AUDIENCE_ENCODE_HOLD);
+                let cost = capacity.audience_join_cost(
+                    settings,
+                    codecs,
+                    room_video.as_deref(),
+                    view_streams,
+                    paid,
+                );
+                if !paid && !view_streams && cost.has_units() {
+                    self.audience_encode_held
+                        .insert(key.clone(), Instant::now());
+                }
+                cost
             } else {
                 capacity.join_cost(settings, codecs, room_video.as_deref(), view_streams)
             };

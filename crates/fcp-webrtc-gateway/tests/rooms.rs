@@ -473,6 +473,9 @@ rtp_port_end = {rtp_end}
 recordings_dir = "{dir}/recordings"
 announcements_dir = "{dir}/announcements"
 join_secret = "{JOIN_SECRET}"
+# Video priced by the fixed table, not a start-up benchmark a busy
+# runner makes small.
+video_benchmark_seconds = 0
 {conference}
 
 [logging]

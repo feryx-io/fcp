@@ -179,6 +179,11 @@ pub struct Cost {
 }
 
 impl Cost {
+    /// Whether it holds any engine's units, beside egress.
+    pub fn has_units(&self) -> bool {
+        self.units.iter().any(|(_, _, u)| *u > 0)
+    }
+
     pub fn zero() -> Self {
         Self::default()
     }
@@ -978,6 +983,7 @@ impl VideoCapacity {
         codecs: &[VideoCodec],
         room_video: Option<&VideoRoom>,
         forwarding: bool,
+        composite_paid: bool,
     ) -> Cost {
         let mut cost = Cost::zero();
         if forwarding {
@@ -992,13 +998,18 @@ impl VideoCapacity {
             return cost;
         }
         cost.add_egress(default_kbps(settings.resolution));
-        let shared = room_video.is_some_and(|video| {
-            video
-                .status()
-                .outputs
-                .iter()
-                .any(|o| o.scope == OutputScope::All && o.view == View::Composite)
-        });
+        // `composite_paid`: a webinar's edge, which forwards its audience
+        // the stage's composite (`docs/WEBINARS.md` §2.7), or another
+        // attendee already holding the composite's encode until the next
+        // recompute sees it.
+        let shared = composite_paid
+            || room_video.is_some_and(|video| {
+                video
+                    .status()
+                    .outputs
+                    .iter()
+                    .any(|o| o.scope == OutputScope::All && o.view == View::Composite)
+            });
         if !shared {
             let fps = settings.fps.max(1);
             let dearest = codecs
@@ -1753,11 +1764,18 @@ mod tests {
         let vp8 = [VideoCodec::VP8];
 
         // The first attendee watching starts the audience's composite.
-        let first = cap.audience_join_cost(&settings, &vp8, Some(&video), false);
+        let first = cap.audience_join_cost(&settings, &vp8, Some(&video), false, false);
         assert_eq!(first.on_engine(&MediaDevice::Host, Engine::Decode), 0);
         assert!(first.on_engine(&MediaDevice::Host, Engine::Encode) > 0);
         assert!(first.on_engine(&MediaDevice::Host, Engine::Compose) > 0);
         assert_eq!(first.egress_kbps(), default_kbps(res));
+        assert!(first.has_units());
+        // On a webinar's edge, or with another join already paying for it:
+        // the picture's rate out alone.
+        let paid = cap.audience_join_cost(&settings, &vp8, Some(&video), false, true);
+        assert_eq!(paid.total(), 0, "{paid}");
+        assert!(!paid.has_units());
+        assert_eq!(paid.egress_kbps(), default_kbps(res));
         let _x = video
             .subscribe(
                 "x",
@@ -1774,14 +1792,14 @@ mod tests {
             )
             .unwrap();
         // Every one after shares it: their picture's rate out, nothing more.
-        let next = cap.audience_join_cost(&settings, &vp8, Some(&video), false);
+        let next = cap.audience_join_cost(&settings, &vp8, Some(&video), false, false);
         assert_eq!(next.total(), 0, "{next}");
         assert_eq!(next.egress_kbps(), default_kbps(res));
         // A stage member costs a decode, and sends to the room.
         let stage = cap.join_cost(&settings, &vp8, Some(&video), false);
         assert!(stage.on_engine(&MediaDevice::Host, Engine::Decode) > 0);
         // A forwarding attendee: the default view of the two cameras.
-        let fwd = cap.audience_join_cost(&settings, &vp8, Some(&video), true);
+        let fwd = cap.audience_join_cost(&settings, &vp8, Some(&video), true, false);
         assert_eq!(fwd.total(), 0);
         assert_eq!(fwd.egress_kbps(), 1200 + 2 * 200);
         room.disable_video();
