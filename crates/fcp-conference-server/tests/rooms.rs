@@ -3626,6 +3626,8 @@ async fn a_webinar_that_requires_registration_admits_its_registrants_alone() {
 /// A webinar streamed out as HLS (`docs/WEBINARS.md` §2.8, W6.2): nothing
 /// in practice; from going live, a live playlist of segments a player can
 /// fetch from the node; and when the webinar ends, the playlist ends too.
+/// The stream is a recording (W6.3a): its row, completed when it ends, and
+/// its directory downloaded as one MP4 and deleted as one.
 #[cfg(feature = "recording-mp4")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_live_webinar_is_streamed_as_hls_until_it_ends() {
@@ -3698,6 +3700,38 @@ async fn a_live_webinar_is_streamed_as_hls_until_it_ends() {
     let (code, _) = fetch(format!("{base}..%2Fsecret")).await;
     assert_ne!(code, 200, "only a stream's own files are served");
 
+    // Kept as a recording (W6.3a): a `stream` row naming the directory,
+    // written before the first segment, which nobody deletes while it runs.
+    use fcp_core::recording::RecordingStore as _;
+    let recordings = fcp_storage_postgres::recording::PostgresRecordingStore::new(
+        stack.seed.storage().pool().clone(),
+    );
+    let (_, w) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+    let sitting = w["stream"]["sitting"].as_str().unwrap().to_string();
+    let recording_id: fcp_core::RecordingId = w["stream"]["recording_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the stream names its recording: {w}"))
+        .parse()
+        .unwrap();
+    let row = recordings
+        .get_recording(&recording_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.kind, fcp_core::RecordingKind::Stream);
+    assert!(row.is_running());
+    assert!(
+        row.path.ends_with(&format!("/hls/{sitting}")),
+        "{}",
+        row.path
+    );
+    assert_eq!(row.file_name(), sitting);
+    assert!(row.meeting_id.is_some());
+    let (code, _) = stack
+        .send("DELETE", &format!("/recordings/{sitting}"), None)
+        .await;
+    assert_eq!(code, 409, "a running stream is not deleted");
+
     // Ended: the playlist ends, and stays for replay.
     let (code, out) = stack
         .post(&format!("/conferences/{ROOM}/webinar/end"))
@@ -3715,6 +3749,64 @@ async fn a_live_webinar_is_streamed_as_hls_until_it_ends() {
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+    // Its row completed, the directory's size its own.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let row = loop {
+        let row = recordings
+            .get_recording(&recording_id)
+            .await
+            .unwrap()
+            .unwrap();
+        if !row.is_running() {
+            break row;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never completed: {row:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert!(row.duration_secs.unwrap_or(0) >= 1, "{row:?}");
+    // Downloaded as a recording is, it is one MP4: the init segment and
+    // every segment, in order.
+    let dir = std::path::Path::new(&row.path);
+    let mut segments: Vec<(u32, std::path::PathBuf)> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            let n = name
+                .strip_prefix("seg-")?
+                .strip_suffix(".m4s")?
+                .parse()
+                .ok()?;
+            Some((n, dir.join(name)))
+        })
+        .collect();
+    segments.sort();
+    assert!(segments.len() >= 3, "{segments:?}");
+    let mut whole = std::fs::read(dir.join("init.mp4")).unwrap();
+    for (_, path) in &segments {
+        whole.extend(std::fs::read(path).unwrap());
+    }
+    let (code, downloaded) = fcp_testkit::smoke::http_get_bytes(&loopback(
+        stack.http,
+        &format!("/recordings/{sitting}"),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(code, 200);
+    assert_eq!(downloaded.len(), whole.len());
+    assert!(
+        downloaded == whole,
+        "the stream comes down as its files, in order"
+    );
+    assert!(&downloaded[4..8] == b"ftyp", "an MP4");
+    // Deleted as one: the directory goes.
+    let (code, out) = stack
+        .send("DELETE", &format!("/recordings/{sitting}"), None)
+        .await;
+    assert_eq!(code, 200, "{out}");
+    assert!(!dir.exists());
     let _ = host_call.hangup().await;
     stack.finish().await;
 }

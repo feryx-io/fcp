@@ -58,6 +58,9 @@ pub struct RecordingResponse {
     pub node_id: String,
     /// The file's name; the path on the node is not a caller's business.
     pub file_name: String,
+    /// `room`, `participant`, or `stream`: a webinar's stream out, which
+    /// downloads as one MP4.
+    pub kind: String,
     pub format: String,
     pub trigger: String,
     pub consent: String,
@@ -85,7 +88,8 @@ impl From<Recording> for RecordingResponse {
             meeting_id: r.meeting_id.map(|m| m.to_string()),
             room_number: r.room_number.clone(),
             node_id: r.node_id.clone(),
-            file_name: r.file_name().to_string(),
+            file_name: r.download_name(),
+            kind: r.kind.as_str().to_string(),
             format: r.format.as_str().to_string(),
             trigger: r.trigger.as_str().to_string(),
             consent: r.consent.as_str().to_string(),
@@ -372,7 +376,7 @@ pub async fn download_recording(
                 ("content-type", recording.format.content_type().to_string()),
                 (
                     "content-disposition",
-                    format!("attachment; filename=\"{}\"", recording.file_name()),
+                    format!("attachment; filename=\"{}\"", recording.download_name()),
                 ),
             ],
             bytes,
@@ -413,7 +417,7 @@ pub async fn download_recording(
             ("content-type", recording.format.content_type().to_string()),
             (
                 "content-disposition",
-                format!("attachment; filename=\"{}\"", recording.file_name()),
+                format!("attachment; filename=\"{}\"", recording.download_name()),
             ),
         ],
         Body::from_stream(resp.bytes_stream()),

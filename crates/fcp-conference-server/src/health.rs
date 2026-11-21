@@ -4864,7 +4864,60 @@ async fn stream_from_peer(
     }
 }
 
+/// A webinar's stream by its sitting (`docs/WEBINARS.md` §2.8): the
+/// directory under `[conference.hls] dir`, when `name` names one.
+fn stream_dir(state: &ConferenceState, name: &str) -> Option<std::path::PathBuf> {
+    if !crate::recording::hls::is_sitting_name(name) {
+        return None;
+    }
+    let dir = state.conference_handler.hls_dir().join(name);
+    dir.is_dir().then_some(dir)
+}
+
+/// A stream downloaded: its init segment and its segments, in order, one
+/// fragmented MP4. A stream still being written comes down as far as it
+/// has got.
+async fn stream_download(dir: std::path::PathBuf) -> axum::response::Response {
+    use futures::{StreamExt as _, TryStreamExt as _};
+    let files = match tokio::task::spawn_blocking(move || crate::recording::hls::stream_files(&dir))
+        .await
+    {
+        Ok(Ok(files)) if !files.is_empty() => files,
+        Ok(Ok(_)) => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                serde_json::json!({ "error": "The stream has no init segment yet" }),
+            )
+        }
+        Ok(Err(e)) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "error": format!("Failed to read the stream: {e}") }),
+            )
+        }
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "error": e.to_string() }),
+            )
+        }
+    };
+    let body = futures::stream::iter(files)
+        .then(|path| async move { tokio::fs::File::open(path).await })
+        .map_ok(tokio_util::io::ReaderStream::new)
+        .try_flatten();
+    (
+        StatusCode::OK,
+        [("content-type", "video/mp4")],
+        Body::from_stream(body),
+    )
+        .into_response()
+}
+
 async fn local_download(state: &ConferenceState, filename: &str) -> axum::response::Response {
+    if let Some(dir) = stream_dir(state, filename) {
+        return stream_download(dir).await;
+    }
     let recordings_dir = state.conference_handler.recordings_dir();
     let Some(path) = safe_recording_path(&recordings_dir, filename) else {
         return json_response(
@@ -5035,6 +5088,27 @@ async fn local_delete(
     state: &ConferenceState,
     filename: &str,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if let Some(dir) = stream_dir(state, filename) {
+        if state.conference_handler.is_streaming(filename) {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "The stream is still being written" })),
+            );
+        }
+        return match tokio::fs::remove_dir_all(&dir).await {
+            Ok(()) => {
+                info!(sitting = %filename, "Stream deleted");
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({ "status": "deleted", "filename": filename })),
+                )
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to delete the stream: {e}") })),
+            ),
+        };
+    }
     let recordings_dir = state.conference_handler.recordings_dir();
     let Some(path) = safe_recording_path(&recordings_dir, filename) else {
         return (

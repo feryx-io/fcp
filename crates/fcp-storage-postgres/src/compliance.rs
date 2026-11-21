@@ -28,12 +28,15 @@ fn to_system_time(dt: DateTime<Utc>) -> SystemTime {
 }
 
 /// Whether a live row names the file at `path` (an SQL expression): a call
-/// or conference recording, a voicemail message or greeting, a prompt, a
-/// profile picture.
+/// or conference recording, a file in a webinar's stream (whose row names
+/// its directory), a voicemail message or greeting, a prompt, a profile
+/// picture.
 fn referenced_sql(path: &str) -> String {
     format!(
         "EXISTS (SELECT 1 FROM call_recordings WHERE path = {path})
          OR EXISTS (SELECT 1 FROM conference_recordings WHERE path = {path})
+         OR EXISTS (SELECT 1 FROM conference_recordings
+                    WHERE kind = 'stream' AND starts_with({path}, path || '/'))
          OR EXISTS (SELECT 1 FROM voicemail_messages WHERE recording_path = {path})
          OR EXISTS (SELECT 1 FROM voicemail_greetings WHERE audio_path = {path})
          OR EXISTS (SELECT 1 FROM prompts WHERE audio_path = {path})

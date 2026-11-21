@@ -1016,7 +1016,11 @@ async fn apply_retention(storage: &DynStorage, policy: &CompliancePolicy) -> Ret
                     for recording in recordings {
                         // On shared storage the file is reachable here;
                         // usually it is not, and that is not an error.
-                        let _ = tokio::fs::remove_file(&recording.path).await;
+                        let path = std::path::PathBuf::from(&recording.path);
+                        let _ = tokio::task::spawn_blocking(move || {
+                            crate::recording::remove_recording_path(&path)
+                        })
+                        .await;
                         match store.delete_recording(&recording.id).await {
                             Ok(true) => report.conference_recordings_deleted += 1,
                             Ok(false) => {}
@@ -1334,7 +1338,12 @@ async fn reap_files(store: &dyn ComplianceStore, config: &UpkeepConfig, report: 
         } else if !under_file_root(Path::new(&entry.path), &config.file_roots) {
             Err("not under a configured file root".to_string())
         } else {
-            match tokio::fs::remove_file(&entry.path).await {
+            // A webinar's stream is a directory (`docs/WEBINARS.md` §2.8).
+            let removed = match tokio::fs::metadata(&entry.path).await {
+                Ok(meta) if meta.is_dir() => tokio::fs::remove_dir_all(&entry.path).await,
+                _ => tokio::fs::remove_file(&entry.path).await,
+            };
+            match removed {
                 Ok(()) => {
                     report.files_removed += 1;
                     Ok(())

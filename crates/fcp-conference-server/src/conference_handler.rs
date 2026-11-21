@@ -3016,6 +3016,7 @@ impl ConferenceCallHandler {
         self.recordings
             .get(key)
             .and_then(|r| r.consent_audio.clone())
+            .or_else(|| self.streams.get(key).and_then(|s| s.consent_audio.clone()))
     }
 
     /// Tell the room it is being recorded, if the tenant's policy says to

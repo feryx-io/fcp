@@ -503,6 +503,56 @@ async fn open(url: &str) -> anyhow::Result<(Box<dyn HttpStream>, String, String)
 /// The body as the server meant it: chunked transfer encoding undone
 /// (a streaming body — anything behind a compression layer, say — is
 /// sent in chunks even to a client that asked for no encoding).
+/// `GET` over plain HTTP/1.1, the body as bytes: for a file, where
+/// [`http_get`]'s text would not be exact.
+pub async fn http_get_bytes(url: &str) -> anyhow::Result<(u16, Vec<u8>)> {
+    let (mut stream, authority, path) = open(url).await?;
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nAccept: */*\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await?;
+    let mut raw = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut raw))
+        .await
+        .map_err(|_| anyhow::anyhow!("read timeout"))??;
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| anyhow::anyhow!("no end of headers"))?;
+    let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+    let body = &raw[split + 4..];
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| anyhow::anyhow!("malformed response: {head:?}"))?;
+    let chunked = head
+        .lines()
+        .any(|l| l.to_ascii_lowercase().replace(' ', "") == "transfer-encoding:chunked");
+    if !chunked {
+        return Ok((status, body.to_vec()));
+    }
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(eol) = rest.windows(2).position(|w| w == b"\r\n") {
+        let size = std::str::from_utf8(&rest[..eol])
+            .ok()
+            .and_then(|l| l.split(';').next())
+            .and_then(|h| usize::from_str_radix(h.trim(), 16).ok())
+            .unwrap_or(0);
+        let after = &rest[eol + 2..];
+        if size == 0 || after.len() < size {
+            break;
+        }
+        out.extend_from_slice(&after[..size]);
+        rest = after[size..]
+            .strip_prefix(b"\r\n")
+            .unwrap_or(&after[size..]);
+    }
+    Ok((status, out))
+}
+
 fn decode_body(head: &str, body: &str) -> String {
     let chunked = head
         .lines()

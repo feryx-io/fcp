@@ -2598,9 +2598,10 @@ async fn sweep_registered_recordings(
             }
         };
         for recording in expired.iter().filter(|r| r.node_id == node_id) {
-            match std::fs::remove_file(&recording.path) {
+            // A stream's path is its directory.
+            match fcp_core::recording::remove_recording_path(std::path::Path::new(&recording.path))
+            {
                 Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
                     warn!(recording = %recording.id, path = %recording.path, error = %e, "Recording retention: could not delete the file; keeping the row");
                     continue;
@@ -2635,13 +2636,11 @@ async fn close_off_orphaned_recordings(
         }
     };
     for recording in running {
-        let meta = std::fs::metadata(&recording.path).ok();
-        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-        // The file's last write is when the recording really ended.
-        let ended_at = meta
-            .as_ref()
-            .and_then(|m| m.modified().ok())
-            .unwrap_or_else(SystemTime::now);
+        // The file's last write (a stream's, its directory's last) is when
+        // the recording really ended.
+        let on_disk = fcp_core::recording::recording_on_disk(std::path::Path::new(&recording.path));
+        let size = on_disk.map(|(size, _)| size).unwrap_or(0);
+        let ended_at = on_disk.map(|(_, at)| at).unwrap_or_else(SystemTime::now);
         let duration = ended_at
             .duration_since(recording.started_at)
             .map(|d| d.as_secs())

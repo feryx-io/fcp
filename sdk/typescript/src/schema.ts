@@ -11940,6 +11940,11 @@ export interface components {
                 node_id: string;
                 /** @description The file's name; the path on the node is not a caller's business. */
                 file_name: string;
+                /**
+                 * @description `room`, `participant`, or `stream`: a webinar's stream out, which
+                 *     downloads as one MP4.
+                 */
+                kind: string;
                 format: string;
                 trigger: string;
                 consent: string;
@@ -13521,6 +13526,11 @@ export interface components {
             node_id: string;
             /** @description The file's name; the path on the node is not a caller's business. */
             file_name: string;
+            /**
+             * @description `room`, `participant`, or `stream`: a webinar's stream out, which
+             *     downloads as one MP4.
+             */
+            kind: string;
             format: string;
             trigger: string;
             consent: string;
