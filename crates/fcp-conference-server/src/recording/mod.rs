@@ -247,6 +247,10 @@ pub struct RecorderSettings {
     pub video: Option<VideoSettings>,
     /// Opus bitrate for the mix.
     pub audio_bitrate: u32,
+    /// An HLS stream instead of a file (`docs/WEBINARS.md` §2.8): CMAF
+    /// segments of this many milliseconds, an init segment and a live
+    /// playlist in the directory `path` names. MP4 only.
+    pub hls_segment_ms: Option<u64>,
 }
 
 /// The video half of a recording.
@@ -260,6 +264,8 @@ pub struct VideoSettings {
 #[cfg(any(feature = "recording-webm", feature = "recording-mp4"))]
 pub use mux::Recorder;
 
+pub mod hls;
+
 #[cfg(any(feature = "recording-webm", feature = "recording-mp4"))]
 mod mux {
     use super::{RecorderSettings, RecordingOutcome};
@@ -271,13 +277,13 @@ mod mux {
     use fcp_core::recording::RecordingFormat;
     use forge_codecs::opus::{OpusApplication, OpusCodec, OpusConfig};
     use forge_codecs::AudioCodec as _;
-    use forge_conference::video::{RecordRequest, RecordedFrame, RecordingSink, VideoRoom};
+    use forge_conference::video::{RecordRequest, RecordingSink, VideoRoom};
     use forge_conference::{ConferenceRoom, MixedFrame};
     use forge_core::VideoCodec;
     use forge_resampler::Resampler;
     use forge_video::flavor::Flavor;
     use tokio::sync::broadcast::error::RecvError;
-    use tokio::sync::{mpsc, Notify};
+    use tokio::sync::Notify;
     use tokio::task::JoinHandle;
     use tracing::{debug, info, warn};
 
@@ -299,6 +305,8 @@ mod mux {
         Webm(forge_webm::WebmWriter<std::fs::File>),
         #[cfg(feature = "recording-mp4")]
         Mp4(forge_mp4::Mp4Writer<std::fs::File>),
+        #[cfg(feature = "recording-mp4")]
+        Hls(Box<super::hls::HlsWriter>),
     }
 
     impl Writer {
@@ -375,6 +383,8 @@ mod mux {
                 Writer::Webm(w) => Ok(w.write_video(ms, keyframe, data)?),
                 #[cfg(feature = "recording-mp4")]
                 Writer::Mp4(w) => Ok(w.write_video(ms, keyframe, data)?),
+                #[cfg(feature = "recording-mp4")]
+                Writer::Hls(w) => w.write_video(ms, keyframe, data),
             }
         }
 
@@ -384,6 +394,8 @@ mod mux {
                 Writer::Webm(w) => Ok(w.write_audio(ms, data)?),
                 #[cfg(feature = "recording-mp4")]
                 Writer::Mp4(w) => Ok(w.write_audio(ms, data)?),
+                #[cfg(feature = "recording-mp4")]
+                Writer::Hls(w) => w.write_audio(ms, data),
             }
         }
 
@@ -404,6 +416,25 @@ mod mux {
                         duration_ms: s.duration_ms,
                         bytes: s.bytes,
                     })
+                }
+                #[cfg(feature = "recording-mp4")]
+                Writer::Hls(w) => {
+                    let (duration_ms, bytes) = w.finish()?;
+                    Ok(Finished { duration_ms, bytes })
+                }
+            }
+        }
+
+        /// Whether the writer wants the encoder's next frame to be a
+        /// keyframe: an HLS segment nearing its target.
+        fn wants_keyframe(&mut self, ms: u64) -> bool {
+            match self {
+                #[cfg(feature = "recording-mp4")]
+                Writer::Hls(w) => w.wants_keyframe(ms),
+                #[allow(unreachable_patterns)]
+                _ => {
+                    let _ = ms;
+                    false
                 }
             }
         }
@@ -468,18 +499,35 @@ mod mux {
                 (None, _) => None,
             };
 
-            if let Some(parent) = settings.path.parent() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("creating {}", parent.display()))?;
-            }
-            let file = std::fs::File::create(&settings.path)
-                .with_context(|| format!("creating {}", settings.path.display()))?;
-            let writer = Writer::open(
-                container,
-                file,
-                sink.as_ref().map(|s| &s.flavor),
-                settings.audio_bitrate,
-            )?;
+            let writer = match settings.hls_segment_ms {
+                #[cfg(feature = "recording-mp4")]
+                Some(segment_ms) => {
+                    if container != RecordingFormat::Mp4 {
+                        anyhow::bail!("an HLS stream is MP4, not {name}");
+                    }
+                    Writer::Hls(Box::new(super::hls::HlsWriter::open(
+                        &settings.path,
+                        sink.as_ref().map(|s| &s.flavor),
+                        segment_ms,
+                    )?))
+                }
+                #[cfg(not(feature = "recording-mp4"))]
+                Some(_) => anyhow::bail!("this build cannot stream HLS (feature `recording-mp4`)"),
+                None => {
+                    if let Some(parent) = settings.path.parent() {
+                        std::fs::create_dir_all(parent)
+                            .with_context(|| format!("creating {}", parent.display()))?;
+                    }
+                    let file = std::fs::File::create(&settings.path)
+                        .with_context(|| format!("creating {}", settings.path.display()))?;
+                    Writer::open(
+                        container,
+                        file,
+                        sink.as_ref().map(|s| &s.flavor),
+                        settings.audio_bitrate,
+                    )?
+                }
+            };
 
             let opus = OpusCodec::with_config(OpusConfig {
                 sample_rate: OPUS_RATE,
@@ -575,7 +623,8 @@ mod mux {
         sample_rate: u32,
         stop: Arc<Notify>,
     ) -> RecordingOutcome {
-        let mut video: Option<mpsc::Receiver<RecordedFrame>> = sink.map(|s| s.frames);
+        // Kept whole: an HLS stream asks it for keyframes.
+        let mut video: Option<RecordingSink> = sink;
         let mut out = RecordingOutcome::default();
 
         // Time zero: whichever side produced a frame first.
@@ -648,7 +697,7 @@ mod mux {
 
                 frame = async {
                     match video.as_mut() {
-                        Some(rx) => rx.recv().await,
+                        Some(sink) => sink.frames.recv().await,
                         None => std::future::pending().await,
                     }
                 } => match frame {
@@ -664,7 +713,14 @@ mod mux {
                         let delta = frame.frame.timestamp.wrapping_sub(pts0) as u64;
                         let ms = video_anchor_ms + delta / 90;
                         match writer.write_video(ms, frame.frame.keyframe, &frame.frame.data) {
-                            Ok(()) => out.video_frames += 1,
+                            Ok(()) => {
+                                out.video_frames += 1;
+                                if writer.wants_keyframe(ms) {
+                                    if let Some(sink) = video.as_ref() {
+                                        sink.request_keyframe();
+                                    }
+                                }
+                            }
                             Err(e) if out.video_frames == 0 => {
                                 // The first frame opens the video track
                                 // (MP4 lifts its parameter sets from it);

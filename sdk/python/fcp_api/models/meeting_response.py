@@ -78,6 +78,7 @@ class MeetingResponse:
             chat (None | str | Unset): Chat in the room: `everyone`, `hosts` (an attendee posts to the
                 hosts only) or `off`; unset is `everyone` in a meeting and `hosts`
                 in a webinar.
+            streaming (None | str | Unset): A webinar streamed out while it is live: `hls`, or `off` (unset).
      """
 
     id: str
@@ -124,6 +125,7 @@ class MeetingResponse:
     panelist_pin: None | str | Unset = UNSET
     qa: None | str | Unset = UNSET
     chat: None | str | Unset = UNSET
+    streaming: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -282,6 +284,12 @@ class MeetingResponse:
         else:
             chat = self.chat
 
+        streaming: None | str | Unset
+        if isinstance(self.streaming, Unset):
+            streaming = UNSET
+        else:
+            streaming = self.streaming
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -345,6 +353,8 @@ class MeetingResponse:
             field_dict["qa"] = qa
         if chat is not UNSET:
             field_dict["chat"] = chat
+        if streaming is not UNSET:
+            field_dict["streaming"] = streaming
 
         return field_dict
 
@@ -568,6 +578,16 @@ class MeetingResponse:
         chat = _parse_chat(d.pop("chat", UNSET))
 
 
+        def _parse_streaming(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        streaming = _parse_streaming(d.pop("streaming", UNSET))
+
+
         meeting_response = cls(
             id=id,
             tenant_id=tenant_id,
@@ -613,6 +633,7 @@ class MeetingResponse:
             panelist_pin=panelist_pin,
             qa=qa,
             chat=chat,
+            streaming=streaming,
         )
 
 

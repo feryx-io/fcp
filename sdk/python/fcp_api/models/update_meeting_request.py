@@ -67,6 +67,7 @@ class UpdateMeetingRequest:
             chat (None | str | Unset): `everyone`, `hosts` or `off`; `null` goes back to the kind's
                 default.
             registration (bool | None | Unset):
+            streaming (None | str | Unset): `hls` or `off`; `null` is off.
      """
 
     name: None | str | Unset = UNSET
@@ -108,6 +109,7 @@ class UpdateMeetingRequest:
     qa_anonymous: bool | None | Unset = UNSET
     chat: None | str | Unset = UNSET
     registration: bool | None | Unset = UNSET
+    streaming: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -360,6 +362,12 @@ class UpdateMeetingRequest:
         else:
             registration = self.registration
 
+        streaming: None | str | Unset
+        if isinstance(self.streaming, Unset):
+            streaming = UNSET
+        else:
+            streaming = self.streaming
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -443,6 +451,8 @@ class UpdateMeetingRequest:
             field_dict["chat"] = chat
         if registration is not UNSET:
             field_dict["registration"] = registration
+        if streaming is not UNSET:
+            field_dict["streaming"] = streaming
 
         return field_dict
 
@@ -864,6 +874,16 @@ class UpdateMeetingRequest:
         registration = _parse_registration(d.pop("registration", UNSET))
 
 
+        def _parse_streaming(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        streaming = _parse_streaming(d.pop("streaming", UNSET))
+
+
         update_meeting_request = cls(
             name=name,
             guest_pin=guest_pin,
@@ -904,6 +924,7 @@ class UpdateMeetingRequest:
             qa_anonymous=qa_anonymous,
             chat=chat,
             registration=registration,
+            streaming=streaming,
         )
 
 

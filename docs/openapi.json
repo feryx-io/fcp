@@ -26660,6 +26660,13 @@
           "registration": {
             "type": "boolean",
             "description": "Whether a webinar's attendees must register."
+          },
+          "streaming": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A webinar streamed out while it is live: `hls` or `off`."
           }
         }
       },
@@ -31399,6 +31406,13 @@
             "type": "boolean",
             "description": "Whether a webinar's attendees must register: one is admitted only\nby the token minted for their registration."
           },
+          "streaming": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A webinar streamed out while it is live: `hls`, or `off` (unset)."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -35931,6 +35945,13 @@
                 "registration": {
                   "type": "boolean",
                   "description": "Whether a webinar's attendees must register: one is admitted only\nby the token minted for their registration."
+                },
+                "streaming": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A webinar streamed out while it is live: `hls`, or `off` (unset)."
                 },
                 "created_at": {
                   "type": "string",
@@ -47121,6 +47142,13 @@
               "boolean",
               "null"
             ]
+          },
+          "streaming": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`hls` or `off`; `null` is off."
           }
         }
       },

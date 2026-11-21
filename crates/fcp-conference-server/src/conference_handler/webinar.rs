@@ -252,6 +252,9 @@ impl ConferenceCallHandler {
             }
             json["tree"] = tree;
         }
+        if let Some(stream) = self.stream_json(key) {
+            json["stream"] = stream;
+        }
         Some(json)
     }
 
@@ -402,6 +405,8 @@ impl ConferenceCallHandler {
                         warn!(room = %key.room, error = %e, "Auto-record failed (going live)");
                     }
                 }
+                // Streamed out from the stage alone (§2.8).
+                me.start_stream(&key).await;
                 if let_in {
                     me.let_in_lobby(key).await;
                 }
@@ -524,6 +529,10 @@ impl ConferenceCallHandler {
         // A stage's edges end with it: told now, before its room empties
         // and it is a stage no more.
         self.queue_tree_ending(key);
+        if let Some(me) = self.me() {
+            let key = key.clone();
+            tokio::spawn(async move { me.stop_stream(&key).await });
+        }
         true
     }
 
@@ -575,6 +584,10 @@ impl ConferenceCallHandler {
         self.keep_sitting(s.kept);
         self.leave_the_stage(key);
         self.audience_encode_held.remove(key);
+        if let Some(me) = self.me() {
+            let key = key.clone();
+            tokio::spawn(async move { me.stop_stream(&key).await });
+        }
     }
 
     /// The live webinars whose stage has been empty past `grace`: each is

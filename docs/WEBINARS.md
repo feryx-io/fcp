@@ -1049,6 +1049,126 @@ For an audience that is not on FCP at all.
 - **W6: HLS** (forge-media, FCP).
   - CMAF segments from forge-mp4, the playlist, the bucket or directory, and the
     admin serving it.
+  - **The plan** (written 2026-11-20 from the code). In three parts.
+    - **What is there:**
+      - `forge_mp4::Mp4Writer` writes one stream, the init segment and
+        every fragment to one `W`, and patches durations in at `finish`.
+        It writes no `styp`. A fragment opens on a keyframe after
+        `min_ms`, or on any sample after `max_ms`, so a fragment can start
+        mid-picture. Audio is Opus (`dOps`), and both tracks use a
+        timescale of 1 ms.
+      - The recorder (`recording.rs`, `recording-mp4`) takes the room's
+        composite from `VideoRoom::record` and the mix as Opus, into one
+        file in `recordings_dir`.
+      - The composite's encoder makes a keyframe every 10 s
+        (`keyframe_interval`, room-wide). A recording sink cannot ask for
+        one.
+      - `fcp_cdr::S3Target` puts a file path as `application/gzip`, with
+        no `Cache-Control`.
+      - The conference server serves bare file names from
+        `recordings_dir`, and the admin proxies a recording's download.
+        Neither serves a playlist or a segment.
+    - **Decisions:**
+      1. **The segmenter is new, beside the writer.**
+         `forge_mp4::CmafSegmenter` makes the init segment once, then one
+         `styp`+`moof`+`mdat` segment for each keyframe-led group. It cuts
+         only on a video keyframe at or past the target duration (2 s by
+         default). Each segment is handed back as bytes with its duration
+         and sequence number. Audio rides in the segment its time falls in.
+         Opus in fMP4 plays in hls.js and Safari, so no AAC is needed for
+         HLS.
+      2. **A keyframe every segment, asked for by the sink.**
+         forge-conference's recording sink keeps its encoder's keyframe
+         request (`RecordingSink::request_keyframe`). The stream asks once a
+         segment, a frame before its target. The room's interval is left
+         alone. A flavor shared with subscribers then sends them a keyframe
+         every 2 s too: a little more bitrate for them.
+      3. **One stream a sitting, on the stage.** `[conference] hls` (off by
+         default) and a meeting's `streaming: hls` start a stream when the
+         webinar goes live (never in practice) and end it when the webinar
+         ends. It runs on the stage only: an edge has no stream.
+      4. **Where it goes.**
+         - Locally, `recordings_dir/hls/<sitting>/`: `init.mp4`,
+           `seg-<n>.m4s`, and `index.m3u8`.
+         - With `[conference.hls.s3]`, the same keys in a bucket. That
+           needs `S3Target::put_bytes` with a content type and a
+           `Cache-Control`: the playlist `no-cache`, the segments
+           immutable.
+         - The playlist is a live `EVENT` playlist (`EXT-X-VERSION:7`,
+           `EXT-X-MAP`, `EXT-X-TARGETDURATION`, `EXT-X-INDEPENDENT-SEGMENTS`).
+           It is rewritten after each segment, and ends with
+           `EXT-X-ENDLIST` when the webinar ends, so the stream is its own
+           recording for replay.
+      5. **Serving.**
+         - The conference server serves `/hls/{sitting}/{file}` (m3u8 and
+           m4s content types, names checked strictly).
+         - The admin serves `GET /api/v1/conferences/meetings/{id}/stream/{file}`
+           to anyone holding the meeting's stream link. That is a signed
+           viewer token, minted by a host as a registrant's link is. It
+           proxies to the stage's node, or redirects to the bucket when one
+           is set, through the CDN's public base URL
+           (`[conference.hls] public_url`) when that is set too.
+         - The meeting's `stream` in the API says its state and its
+           playlist's URL.
+    - **W6.1: the segmenter and the sink's keyframes** (forge-media).
+      **Done** (forge-media v2026.11.20.1: forge-mp4 0.2.0,
+      forge-conference 0.23.0):
+      - `forge_mp4::cmaf::CmafSegmenter` drives an `Mp4Writer` into memory
+        with its cuts on keyframes alone, and hands back the init segment
+        once and each fragment as an `styp`+`moof`+`mdat` segment.
+      - `RecordingSink::request_keyframe`.
+      - Tested:
+        - each segment's boxes, and its `tfdt` equal to its start;
+        - a keyframe first in every segment, and durations at the target;
+        - the init and the segments read back as one file;
+        - audio alone cut at the target;
+        - the request reaching the encoder.
+    - **W6.2: the stream on the stage** (FCP). **Done** (v0.25.603–604).
+      As built:
+      - **The node:**
+        - `[conference.hls]`: `enabled` (off by default), `segment_secs`
+          (2), and `dir` (`hls` under `recordings_dir`);
+        - it needs the `recording-mp4` build, and one without it says so
+          and does not stream.
+      - **The meeting's `streaming`** (`off` or `hls`; migration 148) in the
+        API and the SDKs; `Meeting::streams_hls` is true for a webinar
+        alone.
+      - **Its life** (`conference_handler/stream.rs`):
+        - the stream starts when the stage goes live, never in practice and
+          never on an edge, and ends when the webinar ends or its sitting
+          closes;
+        - it is the recorder's composite and mix, with the codec chosen as
+          for an MP4 recording;
+        - a node with no H.264, HEVC or AV1 encoder streams the audio
+          alone.
+      - **The writer** (`recording/hls.rs`):
+        - `init.mp4`, `seg-<n>.m4s`, and a live `EVENT` playlist
+          (`EXT-X-VERSION:7`, `EXT-X-MAP`, `EXT-X-INDEPENDENT-SEGMENTS`),
+          each written to a temporary name and renamed into place;
+        - `EXT-X-ENDLIST` when it stops;
+        - a keyframe asked for once a segment, a frame before the target.
+      - **Served** at `GET /hls/{sitting}/{file}` on the node:
+        - only the playlist, the init segment and `seg-<n>.m4s`;
+        - the playlist `no-cache`, the segments immutable.
+
+        The webinar's JSON names the stream under way (`stream`: its
+        sitting and playlist).
+      - **Proved:**
+        - `recording_mp4.rs`: an audio stream in one-second segments, whose
+          playlist ends on stop and whose files read back as one file;
+          and with real H.264 (`video-openh264`), a room keying every 10 s
+          streamed in segments of about 2 s, each starting on a keyframe;
+        - `rooms.rs` `a_live_webinar_is_streamed_as_hls_until_it_ends`:
+          nothing in practice; from going live, a playlist growing segment
+          by segment, fetched from the node with its init and first
+          segment; another name refused; ended, the playlist ends.
+      - **Not yet:**
+        - the bucket (`[conference.hls.s3]`);
+        - the stream's recording row, its announcement, and retention
+          (W6.3).
+    - **W6.3: the admin's stream links** (FCP): the viewer token and route,
+      redirect or proxy, `stream` on the meeting, the admin UI's Stream
+      tab, under retention as a recording.
 - **W7: RTMP push** (forge-media, FCP).
   - An AAC encoder, FLV, the RTMP client, and the meeting's sealed stream key.
 - **A7: Anvil.** The attendee's and the host's views (§2.9), and chat in every
