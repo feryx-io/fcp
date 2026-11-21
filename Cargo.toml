@@ -10,7 +10,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.25.609"
+version = "0.25.610"
 license = "MIT OR Apache-2.0"
 authors = ["FCP Team"]
 repository = "https://github.com/thevoiceguy/fcp.git"
@@ -30,5 +30,5 @@ uuid = { version = "1", features = ["v4", "serde"] }
 rust_decimal = { version = "1", features = ["serde-float"] }
 rust_decimal_macros = "1"
 
-[patch."https://github.com/thevoiceguy/siphon-rs"]
+[patch."https://github.com/feryx-io/siphon-rs"]
 sip-sdp = { path = "external/siphon-rs/crates/sip-sdp" }
