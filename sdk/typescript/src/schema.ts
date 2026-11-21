@@ -1525,6 +1525,48 @@ export interface paths {
         patch: operations["self_service_update_my_conference"];
         trace?: never;
     };
+    "/api/v1/me/conferences/{id}/sittings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /me/conferences/:id/sittings -- each run of one of the user's own
+         *     meetings, newest first, for its host (`docs/WEBINARS.md` W8).
+         */
+        get: operations["self_service_my_conference_sittings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/conferences/{id}/attendance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /me/conferences/:id/attendance -- who came to a sitting of one of
+         *     the user's own meetings, how long, and who watched its stream, for its
+         *     host: the report an administrator reads at
+         *     `/conferences/meetings/{id}/attendance`.
+         */
+        get: operations["self_service_my_conference_attendance"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/conferences/{id}/dial-out": {
         parameters: {
             query?: never;
@@ -19422,6 +19464,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MeetingResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_conference_sittings: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SittingResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_conference_attendance: {
+        parameters: {
+            query?: {
+                /** @description The sitting; the newest when absent. */
+                sitting?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttendanceResponse"];
                 };
             };
             /** @description An error */

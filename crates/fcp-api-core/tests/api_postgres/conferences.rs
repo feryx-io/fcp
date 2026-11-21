@@ -1085,11 +1085,13 @@ async fn an_administrator_takes_a_webinar_live_and_ends_it() {
 async fn a_webinar_s_registrants_and_attendance() {
     use fcp_core::webinar::{Sitting, SittingStore};
     let app = require_app!().with_join_secret();
+    app.create_user_with_role("hana", "end_user").await;
+    app.create_user_with_role("ivan", "end_user").await;
     let id = new_meeting(
         &app,
         app.tenant_a,
         "8420",
-        json!({ "kind": "webinar", "registration": true }),
+        json!({ "kind": "webinar", "registration": true, "owner_id": "hana" }),
     )
     .await;
     let meeting_path = format!("/api/v1/conferences/meetings/{id}");
@@ -1258,6 +1260,40 @@ async fn a_webinar_s_registrants_and_attendance() {
         )
         .await;
     assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.text);
+
+    // The meeting's own host reads the same report through /me (W8);
+    // anyone else finds no such meeting.
+    let hana = session(&app, "hana").await;
+    let mine = format!("/api/v1/me/conferences/{id}");
+    let sittings = app
+        .send_as(&hana, Method::GET, &format!("{mine}/sittings"), None)
+        .await;
+    assert_eq!(sittings.status, StatusCode::OK, "{}", sittings.text);
+    assert_eq!(sittings.json[0]["id"], "sit-w42", "{}", sittings.text);
+    let report = app
+        .send_as(
+            &hana,
+            Method::GET,
+            &format!("{mine}/attendance?sitting=sit-w42"),
+            None,
+        )
+        .await;
+    assert_eq!(report.status, StatusCode::OK, "{}", report.text);
+    assert_eq!(report.json["attendees"], 2, "{}", report.text);
+    assert_eq!(report.json["legs"].as_array().unwrap().len(), 4);
+    let admins = app
+        .admin(
+            Method::GET,
+            &format!("{meeting_path}/attendance?sitting=sit-w42"),
+            None,
+        )
+        .await;
+    assert_eq!(report.json["registrants"], admins.json["registrants"]);
+    let ivan = session(&app, "ivan").await;
+    for path in [format!("{mine}/sittings"), format!("{mine}/attendance")] {
+        let res = app.send_as(&ivan, Method::GET, &path, None).await;
+        assert_eq!(res.status, StatusCode::NOT_FOUND, "{path}: {}", res.text);
+    }
 
     // A meeting has no registrations; another tenant's webinar is not found.
     let plain = new_meeting(&app, app.tenant_a, "8421", json!({})).await;

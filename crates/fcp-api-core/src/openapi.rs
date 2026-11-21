@@ -123,6 +123,8 @@ use utoipa::{Modify, OpenApi};
         crate::v1::self_service::logout_my_hoteling,
         crate::v1::self_service::list_my_conferences,
         crate::v1::self_service::get_my_conference,
+        crate::v1::self_service::my_conference_sittings,
+        crate::v1::self_service::my_conference_attendance,
         crate::v1::self_service::update_my_conference,
         crate::v1::self_service::dial_out_my_conference,
         crate::v1::self_service::mint_my_join_token,

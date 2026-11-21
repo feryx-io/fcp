@@ -112,6 +112,8 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (DELETE, "/me/hoteling", Open),
     (GET, "/me/conferences", Open),
     (GET, "/me/conferences/:id", Open),
+    (GET, "/me/conferences/:id/sittings", Open),
+    (GET, "/me/conferences/:id/attendance", Open),
     (PATCH, "/me/conferences/:id", Open),
     (POST, "/me/conferences/:id/dial-out", Open),
     (POST, "/me/conferences/:id/join-tokens", Open),

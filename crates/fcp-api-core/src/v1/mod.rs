@@ -302,6 +302,15 @@ pub fn router() -> Router<ApiState> {
             "/me/conferences/:id/dial-out",
             post(self_service::dial_out_my_conference),
         )
+        // A host's attendance report of their own meeting (W8).
+        .route(
+            "/me/conferences/:id/sittings",
+            get(self_service::my_conference_sittings),
+        )
+        .route(
+            "/me/conferences/:id/attendance",
+            get(self_service::my_conference_attendance),
+        )
         // A host's controls of their room (`docs/SOFTPHONE_VIDEO.md` §2.6)
         .route("/me/conferences/live/:room", get(me_conferences_live::room))
         .route(

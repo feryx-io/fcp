@@ -459,17 +459,24 @@ pub async fn sittings(
     Query(page): Query<crate::page::PageQuery>,
 ) -> Result<Json<crate::page::Page<SittingResponse>>, ApiError> {
     let meeting = meeting_of(&state, &tenant, &id).await?;
-    let list = sitting_store(&state)?
+    sittings_page(&state, &meeting, &page).await.map(Json)
+}
+
+/// The meeting's sittings, newest first, by page: the admin's and the
+/// meeting's host's (`/me/conferences/{id}/sittings`).
+pub(crate) async fn sittings_page(
+    state: &ApiState,
+    meeting: &Meeting,
+    page: &crate::page::PageQuery,
+) -> Result<crate::page::Page<SittingResponse>, ApiError> {
+    let list = sitting_store(state)?
         .sittings_of_meeting(&meeting.tenant_id, &meeting.id.to_string(), MAX_REPORT_ROWS)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let items: Vec<SittingResponse> = list.into_iter().map(Into::into).collect();
-    Ok(Json(crate::page::paginate(
-        items,
-        &page,
-        crate::page::Order::Descending,
-        |s| crate::page::system_time_key(s.started_at, &s.id),
-    )?))
+    crate::page::paginate(items, page, crate::page::Order::Descending, |s| {
+        crate::page::system_time_key(s.started_at, &s.id)
+    })
 }
 
 /// `?sitting=` of the attendance report.
@@ -624,6 +631,23 @@ pub async fn attendance(
     Query(q): Query<AttendanceQuery>,
 ) -> Result<Json<AttendanceResponse>, ApiError> {
     let meeting = meeting_of(&state, &tenant, &id).await?;
+    attendance_report(&state, &meeting, q.sitting.as_deref())
+        .await
+        .map(Json)
+}
+
+/// The attendance report of `meeting`'s sitting (the newest when `None`):
+/// the admin's and the meeting's host's (`/me/conferences/{id}/attendance`).
+pub(crate) async fn attendance_report(
+    state: &ApiState,
+    meeting: &Meeting,
+    sitting: Option<&str>,
+) -> Result<AttendanceResponse, ApiError> {
+    let state = state.clone();
+    let meeting = meeting.clone();
+    let q = AttendanceQuery {
+        sitting: sitting.map(str::to_string),
+    };
     let storage = require_storage!(state);
     let sittings = sitting_store(&state)?;
     let sitting = match q.sitting.as_deref().filter(|s| !s.is_empty()) {
@@ -770,7 +794,7 @@ pub async fn attendance(
         Vec::new()
     };
 
-    Ok(Json(AttendanceResponse {
+    Ok(AttendanceResponse {
         peak: peak_of(&legs),
         attendees,
         sitting: sitting.into(),
@@ -813,7 +837,7 @@ pub async fn attendance(
             })
             .collect(),
         legs,
-    }))
+    })
 }
 
 #[cfg(test)]

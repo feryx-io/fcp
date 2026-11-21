@@ -1701,6 +1701,18 @@ For an audience that is not on FCP at all.
         watched live, or "Opened the recording".
       - **Proved:** `e2e/webinars.spec.ts`. The watch link is minted and
         its page served with its title and CSP.
+    - **W8.3: the host's own report.** **Done** (v0.25.615; the app's
+      panel in Anvil), asked for 2026-11-21.
+      - A meeting's owner reads its sittings and their attendance through
+        `GET /me/conferences/{id}/sittings` and
+        `GET /me/conferences/{id}/attendance` (`?sitting=`, the newest
+        when absent).
+      - This is the report an administrator reads (`attendance_report`,
+        `sittings_page`), with no `conference_read` needed. Anyone else's
+        meeting is not found.
+      - **Proved:** `conferences.rs` `a_webinar_s_registrants_and_attendance`.
+        The owner's report equals the administrator's, and another user
+        is refused.
   - **W8 is complete.**
 
 W1 and W2 come first. W3, W3b and W4 follow in any order; W3b needs no webinar

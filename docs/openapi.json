@@ -4154,6 +4154,114 @@
         }
       }
     },
+    "/api/v1/me/conferences/{id}/sittings": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/conferences/:id/sittings -- each run of one of the user's own\nmeetings, newest first, for its host (`docs/WEBINARS.md` W8).",
+        "operationId": "self_service_my_conference_sittings",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SittingResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/{id}/attendance": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/conferences/:id/attendance -- who came to a sitting of one of\nthe user's own meetings, how long, and who watched its stream, for its\nhost: the report an administrator reads at\n`/conferences/meetings/{id}/attendance`.",
+        "operationId": "self_service_my_conference_attendance",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sitting",
+            "in": "query",
+            "description": "The sitting; the newest when absent.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttendanceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/conferences/{id}/dial-out": {
       "post": {
         "tags": [
