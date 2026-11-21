@@ -6153,6 +6153,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conferences/meetings/{id}/stream/rtmp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /conferences/meetings/:id/stream/rtmp — where the webinar is pushed. */
+        get: operations["webinar_rtmp_get"];
+        /** PUT /conferences/meetings/:id/stream/rtmp — push the webinar here. */
+        put: operations["webinar_rtmp_put"];
+        post?: never;
+        /** DELETE /conferences/meetings/:id/stream/rtmp — push the webinar nowhere. */
+        delete: operations["webinar_rtmp_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conferences/live/{room}/video": {
         parameters: {
             query?: never;
@@ -13895,6 +13914,25 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description `PUT …/stream/rtmp` body. */
+        RtmpDestinationRequest: {
+            /**
+             * @description The service's ingest URL, its application in the path:
+             *     `rtmp://a.rtmp.youtube.com/live2`.
+             */
+            url: string;
+            /** @description The stream key. Left out, the key already set is kept. */
+            key?: string | null;
+        };
+        /** @description A webinar's RTMP destination, as the API shows it. */
+        RtmpDestinationResponse: {
+            /** @description The ingest URL, `rtmp://…` or `rtmps://…`; absent when there is none. */
+            url?: string | null;
+            /** @description Whether a stream key is set. The key itself is never returned. */
+            key_set: boolean;
+            /** Format: date-time */
+            updated_at?: string | null;
         };
         /**
          * @description What a SAML provider posts to ask for a logout, or to answer FCP's
@@ -30788,6 +30826,101 @@ export interface operations {
                 content: {
                     "application/vnd.apple.mpegurl": unknown;
                 };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webinar_rtmp_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The destination */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RtmpDestinationResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webinar_rtmp_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RtmpDestinationRequest"];
+            };
+        };
+        responses: {
+            /** @description The destination */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RtmpDestinationResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webinar_rtmp_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No destination now */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description An error */
             default: {

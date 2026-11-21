@@ -244,6 +244,9 @@ impl App {
                             storage.pool().clone(),
                         ),
                     ))
+                    .with_rtmp_destination_store(
+                        storage.clone() as Arc<dyn fcp_core::webinar::RtmpDestinationStore>
+                    )
                     .with_question_store(Arc::new(
                         fcp_storage_postgres::questions::PostgresQuestionStore::new(
                             storage.pool().clone(),
@@ -18965,4 +18968,101 @@ async fn a_stream_link_opens_the_webinar_s_newest_stream_and_nothing_else() {
     assert_eq!(res.json["state"], "ended", "{}", res.text);
     assert_eq!(res.json["duration_secs"], 3600);
     assert_eq!(anonymous(playlist).await.status, StatusCode::OK);
+}
+
+/// A webinar's RTMP destination (docs/WEBINARS.md W7): set by whoever
+/// manages it, the URL checked, the key needed once and never returned,
+/// kept when only the URL changes, and only for a webinar.
+#[tokio::test]
+async fn a_webinar_s_rtmp_destination_keeps_its_key_to_itself() {
+    let app = require_app!();
+    let make = |room: &'static str, kind: &'static str| {
+        let app = &app;
+        async move {
+            let res = app
+                .admin(
+                    Method::POST,
+                    "/api/v1/conferences/meetings",
+                    Some(json!({ "room_number": room, "name": format!("Room {room}"), "kind": kind })),
+                )
+                .await;
+            assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+            res.json["id"].as_str().unwrap().to_string()
+        }
+    };
+    let webinar = make("8201", "webinar").await;
+    let meeting = make("8202", "meeting").await;
+    let path = |id: &str| format!("/api/v1/conferences/meetings/{id}/stream/rtmp");
+
+    let res = app.admin(Method::GET, &path(&webinar), None).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["key_set"], false);
+    assert!(res.json.get("url").is_none(), "{}", res.text);
+
+    let put = |id: String, body: Value| {
+        let app = &app;
+        async move { app.admin(Method::PUT, &path(&id), Some(body)).await }
+    };
+    let youtube = "rtmp://a.rtmp.youtube.com/live2";
+    let res = put(meeting.clone(), json!({ "url": youtube, "key": "k" })).await;
+    assert_eq!(
+        res.status,
+        StatusCode::CONFLICT,
+        "only a webinar: {}",
+        res.text
+    );
+    for bad in [
+        "https://youtube.com/live",
+        "rtmp://host",
+        "rtmp://u:p@host/live",
+    ] {
+        let res = put(webinar.clone(), json!({ "url": bad, "key": "k" })).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{bad}: {}", res.text);
+    }
+    let res = put(webinar.clone(), json!({ "url": youtube })).await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "a key is needed once");
+
+    let res = put(
+        webinar.clone(),
+        json!({ "url": youtube, "key": "abcd-efgh-ijkl" }),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["url"], youtube);
+    assert_eq!(res.json["key_set"], true);
+    assert!(
+        !res.text.contains("abcd"),
+        "the key never comes back: {}",
+        res.text
+    );
+    let res = app.admin(Method::GET, &path(&webinar), None).await;
+    assert!(!res.text.contains("abcd"), "{}", res.text);
+    assert_eq!(res.json["key_set"], true);
+
+    // The URL changed, the key kept.
+    let backup = "rtmps://b.rtmps.youtube.com/live2";
+    let res = put(webinar.clone(), json!({ "url": backup })).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    let kept = fcp_core::webinar::RtmpDestinationStore::get_rtmp_destination(
+        app.storage.as_ref(),
+        &app.tenant_a,
+        &webinar,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        (kept.url.as_str(), kept.key.as_str()),
+        (backup, "abcd-efgh-ijkl")
+    );
+
+    let res = app.admin(Method::DELETE, &path(&webinar), None).await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+    let res = app.admin(Method::DELETE, &path(&webinar), None).await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        app.admin(Method::GET, &path(&webinar), None).await.json["key_set"],
+        false
+    );
+    app.finish().await;
 }

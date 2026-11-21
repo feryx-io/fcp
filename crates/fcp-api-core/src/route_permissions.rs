@@ -778,6 +778,21 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     ),
     (
         GET,
+        "/conferences/meetings/:id/stream/rtmp",
+        Needs(ConferenceRead),
+    ),
+    (
+        PUT,
+        "/conferences/meetings/:id/stream/rtmp",
+        Needs(ConferenceManage),
+    ),
+    (
+        DELETE,
+        "/conferences/meetings/:id/stream/rtmp",
+        Needs(ConferenceManage),
+    ),
+    (
+        GET,
         "/conferences/meetings/:id/sittings",
         Needs(ConferenceRead),
     ),

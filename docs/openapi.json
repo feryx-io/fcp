@@ -20299,6 +20299,128 @@
         ]
       }
     },
+    "/api/v1/conferences/meetings/{id}/stream/rtmp": {
+      "get": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "GET /conferences/meetings/:id/stream/rtmp — where the webinar is pushed.",
+        "operationId": "webinar_rtmp_get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The destination",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RtmpDestinationResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "PUT /conferences/meetings/:id/stream/rtmp — push the webinar here.",
+        "operationId": "webinar_rtmp_put",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RtmpDestinationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The destination",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RtmpDestinationResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "DELETE /conferences/meetings/:id/stream/rtmp — push the webinar nowhere.",
+        "operationId": "webinar_rtmp_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No destination now"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/conferences/live/{room}/video": {
       "get": {
         "tags": [
@@ -43561,6 +43683,54 @@
           },
           "updated_at": {
             "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RtmpDestinationRequest": {
+        "type": "object",
+        "description": "`PUT …/stream/rtmp` body.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The service's ingest URL, its application in the path:\n`rtmp://a.rtmp.youtube.com/live2`."
+          },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stream key. Left out, the key already set is kept."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RtmpDestinationResponse": {
+        "type": "object",
+        "description": "A webinar's RTMP destination, as the API shows it.",
+        "required": [
+          "key_set"
+        ],
+        "properties": {
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ingest URL, `rtmp://…` or `rtmps://…`; absent when there is none."
+          },
+          "key_set": {
+            "type": "boolean",
+            "description": "Whether a stream key is set. The key itself is never returned."
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "date-time"
           }
         }

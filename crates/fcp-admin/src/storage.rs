@@ -74,6 +74,9 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
         .with_registrant_store(Arc::new(
             fcp_storage_postgres::sittings::PostgresRegistrantStore::new(storage.pool().clone()),
         ))
+        .with_rtmp_destination_store(
+            storage.clone() as Arc<dyn fcp_core::webinar::RtmpDestinationStore>
+        )
         .with_question_store(Arc::new(
             fcp_storage_postgres::questions::PostgresQuestionStore::new(storage.pool().clone()),
         ))

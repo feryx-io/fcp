@@ -1323,6 +1323,116 @@ For an audience that is not on FCP at all.
           404 (nothing streamed) rather than 401.
 - **W7: RTMP push** (forge-media, FCP).
   - An AAC encoder, FLV, the RTMP client, and the meeting's sealed stream key.
+  - **The plan** (written 2026-11-21 from the code). In three parts.
+    - **What is there:**
+      - The recorder (`recording/mod.rs`) takes the composite from
+        `VideoRoom::record` as coded frames (Annex B for H.264), and the mix
+        from the room's tap. It resamples the mix to 48 kHz and encodes it as
+        Opus in 20 ms frames, handing each to a `Writer` (WebM, MP4 or HLS)
+        stamped in milliseconds.
+      - `forge_mp4::codec` lifts the SPS and PPS out of a keyframe and builds
+        the `avcC` record, the same bytes as FLV's AVC sequence header.
+      - `RecordingSink::request_keyframe` (W6.1) lets a sink ask for
+        keyframes.
+      - forge-media has no AAC, no FLV and no RTMP. The `[api.firmware]`
+        and identity providers' secrets are sealed with `fcp-crypto` (a
+        column encrypted at rest, never returned).
+    - **Decisions:**
+      1. **AAC from fdk-aac, built from source** (agreed 2026-11-21).
+         `forge-codecs` gains an `aac` feature (off by default) over the
+         `fdk-aac` crate, whose `fdk-aac-sys` compiles the library with `cc`.
+         It is AAC-LC, 48 kHz, raw access units with their
+         `AudioSpecificConfig`, 128 kb/s unless set, in 1024-sample frames.
+         Its decoder is there for tests. Like OpenH264's, the licence grants
+         no patent rights: AAC's are the deployer's matter, said so in the
+         deployment notes. The feature is only in a build that asks for it
+         (`[features] rtmp` on the conference server).
+      2. **FLV and RTMP are a new crate, `forge-rtmp`**, written here rather
+         than taken from crates.io: what is published is either a server,
+         unmaintained, or pulls in a runtime of its own.
+         - `flv`: tags for `onMetaData`, the AVC and AAC sequence headers,
+           and H.264 NAL units as length-prefixed samples (composition time
+           0, the composite has no B-frames) and AAC access units.
+         - `amf0`, and the chunk stream (4096-byte chunks out, any size
+           in).
+         - The client: TCP, or TLS for `rtmps://` (rustls, the platform's
+           roots). The simple handshake. `connect` (app, `tcUrl`),
+           `releaseStream`, `FCPublish`, `createStream`, `publish(key,
+           "live")`, and `NetStream.Publish.Start` waited for. Window
+           acknowledgements sent, pings answered, and an error status
+           turned into an error.
+         - A stand-in server (`forge_rtmp::server`) that takes a publisher
+           and keeps its tags, for forge-media's tests and FCP's.
+         - H.264 only: plain RTMP carries H.264 and AAC, and Enhanced RTMP's
+           HEVC and AV1 are not what every service takes.
+      3. **The push is a writer.** `Writer::Rtmp` beside MP4 and HLS,
+         with the audio encoder generalised (Opus or AAC, each with its own
+         frame). The network is a task of its own behind a bounded queue, so
+         the recorder never waits on a socket.
+         - Behind: video is dropped until the next keyframe, which is asked
+           for. Audio is kept.
+         - Lost: the connection is made again with backoff (1 s doubling to
+           30 s). It starts from a keyframe with the sequence headers again,
+           its timestamps going on from where they were.
+         - A keyframe every 2 s is asked for, as YouTube asks of an encoder.
+      4. **Where it goes.** The webinar's RTMP destination: the service's
+         ingest URL and the stream key, sealed at rest and never returned.
+         Revised while building W7.2a: it is a sub-resource
+         (`…/stream/rtmp`) in a table of its own
+         (`webinar_rtmp_destinations`, migration 150), not fields on the
+         meeting. The key is then never in a meeting's JSON, and never goes
+         to a site with the meeting through the sync journal.
+         - The stage pushes when the webinar goes live and stops when it
+           ends, as the HLS stream does, under `[conference.rtmp] enabled`.
+           Never in practice, and never from an edge.
+         - A node without an H.264 encoder does not push and says so.
+      5. **Consent.** A push broadcasts the room, so it is announced as the
+         stream is: the recording's or the stream's announcement serves, or
+         the push announces itself. `refused` means no push. FCP keeps
+         nothing of it: no row.
+      6. **What is seen.** The webinar's JSON has `rtmp`: its state
+         (`connecting`, `live`, `retrying`, `stopped`), since when, the last
+         error, and what was sent. The events are `conference.rtmp_live`
+         and `conference.rtmp_failed`, the latter once it has retried for a
+         minute. The admin UI's Stream tab shows it, and the meeting's form
+         takes the URL and key.
+    - **W7.1: AAC, FLV and RTMP** (forge-media). **Built** in forge-media
+      #233 (forge-rtmp 0.1.0, forge-codecs 0.3.0):
+      - `forge_codecs::aac::AacEncoder` (feature `aac`) gives AAC-LC from
+        fdk-aac with afterburner on: raw access units of 1024 samples and
+        their `AudioSpecificConfig`.
+      - `forge-rtmp` has:
+        - FLV tag bodies (`AvcTagger` from Annex B), and FLV files;
+        - AMF0 and the chunk stream;
+        - the `Publisher` over `rtmp://` or `rtmps://`;
+        - `server::StandInServer`.
+      - Proved against the stand-in (a stream, a refused key, a cut, a
+        timeout, RTMPS) and against ffmpeg's RTMP server. There ffprobe
+        reads back H.264 640×360 and AAC 48 kHz mono, four seconds, and
+        every picture decodes.
+    - **W7.2: the push from the stage** (FCP), in two parts:
+      - **W7.2a: the destination.** **Done** (v0.25.609). As built:
+        - `fcp_core::webinar::RtmpDestination` and `RtmpDestinationStore`,
+          implemented on `PostgresStorage` so the key is sealed as every
+          secret column is (`SEALED_COLUMNS`, re-encrypted and rewrapped
+          with them).
+        - `check_rtmp_url`: the URL must be `rtmp://` or `rtmps://`, with a
+          host and an application, and no credentials, query or spaces.
+        - Under `conference_read` and `conference_manage`:
+          - `GET` shows the URL and `key_set`;
+          - `PUT` takes the URL and key, and a key left out keeps the one
+            there is. Only a webinar has a destination (409 otherwise);
+          - `DELETE` removes it.
+        - The destination is gone with its meeting.
+        - A site's webinar does not push: the destination is not synced.
+        - **Proved:**
+          - `api_postgres.rs` `a_webinar_s_rtmp_destination_keeps_its_key_to_itself`;
+          - `integration.rs`'s sealing test, which shows the key sealed
+            at rest and out of another tenant's reach.
+      - **W7.2b: the push**: the writer, consent, state and events, the
+        stand-in in a binary test, and ffmpeg's RTMP server by hand.
+    - **W7.3: the admin UI**: the form's destination and the Stream tab's
+      push.
 - **A7: Anvil.** The attendee's and the host's views (§2.9), and chat in every
   room.
 
