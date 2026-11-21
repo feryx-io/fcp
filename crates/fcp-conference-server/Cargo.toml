@@ -35,6 +35,11 @@ recording-webm = ["dep:forge-webm", "forge-codecs/opus"]
 # §15.9): what a GPU node records on NVENC, and the container every player
 # opens. Same Opus dependency as WebM's.
 recording-mp4 = ["dep:forge-mp4", "forge-codecs/opus"]
+# Push a live webinar to an RTMP service (docs/WEBINARS.md W7): H.264 and
+# AAC in FLV over rtmp:// or rtmps://. AAC is the Fraunhofer FDK library
+# built from source (forge-codecs `aac`), whose licence grants no patent
+# rights: AAC's are the deployer's matter. Off by default.
+rtmp = ["recording-mp4", "dep:forge-rtmp", "forge-codecs/aac"]
 
 [[bin]]
 name = "fcp-conference"
@@ -71,6 +76,7 @@ forge-video-codecs = { path = "../../external/forge-media/crates/forge-video-cod
 forge-video-hw = { path = "../../external/forge-media/crates/forge-video-hw", optional = true }
 forge-webm = { path = "../../external/forge-media/crates/forge-webm", optional = true }
 forge-mp4 = { path = "../../external/forge-media/crates/forge-mp4", optional = true }
+forge-rtmp = { path = "../../external/forge-media/crates/forge-rtmp", optional = true }
 
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }

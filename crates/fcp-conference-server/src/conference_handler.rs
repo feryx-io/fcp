@@ -53,6 +53,7 @@ use futures::StreamExt;
 
 mod chat;
 mod hands;
+mod push;
 mod questions;
 mod stage;
 mod stream;
@@ -439,6 +440,8 @@ pub struct ConferenceCallHandler {
     tree_acked: DashMap<(RoomKey, String), u64>,
     /// Webinars streamed out as HLS from this node (§2.8).
     streams: DashMap<RoomKey, stream::ActiveStream>,
+    /// Webinars pushed over RTMP from this node (W7).
+    pushes: DashMap<RoomKey, push::ActivePush>,
     /// The bucket streams are copied to (`[conference.hls.s3]`, W6.3c).
     hls_bucket: Option<Arc<crate::recording::hls_bucket::HlsBucket>>,
     /// When an attendee's join last paid for the audience's composite: the
@@ -1013,6 +1016,7 @@ impl ConferenceCallHandler {
             edge_passthrough_was: DashMap::new(),
             audience_encode_held: DashMap::new(),
             streams: DashMap::new(),
+            pushes: DashMap::new(),
             hls_bucket: None,
             node_id,
             room_registry: std::sync::RwLock::new(None),
@@ -2863,6 +2867,7 @@ impl ConferenceCallHandler {
                         audio_bitrate: conf.recording_audio_bitrate,
                         hls_segment_ms: None,
                         hls_mirror: None,
+                        rtmp: None,
                     };
                     RecordingWriter::Media(crate::recording::Recorder::start(
                         &record.id.to_string(),
@@ -3031,6 +3036,7 @@ impl ConferenceCallHandler {
             .get(key)
             .and_then(|r| r.consent_audio.clone())
             .or_else(|| self.streams.get(key).and_then(|s| s.consent_audio.clone()))
+            .or_else(|| self.pushes.get(key).and_then(|p| p.consent_audio.clone()))
     }
 
     /// Tell the room it is being recorded, if the tenant's policy says to
@@ -4099,7 +4105,9 @@ impl ConferenceCallHandler {
             | ConferenceEvent::ChatDeleted { room_number, .. }
             | ConferenceEvent::ChatMuted { room_number, .. }
             | ConferenceEvent::WebinarLive { room_number, .. }
-            | ConferenceEvent::WebinarEnded { room_number, .. } => Some(room_number.clone()),
+            | ConferenceEvent::WebinarEnded { room_number, .. }
+            | ConferenceEvent::RtmpLive { room_number, .. }
+            | ConferenceEvent::RtmpFailed { room_number, .. } => Some(room_number.clone()),
         };
 
         let platform_event = PlatformEvent::Conference(event);

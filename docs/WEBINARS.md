@@ -1370,7 +1370,7 @@ For an audience that is not on FCP at all.
          frame). The network is a task of its own behind a bounded queue, so
          the recorder never waits on a socket.
          - Behind: video is dropped until the next keyframe, which is asked
-           for. Audio is kept.
+           for. Audio is dropped only while the queue is full.
          - Lost: the connection is made again with backoff (1 s doubling to
            30 s). It starts from a keyframe with the sequence headers again,
            its timestamps going on from where they were.
@@ -1429,8 +1429,59 @@ For an audience that is not on FCP at all.
           - `api_postgres.rs` `a_webinar_s_rtmp_destination_keeps_its_key_to_itself`;
           - `integration.rs`'s sealing test, which shows the key sealed
             at rest and out of another tenant's reach.
-      - **W7.2b: the push**: the writer, consent, state and events, the
-        stand-in in a binary test, and ffmpeg's RTMP server by hand.
+      - **W7.2b: the push.** **Done** (v0.25.610–611). As built:
+        - **The build.** The conference server's `rtmp` feature (with
+          `recording-mp4`, forge-rtmp and forge-codecs' `aac`), off by
+          default and not in the images. A node with `[conference.rtmp]
+          enabled` and no `rtmp` build says so at startup. v0.25.610 took
+          forge-media v2026.11.21.1 and both submodules from `feryx-io`.
+        - **`[conference.rtmp]`:**
+          - `enabled`, off by default;
+          - `audio_bitrate`, 128 000;
+          - `keyframe_secs`, 2.
+        - **Its life** (`conference_handler/push.rs`):
+          - it starts with the stream when the stage goes live, never in
+            practice and never on an edge, and stops when the webinar ends
+            or its sitting closes;
+          - it needs a destination and the room's video;
+          - a room no camera has joined has no composite, so it has no
+            push: the services want a picture;
+          - so does a node with no H.264 encoder.
+        - **The writer** (`recording/rtmp.rs`, `Writer::Rtmp`):
+          - the recorder's audio encoder is now Opus or AAC, each in frames
+            of its own (`AudioEncoder`);
+          - frames go to a task behind a queue of 512;
+          - a full queue drops video until a keyframe and asks for one,
+            and drops audio only while full;
+          - a lost or refused connection is retried from 1 s, doubling to
+            30 s, from the sequence headers and a keyframe, with the
+            timestamps going on.
+        - **Consent:** the recording's or the stream's announcement, or the
+          push's own. Late joiners hear it, as for the others.
+        - **Seen as:**
+          - the webinar's JSON `rtmp`: `state`, `since`, `error`,
+            `bytes_sent`, `connects`, `dropped_frames`, and the `ingest`
+            host, never the key;
+          - `conference.rtmp_live` at each connection;
+          - `conference.rtmp_failed` once an outage reaches a minute.
+        - **Proved:**
+          - `rooms.rs` `a_live_webinar_is_pushed_over_rtmp_until_it_ends`,
+            against forge-rtmp's stand-in. Nothing is pushed in practice.
+            Live, the stand-in gets:
+            - the meeting's key and application;
+            - `onMetaData` naming AVC and AAC;
+            - the AAC sequence header for AAC-LC 48 kHz mono;
+            - the AVC sequence header, then a keyframe;
+            - a keyframe every second at `keyframe_secs = 1`.
+
+            The JSON says live with the ingest's host, and never the key.
+            The cut is connected again: the sequence header and a keyframe
+            first, with the timestamps going on. Ended, the stream is
+            unpublished.
+          - `rooms.rs` `a_live_webinar_reaches_ffmpeg_s_rtmp_server`, run
+            with `FCP_TEST_FFMPEG=1`: ffmpeg's RTMP server takes the
+            webinar, ffprobe reads H.264 and AAC 48 kHz, and the file
+            decodes whole.
     - **W7.3: the admin UI**: the form's destination and the Stream tab's
       push.
 - **A7: Anvil.** The attendee's and the host's views (§2.9), and chat in every

@@ -255,6 +255,9 @@ impl ConferenceCallHandler {
         if let Some(stream) = self.stream_json(key) {
             json["stream"] = stream;
         }
+        if let Some(push) = self.push_json(key) {
+            json["rtmp"] = push;
+        }
         Some(json)
     }
 
@@ -405,8 +408,10 @@ impl ConferenceCallHandler {
                         warn!(room = %key.room, error = %e, "Auto-record failed (going live)");
                     }
                 }
-                // Streamed out from the stage alone (§2.8).
+                // Streamed out from the stage alone (§2.8), and pushed
+                // over RTMP (W7).
                 me.start_stream(&key).await;
+                me.start_push(&key).await;
                 if let_in {
                     me.let_in_lobby(key).await;
                 }
@@ -531,7 +536,10 @@ impl ConferenceCallHandler {
         self.queue_tree_ending(key);
         if let Some(me) = self.me() {
             let key = key.clone();
-            tokio::spawn(async move { me.stop_stream(&key).await });
+            tokio::spawn(async move {
+                me.stop_stream(&key).await;
+                me.stop_push(&key).await;
+            });
         }
         true
     }
@@ -586,7 +594,10 @@ impl ConferenceCallHandler {
         self.audience_encode_held.remove(key);
         if let Some(me) = self.me() {
             let key = key.clone();
-            tokio::spawn(async move { me.stop_stream(&key).await });
+            tokio::spawn(async move {
+                me.stop_stream(&key).await;
+                me.stop_push(&key).await;
+            });
         }
     }
 

@@ -55,6 +55,8 @@ class WebhookEventEventType(StrEnum):
     CONFERENCE_ROOM_DESTROYED = "conference.room_destroyed"
     CONFERENCE_ROOM_LOCKED = "conference.room_locked"
     CONFERENCE_ROOM_UNLOCKED = "conference.room_unlocked"
+    CONFERENCE_RTMP_FAILED = "conference.rtmp_failed"
+    CONFERENCE_RTMP_LIVE = "conference.rtmp_live"
     CONFERENCE_STAGE_JOINED = "conference.stage_joined"
     CONFERENCE_STAGE_LEFT = "conference.stage_left"
     CONFERENCE_VIDEO_LAYOUT_CHANGED = "conference.video_layout_changed"

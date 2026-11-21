@@ -929,6 +929,9 @@ async fn main() -> Result<()> {
     conference_handler.set_video_backend(video_backend);
     conference_handler.set_cdr(cdr_writer, region);
     conference_handler.set_video_capacity(Arc::clone(&video_capacity));
+    if config.conference.rtmp.enabled && !cfg!(feature = "rtmp") {
+        warn!("[conference.rtmp] enabled is set, but this build cannot push RTMP (feature `rtmp`): webinars will not be pushed");
+    }
     let hls_bucket = match &config.conference.hls.s3 {
         Some(s3) => {
             let bucket = Arc::new(recording::hls_bucket::HlsBucket::new(

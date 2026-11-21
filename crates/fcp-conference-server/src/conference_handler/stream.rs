@@ -152,6 +152,7 @@ impl ConferenceCallHandler {
             audio_bitrate: conf.recording_audio_bitrate,
             hls_segment_ms: Some(conf.hls.segment_secs.max(1) * 1000),
             hls_mirror: self.hls_bucket.as_ref().map(|b| b.mirror(&sitting)),
+            rtmp: None,
         };
         let recorder = match crate::recording::Recorder::start(
             &format!("hls-{sitting}"),

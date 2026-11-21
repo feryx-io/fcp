@@ -172,7 +172,8 @@ jobs:
       # libopus from source), so the conference server's recording tests
       # only run when asked for by name; the MP4 one needs real H.264
       # frames, so `video-openh264` comes along (the codec action above
-      # built it).
+      # built it). `rtmp` (fdk-aac from source) runs the push to RTMP
+      # against forge-rtmp's stand-in ingest.
       # The restore test (crates/fcp-call-manager/tests/compose_restore.rs)
       # dumps and restores with the client tools, which must be the
       # service container's major version or newer, and a restore into an
@@ -231,7 +232,7 @@ jobs:
           FCP_SIPP_TESTS: required
           FCP_BARESIP_TESTS: required
           FCP_ROUTE_LOG: ${{ runner.temp }}/routes.log
-        run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/video-openh264,fcp-api-core/saml
+        run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/rtmp,fcp-conference-server/video-openh264,fcp-api-core/saml
       # docs/DEEP_TESTING.md D1: every operation in the contract is called
       # by a test, or listed in scripts/routes-uncalled.txt with a reason.
       - name: Every operation is called

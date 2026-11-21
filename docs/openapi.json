@@ -50022,6 +50022,8 @@
               "conference.chat_muted",
               "conference.webinar_live",
               "conference.webinar_ended",
+              "conference.rtmp_live",
+              "conference.rtmp_failed",
               "queue.caller_enqueued",
               "queue.caller_dequeued",
               "queue.caller_abandoned",
