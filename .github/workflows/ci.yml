@@ -163,6 +163,11 @@ jobs:
           cargo fmt $pkgs -- --check
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      # The conference server as `Dockerfile.conference` builds it: without
+      # the recording features, which `--all-features` above always turns
+      # on. W6.3a's stream code once compiled only with `recording-mp4`.
+      - name: The conference server without its optional features
+        run: cargo check -p fcp-conference-server --bins
       # `recording-webm` and `recording-mp4` are off by default (they build
       # libopus from source), so the conference server's recording tests
       # only run when asked for by name; the MP4 one needs real H.264

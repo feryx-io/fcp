@@ -48,7 +48,7 @@ pub const DEFAULT_REGISTRANT_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 const MAX_REPORT_ROWS: usize = 20_000;
 
 /// The meeting `id` in the tenant.
-async fn meeting_of(
+pub(crate) async fn meeting_of(
     state: &ApiState,
     tenant: &TenantContext,
     id: &str,
@@ -66,7 +66,7 @@ async fn meeting_of(
 }
 
 /// The meeting `id` in the tenant, when it is a webinar.
-async fn webinar_of(
+pub(crate) async fn webinar_of(
     state: &ApiState,
     tenant: &TenantContext,
     id: &str,

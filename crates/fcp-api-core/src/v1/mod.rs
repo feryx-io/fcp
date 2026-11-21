@@ -70,6 +70,7 @@ pub mod user_devices;
 pub mod users;
 pub mod voicemail;
 pub mod webhooks;
+pub mod webinar_stream;
 pub mod webinars;
 
 use crate::state::ApiState;
@@ -1229,6 +1230,16 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/conferences/meetings/:id/attendance",
             get(webinars::attendance),
+        )
+        // A webinar's stream out (`docs/WEBINARS.md` §2.8); the stream
+        // itself is served to a link's holder outside the auth layer.
+        .route(
+            "/conferences/meetings/:id/stream",
+            get(webinar_stream::stream_state),
+        )
+        .route(
+            "/conferences/meetings/:id/stream/links",
+            post(webinar_stream::mint_link),
         )
         // Live conference controls, proxied to the conference server
         .route(

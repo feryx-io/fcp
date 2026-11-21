@@ -117,6 +117,8 @@ pub struct ListQuery {
     pub until: Option<u64>,
     /// Only those still being written, or only those finished.
     pub running: Option<bool>,
+    /// Only one kind: `room`, `participant` or `stream`.
+    pub kind: Option<String>,
 }
 
 fn to_filter(q: &ListQuery, page: &crate::page::PageQuery) -> Result<RecordingFilter, ApiError> {
@@ -131,6 +133,14 @@ fn to_filter(q: &ListQuery, page: &crate::page::PageQuery) -> Result<RecordingFi
         since: q.since.map(|s| UNIX_EPOCH + Duration::from_secs(s)),
         until: q.until.map(|s| UNIX_EPOCH + Duration::from_secs(s)),
         running: q.running,
+        kind: q
+            .kind
+            .as_deref()
+            .map(|k| {
+                fcp_core::RecordingKind::parse(k)
+                    .ok_or_else(|| ApiError::BadRequest(format!("Invalid kind {k}")))
+            })
+            .transpose()?,
         // One more than the page, to know whether there is another.
         limit: page.limit()? + 1,
         offset: page.offset()?,

@@ -244,6 +244,10 @@ impl RecordingStore for PostgresRecordingStore {
             n += 1;
             sql.push_str(&format!(" AND started_at < ${n}"));
         }
+        if filter.kind.is_some() {
+            n += 1;
+            sql.push_str(&format!(" AND kind = ${n}"));
+        }
         match filter.running {
             Some(true) => sql.push_str(" AND ended_at IS NULL"),
             Some(false) => sql.push_str(" AND ended_at IS NOT NULL"),
@@ -268,6 +272,9 @@ impl RecordingStore for PostgresRecordingStore {
         }
         if let Some(until) = filter.until {
             query = query.bind(to_datetime(until));
+        }
+        if let Some(kind) = filter.kind {
+            query = query.bind(kind.as_str());
         }
         query = query.bind(limit).bind(filter.offset as i64);
 

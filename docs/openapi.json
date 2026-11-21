@@ -9454,6 +9454,15 @@
             }
           },
           {
+            "name": "kind",
+            "in": "query",
+            "description": "Only one kind: `room`, `participant` or `stream`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -20138,6 +20147,156 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/conferences/meetings/{id}/stream": {
+      "get": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "GET /conferences/meetings/:id/stream — the webinar's stream.",
+        "operationId": "webinar_stream_state",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamStateResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conferences/meetings/{id}/stream/links": {
+      "post": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "POST /conferences/meetings/:id/stream/links — a link to the webinar's\nstream for viewers who are not on FCP.",
+        "operationId": "webinar_stream_mint_link",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StreamLinkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Minted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinkResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conferences/meetings/{id}/stream/{token}/{file}": {
+      "get": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "GET /api/v1/conferences/meetings/:id/stream/:token/:file — the webinar's\nstream to a link's holder: no bearer token, the link is the credential.",
+        "operationId": "webinar_stream_serve",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "token",
+            "in": "path",
+            "description": "A stream link's token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "file",
+            "in": "path",
+            "description": "`index.m3u8`, `init.mp4` or `seg-<n>.m4s`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The playlist or a segment",
+            "content": {
+              "application/vnd.apple.mpegurl": {}
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
       }
     },
     "/api/v1/conferences/live/{room}/video": {
@@ -44738,6 +44897,101 @@
           "busy",
           "dnd"
         ]
+      },
+      "StreamLinkRequest": {
+        "type": "object",
+        "description": "`POST …/stream/links` body.",
+        "properties": {
+          "ttl_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The link's lifetime in seconds: a day by default, a week at most.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "StreamLinkResponse": {
+        "type": "object",
+        "description": "A stream link.",
+        "required": [
+          "token",
+          "playlist_path",
+          "expires_at"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The signed token, the credential."
+          },
+          "playlist_path": {
+            "type": "string",
+            "description": "The playlist on this admin, for a player."
+          },
+          "playlist_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The same with this admin's public address, when it knows it\n(`[api.sso] public_url`)."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "StreamStateResponse": {
+        "type": "object",
+        "description": "A webinar's stream, as the API shows it.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "description": "`off` (the meeting does not stream), `waiting` (it will, once live),\n`live`, or `ended` (its newest stream ended, kept for replay)."
+          },
+          "recording_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest stream's recording."
+          },
+          "sitting_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The sitting it streamed."
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "ended_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "duration_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       },
       "SubjectExpansion": {
         "type": "object",

@@ -410,6 +410,12 @@ pub fn create_router_with(
                 "/provision/:key/firmware/:image/:file",
                 axum::routing::get(v1::provisioning::serve_firmware),
             )
+            // A webinar's stream to a link's holder (`docs/WEBINARS.md`
+            // §2.8): the link in the path is the credential.
+            .route(
+                "/api/v1/conferences/meetings/:id/stream/:token/:file",
+                axum::routing::get(v1::webinar_stream::serve),
+            )
             // A brand's assets, public by hash (`docs/BRANDING.md` §6).
             .route(
                 "/brand/v1/assets/:sha256",

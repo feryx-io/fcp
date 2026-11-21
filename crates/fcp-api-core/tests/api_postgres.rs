@@ -18723,3 +18723,225 @@ async fn the_softphone_is_told_whether_its_calls_carry_video() {
         .await;
     assert_eq!(other.json["video"], true, "unset allows it: {}", other.text);
 }
+
+// ─── A webinar's stream out (docs/WEBINARS.md §2.8, W6.3b) ─────────────────
+
+/// A webinar's stream link: minted by its manager, the stream's state from
+/// its newest `stream` row, and the stream served to the link's holder with
+/// no other credential, through a conference node to the node writing it.
+#[tokio::test]
+async fn a_stream_link_opens_the_webinar_s_newest_stream_and_nothing_else() {
+    use axum::extract::{Path as AxPath, Query as AxQuery};
+    use std::collections::HashMap;
+    type Seen = Arc<std::sync::Mutex<Vec<(String, String, Option<String>)>>>;
+    let seen: Seen = Arc::default();
+    let node = Router::new()
+        .route(
+            "/hls/:sitting/:file",
+            axum::routing::get(
+                |axum::extract::State(seen): axum::extract::State<Seen>,
+                 AxPath((sitting, file)): AxPath<(String, String)>,
+                 AxQuery(q): AxQuery<HashMap<String, String>>,
+                 headers: HeaderMap| async move {
+                    let tenant = headers
+                        .get("x-fcp-tenant-id")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    let node = q.get("node").cloned().unwrap_or_default();
+                    seen.lock()
+                        .unwrap()
+                        .push((sitting.clone(), node.clone(), tenant));
+                    (
+                        StatusCode::OK,
+                        [
+                            ("content-type", "application/vnd.apple.mpegurl"),
+                            ("cache-control", "no-cache"),
+                        ],
+                        format!("#EXTM3U\n# {sitting} {file} from {node}\n"),
+                    )
+                },
+            ),
+        )
+        .with_state(Arc::clone(&seen));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, node).await;
+    });
+    let Some(mut app) = App::with_conference_server(&url).await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping PostgreSQL API handler test");
+        return;
+    };
+    app.router = create_router(
+        app.state
+            .clone()
+            .with_conference_join_secret(Some("stream-secret".to_string())),
+        &test_api_config(),
+    );
+    let make = |room: &'static str, extra: Value| {
+        let app = &app;
+        async move {
+            let mut body = json!({ "room_number": room, "name": format!("Town hall {room}") });
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let res = app
+                .admin(Method::POST, "/api/v1/conferences/meetings", Some(body))
+                .await;
+            assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+            res.json["id"].as_str().unwrap().to_string()
+        }
+    };
+    let webinar = make("8101", json!({ "kind": "webinar", "streaming": "hls" })).await;
+    let quiet = make("8102", json!({ "kind": "webinar" })).await;
+
+    // Before it goes live: waiting, and a link opens nothing yet.
+    let res = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/conferences/meetings/{webinar}/stream"),
+            None,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["state"], "waiting", "{}", res.text);
+    let res = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/conferences/meetings/{quiet}/stream"),
+            None,
+        )
+        .await;
+    assert_eq!(res.json["state"], "off", "{}", res.text);
+    let res = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/conferences/meetings/{quiet}/stream/links"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(
+        res.status,
+        StatusCode::CONFLICT,
+        "a webinar that does not stream"
+    );
+    let res = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/conferences/meetings/{webinar}/stream/links"),
+            Some(json!({ "ttl_secs": 3600 })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+    let token = res.json["token"].as_str().unwrap().to_string();
+    let playlist = res.json["playlist_path"].as_str().unwrap().to_string();
+    assert_eq!(
+        playlist,
+        format!("/api/v1/conferences/meetings/{webinar}/stream/{token}/index.m3u8")
+    );
+    let res = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/conferences/meetings/{webinar}/stream/links"),
+            Some(json!({ "ttl_secs": 8 * 86_400 })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "a week at most");
+    let anonymous = |path: String| {
+        let app = &app;
+        async move { app.send(Method::GET, &path, &[], None).await }
+    };
+    assert_eq!(
+        anonymous(playlist.clone()).await.status,
+        StatusCode::NOT_FOUND
+    );
+
+    // Live: the stage's row names the sitting and its node.
+    let tenant = app.tenant_a;
+    let meeting_id: fcp_core::MeetingId = webinar.parse().unwrap();
+    let store = PostgresRecordingStore::new(app.storage.pool().clone());
+    let mut row = fcp_core::Recording::starting(
+        tenant,
+        "8101",
+        "conf-stage",
+        "/var/fcp/recordings/hls/5f1c0e2a-0000-4000-8000-000000000001",
+        fcp_core::RecordingFormat::Mp4,
+        fcp_core::RecordingTrigger::Auto,
+    );
+    row.kind = fcp_core::RecordingKind::Stream;
+    row.meeting_id = Some(meeting_id);
+    fcp_core::recording::RecordingStore::create_recording(&store, &row)
+        .await
+        .unwrap();
+    let res = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/conferences/meetings/{webinar}/stream"),
+            None,
+        )
+        .await;
+    assert_eq!(res.json["state"], "live", "{}", res.text);
+    assert_eq!(
+        res.json["sitting_id"],
+        "5f1c0e2a-0000-4000-8000-000000000001"
+    );
+    let res = app
+        .admin(Method::GET, "/api/v1/recordings?kind=stream", None)
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json.as_array().unwrap().len(), 1, "{}", res.text);
+    assert_eq!(res.json[0]["kind"], "stream");
+
+    let res = anonymous(playlist.clone()).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(
+        res.text,
+        "#EXTM3U\n# 5f1c0e2a-0000-4000-8000-000000000001 index.m3u8 from conf-stage\n"
+    );
+    assert_eq!(res.headers["content-type"], "application/vnd.apple.mpegurl");
+    assert_eq!(res.headers["cache-control"], "no-cache");
+    assert_eq!(res.headers["access-control-allow-origin"], "*");
+    let segment = playlist.replace("index.m3u8", "seg-3.m4s");
+    assert_eq!(anonymous(segment).await.status, StatusCode::OK);
+    assert_eq!(
+        seen.lock().unwrap().last().unwrap().2.as_deref(),
+        Some(tenant.to_string().as_str()),
+        "the node is asked in the meeting's tenant"
+    );
+
+    // Nothing but the stream's own files, and only for its meeting.
+    let res = anonymous(playlist.replace("index.m3u8", "secret.txt")).await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST);
+    let res = anonymous(playlist.replace(&webinar, &quiet)).await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.text);
+    let res = anonymous(playlist.replace(&token, "nope.nope")).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+    let forged =
+        fcp_core::stream_token::StreamToken::new(tenant, meeting_id, Duration::from_secs(60))
+            .mint(b"another secret");
+    let res = anonymous(playlist.replace(&token, &forged)).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+    let calls = seen.lock().unwrap().len();
+    assert_eq!(calls, 2, "refused links never reach the node");
+
+    // Ended: kept for replay, and still served.
+    fcp_core::recording::RecordingStore::finish_recording(
+        &store,
+        &row.id,
+        SystemTime::now(),
+        3600,
+        1 << 20,
+    )
+    .await
+    .unwrap();
+    let res = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/conferences/meetings/{webinar}/stream"),
+            None,
+        )
+        .await;
+    assert_eq!(res.json["state"], "ended", "{}", res.text);
+    assert_eq!(res.json["duration_secs"], 3600);
+    assert_eq!(anonymous(playlist).await.status, StatusCode::OK);
+}
