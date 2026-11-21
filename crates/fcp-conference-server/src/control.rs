@@ -233,8 +233,11 @@ impl ClusterControl {
         debug!(peer = %peer.node_id, %url, "Streaming a file from a peer");
         // A file transfer is not a control request: only the connect is
         // bounded, so a long download is not cut off mid-stream.
+        // A redirect (a stream's segment in its bucket) is the peer's
+        // answer, passed on, never followed.
         let client = reqwest::Client::builder()
             .connect_timeout(PEER_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let resp = client
             .get(&url)

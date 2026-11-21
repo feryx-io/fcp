@@ -29,6 +29,7 @@ pub mod pg_pair;
 pub mod phone;
 pub mod push;
 pub mod redirection;
+pub mod s3;
 pub mod seed;
 pub mod service;
 pub mod sinks;

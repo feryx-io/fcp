@@ -66,6 +66,7 @@ async fn an_audio_only_recording_is_opus_in_mp4() {
             video: None,
             audio_bitrate: 32_000,
             hls_segment_ms: None,
+            hls_mirror: None,
         },
     )
     .expect("the recorder starts");
@@ -146,6 +147,7 @@ async fn an_audio_only_stream_is_opus_in_cmaf_segments() {
             video: None,
             audio_bitrate: 32_000,
             hls_segment_ms: Some(1_000),
+            hls_mirror: None,
         },
     )
     .expect("the stream starts");
@@ -219,6 +221,7 @@ mod video {
                 }),
                 audio_bitrate: 32_000,
                 hls_segment_ms: None,
+                hls_mirror: None,
             },
         )
         .expect("the recorder starts");
@@ -329,6 +332,7 @@ mod video {
                 }),
                 audio_bitrate: 32_000,
                 hls_segment_ms: Some(2_000),
+                hls_mirror: None,
             },
         )
         .expect("the stream starts");
@@ -421,6 +425,7 @@ mod device {
                 }),
                 audio_bitrate: 64_000,
                 hls_segment_ms: None,
+                hls_mirror: None,
             },
         )
         .expect("the recorder starts");

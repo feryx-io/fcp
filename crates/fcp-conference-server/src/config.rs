@@ -1019,6 +1019,18 @@ pub struct HlsSection {
     /// the sitting. Default: `hls` under `recordings_dir`.
     #[serde(default)]
     pub dir: Option<String>,
+    /// A bucket every stream is copied to as it is written (W6.3c): keys
+    /// `<prefix><sitting>/<file>`, the prefix `hls/` unless set. A
+    /// player's requests for segments are then sent there; the playlist
+    /// is still served by the node. The bucket's objects must be readable
+    /// by the players: public, or behind `public_url`.
+    #[serde(default)]
+    pub s3: Option<fcp_core::FirmwareS3Config>,
+    /// The base URL players reach the bucket's objects by, a CDN in front
+    /// of it: a segment is sent to `<public_url>/<key>`. Unset, the
+    /// bucket's own URL.
+    #[serde(default)]
+    pub public_url: Option<String>,
 }
 
 impl Default for HlsSection {
@@ -1027,6 +1039,8 @@ impl Default for HlsSection {
             enabled: false,
             segment_secs: default_hls_segment_secs(),
             dir: None,
+            s3: None,
+            public_url: None,
         }
     }
 }

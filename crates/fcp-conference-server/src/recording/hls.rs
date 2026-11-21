@@ -132,14 +132,21 @@ pub struct HlsWriter {
     /// The last keyframe written, and whether the next has been asked for.
     last_keyframe_ms: Option<u64>,
     asked: bool,
+    /// The bucket's copy, sent each file as it is written.
+    mirror: Option<super::hls_bucket::HlsMirror>,
 }
 
 #[cfg(feature = "recording-mp4")]
 impl HlsWriter {
     /// A stream into `dir` (made if missing), of the composite `video`
     /// (H.264, HEVC or AV1) when there is one and the mix as Opus, cut every
-    /// `target_ms`.
-    pub fn open(dir: &Path, video: Option<&Flavor>, target_ms: u64) -> Result<Self> {
+    /// `target_ms`; each file also sent to `mirror` when there is one.
+    pub fn open(
+        dir: &Path,
+        video: Option<&Flavor>,
+        target_ms: u64,
+        mirror: Option<super::hls_bucket::HlsMirror>,
+    ) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let mut config = Mp4Config::new().audio(AudioTrack::opus(48_000, 1));
         let mut frame_ms = 66;
@@ -168,6 +175,7 @@ impl HlsWriter {
             bytes: 0,
             last_keyframe_ms: None,
             asked: false,
+            mirror,
         };
         w.drain()?;
         Ok(w)
@@ -250,6 +258,9 @@ impl HlsWriter {
         std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, &path).with_context(|| format!("renaming to {}", path.display()))?;
         self.bytes += bytes.len() as u64;
+        if let Some(mirror) = &self.mirror {
+            mirror.send(name, bytes);
+        }
         Ok(())
     }
 }
@@ -332,7 +343,7 @@ mod tests {
     #[test]
     fn audio_alone_streams_into_its_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let mut w = HlsWriter::open(dir.path(), None, 2000).unwrap();
+        let mut w = HlsWriter::open(dir.path(), None, 2000, None).unwrap();
         assert!(
             dir.path().join(INIT).exists(),
             "audio alone has its init at once"

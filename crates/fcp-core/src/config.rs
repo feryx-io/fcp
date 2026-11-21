@@ -884,7 +884,7 @@ pub struct FirmwareS3Config {
     #[serde(default)]
     pub session_token: Option<String>,
     /// What every key starts with: `firmware/` for images, `captures/`
-    /// for captures, unless set.
+    /// for captures, `hls/` for a webinar's streams, unless set.
     #[serde(default)]
     pub prefix: Option<String>,
 }

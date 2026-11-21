@@ -5013,6 +5013,17 @@ async fn hls_file_handler(
                     };
                     let content_type = header("content-type", "application/octet-stream");
                     let cache = header("cache-control", "no-cache");
+                    if status.is_redirection() {
+                        // The peer sends the player to its bucket.
+                        return (
+                            status,
+                            [
+                                ("location", header("location", "")),
+                                ("cache-control", cache),
+                            ],
+                        )
+                            .into_response();
+                    }
                     (
                         status,
                         [("content-type", content_type), ("cache-control", cache)],
@@ -5055,6 +5066,18 @@ async fn local_hls_file(
     file: &str,
 ) -> axum::response::Response {
     use crate::recording::hls;
+    if let Some(url) = state
+        .conference_handler
+        .hls_bucket()
+        .and_then(|b| b.redirect(sitting, file))
+    {
+        // In the bucket: the player fetches it from there (W6.3c).
+        return (
+            StatusCode::FOUND,
+            [("location", url), ("cache-control", "no-cache".to_string())],
+        )
+            .into_response();
+    }
     let path = state.conference_handler.hls_dir().join(sitting).join(file);
     let bytes = match tokio::fs::read(&path).await {
         Ok(b) => b,
@@ -5168,6 +5191,22 @@ async fn local_delete(
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({ "error": "The stream is still being written" })),
             );
+        }
+        if let Some(bucket) = state.conference_handler.hls_bucket() {
+            let list = dir.clone();
+            let files = tokio::task::spawn_blocking(move || {
+                crate::recording::hls_bucket::copied_files(&list)
+            })
+            .await
+            .unwrap_or_default();
+            if let Err(e) = bucket.remove(filename, &files).await {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({
+                        "error": format!("Failed to delete the stream's bucket copy: {e}")
+                    })),
+                );
+            }
         }
         return match tokio::fs::remove_dir_all(&dir).await {
             Ok(()) => {

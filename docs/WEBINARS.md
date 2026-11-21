@@ -1253,10 +1253,56 @@ For an audience that is not on FCP at all.
           - `rooms.rs`: `?node=` naming the node itself served, and an
             unknown node 503;
           - `stream_token` unit tests.
-      - **W6.3c: the bucket.** `[conference.hls.s3]` with
-        `S3Target::put_bytes` (a content type and `Cache-Control`). The
-        admin redirects to it, through `[conference.hls] public_url` when
-        that is set.
+      - **W6.3c: the bucket.** **Done** (v0.25.607). As built:
+        - **The copy.** `[conference.hls.s3]` (the shape of
+          `[api.firmware.s3]`, keys under `hls/` unless `prefix` says
+          otherwise) has the stage put every file of a stream at
+          `<prefix><sitting>/<file>` as it writes it
+          (`recording/hls_bucket.rs`, `S3Target::put_bytes`).
+          - The order is the writer's: the init segment, then each segment
+            before the playlist that names it, so the bucket's playlist
+            never names a segment it lacks.
+          - The content type and `Cache-Control` are the node's: the
+            playlist `no-cache`, the rest immutable.
+          - Uploads run on a task of their own, never holding up the
+            writer. A copy more than 128 files behind, or whose upload fails
+            after `S3Target`'s retries, stops: the node serves the rest.
+        - **The directory stays the recording.** Downloads, retention,
+          holds and erasure act on it as in W6.3a. Deleting it, by the API
+          or by the node's retention sweep, first deletes the bucket's
+          copy of every file it holds (a failure keeps the row, to be tried
+          again).
+        - **Delivery.** The node answers a request for the init segment or a
+          segment the bucket holds with a 302 to `<public_url>/<key>`
+          (`[conference.hls] public_url`, a CDN in front of the bucket), or
+          to the bucket's own URL when that is unset. A peer's redirect is
+          passed on, never followed, and so is the admin's: a stream link's
+          player fetches the segments from the CDN.
+          - **A deviation from §2.8:** the playlist is never redirected. It
+            is small and `no-cache`, so a CDN saves nothing on it. Served
+            through the link, a player keeps returning through the link for
+            it. Each segment it names is redirected only if the bucket has
+            it, and otherwise served by the node. A playlist redirected to a
+            copy that had stopped would leave the player on a playlist that
+            never grows.
+          - The bucket's objects must be readable by players: public, or
+            behind the CDN. The sitting's id in their keys is a link
+            holder's to see, so a segment can be fetched from the bucket
+            after the link expires.
+          - Which files are in the bucket is kept in memory. After the node
+            restarts, the old stream's segments are served by the node, its
+            replay included.
+        - **Proved:**
+          - `rooms.rs` `a_stream_is_copied_to_its_bucket_and_its_segments_sent_there`,
+            against `fcp_testkit::s3::StandInS3`: every file put with its
+            headers, the bucket's playlist naming only segments it holds,
+            a segment redirected through `public_url` (named by its node
+            too), the playlist the node's, a missing segment the node's
+            404, the ended playlist, and the delete emptying the bucket;
+          - `api_postgres.rs`: the node's redirect passed on to a link's
+            holder with CORS;
+          - `fcp-cdr/tests/s3.rs` `puts_bytes_with_their_content_type_and_cache_control`
+            against Garage.
       - **W6.3d: the admin UI's Stream tab.** Its state, a link minted, and
         the replay.
 - **W7: RTMP push** (forge-media, FCP).
