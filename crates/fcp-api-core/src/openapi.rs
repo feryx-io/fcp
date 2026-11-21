@@ -701,6 +701,8 @@ mod tests {
             ("POST", "/auth/signup"),
             ("GET", "/events"),
             ("GET", "/me/events"),
+            // A webinar's stream, to a link's holder (W6.3b).
+            ("GET", "/conferences/meetings/:id/stream/:token/:file"),
         ] {
             bound.insert((method.to_string(), format!("/api/v1{path}")));
         }
