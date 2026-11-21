@@ -30,6 +30,8 @@ class PageRecordingResponseDataItem:
             room_number (str):
             node_id (str):
             file_name (str): The file's name; the path on the node is not a caller's business.
+            kind (str): `room`, `participant`, or `stream`: a webinar's stream out, which
+                downloads as one MP4.
             format_ (str):
             trigger (str):
             consent (str):
@@ -48,6 +50,7 @@ class PageRecordingResponseDataItem:
     room_number: str
     node_id: str
     file_name: str
+    kind: str
     format_: str
     trigger: str
     consent: str
@@ -75,6 +78,8 @@ class PageRecordingResponseDataItem:
         node_id = self.node_id
 
         file_name = self.file_name
+
+        kind = self.kind
 
         format_ = self.format_
 
@@ -125,6 +130,7 @@ class PageRecordingResponseDataItem:
             "room_number": room_number,
             "node_id": node_id,
             "file_name": file_name,
+            "kind": kind,
             "format": format_,
             "trigger": trigger,
             "consent": consent,
@@ -158,6 +164,8 @@ class PageRecordingResponseDataItem:
         node_id = d.pop("node_id")
 
         file_name = d.pop("file_name")
+
+        kind = d.pop("kind")
 
         format_ = d.pop("format")
 
@@ -232,6 +240,7 @@ class PageRecordingResponseDataItem:
             room_number=room_number,
             node_id=node_id,
             file_name=file_name,
+            kind=kind,
             format_=format_,
             trigger=trigger,
             consent=consent,

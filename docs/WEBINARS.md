@@ -1166,9 +1166,63 @@ For an audience that is not on FCP at all.
         - the bucket (`[conference.hls.s3]`);
         - the stream's recording row, its announcement, and retention
           (W6.3).
-    - **W6.3: the admin's stream links** (FCP): the viewer token and route,
-      redirect or proxy, `stream` on the meeting, the admin UI's Stream
-      tab, under retention as a recording.
+    - **W6.3: the stream kept and linked** (FCP), in four parts:
+      - **W6.3a: the stream is a recording.** **Done** (v0.25.605). As
+        built:
+        - **Its row.** A conference recording of kind `stream`
+          (`RecordingKind::Stream`, format `mp4`, trigger `auto`), whose
+          path is the stream's directory and whose name is the sitting.
+          - It is written before the first segment, and nothing is
+            streamed without one, as for a recording.
+          - It is completed when the stream ends, with the directory's
+            size. A node that stopped mid-stream closes it off at start-up
+            from the directory's last write.
+          - The webinar's JSON names it (`stream.recording_id`).
+        - **Its announcement.** The tenant's recording announcement and
+          notice tone, as for a recording. When the meeting also records
+          (`auto_record` starts first as it goes live), the recording's
+          announcement serves both: the room hears it once. Anyone joining
+          later hears it too. A `refused` outcome means no stream.
+        - **One item.** A stream is retained, held, exported and erased as
+          any conference recording, through its row:
+          - the node's `/recordings/{sitting}` downloads the directory as
+            one fragmented MP4 (the init segment, then each segment in
+            order), on its own node or through a peer's;
+          - `DELETE` removes the directory, refused (409) while the stream
+            runs;
+          - the API's download names it `<sitting>.mp4`, and the
+            recording's JSON says `kind`;
+          - the node's retention sweep and the admin's sweep of abandoned
+            rows remove a directory whole
+            (`fcp_core::recording::remove_recording_path`);
+          - the orphan sweep counts a file under a stream's directory as
+            that row's (migration 149, a partial index on stream paths).
+        - **Proved:**
+          - `rooms.rs` `a_live_webinar_is_streamed_as_hls_until_it_ends`:
+            the running row, a delete refused while live, the row
+            completed, the download equal to the files in order, and the
+            delete removing the directory;
+          - `compliance.rs` `a_stream_is_one_recording_its_files_kept_until_retention_takes_it`:
+            the stream's files are not orphans and a file beside them is,
+            and retention takes the row and the directory with it.
+      - **W6.3b: the viewer link.**
+        - A stream token, signed like a join token, naming the meeting and
+          minted by a host. It lives for the webinar's day, at most a week.
+        - The admin's `GET /api/v1/conferences/meetings/{id}/stream/{token}/{file}`.
+          The token is a path segment, not a query: a player resolves a
+          playlist's segments relative to its URL and drops a query. This
+          deviates from §2.8's route, which had none.
+        - It finds the sitting's node from the newest `stream` row of the
+          meeting, and proxies through a conference node
+          (`/hls/{sitting}/{file}?node=`) to it.
+        - The meeting's `stream`: its state (`off`, `waiting`, `live`,
+          `ended`) and the newest stream's recording.
+      - **W6.3c: the bucket.** `[conference.hls.s3]` with
+        `S3Target::put_bytes` (a content type and `Cache-Control`). The
+        admin redirects to it, through `[conference.hls] public_url` when
+        that is set.
+      - **W6.3d: the admin UI's Stream tab.** Its state, a link minted, and
+        the replay.
 - **W7: RTMP push** (forge-media, FCP).
   - An AAC encoder, FLV, the RTMP client, and the meeting's sealed stream key.
 - **A7: Anvil.** The attendee's and the host's views (§2.9), and chat in every

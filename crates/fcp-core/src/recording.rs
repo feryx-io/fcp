@@ -152,6 +152,10 @@ pub enum RecordingKind {
     Room,
     /// One participant's own audio.
     Participant,
+    /// A webinar's stream out (`docs/WEBINARS.md` §2.8): its path is the
+    /// stream's directory, whose files read back in order are one
+    /// fragmented MP4.
+    Stream,
 }
 
 impl RecordingKind {
@@ -159,6 +163,7 @@ impl RecordingKind {
         match self {
             RecordingKind::Room => "room",
             RecordingKind::Participant => "participant",
+            RecordingKind::Stream => "stream",
         }
     }
 
@@ -166,6 +171,7 @@ impl RecordingKind {
         match s {
             "room" => Some(RecordingKind::Room),
             "participant" => Some(RecordingKind::Participant),
+            "stream" => Some(RecordingKind::Stream),
             _ => None,
         }
     }
@@ -263,13 +269,23 @@ impl Recording {
         self.ended_at.is_none()
     }
 
-    /// The file's name, without the directory.
+    /// The file's name, without the directory: what its node knows it by.
+    /// A stream's is its directory's, the sitting.
     pub fn file_name(&self) -> &str {
         self.path
             .rsplit('/')
             .next()
             .filter(|s| !s.is_empty())
             .unwrap_or(&self.path)
+    }
+
+    /// The name a download is saved under: a stream's directory comes down
+    /// as one MP4.
+    pub fn download_name(&self) -> String {
+        match self.kind {
+            RecordingKind::Stream => format!("{}.{}", self.file_name(), self.format.extension()),
+            _ => self.file_name().to_string(),
+        }
     }
 }
 
@@ -481,6 +497,42 @@ impl CallRecording {
     }
 }
 
+/// Remove a recording's file, or a stream's whole directory. Nothing there
+/// is not an error.
+pub fn remove_recording_path(path: &std::path::Path) -> std::io::Result<()> {
+    let removed = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(e) => Err(e),
+    };
+    match removed {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+/// What is on disk at a recording's path: its size (a stream's directory,
+/// every file in it) and its last write, or nothing.
+pub fn recording_on_disk(path: &std::path::Path) -> Option<(u64, SystemTime)> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_dir() {
+        return Some((meta.len(), meta.modified().ok()?));
+    }
+    let mut size = 0;
+    let mut last = meta.modified().ok()?;
+    for entry in std::fs::read_dir(path).ok()?.flatten() {
+        if let Ok(m) = entry.metadata() {
+            if m.is_file() {
+                size += m.len();
+                if let Ok(t) = m.modified() {
+                    last = last.max(t);
+                }
+            }
+        }
+    }
+    Some((size, last))
+}
+
 /// The directory a new recording goes in: the tenant, then the UTC date,
 /// so neither a caller's number nor a queue's name is in a file's path.
 pub fn dated_recording_dir(tenant_id: &TenantId, at: SystemTime) -> std::path::PathBuf {
@@ -623,6 +675,37 @@ mod tests {
             ..r
         };
         assert_eq!(bare.file_name(), "room.wav");
+        assert_eq!(bare.download_name(), "room.wav");
+
+        let stream = Recording {
+            path: "/var/fcp/recordings/hls/5f1c".to_string(),
+            format: RecordingFormat::Mp4,
+            kind: RecordingKind::Stream,
+            ..bare
+        };
+        assert_eq!(stream.file_name(), "5f1c");
+        assert_eq!(stream.download_name(), "5f1c.mp4");
+        assert_eq!(RecordingKind::parse("stream"), Some(RecordingKind::Stream));
+    }
+
+    #[test]
+    fn a_stream_s_directory_is_measured_and_removed_whole() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("hls").join("s1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("init.mp4"), [0u8; 10]).unwrap();
+        std::fs::write(dir.join("seg-1.m4s"), [0u8; 32]).unwrap();
+        let (size, _) = recording_on_disk(&dir).unwrap();
+        assert_eq!(size, 42);
+        let file = root.path().join("room.wav");
+        std::fs::write(&file, [0u8; 7]).unwrap();
+        assert_eq!(recording_on_disk(&file).unwrap().0, 7);
+        assert_eq!(recording_on_disk(&root.path().join("gone")), None);
+
+        remove_recording_path(&dir).unwrap();
+        remove_recording_path(&file).unwrap();
+        assert!(!dir.exists() && !file.exists());
+        remove_recording_path(&dir).unwrap();
     }
 
     #[test]

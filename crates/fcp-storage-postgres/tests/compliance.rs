@@ -2667,3 +2667,87 @@ async fn webinar_questions_and_registrations_are_kept_held_found_and_erased() {
     }
     db.finish().await;
 }
+
+/// A webinar's stream is one recording whose row names its directory
+/// (`docs/WEBINARS.md` §2.8, W6.3a): its files are never orphans while the
+/// row stands, and retention takes the row like any recording and the
+/// directory with it.
+#[tokio::test]
+async fn a_stream_is_one_recording_its_files_kept_until_retention_takes_it() {
+    let db = require_db!();
+    let root = tempfile::tempdir().unwrap();
+    let tenant = TenantId::new();
+    let dir = root
+        .path()
+        .join("hls")
+        .join("5f1c0e2a-0000-4000-8000-000000000001");
+    let files: Vec<String> = ["init.mp4", "seg-1.m4s", "seg-2.m4s", "index.m3u8"]
+        .iter()
+        .map(|name| file(&dir.join(name), 40))
+        .collect();
+    // A file beside the stream's directory whose name it begins: not its.
+    let beside = file(
+        &root
+            .path()
+            .join("hls")
+            .join("5f1c0e2a-0000-4000-8000-000000000001x.wav"),
+        40,
+    );
+    let mut stream = Recording::starting(
+        tenant,
+        "8001",
+        "conference-01",
+        dir.to_string_lossy(),
+        RecordingFormat::Mp4,
+        RecordingTrigger::Auto,
+    );
+    stream.kind = RecordingKind::Stream;
+    stream.started_at = days_ago(40);
+    let store = db.storage.recording_store().unwrap().clone();
+    store.create_recording(&stream).await.unwrap();
+    store
+        .finish_recording(&stream.id, days_ago(40), 3600, 1 << 20)
+        .await
+        .unwrap();
+    let back = store.get_recording(&stream.id).await.unwrap().unwrap();
+    assert_eq!(back.kind, RecordingKind::Stream);
+
+    // Its files are named by its row; the file beside it is not.
+    let upkeep = UpkeepConfig {
+        file_roots: vec![root.path().to_path_buf()],
+        orphan_files_after: Some(Duration::from_secs(30 * 86_400)),
+        ..UpkeepConfig::default()
+    };
+    let done = run_upkeep(&db.storage, &upkeep, "upkeep-test").await;
+    assert!(done.errors.is_empty(), "{:?}", done.errors);
+    for f in &files {
+        assert!(Path::new(f).exists(), "{f} is the stream's");
+    }
+    assert!(!Path::new(&beside).exists(), "an orphan beside the stream");
+    assert_eq!(done.orphan_files_removed, 1, "{done:?}");
+
+    // Retention takes a row its node abandoned, and the directory with it
+    // where it is reachable. (A node takes its own on its own sweep.)
+    let mut policy = CompliancePolicy::defaults(tenant);
+    policy.recording_retention_days = Some(30);
+    let report = run_retention(&db.storage, &policy, "retention-test").await;
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.conference_recordings_deleted, 1, "{report:?}");
+    assert!(store.get_recording(&stream.id).await.unwrap().is_none());
+    assert!(!dir.exists(), "the stream's directory is gone");
+    let logged = db
+        .compliance
+        .list_deletions(&DeletionQuery {
+            before: None,
+            tenant_id: Some(tenant),
+            class: Some("conference_recording".into()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(logged.len(), 1);
+    assert_eq!(logged[0].detail.as_ref().unwrap()["kind"], "stream");
+
+    db.finish().await;
+}

@@ -37831,6 +37831,7 @@
                 "room_number",
                 "node_id",
                 "file_name",
+                "kind",
                 "format",
                 "trigger",
                 "consent",
@@ -37861,6 +37862,10 @@
                 "file_name": {
                   "type": "string",
                   "description": "The file's name; the path on the node is not a caller's business."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`room`, `participant`, or `stream`: a webinar's stream out, which\ndownloads as one MP4."
                 },
                 "format": {
                   "type": "string"
@@ -42555,6 +42560,7 @@
           "room_number",
           "node_id",
           "file_name",
+          "kind",
           "format",
           "trigger",
           "consent",
@@ -42585,6 +42591,10 @@
           "file_name": {
             "type": "string",
             "description": "The file's name; the path on the node is not a caller's business."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`room`, `participant`, or `stream`: a webinar's stream out, which\ndownloads as one MP4."
           },
           "format": {
             "type": "string"

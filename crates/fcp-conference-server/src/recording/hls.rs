@@ -42,6 +42,40 @@ pub fn is_stream_file(name: &str) -> bool {
             })
 }
 
+/// Whether `name` could be a stream's directory: a sitting's id, never a
+/// recording's file name (which has an extension).
+pub fn is_sitting_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// A stream directory's files in the order they play: the init segment,
+/// then each segment by its number. Read back in this order they are one
+/// fragmented MP4. Nothing when `dir` holds no init segment.
+pub fn stream_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let init = dir.join(INIT);
+    if !init.is_file() {
+        return Ok(Vec::new());
+    }
+    let mut segments = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let name = entry?.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if let Some(n) = name
+            .strip_prefix("seg-")
+            .and_then(|n| n.strip_suffix(".m4s"))
+            .and_then(|n| n.parse::<u32>().ok())
+        {
+            segments.push((n, dir.join(name)));
+        }
+    }
+    segments.sort_by_key(|(n, _)| *n);
+    Ok(std::iter::once(init)
+        .chain(segments.into_iter().map(|(_, p)| p))
+        .collect())
+}
+
 /// The content type a stream's file is served as.
 pub fn content_type(name: &str) -> &'static str {
     if name.ends_with(".m3u8") {
@@ -244,6 +278,37 @@ mod tests {
         }
         assert_eq!(content_type("index.m3u8"), "application/vnd.apple.mpegurl");
         assert_eq!(content_type("seg-3.m4s"), "video/mp4");
+    }
+
+    #[test]
+    fn a_stream_s_directory_reads_back_init_first_then_segments_by_number() {
+        for ok in ["5f1c0e2a-0000-4000-8000-000000000001", "abc"] {
+            assert!(is_sitting_name(ok), "{ok}");
+        }
+        for bad in ["", "a.mp4", "../x", "a/b", &"x".repeat(65)] {
+            assert!(!is_sitting_name(bad), "{bad}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            stream_files(dir.path()).unwrap().is_empty(),
+            "no init, no stream"
+        );
+        for name in [
+            "seg-10.m4s",
+            "seg-2.m4s",
+            INIT,
+            PLAYLIST,
+            "seg-1.m4s",
+            ".seg-3.m4s.tmp",
+        ] {
+            std::fs::write(dir.path().join(name), name).unwrap();
+        }
+        let names: Vec<String> = stream_files(dir.path())
+            .unwrap()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, [INIT, "seg-1.m4s", "seg-2.m4s", "seg-10.m4s"]);
     }
 
     #[test]
