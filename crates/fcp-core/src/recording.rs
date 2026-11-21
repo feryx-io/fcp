@@ -300,6 +300,8 @@ pub struct RecordingFilter {
     pub until: Option<SystemTime>,
     /// Only recordings still being written, or only finished ones.
     pub running: Option<bool>,
+    /// Only one kind: a meeting's streams, say.
+    pub kind: Option<RecordingKind>,
     pub limit: usize,
     pub offset: usize,
 }

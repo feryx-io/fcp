@@ -356,6 +356,10 @@ fn internal_router(state: Arc<ConferenceState>) -> Router<Arc<ConferenceState>> 
             get(internal_download_recording_handler).delete(internal_delete_recording_handler),
         )
         .route(
+            "/internal/hls/:sitting/:file",
+            get(internal_hls_file_handler),
+        )
+        .route(
             "/internal/conferences/:room_number/speaker",
             post(internal_speaker_handler),
         )
@@ -4957,31 +4961,101 @@ async fn local_download(state: &ConferenceState, filename: &str) -> axum::respon
         .into_response()
 }
 
-/// `GET /hls/{sitting}/{file}` — a file of a webinar's HLS stream on this
-/// node: its playlist (`index.m3u8`, never cached), its init segment or a
-/// segment (`seg-<n>.m4s`, never changed once written). Any other name is
-/// refused.
+/// `GET /hls/{sitting}/{file}` — a file of a webinar's HLS stream: its
+/// playlist (`index.m3u8`, never cached), its init segment or a segment
+/// (`seg-<n>.m4s`, never changed once written). Any other name is refused.
+/// On this node, or with `?node=` the node writing it, fetched through it
+/// (W6.3b: the admin's stream link enters at any node).
 async fn hls_file_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path((sitting, file)): Path<(String, String)>,
+    Query(NodeParam { node }): Query<NodeParam>,
 ) -> axum::response::Response {
     use crate::recording::hls;
-    let sitting_ok = !sitting.is_empty()
-        && sitting.len() <= 64
-        && sitting
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
-    if !sitting_ok || !hls::is_stream_file(&file) {
+    if !hls::is_sitting_name(&sitting) || !hls::is_stream_file(&file) {
         return json_response(
             StatusCode::BAD_REQUEST,
             serde_json::json!({ "error": "Invalid stream file" }),
         );
     }
-    let path = state
-        .conference_handler
-        .hls_dir()
-        .join(&sitting)
-        .join(&file);
+    match peer_for(&state, node.as_deref()) {
+        PeerRoute::Local => local_hls_file(&state, &sitting, &file).await,
+        PeerRoute::Unknown(node) => json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": format!("Node {node} is not in cluster membership") }),
+        ),
+        PeerRoute::Peer(node) => {
+            let Some(control) = &state.control else {
+                return json_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    serde_json::json!({ "error": "This node is not clustered" }),
+                );
+            };
+            let tenant = headers
+                .get(PLATFORM_TENANT_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            match control
+                .stream_from_node(&node, &tenant, &format!("/hls/{sitting}/{file}"))
+                .await
+            {
+                Ok(resp) => {
+                    let status = StatusCode::from_u16(resp.status().as_u16())
+                        .unwrap_or(StatusCode::BAD_GATEWAY);
+                    let header = |name: &str, default: &str| {
+                        resp.headers()
+                            .get(name)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or(default)
+                            .to_string()
+                    };
+                    let content_type = header("content-type", "application/octet-stream");
+                    let cache = header("cache-control", "no-cache");
+                    (
+                        status,
+                        [("content-type", content_type), ("cache-control", cache)],
+                        Body::from_stream(resp.bytes_stream()),
+                    )
+                        .into_response()
+                }
+                Err(e) => {
+                    warn!(node = %node, sitting = %sitting, error = %e, "Could not fetch a stream file from its node");
+                    json_response(
+                        StatusCode::BAD_GATEWAY,
+                        serde_json::json!({ "error": format!("Node {node}: {e}") }),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// GET /internal/hls/{sitting}/{file} — what a peer asks this node for.
+async fn internal_hls_file_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path((sitting, file)): Path<(String, String)>,
+) -> axum::response::Response {
+    if !crate::recording::hls::is_sitting_name(&sitting)
+        || !crate::recording::hls::is_stream_file(&file)
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": "Invalid stream file" }),
+        );
+    }
+    local_hls_file(&state, &sitting, &file).await
+}
+
+/// A stream's file from this node's directory.
+async fn local_hls_file(
+    state: &ConferenceState,
+    sitting: &str,
+    file: &str,
+) -> axum::response::Response {
+    use crate::recording::hls;
+    let path = state.conference_handler.hls_dir().join(sitting).join(file);
     let bytes = match tokio::fs::read(&path).await {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -5005,7 +5079,7 @@ async fn hls_file_handler(
     (
         StatusCode::OK,
         [
-            ("content-type", hls::content_type(&file)),
+            ("content-type", hls::content_type(file)),
             ("cache-control", cache),
         ],
         Body::from(bytes),

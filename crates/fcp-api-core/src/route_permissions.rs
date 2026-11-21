@@ -768,6 +768,16 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     ),
     (
         GET,
+        "/conferences/meetings/:id/stream",
+        Needs(ConferenceRead),
+    ),
+    (
+        POST,
+        "/conferences/meetings/:id/stream/links",
+        Needs(ConferenceManage),
+    ),
+    (
+        GET,
         "/conferences/meetings/:id/sittings",
         Needs(ConferenceRead),
     ),

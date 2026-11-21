@@ -3699,6 +3699,13 @@ async fn a_live_webinar_is_streamed_as_hls_until_it_ends() {
     assert_eq!(code, 200, "{seg}");
     let (code, _) = fetch(format!("{base}..%2Fsecret")).await;
     assert_ne!(code, 200, "only a stream's own files are served");
+    // Named by its node, as the admin's stream link asks (W6.3b): this
+    // node serves its own, and a node it does not know is not reached.
+    let (code, named) = fetch(format!("{base}init.mp4?node=e2e-conference")).await;
+    assert_eq!(code, 200);
+    assert_eq!(named, init);
+    let (code, _) = fetch(format!("{base}init.mp4?node=nowhere")).await;
+    assert_eq!(code, 503);
 
     // Kept as a recording (W6.3a): a `stream` row naming the directory,
     // written before the first segment, which nobody deletes while it runs.

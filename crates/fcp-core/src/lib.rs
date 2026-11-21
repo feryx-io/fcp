@@ -68,6 +68,7 @@ pub mod sip_trace;
 pub mod site;
 pub mod site_location;
 pub mod storage;
+pub mod stream_token;
 pub mod subject;
 pub mod subject_erasure;
 pub mod subject_request;

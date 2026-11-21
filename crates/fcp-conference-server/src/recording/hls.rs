@@ -21,7 +21,6 @@ use forge_mp4::cmaf::{CmafSegment, CmafSegmenter};
 use forge_mp4::{AudioTrack, Mp4Config, Mp4VideoCodec, VideoTrack};
 #[cfg(feature = "recording-mp4")]
 use forge_video::flavor::Flavor;
-#[cfg(feature = "recording-mp4")]
 use std::path::{Path, PathBuf};
 
 /// The playlist's name in a stream's directory.

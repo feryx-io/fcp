@@ -6096,6 +6096,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conferences/meetings/{id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /conferences/meetings/:id/stream — the webinar's stream. */
+        get: operations["webinar_stream_state"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conferences/meetings/{id}/stream/links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /conferences/meetings/:id/stream/links — a link to the webinar's
+         *     stream for viewers who are not on FCP.
+         */
+        post: operations["webinar_stream_mint_link"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conferences/meetings/{id}/stream/{token}/{file}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/conferences/meetings/:id/stream/:token/:file — the webinar's
+         *     stream to a link's holder: no bearer token, the link is the credential.
+         */
+        get: operations["webinar_stream_serve"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conferences/live/{room}/video": {
         parameters: {
             query?: never;
@@ -14379,6 +14436,46 @@ export interface components {
          * @enum {string}
          */
         StatusState: "available" | "away" | "busy" | "dnd";
+        /** @description `POST …/stream/links` body. */
+        StreamLinkRequest: {
+            /**
+             * Format: int64
+             * @description The link's lifetime in seconds: a day by default, a week at most.
+             */
+            ttl_secs?: number | null;
+        };
+        /** @description A stream link. */
+        StreamLinkResponse: {
+            /** @description The signed token, the credential. */
+            token: string;
+            /** @description The playlist on this admin, for a player. */
+            playlist_path: string;
+            /**
+             * @description The same with this admin's public address, when it knows it
+             *     (`[api.sso] public_url`).
+             */
+            playlist_url?: string | null;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        /** @description A webinar's stream, as the API shows it. */
+        StreamStateResponse: {
+            /**
+             * @description `off` (the meeting does not stream), `waiting` (it will, once live),
+             *     `live`, or `ended` (its newest stream ended, kept for replay).
+             */
+            state: string;
+            /** @description The newest stream's recording. */
+            recording_id?: string | null;
+            /** @description The sitting it streamed. */
+            sitting_id?: string | null;
+            /** Format: date-time */
+            started_at?: string | null;
+            /** Format: date-time */
+            ended_at?: string | null;
+            /** Format: int64 */
+            duration_secs?: number | null;
+        };
         /**
          * @description A subject as the tenant knows them: every spelling that identifies them,
          *     and the platform objects that are theirs (`docs/COMPLIANCE_FOLLOWUPS.md`
@@ -23017,6 +23114,8 @@ export interface operations {
                 until?: number;
                 /** @description Only those still being written, or only those finished. */
                 running?: boolean;
+                /** @description Only one kind: `room`, `participant` or `stream`. */
+                kind?: string;
                 limit?: number;
                 cursor?: string;
             };
@@ -30587,6 +30686,107 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AttendanceResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webinar_stream_state: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stream */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StreamStateResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webinar_stream_mint_link: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StreamLinkRequest"];
+            };
+        };
+        responses: {
+            /** @description Minted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StreamLinkResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webinar_stream_serve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                /** @description A stream link's token */
+                token: string;
+                /** @description `index.m3u8`, `init.mp4` or `seg-<n>.m4s` */
+                file: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The playlist or a segment */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.apple.mpegurl": unknown;
                 };
             };
             /** @description An error */

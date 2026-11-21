@@ -22,6 +22,7 @@ def _get_kwargs(
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
     running: bool | Unset = UNSET,
+    kind: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -41,6 +42,8 @@ def _get_kwargs(
     params["until"] = until
 
     params["running"] = running
+
+    params["kind"] = kind
 
     params["limit"] = limit
 
@@ -94,6 +97,7 @@ def sync_detailed(
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
     running: bool | Unset = UNSET,
+    kind: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -106,6 +110,7 @@ def sync_detailed(
         since (int | Unset):
         until (int | Unset):
         running (bool | Unset):
+        kind (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -124,6 +129,7 @@ meeting_id=meeting_id,
 since=since,
 until=until,
 running=running,
+kind=kind,
 limit=limit,
 cursor=cursor,
 
@@ -143,6 +149,7 @@ def sync(
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
     running: bool | Unset = UNSET,
+    kind: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -155,6 +162,7 @@ def sync(
         since (int | Unset):
         until (int | Unset):
         running (bool | Unset):
+        kind (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -174,6 +182,7 @@ meeting_id=meeting_id,
 since=since,
 until=until,
 running=running,
+kind=kind,
 limit=limit,
 cursor=cursor,
 
@@ -187,6 +196,7 @@ async def asyncio_detailed(
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
     running: bool | Unset = UNSET,
+    kind: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -199,6 +209,7 @@ async def asyncio_detailed(
         since (int | Unset):
         until (int | Unset):
         running (bool | Unset):
+        kind (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -217,6 +228,7 @@ meeting_id=meeting_id,
 since=since,
 until=until,
 running=running,
+kind=kind,
 limit=limit,
 cursor=cursor,
 
@@ -236,6 +248,7 @@ async def asyncio(
     since: int | Unset = UNSET,
     until: int | Unset = UNSET,
     running: bool | Unset = UNSET,
+    kind: str | Unset = UNSET,
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 
@@ -248,6 +261,7 @@ async def asyncio(
         since (int | Unset):
         until (int | Unset):
         running (bool | Unset):
+        kind (str | Unset):
         limit (int | Unset):
         cursor (str | Unset):
 
@@ -267,6 +281,7 @@ meeting_id=meeting_id,
 since=since,
 until=until,
 running=running,
+kind=kind,
 limit=limit,
 cursor=cursor,
 

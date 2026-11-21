@@ -1205,18 +1205,54 @@ For an audience that is not on FCP at all.
           - `compliance.rs` `a_stream_is_one_recording_its_files_kept_until_retention_takes_it`:
             the stream's files are not orphans and a file beside them is,
             and retention takes the row and the directory with it.
-      - **W6.3b: the viewer link.**
-        - A stream token, signed like a join token, naming the meeting and
-          minted by a host. It lives for the webinar's day, at most a week.
-        - The admin's `GET /api/v1/conferences/meetings/{id}/stream/{token}/{file}`.
-          The token is a path segment, not a query: a player resolves a
-          playlist's segments relative to its URL and drops a query. This
-          deviates from §2.8's route, which had none.
-        - It finds the sitting's node from the newest `stream` row of the
-          meeting, and proxies through a conference node
-          (`/hls/{sitting}/{file}?node=`) to it.
-        - The meeting's `stream`: its state (`off`, `waiting`, `live`,
-          `ended`) and the newest stream's recording.
+      - **W6.3b: the viewer link.** **Done** (v0.25.606). As built:
+        - **The link.** A `StreamToken` (`fcp_core::stream_token`), signed
+          like a join token with `[conference] join_secret`, naming the
+          tenant and the meeting. Its `purpose` keeps it from passing for
+          a join token, or a join token for it.
+          - `POST /api/v1/conferences/meetings/{id}/stream/links` mints one
+            under `conference_manage`: a day by default, a week at most
+            (`ttl_secs`), and only for a webinar whose `streaming` is
+            `hls` (409 otherwise).
+          - It answers `token`, `playlist_path`, `playlist_url` (when
+            `[api.sso] public_url` says where the admin is) and
+            `expires_at`.
+          - A host's own route (`/me/…`) is left for A7: the link is the
+            admin's, as a registrant's is.
+        - **The stream.** `GET /api/v1/conferences/meetings/{id}/stream/{token}/{file}`,
+          outside the auth layer: the link is the credential.
+          - The token is a path segment, not a query: a player resolves a
+            playlist's segments relative to its URL and drops a query.
+            This deviates from §2.8's route, which had none.
+          - Only the playlist, the init segment and `seg-<n>.m4s`.
+          - A forged or expired link is 401, another meeting's 403, a
+            meeting that no longer streams or has not streamed yet 404.
+            None reaches a node.
+          - The newest `stream` row of the meeting names the sitting and
+            its node. The request goes to the configured conference node
+            as `/hls/{sitting}/{file}?node=<node>`, in the meeting's
+            tenant. That node serves its own, and fetches a peer's
+            through `/internal/hls/…` under `cluster.secret`.
+          - The content type and `Cache-Control` come back as the node
+            set them, with `Access-Control-Allow-Origin: *` for a player
+            on another origin.
+          - A stream that ended stays served, its replay, until retention
+            takes its row.
+        - **The meeting's stream.** `GET /api/v1/conferences/meetings/{id}/stream`
+          (`conference_read`), a resource of its own rather than a field on
+          every meeting. It gives `state` (`off`, `waiting`, `live` or
+          `ended`, from the newest stream's row) with that row's
+          recording, sitting, start, end and duration.
+        - **Recordings by kind.** `GET /api/v1/recordings?kind=stream`, and
+          `RecordingFilter::kind`.
+        - **Proved:**
+          - `api_postgres.rs` `a_stream_link_opens_the_webinar_s_newest_stream_and_nothing_else`,
+            against a stand-in node: the states, the link's limits, the
+            playlist and a segment proxied with the node and tenant named,
+            the refusals never reaching the node, and replay;
+          - `rooms.rs`: `?node=` naming the node itself served, and an
+            unknown node 503;
+          - `stream_token` unit tests.
       - **W6.3c: the bucket.** `[conference.hls.s3]` with
         `S3Target::put_bytes` (a content type and `Cache-Control`). The
         admin redirects to it, through `[conference.hls] public_url` when
