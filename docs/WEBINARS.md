@@ -1482,8 +1482,26 @@ For an audience that is not on FCP at all.
             with `FCP_TEST_FFMPEG=1`: ffmpeg's RTMP server takes the
             webinar, ffprobe reads H.264 and AAC 48 kHz, and the file
             decodes whole.
-    - **W7.3: the admin UI**: the form's destination and the Stream tab's
-      push.
+    - **W7.3: the admin UI.** **Done** (v0.25.612). As built:
+      - The webinar dialog's Stream tab has the HLS stream (W6.3d) above
+        and the push over RTMP below. The two are independent: a webinar
+        can be pushed without being streamed as HLS.
+      - The destination: the ingest URL and the stream key. The key is
+        typed once, never shown again, and kept when it is left empty;
+        "Stream key set" says there is one. Remove takes it away.
+      - The push while live, from the node's webinar JSON:
+        - Pushing, Connecting, Retrying or Stopped;
+        - the ingest's host, since when, MB sent, connections, frames
+          dropped while behind;
+        - the last error while not pushing.
+      - Revised from decision 6: the destination is set in the Stream
+        tab, not the meeting's form, as it is its own sub-resource
+        (W7.2a).
+      - **Proved:** `e2e/webinars.spec.ts`. A destination is saved and
+        the API shows it with its key set. The key is in no field and
+        nowhere in the dialog. Saving the URL alone keeps the key, and
+        Remove clears it.
+  - **W7 is complete.**
 - **A7: Anvil.** The attendee's and the host's views (§2.9), and chat in every
   room.
 

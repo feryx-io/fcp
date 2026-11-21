@@ -1379,6 +1379,19 @@ export type SittingResponse = components['schemas']['SittingResponse']
 export type AttendanceResponse = components['schemas']['AttendanceResponse']
 export type StreamStateResponse = components['schemas']['StreamStateResponse']
 export type StreamLinkResponse = components['schemas']['StreamLinkResponse']
+export type RtmpDestinationResponse = components['schemas']['RtmpDestinationResponse']
+export type RtmpDestinationRequest = components['schemas']['RtmpDestinationRequest']
+
+/** A webinar's push over RTMP as its node tells it (W7). */
+export interface RtmpPush {
+  state: 'connecting' | 'live' | 'retrying' | 'stopped'
+  since: string
+  error?: string
+  bytes_sent: number
+  connects: number
+  dropped_frames: number
+  ingest: string
+}
 
 /** The room's sitting as its node tells it. */
 export interface LiveSitting {
@@ -1388,6 +1401,8 @@ export interface LiveSitting {
   started_at: string
   live_at: string | null
   lobby: number
+  /** The push over RTMP, while there is one. */
+  rtmp?: RtmpPush
 }
 
 /** One attendee as the node lists them. */
@@ -1429,6 +1444,11 @@ export const webinars = {
     apiClient.post<JoinTokenResponse>(`${meetingPath(id)}/registrants/${encodeURIComponent(rid)}/token`, {}),
   /** The webinar's stream out (§2.8): off, waiting, live or ended. */
   stream: (id: string) => apiClient.get<StreamStateResponse>(`${meetingPath(id)}/stream`),
+  /** Where the webinar is pushed over RTMP; the key is never returned. */
+  rtmp: (id: string) => apiClient.get<RtmpDestinationResponse>(`${meetingPath(id)}/stream/rtmp`),
+  setRtmp: (id: string, body: RtmpDestinationRequest) =>
+    apiClient.put<RtmpDestinationResponse>(`${meetingPath(id)}/stream/rtmp`, body),
+  deleteRtmp: (id: string) => apiClient.delete<void>(`${meetingPath(id)}/stream/rtmp`),
   /** A link to watch the stream, for `ttlSecs` (a day unless set). */
   streamLink: (id: string, ttlSecs?: number) =>
     apiClient.post<StreamLinkResponse>(`${meetingPath(id)}/stream/links`, { ttl_secs: ttlSecs }),
