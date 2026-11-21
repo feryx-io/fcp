@@ -3623,6 +3623,166 @@ async fn a_webinar_that_requires_registration_admits_its_registrants_alone() {
     stack.finish().await;
 }
 
+/// A stream copied to a bucket (`docs/WEBINARS.md` §2.8, W6.3c): each file
+/// put as it is written, with the content type and `Cache-Control` the node
+/// serves it with; a segment the bucket holds is redirected there, through
+/// `public_url`, while the playlist is always the node's; and deleting the
+/// stream takes the bucket's copy too.
+#[cfg(feature = "recording-mp4")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stream_is_copied_to_its_bucket_and_its_segments_sent_there() {
+    use fcp_testkit::s3::{StandInS3, ACCESS_KEY_ID, SECRET_ACCESS_KEY};
+    let s3 = StandInS3::start("streams").await.unwrap();
+    let hls = format!(
+        "hls = {{ enabled = true, segment_secs = 1, public_url = \"https://cdn.example.test/live/\", \
+         s3 = {{ bucket = \"streams\", endpoint = \"{}\", path_style = true, \
+         access_key_id = \"{ACCESS_KEY_ID}\", secret_access_key = \"{SECRET_ACCESS_KEY}\" }} }}",
+        s3.url()
+    );
+    let Some(stack) = Stack::start_conference("", 60, &hls).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({ "kind": "webinar", "host_pin": "9999", "streaming": "hls" }),
+        )
+        .await;
+    let host = stack.phone("hostess").await;
+    let host_call = join(&stack, &host).await;
+    dial_digits(&host_call, "9999").await;
+    stack.wait_participants(1).await;
+    go_live(&stack).await;
+    host_call.media().play_tone(440.0, 8000);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let sitting = loop {
+        let (_, w) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+        if let Some(s) = w["stream"]["sitting"].as_str() {
+            break s.to_string();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never streamed: {w}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let key = |file: &str| format!("hls/{sitting}/{file}");
+    // Put as written: the init segment, segments, and the playlist after
+    // the segment it names.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let listed = s3
+            .object(&key("index.m3u8"))
+            .map(|o| String::from_utf8(o.body).unwrap())
+            .unwrap_or_default();
+        if listed.matches("#EXTINF:").count() >= 2 {
+            for line in listed.lines().filter(|l| l.starts_with("seg-")) {
+                assert!(
+                    s3.object(&key(line)).is_some(),
+                    "the playlist in the bucket names {line}, which is not there yet: {:?}",
+                    s3.keys()
+                );
+            }
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the bucket never got the stream: {:?}",
+            s3.keys()
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let init = s3.object(&key("init.mp4")).expect("the init segment");
+    assert_eq!(init.content_type.as_deref(), Some("video/mp4"));
+    assert_eq!(
+        init.cache_control.as_deref(),
+        Some("public, max-age=31536000, immutable")
+    );
+    let playlist = s3.object(&key("index.m3u8")).unwrap();
+    assert_eq!(
+        playlist.content_type.as_deref(),
+        Some("application/vnd.apple.mpegurl")
+    );
+    assert_eq!(playlist.cache_control.as_deref(), Some("no-cache"));
+    let seg = s3.object(&key("seg-1.m4s")).expect("the first segment");
+    let dir = stack._dir.path().join("recordings/hls").join(&sitting);
+    assert_eq!(seg.body, std::fs::read(dir.join("seg-1.m4s")).unwrap());
+
+    // A segment is sent to the bucket, through its public URL; the
+    // playlist never is.
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let get = |path: String| {
+        let client = client.clone();
+        async move {
+            client
+                .get(loopback(stack.http, &path))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let resp = get(format!("/hls/{sitting}/seg-1.m4s")).await;
+    assert_eq!(resp.status(), 302);
+    assert_eq!(
+        resp.headers()["location"],
+        format!("https://cdn.example.test/live/hls/{sitting}/seg-1.m4s").as_str()
+    );
+    let resp = get(format!("/hls/{sitting}/init.mp4?node=e2e-conference")).await;
+    assert_eq!(resp.status(), 302, "named by its node, the same");
+    let resp = get(format!("/hls/{sitting}/index.m3u8")).await;
+    assert_eq!(resp.status(), 200, "the playlist is the node's");
+    let resp = get(format!("/hls/{sitting}/seg-999.m4s")).await;
+    assert_eq!(
+        resp.status(),
+        404,
+        "what the bucket does not have, the node answers"
+    );
+
+    // Ended: the bucket's playlist ends too.
+    let (code, out) = stack
+        .post(&format!("/conferences/{ROOM}/webinar/end"))
+        .await;
+    assert_eq!(code, 200, "{out}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let ended = s3
+            .object(&key("index.m3u8"))
+            .is_some_and(|o| o.body.ends_with(b"#EXT-X-ENDLIST\n"));
+        if ended && stack.get(&format!("/conferences/{ROOM}/webinar")).await.1["stream"].is_null() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the bucket's playlist never ended"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let local: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    for name in &local {
+        assert!(s3.object(&key(name)).is_some(), "{name} not copied");
+    }
+
+    // Deleted, the copy goes with the directory.
+    let (code, out) = stack
+        .send("DELETE", &format!("/recordings/{sitting}"), None)
+        .await;
+    assert_eq!(code, 200, "{out}");
+    assert!(!dir.exists());
+    assert!(s3.keys().is_empty(), "left in the bucket: {:?}", s3.keys());
+    let _ = host_call.hangup().await;
+    stack.finish().await;
+}
+
 /// A webinar streamed out as HLS (`docs/WEBINARS.md` §2.8, W6.2): nothing
 /// in practice; from going live, a live playlist of segments a player can
 /// fetch from the node; and when the webinar ends, the playlist ends too.

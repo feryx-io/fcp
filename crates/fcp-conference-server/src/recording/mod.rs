@@ -251,6 +251,8 @@ pub struct RecorderSettings {
     /// segments of this many milliseconds, an init segment and a live
     /// playlist in the directory `path` names. MP4 only.
     pub hls_segment_ms: Option<u64>,
+    /// The stream's copy in a bucket (`[conference.hls.s3]`, W6.3c).
+    pub hls_mirror: Option<hls_bucket::HlsMirror>,
 }
 
 /// The video half of a recording.
@@ -265,6 +267,7 @@ pub struct VideoSettings {
 pub use mux::Recorder;
 
 pub mod hls;
+pub mod hls_bucket;
 
 #[cfg(any(feature = "recording-webm", feature = "recording-mp4"))]
 mod mux {
@@ -509,6 +512,7 @@ mod mux {
                         &settings.path,
                         sink.as_ref().map(|s| &s.flavor),
                         segment_ms,
+                        settings.hls_mirror.clone(),
                     )?))
                 }
                 #[cfg(not(feature = "recording-mp4"))]

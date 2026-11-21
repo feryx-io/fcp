@@ -286,8 +286,11 @@ pub async fn serve(
         urlencoding::encode(stream.file_name()),
         urlencoding::encode(&stream.node_id)
     );
+    // A segment in the stream's bucket comes back as a redirect, passed
+    // on to the player (W6.3c).
     let client = reqwest::Client::builder()
         .connect_timeout(UPSTREAM_CONNECT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let mut req = client
@@ -301,6 +304,26 @@ pub async fn serve(
         ApiError::ServiceUnavailable(format!("Conference server unreachable: {e}"))
     })?;
     let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    if status.is_redirection() {
+        let location = resp
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .filter(|l| l.starts_with("https://") || l.starts_with("http://"))
+            .ok_or_else(|| {
+                ApiError::ServiceUnavailable("The conference server redirected nowhere".into())
+            })?
+            .to_string();
+        return Ok((
+            StatusCode::FOUND,
+            [
+                ("location", location),
+                ("cache-control", "no-cache".to_string()),
+                ("access-control-allow-origin", "*".to_string()),
+            ],
+        )
+            .into_response());
+    }
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
         let error = crate::error::ErrorResponse::for_status(status, Some(body));

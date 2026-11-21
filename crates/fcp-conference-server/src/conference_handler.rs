@@ -439,6 +439,8 @@ pub struct ConferenceCallHandler {
     tree_acked: DashMap<(RoomKey, String), u64>,
     /// Webinars streamed out as HLS from this node (§2.8).
     streams: DashMap<RoomKey, stream::ActiveStream>,
+    /// The bucket streams are copied to (`[conference.hls.s3]`, W6.3c).
+    hls_bucket: Option<Arc<crate::recording::hls_bucket::HlsBucket>>,
     /// When an attendee's join last paid for the audience's composite: the
     /// joins after it, until the budget is recomputed, do not pay again.
     audience_encode_held: DashMap<RoomKey, Instant>,
@@ -1011,6 +1013,7 @@ impl ConferenceCallHandler {
             edge_passthrough_was: DashMap::new(),
             audience_encode_held: DashMap::new(),
             streams: DashMap::new(),
+            hls_bucket: None,
             node_id,
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),
@@ -1073,6 +1076,16 @@ impl ConferenceCallHandler {
     /// Give rooms a video backend; without one every meeting is audio-only.
     pub fn set_video_backend(&mut self, backend: VideoBackend) {
         self.video_backend = Some(Arc::new(backend));
+    }
+
+    /// Copy streams to a bucket and send players there for its segments.
+    pub fn set_hls_bucket(&mut self, bucket: Arc<crate::recording::hls_bucket::HlsBucket>) {
+        self.hls_bucket = Some(bucket);
+    }
+
+    /// The bucket streams are copied to, when there is one.
+    pub fn hls_bucket(&self) -> Option<&Arc<crate::recording::hls_bucket::HlsBucket>> {
+        self.hls_bucket.as_ref()
     }
 
     /// Set the TTS service for synthesizing prompts from meeting text fields.
@@ -2849,6 +2862,7 @@ impl ConferenceCallHandler {
                         }),
                         audio_bitrate: conf.recording_audio_bitrate,
                         hls_segment_ms: None,
+                        hls_mirror: None,
                     };
                     RecordingWriter::Media(crate::recording::Recorder::start(
                         &record.id.to_string(),

@@ -150,3 +150,36 @@ async fn reads_an_object_back_and_deletes_it() {
     // Deleting what is not there is no error.
     target.delete(&key).await.unwrap();
 }
+
+/// A small object put from memory (a stream's segment or playlist,
+/// `docs/WEBINARS.md` W6.3c): served back with the content type and
+/// `Cache-Control` it was put with, at the URL `object_url` names.
+#[tokio::test]
+async fn puts_bytes_with_their_content_type_and_cache_control() {
+    let config = require_s3!();
+    let target = S3Target::new(config).unwrap();
+    let key = format!("test/{}/hls/seg-1.m4s", uuid::Uuid::new_v4());
+    target
+        .put_bytes(
+            &key,
+            b"segment".to_vec(),
+            "video/mp4",
+            Some("public, max-age=31536000, immutable"),
+        )
+        .await
+        .unwrap();
+    let got = target.get(&key).await.unwrap().expect("the object");
+    assert_eq!(got.headers()["content-type"], "video/mp4");
+    assert_eq!(
+        got.headers()["cache-control"],
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(got.bytes().await.unwrap().as_ref(), b"segment");
+    assert!(
+        target.object_url(&key).ends_with(&key),
+        "{}",
+        target.object_url(&key)
+    );
+    target.delete(&key).await.unwrap();
+    assert!(target.get(&key).await.unwrap().is_none());
+}

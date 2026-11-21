@@ -18732,6 +18732,7 @@ async fn the_softphone_is_told_whether_its_calls_carry_video() {
 #[tokio::test]
 async fn a_stream_link_opens_the_webinar_s_newest_stream_and_nothing_else() {
     use axum::extract::{Path as AxPath, Query as AxQuery};
+    use axum::response::IntoResponse as _;
     use std::collections::HashMap;
     type Seen = Arc<std::sync::Mutex<Vec<(String, String, Option<String>)>>>;
     let seen: Seen = Arc::default();
@@ -18751,6 +18752,17 @@ async fn a_stream_link_opens_the_webinar_s_newest_stream_and_nothing_else() {
                     seen.lock()
                         .unwrap()
                         .push((sitting.clone(), node.clone(), tenant));
+                    if file == "seg-100.m4s" {
+                        // In the stream's bucket (W6.3c).
+                        return (
+                            StatusCode::FOUND,
+                            [(
+                                "location",
+                                format!("https://cdn.example.test/hls/{sitting}/{file}"),
+                            )],
+                        )
+                            .into_response();
+                    }
                     (
                         StatusCode::OK,
                         [
@@ -18759,6 +18771,7 @@ async fn a_stream_link_opens_the_webinar_s_newest_stream_and_nothing_else() {
                         ],
                         format!("#EXTM3U\n# {sitting} {file} from {node}\n"),
                     )
+                        .into_response()
                 },
             ),
         )
@@ -18923,6 +18936,14 @@ async fn a_stream_link_opens_the_webinar_s_newest_stream_and_nothing_else() {
     assert_eq!(res.status, StatusCode::UNAUTHORIZED);
     let calls = seen.lock().unwrap().len();
     assert_eq!(calls, 2, "refused links never reach the node");
+    // A segment the node sends to its bucket: the player is sent there.
+    let res = anonymous(playlist.replace("index.m3u8", "seg-100.m4s")).await;
+    assert_eq!(res.status, StatusCode::FOUND, "{}", res.text);
+    assert_eq!(
+        res.headers["location"],
+        "https://cdn.example.test/hls/5f1c0e2a-0000-4000-8000-000000000001/seg-100.m4s"
+    );
+    assert_eq!(res.headers["access-control-allow-origin"], "*");
 
     // Ended: kept for replay, and still served.
     fcp_core::recording::RecordingStore::finish_recording(

@@ -929,6 +929,18 @@ async fn main() -> Result<()> {
     conference_handler.set_video_backend(video_backend);
     conference_handler.set_cdr(cdr_writer, region);
     conference_handler.set_video_capacity(Arc::clone(&video_capacity));
+    let hls_bucket = match &config.conference.hls.s3 {
+        Some(s3) => {
+            let bucket = Arc::new(recording::hls_bucket::HlsBucket::new(
+                s3,
+                config.conference.hls.public_url.clone(),
+            )?);
+            info!(bucket = %bucket.location(), public_url = ?config.conference.hls.public_url, "Streams are copied to a bucket");
+            conference_handler.set_hls_bucket(Arc::clone(&bucket));
+            Some(bucket)
+        }
+        None => None,
+    };
 
     // Initialize TTS service if configured (supports local/Kokoro + cloud providers)
     let tts_service: Option<Arc<fcp_media::TtsService>> = if config.tts.enabled {
@@ -1879,6 +1891,7 @@ async fn main() -> Result<()> {
         let cleanup_interval_secs = config.conference.recording_cleanup_interval_secs;
         let cleanup_storage = Arc::clone(&dyn_storage);
         let cleanup_node = config.service.node_id.clone();
+        let cleanup_bucket = hls_bucket.clone();
         // Anything this node was recording when it last stopped is
         // finished off before the sweep can call it expired.
         close_off_orphaned_recordings(&dyn_storage, &config.service.node_id).await;
@@ -1897,6 +1910,7 @@ async fn main() -> Result<()> {
                     cleanup_interval_secs,
                     cleanup_storage,
                     cleanup_node,
+                    cleanup_bucket,
                 ),
             )
             .await;
@@ -2465,14 +2479,20 @@ async fn run_recording_cleanup(
     cleanup_interval_secs: u64,
     storage: Arc<fcp_core::storage::DynStorage>,
     node_id: String,
+    hls_bucket: Option<Arc<recording::hls_bucket::HlsBucket>>,
 ) {
     let normal_interval = Duration::from_secs(cleanup_interval_secs);
     let mut backoff = Duration::from_secs(60);
     let max_backoff = Duration::from_secs(3600);
 
     loop {
-        let registry_deleted =
-            sweep_registered_recordings(&storage, &node_id, default_retention_days).await;
+        let registry_deleted = sweep_registered_recordings(
+            &storage,
+            &node_id,
+            default_retention_days,
+            hls_bucket.as_deref(),
+        )
+        .await;
         if registry_deleted > 0 {
             info!(
                 deleted = registry_deleted,
@@ -2558,6 +2578,7 @@ async fn sweep_registered_recordings(
     storage: &Arc<fcp_core::storage::DynStorage>,
     node_id: &str,
     default_retention_days: Option<u32>,
+    hls_bucket: Option<&recording::hls_bucket::HlsBucket>,
 ) -> u32 {
     let Some(store) = storage.recording_store() else {
         return 0;
@@ -2598,6 +2619,16 @@ async fn sweep_registered_recordings(
             }
         };
         for recording in expired.iter().filter(|r| r.node_id == node_id) {
+            // A stream's bucket copy goes first, while its directory still
+            // names the files.
+            if let (Some(bucket), fcp_core::RecordingKind::Stream) = (hls_bucket, recording.kind) {
+                let dir = std::path::PathBuf::from(&recording.path);
+                let files = recording::hls_bucket::copied_files(&dir);
+                if let Err(e) = bucket.remove(recording.file_name(), &files).await {
+                    warn!(recording = %recording.id, error = %e, "Recording retention: could not remove the stream's bucket copy; keeping the row");
+                    continue;
+                }
+            }
             // A stream's path is its directory.
             match fcp_core::recording::remove_recording_path(std::path::Path::new(&recording.path))
             {

@@ -316,6 +316,48 @@ impl S3Target {
         .await
     }
 
+    /// Put `bytes` at `key` in one request, served back as `content_type`
+    /// with `cache_control` when set: a small object made in memory, such
+    /// as a stream's segment or playlist.
+    pub async fn put_bytes(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+        cache_control: Option<&str>,
+    ) -> Result<(), ArchiveError> {
+        use sha2::Digest;
+        let sha256 = hex::encode(sha2::Sha256::digest(&bytes));
+        let body = bytes::Bytes::from(bytes);
+        self.retrying("PUT", || async {
+            let mut headers = vec![("content-type".to_string(), content_type.to_string())];
+            if let Some(cache) = cache_control {
+                headers.push(("cache-control".into(), cache.to_string()));
+            }
+            if let Some(class) = &self.config.storage_class {
+                headers.push(("x-amz-storage-class".into(), class.clone()));
+            }
+            let response = self
+                .request(Method::PUT, key, &[], headers, &sha256)?
+                .header("content-length", body.len())
+                .timeout(deadline(body.len() as u64))
+                .body(body.clone())
+                .send()
+                .await?;
+            Self::check(response).await.map(|_| ())
+        })
+        .await
+    }
+
+    /// The unsigned URL of `key`: where a reader of a public bucket finds
+    /// it.
+    pub fn object_url(&self, key: &str) -> String {
+        let mut url = self.base.clone();
+        let path = format!("{}{}", url.path(), sigv4::uri_encode(key, true));
+        url.set_path(&path);
+        url.to_string()
+    }
+
     /// Remove the object at `key`; one that is not there is no error.
     pub async fn delete(&self, key: &str) -> Result<(), ArchiveError> {
         self.retrying("DELETE", || async {
