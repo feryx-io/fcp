@@ -32,6 +32,8 @@ class AttendanceRegistrant:
             created_at (datetime.datetime):
             attended (bool):
             attended_secs (int): Their time in the room across legs (the lobby aside).
+            watched (bool): They watched the stream by their own link (W8).
+            watched_secs (int): Seconds of it they watched live.
             email (None | str | Unset):
             revoked_at (datetime.datetime | None | Unset): When it was revoked: its token is refused.
      """
@@ -42,6 +44,8 @@ class AttendanceRegistrant:
     created_at: datetime.datetime
     attended: bool
     attended_secs: int
+    watched: bool
+    watched_secs: int
     email: None | str | Unset = UNSET
     revoked_at: datetime.datetime | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -62,6 +66,10 @@ class AttendanceRegistrant:
         attended = self.attended
 
         attended_secs = self.attended_secs
+
+        watched = self.watched
+
+        watched_secs = self.watched_secs
 
         email: None | str | Unset
         if isinstance(self.email, Unset):
@@ -87,6 +95,8 @@ class AttendanceRegistrant:
             "created_at": created_at,
             "attended": attended,
             "attended_secs": attended_secs,
+            "watched": watched,
+            "watched_secs": watched_secs,
         })
         if email is not UNSET:
             field_dict["email"] = email
@@ -114,6 +124,10 @@ class AttendanceRegistrant:
         attended = d.pop("attended")
 
         attended_secs = d.pop("attended_secs")
+
+        watched = d.pop("watched")
+
+        watched_secs = d.pop("watched_secs")
 
         def _parse_email(data: object) -> None | str | Unset:
             if data is None:
@@ -152,6 +166,8 @@ class AttendanceRegistrant:
             created_at=created_at,
             attended=attended,
             attended_secs=attended_secs,
+            watched=watched,
+            watched_secs=watched_secs,
             email=email,
             revoked_at=revoked_at,
         )

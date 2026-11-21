@@ -777,6 +777,11 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
         Needs(ConferenceManage),
     ),
     (
+        POST,
+        "/conferences/meetings/:id/registrants/:rid/stream-link",
+        Needs(ConferenceManage),
+    ),
+    (
         GET,
         "/conferences/meetings/:id/stream/rtmp",
         Needs(ConferenceRead),

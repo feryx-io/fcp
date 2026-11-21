@@ -20,6 +20,7 @@ from .attendance_message import AttendanceMessage
 from .attendance_question import AttendanceQuestion
 from .attendance_registrant import AttendanceRegistrant
 from .attendance_response import AttendanceResponse
+from .attendance_viewer import AttendanceViewer
 from .audit_entry_response import AuditEntryResponse
 from .audit_entry_response_new_value import AuditEntryResponseNewValue
 from .audit_entry_response_old_value_type_0 import AuditEntryResponseOldValueType0
@@ -639,6 +640,7 @@ __all__ = (
     "AttendanceQuestion",
     "AttendanceRegistrant",
     "AttendanceResponse",
+    "AttendanceViewer",
     "AuditEntryResponse",
     "AuditEntryResponseNewValue",
     "AuditEntryResponseOldValueType0",

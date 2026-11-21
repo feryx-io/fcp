@@ -101,6 +101,16 @@ test('a webinar requires registration, registers a person, re-links and revokes 
   await regRow.getByRole('button', { name: 'New link' }).click()
   await expect(dialog).toContainText('for Ann Example')
 
+  // Her own watch page (W8): the stream in a browser, counted as hers.
+  await regRow.getByRole('button', { name: 'Watch link' }).click()
+  await expect(dialog).toContainText('Watch page for Ann Example')
+  const watchUrl = await dialog.getByRole('textbox', { name: 'Watch link' }).inputValue()
+  expect(watchUrl).toContain(`/watch/${meeting.id}/`)
+  const watchPage = await api.get(watchUrl)
+  expect(watchPage.status()).toBe(200)
+  expect(await watchPage.text()).toContain(`<title>${name}</title>`)
+  expect(watchPage.headers()['content-security-policy']).toContain("frame-ancestors 'none'")
+
   page.once('dialog', (d) => void d.accept())
   await regRow.getByRole('button', { name: 'Revoke' }).click()
   await expect(regRow).toContainText('Revoked')

@@ -1242,6 +1242,11 @@ pub fn router() -> Router<ApiState> {
             "/conferences/meetings/:id/stream/links",
             post(webinar_stream::mint_link),
         )
+        // A registrant's own stream link and watch page (W8).
+        .route(
+            "/conferences/meetings/:id/registrants/:rid/stream-link",
+            post(webinar_stream::mint_registrant_link),
+        )
         // Where it is pushed over RTMP (W7); the key is never returned.
         .route(
             "/conferences/meetings/:id/stream/rtmp",

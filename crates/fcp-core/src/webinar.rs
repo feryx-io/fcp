@@ -179,6 +179,38 @@ pub trait RegistrantStore: Send + Sync {
         after: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<(Vec<Registrant>, u64)>;
+    /// A registrant was seen watching `sitting_id`'s stream at `at` (W8):
+    /// the row made, or its last seen moved on, with `add_secs` watched.
+    async fn record_stream_view(&self, view: &StreamViewSeen) -> anyhow::Result<()>;
+    /// Who watched `sitting_id`'s stream by a registrant's link.
+    async fn stream_views_of_sitting(
+        &self,
+        tenant: &TenantId,
+        sitting_id: &str,
+    ) -> anyhow::Result<Vec<StreamView>>;
+}
+
+/// A registrant seen watching a sitting's stream (W8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamViewSeen {
+    pub tenant_id: TenantId,
+    pub meeting_id: String,
+    pub sitting_id: String,
+    pub registrant_id: String,
+    pub at: SystemTime,
+    /// Seconds watched since the row was last written.
+    pub add_secs: u64,
+}
+
+/// What a registrant watched of a sitting's stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamView {
+    pub registrant_id: String,
+    pub first_at: SystemTime,
+    pub last_at: SystemTime,
+    /// Seconds watched: the gaps under 30 s between the playlist's fetches
+    /// while it was live. A replay opened shows none.
+    pub watched_secs: u64,
 }
 
 /// Where a webinar is pushed over RTMP (`docs/WEBINARS.md` §2.8, W7): a

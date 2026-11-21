@@ -5,7 +5,9 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use fcp_core::webinar::{Registrant, RegistrantStore, Sitting, SittingStore};
+use fcp_core::webinar::{
+    Registrant, RegistrantStore, Sitting, SittingStore, StreamView, StreamViewSeen,
+};
 use fcp_core::TenantId;
 use sqlx::{Pool, Postgres, Row};
 use std::str::FromStr;
@@ -221,5 +223,52 @@ impl RegistrantStore for PostgresRegistrantStore {
             .map(Self::row_to_registrant)
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok((list, total.max(0) as u64))
+    }
+
+    async fn record_stream_view(&self, v: &StreamViewSeen) -> anyhow::Result<()> {
+        let at: DateTime<Utc> = v.at.into();
+        sqlx::query(
+            "INSERT INTO webinar_stream_views
+                 (sitting_id, registrant_id, tenant_id, meeting_id, first_at, last_at, watched_secs)
+             SELECT $1, $2, $3, $4, $5, $5, $6
+              WHERE EXISTS (SELECT 1 FROM webinar_registrants WHERE id = $2 AND tenant_id = $3)
+             ON CONFLICT (sitting_id, registrant_id) DO UPDATE SET
+                 last_at = GREATEST(webinar_stream_views.last_at, EXCLUDED.last_at),
+                 watched_secs = webinar_stream_views.watched_secs + EXCLUDED.watched_secs",
+        )
+        .bind(&v.sitting_id)
+        .bind(&v.registrant_id)
+        .bind(v.tenant_id.to_string())
+        .bind(&v.meeting_id)
+        .bind(at)
+        .bind(v.add_secs as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn stream_views_of_sitting(
+        &self,
+        tenant: &TenantId,
+        sitting_id: &str,
+    ) -> anyhow::Result<Vec<StreamView>> {
+        let rows = sqlx::query(
+            "SELECT registrant_id, first_at, last_at, watched_secs FROM webinar_stream_views
+              WHERE tenant_id = $1 AND sitting_id = $2 ORDER BY first_at, registrant_id",
+        )
+        .bind(tenant.to_string())
+        .bind(sitting_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(StreamView {
+                    registrant_id: r.try_get("registrant_id")?,
+                    first_at: r.try_get::<DateTime<Utc>, _>("first_at")?.into(),
+                    last_at: r.try_get::<DateTime<Utc>, _>("last_at")?.into(),
+                    watched_secs: r.try_get::<i64, _>("watched_secs")?.max(0) as u64,
+                })
+            })
+            .collect()
     }
 }

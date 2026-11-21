@@ -80,7 +80,7 @@ pub(crate) async fn webinar_of(
     Ok(meeting)
 }
 
-fn registrant_store(
+pub(crate) fn registrant_store(
     state: &ApiState,
 ) -> Result<Arc<dyn fcp_core::webinar::RegistrantStore>, ApiError> {
     state
@@ -91,7 +91,7 @@ fn registrant_store(
 }
 
 /// The registration `rid` of `meeting`.
-async fn registrant_of(
+pub(crate) async fn registrant_of(
     state: &ApiState,
     meeting: &Meeting,
     rid: &str,
@@ -513,6 +513,26 @@ pub struct AttendanceRegistrant {
     pub attended: bool,
     /// Their time in the room across legs (the lobby aside).
     pub attended_secs: u64,
+    /// They watched the stream by their own link (W8).
+    pub watched: bool,
+    /// Seconds of it they watched live.
+    pub watched_secs: u64,
+}
+
+/// A registrant who watched the sitting's stream by their own link (W8).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AttendanceViewer {
+    pub registrant_id: String,
+    pub name: Option<String>,
+    #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
+    pub first_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
+    pub last_at: SystemTime,
+    /// Seconds watched while it was live: the gaps under 30 s between the
+    /// player's fetches of the playlist. A replay opened shows none.
+    pub watched_secs: u64,
 }
 
 /// A question of the sitting, as kept.
@@ -562,6 +582,8 @@ pub struct AttendanceResponse {
     /// A webinar's registrations, each with whether they came; empty for a
     /// meeting.
     pub registrants: Vec<AttendanceRegistrant>,
+    /// Who watched the stream by a registrant's link (W8).
+    pub stream_viewers: Vec<AttendanceViewer>,
     pub questions: Vec<AttendanceQuestion>,
     pub messages: Vec<AttendanceMessage>,
 }
@@ -711,7 +733,16 @@ pub async fn attendance(
         }
     }
 
-    let registrants = if meeting.is_webinar() {
+    let views = if meeting.is_webinar() {
+        registrant_store(&state)?
+            .stream_views_of_sitting(&meeting.tenant_id, &sitting.id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+    } else {
+        Vec::new()
+    };
+    let mut names: HashMap<String, String> = HashMap::new();
+    let registrants: Vec<AttendanceRegistrant> = if meeting.is_webinar() {
         let (list, _) = registrant_store(&state)?
             .registrants_of_meeting(
                 &meeting.tenant_id,
@@ -724,9 +755,13 @@ pub async fn attendance(
         list.into_iter()
             .map(|r| {
                 let secs = time_of.get(r.id.as_str()).copied();
+                let view = views.iter().find(|v| v.registrant_id == r.id);
+                names.insert(r.id.clone(), r.name.clone());
                 AttendanceRegistrant {
                     attended: secs.is_some(),
                     attended_secs: secs.unwrap_or(0),
+                    watched: view.is_some(),
+                    watched_secs: view.map_or(0, |v| v.watched_secs),
                     registrant: r.into(),
                 }
             })
@@ -740,6 +775,16 @@ pub async fn attendance(
         attendees,
         sitting: sitting.into(),
         registrants,
+        stream_viewers: views
+            .into_iter()
+            .map(|v| AttendanceViewer {
+                name: names.get(&v.registrant_id).cloned(),
+                registrant_id: v.registrant_id,
+                first_at: v.first_at,
+                last_at: v.last_at,
+                watched_secs: v.watched_secs,
+            })
+            .collect(),
         questions: questions
             .into_iter()
             .map(|q| AttendanceQuestion {

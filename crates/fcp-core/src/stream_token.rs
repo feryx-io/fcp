@@ -41,7 +41,15 @@ pub struct StreamToken {
     pub expires_at: u64,
     /// Random, so two links differ.
     pub nonce: String,
+    /// The registration this link is for (`docs/WEBINARS.md` W8): its
+    /// holder's watching is counted under it, and it is refused once the
+    /// registration is revoked. `None`, the meeting's own link (W6.3b).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registrant: Option<String>,
 }
+
+/// The longest a registrant's stream link lasts: as their join token.
+pub const MAX_REGISTRANT_STREAM_TTL: Duration = crate::join_token::MAX_REGISTRANT_TOKEN_TTL;
 
 /// Why a link was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -66,6 +74,20 @@ impl StreamToken {
             meeting,
             expires_at: unix_now().saturating_add(ttl.as_secs()),
             nonce: uuid::Uuid::new_v4().simple().to_string()[..16].to_string(),
+            registrant: None,
+        }
+    }
+
+    /// A link for one registration of `meeting`.
+    pub fn for_registrant(
+        tenant_id: TenantId,
+        meeting: MeetingId,
+        registrant: impl Into<String>,
+        ttl: Duration,
+    ) -> Self {
+        Self {
+            registrant: Some(registrant.into()),
+            ..Self::new(tenant_id, meeting, ttl)
         }
     }
 
@@ -151,5 +173,20 @@ mod tests {
         let link = StreamToken::new(TenantId::new(), MeetingId::new(), Duration::from_secs(60))
             .mint(SECRET);
         assert!(JoinToken::verify(&link, SECRET).is_err());
+    }
+
+    #[test]
+    fn a_registrant_s_link_names_its_registration_and_the_meeting_s_does_not() {
+        let secret = b"s";
+        let (tenant, meeting) = (TenantId::new(), MeetingId::new());
+        let token = StreamToken::for_registrant(tenant, meeting, "reg-1", Duration::from_secs(60))
+            .mint(secret);
+        let link = StreamToken::verify(&token, secret).unwrap();
+        assert_eq!(link.registrant.as_deref(), Some("reg-1"));
+        let plain = StreamToken::new(tenant, meeting, Duration::from_secs(60)).mint(secret);
+        assert_eq!(
+            StreamToken::verify(&plain, secret).unwrap().registrant,
+            None
+        );
     }
 }

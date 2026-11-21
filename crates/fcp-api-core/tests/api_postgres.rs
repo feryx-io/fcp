@@ -19066,3 +19066,180 @@ async fn a_webinar_s_rtmp_destination_keeps_its_key_to_itself() {
     );
     app.finish().await;
 }
+
+/// A registrant's own stream link and watch page (docs/WEBINARS.md W8): minted
+/// for a registration, the page served with its player and nothing else, the
+/// playlist fetched by it counting the registrant as watching, the
+/// attendance report naming them, and the link refused once the
+/// registration is revoked.
+#[tokio::test]
+async fn a_registrant_watches_by_their_own_link_and_is_counted() {
+    use fcp_core::webinar::{Sitting, SittingStore};
+    let node = Router::new().route(
+        "/hls/:sitting/:file",
+        axum::routing::get(|| async {
+            (
+                StatusCode::OK,
+                [
+                    ("content-type", "application/vnd.apple.mpegurl"),
+                    ("cache-control", "no-cache"),
+                ],
+                "#EXTM3U\n#EXT-X-TARGETDURATION:2\n",
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, node).await;
+    });
+    let Some(mut app) = App::with_conference_server(&url).await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping PostgreSQL API handler test");
+        return;
+    };
+    app.router = create_router(
+        app.state
+            .clone()
+            .with_conference_join_secret(Some("watch-secret".to_string())),
+        &test_api_config(),
+    );
+    let res = app
+        .admin(
+            Method::POST,
+            "/api/v1/conferences/meetings",
+            Some(json!({ "room_number": "8301", "name": "Town <hall>", "kind": "webinar", "streaming": "hls" })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+    let webinar = res.json["id"].as_str().unwrap().to_string();
+    let res = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/conferences/meetings/{webinar}/registrants"),
+            Some(json!({ "name": "Ann Example", "email": "ann@example.com" })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+    let rid = res.json["registrant"]["id"].as_str().unwrap().to_string();
+
+    let mint = format!("/api/v1/conferences/meetings/{webinar}/registrants/{rid}/stream-link");
+    let res = app
+        .admin(
+            Method::POST,
+            &mint,
+            Some(json!({ "ttl_secs": 91 * 86_400 })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "90 days at most");
+    let res = app.admin(Method::POST, &mint, Some(json!({}))).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+    let token = res.json["token"].as_str().unwrap().to_string();
+    let watch = res.json["watch_path"].as_str().unwrap().to_string();
+    let playlist = res.json["playlist_path"].as_str().unwrap().to_string();
+    assert_eq!(watch, format!("/watch/{webinar}/{token}"));
+
+    // The page: the meeting's name escaped, the player's files its own.
+    let anonymous = |path: String| {
+        let app = &app;
+        async move { app.send(Method::GET, &path, &[], None).await }
+    };
+    let page = anonymous(watch.clone()).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    assert!(
+        page.text.contains("<title>Town &lt;hall&gt;</title>"),
+        "{}",
+        page.text
+    );
+    assert!(
+        page.text.contains(&format!("data-playlist=\"{playlist}\"")),
+        "{}",
+        page.text
+    );
+    let csp = page.headers["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        csp.contains("script-src 'self'") && csp.contains("frame-ancestors 'none'"),
+        "{csp}"
+    );
+    assert_eq!(page.headers["cache-control"], "no-store");
+    let hls = anonymous("/watch/hls-1.5.20.min.js".into()).await;
+    assert_eq!(hls.status, StatusCode::OK);
+    assert!(hls.text.len() > 100_000, "hls.js itself");
+    assert_eq!(
+        anonymous("/watch/other.js".into()).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let bad = anonymous(format!("/watch/{webinar}/not.a.token")).await;
+    assert_eq!(bad.status, StatusCode::UNAUTHORIZED);
+
+    // Live: the stage's stream row, and a sitting for the report.
+    let meeting_id: fcp_core::MeetingId = webinar.parse().unwrap();
+    let sitting = "sit-w8-watch";
+    let store = PostgresRecordingStore::new(app.storage.pool().clone());
+    let mut row = fcp_core::Recording::starting(
+        app.tenant_a,
+        "8301",
+        "conf-stage",
+        format!("/var/fcp/recordings/hls/{sitting}"),
+        fcp_core::RecordingFormat::Mp4,
+        fcp_core::RecordingTrigger::Auto,
+    );
+    row.kind = fcp_core::RecordingKind::Stream;
+    row.meeting_id = Some(meeting_id);
+    fcp_core::recording::RecordingStore::create_recording(&store, &row)
+        .await
+        .unwrap();
+    fcp_storage_postgres::sittings::PostgresSittingStore::new(app.storage.pool().clone())
+        .put_sitting(&Sitting {
+            id: sitting.into(),
+            tenant_id: app.tenant_a,
+            meeting_id: Some(webinar.clone()),
+            room_number: "8301".into(),
+            kind: "webinar".into(),
+            started_at: SystemTime::now() - Duration::from_secs(60),
+            live_at: Some(SystemTime::now() - Duration::from_secs(50)),
+            ended_at: None,
+            ended_by: None,
+        })
+        .await
+        .unwrap();
+
+    // The page's player fetches the playlist: Ann is watching.
+    let res = anonymous(playlist.clone()).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    let report = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/conferences/meetings/{webinar}/attendance?sitting={sitting}"),
+            None,
+        )
+        .await;
+    assert_eq!(report.status, StatusCode::OK, "{}", report.text);
+    let viewers = report.json["stream_viewers"].as_array().unwrap();
+    assert_eq!(viewers.len(), 1, "{}", report.text);
+    assert_eq!(viewers[0]["registrant_id"], rid.as_str());
+    assert_eq!(viewers[0]["name"], "Ann Example");
+    let ann = &report.json["registrants"][0];
+    assert_eq!(ann["watched"], true, "{}", report.text);
+    assert_eq!(ann["attended"], false, "watching is not being in the room");
+
+    // Revoked: the link and its page open nothing.
+    let res = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/conferences/meetings/{webinar}/registrants/{rid}"),
+            None,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(anonymous(playlist).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(anonymous(watch).await.status, StatusCode::FORBIDDEN);
+    let res = app.admin(Method::POST, &mint, Some(json!({}))).await;
+    assert_eq!(
+        res.status,
+        StatusCode::CONFLICT,
+        "no link for a revoked registration"
+    );
+}

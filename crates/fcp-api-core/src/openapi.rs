@@ -473,6 +473,7 @@ use utoipa::{Modify, OpenApi};
         crate::v1::webinars::attendance,
         crate::v1::webinar_stream::stream_state,
         crate::v1::webinar_stream::mint_link,
+        crate::v1::webinar_stream::mint_registrant_link,
         crate::v1::webinar_stream::serve,
         crate::v1::webinar_rtmp::get_destination,
         crate::v1::webinar_rtmp::put_destination,
