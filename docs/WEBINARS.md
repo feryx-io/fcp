@@ -1504,6 +1504,104 @@ For an audience that is not on FCP at all.
   - **W7 is complete.**
 - **A7: Anvil.** The attendee's and the host's views (§2.9), and chat in every
   room.
+  - **The plan** (written 2026-11-21 from the code). In three parts.
+    - **What is there:**
+      - Anvil's room (`anvil-core/src/room.rs`) has:
+        - a join token in `X-FCP-Join`;
+        - `Recv-Info: fcp-content` (the floor) and `fcp-view` (a forwarding
+          room's streams);
+        - the roster subscribed in the call (RFC 4575);
+        - the view INFO.
+      - `anvil-fcp` reaches `/me/conferences/live/{room}/…` for a host's
+        controls (F2b).
+      - FCP has, for a participant who asks:
+        - the audience's voice in the call as `fcp-qa` INFOs: the hand, the
+          stage, questions, and the webinar's phase and lobby (W3.1–W4.1);
+        - chat as `fcp-chat` INFOs (W3b);
+        - the roster's `fcp:audience` count and hands (W2–W3.1).
+
+        A host's room controls are routes under
+        `/me/conferences/live/{room}`: live and end, lowering hands, the
+        stage, the audience by page, and muting chat. The call manager and
+        the gateway relay both packages.
+      - Anvil has none of the audience's packages, no chat, and no
+        webinar screen.
+    - **Decisions:**
+      1. **In the call where the call can say it, a route where it cannot.**
+         These go as INFOs: one's own hand, questions, upvotes and posts,
+         and a host's or panelist's question moderation (publish, answer,
+         dismiss) and deleting a message. These go through `anvil-fcp`'s
+         `/me` routes, which the call has no words for:
+         - going live and ending;
+         - lowering another's hand, or all of them;
+         - bringing someone to the stage and back;
+         - the audience by page;
+         - muting a person's chat.
+      2. **Every room call asks for both packages**
+         (`Recv-Info: fcp-content, fcp-view, fcp-qa, fcp-chat`), so chat
+         is in meetings as well as webinars, as W3b made it.
+      3. **An attendee's call is the stage's to hear.**
+         - It offers audio both ways, so being brought to the stage needs
+           no re-INVITE, with the microphone muted in the app until then.
+         - It offers no camera.
+         - The picture is the stage's composite, or the stage's grid in a
+           forwarding webinar.
+         - The lobby is a waiting screen while the phase says `lobby`.
+         - "You are on the stage" is shown when `stage` says so. The
+           microphone is the person's to unmute from then, and the camera
+           theirs to add by re-INVITE.
+      4. **Who one is is told by the room.** The `fcp-qa` webinar
+         message gains `role` (`host`, `panelist` or `attendee`), sent
+         when a participant joins and again when it changes (FCP, the
+         start of A7a). `/me/conferences/live/{room}` answers a room's
+         hosts alone, and a join token's claims say nothing of a PIN
+         dialed by number. Hosts and panelists get the moderation panels;
+         a host also gets live and end.
+      5. **The app's panels:**
+         - Questions (ask, upvote; and for the stage, publish, answer and
+           dismiss);
+         - Chat (to the room or the hosts as the meeting allows; and for
+           the stage, delete and mute);
+         - Hands (for the stage: lower, bring to the stage, send back);
+         - the stage's roster with the audience as a count.
+    - **A7a: the packages in `anvil-core`**, after `role` on FCP's
+      `fcp-qa` webinar message. That message is done (v0.25.613): it
+      names `host`, `panelist`, `attendee` or `guest`, whenever it is
+      sent. `rooms.rs` `a_webinar_practices_goes_live_and_ends` checks it
+      for the host and for an attendee in the lobby.
+      - What a room call takes in: `fcp-qa` and `fcp-chat` INFOs, the
+        roster's `fcp:audience` and `fcp:hand`.
+      - What it sends: the INFOs above, under a `Room` API, with events to
+        the app.
+      - The attendee's call, as decision 3 has it.
+      - Tested against a scripted room, as the floor is.
+      **A7a done** in Anvil (#104, v0.2.97). `anvil_core::audience` reads
+      the room's `fcp-qa` and `fcp-chat` INFOs and writes ours
+      (`QaRequest`, `ChatRequest`, through `Anvil::room_qa` and
+      `room_chat`). The events are `RoomWebinar`, `RoomHand`, `RoomStage`,
+      `RoomQuestions`, `RoomChat` and `RoomChatMuted`. The roster's
+      `audience` count is on `RoomRoster`, and a member's `panelist`,
+      `attendee` and `hand`. Tested against a scripted room.
+    - **A7b: the host's routes in `anvil-fcp`.** **Done** (Anvil #105,
+      v0.2.98). `RoomHost` gains `webinar`, `go_live`, `end_webinar`,
+      `audience`, `lower_hand`, `lower_all_hands`, `stage` and
+      `mute_chat`.
+      - Proved by `tests/fcp.rs` `a_webinar_on_fcp_is_run_by_its_host_from_anvil`
+        against FCP v0.25.613, a local stack: Anvil's CI job against FCP
+        skips without its `FCP_READ_TOKEN` secret.
+      - What the run found: in a webinar, an owner who dials the number
+        with no PIN is an attendee, so a host joins by a host's link. A
+        webinar's chat goes to the hosts.
+    - **A7c: the app.** **Done** (Anvil #106, v0.2.99).
+      - `anvil-app`'s room keeps the role, phase, lobby, hand, stage,
+        audience, questions and chat.
+      - An attendee off the stage is muted in the app.
+      - `Command::Audience`, and `RoomAction`'s webinar controls.
+      - The screens: the webinar banner, the raised hand, Raised hands
+        for a host, Questions, and Chat in every room
+        (`lib/src/screens/webinar.dart`).
+      - Proved by `test/webinar_test.dart`.
+  - **A7 is complete.**
 
 W1 and W2 come first. W3, W3b and W4 follow in any order; W3b needs no webinar
 at all. W5 waits on W1's measurements to say when one node is not enough. W6 and

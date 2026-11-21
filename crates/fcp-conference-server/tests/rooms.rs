@@ -2450,10 +2450,24 @@ async fn any_qa_told(phone: &Phone, call_id: &str) -> fcp_core::qa::QaMessage {
 /// The next webinar phase `phone` is told in `call_id`, and whether it
 /// waits in the lobby.
 async fn phase_told(phone: &Phone, call_id: &str) -> (fcp_core::webinar::WebinarPhase, bool) {
+    let (phase, lobby, _) = phase_and_role_told(phone, call_id).await;
+    (phase, lobby)
+}
+
+/// The same, with the role the room says the participant has (A7).
+async fn phase_and_role_told(
+    phone: &Phone,
+    call_id: &str,
+) -> (
+    fcp_core::webinar::WebinarPhase,
+    bool,
+    Option<fcp_core::JoinRole>,
+) {
     loop {
-        if let fcp_core::qa::QaMessage::Webinar { phase, lobby } = any_qa_told(phone, call_id).await
+        if let fcp_core::qa::QaMessage::Webinar { phase, lobby, role } =
+            any_qa_told(phone, call_id).await
         {
-            return (phase, lobby);
+            return (phase, lobby, role);
         }
     }
 }
@@ -3371,8 +3385,13 @@ async fn a_webinar_practices_goes_live_and_ends() {
     }
     dial_digits(&host_call, "9999").await;
     assert_eq!(
-        phase_told(&host, host_call.call_id()).await,
-        (WebinarPhase::Practice, false)
+        phase_and_role_told(&host, host_call.call_id()).await,
+        (
+            WebinarPhase::Practice,
+            false,
+            Some(fcp_core::JoinRole::Host)
+        ),
+        "the host is told the phase and that she is the host"
     );
     let ann = stack.phone("ann").await;
     let ann_call = ann.call_with_headers(ROOM, &qa).await.unwrap();
@@ -3383,9 +3402,13 @@ async fn a_webinar_practices_goes_live_and_ends() {
     }
     dial_digits(&ann_call, "").await;
     assert_eq!(
-        phase_told(&ann, ann_call.call_id()).await,
-        (WebinarPhase::Practice, true),
-        "Ann is told she waits in the lobby"
+        phase_and_role_told(&ann, ann_call.call_id()).await,
+        (
+            WebinarPhase::Practice,
+            true,
+            Some(fcp_core::JoinRole::Attendee)
+        ),
+        "Ann is told she waits in the lobby, an attendee"
     );
     let ben = stack.phone("ben").await;
     let ben_call = join(&stack, &ben).await;

@@ -333,7 +333,19 @@ impl ConferenceCallHandler {
             return;
         };
         let lobby = self.in_lobby(key, participant_id);
-        self.tell_qa(call_id, QaMessage::Webinar { phase, lobby });
+        let role = self.role_on(call_id);
+        self.tell_qa(call_id, QaMessage::Webinar { phase, lobby, role });
+    }
+
+    /// The role of whoever is on `call_id`, as a client is told it.
+    fn role_on(&self, call_id: &str) -> Option<fcp_core::JoinRole> {
+        let role = self.sessions.get(call_id)?.role;
+        Some(match role {
+            super::ConferenceRole::Host => fcp_core::JoinRole::Host,
+            super::ConferenceRole::Panelist => fcp_core::JoinRole::Panelist,
+            super::ConferenceRole::Attendee => fcp_core::JoinRole::Attendee,
+            super::ConferenceRole::Guest => fcp_core::JoinRole::Guest,
+        })
     }
 
     /// Tell everyone in `key`'s room who asked the webinar's phase.
@@ -360,7 +372,8 @@ impl ConferenceCallHandler {
             if lobby && phase == WebinarPhase::Live {
                 continue;
             }
-            self.tell_qa(&call_id, QaMessage::Webinar { phase, lobby });
+            let role = self.role_on(&call_id);
+            self.tell_qa(&call_id, QaMessage::Webinar { phase, lobby, role });
         }
     }
 
@@ -463,11 +476,13 @@ impl ConferenceCallHandler {
                 Ok(()) => {
                     admitted += 1;
                     if let Some(call_id) = self.call_of(&key, &pid) {
+                        let role = self.role_on(&call_id);
                         self.tell_qa(
                             &call_id,
                             QaMessage::Webinar {
                                 phase: WebinarPhase::Live,
                                 lobby: false,
+                                role,
                             },
                         );
                     }
