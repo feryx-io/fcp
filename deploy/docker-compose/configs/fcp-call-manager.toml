@@ -122,3 +122,8 @@ format = "pretty"
 # from the database every [queue] store_sync_secs (30).
 [queue]
 enabled = true
+
+# Presence and busy lamps: a phone subscribes to its registrar (this node)
+# for `presence` and `dialog` (BLF). Off, those SUBSCRIBEs are answered 489.
+[presence]
+enabled = true
