@@ -180,3 +180,115 @@ pub trait RegistrantStore: Send + Sync {
         limit: usize,
     ) -> anyhow::Result<(Vec<Registrant>, u64)>;
 }
+
+/// Where a webinar is pushed over RTMP (`docs/WEBINARS.md` §2.8, W7): a
+/// live service's ingest and the stream key it handed out. The key is a
+/// secret: sealed at rest, never returned by the API, and kept apart from
+/// the meeting so it never travels with it (to a site, by the journal).
+#[derive(Clone, PartialEq, Eq)]
+pub struct RtmpDestination {
+    pub tenant_id: TenantId,
+    /// The meeting's id.
+    pub meeting_id: String,
+    /// `rtmp://…` or `rtmps://…`, the application in its path.
+    pub url: String,
+    pub key: String,
+    pub updated_at: SystemTime,
+}
+
+impl std::fmt::Debug for RtmpDestination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RtmpDestination")
+            .field("tenant_id", &self.tenant_id)
+            .field("meeting_id", &self.meeting_id)
+            .field("url", &self.url)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Why an ingest URL is not one a push can use, if it is not: `rtmp://` or
+/// `rtmps://`, a host, an application in the path, no credentials and no
+/// query.
+pub fn check_rtmp_url(url: &str) -> Result<(), String> {
+    let rest = url
+        .strip_prefix("rtmps://")
+        .or_else(|| url.strip_prefix("rtmp://"))
+        .ok_or("the URL must start rtmp:// or rtmps://")?;
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    if authority.is_empty() {
+        return Err("the URL has no host".into());
+    }
+    if authority.contains('@') {
+        return Err("the URL may not carry credentials: the stream key goes apart".into());
+    }
+    if url.contains('?') || url.contains('#') || url.chars().any(char::is_whitespace) {
+        return Err("the URL may not carry a query, a fragment or spaces".into());
+    }
+    if path.trim_matches('/').is_empty() {
+        return Err(
+            "the URL needs the service's application in its path, as rtmp://host/live".into(),
+        );
+    }
+    if url.len() > 512 {
+        return Err("the URL is too long".into());
+    }
+    Ok(())
+}
+
+/// Where RTMP destinations are kept.
+#[async_trait::async_trait]
+pub trait RtmpDestinationStore: Send + Sync {
+    /// The meeting's destination, its key opened.
+    async fn get_rtmp_destination(
+        &self,
+        tenant: &TenantId,
+        meeting_id: &str,
+    ) -> anyhow::Result<Option<RtmpDestination>>;
+    /// Write the destination, its key sealed.
+    async fn put_rtmp_destination(&self, destination: &RtmpDestination) -> anyhow::Result<()>;
+    /// Forget it; whether there was one.
+    async fn delete_rtmp_destination(
+        &self,
+        tenant: &TenantId,
+        meeting_id: &str,
+    ) -> anyhow::Result<bool>;
+}
+
+#[cfg(test)]
+mod rtmp_tests {
+    use super::*;
+
+    #[test]
+    fn an_ingest_url_names_its_host_and_application_and_nothing_secret() {
+        for ok in [
+            "rtmp://a.rtmp.youtube.com/live2",
+            "rtmps://live-api-s.facebook.com:443/rtmp/",
+            "rtmp://[::1]:1935/live",
+        ] {
+            assert!(check_rtmp_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "https://x/live",
+            "rtmp://x",
+            "rtmp://x/",
+            "rtmp:///live",
+            "rtmp://u:p@x/live",
+            "rtmp://x/live?key=1",
+            "rtmp://x/li ve",
+        ] {
+            assert!(check_rtmp_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_destination_never_prints_its_key() {
+        let d = RtmpDestination {
+            tenant_id: TenantId::new(),
+            meeting_id: "m".into(),
+            url: "rtmp://x/live".into(),
+            key: "s3cret-key".into(),
+            updated_at: SystemTime::now(),
+        };
+        assert!(!format!("{d:?}").contains("s3cret"));
+    }
+}

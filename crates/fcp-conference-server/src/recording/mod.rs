@@ -253,6 +253,9 @@ pub struct RecorderSettings {
     pub hls_segment_ms: Option<u64>,
     /// The stream's copy in a bucket (`[conference.hls.s3]`, W6.3c).
     pub hls_mirror: Option<hls_bucket::HlsMirror>,
+    /// A push to an RTMP service instead of a file (`docs/WEBINARS.md`
+    /// W7): H.264 and AAC. `path` is unused.
+    pub rtmp: Option<rtmp::RtmpTarget>,
 }
 
 /// The video half of a recording.
@@ -268,6 +271,7 @@ pub use mux::Recorder;
 
 pub mod hls;
 pub mod hls_bucket;
+pub mod rtmp;
 
 #[cfg(any(feature = "recording-webm", feature = "recording-mp4"))]
 mod mux {
@@ -295,6 +299,42 @@ mod mux {
     /// One Opus frame: 20 ms.
     const OPUS_FRAME: usize = (OPUS_RATE as usize) / 50;
 
+    /// The mix's encoder: Opus for the files and HLS, AAC for RTMP. Each
+    /// takes frames of its own length at 48 kHz.
+    enum AudioEncoder {
+        Opus(OpusCodec),
+        #[cfg(feature = "rtmp")]
+        Aac(forge_codecs::aac::AacEncoder),
+    }
+
+    impl AudioEncoder {
+        fn frame(&self) -> usize {
+            match self {
+                AudioEncoder::Opus(_) => OPUS_FRAME,
+                #[cfg(feature = "rtmp")]
+                AudioEncoder::Aac(_) => forge_codecs::aac::AAC_FRAME,
+            }
+        }
+
+        fn name(&self) -> &'static str {
+            match self {
+                AudioEncoder::Opus(_) => "Opus",
+                #[cfg(feature = "rtmp")]
+                AudioEncoder::Aac(_) => "AAC",
+            }
+        }
+
+        /// The packets one frame makes: one for Opus, none or one for AAC
+        /// (which holds a frame back for its look-ahead).
+        fn encode(&mut self, frame: &[i16]) -> Result<Vec<Vec<u8>>> {
+            match self {
+                AudioEncoder::Opus(o) => Ok(vec![o.encode(frame)?]),
+                #[cfg(feature = "rtmp")]
+                AudioEncoder::Aac(a) => Ok(a.encode(frame)?),
+            }
+        }
+    }
+
     /// What a closed file came to, whichever writer wrote it.
     struct Finished {
         duration_ms: u64,
@@ -310,6 +350,8 @@ mod mux {
         Mp4(forge_mp4::Mp4Writer<std::fs::File>),
         #[cfg(feature = "recording-mp4")]
         Hls(Box<super::hls::HlsWriter>),
+        #[cfg(feature = "rtmp")]
+        Rtmp(Box<super::rtmp::RtmpWriter>),
     }
 
     impl Writer {
@@ -388,6 +430,8 @@ mod mux {
                 Writer::Mp4(w) => Ok(w.write_video(ms, keyframe, data)?),
                 #[cfg(feature = "recording-mp4")]
                 Writer::Hls(w) => w.write_video(ms, keyframe, data),
+                #[cfg(feature = "rtmp")]
+                Writer::Rtmp(w) => w.write_video(ms, keyframe, data),
             }
         }
 
@@ -399,6 +443,8 @@ mod mux {
                 Writer::Mp4(w) => Ok(w.write_audio(ms, data)?),
                 #[cfg(feature = "recording-mp4")]
                 Writer::Hls(w) => w.write_audio(ms, data),
+                #[cfg(feature = "rtmp")]
+                Writer::Rtmp(w) => w.write_audio(ms, data),
             }
         }
 
@@ -425,6 +471,11 @@ mod mux {
                     let (duration_ms, bytes) = w.finish()?;
                     Ok(Finished { duration_ms, bytes })
                 }
+                #[cfg(feature = "rtmp")]
+                Writer::Rtmp(w) => {
+                    let (duration_ms, bytes) = w.finish();
+                    Ok(Finished { duration_ms, bytes })
+                }
             }
         }
 
@@ -434,6 +485,8 @@ mod mux {
             match self {
                 #[cfg(feature = "recording-mp4")]
                 Writer::Hls(w) => w.wants_keyframe(ms),
+                #[cfg(feature = "rtmp")]
+                Writer::Rtmp(w) => w.wants_keyframe(ms),
                 #[allow(unreachable_patterns)]
                 _ => {
                     let _ = ms;
@@ -502,9 +555,35 @@ mod mux {
                 (None, _) => None,
             };
 
-            let writer = match settings.hls_segment_ms {
+            // A push to RTMP: AAC for the mix, not Opus.
+            #[cfg(feature = "rtmp")]
+            let mut aac: Option<forge_codecs::aac::AacEncoder> = None;
+            let rtmp_writer = match settings.rtmp.clone() {
+                #[cfg(feature = "rtmp")]
+                Some(target) => {
+                    let encoder =
+                        forge_codecs::aac::AacEncoder::new(forge_codecs::aac::AacConfig {
+                            sample_rate: OPUS_RATE,
+                            channels: 1,
+                            bitrate: target.audio_bitrate,
+                        })
+                        .context("no AAC encoder")?;
+                    let asc = encoder.audio_specific_config().to_vec();
+                    aac = Some(encoder);
+                    Some(Writer::Rtmp(Box::new(super::rtmp::RtmpWriter::open(
+                        target,
+                        sink.as_ref().map(|s| &s.flavor),
+                        asc,
+                    )?)))
+                }
+                #[cfg(not(feature = "rtmp"))]
+                Some(_) => anyhow::bail!("this build cannot push RTMP (feature `rtmp`)"),
+                None => None,
+            };
+            let writer = match (rtmp_writer, settings.hls_segment_ms) {
+                (Some(w), _) => w,
                 #[cfg(feature = "recording-mp4")]
-                Some(segment_ms) => {
+                (None, Some(segment_ms)) => {
                     if container != RecordingFormat::Mp4 {
                         anyhow::bail!("an HLS stream is MP4, not {name}");
                     }
@@ -516,8 +595,10 @@ mod mux {
                     )?))
                 }
                 #[cfg(not(feature = "recording-mp4"))]
-                Some(_) => anyhow::bail!("this build cannot stream HLS (feature `recording-mp4`)"),
-                None => {
+                (None, Some(_)) => {
+                    anyhow::bail!("this build cannot stream HLS (feature `recording-mp4`)")
+                }
+                (None, None) => {
                     if let Some(parent) = settings.path.parent() {
                         std::fs::create_dir_all(parent)
                             .with_context(|| format!("creating {}", parent.display()))?;
@@ -533,14 +614,23 @@ mod mux {
                 }
             };
 
-            let opus = OpusCodec::with_config(OpusConfig {
-                sample_rate: OPUS_RATE,
-                channels: 1,
-                application: OpusApplication::Voip,
-                bitrate: settings.audio_bitrate,
-                frame_duration_ms: 20,
-            })
-            .context("no Opus encoder")?;
+            #[cfg(feature = "rtmp")]
+            let chosen = aac.map(AudioEncoder::Aac);
+            #[cfg(not(feature = "rtmp"))]
+            let chosen: Option<AudioEncoder> = None;
+            let audio = match chosen {
+                Some(a) => a,
+                None => AudioEncoder::Opus(
+                    OpusCodec::with_config(OpusConfig {
+                        sample_rate: OPUS_RATE,
+                        channels: 1,
+                        application: OpusApplication::Voip,
+                        bitrate: settings.audio_bitrate,
+                        frame_duration_ms: 20,
+                    })
+                    .context("no Opus encoder")?,
+                ),
+            };
             let resampler = (sample_rate != OPUS_RATE)
                 .then(|| Resampler::new(sample_rate, OPUS_RATE, 1))
                 .transpose()
@@ -557,7 +647,7 @@ mod mux {
                 room.tap_mix(),
                 sink,
                 writer,
-                opus,
+                audio,
                 resampler,
                 sample_rate,
                 Arc::clone(&stop),
@@ -622,7 +712,7 @@ mod mux {
         mut mix: tokio::sync::broadcast::Receiver<MixedFrame>,
         sink: Option<RecordingSink>,
         mut writer: Writer,
-        mut opus: OpusCodec,
+        mut audio: AudioEncoder,
         mut resampler: Option<Resampler>,
         sample_rate: u32,
         stop: Arc<Notify>,
@@ -636,7 +726,8 @@ mod mux {
         // Audio: samples written at 48 kHz since the audio anchor.
         let mut audio_anchor_ms = 0u64;
         let mut audio_samples = 0u64;
-        let mut pending: Vec<i16> = Vec::with_capacity(OPUS_FRAME * 2);
+        let audio_frame = audio.frame();
+        let mut pending: Vec<i16> = Vec::with_capacity(audio_frame * 2);
         // Video: the room's 90 kHz clock since the video anchor.
         let mut video_anchor_ms = 0u64;
         let mut video_pts0: Option<u32> = None;
@@ -663,24 +754,26 @@ mod mux {
                             None => frame.samples.as_ref().clone(),
                         };
                         pending.extend_from_slice(&samples);
-                        while pending.len() >= OPUS_FRAME {
+                        while pending.len() >= audio_frame {
                             let ms = audio_anchor_ms + audio_samples * 1_000 / OPUS_RATE as u64;
-                            let chunk: Vec<i16> = pending.drain(..OPUS_FRAME).collect();
-                            match opus.encode(&chunk) {
-                                Ok(packet) => {
-                                    if let Err(e) = writer.write_audio(ms, &packet) {
-                                        warn!(recording = %id, error = %e, "writing audio failed");
-                                        out.dropped += 1;
-                                    } else {
-                                        out.audio_frames += 1;
+                            let chunk: Vec<i16> = pending.drain(..audio_frame).collect();
+                            match audio.encode(&chunk) {
+                                Ok(packets) => {
+                                    for packet in packets {
+                                        if let Err(e) = writer.write_audio(ms, &packet) {
+                                            warn!(recording = %id, error = %e, "writing audio failed");
+                                            out.dropped += 1;
+                                        } else {
+                                            out.audio_frames += 1;
+                                        }
                                     }
                                 }
                                 Err(e) => {
-                                    warn!(recording = %id, error = %e, "Opus encoding failed");
+                                    warn!(recording = %id, error = %e, encoder = audio.name(), "encoding the mix failed");
                                     out.dropped += 1;
                                 }
                             }
-                            audio_samples += OPUS_FRAME as u64;
+                            audio_samples += audio_frame as u64;
                         }
                     }
                     Err(RecvError::Lagged(n)) => {

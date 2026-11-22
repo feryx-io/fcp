@@ -1413,6 +1413,30 @@ pub enum ConferenceEvent {
         timestamp: SystemTime,
     },
 
+    /// A webinar's RTMP push reached its live service and is publishing
+    /// (`docs/WEBINARS.md` W7): the first time, or again after a loss.
+    /// `host` is the ingest's; the stream key is never in an event.
+    RtmpLive {
+        room_number: String,
+        sitting_id: String,
+        host: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A webinar's RTMP push has failed for a minute and is still being
+    /// retried: once for each outage. `error` is the last one.
+    RtmpFailed {
+        room_number: String,
+        sitting_id: String,
+        host: String,
+        error: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// Conference room was locked
     RoomLocked {
         room_number: String,
@@ -2202,6 +2226,8 @@ impl PlatformEvent {
         "conference.chat_muted",
         "conference.webinar_live",
         "conference.webinar_ended",
+        "conference.rtmp_live",
+        "conference.rtmp_failed",
         "queue.caller_enqueued",
         "queue.caller_dequeued",
         "queue.caller_abandoned",
@@ -2381,6 +2407,8 @@ impl PlatformEvent {
                 ConferenceEvent::ChatMuted { .. } => "conference.chat_muted",
                 ConferenceEvent::WebinarLive { .. } => "conference.webinar_live",
                 ConferenceEvent::WebinarEnded { .. } => "conference.webinar_ended",
+                ConferenceEvent::RtmpLive { .. } => "conference.rtmp_live",
+                ConferenceEvent::RtmpFailed { .. } => "conference.rtmp_failed",
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { .. } => "queue.caller_enqueued",
@@ -2531,7 +2559,9 @@ impl PlatformEvent {
                 | ConferenceEvent::ChatDeleted { tenant_id, .. }
                 | ConferenceEvent::ChatMuted { tenant_id, .. }
                 | ConferenceEvent::WebinarLive { tenant_id, .. }
-                | ConferenceEvent::WebinarEnded { tenant_id, .. } => Some(tenant_id),
+                | ConferenceEvent::WebinarEnded { tenant_id, .. }
+                | ConferenceEvent::RtmpLive { tenant_id, .. }
+                | ConferenceEvent::RtmpFailed { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { tenant_id, .. }
@@ -2922,7 +2952,9 @@ impl ConferenceEvent {
             | ConferenceEvent::ChatDeleted { timestamp, .. }
             | ConferenceEvent::ChatMuted { timestamp, .. }
             | ConferenceEvent::WebinarLive { timestamp, .. }
-            | ConferenceEvent::WebinarEnded { timestamp, .. } => *timestamp,
+            | ConferenceEvent::WebinarEnded { timestamp, .. }
+            | ConferenceEvent::RtmpLive { timestamp, .. }
+            | ConferenceEvent::RtmpFailed { timestamp, .. } => *timestamp,
         }
     }
 }

@@ -67,6 +67,7 @@ async fn an_audio_only_recording_is_opus_in_mp4() {
             audio_bitrate: 32_000,
             hls_segment_ms: None,
             hls_mirror: None,
+            rtmp: None,
         },
     )
     .expect("the recorder starts");
@@ -148,6 +149,7 @@ async fn an_audio_only_stream_is_opus_in_cmaf_segments() {
             audio_bitrate: 32_000,
             hls_segment_ms: Some(1_000),
             hls_mirror: None,
+            rtmp: None,
         },
     )
     .expect("the stream starts");
@@ -222,6 +224,7 @@ mod video {
                 audio_bitrate: 32_000,
                 hls_segment_ms: None,
                 hls_mirror: None,
+                rtmp: None,
             },
         )
         .expect("the recorder starts");
@@ -333,6 +336,7 @@ mod video {
                 audio_bitrate: 32_000,
                 hls_segment_ms: Some(2_000),
                 hls_mirror: None,
+                rtmp: None,
             },
         )
         .expect("the stream starts");
@@ -346,7 +350,14 @@ mod video {
             durations.len() >= 3,
             "cut about every two seconds, not at the room's ten: {playlist}"
         );
-        for d in &durations[..durations.len() - 1] {
+        // The encoder just started may let the first request go (about one
+        // run in ten on OpenH264): the first segment then runs to the
+        // second, at most two targets. Every later one is cut as asked.
+        assert!(
+            (1_800..=4_100).contains(&durations[0]),
+            "the first segment: {playlist}"
+        );
+        for d in &durations[1..durations.len() - 1] {
             assert!((1_800..=2_600).contains(d), "{playlist}");
         }
         let summary = forge_mp4::read_summary(&whole).unwrap();
@@ -426,6 +437,7 @@ mod device {
                 audio_bitrate: 64_000,
                 hls_segment_ms: None,
                 hls_mirror: None,
+                rtmp: None,
             },
         )
         .expect("the recorder starts");

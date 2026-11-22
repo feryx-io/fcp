@@ -70,6 +70,7 @@ pub mod user_devices;
 pub mod users;
 pub mod voicemail;
 pub mod webhooks;
+pub mod webinar_rtmp;
 pub mod webinar_stream;
 pub mod webinars;
 
@@ -1240,6 +1241,13 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/conferences/meetings/:id/stream/links",
             post(webinar_stream::mint_link),
+        )
+        // Where it is pushed over RTMP (W7); the key is never returned.
+        .route(
+            "/conferences/meetings/:id/stream/rtmp",
+            get(webinar_rtmp::get_destination)
+                .put(webinar_rtmp::put_destination)
+                .delete(webinar_rtmp::delete_destination),
         )
         // Live conference controls, proxied to the conference server
         .route(

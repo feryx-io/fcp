@@ -49,9 +49,12 @@
 //! they are waiting in the lobby:
 //!
 //! ```json
-//! { "op": "webinar", "phase": "practice", "lobby": true }
-//! { "op": "webinar", "phase": "live", "lobby": false }
+//! { "op": "webinar", "phase": "practice", "lobby": true, "role": "attendee" }
+//! { "op": "webinar", "phase": "live", "lobby": false, "role": "host" }
 //! ```
+//!
+//! `role` is who the participant told is: `host`, `panelist` or
+//! `attendee` (A7).
 
 use serde::{Deserialize, Serialize};
 
@@ -96,6 +99,11 @@ pub enum QaMessage {
         phase: crate::webinar::WebinarPhase,
         #[serde(default)]
         lobby: bool,
+        /// Who the participant told is in the room: `host`, `panelist`
+        /// or `attendee` (A7). A client knows no other way when it dialed
+        /// a PIN.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<crate::JoinRole>,
     },
 }
 

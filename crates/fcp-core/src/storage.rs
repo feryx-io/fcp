@@ -3739,6 +3739,7 @@ pub struct DynStorage {
     chat_store: Option<Arc<dyn crate::chat::ChatStore>>,
     sitting_store: Option<Arc<dyn crate::webinar::SittingStore>>,
     registrant_store: Option<Arc<dyn crate::webinar::RegistrantStore>>,
+    rtmp_destination_store: Option<Arc<dyn crate::webinar::RtmpDestinationStore>>,
     call_recording_store: Option<Arc<dyn crate::recording::CallRecordingStore>>,
     subject_data_store: Option<Arc<dyn crate::subject_request::SubjectDataStore>>,
     subject_erase_store: Option<Arc<dyn crate::subject_erasure::SubjectEraseStore>>,
@@ -3846,6 +3847,7 @@ impl DynStorage {
             chat_store: None,
             sitting_store: None,
             registrant_store: None,
+            rtmp_destination_store: None,
             call_recording_store: None,
         }
     }
@@ -3943,6 +3945,7 @@ impl DynStorage {
             chat_store: None,
             sitting_store: None,
             registrant_store: None,
+            rtmp_destination_store: None,
             call_recording_store: None,
         }
     }
@@ -4194,6 +4197,21 @@ impl DynStorage {
     /// Where registrations are kept, when a store is attached.
     pub fn registrant_store(&self) -> Option<&Arc<dyn crate::webinar::RegistrantStore>> {
         self.registrant_store.as_ref()
+    }
+
+    /// Attach where webinars' RTMP destinations are kept
+    /// (`docs/WEBINARS.md` W7).
+    pub fn with_rtmp_destination_store(
+        mut self,
+        store: Arc<dyn crate::webinar::RtmpDestinationStore>,
+    ) -> Self {
+        self.rtmp_destination_store = Some(store);
+        self
+    }
+
+    /// Where RTMP destinations are kept, when a store is attached.
+    pub fn rtmp_destination_store(&self) -> Option<&Arc<dyn crate::webinar::RtmpDestinationStore>> {
+        self.rtmp_destination_store.as_ref()
     }
 
     /// Attach the call recording registry (`docs/COMPLIANCE_FOLLOWUPS.md`

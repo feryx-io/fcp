@@ -473,6 +473,8 @@ from .rollout_stage import RolloutStage
 from .rotate_api_token_request import RotateApiTokenRequest
 from .rotate_webhook_secret_request import RotateWebhookSecretRequest
 from .routing_rule_response import RoutingRuleResponse
+from .rtmp_destination_request import RtmpDestinationRequest
+from .rtmp_destination_response import RtmpDestinationResponse
 from .saml_logout_post import SamlLogoutPost
 from .saml_post import SamlPost
 from .saml_settings import SamlSettings
@@ -1090,6 +1092,8 @@ __all__ = (
     "RotateApiTokenRequest",
     "RotateWebhookSecretRequest",
     "RoutingRuleResponse",
+    "RtmpDestinationRequest",
+    "RtmpDestinationResponse",
     "SamlLogoutPost",
     "SamlPost",
     "SamlSettings",

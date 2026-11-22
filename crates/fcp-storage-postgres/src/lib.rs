@@ -54,6 +54,7 @@ pub mod prompt;
 mod provisioning;
 pub mod questions;
 pub mod recording;
+pub mod rtmp;
 mod service_registry;
 pub mod sip_trace;
 pub mod sittings;

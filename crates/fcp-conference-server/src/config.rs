@@ -806,6 +806,10 @@ pub struct ConferenceSection {
     /// while it is live.
     #[serde(default)]
     pub hls: HlsSection,
+    /// Whether this node pushes a webinar to its RTMP destination
+    /// (`docs/WEBINARS.md` W7). Needs the `rtmp` build.
+    #[serde(default)]
+    pub rtmp: RtmpSection,
 
     /// Interval (seconds) between repeating the wait-for-moderator announcement.
     /// The announcement plays once, then hold music (or silence) plays for this
@@ -1049,6 +1053,42 @@ fn default_hls_segment_secs() -> u64 {
     2
 }
 
+/// `[conference.rtmp]`: pushing a live webinar to a service over RTMP.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpSection {
+    /// Whether this node pushes at all: a webinar whose meeting has an RTMP
+    /// destination is pushed from its stage while live. A build without
+    /// the `rtmp` feature cannot, and says so at startup. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// AAC's bit rate, bits a second. Default: 128 000.
+    #[serde(default = "default_rtmp_audio_bitrate")]
+    pub audio_bitrate: u32,
+    /// How often a keyframe is asked for, in seconds: services want one
+    /// every 2 to 4. Default: 2.
+    #[serde(default = "default_rtmp_keyframe_secs")]
+    pub keyframe_secs: u64,
+}
+
+impl Default for RtmpSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            audio_bitrate: default_rtmp_audio_bitrate(),
+            keyframe_secs: default_rtmp_keyframe_secs(),
+        }
+    }
+}
+
+fn default_rtmp_audio_bitrate() -> u32 {
+    128_000
+}
+
+fn default_rtmp_keyframe_secs() -> u64 {
+    2
+}
+
 fn default_moh_announcement_interval_secs() -> u64 {
     30
 }
@@ -1124,6 +1164,7 @@ impl Default for ConferenceSection {
             lobby_max_wait_secs: default_lobby_max_wait_secs(),
             webinar_stage_grace_secs: default_webinar_stage_grace_secs(),
             hls: HlsSection::default(),
+            rtmp: RtmpSection::default(),
             moh_announcement_interval_secs: default_moh_announcement_interval_secs(),
             max_invite_rate_per_ip: default_max_invite_rate(),
             session_expires_secs: default_session_expires_secs(),

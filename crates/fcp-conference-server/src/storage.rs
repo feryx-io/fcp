@@ -80,7 +80,10 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
                     fcp_storage_postgres::sittings::PostgresRegistrantStore::new(
                         storage.pool().clone(),
                     ),
-                )),
+                ))
+                .with_rtmp_destination_store(
+                    storage.clone() as Arc<dyn fcp_core::webinar::RtmpDestinationStore>
+                ),
         ),
         config_store: storage,
     })

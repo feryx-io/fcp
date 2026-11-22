@@ -287,7 +287,7 @@ impl QaState {
                     }
                 }
             }
-            QaMessage::Webinar { phase, lobby } => {
+            QaMessage::Webinar { phase, lobby, .. } => {
                 self.webinar = Some(*phase);
                 self.lobby = *lobby;
             }

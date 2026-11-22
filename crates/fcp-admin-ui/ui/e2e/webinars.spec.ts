@@ -1,6 +1,7 @@
 // A webinar's pages (docs/WEBINARS.md §2.6, W4.3): an administrator turns
 // on registration and streaming in the meeting's form, mints a stream link
-// (W6.3d), registers a person and is handed
+// (W6.3d), sets and removes an RTMP destination (W7.3), registers a person
+// and is handed
 // their join link, mints another, revokes the registration, and finds no
 // sitting yet — each step checked through the API.
 import { test, expect, tenantAdmin, signIn, settled } from './fixtures'
@@ -58,6 +59,32 @@ test('a webinar requires registration, registers a person, re-links and revokes 
   expect(link.endsWith('/index.m3u8')).toBe(true)
   const watched = await api.get(link)
   expect(watched.status(), 'a good link, nothing streamed yet').toBe(404)
+
+  // The push over RTMP (W7.3): a destination saved, its key never shown
+  // again, kept when only the URL changes, and removed.
+  await dialog.getByLabel('Ingest URL').fill('rtmp://a.rtmp.youtube.com/live2')
+  await dialog.getByLabel('Stream key').fill('abcd-efgh-ijkl')
+  await dialog.getByRole('button', { name: 'Save destination' }).click()
+  await expect(dialog).toContainText('Stream key set')
+  const rtmpPath = `/api/v1/conferences/meetings/${meeting.id}/stream/rtmp`
+  let rtmp = await (await api.get(rtmpPath)).json()
+  expect(rtmp.url).toBe('rtmp://a.rtmp.youtube.com/live2')
+  expect(rtmp.key_set).toBe(true)
+  await expect(dialog.getByLabel('Stream key')).toHaveValue('')
+  expect(await dialog.innerHTML()).not.toContain('abcd-efgh-ijkl')
+  await dialog.getByLabel('Ingest URL').fill('rtmps://a.rtmps.youtube.com/live2')
+  await dialog.getByRole('button', { name: 'Save destination' }).click()
+  await expect.poll(async () => (await (await api.get(rtmpPath)).json()).url).toBe('rtmps://a.rtmps.youtube.com/live2')
+  rtmp = await (await api.get(rtmpPath)).json()
+  expect(rtmp.key_set, 'the key kept').toBe(true)
+  await expect(dialog).toContainText('the push starts when the webinar goes live')
+  page.once('dialog', (d) => void d.accept())
+  await dialog.getByRole('button', { name: 'Remove' }).click()
+  await expect.poll(async () => (await (await api.get(rtmpPath)).json()).key_set).toBe(false)
+  // The Stream tab asked for the sitting too, and there is no node here.
+  for (let i = troubles.length - 1; i >= 0; i--) {
+    if (troubles[i].what.startsWith(`GET /api/v1/conferences/live/${room}/webinar answered`)) troubles.splice(i, 1)
+  }
 
   await dialog.getByRole('button', { name: 'Registrants' }).click()
   await expect(dialog).toContainText('requires registration')

@@ -2234,6 +2234,43 @@ async fn encryption_seals_secret_columns_and_reads_them_back() {
         assert!(raw.starts_with("enc:v1:"), "{column} sealed at rest");
     }
 
+    // A webinar's RTMP stream key (docs/WEBINARS.md W7), in a table of its
+    // own, gone with its meeting.
+    use fcp_core::webinar::{RtmpDestination, RtmpDestinationStore};
+    let dest = RtmpDestination {
+        tenant_id: a.id,
+        meeting_id: meeting_id.to_string(),
+        url: "rtmp://a.rtmp.youtube.com/live2".to_string(),
+        key: "abcd-efgh-ijkl".to_string(),
+        updated_at: SystemTime::now(),
+    };
+    s.put_rtmp_destination(&dest).await.unwrap();
+    let back = s
+        .get_rtmp_destination(&a.id, &meeting_id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(back.key, "abcd-efgh-ijkl");
+    assert_eq!(back.url, dest.url);
+    let raw = db
+        .raw(
+            "SELECT key_sealed FROM webinar_rtmp_destinations WHERE id = $1",
+            &meeting_id.to_string(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        raw.starts_with("enc:v1:") && !raw.contains("abcd"),
+        "the stream key sealed"
+    );
+    assert!(
+        s.get_rtmp_destination(&tenant("b").id, &meeting_id.to_string())
+            .await
+            .unwrap()
+            .is_none(),
+        "another tenant's"
+    );
+
     // Webhook secret inside JSONB.
     let w = webhook(a.id, "whsec_123");
     let webhook_id = w.id;

@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { recordings, webinars, type AttendanceResponse, type JoinTokenResponse, type StreamLinkResponse } from '@/api/endpoints'
+import { recordings, webinars, type AttendanceResponse, type JoinTokenResponse, type RtmpPush, type StreamLinkResponse } from '@/api/endpoints'
 import type { MeetingResponse } from '@/types'
 
 type Tab = 'live' | 'stream' | 'registrants' | 'attendance'
@@ -53,7 +53,8 @@ function legsCsv(report: AttendanceResponse): string {
 /**
  * A webinar's life (`docs/WEBINARS.md` §2.6): its sitting now — practice,
  * live or ended, the lobby, going live and ending, the audience by page —
- * its stream out (§2.8), its registrations, and who came to each sitting.
+ * its stream out and its push (§2.8), its registrations, and who came to
+ * each sitting.
  */
 export function WebinarDialog({ meeting, onOpenChange }: {
   meeting: MeetingResponse | null
@@ -191,11 +192,131 @@ const LINK_LIFETIMES: { label: string; secs: number }[] = [
 ]
 
 /**
- * The webinar's stream out (`docs/WEBINARS.md` §2.8, W6.3d): its state,
+ * The webinar out to an audience not on FCP (`docs/WEBINARS.md` §2.8): its
+ * HLS stream (W6.3d) and its push to a live service over RTMP (W7.3).
+ */
+function StreamTab({ meeting }: { meeting: MeetingResponse }) {
+  return (
+    <div className="space-y-6">
+      <HlsSection meeting={meeting} />
+      <div className="border-t pt-4">
+        <RtmpSection meeting={meeting} />
+      </div>
+    </div>
+  )
+}
+
+const PUSH_STATES: Record<RtmpPush['state'], { label: string; variant: 'success' | 'secondary' | 'outline' | 'destructive' }> = {
+  connecting: { label: 'Connecting', variant: 'secondary' },
+  live: { label: 'Pushing', variant: 'success' },
+  retrying: { label: 'Retrying', variant: 'destructive' },
+  stopped: { label: 'Stopped', variant: 'outline' },
+}
+
+const megabytes = (bytes: number) => `${(bytes / 1_000_000).toFixed(1)} MB`
+
+/**
+ * Where the webinar is pushed over RTMP — a service's ingest URL and the
+ * stream key it gave, the key never shown again — and the push while live.
+ */
+function RtmpSection({ meeting }: { meeting: MeetingResponse }) {
+  const queryClient = useQueryClient()
+  const [url, setUrl] = useState('')
+  const [key, setKey] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const destination = useQuery({ queryKey: ['webinar-rtmp', meeting.id], queryFn: () => webinars.rtmp(meeting.id) })
+  useEffect(() => { setUrl(destination.data?.url ?? '') }, [destination.data?.url])
+  const sitting = useQuery({
+    queryKey: ['webinar-sitting', meeting.room_number],
+    queryFn: () => webinars.sitting(meeting.room_number),
+    refetchInterval: (q) => (q.state.status === 'success' ? 3000 : false),
+    retry: false,
+  })
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['webinar-rtmp', meeting.id] })
+  const save = useMutation({
+    mutationFn: () => webinars.setRtmp(meeting.id, { url: url.trim(), key: key.trim() || undefined }),
+    onSuccess: () => { setKey(''); refresh() },
+    onError: (e) => setError((e as Error).message),
+  })
+  const remove = useMutation({
+    mutationFn: () => webinars.deleteRtmp(meeting.id),
+    onSuccess: () => { setUrl(''); setKey(''); refresh() },
+    onError: (e) => setError((e as Error).message),
+  })
+  const d = destination.data
+  const push = sitting.data?.rtmp
+  const shown = push ? PUSH_STATES[push.state] : null
+  return (
+    <div className="space-y-3">
+      <div>
+        <Label>Push to a live service (RTMP)</Label>
+        <p className="text-xs text-muted-foreground">
+          While the webinar is live its stage pushes it to the service's ingest — YouTube Live, Twitch, any RTMP server — under the stream key the service gave. The key is kept sealed and never shown again.
+        </p>
+      </div>
+      <div className="grid grid-cols-[1fr_1fr] gap-2">
+        <div>
+          <Label>Ingest URL</Label>
+          <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="rtmp://a.rtmp.youtube.com/live2" aria-label="Ingest URL" />
+        </div>
+        <div>
+          <Label>Stream key</Label>
+          <Input
+            type="password"
+            autoComplete="off"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder={d?.key_set ? 'Set — leave empty to keep it' : 'From the service'}
+            aria-label="Stream key"
+          />
+        </div>
+      </div>
+      <div className="flex gap-2 items-center">
+        <Button
+          disabled={!url.trim() || (!key.trim() && !d?.key_set) || save.isPending}
+          onClick={() => { setError(null); save.mutate() }}
+        >
+          Save destination
+        </Button>
+        {d?.url && (
+          <Button
+            variant="ghost"
+            className="text-destructive"
+            disabled={remove.isPending}
+            onClick={() => { if (confirm('Remove the RTMP destination? The webinar will not be pushed.')) { setError(null); remove.mutate() } }}
+          >
+            Remove
+          </Button>
+        )}
+        {d?.key_set && <span className="text-xs text-muted-foreground">Stream key set{d.updated_at ? ` · saved ${when(d.updated_at)}` : ''}</span>}
+      </div>
+      {push && shown && (
+        <div className="rounded border p-3 space-y-1 text-sm">
+          <div className="flex items-center gap-3">
+            <Badge variant={shown.variant}>{shown.label}</Badge>
+            <span className="text-muted-foreground">to {push.ingest} since {when(push.since)}</span>
+          </div>
+          <div className="text-muted-foreground">
+            {megabytes(push.bytes_sent)} sent · {push.connects} connection{push.connects === 1 ? '' : 's'}
+            {push.dropped_frames > 0 ? ` · ${push.dropped_frames} frames dropped while behind` : ''}
+          </div>
+          {push.error && push.state !== 'live' && <div className="text-destructive">{push.error}</div>}
+        </div>
+      )}
+      {!push && d?.url && (
+        <p className="text-xs text-muted-foreground">Nothing is being pushed now: the push starts when the webinar goes live.</p>
+      )}
+      {error && <p className="text-sm text-destructive">{error}</p>}
+    </div>
+  )
+}
+
+/**
+ * The webinar's HLS stream (`docs/WEBINARS.md` §2.8, W6.3d): its state,
  * a link minted for watching it, and the stream kept as a recording for
  * replay.
  */
-function StreamTab({ meeting }: { meeting: MeetingResponse }) {
+function HlsSection({ meeting }: { meeting: MeetingResponse }) {
   const [ttl, setTtl] = useState(String(86_400))
   const [link, setLink] = useState<StreamLinkResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -231,7 +352,7 @@ function StreamTab({ meeting }: { meeting: MeetingResponse }) {
       <div className="space-y-2">
         <Badge variant={shown.variant}>{shown.label}</Badge>
         <p className="text-sm text-muted-foreground">
-          This webinar is not streamed out. Turn on "Stream out as HLS" in its form to stream it from going live to the end.
+          This webinar is not streamed out as HLS. Turn on "Stream out as HLS" in its form to stream it from going live to the end.
         </p>
       </div>
     )

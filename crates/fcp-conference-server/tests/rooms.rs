@@ -2450,10 +2450,24 @@ async fn any_qa_told(phone: &Phone, call_id: &str) -> fcp_core::qa::QaMessage {
 /// The next webinar phase `phone` is told in `call_id`, and whether it
 /// waits in the lobby.
 async fn phase_told(phone: &Phone, call_id: &str) -> (fcp_core::webinar::WebinarPhase, bool) {
+    let (phase, lobby, _) = phase_and_role_told(phone, call_id).await;
+    (phase, lobby)
+}
+
+/// The same, with the role the room says the participant has (A7).
+async fn phase_and_role_told(
+    phone: &Phone,
+    call_id: &str,
+) -> (
+    fcp_core::webinar::WebinarPhase,
+    bool,
+    Option<fcp_core::JoinRole>,
+) {
     loop {
-        if let fcp_core::qa::QaMessage::Webinar { phase, lobby } = any_qa_told(phone, call_id).await
+        if let fcp_core::qa::QaMessage::Webinar { phase, lobby, role } =
+            any_qa_told(phone, call_id).await
         {
-            return (phase, lobby);
+            return (phase, lobby, role);
         }
     }
 }
@@ -3371,8 +3385,13 @@ async fn a_webinar_practices_goes_live_and_ends() {
     }
     dial_digits(&host_call, "9999").await;
     assert_eq!(
-        phase_told(&host, host_call.call_id()).await,
-        (WebinarPhase::Practice, false)
+        phase_and_role_told(&host, host_call.call_id()).await,
+        (
+            WebinarPhase::Practice,
+            false,
+            Some(fcp_core::JoinRole::Host)
+        ),
+        "the host is told the phase and that she is the host"
     );
     let ann = stack.phone("ann").await;
     let ann_call = ann.call_with_headers(ROOM, &qa).await.unwrap();
@@ -3383,9 +3402,13 @@ async fn a_webinar_practices_goes_live_and_ends() {
     }
     dial_digits(&ann_call, "").await;
     assert_eq!(
-        phase_told(&ann, ann_call.call_id()).await,
-        (WebinarPhase::Practice, true),
-        "Ann is told she waits in the lobby"
+        phase_and_role_told(&ann, ann_call.call_id()).await,
+        (
+            WebinarPhase::Practice,
+            true,
+            Some(fcp_core::JoinRole::Attendee)
+        ),
+        "Ann is told she waits in the lobby, an attendee"
     );
     let ben = stack.phone("ben").await;
     let ben_call = join(&stack, &ben).await;
@@ -3620,6 +3643,327 @@ async fn a_webinar_that_requires_registration_admits_its_registrants_alone() {
     assert_eq!(anns["sitting_id"], sitting_id.as_str(), "{anns}");
     assert_eq!(anns["role"], "attendee", "{anns}");
     assert_eq!(anns["lobby"], false, "{anns}");
+    stack.finish().await;
+}
+
+/// A webinar pushed over RTMP (`docs/WEBINARS.md` W7.2b): nothing in
+/// practice; from going live, the stage publishes to the meeting's
+/// destination under its key — `onMetaData`, the AAC and AVC sequence
+/// headers, a keyframe first, AAC frames, a keyframe asked for every
+/// second — and the webinar's JSON says it is live. A cut connection is
+/// made again, starting from a keyframe with its timestamps going on; and
+/// when the webinar ends, the stream is unpublished.
+#[cfg(all(feature = "rtmp", feature = "video-openh264"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_live_webinar_is_pushed_over_rtmp_until_it_ends() {
+    use fcp_core::webinar::{RtmpDestination, RtmpDestinationStore};
+    use forge_rtmp::server::StandInServer;
+    let ingest = StandInServer::start().await.unwrap();
+    let conference = format!("{VIDEO}\nrtmp = {{ enabled = true, keyframe_secs = 1 }}");
+    let Some(stack) = Stack::start_conference("", 60, &conference).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({
+                "kind": "webinar",
+                "host_pin": "9999",
+                "video_enabled": true,
+                "video_codecs": ["VP8"],
+            }),
+        )
+        .await;
+    let meeting = fcp_core::storage::ConferenceStore::get_meeting_by_room_number(
+        stack.seed.storage(),
+        &stack.seed.tenant_id,
+        ROOM,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    RtmpDestinationStore::put_rtmp_destination(
+        stack.seed.storage(),
+        &RtmpDestination {
+            tenant_id: meeting.tenant_id,
+            meeting_id: meeting.id.to_string(),
+            url: ingest.url("live2"),
+            key: "abcd-efgh".to_string(),
+            updated_at: std::time::SystemTime::now(),
+        },
+    )
+    .await
+    .unwrap();
+
+    // The host's camera gives the room its video, and the push a picture.
+    let host = stack.phone("hostess").await;
+    host.enable_video(fcp_testkit::video::VideoMode::Plain);
+    host.set_video_codec(fcp_testkit::video::VideoCodec::Vp8);
+    let host_call = join(&stack, &host).await;
+    dial_digits(&host_call, "9999").await;
+    stack.wait_participants(1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        ingest.publishes().is_empty(),
+        "nothing is pushed in practice"
+    );
+
+    go_live(&stack).await;
+    host_call.media().play_tone(440.0, 15_000);
+    let first = match ingest
+        .wait_for(Duration::from_secs(20), |all| {
+            all.first().is_some_and(|p| {
+                p.video().filter(|t| t.body.first() == Some(&0x17)).count() >= 3
+                    && p.audio().count() >= 50
+            })
+        })
+        .await
+    {
+        Ok(mut all) => all.remove(0),
+        Err(all) => {
+            let (_, w) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+            let got: Vec<_> = all
+                .iter()
+                .map(|p| (p.tags.len(), p.video().count(), p.audio().count()))
+                .collect();
+            stack
+                .fail_with_logs(&format!("never pushed: {got:?}\n{w}"))
+                .await
+        }
+    };
+    assert_eq!(
+        (first.app.as_str(), first.key.as_str()),
+        ("live2", "abcd-efgh")
+    );
+    let meta = first.metadata.as_ref().expect("onMetaData");
+    assert_eq!(
+        meta[1].get("videocodecid").and_then(|v| v.as_number()),
+        Some(7.0)
+    );
+    assert_eq!(
+        meta[1].get("audiocodecid").and_then(|v| v.as_number()),
+        Some(10.0)
+    );
+    let audio: Vec<_> = first.audio().collect();
+    assert_eq!(
+        &audio[0].body[..2],
+        &[0xAF, 0],
+        "the AAC sequence header first"
+    );
+    assert_eq!(&audio[0].body[2..], &[0x11, 0x88], "AAC-LC, 48 kHz, mono");
+    assert!(audio[1..].iter().all(|t| t.body[..2] == [0xAF, 1]));
+    let video: Vec<_> = first.video().collect();
+    assert_eq!(
+        &video[0].body[..2],
+        &[0x17, 0],
+        "the AVC sequence header first"
+    );
+    assert_eq!(&video[1].body[..2], &[0x17, 1], "then a keyframe");
+    let keys: Vec<u32> = video
+        .iter()
+        .filter(|t| t.body[..2] == [0x17, 1])
+        .map(|t| t.timestamp)
+        .collect();
+    let gaps: Vec<u32> = keys.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(
+        gaps.iter().all(|g| (500..=2_500).contains(g)),
+        "a keyframe about every second: {gaps:?}"
+    );
+    assert!(
+        video.windows(2).all(|w| w[1].timestamp >= w[0].timestamp),
+        "video in order"
+    );
+    let (_, w) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+    assert_eq!(w["rtmp"]["state"], "live", "{w}");
+    assert_eq!(w["rtmp"]["connects"], 1, "{w}");
+    assert_eq!(
+        w["rtmp"]["ingest"],
+        format!("127.0.0.1:{}", ingest.addr().port()).as_str()
+    );
+    assert!(
+        !w.to_string().contains("abcd-efgh"),
+        "the key is never shown: {w}"
+    );
+
+    // Cut: connected again, from a keyframe, the timestamps going on.
+    let last_before = first.tags.iter().map(|t| t.timestamp).max().unwrap();
+    ingest.cut();
+    let again = ingest
+        .wait_for(Duration::from_secs(20), |all| {
+            all.len() >= 2
+                && all[1]
+                    .video()
+                    .filter(|t| t.body.first() == Some(&0x17))
+                    .count()
+                    >= 2
+        })
+        .await
+        .unwrap_or_else(|all| panic!("never pushed again: {all:#?}"))
+        .remove(1);
+    assert!(again.metadata.is_some());
+    let video: Vec<_> = again.video().collect();
+    assert_eq!(&video[0].body[..2], &[0x17, 0], "the sequence header again");
+    assert_eq!(&video[1].body[..2], &[0x17, 1], "and a keyframe first");
+    assert!(
+        video[1].timestamp > last_before,
+        "the timestamps go on: {} after {last_before}",
+        video[1].timestamp
+    );
+    let (_, w) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+    assert_eq!(w["rtmp"]["connects"], 2, "{w}");
+
+    // Ended: unpublished.
+    let (code, out) = stack
+        .post(&format!("/conferences/{ROOM}/webinar/end"))
+        .await;
+    assert_eq!(code, 200, "{out}");
+    ingest
+        .wait_for(Duration::from_secs(10), |all| {
+            all[1].unpublished && all[1].closed
+        })
+        .await
+        .unwrap_or_else(|all| panic!("never unpublished: {all:#?}"));
+    let (_, w) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+    assert!(w["rtmp"].is_null(), "{w}");
+    let _ = host_call.hangup().await;
+    stack.finish().await;
+}
+
+/// The push against a real RTMP server (`docs/WEBINARS.md` W7.2b): ffmpeg
+/// listening takes the webinar and copies it to a file, which ffprobe reads
+/// as H.264 and AAC, and which decodes whole. Skipped unless
+/// `FCP_TEST_FFMPEG` is set and `ffmpeg` and `ffprobe` are on the path.
+#[cfg(all(feature = "rtmp", feature = "video-openh264"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_live_webinar_reaches_ffmpeg_s_rtmp_server() {
+    use fcp_core::webinar::{RtmpDestination, RtmpDestinationStore};
+    use std::process::Command;
+    if std::env::var_os("FCP_TEST_FFMPEG").is_none() {
+        eprintln!("skipped: FCP_TEST_FFMPEG is not set");
+        return;
+    }
+    let conference = format!("{VIDEO}\nrtmp = {{ enabled = true }}");
+    let Some(stack) = Stack::start_conference("", 60, &conference).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack
+        .seed
+        .meeting_with(
+            ROOM,
+            serde_json::json!({
+                "kind": "webinar",
+                "host_pin": "9999",
+                "video_enabled": true,
+                "video_codecs": ["VP8"],
+            }),
+        )
+        .await;
+    let meeting = fcp_core::storage::ConferenceStore::get_meeting_by_room_number(
+        stack.seed.storage(),
+        &stack.seed.tenant_id,
+        ROOM,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let port = free_port();
+    let out = stack._dir.path().join("pushed.flv");
+    let mut server = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-listen",
+            "1",
+            "-i",
+        ])
+        .arg(format!("rtmp://127.0.0.1:{port}/live/key"))
+        .args(["-c", "copy"])
+        .arg(&out)
+        .spawn()
+        .expect("ffmpeg");
+    RtmpDestinationStore::put_rtmp_destination(
+        stack.seed.storage(),
+        &RtmpDestination {
+            tenant_id: meeting.tenant_id,
+            meeting_id: meeting.id.to_string(),
+            url: format!("rtmp://127.0.0.1:{port}/live"),
+            key: "key".to_string(),
+            updated_at: std::time::SystemTime::now(),
+        },
+    )
+    .await
+    .unwrap();
+    let host = stack.phone("hostess").await;
+    host.enable_video(fcp_testkit::video::VideoMode::Plain);
+    host.set_video_codec(fcp_testkit::video::VideoCodec::Vp8);
+    let host_call = join(&stack, &host).await;
+    dial_digits(&host_call, "9999").await;
+    stack.wait_participants(1).await;
+    // ffmpeg may take a moment to listen; the push retries until it does.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    go_live(&stack).await;
+    host_call.media().play_tone(440.0, 12_000);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, w) = stack.get(&format!("/conferences/{ROOM}/webinar")).await;
+        if w["rtmp"]["state"] == "live" && w["rtmp"]["bytes_sent"].as_u64().unwrap_or(0) > 50_000 {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "never live: {w}");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let (code, _) = stack
+        .post(&format!("/conferences/{ROOM}/webinar/end"))
+        .await;
+    assert_eq!(code, 200);
+    let ended = tokio::task::spawn_blocking(move || server.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(ended.success(), "ffmpeg took the stream to its end");
+    let probe = Command::new("ffprobe")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-show_entries",
+            "stream=codec_name,sample_rate,channels:format=duration",
+            "-of",
+            "default=nw=1",
+        ])
+        .arg(&out)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&probe.stdout).to_string();
+    assert!(text.contains("codec_name=h264"), "{text}");
+    assert!(
+        text.contains("codec_name=aac") && text.contains("sample_rate=48000"),
+        "{text}"
+    );
+    let duration: f64 = text
+        .lines()
+        .find_map(|l| l.strip_prefix("duration="))
+        .and_then(|d| d.parse().ok())
+        .unwrap_or(0.0);
+    assert!(duration >= 4.0, "seconds of it: {text}");
+    let decoded = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(&out)
+        .args(["-f", "null", "-"])
+        .output()
+        .unwrap();
+    assert!(
+        decoded.status.success() && decoded.stderr.is_empty(),
+        "it decodes whole: {}",
+        String::from_utf8_lossy(&decoded.stderr)
+    );
+    let _ = host_call.hangup().await;
     stack.finish().await;
 }
 

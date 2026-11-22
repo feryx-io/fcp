@@ -255,6 +255,9 @@ impl ConferenceCallHandler {
         if let Some(stream) = self.stream_json(key) {
             json["stream"] = stream;
         }
+        if let Some(push) = self.push_json(key) {
+            json["rtmp"] = push;
+        }
         Some(json)
     }
 
@@ -330,7 +333,19 @@ impl ConferenceCallHandler {
             return;
         };
         let lobby = self.in_lobby(key, participant_id);
-        self.tell_qa(call_id, QaMessage::Webinar { phase, lobby });
+        let role = self.role_on(call_id);
+        self.tell_qa(call_id, QaMessage::Webinar { phase, lobby, role });
+    }
+
+    /// The role of whoever is on `call_id`, as a client is told it.
+    fn role_on(&self, call_id: &str) -> Option<fcp_core::JoinRole> {
+        let role = self.sessions.get(call_id)?.role;
+        Some(match role {
+            super::ConferenceRole::Host => fcp_core::JoinRole::Host,
+            super::ConferenceRole::Panelist => fcp_core::JoinRole::Panelist,
+            super::ConferenceRole::Attendee => fcp_core::JoinRole::Attendee,
+            super::ConferenceRole::Guest => fcp_core::JoinRole::Guest,
+        })
     }
 
     /// Tell everyone in `key`'s room who asked the webinar's phase.
@@ -357,7 +372,8 @@ impl ConferenceCallHandler {
             if lobby && phase == WebinarPhase::Live {
                 continue;
             }
-            self.tell_qa(&call_id, QaMessage::Webinar { phase, lobby });
+            let role = self.role_on(&call_id);
+            self.tell_qa(&call_id, QaMessage::Webinar { phase, lobby, role });
         }
     }
 
@@ -405,8 +421,10 @@ impl ConferenceCallHandler {
                         warn!(room = %key.room, error = %e, "Auto-record failed (going live)");
                     }
                 }
-                // Streamed out from the stage alone (§2.8).
+                // Streamed out from the stage alone (§2.8), and pushed
+                // over RTMP (W7).
                 me.start_stream(&key).await;
+                me.start_push(&key).await;
                 if let_in {
                     me.let_in_lobby(key).await;
                 }
@@ -458,11 +476,13 @@ impl ConferenceCallHandler {
                 Ok(()) => {
                     admitted += 1;
                     if let Some(call_id) = self.call_of(&key, &pid) {
+                        let role = self.role_on(&call_id);
                         self.tell_qa(
                             &call_id,
                             QaMessage::Webinar {
                                 phase: WebinarPhase::Live,
                                 lobby: false,
+                                role,
                             },
                         );
                     }
@@ -531,7 +551,10 @@ impl ConferenceCallHandler {
         self.queue_tree_ending(key);
         if let Some(me) = self.me() {
             let key = key.clone();
-            tokio::spawn(async move { me.stop_stream(&key).await });
+            tokio::spawn(async move {
+                me.stop_stream(&key).await;
+                me.stop_push(&key).await;
+            });
         }
         true
     }
@@ -586,7 +609,10 @@ impl ConferenceCallHandler {
         self.audience_encode_held.remove(key);
         if let Some(me) = self.me() {
             let key = key.clone();
-            tokio::spawn(async move { me.stop_stream(&key).await });
+            tokio::spawn(async move {
+                me.stop_stream(&key).await;
+                me.stop_push(&key).await;
+            });
         }
     }
 

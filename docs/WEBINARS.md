@@ -1323,8 +1323,285 @@ For an audience that is not on FCP at all.
           404 (nothing streamed) rather than 401.
 - **W7: RTMP push** (forge-media, FCP).
   - An AAC encoder, FLV, the RTMP client, and the meeting's sealed stream key.
+  - **The plan** (written 2026-11-21 from the code). In three parts.
+    - **What is there:**
+      - The recorder (`recording/mod.rs`) takes the composite from
+        `VideoRoom::record` as coded frames (Annex B for H.264), and the mix
+        from the room's tap. It resamples the mix to 48 kHz and encodes it as
+        Opus in 20 ms frames, handing each to a `Writer` (WebM, MP4 or HLS)
+        stamped in milliseconds.
+      - `forge_mp4::codec` lifts the SPS and PPS out of a keyframe and builds
+        the `avcC` record, the same bytes as FLV's AVC sequence header.
+      - `RecordingSink::request_keyframe` (W6.1) lets a sink ask for
+        keyframes.
+      - forge-media has no AAC, no FLV and no RTMP. The `[api.firmware]`
+        and identity providers' secrets are sealed with `fcp-crypto` (a
+        column encrypted at rest, never returned).
+    - **Decisions:**
+      1. **AAC from fdk-aac, built from source** (agreed 2026-11-21).
+         `forge-codecs` gains an `aac` feature (off by default) over the
+         `fdk-aac` crate, whose `fdk-aac-sys` compiles the library with `cc`.
+         It is AAC-LC, 48 kHz, raw access units with their
+         `AudioSpecificConfig`, 128 kb/s unless set, in 1024-sample frames.
+         Its decoder is there for tests. Like OpenH264's, the licence grants
+         no patent rights: AAC's are the deployer's matter, said so in the
+         deployment notes. The feature is only in a build that asks for it
+         (`[features] rtmp` on the conference server).
+      2. **FLV and RTMP are a new crate, `forge-rtmp`**, written here rather
+         than taken from crates.io: what is published is either a server,
+         unmaintained, or pulls in a runtime of its own.
+         - `flv`: tags for `onMetaData`, the AVC and AAC sequence headers,
+           and H.264 NAL units as length-prefixed samples (composition time
+           0, the composite has no B-frames) and AAC access units.
+         - `amf0`, and the chunk stream (4096-byte chunks out, any size
+           in).
+         - The client: TCP, or TLS for `rtmps://` (rustls, the platform's
+           roots). The simple handshake. `connect` (app, `tcUrl`),
+           `releaseStream`, `FCPublish`, `createStream`, `publish(key,
+           "live")`, and `NetStream.Publish.Start` waited for. Window
+           acknowledgements sent, pings answered, and an error status
+           turned into an error.
+         - A stand-in server (`forge_rtmp::server`) that takes a publisher
+           and keeps its tags, for forge-media's tests and FCP's.
+         - H.264 only: plain RTMP carries H.264 and AAC, and Enhanced RTMP's
+           HEVC and AV1 are not what every service takes.
+      3. **The push is a writer.** `Writer::Rtmp` beside MP4 and HLS,
+         with the audio encoder generalised (Opus or AAC, each with its own
+         frame). The network is a task of its own behind a bounded queue, so
+         the recorder never waits on a socket.
+         - Behind: video is dropped until the next keyframe, which is asked
+           for. Audio is dropped only while the queue is full.
+         - Lost: the connection is made again with backoff (1 s doubling to
+           30 s). It starts from a keyframe with the sequence headers again,
+           its timestamps going on from where they were.
+         - A keyframe every 2 s is asked for, as YouTube asks of an encoder.
+      4. **Where it goes.** The webinar's RTMP destination: the service's
+         ingest URL and the stream key, sealed at rest and never returned.
+         Revised while building W7.2a: it is a sub-resource
+         (`…/stream/rtmp`) in a table of its own
+         (`webinar_rtmp_destinations`, migration 150), not fields on the
+         meeting. The key is then never in a meeting's JSON, and never goes
+         to a site with the meeting through the sync journal.
+         - The stage pushes when the webinar goes live and stops when it
+           ends, as the HLS stream does, under `[conference.rtmp] enabled`.
+           Never in practice, and never from an edge.
+         - A node without an H.264 encoder does not push and says so.
+      5. **Consent.** A push broadcasts the room, so it is announced as the
+         stream is: the recording's or the stream's announcement serves, or
+         the push announces itself. `refused` means no push. FCP keeps
+         nothing of it: no row.
+      6. **What is seen.** The webinar's JSON has `rtmp`: its state
+         (`connecting`, `live`, `retrying`, `stopped`), since when, the last
+         error, and what was sent. The events are `conference.rtmp_live`
+         and `conference.rtmp_failed`, the latter once it has retried for a
+         minute. The admin UI's Stream tab shows it, and the meeting's form
+         takes the URL and key.
+    - **W7.1: AAC, FLV and RTMP** (forge-media). **Built** in forge-media
+      #233 (forge-rtmp 0.1.0, forge-codecs 0.3.0):
+      - `forge_codecs::aac::AacEncoder` (feature `aac`) gives AAC-LC from
+        fdk-aac with afterburner on: raw access units of 1024 samples and
+        their `AudioSpecificConfig`.
+      - `forge-rtmp` has:
+        - FLV tag bodies (`AvcTagger` from Annex B), and FLV files;
+        - AMF0 and the chunk stream;
+        - the `Publisher` over `rtmp://` or `rtmps://`;
+        - `server::StandInServer`.
+      - Proved against the stand-in (a stream, a refused key, a cut, a
+        timeout, RTMPS) and against ffmpeg's RTMP server. There ffprobe
+        reads back H.264 640×360 and AAC 48 kHz mono, four seconds, and
+        every picture decodes.
+    - **W7.2: the push from the stage** (FCP), in two parts:
+      - **W7.2a: the destination.** **Done** (v0.25.609). As built:
+        - `fcp_core::webinar::RtmpDestination` and `RtmpDestinationStore`,
+          implemented on `PostgresStorage` so the key is sealed as every
+          secret column is (`SEALED_COLUMNS`, re-encrypted and rewrapped
+          with them).
+        - `check_rtmp_url`: the URL must be `rtmp://` or `rtmps://`, with a
+          host and an application, and no credentials, query or spaces.
+        - Under `conference_read` and `conference_manage`:
+          - `GET` shows the URL and `key_set`;
+          - `PUT` takes the URL and key, and a key left out keeps the one
+            there is. Only a webinar has a destination (409 otherwise);
+          - `DELETE` removes it.
+        - The destination is gone with its meeting.
+        - A site's webinar does not push: the destination is not synced.
+        - **Proved:**
+          - `api_postgres.rs` `a_webinar_s_rtmp_destination_keeps_its_key_to_itself`;
+          - `integration.rs`'s sealing test, which shows the key sealed
+            at rest and out of another tenant's reach.
+      - **W7.2b: the push.** **Done** (v0.25.610–611). As built:
+        - **The build.** The conference server's `rtmp` feature (with
+          `recording-mp4`, forge-rtmp and forge-codecs' `aac`), off by
+          default and not in the images. A node with `[conference.rtmp]
+          enabled` and no `rtmp` build says so at startup. v0.25.610 took
+          forge-media v2026.11.21.1 and both submodules from `feryx-io`.
+        - **`[conference.rtmp]`:**
+          - `enabled`, off by default;
+          - `audio_bitrate`, 128 000;
+          - `keyframe_secs`, 2.
+        - **Its life** (`conference_handler/push.rs`):
+          - it starts with the stream when the stage goes live, never in
+            practice and never on an edge, and stops when the webinar ends
+            or its sitting closes;
+          - it needs a destination and the room's video;
+          - a room no camera has joined has no composite, so it has no
+            push: the services want a picture;
+          - so does a node with no H.264 encoder.
+        - **The writer** (`recording/rtmp.rs`, `Writer::Rtmp`):
+          - the recorder's audio encoder is now Opus or AAC, each in frames
+            of its own (`AudioEncoder`);
+          - frames go to a task behind a queue of 512;
+          - a full queue drops video until a keyframe and asks for one,
+            and drops audio only while full;
+          - a lost or refused connection is retried from 1 s, doubling to
+            30 s, from the sequence headers and a keyframe, with the
+            timestamps going on.
+        - **Consent:** the recording's or the stream's announcement, or the
+          push's own. Late joiners hear it, as for the others.
+        - **Seen as:**
+          - the webinar's JSON `rtmp`: `state`, `since`, `error`,
+            `bytes_sent`, `connects`, `dropped_frames`, and the `ingest`
+            host, never the key;
+          - `conference.rtmp_live` at each connection;
+          - `conference.rtmp_failed` once an outage reaches a minute.
+        - **Proved:**
+          - `rooms.rs` `a_live_webinar_is_pushed_over_rtmp_until_it_ends`,
+            against forge-rtmp's stand-in. Nothing is pushed in practice.
+            Live, the stand-in gets:
+            - the meeting's key and application;
+            - `onMetaData` naming AVC and AAC;
+            - the AAC sequence header for AAC-LC 48 kHz mono;
+            - the AVC sequence header, then a keyframe;
+            - a keyframe every second at `keyframe_secs = 1`.
+
+            The JSON says live with the ingest's host, and never the key.
+            The cut is connected again: the sequence header and a keyframe
+            first, with the timestamps going on. Ended, the stream is
+            unpublished.
+          - `rooms.rs` `a_live_webinar_reaches_ffmpeg_s_rtmp_server`, run
+            with `FCP_TEST_FFMPEG=1`: ffmpeg's RTMP server takes the
+            webinar, ffprobe reads H.264 and AAC 48 kHz, and the file
+            decodes whole.
+    - **W7.3: the admin UI.** **Done** (v0.25.612). As built:
+      - The webinar dialog's Stream tab has the HLS stream (W6.3d) above
+        and the push over RTMP below. The two are independent: a webinar
+        can be pushed without being streamed as HLS.
+      - The destination: the ingest URL and the stream key. The key is
+        typed once, never shown again, and kept when it is left empty;
+        "Stream key set" says there is one. Remove takes it away.
+      - The push while live, from the node's webinar JSON:
+        - Pushing, Connecting, Retrying or Stopped;
+        - the ingest's host, since when, MB sent, connections, frames
+          dropped while behind;
+        - the last error while not pushing.
+      - Revised from decision 6: the destination is set in the Stream
+        tab, not the meeting's form, as it is its own sub-resource
+        (W7.2a).
+      - **Proved:** `e2e/webinars.spec.ts`. A destination is saved and
+        the API shows it with its key set. The key is in no field and
+        nowhere in the dialog. Saving the URL alone keeps the key, and
+        Remove clears it.
+  - **W7 is complete.**
 - **A7: Anvil.** The attendee's and the host's views (§2.9), and chat in every
   room.
+  - **The plan** (written 2026-11-21 from the code). In three parts.
+    - **What is there:**
+      - Anvil's room (`anvil-core/src/room.rs`) has:
+        - a join token in `X-FCP-Join`;
+        - `Recv-Info: fcp-content` (the floor) and `fcp-view` (a forwarding
+          room's streams);
+        - the roster subscribed in the call (RFC 4575);
+        - the view INFO.
+      - `anvil-fcp` reaches `/me/conferences/live/{room}/…` for a host's
+        controls (F2b).
+      - FCP has, for a participant who asks:
+        - the audience's voice in the call as `fcp-qa` INFOs: the hand, the
+          stage, questions, and the webinar's phase and lobby (W3.1–W4.1);
+        - chat as `fcp-chat` INFOs (W3b);
+        - the roster's `fcp:audience` count and hands (W2–W3.1).
+
+        A host's room controls are routes under
+        `/me/conferences/live/{room}`: live and end, lowering hands, the
+        stage, the audience by page, and muting chat. The call manager and
+        the gateway relay both packages.
+      - Anvil has none of the audience's packages, no chat, and no
+        webinar screen.
+    - **Decisions:**
+      1. **In the call where the call can say it, a route where it cannot.**
+         These go as INFOs: one's own hand, questions, upvotes and posts,
+         and a host's or panelist's question moderation (publish, answer,
+         dismiss) and deleting a message. These go through `anvil-fcp`'s
+         `/me` routes, which the call has no words for:
+         - going live and ending;
+         - lowering another's hand, or all of them;
+         - bringing someone to the stage and back;
+         - the audience by page;
+         - muting a person's chat.
+      2. **Every room call asks for both packages**
+         (`Recv-Info: fcp-content, fcp-view, fcp-qa, fcp-chat`), so chat
+         is in meetings as well as webinars, as W3b made it.
+      3. **An attendee's call is the stage's to hear.**
+         - It offers audio both ways, so being brought to the stage needs
+           no re-INVITE, with the microphone muted in the app until then.
+         - It offers no camera.
+         - The picture is the stage's composite, or the stage's grid in a
+           forwarding webinar.
+         - The lobby is a waiting screen while the phase says `lobby`.
+         - "You are on the stage" is shown when `stage` says so. The
+           microphone is the person's to unmute from then, and the camera
+           theirs to add by re-INVITE.
+      4. **Who one is is told by the room.** The `fcp-qa` webinar
+         message gains `role` (`host`, `panelist` or `attendee`), sent
+         when a participant joins and again when it changes (FCP, the
+         start of A7a). `/me/conferences/live/{room}` answers a room's
+         hosts alone, and a join token's claims say nothing of a PIN
+         dialed by number. Hosts and panelists get the moderation panels;
+         a host also gets live and end.
+      5. **The app's panels:**
+         - Questions (ask, upvote; and for the stage, publish, answer and
+           dismiss);
+         - Chat (to the room or the hosts as the meeting allows; and for
+           the stage, delete and mute);
+         - Hands (for the stage: lower, bring to the stage, send back);
+         - the stage's roster with the audience as a count.
+    - **A7a: the packages in `anvil-core`**, after `role` on FCP's
+      `fcp-qa` webinar message. That message is done (v0.25.613): it
+      names `host`, `panelist`, `attendee` or `guest`, whenever it is
+      sent. `rooms.rs` `a_webinar_practices_goes_live_and_ends` checks it
+      for the host and for an attendee in the lobby.
+      - What a room call takes in: `fcp-qa` and `fcp-chat` INFOs, the
+        roster's `fcp:audience` and `fcp:hand`.
+      - What it sends: the INFOs above, under a `Room` API, with events to
+        the app.
+      - The attendee's call, as decision 3 has it.
+      - Tested against a scripted room, as the floor is.
+      **A7a done** in Anvil (#104, v0.2.97). `anvil_core::audience` reads
+      the room's `fcp-qa` and `fcp-chat` INFOs and writes ours
+      (`QaRequest`, `ChatRequest`, through `Anvil::room_qa` and
+      `room_chat`). The events are `RoomWebinar`, `RoomHand`, `RoomStage`,
+      `RoomQuestions`, `RoomChat` and `RoomChatMuted`. The roster's
+      `audience` count is on `RoomRoster`, and a member's `panelist`,
+      `attendee` and `hand`. Tested against a scripted room.
+    - **A7b: the host's routes in `anvil-fcp`.** **Done** (Anvil #105,
+      v0.2.98). `RoomHost` gains `webinar`, `go_live`, `end_webinar`,
+      `audience`, `lower_hand`, `lower_all_hands`, `stage` and
+      `mute_chat`.
+      - Proved by `tests/fcp.rs` `a_webinar_on_fcp_is_run_by_its_host_from_anvil`
+        against FCP v0.25.613, a local stack: Anvil's CI job against FCP
+        skips without its `FCP_READ_TOKEN` secret.
+      - What the run found: in a webinar, an owner who dials the number
+        with no PIN is an attendee, so a host joins by a host's link. A
+        webinar's chat goes to the hosts.
+    - **A7c: the app.** **Done** (Anvil #106, v0.2.99).
+      - `anvil-app`'s room keeps the role, phase, lobby, hand, stage,
+        audience, questions and chat.
+      - An attendee off the stage is muted in the app.
+      - `Command::Audience`, and `RoomAction`'s webinar controls.
+      - The screens: the webinar banner, the raised hand, Raised hands
+        for a host, Questions, and Chat in every room
+        (`lib/src/screens/webinar.dart`).
+      - Proved by `test/webinar_test.dart`.
+  - **A7 is complete.**
 
 W1 and W2 come first. W3, W3b and W4 follow in any order; W3b needs no webinar
 at all. W5 waits on W1's measurements to say when one node is not enough. W6 and

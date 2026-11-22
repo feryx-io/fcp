@@ -66,6 +66,7 @@ async fn an_audio_only_recording_is_opus_in_webm() {
             audio_bitrate: 32_000,
             hls_segment_ms: None,
             hls_mirror: None,
+            rtmp: None,
         },
     )
     .expect("the recorder starts");
@@ -134,6 +135,7 @@ async fn a_room_with_video_records_the_composite_beside_the_mix() {
             audio_bitrate: 32_000,
             hls_segment_ms: None,
             hls_mirror: None,
+            rtmp: None,
         },
     )
     .expect("the recorder starts");
