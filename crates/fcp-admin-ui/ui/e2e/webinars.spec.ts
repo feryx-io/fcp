@@ -1,5 +1,6 @@
 // A webinar's pages (docs/WEBINARS.md §2.6, W4.3): an administrator turns
-// on registration in the meeting's form, registers a person and is handed
+// on registration and streaming in the meeting's form, mints a stream link
+// (W6.3d), registers a person and is handed
 // their join link, mints another, revokes the registration, and finds no
 // sitting yet — each step checked through the API.
 import { test, expect, tenantAdmin, signIn, settled } from './fixtures'
@@ -28,11 +29,14 @@ test('a webinar requires registration, registers a person, re-links and revokes 
   await page.getByRole('menuitem', { name: 'Edit' }).click()
   const edit = page.getByRole('dialog')
   await edit.getByRole('switch', { name: 'Require registration' }).click()
+  await edit.getByRole('switch', { name: 'Stream out as HLS' }).click()
   await edit.getByRole('button', { name: /Save/ }).click()
   await expect(edit).toBeHidden()
   const after = await (await api.get(`/api/v1/conferences/meetings/${meeting.id}`)).json()
   expect(after.registration).toBe(true)
+  expect(after.streaming).toBe('hls')
   await expect(row).toContainText('Registration')
+  await expect(row).toContainText('Streamed')
 
   // The webinar's own dialog. No conference server here, so no sitting:
   // the Live tab says nobody is in the room.
@@ -43,6 +47,17 @@ test('a webinar requires registration, registers a person, re-links and revokes 
   for (let i = troubles.length - 1; i >= 0; i--) {
     if (troubles[i].what.startsWith(`GET /api/v1/conferences/live/${room}/webinar answered`)) troubles.splice(i, 1)
   }
+
+  // The stream (W6.3d): waiting to go live, and a link minted that the
+  // admin takes — nothing streamed yet, so its playlist is not there.
+  await dialog.getByRole('button', { name: 'Stream', exact: true }).click()
+  await expect(dialog).toContainText('Waiting to go live')
+  await dialog.getByRole('button', { name: 'Make a link' }).click()
+  const link = await dialog.getByRole('textbox', { name: 'Stream link' }).inputValue()
+  expect(link).toContain(`/api/v1/conferences/meetings/${meeting.id}/stream/`)
+  expect(link.endsWith('/index.m3u8')).toBe(true)
+  const watched = await api.get(link)
+  expect(watched.status(), 'a good link, nothing streamed yet').toBe(404)
 
   await dialog.getByRole('button', { name: 'Registrants' }).click()
   await expect(dialog).toContainText('requires registration')

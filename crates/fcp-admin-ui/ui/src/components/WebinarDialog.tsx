@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, Download, Radio, Square, UserPlus, Ban, Link as LinkIcon } from 'lucide-react'
+import { Copy, Download, Radio, Square, UserPlus, Ban, Link as LinkIcon, Tv } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { webinars, type AttendanceResponse, type JoinTokenResponse } from '@/api/endpoints'
+import { recordings, webinars, type AttendanceResponse, type JoinTokenResponse, type StreamLinkResponse } from '@/api/endpoints'
 import type { MeetingResponse } from '@/types'
 
-type Tab = 'live' | 'registrants' | 'attendance'
+type Tab = 'live' | 'stream' | 'registrants' | 'attendance'
+
+const TAB_NAMES: Record<Tab, string> = { live: 'Live', stream: 'Stream', registrants: 'Registrants', attendance: 'Attendance' }
 
 const when = (at: string | null | undefined) => (at ? new Date(at).toLocaleString() : '—')
 const minutes = (secs: number) => `${Math.round(secs / 60)} min`
@@ -51,7 +53,7 @@ function legsCsv(report: AttendanceResponse): string {
 /**
  * A webinar's life (`docs/WEBINARS.md` §2.6): its sitting now — practice,
  * live or ended, the lobby, going live and ending, the audience by page —
- * its registrations, and who came to each sitting.
+ * its stream out (§2.8), its registrations, and who came to each sitting.
  */
 export function WebinarDialog({ meeting, onOpenChange }: {
   meeting: MeetingResponse | null
@@ -67,13 +69,14 @@ export function WebinarDialog({ meeting, onOpenChange }: {
           <DialogDescription>Room {meeting?.room_number}</DialogDescription>
         </DialogHeader>
         <div className="flex gap-2 border-b pb-2">
-          {(['live', 'registrants', 'attendance'] as Tab[]).map((t) => (
+          {(['live', 'stream', 'registrants', 'attendance'] as Tab[]).map((t) => (
             <Button key={t} size="sm" variant={tab === t ? 'default' : 'ghost'} onClick={() => setTab(t)}>
-              {t === 'live' ? 'Live' : t === 'registrants' ? 'Registrants' : 'Attendance'}
+              {TAB_NAMES[t]}
             </Button>
           ))}
         </div>
         {meeting && tab === 'live' && <LiveTab meeting={meeting} />}
+        {meeting && tab === 'stream' && <StreamTab meeting={meeting} />}
         {meeting && tab === 'registrants' && <RegistrantsTab meeting={meeting} />}
         {meeting && tab === 'attendance' && <AttendanceTab meeting={meeting} />}
       </DialogContent>
@@ -170,6 +173,121 @@ function LiveTab({ meeting }: { meeting: MeetingResponse }) {
           </Button>
         </div>
       </div>
+    </div>
+  )
+}
+
+const STREAM_STATES: Record<string, { label: string; variant: 'success' | 'secondary' | 'outline' }> = {
+  off: { label: 'Not streamed', variant: 'outline' },
+  waiting: { label: 'Waiting to go live', variant: 'secondary' },
+  live: { label: 'Live', variant: 'success' },
+  ended: { label: 'Ended', variant: 'secondary' },
+}
+
+const LINK_LIFETIMES: { label: string; secs: number }[] = [
+  { label: 'An hour', secs: 3600 },
+  { label: 'A day', secs: 86_400 },
+  { label: 'A week', secs: 7 * 86_400 },
+]
+
+/**
+ * The webinar's stream out (`docs/WEBINARS.md` §2.8, W6.3d): its state,
+ * a link minted for watching it, and the stream kept as a recording for
+ * replay.
+ */
+function StreamTab({ meeting }: { meeting: MeetingResponse }) {
+  const [ttl, setTtl] = useState(String(86_400))
+  const [link, setLink] = useState<StreamLinkResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, copy] = useCopy()
+  const state = useQuery({
+    queryKey: ['webinar-stream', meeting.id],
+    queryFn: () => webinars.stream(meeting.id),
+    refetchInterval: 5000,
+  })
+  const mint = useMutation({
+    mutationFn: () => webinars.streamLink(meeting.id, Number(ttl)),
+    onSuccess: setLink,
+    onError: (e) => setError((e as Error).message),
+  })
+  const download = async (recordingId: string, sitting: string) => {
+    setError(null)
+    try {
+      const url = await recordings.fetchMedia(recordingId)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${sitting}.mp4`
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 30_000)
+    } catch {
+      setError('Download failed; the node holding the stream may be unreachable.')
+    }
+  }
+  if (!state.data) return <p className="text-sm text-muted-foreground">Loading…</p>
+  const s = state.data
+  const shown = STREAM_STATES[s.state] ?? { label: s.state, variant: 'outline' as const }
+  if (s.state === 'off') {
+    return (
+      <div className="space-y-2">
+        <Badge variant={shown.variant}>{shown.label}</Badge>
+        <p className="text-sm text-muted-foreground">
+          This webinar is not streamed out. Turn on "Stream out as HLS" in its form to stream it from going live to the end.
+        </p>
+      </div>
+    )
+  }
+  const playlist = link ? link.playlist_url ?? `${window.location.origin}${link.playlist_path}` : ''
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <Badge variant={shown.variant}>{shown.label}</Badge>
+        <span className="text-sm text-muted-foreground">
+          {s.state === 'waiting'
+            ? 'The stream starts when the webinar goes live.'
+            : `Started ${when(s.started_at)}${s.ended_at ? ` · ended ${when(s.ended_at)}` : ''}${s.duration_secs != null ? ` · ${minutes(s.duration_secs)}` : ''}`}
+        </span>
+      </div>
+      <div className="space-y-2">
+        <Label>Viewer link</Label>
+        <p className="text-xs text-muted-foreground">
+          Anyone holding the link can watch the stream in an HLS player, live and after it ends, until the link expires. It is the only credential: share it as you would a password.
+        </p>
+        <div className="flex gap-2 items-center">
+          <Select value={ttl} onValueChange={setTtl}>
+            <SelectTrigger className="w-40" aria-label="Link lifetime"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {LINK_LIFETIMES.map((l) => (
+                <SelectItem key={l.secs} value={String(l.secs)}>{l.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button disabled={mint.isPending} onClick={() => { setError(null); mint.mutate() }}>
+            <Tv className="mr-2 h-4 w-4" /> Make a link
+          </Button>
+        </div>
+        {link && (
+          <div className="rounded border p-3 space-y-2">
+            <p className="text-sm">Playlist, good until {new Date(link.expires_at).toLocaleString()}:</p>
+            <div className="flex gap-2">
+              <Input readOnly value={playlist} className="font-mono text-xs" aria-label="Stream link" />
+              <Button size="icon" variant="outline" aria-label="Copy" onClick={() => copy('stream', playlist)}><Copy className="h-4 w-4" /></Button>
+            </div>
+            {copied === 'stream' && <p className="text-xs text-green-600">Copied</p>}
+          </div>
+        )}
+      </div>
+      {s.recording_id && s.sitting_id && (
+        <div className="space-y-2">
+          <Label>Replay</Label>
+          <p className="text-xs text-muted-foreground">
+            The stream is kept as a recording, under the tenant's retention, and downloads as one MP4{s.state === 'live' ? ' as far as it has got' : ''}.
+          </p>
+          <Button variant="outline" onClick={() => download(s.recording_id!, s.sitting_id!)}>
+            <Download className="mr-2 h-4 w-4" /> Download the stream
+          </Button>
+        </div>
+      )}
+      {error && <p className="text-sm text-destructive">{error}</p>}
     </div>
   )
 }

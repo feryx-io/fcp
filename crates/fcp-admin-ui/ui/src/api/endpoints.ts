@@ -1377,6 +1377,8 @@ export type RegisteredResponse = components['schemas']['RegisteredResponse']
 export type RegisterRequest = components['schemas']['RegisterRequest']
 export type SittingResponse = components['schemas']['SittingResponse']
 export type AttendanceResponse = components['schemas']['AttendanceResponse']
+export type StreamStateResponse = components['schemas']['StreamStateResponse']
+export type StreamLinkResponse = components['schemas']['StreamLinkResponse']
 
 /** The room's sitting as its node tells it. */
 export interface LiveSitting {
@@ -1425,6 +1427,11 @@ export const webinars = {
     apiClient.delete<RegistrantResponse>(`${meetingPath(id)}/registrants/${encodeURIComponent(rid)}`),
   token: (id: string, rid: string) =>
     apiClient.post<JoinTokenResponse>(`${meetingPath(id)}/registrants/${encodeURIComponent(rid)}/token`, {}),
+  /** The webinar's stream out (§2.8): off, waiting, live or ended. */
+  stream: (id: string) => apiClient.get<StreamStateResponse>(`${meetingPath(id)}/stream`),
+  /** A link to watch the stream, for `ttlSecs` (a day unless set). */
+  streamLink: (id: string, ttlSecs?: number) =>
+    apiClient.post<StreamLinkResponse>(`${meetingPath(id)}/stream/links`, { ttl_secs: ttlSecs }),
   sittings: (id: string) => apiClient.getAll<SittingResponse>(`${meetingPath(id)}/sittings`),
   attendance: (id: string, sitting?: string) =>
     apiClient.get<AttendanceResponse>(
