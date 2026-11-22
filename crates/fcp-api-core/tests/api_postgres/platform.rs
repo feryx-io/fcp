@@ -32,13 +32,19 @@ async fn the_dashboard_counts_the_tenants_own() {
 
     // Two answered calls today, one unanswered; one two days ago; one of
     // tenant B's. A call is up.
-    let since_midnight = Duration::from_secs(
+    // Today's calls must still be today's when the summary is asked for: a
+    // run near midnight UTC (one failed at 00:03) waits for the new day.
+    let secs_of_day = || {
         SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs()
-            % 86_400,
-    );
+            % 86_400
+    };
+    if secs_of_day() > 86_400 - 120 {
+        tokio::time::sleep(Duration::from_secs(86_400 - secs_of_day() + 1)).await;
+    }
+    let since_midnight = Duration::from_secs(secs_of_day());
     let today = since_midnight.min(Duration::from_secs(60));
     call_to(&app, app.tenant_a, "+15550030001", Some(58_000), today).await;
     call_to(&app, app.tenant_a, "+15550030001", Some(30_000), today).await;

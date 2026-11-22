@@ -35,7 +35,7 @@ impl Gateway {
     async fn start(call_manager: Option<SocketAddr>) -> Self {
         let sip = free_port();
         let http = free_port();
-        let rtp_start = 20000 + (uuid::Uuid::new_v4().as_u128() % 20) as u16 * 400;
+        let rtp_start = allocate_rtp_range(400);
         let dir = tempfile::tempdir().expect("tempdir");
         let proxy = call_manager
             .map(|cm| format!("outbound_proxy = \"{cm}\""))
