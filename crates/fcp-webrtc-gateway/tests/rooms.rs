@@ -57,8 +57,9 @@ impl Gateway {
     ) -> Self {
         let sip = free_port();
         let http = free_port();
-        // The gateway wants 400 ports: a band below the phones' 30000+.
-        let rtp_start = 20000 + (uuid::Uuid::new_v4().as_u128() % 20) as u16 * 400;
+        // The gateway wants 400 ports, reserved so that two gateways in a
+        // test (or tests side by side) never share a band.
+        let rtp_start = allocate_rtp_range(400);
         let dir = tempfile::tempdir().expect("tempdir");
         // With Redis, the gateway's session records ship to the CDR stream
         // (the only sink a node without a database has).

@@ -10809,186 +10809,212 @@ impl SipMessageHandler {
             dst_dialog = ?target_dialog.id(),
             cseq = ?cseq
         );
-        let _guard_span = span.enter();
-        let start = std::time::Instant::now();
+        // The span is the future's, not a guard held across awaits: a
+        // guard entered on one thread and dropped on another once
+        // crashed the node (#355, "tried to clone a span that already
+        // closed").
+        let result: Result<sip_core::Response> = tracing::Instrument::instrument(
+            async {
+            let start = std::time::Instant::now();
 
-        let uac = self
-            .uac
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No UAC configured for re-INVITE forwarding"))?;
+            let uac = self
+                .uac
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("No UAC configured for re-INVITE forwarding"))?;
 
-        let prior_sdp = if is_a_leg {
-            call.a_leg.sdp.as_deref()
-        } else {
-            call.b_leg.as_ref().and_then(|b| b.sdp.as_deref())
-        };
+            let prior_sdp = if is_a_leg {
+                call.a_leg.sdp.as_deref()
+            } else {
+                call.b_leg.as_ref().and_then(|b| b.sdp.as_deref())
+            };
 
-        if self.check_rate_limit(
-            "REINVITE",
-            src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
-            self.settings.reinvite_rate_limit,
-        ) {
-            warn!(call_id = %call.id, "re-INVITE rate limited");
-            let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-            let _ = resp.headers_mut().push(
-                SmolStr::new("Retry-After"),
-                SmolStr::new(self.settings.rate_window.as_secs().to_string()),
-            );
-            return Ok(resp);
-        }
-        let mut body = validate_sdp_body_static(request, prior_sdp)?;
-        // The sender's own offer, before any rewrite: what says whether it
-        // holds the far party, and what its answer answers.
-        let sender_offer = body.clone();
+            if self.check_rate_limit(
+                "REINVITE",
+                src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
+                self.settings.reinvite_rate_limit,
+            ) {
+                warn!(call_id = %call.id, "re-INVITE rate limited");
+                let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+                let _ = resp.headers_mut().push(
+                    SmolStr::new("Retry-After"),
+                    SmolStr::new(self.settings.rate_window.as_secs().to_string()),
+                );
+                return Ok(resp);
+            }
+            let mut body = validate_sdp_body_static(request, prior_sdp)?;
+            // The sender's own offer, before any rewrite: what says whether it
+            // holds the far party, and what its answer answers.
+            let sender_offer = body.clone();
 
-        // With hold music, the node answers a hold (and its resume) itself
-        // and plays music into the held leg: the far phone is never told
-        // (`docs/ENTERPRISE_CALLING.md` §3.3).
-        if call.media_anchored && self.media_config.as_ref().is_some_and(|m| m.hold_music) {
-            if let Some(offer) = sender_offer.as_deref() {
-                let sender = fcp_b2bua_core::LegSide::of(is_a_leg);
-                let holds = crate::hold::holds(offer);
-                if holds || call.held == Some(sender.other()) {
-                    return self
-                        .answer_hold_locally(request, &call, sender, offer, prior_sdp, holds)
-                        .await;
+            // With hold music, the node answers a hold (and its resume) itself
+            // and plays music into the held leg: the far phone is never told
+            // (`docs/ENTERPRISE_CALLING.md` §3.3).
+            if call.media_anchored && self.media_config.as_ref().is_some_and(|m| m.hold_music) {
+                if let Some(offer) = sender_offer.as_deref() {
+                    let sender = fcp_b2bua_core::LegSide::of(is_a_leg);
+                    let holds = crate::hold::holds(offer);
+                    if holds || call.held == Some(sender.other()) {
+                        return self
+                            .answer_hold_locally(request, &call, sender, offer, prior_sdp, holds)
+                            .await;
+                    }
                 }
             }
-        }
 
-        // If media is anchored, rewrite SDP before forwarding to peer
-        if call.media_anchored {
-            if let (Some(body_str), Some(ref media_session_id), Some(media_manager)) = (
-                body.as_ref(),
-                call.media_session_id.as_ref(),
-                self.media_manager.as_ref(),
-            ) {
-                debug!(
-                    call_id = %call.id,
-                    media_session_id = %media_session_id,
-                    "Media is anchored, rewriting incoming re-INVITE SDP"
-                );
+            // If media is anchored, rewrite SDP before forwarding to peer
+            if call.media_anchored {
+                if let (Some(body_str), Some(ref media_session_id), Some(media_manager)) = (
+                    body.as_ref(),
+                    call.media_session_id.as_ref(),
+                    self.media_manager.as_ref(),
+                ) {
+                    debug!(
+                        call_id = %call.id,
+                        media_session_id = %media_session_id,
+                        "Media is anchored, rewriting incoming re-INVITE SDP"
+                    );
 
-                match media_manager.get_session(media_session_id).await {
-                    Ok(session) => {
-                        // Forwarded to the other leg, told its own port.
-                        let far = fcp_b2bua_core::LegSide::of(is_a_leg).other();
-                        let (rtp_port, _rtcp_port) = session.ports_for(media_leg(far));
-                        // Its video relayed, keyed if the node keys that leg.
-                        let video_secure = self.leg_srtp(&call.id, far, &session).await.is_some();
-                        let rewritten_sdp = match media_manager
-                            .anchored_offer(
-                                media_session_id,
-                                media_leg(far),
-                                body_str,
-                                &self.local_addr,
-                                None,
-                                video_secure,
-                            )
-                            .await
-                        {
-                            Ok(sdp) => sdp,
-                            Err(e) => {
-                                warn!(call_id = %call.id, error = %e, "Video could not be relayed; re-offering audio alone");
-                                fcp_media::rewrite_sdp_for_anchoring(
+                    match media_manager.get_session(media_session_id).await {
+                        Ok(session) => {
+                            // Forwarded to the other leg, told its own port.
+                            let far = fcp_b2bua_core::LegSide::of(is_a_leg).other();
+                            let (rtp_port, _rtcp_port) = session.ports_for(media_leg(far));
+                            // Its video relayed, keyed if the node keys that leg.
+                            let video_secure = self.leg_srtp(&call.id, far, &session).await.is_some();
+                            let rewritten_sdp = match media_manager
+                                .anchored_offer(
+                                    media_session_id,
+                                    media_leg(far),
                                     body_str,
                                     &self.local_addr,
-                                    rtp_port,
                                     None,
+                                    video_secure,
                                 )
-                            }
-                        };
+                                .await
+                            {
+                                Ok(sdp) => sdp,
+                                Err(e) => {
+                                    warn!(call_id = %call.id, error = %e, "Video could not be relayed; re-offering audio alone");
+                                    fcp_media::rewrite_sdp_for_anchoring(
+                                        body_str,
+                                        &self.local_addr,
+                                        rtp_port,
+                                        None,
+                                    )
+                                }
+                            };
 
-                        // The far leg may be on another codec than the
-                        // sender (the node transcodes between them): it is
-                        // offered G.711 too, as the first INVITE offered it
-                        // (`docs/DEEP_TESTING.md` D2d), or a re-INVITE in
-                        // the sender's codec alone is refused 488 there.
-                        let rewritten_sdp = with_transcodable_g711(&rewritten_sdp);
+                            // The far leg may be on another codec than the
+                            // sender (the node transcodes between them): it is
+                            // offered G.711 too, as the first INVITE offered it
+                            // (`docs/DEEP_TESTING.md` D2d), or a re-INVITE in
+                            // the sender's codec alone is refused 488 there.
+                            let rewritten_sdp = with_transcodable_g711(&rewritten_sdp);
 
-                        info!(
-                            call_id = %call.id,
-                            leg = if is_a_leg { "A" } else { "B" },
-                            server_ip = %self.local_addr,
-                            rtp_port = rtp_port,
-                            "Rewrote re-INVITE SDP for media anchoring"
-                        );
+                            info!(
+                                call_id = %call.id,
+                                leg = if is_a_leg { "A" } else { "B" },
+                                server_ip = %self.local_addr,
+                                rtp_port = rtp_port,
+                                "Rewrote re-INVITE SDP for media anchoring"
+                            );
 
-                        body = Some(rewritten_sdp);
-                    }
-                    Err(e) => {
-                        error!(
-                            call_id = %call.id,
-                            media_session_id = %media_session_id,
-                            error = %e,
-                            "Failed to get media session for re-INVITE SDP rewriting"
-                        );
+                            body = Some(rewritten_sdp);
+                        }
+                        Err(e) => {
+                            error!(
+                                call_id = %call.id,
+                                media_session_id = %media_session_id,
+                                error = %e,
+                                "Failed to get media session for re-INVITE SDP rewriting"
+                            );
+                        }
                     }
                 }
             }
-        }
 
-        self.log_sip_message(
-            "outbound",
-            "INVITE",
-            Some(call.id.to_string().as_str()),
-            Some(target_dialog.id()),
-            cseq.as_ref().map(|v| v.as_str()),
-            None,
-            None,
-            None,
-            None,
-        );
-        // The far leg reached down a flow — a site's link, a phone
-        // registered over TLS — is re-invited down it; any other by its
-        // contact.
-        let target_flow = if is_a_leg {
-            call.b_leg.as_ref().and_then(|b| b.flow_token.clone())
-        } else {
-            call.a_leg.flow_token.clone()
-        }
-        .and_then(|token| self.flow_registry.lookup(&token).map(|flow| (token, flow)));
-        let sent = match target_flow {
-            Some((token, flow)) => {
-                info!(
-                    call_id = %call.id,
-                    flow_token = %token,
-                    peer_addr = %flow.peer_addr,
-                    "Forwarding re-INVITE via RFC 5626 flow"
-                );
-                uac.send_reinvite_via_flow(
-                    &mut target_dialog,
-                    body.as_deref(),
-                    flow.stream,
-                    flow.peer_addr,
-                )
-                .await
+            self.log_sip_message(
+                "outbound",
+                "INVITE",
+                Some(call.id.to_string().as_str()),
+                Some(target_dialog.id()),
+                cseq.as_ref().map(|v| v.as_str()),
+                None,
+                None,
+                None,
+                None,
+            );
+            // The far leg reached down a flow — a site's link, a phone
+            // registered over TLS — is re-invited down it; any other by its
+            // contact.
+            let target_flow = if is_a_leg {
+                call.b_leg.as_ref().and_then(|b| b.flow_token.clone())
+            } else {
+                call.a_leg.flow_token.clone()
             }
-            None => uac.send_reinvite(&mut target_dialog, body.as_deref()).await,
-        };
-        let peer_resp = match sent {
-            Ok(r) => {
-                info!(
-                    status = r.start_line().code(),
-                    "Forwarded re-INVITE to peer"
-                );
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "REINVITE"), ("result", "ok")],
-                );
-                self.metrics.observe_ms(
-                    "fcp_sip_mid_dialog_forward_ms",
-                    start.elapsed().as_millis(),
-                    &[("method", "REINVITE"), ("result", "ok")],
-                );
-                r
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to forward re-INVITE to peer");
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "REINVITE"), ("result", "error")],
-                );
+            .and_then(|token| self.flow_registry.lookup(&token).map(|flow| (token, flow)));
+            let sent = match target_flow {
+                Some((token, flow)) => {
+                    info!(
+                        call_id = %call.id,
+                        flow_token = %token,
+                        peer_addr = %flow.peer_addr,
+                        "Forwarding re-INVITE via RFC 5626 flow"
+                    );
+                    uac.send_reinvite_via_flow(
+                        &mut target_dialog,
+                        body.as_deref(),
+                        flow.stream,
+                        flow.peer_addr,
+                    )
+                    .await
+                }
+                None => uac.send_reinvite(&mut target_dialog, body.as_deref()).await,
+            };
+            let peer_resp = match sent {
+                Ok(r) => {
+                    info!(
+                        status = r.start_line().code(),
+                        "Forwarded re-INVITE to peer"
+                    );
+                    self.metrics.inc_counter(
+                        "fcp_sip_mid_dialog_forward_total",
+                        &[("method", "REINVITE"), ("result", "ok")],
+                    );
+                    self.metrics.observe_ms(
+                        "fcp_sip_mid_dialog_forward_ms",
+                        start.elapsed().as_millis(),
+                        &[("method", "REINVITE"), ("result", "ok")],
+                    );
+                    r
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to forward re-INVITE to peer");
+                    self.metrics.inc_counter(
+                        "fcp_sip_mid_dialog_forward_total",
+                        &[("method", "REINVITE"), ("result", "error")],
+                    );
+                    cleanup_after_forward_failure(
+                        &self.call_manager,
+                        &self.dialog_manager,
+                        &self.session_timer_manager,
+                        &self.rate_limits,
+                        &self.mid_dialog_lock,
+                        &self.subscription_index,
+                        &self.subscription_created_at,
+                        &call.id,
+                        target_dialog.id(),
+                        "re-INVITE forward failed",
+                    );
+                    return Ok(self.create_simple_response(
+                        request,
+                        481,
+                        "Call/Transaction Does Not Exist",
+                    ));
+                }
+            };
+
+            if peer_resp.start_line().code() == 481 {
                 cleanup_after_forward_failure(
                     &self.call_manager,
                     &self.dialog_manager,
@@ -10999,206 +11025,190 @@ impl SipMessageHandler {
                     &self.subscription_created_at,
                     &call.id,
                     target_dialog.id(),
-                    "re-INVITE forward failed",
+                    "Peer returned 481 to re-INVITE",
                 );
-                return Ok(self.create_simple_response(
-                    request,
-                    481,
-                    "Call/Transaction Does Not Exist",
-                ));
+                self.metrics.inc_counter(
+                    "fcp_sip_mid_dialog_forward_total",
+                    &[("method", "REINVITE"), ("result", "481")],
+                );
             }
-        };
 
-        if peer_resp.start_line().code() == 481 {
-            cleanup_after_forward_failure(
-                &self.call_manager,
-                &self.dialog_manager,
-                &self.session_timer_manager,
-                &self.rate_limits,
-                &self.mid_dialog_lock,
-                &self.subscription_index,
-                &self.subscription_created_at,
-                &call.id,
-                target_dialog.id(),
-                "Peer returned 481 to re-INVITE",
-            );
-            self.metrics.inc_counter(
-                "fcp_sip_mid_dialog_forward_total",
-                &[("method", "REINVITE"), ("result", "481")],
-            );
-        }
+            // If media is anchored and peer sent SDP in response, rewrite it before relaying back
+            let mut peer_resp = peer_resp;
+            if call.media_anchored && peer_resp.start_line().is_success() {
+                if let (Some(ref media_session_id), Some(media_manager)) =
+                    (call.media_session_id.as_ref(), self.media_manager.as_ref())
+                {
+                    if !peer_resp.body().is_empty() {
+                        let response_sdp = String::from_utf8_lossy(peer_resp.body().as_ref());
 
-        // If media is anchored and peer sent SDP in response, rewrite it before relaying back
-        let mut peer_resp = peer_resp;
-        if call.media_anchored && peer_resp.start_line().is_success() {
-            if let (Some(ref media_session_id), Some(media_manager)) =
-                (call.media_session_id.as_ref(), self.media_manager.as_ref())
-            {
-                if !peer_resp.body().is_empty() {
-                    let response_sdp = String::from_utf8_lossy(peer_resp.body().as_ref());
+                        debug!(
+                            call_id = %call.id,
+                            media_session_id = %media_session_id,
+                            "Media is anchored, rewriting peer re-INVITE response SDP"
+                        );
 
-                    debug!(
-                        call_id = %call.id,
-                        media_session_id = %media_session_id,
-                        "Media is anchored, rewriting peer re-INVITE response SDP"
-                    );
+                        match media_manager.get_session(media_session_id).await {
+                            Ok(session) => {
+                                // The answer goes back to the sender, on its leg's port.
+                                let (rtp_port, _rtcp_port) =
+                                    session.ports_for(media_leg(fcp_b2bua_core::LegSide::of(is_a_leg)));
+                                // An encrypted sender is answered encrypted, with its own leg's key.
+                                let a_leg_srtp = match sender_offer.as_deref() {
+                                    Some(offer) if !fcp_media::parse_sdes_crypto(offer).is_empty() => {
+                                        let side = if is_a_leg {
+                                            fcp_b2bua_core::LegSide::A
+                                        } else {
+                                            fcp_b2bua_core::LegSide::B
+                                        };
+                                        self.leg_srtp(&call.id, side, &session).await
+                                    }
+                                    _ => None,
+                                };
 
-                    match media_manager.get_session(media_session_id).await {
-                        Ok(session) => {
-                            // The answer goes back to the sender, on its leg's port.
-                            let (rtp_port, _rtcp_port) =
-                                session.ports_for(media_leg(fcp_b2bua_core::LegSide::of(is_a_leg)));
-                            // An encrypted sender is answered encrypted, with its own leg's key.
-                            let a_leg_srtp = match sender_offer.as_deref() {
-                                Some(offer) if !fcp_media::parse_sdes_crypto(offer).is_empty() => {
-                                    let side = if is_a_leg {
-                                        fcp_b2bua_core::LegSide::A
-                                    } else {
-                                        fcp_b2bua_core::LegSide::B
-                                    };
-                                    self.leg_srtp(&call.id, side, &session).await
-                                }
-                                _ => None,
-                            };
-
-                            // The answer to the sender's own offer: its codec
-                            // (the transcoder bridges the far leg's), and the
-                            // direction that answers its direction — `recvonly`
-                            // to a hold. It used to be built from the call's
-                            // first INVITE, which answered every hold
-                            // `sendrecv` (`docs/ENTERPRISE_CALLING.md` §1.2).
-                            let rewritten_sdp = match sender_offer.as_deref() {
-                                Some(offer)
-                                    if !fcp_media::sdp::parse_sdp_codecs(offer).is_empty() =>
-                                {
-                                    let own = fcp_media::construct_answer_for_a_leg(
-                                        offer,
+                                // The answer to the sender's own offer: its codec
+                                // (the transcoder bridges the far leg's), and the
+                                // direction that answers its direction — `recvonly`
+                                // to a hold. It used to be built from the call's
+                                // first INVITE, which answered every hold
+                                // `sendrecv` (`docs/ENTERPRISE_CALLING.md` §1.2).
+                                let rewritten_sdp = match sender_offer.as_deref() {
+                                    Some(offer)
+                                        if !fcp_media::sdp::parse_sdp_codecs(offer).is_empty() =>
+                                    {
+                                        let own = fcp_media::construct_answer_for_a_leg(
+                                            offer,
+                                            &self.local_addr,
+                                            rtp_port,
+                                            a_leg_srtp.as_ref(),
+                                        );
+                                        // The far phone's video: where it goes
+                                        // and its keys, then relayed back to the
+                                        // sender as the far phone answered it.
+                                        let sender = fcp_b2bua_core::LegSide::of(is_a_leg);
+                                        if let Err(e) = media_manager
+                                            .video_answered(
+                                                media_session_id,
+                                                media_leg(sender.other()),
+                                                &response_sdp,
+                                            )
+                                            .await
+                                        {
+                                            warn!(call_id = %call.id, error = %e, "Could not relay the far phone's video");
+                                        }
+                                        match media_manager
+                                            .anchored_answer(
+                                                media_session_id,
+                                                media_leg(sender),
+                                                offer,
+                                                own.clone(),
+                                                &response_sdp,
+                                                &self.local_addr,
+                                            )
+                                            .await
+                                        {
+                                            Ok(sdp) => sdp,
+                                            Err(e) => {
+                                                warn!(call_id = %call.id, error = %e, "Could not relay video back to the sender");
+                                                own
+                                            }
+                                        }
+                                    }
+                                    _ => fcp_media::rewrite_sdp_for_anchoring(
+                                        &response_sdp,
                                         &self.local_addr,
                                         rtp_port,
                                         a_leg_srtp.as_ref(),
-                                    );
-                                    // The far phone's video: where it goes
-                                    // and its keys, then relayed back to the
-                                    // sender as the far phone answered it.
-                                    let sender = fcp_b2bua_core::LegSide::of(is_a_leg);
-                                    if let Err(e) = media_manager
-                                        .video_answered(
-                                            media_session_id,
-                                            media_leg(sender.other()),
-                                            &response_sdp,
-                                        )
-                                        .await
-                                    {
-                                        warn!(call_id = %call.id, error = %e, "Could not relay the far phone's video");
-                                    }
-                                    match media_manager
-                                        .anchored_answer(
-                                            media_session_id,
-                                            media_leg(sender),
-                                            offer,
-                                            own.clone(),
-                                            &response_sdp,
-                                            &self.local_addr,
-                                        )
-                                        .await
-                                    {
-                                        Ok(sdp) => sdp,
-                                        Err(e) => {
-                                            warn!(call_id = %call.id, error = %e, "Could not relay video back to the sender");
-                                            own
-                                        }
-                                    }
-                                }
-                                _ => fcp_media::rewrite_sdp_for_anchoring(
-                                    &response_sdp,
-                                    &self.local_addr,
-                                    rtp_port,
-                                    a_leg_srtp.as_ref(),
-                                ),
-                            };
+                                    ),
+                                };
 
-                            info!(
-                                call_id = %call.id,
-                                leg = if is_a_leg { "B" } else { "A" },
-                                server_ip = %self.local_addr,
-                                rtp_port = rtp_port,
-                                "Rewrote peer re-INVITE response SDP for media anchoring"
-                            );
+                                info!(
+                                    call_id = %call.id,
+                                    leg = if is_a_leg { "B" } else { "A" },
+                                    server_ip = %self.local_addr,
+                                    rtp_port = rtp_port,
+                                    "Rewrote peer re-INVITE response SDP for media anchoring"
+                                );
 
-                            // Rebuild response with rewritten SDP
-                            let mut new_headers = peer_resp.headers().clone();
-                            let new_body = bytes::Bytes::from(rewritten_sdp.into_bytes());
-                            let _ = new_headers.set_or_push(
-                                SmolStr::new("Content-Length"),
-                                SmolStr::new(new_body.len().to_string()),
-                            );
+                                // Rebuild response with rewritten SDP
+                                let mut new_headers = peer_resp.headers().clone();
+                                let new_body = bytes::Bytes::from(rewritten_sdp.into_bytes());
+                                let _ = new_headers.set_or_push(
+                                    SmolStr::new("Content-Length"),
+                                    SmolStr::new(new_body.len().to_string()),
+                                );
 
-                            peer_resp = sip_core::Response::new(
-                                peer_resp.start_line().clone(),
-                                new_headers,
-                                new_body,
-                            )?;
-                        }
-                        Err(e) => {
-                            error!(
-                                call_id = %call.id,
-                                media_session_id = %media_session_id,
-                                error = %e,
-                                "Failed to get media session for peer response SDP rewriting"
-                            );
+                                peer_resp = sip_core::Response::new(
+                                    peer_resp.start_line().clone(),
+                                    new_headers,
+                                    new_body,
+                                )?;
+                            }
+                            Err(e) => {
+                                error!(
+                                    call_id = %call.id,
+                                    media_session_id = %media_session_id,
+                                    error = %e,
+                                    "Failed to get media session for peer response SDP rewriting"
+                                );
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // Update stored SDP for originating leg if present
-        if let Some(body) = body {
-            store_leg_sdp(&self.call_manager, &call.id, is_a_leg, body);
-        }
-        // Which leg is on hold, once the far end took the offer.
-        if peer_resp.start_line().is_success() {
-            if let Some(offer) = sender_offer.as_deref() {
-                let sender = fcp_b2bua_core::LegSide::of(is_a_leg);
-                let held = if crate::hold::holds(offer) {
-                    Some(sender.other())
-                } else if call.held == Some(sender.other()) {
-                    None
-                } else {
-                    call.held
-                };
-                if held != call.held {
-                    info!(call_id = %call.id, ?held, "Hold changed");
-                    let _ = self.call_manager.update_call(&call.id, |c| c.held = held);
+            // Update stored SDP for originating leg if present
+            if let Some(body) = body {
+                store_leg_sdp(&self.call_manager, &call.id, is_a_leg, body);
+            }
+            // Which leg is on hold, once the far end took the offer.
+            if peer_resp.start_line().is_success() {
+                if let Some(offer) = sender_offer.as_deref() {
+                    let sender = fcp_b2bua_core::LegSide::of(is_a_leg);
+                    let held = if crate::hold::holds(offer) {
+                        Some(sender.other())
+                    } else if call.held == Some(sender.other()) {
+                        None
+                    } else {
+                        call.held
+                    };
+                    if held != call.held {
+                        info!(call_id = %call.id, ?held, "Hold changed");
+                        let _ = self.call_manager.update_call(&call.id, |c| c.held = held);
+                    }
                 }
             }
-        }
-        self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog.clone());
-        self.start_session_timer(&target_dialog);
+            self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog.clone());
+            self.start_session_timer(&target_dialog);
 
-        // Also refresh timers on the originating leg based on the response we will relay
-        if let Some((mut src_dialog, is_a_leg_src)) = if is_a_leg {
-            call.a_leg.dialog.clone().map(|d| (d, true))
-        } else {
-            call.b_leg
-                .as_ref()
-                .and_then(|b| b.dialog.clone())
-                .map(|d| (d, false))
-        } {
-            if let Some((se, _refresher)) = extract_session_timer(&peer_resp) {
-                let _ = src_dialog.set_session_expires(se);
-                self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog.clone());
-                self.start_session_timer(&src_dialog);
-            } else if peer_resp.start_line().code() == 422 {
-                if let Some(min_se) = extract_min_se(&peer_resp) {
-                    let _ = src_dialog.set_session_expires(min_se);
-                    debug!(call_id = %call.id, dialog_id = ?src_dialog.id(), min_se = ?min_se, "Applied Min-SE from 422 to originating leg dialog");
-                    self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog);
+            // Also refresh timers on the originating leg based on the response we will relay
+            if let Some((mut src_dialog, is_a_leg_src)) = if is_a_leg {
+                call.a_leg.dialog.clone().map(|d| (d, true))
+            } else {
+                call.b_leg
+                    .as_ref()
+                    .and_then(|b| b.dialog.clone())
+                    .map(|d| (d, false))
+            } {
+                if let Some((se, _refresher)) = extract_session_timer(&peer_resp) {
+                    let _ = src_dialog.set_session_expires(se);
+                    self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog.clone());
+                    self.start_session_timer(&src_dialog);
+                } else if peer_resp.start_line().code() == 422 {
+                    if let Some(min_se) = extract_min_se(&peer_resp) {
+                        let _ = src_dialog.set_session_expires(min_se);
+                        debug!(call_id = %call.id, dialog_id = ?src_dialog.id(), min_se = ?min_se, "Applied Min-SE from 422 to originating leg dialog");
+                        self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog);
+                    }
                 }
             }
-        }
 
-        Ok(self.build_in_dialog_response(request, &peer_resp))
+            Ok(self.build_in_dialog_response(request, &peer_resp))
+            },
+            span,
+        )
+        .await;
+        result
     }
 
     /// Whether the call may carry video, told to its media session before
@@ -11374,117 +11384,127 @@ impl SipMessageHandler {
             dst_dialog = ?target_dialog.id(),
             cseq = ?cseq
         );
-        let _guard_span = span.enter();
-        let start = std::time::Instant::now();
+        // The span is the future's, not a guard held across awaits: a
+        // guard entered on one thread and dropped on another once
+        // crashed the node (#355, "tried to clone a span that already
+        // closed").
+        let result: Result<sip_core::Response> = tracing::Instrument::instrument(
+            async {
+                let start = std::time::Instant::now();
 
-        let uac = self
-            .uac
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No UAC configured for SUBSCRIBE forwarding"))?;
+                let uac = self
+                    .uac
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("No UAC configured for SUBSCRIBE forwarding"))?;
 
-        let event = sip_parse::header(request.headers(), "Event")
-            .ok_or_else(|| anyhow::anyhow!("Missing Event header"))?;
-        let expires =
-            sip_parse::header(request.headers(), "Expires").and_then(|v| v.parse::<u32>().ok());
+                let event = sip_parse::header(request.headers(), "Event")
+                    .ok_or_else(|| anyhow::anyhow!("Missing Event header"))?;
+                let expires = sip_parse::header(request.headers(), "Expires")
+                    .and_then(|v| v.parse::<u32>().ok());
 
-        if self.check_rate_limit(
-            "SUBSCRIBE",
-            src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
-            self.settings.update_rate_limit,
-        ) {
-            warn!(call_id = %call.id, "SUBSCRIBE rate limited");
-            let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-            let _ = resp.headers_mut().push(
-                SmolStr::new("Retry-After"),
-                SmolStr::new(self.settings.rate_window.as_secs().to_string()),
-            );
-            return Ok(resp);
-        }
-        self.log_sip_message(
-            "outbound",
-            "SUBSCRIBE",
-            Some(call.id.to_string().as_str()),
-            Some(target_dialog.id()),
-            cseq.as_ref().map(|v| v.as_str()),
-            None,
-            None,
-            None,
-            None,
-        );
-        let (peer_resp, subscription) = match uac
-            .send_subscribe(&mut target_dialog, event.as_str(), expires)
-            .await
-        {
-            Ok(r) => {
-                info!(
-                    status = r.0.start_line().code(),
-                    "Forwarded SUBSCRIBE to peer"
+                if self.check_rate_limit(
+                    "SUBSCRIBE",
+                    src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
+                    self.settings.update_rate_limit,
+                ) {
+                    warn!(call_id = %call.id, "SUBSCRIBE rate limited");
+                    let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+                    let _ = resp.headers_mut().push(
+                        SmolStr::new("Retry-After"),
+                        SmolStr::new(self.settings.rate_window.as_secs().to_string()),
+                    );
+                    return Ok(resp);
+                }
+                self.log_sip_message(
+                    "outbound",
+                    "SUBSCRIBE",
+                    Some(call.id.to_string().as_str()),
+                    Some(target_dialog.id()),
+                    cseq.as_ref().map(|v| v.as_str()),
+                    None,
+                    None,
+                    None,
+                    None,
                 );
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "SUBSCRIBE"), ("result", "ok")],
-                );
-                self.metrics.observe_ms(
-                    "fcp_sip_mid_dialog_forward_ms",
-                    start.elapsed().as_millis(),
-                    &[("method", "SUBSCRIBE"), ("result", "ok")],
-                );
-                r
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to forward SUBSCRIBE to peer");
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "SUBSCRIBE"), ("result", "error")],
-                );
-                cleanup_after_forward_failure(
-                    &self.call_manager,
-                    &self.dialog_manager,
-                    &self.session_timer_manager,
-                    &self.rate_limits,
-                    &self.mid_dialog_lock,
-                    &self.subscription_index,
-                    &self.subscription_created_at,
-                    &call.id,
-                    target_dialog.id(),
-                    "SUBSCRIBE forward failed",
-                );
-                return Ok(self.create_simple_response(
-                    request,
-                    481,
-                    "Call/Transaction Does Not Exist",
-                ));
-            }
-        };
+                let (peer_resp, subscription) = match uac
+                    .send_subscribe(&mut target_dialog, event.as_str(), expires)
+                    .await
+                {
+                    Ok(r) => {
+                        info!(
+                            status = r.0.start_line().code(),
+                            "Forwarded SUBSCRIBE to peer"
+                        );
+                        self.metrics.inc_counter(
+                            "fcp_sip_mid_dialog_forward_total",
+                            &[("method", "SUBSCRIBE"), ("result", "ok")],
+                        );
+                        self.metrics.observe_ms(
+                            "fcp_sip_mid_dialog_forward_ms",
+                            start.elapsed().as_millis(),
+                            &[("method", "SUBSCRIBE"), ("result", "ok")],
+                        );
+                        r
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to forward SUBSCRIBE to peer");
+                        self.metrics.inc_counter(
+                            "fcp_sip_mid_dialog_forward_total",
+                            &[("method", "SUBSCRIBE"), ("result", "error")],
+                        );
+                        cleanup_after_forward_failure(
+                            &self.call_manager,
+                            &self.dialog_manager,
+                            &self.session_timer_manager,
+                            &self.rate_limits,
+                            &self.mid_dialog_lock,
+                            &self.subscription_index,
+                            &self.subscription_created_at,
+                            &call.id,
+                            target_dialog.id(),
+                            "SUBSCRIBE forward failed",
+                        );
+                        return Ok(self.create_simple_response(
+                            request,
+                            481,
+                            "Call/Transaction Does Not Exist",
+                        ));
+                    }
+                };
 
-        if peer_resp.start_line().code() == 481 {
-            cleanup_after_forward_failure(
-                &self.call_manager,
-                &self.dialog_manager,
-                &self.session_timer_manager,
-                &self.rate_limits,
-                &self.mid_dialog_lock,
-                &self.subscription_index,
-                &self.subscription_created_at,
-                &call.id,
-                target_dialog.id(),
-                "Peer returned 481 to SUBSCRIBE",
-            );
-            self.metrics.inc_counter(
-                "fcp_sip_mid_dialog_forward_total",
-                &[("method", "SUBSCRIBE"), ("result", "481")],
-            );
-        }
+                if peer_resp.start_line().code() == 481 {
+                    cleanup_after_forward_failure(
+                        &self.call_manager,
+                        &self.dialog_manager,
+                        &self.session_timer_manager,
+                        &self.rate_limits,
+                        &self.mid_dialog_lock,
+                        &self.subscription_index,
+                        &self.subscription_created_at,
+                        &call.id,
+                        target_dialog.id(),
+                        "Peer returned 481 to SUBSCRIBE",
+                    );
+                    self.metrics.inc_counter(
+                        "fcp_sip_mid_dialog_forward_total",
+                        &[("method", "SUBSCRIBE"), ("result", "481")],
+                    );
+                }
 
-        if let Some(sub) = subscription {
-            let sub_clone = sub.clone();
-            let _ = self.subscription_manager.insert(sub);
-            self.index_subscription(sub_clone);
-        }
+                if let Some(sub) = subscription {
+                    let sub_clone = sub.clone();
+                    let _ = self.subscription_manager.insert(sub);
+                    self.index_subscription(sub_clone);
+                }
 
-        self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
+                self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
 
-        Ok(self.build_in_dialog_response(request, &peer_resp))
+                Ok(self.build_in_dialog_response(request, &peer_resp))
+            },
+            span,
+        )
+        .await;
+        result
     }
 
     /// Handle in-dialog NOTIFY by forwarding.
@@ -11510,215 +11530,228 @@ impl SipMessageHandler {
             dst_dialog = ?target_dialog.id(),
             cseq = ?cseq
         );
-        let _guard_span = span.enter();
-        let start = std::time::Instant::now();
+        // The span is the future's, not a guard held across awaits: a
+        // guard entered on one thread and dropped on another once
+        // crashed the node (#355, "tried to clone a span that already
+        // closed").
+        let result: Result<sip_core::Response> = tracing::Instrument::instrument(
+            async {
+                let start = std::time::Instant::now();
 
-        let uac = self
-            .uac
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No UAC configured for NOTIFY forwarding"))?;
+                let uac = self
+                    .uac
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("No UAC configured for NOTIFY forwarding"))?;
 
-        // Build a subscription placeholder from dialog + event to forward notify
-        let event = sip_parse::header(request.headers(), "Event")
-            .ok_or_else(|| anyhow::anyhow!("Missing Event header"))?;
-        let body = if request.body().is_empty() {
-            None
-        } else {
-            Some(String::from_utf8_lossy(request.body()).to_string())
-        };
+                // Build a subscription placeholder from dialog + event to forward notify
+                let event = sip_parse::header(request.headers(), "Event")
+                    .ok_or_else(|| anyhow::anyhow!("Missing Event header"))?;
+                let body = if request.body().is_empty() {
+                    None
+                } else {
+                    Some(String::from_utf8_lossy(request.body()).to_string())
+                };
 
-        self.check_body_size(request, self.settings.notify_max_body_bytes)?;
+                self.check_body_size(request, self.settings.notify_max_body_bytes)?;
 
-        // Record body size histogram
-        self.metrics.record_histogram(
-            "fcp_sip_notify_body_bytes",
-            request.body().len() as f64,
-            &[("event", event.as_str())],
-        );
-
-        // Create a synthetic subscription to use contact/route info from dialog target
-        // (we don't track full subscription state yet beyond storage)
-        if let Some(sub) = self.find_subscription(target_dialog.id(), event.as_str()) {
-            let state = sip_dialog::SubscriptionState::Active;
-            self.log_sip_message(
-                "outbound",
-                "NOTIFY",
-                Some(call.id.to_string().as_str()),
-                Some(target_dialog.id()),
-                cseq.as_ref().map(|v| v.as_str()),
-                None,
-                None,
-                None,
-                body.as_ref().map(|b| b.as_bytes()),
-            );
-            if self.check_rate_limit(
-                "NOTIFY",
-                src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
-                self.settings.info_rate_limit,
-            ) {
-                warn!(call_id = %call.id, "NOTIFY rate limited");
-                let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-                let _ = resp.headers_mut().push(
-                    SmolStr::new("Retry-After"),
-                    SmolStr::new(self.settings.rate_window.as_secs().to_string()),
+                // Record body size histogram
+                self.metrics.record_histogram(
+                    "fcp_sip_notify_body_bytes",
+                    request.body().len() as f64,
+                    &[("event", event.as_str())],
                 );
-                return Ok(resp);
-            }
-            let peer_resp = match uac.send_notify(&sub, state, body.as_deref()).await {
-                Ok(r) => {
-                    info!(status = r.start_line().code(), "Forwarded NOTIFY to peer");
-                    self.metrics.inc_counter(
-                        "fcp_sip_mid_dialog_forward_total",
-                        &[("method", "NOTIFY"), ("result", "ok")],
+
+                // Create a synthetic subscription to use contact/route info from dialog target
+                // (we don't track full subscription state yet beyond storage)
+                if let Some(sub) = self.find_subscription(target_dialog.id(), event.as_str()) {
+                    let state = sip_dialog::SubscriptionState::Active;
+                    self.log_sip_message(
+                        "outbound",
+                        "NOTIFY",
+                        Some(call.id.to_string().as_str()),
+                        Some(target_dialog.id()),
+                        cseq.as_ref().map(|v| v.as_str()),
+                        None,
+                        None,
+                        None,
+                        body.as_ref().map(|b| b.as_bytes()),
                     );
-                    self.metrics.observe_ms(
-                        "fcp_sip_mid_dialog_forward_ms",
-                        start.elapsed().as_millis(),
-                        &[("method", "NOTIFY"), ("result", "ok")],
-                    );
-                    r
+                    if self.check_rate_limit(
+                        "NOTIFY",
+                        src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
+                        self.settings.info_rate_limit,
+                    ) {
+                        warn!(call_id = %call.id, "NOTIFY rate limited");
+                        let mut resp =
+                            self.create_simple_response(request, 429, "Too Many Requests");
+                        let _ = resp.headers_mut().push(
+                            SmolStr::new("Retry-After"),
+                            SmolStr::new(self.settings.rate_window.as_secs().to_string()),
+                        );
+                        return Ok(resp);
+                    }
+                    let peer_resp = match uac.send_notify(&sub, state, body.as_deref()).await {
+                        Ok(r) => {
+                            info!(status = r.start_line().code(), "Forwarded NOTIFY to peer");
+                            self.metrics.inc_counter(
+                                "fcp_sip_mid_dialog_forward_total",
+                                &[("method", "NOTIFY"), ("result", "ok")],
+                            );
+                            self.metrics.observe_ms(
+                                "fcp_sip_mid_dialog_forward_ms",
+                                start.elapsed().as_millis(),
+                                &[("method", "NOTIFY"), ("result", "ok")],
+                            );
+                            r
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to forward NOTIFY to peer");
+                            self.metrics.inc_counter(
+                                "fcp_sip_mid_dialog_forward_total",
+                                &[("method", "NOTIFY"), ("result", "error")],
+                            );
+                            cleanup_after_forward_failure(
+                                &self.call_manager,
+                                &self.dialog_manager,
+                                &self.session_timer_manager,
+                                &self.rate_limits,
+                                &self.mid_dialog_lock,
+                                &self.subscription_index,
+                                &self.subscription_created_at,
+                                &call.id,
+                                target_dialog.id(),
+                                "NOTIFY forward failed",
+                            );
+                            return Ok(self.create_simple_response(
+                                request,
+                                481,
+                                "Subscription Does Not Exist",
+                            ));
+                        }
+                    };
+
+                    if peer_resp.start_line().code() == 481 {
+                        cleanup_after_forward_failure(
+                            &self.call_manager,
+                            &self.dialog_manager,
+                            &self.session_timer_manager,
+                            &self.rate_limits,
+                            &self.mid_dialog_lock,
+                            &self.subscription_index,
+                            &self.subscription_created_at,
+                            &call.id,
+                            target_dialog.id(),
+                            "Peer returned 481 to NOTIFY",
+                        );
+                        self.metrics.inc_counter(
+                            "fcp_sip_mid_dialog_forward_total",
+                            &[("method", "NOTIFY"), ("result", "481")],
+                        );
+                    }
+                    self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
+                    return Ok(self.build_in_dialog_response(request, &peer_resp));
                 }
-                Err(e) => {
-                    warn!(error = %e, "Failed to forward NOTIFY to peer");
-                    self.metrics.inc_counter(
-                        "fcp_sip_mid_dialog_forward_total",
-                        &[("method", "NOTIFY"), ("result", "error")],
+
+                // Fallback: if subscription not found, try to create a transient one from dialog/event
+                let transient_sub =
+                    self.create_transient_subscription(&target_dialog, event.as_str());
+                if let Some(sub) = transient_sub {
+                    let state = sip_dialog::SubscriptionState::Active;
+                    self.log_sip_message(
+                        "outbound",
+                        "NOTIFY",
+                        Some(call.id.to_string().as_str()),
+                        Some(target_dialog.id()),
+                        cseq.as_ref().map(|v| v.as_str()),
+                        None,
+                        None,
+                        None,
+                        body.as_ref().map(|b| b.as_bytes()),
                     );
-                    cleanup_after_forward_failure(
-                        &self.call_manager,
-                        &self.dialog_manager,
-                        &self.session_timer_manager,
-                        &self.rate_limits,
-                        &self.mid_dialog_lock,
-                        &self.subscription_index,
-                        &self.subscription_created_at,
-                        &call.id,
-                        target_dialog.id(),
-                        "NOTIFY forward failed",
-                    );
-                    return Ok(self.create_simple_response(
-                        request,
-                        481,
-                        "Subscription Does Not Exist",
-                    ));
+                    if self.check_rate_limit(
+                        "NOTIFY",
+                        src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
+                        self.settings.info_rate_limit,
+                    ) {
+                        warn!(call_id = %call.id, "NOTIFY rate limited");
+                        let mut resp =
+                            self.create_simple_response(request, 429, "Too Many Requests");
+                        let _ = resp.headers_mut().push(
+                            SmolStr::new("Retry-After"),
+                            SmolStr::new(self.settings.rate_window.as_secs().to_string()),
+                        );
+                        return Ok(resp);
+                    }
+                    let peer_resp = match uac.send_notify(&sub, state, body.as_deref()).await {
+                        Ok(r) => {
+                            info!(
+                                status = r.start_line().code(),
+                                "Forwarded NOTIFY (transient sub) to peer"
+                            );
+                            self.metrics.inc_counter(
+                                "fcp_sip_mid_dialog_forward_total",
+                                &[("method", "NOTIFY"), ("result", "ok")],
+                            );
+                            self.metrics.observe_ms(
+                                "fcp_sip_mid_dialog_forward_ms",
+                                start.elapsed().as_millis(),
+                                &[("method", "NOTIFY"), ("result", "ok")],
+                            );
+                            r
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to forward NOTIFY (transient) to peer");
+                            self.metrics.inc_counter(
+                                "fcp_sip_mid_dialog_forward_total",
+                                &[("method", "NOTIFY"), ("result", "error")],
+                            );
+                            cleanup_after_forward_failure(
+                                &self.call_manager,
+                                &self.dialog_manager,
+                                &self.session_timer_manager,
+                                &self.rate_limits,
+                                &self.mid_dialog_lock,
+                                &self.subscription_index,
+                                &self.subscription_created_at,
+                                &call.id,
+                                target_dialog.id(),
+                                "NOTIFY forward failed",
+                            );
+                            return Ok(self.create_simple_response(
+                                request,
+                                481,
+                                "Subscription Does Not Exist",
+                            ));
+                        }
+                    };
+
+                    if peer_resp.start_line().code() == 481 {
+                        cleanup_after_forward_failure(
+                            &self.call_manager,
+                            &self.dialog_manager,
+                            &self.session_timer_manager,
+                            &self.rate_limits,
+                            &self.mid_dialog_lock,
+                            &self.subscription_index,
+                            &self.subscription_created_at,
+                            &call.id,
+                            target_dialog.id(),
+                            "Peer returned 481 to NOTIFY",
+                        );
+                        self.metrics.inc_counter(
+                            "fcp_sip_mid_dialog_forward_total",
+                            &[("method", "NOTIFY"), ("result", "481")],
+                        );
+                    }
+                    return Ok(self.build_in_dialog_response(request, &peer_resp));
                 }
-            };
 
-            if peer_resp.start_line().code() == 481 {
-                cleanup_after_forward_failure(
-                    &self.call_manager,
-                    &self.dialog_manager,
-                    &self.session_timer_manager,
-                    &self.rate_limits,
-                    &self.mid_dialog_lock,
-                    &self.subscription_index,
-                    &self.subscription_created_at,
-                    &call.id,
-                    target_dialog.id(),
-                    "Peer returned 481 to NOTIFY",
-                );
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "NOTIFY"), ("result", "481")],
-                );
-            }
-            self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
-            return Ok(self.build_in_dialog_response(request, &peer_resp));
-        }
-
-        // Fallback: if subscription not found, try to create a transient one from dialog/event
-        let transient_sub = self.create_transient_subscription(&target_dialog, event.as_str());
-        if let Some(sub) = transient_sub {
-            let state = sip_dialog::SubscriptionState::Active;
-            self.log_sip_message(
-                "outbound",
-                "NOTIFY",
-                Some(call.id.to_string().as_str()),
-                Some(target_dialog.id()),
-                cseq.as_ref().map(|v| v.as_str()),
-                None,
-                None,
-                None,
-                body.as_ref().map(|b| b.as_bytes()),
-            );
-            if self.check_rate_limit(
-                "NOTIFY",
-                src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
-                self.settings.info_rate_limit,
-            ) {
-                warn!(call_id = %call.id, "NOTIFY rate limited");
-                let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-                let _ = resp.headers_mut().push(
-                    SmolStr::new("Retry-After"),
-                    SmolStr::new(self.settings.rate_window.as_secs().to_string()),
-                );
-                return Ok(resp);
-            }
-            let peer_resp = match uac.send_notify(&sub, state, body.as_deref()).await {
-                Ok(r) => {
-                    info!(
-                        status = r.start_line().code(),
-                        "Forwarded NOTIFY (transient sub) to peer"
-                    );
-                    self.metrics.inc_counter(
-                        "fcp_sip_mid_dialog_forward_total",
-                        &[("method", "NOTIFY"), ("result", "ok")],
-                    );
-                    self.metrics.observe_ms(
-                        "fcp_sip_mid_dialog_forward_ms",
-                        start.elapsed().as_millis(),
-                        &[("method", "NOTIFY"), ("result", "ok")],
-                    );
-                    r
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to forward NOTIFY (transient) to peer");
-                    self.metrics.inc_counter(
-                        "fcp_sip_mid_dialog_forward_total",
-                        &[("method", "NOTIFY"), ("result", "error")],
-                    );
-                    cleanup_after_forward_failure(
-                        &self.call_manager,
-                        &self.dialog_manager,
-                        &self.session_timer_manager,
-                        &self.rate_limits,
-                        &self.mid_dialog_lock,
-                        &self.subscription_index,
-                        &self.subscription_created_at,
-                        &call.id,
-                        target_dialog.id(),
-                        "NOTIFY forward failed",
-                    );
-                    return Ok(self.create_simple_response(
-                        request,
-                        481,
-                        "Subscription Does Not Exist",
-                    ));
-                }
-            };
-
-            if peer_resp.start_line().code() == 481 {
-                cleanup_after_forward_failure(
-                    &self.call_manager,
-                    &self.dialog_manager,
-                    &self.session_timer_manager,
-                    &self.rate_limits,
-                    &self.mid_dialog_lock,
-                    &self.subscription_index,
-                    &self.subscription_created_at,
-                    &call.id,
-                    target_dialog.id(),
-                    "Peer returned 481 to NOTIFY",
-                );
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "NOTIFY"), ("result", "481")],
-                );
-            }
-            return Ok(self.build_in_dialog_response(request, &peer_resp));
-        }
-
-        Ok(self.create_simple_response(request, 481, "Subscription Does Not Exist"))
+                Ok(self.create_simple_response(request, 481, "Subscription Does Not Exist"))
+            },
+            span,
+        )
+        .await;
+        result
     }
 
     /// Handle in-dialog UPDATE by forwarding to the opposite leg.
@@ -11752,66 +11785,92 @@ impl SipMessageHandler {
             dst_dialog = ?target_dialog.id(),
             cseq = ?cseq
         );
-        let _guard_span = span.enter();
-        let start = std::time::Instant::now();
+        // The span is the future's, not a guard held across awaits: a
+        // guard entered on one thread and dropped on another once
+        // crashed the node (#355, "tried to clone a span that already
+        // closed").
+        let result: Result<sip_core::Response> = tracing::Instrument::instrument(
+            async {
+            let start = std::time::Instant::now();
 
-        let uac = self
-            .uac
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No UAC configured for UPDATE forwarding"))?;
+            let uac = self
+                .uac
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("No UAC configured for UPDATE forwarding"))?;
 
-        let prior_sdp = if is_a_leg {
-            call.a_leg.sdp.as_deref()
-        } else {
-            call.b_leg.as_ref().and_then(|b| b.sdp.as_deref())
-        };
+            let prior_sdp = if is_a_leg {
+                call.a_leg.sdp.as_deref()
+            } else {
+                call.b_leg.as_ref().and_then(|b| b.sdp.as_deref())
+            };
 
-        if self.check_rate_limit(
-            "UPDATE",
-            src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
-            self.settings.update_rate_limit,
-        ) {
-            warn!(call_id = %call.id, "UPDATE rate limited");
-            let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-            let _ = resp.headers_mut().push(
-                SmolStr::new("Retry-After"),
-                SmolStr::new(self.settings.rate_window.as_secs().to_string()),
-            );
-            return Ok(resp);
-        }
-        let body = validate_sdp_body_static(request, prior_sdp)?;
-
-        self.log_sip_message(
-            "outbound",
-            "UPDATE",
-            Some(call.id.to_string().as_str()),
-            Some(target_dialog.id()),
-            cseq.as_ref().map(|v| v.as_str()),
-            None,
-            None,
-            None,
-            None,
-        );
-        let peer_resp = match uac.send_update(&mut target_dialog, body.as_deref()).await {
-            Ok(r) => {
-                info!(status = r.start_line().code(), "Forwarded UPDATE to peer");
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "UPDATE"), ("result", "ok")],
+            if self.check_rate_limit(
+                "UPDATE",
+                src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
+                self.settings.update_rate_limit,
+            ) {
+                warn!(call_id = %call.id, "UPDATE rate limited");
+                let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+                let _ = resp.headers_mut().push(
+                    SmolStr::new("Retry-After"),
+                    SmolStr::new(self.settings.rate_window.as_secs().to_string()),
                 );
-                self.metrics.observe_ms(
-                    "fcp_sip_mid_dialog_forward_ms",
-                    start.elapsed().as_millis(),
-                    &[("method", "UPDATE"), ("result", "ok")],
-                );
-                r
+                return Ok(resp);
             }
-            Err(e) => {
-                warn!(error = %e, "Failed to forward UPDATE to peer");
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "UPDATE"), ("result", "error")],
-                );
+            let body = validate_sdp_body_static(request, prior_sdp)?;
+
+            self.log_sip_message(
+                "outbound",
+                "UPDATE",
+                Some(call.id.to_string().as_str()),
+                Some(target_dialog.id()),
+                cseq.as_ref().map(|v| v.as_str()),
+                None,
+                None,
+                None,
+                None,
+            );
+            let peer_resp = match uac.send_update(&mut target_dialog, body.as_deref()).await {
+                Ok(r) => {
+                    info!(status = r.start_line().code(), "Forwarded UPDATE to peer");
+                    self.metrics.inc_counter(
+                        "fcp_sip_mid_dialog_forward_total",
+                        &[("method", "UPDATE"), ("result", "ok")],
+                    );
+                    self.metrics.observe_ms(
+                        "fcp_sip_mid_dialog_forward_ms",
+                        start.elapsed().as_millis(),
+                        &[("method", "UPDATE"), ("result", "ok")],
+                    );
+                    r
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to forward UPDATE to peer");
+                    self.metrics.inc_counter(
+                        "fcp_sip_mid_dialog_forward_total",
+                        &[("method", "UPDATE"), ("result", "error")],
+                    );
+                    cleanup_after_forward_failure(
+                        &self.call_manager,
+                        &self.dialog_manager,
+                        &self.session_timer_manager,
+                        &self.rate_limits,
+                        &self.mid_dialog_lock,
+                        &self.subscription_index,
+                        &self.subscription_created_at,
+                        &call.id,
+                        target_dialog.id(),
+                        "UPDATE forward failed",
+                    );
+                    return Ok(self.create_simple_response(
+                        request,
+                        481,
+                        "Call/Transaction Does Not Exist",
+                    ));
+                }
+            };
+
+            if peer_resp.start_line().code() == 481 {
                 cleanup_after_forward_failure(
                     &self.call_manager,
                     &self.dialog_manager,
@@ -11822,64 +11881,48 @@ impl SipMessageHandler {
                     &self.subscription_created_at,
                     &call.id,
                     target_dialog.id(),
-                    "UPDATE forward failed",
+                    "Peer returned 481 to UPDATE",
                 );
-                return Ok(self.create_simple_response(
-                    request,
-                    481,
-                    "Call/Transaction Does Not Exist",
-                ));
+                self.metrics.inc_counter(
+                    "fcp_sip_mid_dialog_forward_total",
+                    &[("method", "UPDATE"), ("result", "481")],
+                );
             }
-        };
+            // Update stored SDP for originating leg if present
+            if let Some(body) = body {
+                store_leg_sdp(&self.call_manager, &call.id, is_a_leg, body);
+            }
+            self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog.clone());
+            self.start_session_timer(&target_dialog);
 
-        if peer_resp.start_line().code() == 481 {
-            cleanup_after_forward_failure(
-                &self.call_manager,
-                &self.dialog_manager,
-                &self.session_timer_manager,
-                &self.rate_limits,
-                &self.mid_dialog_lock,
-                &self.subscription_index,
-                &self.subscription_created_at,
-                &call.id,
-                target_dialog.id(),
-                "Peer returned 481 to UPDATE",
-            );
-            self.metrics.inc_counter(
-                "fcp_sip_mid_dialog_forward_total",
-                &[("method", "UPDATE"), ("result", "481")],
-            );
-        }
-        // Update stored SDP for originating leg if present
-        if let Some(body) = body {
-            store_leg_sdp(&self.call_manager, &call.id, is_a_leg, body);
-        }
-        self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog.clone());
-        self.start_session_timer(&target_dialog);
-
-        // Refresh timers on the originating leg based on the response we will relay
-        if let Some((mut src_dialog, is_a_leg_src)) = if is_a_leg {
-            call.a_leg.dialog.clone().map(|d| (d, true))
-        } else {
-            call.b_leg
-                .as_ref()
-                .and_then(|b| b.dialog.clone())
-                .map(|d| (d, false))
-        } {
-            if let Some((se, _refresher)) = extract_session_timer(&peer_resp) {
-                let _ = src_dialog.set_session_expires(se);
-                self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog.clone());
-                self.start_session_timer(&src_dialog);
-            } else if peer_resp.start_line().code() == 422 {
-                if let Some(min_se) = extract_min_se(&peer_resp) {
-                    let _ = src_dialog.set_session_expires(min_se);
-                    debug!(call_id = %call.id, dialog_id = ?src_dialog.id(), min_se = ?min_se, "Applied Min-SE from 422 to originating leg dialog");
-                    self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog);
+            // Refresh timers on the originating leg based on the response we will relay
+            if let Some((mut src_dialog, is_a_leg_src)) = if is_a_leg {
+                call.a_leg.dialog.clone().map(|d| (d, true))
+            } else {
+                call.b_leg
+                    .as_ref()
+                    .and_then(|b| b.dialog.clone())
+                    .map(|d| (d, false))
+            } {
+                if let Some((se, _refresher)) = extract_session_timer(&peer_resp) {
+                    let _ = src_dialog.set_session_expires(se);
+                    self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog.clone());
+                    self.start_session_timer(&src_dialog);
+                } else if peer_resp.start_line().code() == 422 {
+                    if let Some(min_se) = extract_min_se(&peer_resp) {
+                        let _ = src_dialog.set_session_expires(min_se);
+                        debug!(call_id = %call.id, dialog_id = ?src_dialog.id(), min_se = ?min_se, "Applied Min-SE from 422 to originating leg dialog");
+                        self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog);
+                    }
                 }
             }
-        }
 
-        Ok(self.build_in_dialog_response(request, &peer_resp))
+            Ok(self.build_in_dialog_response(request, &peer_resp))
+            },
+            span,
+        )
+        .await;
+        result
     }
 
     /// A PRACK (RFC 3262). The node's provisionals to a caller are
@@ -11960,116 +12003,126 @@ impl SipMessageHandler {
             dst_dialog = ?target_dialog.id(),
             cseq = ?cseq
         );
-        let _guard_span = span.enter();
-        let start = std::time::Instant::now();
+        // The span is the future's, not a guard held across awaits: a
+        // guard entered on one thread and dropped on another once
+        // crashed the node (#355, "tried to clone a span that already
+        // closed").
+        let result: Result<sip_core::Response> = tracing::Instrument::instrument(
+            async {
+                let start = std::time::Instant::now();
 
-        let uac = self
-            .uac
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No UAC configured for INFO forwarding"))?;
+                let uac = self
+                    .uac
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("No UAC configured for INFO forwarding"))?;
 
-        let content_type = sip_parse::header(request.headers(), "Content-Type")
-            .ok_or_else(|| anyhow::anyhow!("Missing Content-Type for INFO"))?;
-        let body = String::from_utf8_lossy(request.body()).to_string();
+                let content_type = sip_parse::header(request.headers(), "Content-Type")
+                    .ok_or_else(|| anyhow::anyhow!("Missing Content-Type for INFO"))?;
+                let body = String::from_utf8_lossy(request.body()).to_string();
 
-        self.check_body_size(request, self.settings.info_max_body_bytes)?;
+                self.check_body_size(request, self.settings.info_max_body_bytes)?;
 
-        // Record body size histogram
-        self.metrics.record_histogram(
-            "fcp_sip_info_body_bytes",
-            request.body().len() as f64,
-            &[("content_type", content_type.as_str())],
-        );
-
-        self.check_info_content_type(content_type.as_str())?;
-        if self.check_rate_limit(
-            "INFO",
-            src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
-            self.settings.info_rate_limit,
-        ) {
-            warn!(call_id = %call.id, "INFO rate limited");
-            let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-            let _ = resp.headers_mut().push(
-                SmolStr::new("Retry-After"),
-                SmolStr::new(self.settings.rate_window.as_secs().to_string()),
-            );
-            return Ok(resp);
-        }
-        self.log_sip_message(
-            "outbound",
-            "INFO",
-            Some(call.id.to_string().as_str()),
-            Some(target_dialog.id()),
-            cseq.as_ref().map(|v| v.as_str()),
-            None,
-            None,
-            None,
-            None,
-        );
-        let peer_resp = match uac
-            .send_info(&mut target_dialog, content_type.as_str(), &body)
-            .await
-        {
-            Ok(r) => {
-                info!(status = r.start_line().code(), "Forwarded INFO to peer");
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "INFO"), ("result", "ok")],
+                // Record body size histogram
+                self.metrics.record_histogram(
+                    "fcp_sip_info_body_bytes",
+                    request.body().len() as f64,
+                    &[("content_type", content_type.as_str())],
                 );
-                self.metrics.observe_ms(
-                    "fcp_sip_mid_dialog_forward_ms",
-                    start.elapsed().as_millis(),
-                    &[("method", "INFO"), ("result", "ok")],
-                );
-                r
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to forward INFO to peer");
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "INFO"), ("result", "error")],
-                );
-                cleanup_after_forward_failure(
-                    &self.call_manager,
-                    &self.dialog_manager,
-                    &self.session_timer_manager,
-                    &self.rate_limits,
-                    &self.mid_dialog_lock,
-                    &self.subscription_index,
-                    &self.subscription_created_at,
-                    &call.id,
-                    target_dialog.id(),
-                    "INFO forward failed",
-                );
-                return Ok(self.create_simple_response(
-                    request,
-                    481,
-                    "Call/Transaction Does Not Exist",
-                ));
-            }
-        };
 
-        if peer_resp.start_line().code() == 481 {
-            cleanup_after_forward_failure(
-                &self.call_manager,
-                &self.dialog_manager,
-                &self.session_timer_manager,
-                &self.rate_limits,
-                &self.mid_dialog_lock,
-                &self.subscription_index,
-                &self.subscription_created_at,
-                &call.id,
-                target_dialog.id(),
-                "Peer returned 481 to INFO",
-            );
-            self.metrics.inc_counter(
-                "fcp_sip_mid_dialog_forward_total",
-                &[("method", "INFO"), ("result", "481")],
-            );
-        }
-        self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
+                self.check_info_content_type(content_type.as_str())?;
+                if self.check_rate_limit(
+                    "INFO",
+                    src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
+                    self.settings.info_rate_limit,
+                ) {
+                    warn!(call_id = %call.id, "INFO rate limited");
+                    let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+                    let _ = resp.headers_mut().push(
+                        SmolStr::new("Retry-After"),
+                        SmolStr::new(self.settings.rate_window.as_secs().to_string()),
+                    );
+                    return Ok(resp);
+                }
+                self.log_sip_message(
+                    "outbound",
+                    "INFO",
+                    Some(call.id.to_string().as_str()),
+                    Some(target_dialog.id()),
+                    cseq.as_ref().map(|v| v.as_str()),
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                let peer_resp = match uac
+                    .send_info(&mut target_dialog, content_type.as_str(), &body)
+                    .await
+                {
+                    Ok(r) => {
+                        info!(status = r.start_line().code(), "Forwarded INFO to peer");
+                        self.metrics.inc_counter(
+                            "fcp_sip_mid_dialog_forward_total",
+                            &[("method", "INFO"), ("result", "ok")],
+                        );
+                        self.metrics.observe_ms(
+                            "fcp_sip_mid_dialog_forward_ms",
+                            start.elapsed().as_millis(),
+                            &[("method", "INFO"), ("result", "ok")],
+                        );
+                        r
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to forward INFO to peer");
+                        self.metrics.inc_counter(
+                            "fcp_sip_mid_dialog_forward_total",
+                            &[("method", "INFO"), ("result", "error")],
+                        );
+                        cleanup_after_forward_failure(
+                            &self.call_manager,
+                            &self.dialog_manager,
+                            &self.session_timer_manager,
+                            &self.rate_limits,
+                            &self.mid_dialog_lock,
+                            &self.subscription_index,
+                            &self.subscription_created_at,
+                            &call.id,
+                            target_dialog.id(),
+                            "INFO forward failed",
+                        );
+                        return Ok(self.create_simple_response(
+                            request,
+                            481,
+                            "Call/Transaction Does Not Exist",
+                        ));
+                    }
+                };
 
-        Ok(self.build_in_dialog_response(request, &peer_resp))
+                if peer_resp.start_line().code() == 481 {
+                    cleanup_after_forward_failure(
+                        &self.call_manager,
+                        &self.dialog_manager,
+                        &self.session_timer_manager,
+                        &self.rate_limits,
+                        &self.mid_dialog_lock,
+                        &self.subscription_index,
+                        &self.subscription_created_at,
+                        &call.id,
+                        target_dialog.id(),
+                        "Peer returned 481 to INFO",
+                    );
+                    self.metrics.inc_counter(
+                        "fcp_sip_mid_dialog_forward_total",
+                        &[("method", "INFO"), ("result", "481")],
+                    );
+                }
+                self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
+
+                Ok(self.build_in_dialog_response(request, &peer_resp))
+            },
+            span,
+        )
+        .await;
+        result
     }
 
     /// Handle in-dialog REFER by forwarding to the opposite leg.
@@ -12094,167 +12147,178 @@ impl SipMessageHandler {
             dst_dialog = ?target_dialog.id(),
             cseq = ?cseq
         );
-        let _guard_span = span.enter();
-        let start = std::time::Instant::now();
+        // The span is the future's, not a guard held across awaits: a
+        // guard entered on one thread and dropped on another once
+        // crashed the node (#355, "tried to clone a span that already
+        // closed").
+        let result: Result<sip_core::Response> = tracing::Instrument::instrument(
+            async {
+                let start = std::time::Instant::now();
 
-        let uac = self
-            .uac
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No UAC configured for REFER forwarding"))?;
+                let uac = self
+                    .uac
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("No UAC configured for REFER forwarding"))?;
 
-        let refer_to_raw = sip_parse::header(request.headers(), "Refer-To")
-            .ok_or_else(|| anyhow::anyhow!("Missing Refer-To"))?;
-        let refer_uri_str = refer_to_raw
-            .split('<')
-            .nth(1)
-            .and_then(|s| s.split('>').next())
-            .unwrap_or(refer_to_raw.as_str())
-            .trim();
+                let refer_to_raw = sip_parse::header(request.headers(), "Refer-To")
+                    .ok_or_else(|| anyhow::anyhow!("Missing Refer-To"))?;
+                let refer_uri_str = refer_to_raw
+                    .split('<')
+                    .nth(1)
+                    .and_then(|s| s.split('>').next())
+                    .unwrap_or(refer_to_raw.as_str())
+                    .trim();
 
-        // A conference node draining asks for the caller to be moved to
-        // another node (phase 5b): executed here, never relayed.
-        if !is_a_leg && call.conference_room.is_some() {
-            if let Some(migration) =
-                crate::conference_migration::parse_migration_refer(refer_to_raw.as_str())
-            {
-                return Ok(self.start_conference_migration(request, &call, migration));
-            }
-        }
+                // A conference node draining asks for the caller to be moved to
+                // another node (phase 5b): executed here, never relayed.
+                if !is_a_leg && call.conference_room.is_some() {
+                    if let Some(migration) =
+                        crate::conference_migration::parse_migration_refer(refer_to_raw.as_str())
+                    {
+                        return Ok(self.start_conference_migration(request, &call, migration));
+                    }
+                }
 
-        // The B2BUA carries the transfer out itself
-        // (`docs/ENTERPRISE_CALLING.md` §3.2), after the same policy checks
-        // a relayed REFER passes.
-        if self.b2bua_config.transfer.execute {
-            if !self
-                .b2bua_config
-                .transfer
-                .is_allowed(fcp_b2bua_core::TransferType::Blind)
-                || !self.settings.allow_refer
-            {
-                warn!(call_id = %call.id, "REFER denied by the transfer policy");
-                return Ok(self.create_simple_response(request, 403, "Refer Not Allowed"));
-            }
-            if self.check_rate_limit(
-                "REFER",
-                src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
-                self.b2bua_config.transfer.rate_limit_per_dialog,
-            ) {
-                warn!(call_id = %call.id, "REFER rate limited");
-                return Ok(self.create_simple_response(request, 429, "Too Many Requests"));
-            }
-            return Ok(self
-                .execute_refer(request, &call, is_a_leg, refer_to_raw.as_str())
-                .await);
-        }
+                // The B2BUA carries the transfer out itself
+                // (`docs/ENTERPRISE_CALLING.md` §3.2), after the same policy checks
+                // a relayed REFER passes.
+                if self.b2bua_config.transfer.execute {
+                    if !self
+                        .b2bua_config
+                        .transfer
+                        .is_allowed(fcp_b2bua_core::TransferType::Blind)
+                        || !self.settings.allow_refer
+                    {
+                        warn!(call_id = %call.id, "REFER denied by the transfer policy");
+                        return Ok(self.create_simple_response(request, 403, "Refer Not Allowed"));
+                    }
+                    if self.check_rate_limit(
+                        "REFER",
+                        src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
+                        self.b2bua_config.transfer.rate_limit_per_dialog,
+                    ) {
+                        warn!(call_id = %call.id, "REFER rate limited");
+                        return Ok(self.create_simple_response(request, 429, "Too Many Requests"));
+                    }
+                    return Ok(self
+                        .execute_refer(request, &call, is_a_leg, refer_to_raw.as_str())
+                        .await);
+                }
 
-        // The transferred caller's phone copies the Refer-To's URI headers
-        // into its new INVITE (RFC 3261 §19.1.5), which is how the new call
-        // learns the call it came from.
-        let refer_with_origin =
-            with_uri_header(refer_uri_str, TRANSFERRED_FROM_HEADER, &call.id.to_string());
-        let refer_uri = sip_core::SipUri::parse(&refer_with_origin)
-            .or_else(|_| sip_core::SipUri::parse(refer_uri_str))
-            .map_err(|_| anyhow::anyhow!("Invalid Refer-To URI"))?;
+                // The transferred caller's phone copies the Refer-To's URI headers
+                // into its new INVITE (RFC 3261 §19.1.5), which is how the new call
+                // learns the call it came from.
+                let refer_with_origin =
+                    with_uri_header(refer_uri_str, TRANSFERRED_FROM_HEADER, &call.id.to_string());
+                let refer_uri = sip_core::SipUri::parse(&refer_with_origin)
+                    .or_else(|_| sip_core::SipUri::parse(refer_uri_str))
+                    .map_err(|_| anyhow::anyhow!("Invalid Refer-To URI"))?;
 
-        // B2BUA transfer policy check (primary gate)
-        if !self
-            .b2bua_config
-            .transfer
-            .is_allowed(fcp_b2bua_core::TransferType::Blind)
-        {
-            warn!(call_id = %call.id, "REFER denied by B2BUA transfer policy");
-            return Ok(self.create_simple_response(request, 403, "Refer Not Allowed"));
-        }
-        // Legacy settings check (secondary gate for backward compatibility)
-        if !self.settings.allow_refer {
-            warn!(call_id = %call.id, "REFER not allowed by legacy settings");
-            return Ok(self.create_simple_response(request, 403, "Refer Not Allowed"));
-        }
-        if self.check_rate_limit(
-            "REFER",
-            src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
-            self.b2bua_config.transfer.rate_limit_per_dialog,
-        ) {
-            warn!(call_id = %call.id, "REFER rate limited");
-            let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-            let _ = resp.headers_mut().push(
-                SmolStr::new("Retry-After"),
-                SmolStr::new(self.settings.rate_window.as_secs().to_string()),
-            );
-            return Ok(resp);
-        }
-        self.log_sip_message(
-            "outbound",
-            "REFER",
-            Some(call.id.to_string().as_str()),
-            Some(target_dialog.id()),
-            cseq.as_ref().map(|v| v.as_str()),
-            None,
-            None,
-            None,
-            None,
-        );
-        let (peer_resp, _) = match uac.send_refer(&mut target_dialog, &refer_uri, None).await {
-            Ok(r) => {
-                info!(status = r.0.start_line().code(), "Forwarded REFER to peer");
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "REFER"), ("result", "ok")],
+                // B2BUA transfer policy check (primary gate)
+                if !self
+                    .b2bua_config
+                    .transfer
+                    .is_allowed(fcp_b2bua_core::TransferType::Blind)
+                {
+                    warn!(call_id = %call.id, "REFER denied by B2BUA transfer policy");
+                    return Ok(self.create_simple_response(request, 403, "Refer Not Allowed"));
+                }
+                // Legacy settings check (secondary gate for backward compatibility)
+                if !self.settings.allow_refer {
+                    warn!(call_id = %call.id, "REFER not allowed by legacy settings");
+                    return Ok(self.create_simple_response(request, 403, "Refer Not Allowed"));
+                }
+                if self.check_rate_limit(
+                    "REFER",
+                    src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
+                    self.b2bua_config.transfer.rate_limit_per_dialog,
+                ) {
+                    warn!(call_id = %call.id, "REFER rate limited");
+                    let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+                    let _ = resp.headers_mut().push(
+                        SmolStr::new("Retry-After"),
+                        SmolStr::new(self.settings.rate_window.as_secs().to_string()),
+                    );
+                    return Ok(resp);
+                }
+                self.log_sip_message(
+                    "outbound",
+                    "REFER",
+                    Some(call.id.to_string().as_str()),
+                    Some(target_dialog.id()),
+                    cseq.as_ref().map(|v| v.as_str()),
+                    None,
+                    None,
+                    None,
+                    None,
                 );
-                self.metrics.observe_ms(
-                    "fcp_sip_mid_dialog_forward_ms",
-                    start.elapsed().as_millis(),
-                    &[("method", "REFER"), ("result", "ok")],
-                );
-                r
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to forward REFER to peer");
-                self.metrics.inc_counter(
-                    "fcp_sip_mid_dialog_forward_total",
-                    &[("method", "REFER"), ("result", "error")],
-                );
-                cleanup_after_forward_failure(
-                    &self.call_manager,
-                    &self.dialog_manager,
-                    &self.session_timer_manager,
-                    &self.rate_limits,
-                    &self.mid_dialog_lock,
-                    &self.subscription_index,
-                    &self.subscription_created_at,
-                    &call.id,
-                    target_dialog.id(),
-                    "REFER forward failed",
-                );
-                return Ok(self.create_simple_response(
-                    request,
-                    481,
-                    "Call/Transaction Does Not Exist",
-                ));
-            }
-        };
+                let (peer_resp, _) =
+                    match uac.send_refer(&mut target_dialog, &refer_uri, None).await {
+                        Ok(r) => {
+                            info!(status = r.0.start_line().code(), "Forwarded REFER to peer");
+                            self.metrics.inc_counter(
+                                "fcp_sip_mid_dialog_forward_total",
+                                &[("method", "REFER"), ("result", "ok")],
+                            );
+                            self.metrics.observe_ms(
+                                "fcp_sip_mid_dialog_forward_ms",
+                                start.elapsed().as_millis(),
+                                &[("method", "REFER"), ("result", "ok")],
+                            );
+                            r
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to forward REFER to peer");
+                            self.metrics.inc_counter(
+                                "fcp_sip_mid_dialog_forward_total",
+                                &[("method", "REFER"), ("result", "error")],
+                            );
+                            cleanup_after_forward_failure(
+                                &self.call_manager,
+                                &self.dialog_manager,
+                                &self.session_timer_manager,
+                                &self.rate_limits,
+                                &self.mid_dialog_lock,
+                                &self.subscription_index,
+                                &self.subscription_created_at,
+                                &call.id,
+                                target_dialog.id(),
+                                "REFER forward failed",
+                            );
+                            return Ok(self.create_simple_response(
+                                request,
+                                481,
+                                "Call/Transaction Does Not Exist",
+                            ));
+                        }
+                    };
 
-        if peer_resp.start_line().code() == 481 {
-            cleanup_after_forward_failure(
-                &self.call_manager,
-                &self.dialog_manager,
-                &self.session_timer_manager,
-                &self.rate_limits,
-                &self.mid_dialog_lock,
-                &self.subscription_index,
-                &self.subscription_created_at,
-                &call.id,
-                target_dialog.id(),
-                "Peer returned 481 to REFER",
-            );
-            self.metrics.inc_counter(
-                "fcp_sip_mid_dialog_forward_total",
-                &[("method", "REFER"), ("result", "481")],
-            );
-        }
-        self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
+                if peer_resp.start_line().code() == 481 {
+                    cleanup_after_forward_failure(
+                        &self.call_manager,
+                        &self.dialog_manager,
+                        &self.session_timer_manager,
+                        &self.rate_limits,
+                        &self.mid_dialog_lock,
+                        &self.subscription_index,
+                        &self.subscription_created_at,
+                        &call.id,
+                        target_dialog.id(),
+                        "Peer returned 481 to REFER",
+                    );
+                    self.metrics.inc_counter(
+                        "fcp_sip_mid_dialog_forward_total",
+                        &[("method", "REFER"), ("result", "481")],
+                    );
+                }
+                self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
 
-        Ok(self.build_in_dialog_response(request, &peer_resp))
+                Ok(self.build_in_dialog_response(request, &peer_resp))
+            },
+            span,
+        )
+        .await;
+        result
     }
 
     /// Handle a REGISTER request for endpoint registration.
