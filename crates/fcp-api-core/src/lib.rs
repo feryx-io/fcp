@@ -433,6 +433,19 @@ pub fn create_router_with(
             )
             .layer(middleware::from_fn(route_log::record)),
     );
+    // A webinar's watch page and its files (`docs/WEBINARS.md` W8): public,
+    // the link in the path the credential.
+    router = router.merge(
+        Router::new()
+            .route(
+                "/watch/:file",
+                axum::routing::get(v1::webinar_stream::watch_asset),
+            )
+            .route(
+                "/watch/:id/:token",
+                axum::routing::get(v1::webinar_stream::watch_page),
+            ),
+    );
     // `/api/v1/health` says `ok` and a version and nothing else; it is
     // what a load balancer or the API gateway probes, and a probe carries
     // no token (`docs/DEPLOYMENT_GAPS.md` §1.4).

@@ -80,7 +80,7 @@ pub(crate) async fn webinar_of(
     Ok(meeting)
 }
 
-fn registrant_store(
+pub(crate) fn registrant_store(
     state: &ApiState,
 ) -> Result<Arc<dyn fcp_core::webinar::RegistrantStore>, ApiError> {
     state
@@ -91,7 +91,7 @@ fn registrant_store(
 }
 
 /// The registration `rid` of `meeting`.
-async fn registrant_of(
+pub(crate) async fn registrant_of(
     state: &ApiState,
     meeting: &Meeting,
     rid: &str,
@@ -459,17 +459,24 @@ pub async fn sittings(
     Query(page): Query<crate::page::PageQuery>,
 ) -> Result<Json<crate::page::Page<SittingResponse>>, ApiError> {
     let meeting = meeting_of(&state, &tenant, &id).await?;
-    let list = sitting_store(&state)?
+    sittings_page(&state, &meeting, &page).await.map(Json)
+}
+
+/// The meeting's sittings, newest first, by page: the admin's and the
+/// meeting's host's (`/me/conferences/{id}/sittings`).
+pub(crate) async fn sittings_page(
+    state: &ApiState,
+    meeting: &Meeting,
+    page: &crate::page::PageQuery,
+) -> Result<crate::page::Page<SittingResponse>, ApiError> {
+    let list = sitting_store(state)?
         .sittings_of_meeting(&meeting.tenant_id, &meeting.id.to_string(), MAX_REPORT_ROWS)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let items: Vec<SittingResponse> = list.into_iter().map(Into::into).collect();
-    Ok(Json(crate::page::paginate(
-        items,
-        &page,
-        crate::page::Order::Descending,
-        |s| crate::page::system_time_key(s.started_at, &s.id),
-    )?))
+    crate::page::paginate(items, page, crate::page::Order::Descending, |s| {
+        crate::page::system_time_key(s.started_at, &s.id)
+    })
 }
 
 /// `?sitting=` of the attendance report.
@@ -513,6 +520,26 @@ pub struct AttendanceRegistrant {
     pub attended: bool,
     /// Their time in the room across legs (the lobby aside).
     pub attended_secs: u64,
+    /// They watched the stream by their own link (W8).
+    pub watched: bool,
+    /// Seconds of it they watched live.
+    pub watched_secs: u64,
+}
+
+/// A registrant who watched the sitting's stream by their own link (W8).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AttendanceViewer {
+    pub registrant_id: String,
+    pub name: Option<String>,
+    #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
+    pub first_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
+    pub last_at: SystemTime,
+    /// Seconds watched while it was live: the gaps under 30 s between the
+    /// player's fetches of the playlist. A replay opened shows none.
+    pub watched_secs: u64,
 }
 
 /// A question of the sitting, as kept.
@@ -562,6 +589,8 @@ pub struct AttendanceResponse {
     /// A webinar's registrations, each with whether they came; empty for a
     /// meeting.
     pub registrants: Vec<AttendanceRegistrant>,
+    /// Who watched the stream by a registrant's link (W8).
+    pub stream_viewers: Vec<AttendanceViewer>,
     pub questions: Vec<AttendanceQuestion>,
     pub messages: Vec<AttendanceMessage>,
 }
@@ -602,6 +631,23 @@ pub async fn attendance(
     Query(q): Query<AttendanceQuery>,
 ) -> Result<Json<AttendanceResponse>, ApiError> {
     let meeting = meeting_of(&state, &tenant, &id).await?;
+    attendance_report(&state, &meeting, q.sitting.as_deref())
+        .await
+        .map(Json)
+}
+
+/// The attendance report of `meeting`'s sitting (the newest when `None`):
+/// the admin's and the meeting's host's (`/me/conferences/{id}/attendance`).
+pub(crate) async fn attendance_report(
+    state: &ApiState,
+    meeting: &Meeting,
+    sitting: Option<&str>,
+) -> Result<AttendanceResponse, ApiError> {
+    let state = state.clone();
+    let meeting = meeting.clone();
+    let q = AttendanceQuery {
+        sitting: sitting.map(str::to_string),
+    };
     let storage = require_storage!(state);
     let sittings = sitting_store(&state)?;
     let sitting = match q.sitting.as_deref().filter(|s| !s.is_empty()) {
@@ -711,7 +757,16 @@ pub async fn attendance(
         }
     }
 
-    let registrants = if meeting.is_webinar() {
+    let views = if meeting.is_webinar() {
+        registrant_store(&state)?
+            .stream_views_of_sitting(&meeting.tenant_id, &sitting.id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+    } else {
+        Vec::new()
+    };
+    let mut names: HashMap<String, String> = HashMap::new();
+    let registrants: Vec<AttendanceRegistrant> = if meeting.is_webinar() {
         let (list, _) = registrant_store(&state)?
             .registrants_of_meeting(
                 &meeting.tenant_id,
@@ -724,9 +779,13 @@ pub async fn attendance(
         list.into_iter()
             .map(|r| {
                 let secs = time_of.get(r.id.as_str()).copied();
+                let view = views.iter().find(|v| v.registrant_id == r.id);
+                names.insert(r.id.clone(), r.name.clone());
                 AttendanceRegistrant {
                     attended: secs.is_some(),
                     attended_secs: secs.unwrap_or(0),
+                    watched: view.is_some(),
+                    watched_secs: view.map_or(0, |v| v.watched_secs),
                     registrant: r.into(),
                 }
             })
@@ -735,11 +794,21 @@ pub async fn attendance(
         Vec::new()
     };
 
-    Ok(Json(AttendanceResponse {
+    Ok(AttendanceResponse {
         peak: peak_of(&legs),
         attendees,
         sitting: sitting.into(),
         registrants,
+        stream_viewers: views
+            .into_iter()
+            .map(|v| AttendanceViewer {
+                name: names.get(&v.registrant_id).cloned(),
+                registrant_id: v.registrant_id,
+                first_at: v.first_at,
+                last_at: v.last_at,
+                watched_secs: v.watched_secs,
+            })
+            .collect(),
         questions: questions
             .into_iter()
             .map(|q| AttendanceQuestion {
@@ -768,7 +837,7 @@ pub async fn attendance(
             })
             .collect(),
         legs,
-    }))
+    })
 }
 
 #[cfg(test)]

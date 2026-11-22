@@ -1449,6 +1449,13 @@ export const webinars = {
   setRtmp: (id: string, body: RtmpDestinationRequest) =>
     apiClient.put<RtmpDestinationResponse>(`${meetingPath(id)}/stream/rtmp`, body),
   deleteRtmp: (id: string) => apiClient.delete<void>(`${meetingPath(id)}/stream/rtmp`),
+  /** A registrant's own link and watch page (W8), for `ttlSecs` (a week
+   * unless set); their watching is counted under it. */
+  registrantWatchLink: (id: string, rid: string, ttlSecs?: number) =>
+    apiClient.post<StreamLinkResponse>(
+      `${meetingPath(id)}/registrants/${encodeURIComponent(rid)}/stream-link`,
+      { ttl_secs: ttlSecs },
+    ),
   /** A link to watch the stream, for `ttlSecs` (a day unless set). */
   streamLink: (id: string, ttlSecs?: number) =>
     apiClient.post<StreamLinkResponse>(`${meetingPath(id)}/stream/links`, { ttl_secs: ttlSecs }),

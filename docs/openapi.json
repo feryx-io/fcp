@@ -4154,6 +4154,114 @@
         }
       }
     },
+    "/api/v1/me/conferences/{id}/sittings": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/conferences/:id/sittings -- each run of one of the user's own\nmeetings, newest first, for its host (`docs/WEBINARS.md` W8).",
+        "operationId": "self_service_my_conference_sittings",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SittingResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/conferences/{id}/attendance": {
+      "get": {
+        "tags": [
+          "self_service"
+        ],
+        "summary": "GET /me/conferences/:id/attendance -- who came to a sitting of one of\nthe user's own meetings, how long, and who watched its stream, for its\nhost: the report an administrator reads at\n`/conferences/meetings/{id}/attendance`.",
+        "operationId": "self_service_my_conference_attendance",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sitting",
+            "in": "query",
+            "description": "The sitting; the newest when absent.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttendanceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/conferences/{id}/dial-out": {
       "post": {
         "tags": [
@@ -20241,6 +20349,65 @@
         }
       }
     },
+    "/api/v1/conferences/meetings/{id}/registrants/{rid}/stream-link": {
+      "post": {
+        "tags": [
+          "conferences"
+        ],
+        "summary": "POST /conferences/meetings/:id/registrants/:rid/stream-link — a link to\nthe webinar's stream and its watch page for one registration (W8): its\nwatching counted under it, refused once it is revoked.",
+        "operationId": "webinar_registrant_stream_link",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StreamLinkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Minted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamLinkResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/conferences/meetings/{id}/stream/{token}/{file}": {
       "get": {
         "tags": [
@@ -23460,7 +23627,9 @@
             "type": "object",
             "required": [
               "attended",
-              "attended_secs"
+              "attended_secs",
+              "watched",
+              "watched_secs"
             ],
             "properties": {
               "attended": {
@@ -23470,6 +23639,16 @@
                 "type": "integer",
                 "format": "int64",
                 "description": "Their time in the room across legs (the lobby aside).",
+                "minimum": 0
+              },
+              "watched": {
+                "type": "boolean",
+                "description": "They watched the stream by their own link (W8)."
+              },
+              "watched_secs": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Seconds of it they watched live.",
                 "minimum": 0
               }
             }
@@ -23486,6 +23665,7 @@
           "peak",
           "legs",
           "registrants",
+          "stream_viewers",
           "questions",
           "messages"
         ],
@@ -23518,6 +23698,13 @@
             },
             "description": "A webinar's registrations, each with whether they came; empty for a\nmeeting."
           },
+          "stream_viewers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttendanceViewer"
+            },
+            "description": "Who watched the stream by a registrant's link (W8)."
+          },
           "questions": {
             "type": "array",
             "items": {
@@ -23529,6 +23716,41 @@
             "items": {
               "$ref": "#/components/schemas/AttendanceMessage"
             }
+          }
+        }
+      },
+      "AttendanceViewer": {
+        "type": "object",
+        "description": "A registrant who watched the sitting's stream by their own link (W8).",
+        "required": [
+          "registrant_id",
+          "first_at",
+          "last_at",
+          "watched_secs"
+        ],
+        "properties": {
+          "registrant_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "watched_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds watched while it was live: the gaps under 30 s between the\nplayer's fetches of the playlist. A replay opened shows none.",
+            "minimum": 0
           }
         }
       },
@@ -45090,6 +45312,7 @@
         "required": [
           "token",
           "playlist_path",
+          "watch_path",
           "expires_at"
         ],
         "properties": {
@@ -45107,6 +45330,17 @@
               "null"
             ],
             "description": "The same with this admin's public address, when it knows it\n(`[api.sso] public_url`)."
+          },
+          "watch_path": {
+            "type": "string",
+            "description": "The watch page on this admin (W8): the stream in a browser, no\nclient needed."
+          },
+          "watch_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The same with this admin's public address, when it knows it."
           },
           "expires_at": {
             "type": "string",

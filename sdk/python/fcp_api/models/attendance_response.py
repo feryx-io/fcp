@@ -15,6 +15,7 @@ if TYPE_CHECKING:
   from ..models.attendance_message import AttendanceMessage
   from ..models.attendance_question import AttendanceQuestion
   from ..models.attendance_registrant import AttendanceRegistrant
+  from ..models.attendance_viewer import AttendanceViewer
   from ..models.sitting_response import SittingResponse
 
 
@@ -37,6 +38,7 @@ class AttendanceResponse:
             legs (list[AttendanceLeg]):
             registrants (list[AttendanceRegistrant]): A webinar's registrations, each with whether they came; empty for a
                 meeting.
+            stream_viewers (list[AttendanceViewer]): Who watched the stream by a registrant's link (W8).
             questions (list[AttendanceQuestion]):
             messages (list[AttendanceMessage]):
      """
@@ -46,6 +48,7 @@ class AttendanceResponse:
     peak: int
     legs: list[AttendanceLeg]
     registrants: list[AttendanceRegistrant]
+    stream_viewers: list[AttendanceViewer]
     questions: list[AttendanceQuestion]
     messages: list[AttendanceMessage]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -59,6 +62,7 @@ class AttendanceResponse:
         from ..models.attendance_message import AttendanceMessage # noqa: PLC0415
         from ..models.attendance_question import AttendanceQuestion # noqa: PLC0415
         from ..models.attendance_registrant import AttendanceRegistrant # noqa: PLC0415
+        from ..models.attendance_viewer import AttendanceViewer # noqa: PLC0415
         from ..models.sitting_response import SittingResponse # noqa: PLC0415
         sitting = self.sitting.to_dict()
 
@@ -77,6 +81,13 @@ class AttendanceResponse:
         for registrants_item_data in self.registrants:
             registrants_item = registrants_item_data.to_dict()
             registrants.append(registrants_item)
+
+
+
+        stream_viewers = []
+        for stream_viewers_item_data in self.stream_viewers:
+            stream_viewers_item = stream_viewers_item_data.to_dict()
+            stream_viewers.append(stream_viewers_item)
 
 
 
@@ -103,6 +114,7 @@ class AttendanceResponse:
             "peak": peak,
             "legs": legs,
             "registrants": registrants,
+            "stream_viewers": stream_viewers,
             "questions": questions,
             "messages": messages,
         })
@@ -117,6 +129,7 @@ class AttendanceResponse:
         from ..models.attendance_message import AttendanceMessage # noqa: PLC0415
         from ..models.attendance_question import AttendanceQuestion # noqa: PLC0415
         from ..models.attendance_registrant import AttendanceRegistrant # noqa: PLC0415
+        from ..models.attendance_viewer import AttendanceViewer # noqa: PLC0415
         from ..models.sitting_response import SittingResponse # noqa: PLC0415
         d = dict(src_dict)
         sitting = SittingResponse.from_dict(d.pop("sitting"))
@@ -148,6 +161,16 @@ class AttendanceResponse:
             registrants.append(registrants_item)
 
 
+        stream_viewers = []
+        _stream_viewers = d.pop("stream_viewers")
+        for stream_viewers_item_data in (_stream_viewers):
+            stream_viewers_item = AttendanceViewer.from_dict(stream_viewers_item_data)
+
+
+
+            stream_viewers.append(stream_viewers_item)
+
+
         questions = []
         _questions = d.pop("questions")
         for questions_item_data in (_questions):
@@ -174,6 +197,7 @@ class AttendanceResponse:
             peak=peak,
             legs=legs,
             registrants=registrants,
+            stream_viewers=stream_viewers,
             questions=questions,
             messages=messages,
         )

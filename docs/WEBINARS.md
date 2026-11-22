@@ -1603,6 +1603,118 @@ For an audience that is not on FCP at all.
       - Proved by `test/webinar_test.dart`.
   - **A7 is complete.**
 
+- **W8: a registrant's watch page** (asked for 2026-11-21, after A7):
+  watching a webinar's HLS stream in a browser, no client, by a link of the
+  registrant's own, and the watching in the attendance report.
+  - **The plan** (written 2026-11-21 from the code). In two parts.
+    - **What is there:**
+      - W6.3b's stream link is the meeting's, not anyone's: whoever holds it
+        watches, and nothing says who did. HLS plays natively only in
+        Safari, and FCP serves no page.
+      - A registration mints attendee join tokens that name it
+        (`JoinToken::registrant`, up to 90 days), refused once revoked.
+      - The attendance report (W4.2) lists the legs in the room and the
+        registrants who came, as CDRs record them.
+    - **Decisions:**
+      1. **A stream link may name its registration.** `StreamToken` gains
+         `registrant`. `POST …/registrants/{rid}/stream-link` mints one
+         (`conference_manage`) for a webinar that streams HLS: a week by
+         default, 90 days at most, as a registrant's join token. It answers
+         the watch page's URL beside the playlist's.
+      2. **Refused once revoked.** Serving a registrant's link reads the
+         registration: revoked or gone, 403. That is one read per playlist
+         fetch, and segments are fetched from the bucket when there is one.
+      3. **The watch page is the admin's, with hls.js inside it.**
+         `GET /watch/{meeting}/{token}` is a small page of its own: the
+         meeting's name, the player, and "waiting for the webinar to start"
+         until there is a stream. It needs no sign-in and no SPA.
+         - hls.js is vendored into the binary at a pinned version
+           (Apache-2.0) and served at `/watch/hls.min.js`, immutable. A CDN
+           would tell a third party who watches.
+         - Safari plays the playlist natively.
+         - The page is `no-store` and `noindex`, with a strict CSP.
+      4. **Watching is counted from the playlist.** The playlist is never
+         redirected (W6.3c), so its fetches reach the admin and say who is
+         watching a sitting. A live player fetches it every few seconds.
+         - `webinar_stream_views` (migration 151) holds one row per sitting
+           and registration: first and last seen, and the seconds watched.
+         - The seconds are the sum of the gaps between fetches shorter
+           than 30 s.
+         - It is written at most every 15 s per viewer.
+         - A replay, whose playlist has ended, is fetched once: it shows
+           as opened, with no seconds.
+         - A row goes with its registration (`ON DELETE CASCADE`), so
+           retention, holds and erasure of registrations cover it.
+      5. **The report:** attendance gains `stream_viewers` (the
+         registration, name, first and last seen, seconds watched), and a
+         registrant `watched` beside `attended`. The admin UI's Registrants
+         tab gains a watch link per registrant, and its Attendance tab the
+         viewers.
+    - **W8.1: the link, the page and the count.** **Done** (v0.25.614).
+      As built:
+      - **The link:** `StreamToken::for_registrant` and
+        `POST …/registrants/{rid}/stream-link`.
+        - It lasts a week by default and 90 days at most.
+        - It is refused (409) for a webinar that does not stream and for
+          a revoked registration.
+        - Any stream link's answer now carries `watch_path` and
+          `watch_url`.
+      - **The page:** `GET /watch/{meeting}/{token}`.
+        - It shows the meeting's name, escaped, and a player of the
+          link's playlist (`assets/watch/watch.js`). It says "Waiting for
+          the webinar to start…" and tries again every 10 s while there
+          is no stream, and "this is its recording" once the playlist has
+          ended.
+        - Its files are `/watch/hls-1.5.20.min.js` (hls.js 1.5.20,
+          Apache-2.0, vendored with its licence), `watch.js` and
+          `watch.css`.
+        - The headers: `no-store`, `noindex`, `no-referrer`, and a CSP of
+          the page's own scripts and styles with `frame-ancestors
+          'none'`.
+        - A forged or expired link is 401, another meeting's or a revoked
+          registration's 403, and a webinar that does not stream 404, each
+          as a short page.
+      - **The count:**
+        - A registrant link's playlist fetch is counted by `count_view`.
+          The gaps under 30 s are time watched (`tick`), written at most
+          every 15 s per viewer.
+        - `RegistrantStore::record_stream_view` and
+          `stream_views_of_sitting` keep it in `webinar_stream_views`
+          (migration 151). A row is written only for a registration of
+          the tenant, and is deleted with it.
+        - A revoked registration's link is refused at the playlist too.
+      - **The report:** attendance gains `stream_viewers` (name, first and
+        last seen, seconds watched), and each registrant `watched` and
+        `watched_secs`.
+      - **Proved:**
+        - `api_postgres.rs` `a_registrant_watches_by_their_own_link_and_is_counted`:
+          - the link's limits and the page, its headers and its files;
+          - a fetch counting the registrant, and the report naming them
+            as watched, not as having come;
+          - the link, the page and a new link refused once revoked;
+        - `watching_tests`: the arithmetic of the seconds.
+    - **W8.2: the admin UI.** **Done** (v0.25.614).
+      - The Registrants tab gains a "Watch link" per registrant of a
+        webinar that streams, which shows the page's URL to copy.
+      - The Attendance tab gains each registrant's "Watched the stream",
+        and a "Watched the stream" table: name, first and last seen, time
+        watched live, or "Opened the recording".
+      - **Proved:** `e2e/webinars.spec.ts`. The watch link is minted and
+        its page served with its title and CSP.
+    - **W8.3: the host's own report.** **Done** (v0.25.615; the app's
+      panel in Anvil), asked for 2026-11-21.
+      - A meeting's owner reads its sittings and their attendance through
+        `GET /me/conferences/{id}/sittings` and
+        `GET /me/conferences/{id}/attendance` (`?sitting=`, the newest
+        when absent).
+      - This is the report an administrator reads (`attendance_report`,
+        `sittings_page`), with no `conference_read` needed. Anyone else's
+        meeting is not found.
+      - **Proved:** `conferences.rs` `a_webinar_s_registrants_and_attendance`.
+        The owner's report equals the administrator's, and another user
+        is refused.
+  - **W8 is complete.**
+
 W1 and W2 come first. W3, W3b and W4 follow in any order; W3b needs no webinar
 at all. W5 waits on W1's measurements to say when one node is not enough. W6 and
 W7 are independent of W3–W5, and A7 follows W3 and W3b.

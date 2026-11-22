@@ -433,6 +433,13 @@ function RegistrantsTab({ meeting }: { meeting: MeetingResponse }) {
     onSuccess: (token, { who }) => setMinted({ who, token }),
     onError: (e) => setError((e as Error).message),
   })
+  const [watch, setWatch] = useState<{ who: string; link: StreamLinkResponse } | null>(null)
+  const watchLink = useMutation({
+    mutationFn: ({ rid }: { rid: string; who: string }) => webinars.registrantWatchLink(meeting.id, rid),
+    onSuccess: (link, { who }) => setWatch({ who, link }),
+    onError: (e) => setError((e as Error).message),
+  })
+  const watchUrl = watch ? watch.link.watch_url ?? `${window.location.origin}${watch.link.watch_path}` : ''
   const shareable = minted ? minted.token.join_url ?? minted.token.token : ''
   return (
     <div className="space-y-4">
@@ -459,6 +466,16 @@ function RegistrantsTab({ meeting }: { meeting: MeetingResponse }) {
           {copied === 'minted' && <p className="text-xs text-green-600">Copied</p>}
         </div>
       )}
+      {watch && (
+        <div className="rounded border p-3 space-y-2">
+          <p className="text-sm">Watch page for {watch.who}, good until {new Date(watch.link.expires_at).toLocaleString()}: the stream in a browser, no client, counted as theirs.</p>
+          <div className="flex gap-2">
+            <Input readOnly value={watchUrl} className="font-mono text-xs" aria-label="Watch link" />
+            <Button size="icon" variant="outline" aria-label="Copy watch link" onClick={() => copy('watch', watchUrl)}><Copy className="h-4 w-4" /></Button>
+          </div>
+          {copied === 'watch' && <p className="text-xs text-green-600">Copied</p>}
+        </div>
+      )}
       <table className="w-full text-sm">
         <thead className="text-left text-muted-foreground">
           <tr><th>Name</th><th>Email</th><th>Registered</th><th>Status</th><th /></tr>
@@ -476,6 +493,11 @@ function RegistrantsTab({ meeting }: { meeting: MeetingResponse }) {
                     <Button size="sm" variant="ghost" onClick={() => remint.mutate({ rid: r.id, who: r.name })}>
                       <LinkIcon className="mr-1 h-3 w-3" /> New link
                     </Button>
+                    {meeting.streaming === 'hls' && (
+                      <Button size="sm" variant="ghost" onClick={() => { setError(null); watchLink.mutate({ rid: r.id, who: r.name }) }}>
+                        <Tv className="mr-1 h-3 w-3" /> Watch link
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="ghost"
@@ -580,6 +602,27 @@ function AttendanceTab({ meeting }: { meeting: MeetingResponse }) {
                       <td>{x.name}</td>
                       <td>{x.email ?? ''}</td>
                       <td>{x.attended ? `Came, ${minutes(x.attended_secs)}` : 'Did not come'}</td>
+                    <td>{x.watched ? `Watched the stream${x.watched_secs ? `, ${minutes(x.watched_secs)}` : ' (opened)'}` : ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {r.stream_viewers.length > 0 && (
+            <div>
+              <Label>Watched the stream</Label>
+              <table className="w-full text-sm mt-1">
+                <thead className="text-left text-muted-foreground">
+                  <tr><th>Name</th><th>First seen</th><th>Last seen</th><th>Watched live</th></tr>
+                </thead>
+                <tbody>
+                  {r.stream_viewers.map((v) => (
+                    <tr key={v.registrant_id} className="border-t">
+                      <td>{v.name ?? v.registrant_id}</td>
+                      <td>{when(v.first_at)}</td>
+                      <td>{when(v.last_at)}</td>
+                      <td>{v.watched_secs ? minutes(v.watched_secs) : 'Opened the recording'}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -302,6 +302,15 @@ pub fn router() -> Router<ApiState> {
             "/me/conferences/:id/dial-out",
             post(self_service::dial_out_my_conference),
         )
+        // A host's attendance report of their own meeting (W8).
+        .route(
+            "/me/conferences/:id/sittings",
+            get(self_service::my_conference_sittings),
+        )
+        .route(
+            "/me/conferences/:id/attendance",
+            get(self_service::my_conference_attendance),
+        )
         // A host's controls of their room (`docs/SOFTPHONE_VIDEO.md` §2.6)
         .route("/me/conferences/live/:room", get(me_conferences_live::room))
         .route(
@@ -1241,6 +1250,11 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/conferences/meetings/:id/stream/links",
             post(webinar_stream::mint_link),
+        )
+        // A registrant's own stream link and watch page (W8).
+        .route(
+            "/conferences/meetings/:id/registrants/:rid/stream-link",
+            post(webinar_stream::mint_registrant_link),
         )
         // Where it is pushed over RTMP (W7); the key is never returned.
         .route(

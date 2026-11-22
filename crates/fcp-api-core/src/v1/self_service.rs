@@ -1985,6 +1985,77 @@ pub async fn get_my_conference(
     Ok(Json(super::conferences::MeetingResponse::from(meeting)))
 }
 
+/// One of the current user's own meetings, by id: anyone else's is not
+/// found.
+async fn my_meeting(
+    state: &ApiState,
+    claims: &crate::v1::auth_session::Claims,
+    id: &str,
+) -> Result<fcp_core::Meeting, ApiError> {
+    let storage = require_storage!(state);
+    let tenant_id = resolve_tenant_from_claims(claims, state);
+    let meeting_id = fcp_core::MeetingId::from_str(id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid meeting ID: {}", e)))?;
+    storage
+        .get_meeting(&meeting_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .filter(|m| m.tenant_id == tenant_id && m.owner_id.as_deref() == Some(&claims.sub))
+        .ok_or_else(|| ApiError::NotFound("Conference not found".to_string()))
+}
+
+/// GET /me/conferences/:id/sittings -- each run of one of the user's own
+/// meetings, newest first, for its host (`docs/WEBINARS.md` W8).
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/conferences/{id}/sittings",
+    tag = "self_service",
+    operation_id = "self_service_my_conference_sittings",
+    params(("id" = String, Path), crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<crate::v1::webinars::SittingResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn my_conference_sittings(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    Path(id): Path<String>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<crate::v1::webinars::SittingResponse>>, ApiError> {
+    let meeting = my_meeting(&state, &claims, &id).await?;
+    crate::v1::webinars::sittings_page(&state, &meeting, &page)
+        .await
+        .map(Json)
+}
+
+/// GET /me/conferences/:id/attendance -- who came to a sitting of one of
+/// the user's own meetings, how long, and who watched its stream, for its
+/// host: the report an administrator reads at
+/// `/conferences/meetings/{id}/attendance`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/conferences/{id}/attendance",
+    tag = "self_service",
+    operation_id = "self_service_my_conference_attendance",
+    params(("id" = String, Path), crate::v1::webinars::AttendanceQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::v1::webinars::AttendanceResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn my_conference_attendance(
+    State(state): State<ApiState>,
+    Me(claims): Me,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<crate::v1::webinars::AttendanceQuery>,
+) -> Result<Json<crate::v1::webinars::AttendanceResponse>, ApiError> {
+    let meeting = my_meeting(&state, &claims, &id).await?;
+    crate::v1::webinars::attendance_report(&state, &meeting, q.sitting.as_deref())
+        .await
+        .map(Json)
+}
+
 /// POST /me/conferences/:id/dial-out -- Invite someone into a conference
 /// owned by the current user, through the conference server.
 #[utoipa::path(

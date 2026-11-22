@@ -1525,6 +1525,48 @@ export interface paths {
         patch: operations["self_service_update_my_conference"];
         trace?: never;
     };
+    "/api/v1/me/conferences/{id}/sittings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /me/conferences/:id/sittings -- each run of one of the user's own
+         *     meetings, newest first, for its host (`docs/WEBINARS.md` W8).
+         */
+        get: operations["self_service_my_conference_sittings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/conferences/{id}/attendance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /me/conferences/:id/attendance -- who came to a sitting of one of
+         *     the user's own meetings, how long, and who watched its stream, for its
+         *     host: the report an administrator reads at
+         *     `/conferences/meetings/{id}/attendance`.
+         */
+        get: operations["self_service_my_conference_attendance"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/conferences/{id}/dial-out": {
         parameters: {
             query?: never;
@@ -6133,6 +6175,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conferences/meetings/{id}/registrants/{rid}/stream-link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /conferences/meetings/:id/registrants/:rid/stream-link — a link to
+         *     the webinar's stream and its watch page for one registration (W8): its
+         *     watching counted under it, refused once it is revoked.
+         */
+        post: operations["webinar_registrant_stream_link"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conferences/meetings/{id}/stream/{token}/{file}": {
         parameters: {
             query?: never;
@@ -7278,6 +7341,13 @@ export interface components {
              * @description Their time in the room across legs (the lobby aside).
              */
             attended_secs: number;
+            /** @description They watched the stream by their own link (W8). */
+            watched: boolean;
+            /**
+             * Format: int64
+             * @description Seconds of it they watched live.
+             */
+            watched_secs: number;
         };
         /** @description Who came to one sitting. */
         AttendanceResponse: {
@@ -7299,8 +7369,25 @@ export interface components {
              *     meeting.
              */
             registrants: components["schemas"]["AttendanceRegistrant"][];
+            /** @description Who watched the stream by a registrant's link (W8). */
+            stream_viewers: components["schemas"]["AttendanceViewer"][];
             questions: components["schemas"]["AttendanceQuestion"][];
             messages: components["schemas"]["AttendanceMessage"][];
+        };
+        /** @description A registrant who watched the sitting's stream by their own link (W8). */
+        AttendanceViewer: {
+            registrant_id: string;
+            name?: string | null;
+            /** Format: date-time */
+            first_at: string;
+            /** Format: date-time */
+            last_at: string;
+            /**
+             * Format: int64
+             * @description Seconds watched while it was live: the gaps under 30 s between the
+             *     player's fetches of the playlist. A replay opened shows none.
+             */
+            watched_secs: number;
         };
         AuditEntryResponse: {
             /** Format: int64 */
@@ -14493,6 +14580,13 @@ export interface components {
              *     (`[api.sso] public_url`).
              */
             playlist_url?: string | null;
+            /**
+             * @description The watch page on this admin (W8): the stream in a browser, no
+             *     client needed.
+             */
+            watch_path: string;
+            /** @description The same with this admin's public address, when it knows it. */
+            watch_url?: string | null;
             /** Format: date-time */
             expires_at: string;
         };
@@ -19370,6 +19464,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MeetingResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_conference_sittings: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SittingResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_my_conference_attendance: {
+        parameters: {
+            query?: {
+                /** @description The sitting; the newest when absent. */
+                sitting?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttendanceResponse"];
                 };
             };
             /** @description An error */
@@ -30774,6 +30936,42 @@ export interface operations {
             header?: never;
             path: {
                 id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StreamLinkRequest"];
+            };
+        };
+        responses: {
+            /** @description Minted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StreamLinkResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webinar_registrant_stream_link: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                rid: string;
             };
             cookie?: never;
         };
