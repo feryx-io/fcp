@@ -480,3 +480,24 @@ async fn encryption_at_rest_is_managed_by_the_platform() {
     assert_eq!(after.json["active_key_id"], rotated.json["active_key_id"]);
     app.finish().await;
 }
+
+/// Creates racing for one tenant name: one is made, the rest are told 409,
+/// never 500 (the name check runs before the insert, so the unique index
+/// decides the race).
+#[tokio::test]
+async fn creates_racing_for_one_tenant_name_conflict() {
+    let app = require_app!();
+    let body = json!({ "name": "racing-tenant" });
+    let sends = (0..8).map(|_| app.admin(Method::POST, "/api/v1/tenants", Some(body.clone())));
+    let answers = futures_util::future::join_all(sends).await;
+    let made = answers.iter().filter(|r| r.status.is_success()).count();
+    for r in &answers {
+        assert!(
+            r.status.is_success() || r.status == StatusCode::CONFLICT,
+            "{} {}",
+            r.status,
+            r.text
+        );
+    }
+    assert_eq!(made, 1, "exactly one create wins");
+}

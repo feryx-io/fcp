@@ -148,16 +148,23 @@ impl From<anyhow::Error> for ApiError {
 }
 
 impl ApiError {
-    /// A storage error: a delete a legal hold refused is a conflict the
-    /// caller can act on (release the hold), anything else is internal.
+    /// A storage error: a delete a legal hold refused, or a write a unique
+    /// index refused (`StorageError::Conflict`, e.g. two creates racing for
+    /// one name), is a conflict the caller can act on; anything else is
+    /// internal.
     pub fn storage(err: anyhow::Error) -> Self {
-        match err.downcast_ref::<fcp_core::legal_hold::LegalHoldViolation>() {
-            Some(v) => ApiError::Conflict(format!(
+        if let Some(v) = err.downcast_ref::<fcp_core::legal_hold::LegalHoldViolation>() {
+            return ApiError::Conflict(format!(
                 "held by legal hold {} (docs/COMPLIANCE.md: legal holds)",
                 v.hold_id
-            )),
-            None => ApiError::Internal(err.to_string()),
+            ));
         }
+        if let Some(fcp_core::Error::Storage(fcp_core::StorageError::Conflict(msg))) =
+            err.downcast_ref::<fcp_core::Error>()
+        {
+            return ApiError::Conflict(msg.clone());
+        }
+        ApiError::Internal(err.to_string())
     }
 }
 
