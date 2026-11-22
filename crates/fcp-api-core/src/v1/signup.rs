@@ -156,16 +156,16 @@ pub async fn signup(
         metadata: None,
     };
 
-    storage.put_tenant(tenant.clone()).await.map_err(|e| {
-        if e.to_string().contains("unique") || e.to_string().contains("duplicate") {
-            ApiError::Conflict(format!(
+    storage
+        .put_tenant(tenant.clone())
+        .await
+        .map_err(|e| match ApiError::storage(e) {
+            ApiError::Conflict(_) => ApiError::Conflict(format!(
                 "Company name '{}' is already taken",
                 req.company_name
-            ))
-        } else {
-            ApiError::Internal(e.to_string())
-        }
-    })?;
+            )),
+            other => other,
+        })?;
 
     // Create admin user (same pattern as users.rs create_user)
     let user = User {
