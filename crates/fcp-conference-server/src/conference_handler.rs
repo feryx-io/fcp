@@ -8657,12 +8657,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     ContentChange::Stopped => {
                         if video.release_content(&session.participant_id) {
                             info!(call_id = %call_id, "re-INVITE: the presenter stopped sharing; floor released");
-                            // Its decode was reserved when it was granted:
-                            // re-price now, not at the next five-second
-                            // tick, so a share at once after is not
-                            // refused for a budget nothing is using.
-                            self.recompute_video_capacity();
                         }
+                        // A share's decode is reserved when it is granted,
+                        // and a host may have taken the floor already:
+                        // re-price now, not at the next five-second tick,
+                        // so a share at once after is not refused for a
+                        // budget nothing is using.
+                        self.recompute_video_capacity();
                     }
                     ContentChange::SharesAgain => {
                         video.set_participant_content_enabled(&session.participant_id, true);
