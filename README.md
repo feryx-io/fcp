@@ -36,8 +36,8 @@ names; the full table with each one's configuration file is in
 | `fcp-registrar` | A standalone registrar, for deployments that keep registration off the call manager |
 
 Under `external/` are the two stacks they are built on, each its own
-public repository: [siphon-rs](https://github.com/thevoiceguy/siphon-rs),
-the SIP stack, and [forge-media](https://github.com/thevoiceguy/forge-media),
+public repository: [siphon-rs](https://github.com/feryx-io/siphon-rs),
+the SIP stack, and [forge-media](https://github.com/feryx-io/forge-media),
 the media stack. Clone with `--recursive`, or run
 `git submodule update --init --recursive`; nothing builds without them.
 
@@ -46,7 +46,7 @@ the media stack. Clone with `--recursive`, or run
 Rust stable (`rust-toolchain.toml`); the code needs Rust 1.82 or later.
 
 ```bash
-git clone --recursive https://github.com/thevoiceguy/fcp.git
+git clone --recursive https://github.com/feryx-io/fcp.git
 cd fcp
 cargo build --release          # every binary, under target/release/
 cargo test --workspace         # unit tests and every test that needs no database
@@ -134,4 +134,4 @@ additional terms or conditions.
 
 ## Support
 
-Issues and discussion: https://github.com/thevoiceguy/fcp/issues
+Issues and discussion: https://github.com/feryx-io/fcp/issues

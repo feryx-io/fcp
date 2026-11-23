@@ -11,7 +11,7 @@ a change to this stack is checked by a registration and a call.
 ## Start
 
 ```bash
-git clone --recursive https://github.com/thevoiceguy/fcp.git   # the submodules are built into the images
+git clone --recursive https://github.com/feryx-io/fcp.git   # the submodules are built into the images
 cd fcp/deploy/docker-compose
 $EDITOR .env                          # HOST_IP, and every secret (all say change-me)
 docker compose up -d --build          # a Rust release build per service the first time
@@ -222,7 +222,7 @@ removes the volumes too, the database included.
 ## Pull instead of build
 
 The Images workflow builds the fifteen images every night and pushes
-them to `ghcr.io/thevoiceguy/fcp-<service>` as `nightly` and as the
+them to `ghcr.io/feryx-io/fcp-<service>` as `nightly` and as the
 commit's sha, then brings that stack up on a runner, carries a call
 through it, backs it up, drops it, restores it and calls again
 (`docs/NIGHTLY_STACK.md`). To run what it ran, with no Rust toolchain:

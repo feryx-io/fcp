@@ -125,7 +125,7 @@ Now that Docker is installed, you can deploy FCP:
 sudo apt-get install -y git
 
 # Clone with submodules
-git clone --recursive https://github.com/thevoiceguy/fcp.git
+git clone --recursive https://github.com/feryx-io/fcp.git
 cd fcp
 ```
 
@@ -433,7 +433,7 @@ docker compose version
 
 echo ""
 echo "=== Cloning FCP Repository ==="
-git clone --recursive https://github.com/thevoiceguy/fcp.git
+git clone --recursive https://github.com/feryx-io/fcp.git
 cd fcp
 
 echo ""

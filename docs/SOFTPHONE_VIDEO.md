@@ -1,6 +1,6 @@
 # Video in the softphone
 
-Designed 2026-11-08. Anvil (`thevoiceguy/anvil`) is audio-only by design: its
+Designed 2026-11-08. Anvil (`feryx-io/anvil`) is audio-only by design: its
 `docs/ARCHITECTURE.md` lists video as a non-goal, and `docs/SOFTPHONE.md` §5 sends
 conferences to dial-in or the WebRTC join page. This project gives Anvil video
 on two kinds of call:

@@ -353,5 +353,5 @@ API Request →
 ## Support
 
 For questions or issues:
-- GitHub Issues: https://github.com/thevoiceguy/fcp/issues
+- GitHub Issues: https://github.com/feryx-io/fcp/issues
 - Security Concerns: security@example.com

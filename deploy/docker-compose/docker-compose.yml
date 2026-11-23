@@ -88,7 +88,7 @@ services:
       - fcp-certs:/certs
 
   fcp-admin:
-    image: ghcr.io/thevoiceguy/fcp-admin:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-admin:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.admin
@@ -137,7 +137,7 @@ services:
 
   # The public API gateway in front of the admin.
   fcp-api-gateway:
-    image: ghcr.io/thevoiceguy/fcp-gateway:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-gateway:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.gateway
@@ -164,7 +164,7 @@ services:
 
   # Event streaming: every other service posts to its /ingest.
   fcp-events-server:
-    image: ghcr.io/thevoiceguy/fcp-events:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-events:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.events
@@ -205,7 +205,7 @@ services:
   # Registrar, B2BUA, routing and PBX features: where phones register and
   # calls are placed. SIP 5060, HTTP 8084, RTP 10000-10999, on the host.
   fcp-call-manager:
-    image: ghcr.io/thevoiceguy/fcp-call-manager:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-call-manager:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.call-manager
@@ -247,7 +247,7 @@ services:
 
   # The conference bridge. SIP 5074, HTTP 8090, RTP 20000-20999, on the host.
   fcp-conference:
-    image: ghcr.io/thevoiceguy/fcp-conference:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-conference:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.conference
@@ -289,7 +289,7 @@ services:
   # Browsers into conference rooms. HTTP 8095, SIP 5077, RTP 34000-35999,
   # on the host.
   fcp-webrtc-gw:
-    image: ghcr.io/thevoiceguy/fcp-webrtc-gw:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-webrtc-gw:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.webrtc-gw
@@ -319,7 +319,7 @@ services:
   # The standalone media server. HTTP 8085, HTTPS 8185, RTP 30000-30999,
   # on the host.
   fcp-media:
-    image: ghcr.io/thevoiceguy/fcp-media:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-media:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.media
@@ -348,7 +348,7 @@ services:
 
   # The CDR processor and the job workers.
   fcp-jobs:
-    image: ghcr.io/thevoiceguy/fcp-jobs:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-jobs:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.jobs
@@ -382,7 +382,7 @@ services:
 
   # Call flows (IVR). SIP 5070, HTTP 8086, RTP 22000-22999, on the host.
   fcp-ivr:
-    image: ghcr.io/thevoiceguy/fcp-ivr:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-ivr:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.ivr
@@ -418,7 +418,7 @@ services:
 
   # Voicemail. SIP 5072, HTTP 8087, RTP 24000-24999, on the host.
   fcp-voicemail:
-    image: ghcr.io/thevoiceguy/fcp-voicemail:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-voicemail:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.voicemail
@@ -454,7 +454,7 @@ services:
 
   # Presence and BLF. SIP 5076, HTTP 8092, on the host.
   fcp-presence:
-    image: ghcr.io/thevoiceguy/fcp-presence:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-presence:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.presence
@@ -486,7 +486,7 @@ services:
   # carriers. SIP 5078, health 8094, RTP 28000-28999, on the host; its
   # binds are flags, set here.
   fcp-sbc:
-    image: ghcr.io/thevoiceguy/fcp-sbc:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-sbc:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.sbc
@@ -525,7 +525,7 @@ services:
     # (docs/SPEECH.md). FCP_TTS=tts (the default) is Piper alone, small;
     # FCP_TTS=tts-full adds Kokoro and the local Whisper worker (PyTorch,
     # several GB), named in configs/fcp-tts-server.toml to be used.
-    image: ghcr.io/thevoiceguy/fcp-${FCP_TTS:-tts}:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-${FCP_TTS:-tts}:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.${FCP_TTS:-tts}
@@ -589,7 +589,7 @@ services:
   # call manager (docs/CAPACITY_AND_SURVIVABILITY.md). Off unless asked
   # for: `docker compose --profile registrar up -d`. SIP 5062, HTTP 8083.
   fcp-registrar:
-    image: ghcr.io/thevoiceguy/fcp-registrar:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-registrar:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.registrar

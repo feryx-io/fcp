@@ -258,7 +258,7 @@ jobs:
         run: |
           set -eo pipefail
           failed=""
-          for repo in thevoiceguy/siphon-rs thevoiceguy/forge-media; do
+          for repo in feryx-io/siphon-rs feryx-io/forge-media; do
             run=$(gh api "repos/$repo/actions/workflows/fuzz.yml/runs?status=completed&per_page=1" \
               --jq '.workflow_runs[0] | "\(.conclusion) \(.created_at) \(.html_url)"')
             set -- $run

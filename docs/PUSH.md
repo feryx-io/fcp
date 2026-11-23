@@ -12,7 +12,7 @@ delivered, pushes and waits for the app to come back.
 
 This document designs that for FCP and for Anvil, FCP's softphone
 (`docs/SOFTPHONE.md`), whose mobile app (Anvil's U4) works while it is
-open. It is Anvil's U5 (`thevoiceguy/anvil` `docs/APP.md`). Agreed
+open. It is Anvil's U5 (`feryx-io/anvil` `docs/APP.md`). Agreed
 2026-10-09 on every recommendation in §6.
 
 Progress: phase P1 done (v0.25.377). A REGISTER's Contact keeps its

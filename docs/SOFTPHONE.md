@@ -2,7 +2,7 @@
 
 Designed 2026-10-05. FCP serves desk phones, browsers joining conferences and
 API clients, but it has no softphone of its own and nothing a softphone app
-could sign in to. Anvil (`thevoiceguy/anvil`) is a cross-platform softphone
+could sign in to. Anvil (`feryx-io/anvil`) is a cross-platform softphone
 in Rust, built on the same SIP and media stacks as FCP: siphon-rs and
 forge-media. This document designs how Anvil becomes FCP's own client:
 

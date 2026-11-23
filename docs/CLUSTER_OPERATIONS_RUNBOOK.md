@@ -405,7 +405,7 @@ fail and its trunk registration is refused. `enable` takes it back.
 own stack is the customer's to stop.
 
 **Upgrading.** The site's releases are on its record and the Sites
-page. The site runs the cloud's images (`ghcr.io/thevoiceguy/fcp-<service>`,
+page. The site runs the cloud's images (`ghcr.io/feryx-io/fcp-<service>`,
 tagged `nightly` and by commit — the compose README's "Pull instead of
 build"); upgrade the cloud first, then
 the sites, and keep a site within one release of the cloud. The link's
