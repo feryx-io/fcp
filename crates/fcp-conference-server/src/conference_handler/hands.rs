@@ -304,44 +304,66 @@ impl ConferenceCallHandler {
         content_type: &'static str,
         body: String,
     ) {
-        // The INFO's CSeq is taken from the session's dialog as it is
-        // cloned, so two sent at once (a hand and the stage) differ.
-        let Some(mut dialog) = self.sessions.get_mut(&call_id).map(|mut s| {
-            let dialog = s.dialog.clone();
-            s.dialog.next_local_cseq();
-            dialog
-        }) else {
-            return;
-        };
-        let request = match fcp_sip::conference_relay::in_dialog_request(
-            &dialog,
-            sip_core::Method::Info,
-            &[
-                ("Info-Package".to_string(), package.to_string()),
-                ("Content-Type".to_string(), content_type.to_string()),
-            ],
-            body.as_bytes(),
-        ) {
-            Ok(request) => request,
-            Err(e) => {
-                warn!(call_id = %call_id, package, error = %e, "An INFO could not be built");
+        // A notice sent as the call is joined can reach the call manager
+        // before the room's 200 OK does, or the phone before its own: the
+        // dialog is not known there yet and the INFO is answered 481. It
+        // is sent again, a moment later, rather than lost.
+        for attempt in 1..=JOIN_NOTICE_ATTEMPTS {
+            // The INFO's CSeq is taken from the session's dialog as it is
+            // cloned, so two sent at once (a hand and the stage) differ.
+            let Some(mut dialog) = self.sessions.get_mut(&call_id).map(|mut s| {
+                let dialog = s.dialog.clone();
+                s.dialog.next_local_cseq();
+                dialog
+            }) else {
                 return;
+            };
+            let request = match fcp_sip::conference_relay::in_dialog_request(
+                &dialog,
+                sip_core::Method::Info,
+                &[
+                    ("Info-Package".to_string(), package.to_string()),
+                    ("Content-Type".to_string(), content_type.to_string()),
+                ],
+                body.as_bytes(),
+            ) {
+                Ok(request) => request,
+                Err(e) => {
+                    warn!(call_id = %call_id, package, error = %e, "An INFO could not be built");
+                    return;
+                }
+            };
+            match self
+                .uac
+                .inner()
+                .send_in_dialog_non_invite(&mut dialog, request)
+                .await
+            {
+                Ok(resp) if (200..300).contains(&resp.start_line().code()) => return,
+                Ok(resp) if resp.start_line().code() == 481 && attempt < JOIN_NOTICE_ATTEMPTS => {
+                    debug!(call_id = %call_id, package, attempt, "An INFO before the dialog was known: again");
+                    tokio::time::sleep(JOIN_NOTICE_RETRY).await;
+                }
+                Ok(resp) => {
+                    debug!(
+                        call_id = %call_id,
+                        package,
+                        code = resp.start_line().code(),
+                        "An INFO refused"
+                    );
+                    return;
+                }
+                Err(e) => {
+                    debug!(call_id = %call_id, package, error = %e, "An INFO failed");
+                    return;
+                }
             }
-        };
-        match self
-            .uac
-            .inner()
-            .send_in_dialog_non_invite(&mut dialog, request)
-            .await
-        {
-            Ok(resp) if (200..300).contains(&resp.start_line().code()) => {}
-            Ok(resp) => debug!(
-                call_id = %call_id,
-                package,
-                code = resp.start_line().code(),
-                "An INFO refused"
-            ),
-            Err(e) => debug!(call_id = %call_id, package, error = %e, "An INFO failed"),
         }
     }
 }
+
+/// How often an INFO answered 481 is sent, and how far apart: a notice
+/// sent as a call is joined may beat the 200 OK to the call manager and
+/// the phone.
+const JOIN_NOTICE_ATTEMPTS: u32 = 5;
+const JOIN_NOTICE_RETRY: std::time::Duration = std::time::Duration::from_millis(300);
