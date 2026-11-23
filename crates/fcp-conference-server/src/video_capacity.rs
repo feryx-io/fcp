@@ -846,7 +846,14 @@ impl VideoCapacity {
         // left to encode is not being composed (§5.6). Charging for them
         // would keep reserving a budget nothing spends.
         let idle = idle_flavors(video, &st);
-        for o in &st.outputs {
+        // A content channel with nothing shared draws and sends nothing:
+        // the room skips it until the next share, so it costs nothing.
+        let sharing = st.content.is_some();
+        for o in st
+            .outputs
+            .iter()
+            .filter(|o| sharing || o.view != forge_conference::video::View::Content)
+        {
             let mut live = false;
             for f in o.flavors.iter().filter(|f| !idle.contains(&f.flavor)) {
                 live = true;

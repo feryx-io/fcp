@@ -2578,7 +2578,13 @@ mod tests {
                 crate::video_capacity::Engine::Decode,
             )
         };
+        let host = forge_video::frame::MediaDevice::Host;
+        let encode = |cost: &crate::video_capacity::Cost| {
+            cost.on_engine(&host, crate::video_capacity::Engine::Encode)
+                + cost.on_engine(&host, crate::video_capacity::Engine::Compose)
+        };
         let presenting = decode(&capacity.room_cost(&video));
+        let presenting_encode = encode(&capacity.room_cost(&video));
 
         // A host ends it: the floor is free and the composite is a grid again.
         let stopped = stop_content(&room).unwrap();
@@ -2593,6 +2599,14 @@ mod tests {
         assert!(
             released < presenting,
             "a released screen is not charged: {released} decode units, {presenting} while presenting"
+        );
+        // Nor is the content channel, which draws nothing until the next
+        // share: on a two-thread host its 1080p encode alone would leave
+        // the next share no budget.
+        let released_encode = encode(&capacity.room_cost(&video));
+        assert!(
+            released_encode < presenting_encode,
+            "the idle content channel is not charged: {released_encode} encode and compose units, {presenting_encode} while presenting"
         );
 
         // The floor's story, as gateway sessions would hear it: Alice
