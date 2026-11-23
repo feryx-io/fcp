@@ -146,6 +146,14 @@ jobs:
             exit 0
           fi
           git fetch --quiet --depth 1 origin "$prev"
+          # A release published under another owner (before the move to
+          # feryx-io) has no images this run can read: start on this one,
+          # as with no earlier release, until a release here is good.
+          if ! git show "$prev:deploy/docker-compose/docker-compose.yml" \
+              | grep -q "image: $REGISTRY/$OWNER/fcp-"; then
+            echo "::notice::the previous release ($prev) is under another owner: the stack starts on this one"
+            exit 0
+          fi
           git restore --source="$prev" --staged --worktree -- .
           echo "sha=$prev" >> "$GITHUB_OUTPUT"
           echo "starting on $prev, release $(git show "$prev:Cargo.toml" | grep -m1 '^version')"
