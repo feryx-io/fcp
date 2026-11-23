@@ -69,6 +69,9 @@ struct Tenant {
     /// Lower-cased SIP names, extensions and devices' SIP names → person.
     names: HashMap<String, UserId>,
     people: HashMap<UserId, Person>,
+    /// Who was asked after and was not among the tenant's users when it
+    /// was read for them, so asking again does not read it again.
+    strangers: HashSet<UserId>,
     /// Which people each ringing call rings.
     ringing: HashMap<String, Vec<UserId>>,
 }
@@ -118,7 +121,7 @@ impl PeoplePresence {
     pub async fn of(&self, tenant: &TenantId, user: &UserId) -> Option<Presence> {
         let t = self.tenant(tenant);
         let mut t = t.lock().await;
-        self.ensure_read(tenant, &mut t).await;
+        self.ensure_knows(tenant, &mut t, user).await;
         let now = Instant::now();
         t.people
             .get(user)
@@ -141,7 +144,7 @@ impl PeoplePresence {
     pub async fn chosen_changed(&self, tenant: &TenantId, user: &UserId) {
         let t = self.tenant(tenant);
         let mut t = t.lock().await;
-        self.ensure_read(tenant, &mut t).await;
+        self.ensure_knows(tenant, &mut t, user).await;
         self.read_person_settings(tenant, &mut t, user).await;
         self.announce(tenant, &mut t).await;
     }
@@ -150,7 +153,7 @@ impl PeoplePresence {
     pub async fn set_idle(&self, tenant: &TenantId, user: &UserId, session: &str, idle: bool) {
         let t = self.tenant(tenant);
         let mut t = t.lock().await;
-        self.ensure_read(tenant, &mut t).await;
+        self.ensure_knows(tenant, &mut t, user).await;
         if let Some(p) = t.people.get_mut(user) {
             if idle {
                 p.idle
@@ -380,6 +383,21 @@ impl PeoplePresence {
         }
     }
 
+    /// As [`Self::ensure_read`], and the tenant read again when `user` is
+    /// not among its people: a user made since the last read. Without
+    /// this they had no presence until [`REREAD_EVERY`] came round: their
+    /// idleness was dropped and nothing they chose was announced.
+    async fn ensure_knows(&self, tenant: &TenantId, t: &mut Tenant, user: &UserId) {
+        self.ensure_read(tenant, t).await;
+        if t.people.contains_key(user) || t.strangers.contains(user) {
+            return;
+        }
+        self.read_tenant(tenant, t).await;
+        if !t.people.contains_key(user) {
+            t.strangers.insert(*user);
+        }
+    }
+
     /// Read the tenant whole, keeping what only events said (calls,
     /// ringing, idleness).
     async fn read_tenant(&self, tenant: &TenantId, t: &mut Tenant) {
@@ -464,6 +482,7 @@ impl PeoplePresence {
         }
         t.names = names;
         t.people = people;
+        t.strangers.clear();
         t.read_at = Some(Instant::now());
         self.read_registrations(tenant, t).await;
         debug!(tenant_id = %tenant, people = t.people.len(), "A tenant's presence read");
