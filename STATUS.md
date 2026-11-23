@@ -1976,7 +1976,7 @@ registrations, and takes its credentials. Proved at a call manager by
 `fcp-admin/tests/app_devices.rs`.
 
 The softphone (designed 2026-10-05, `docs/SOFTPHONE.md`): Anvil
-(`thevoiceguy/anvil`) as FCP's own client, desktop first: the app as a
+(`feryx-io/anvil`) as FCP's own client, desktop first: the app as a
 device with SIP credentials of its own, OAuth 2.0 for native apps (PKCE,
 loopback redirect) with rotated app sessions, `/me/softphone`, tenant
 branding on Anvil's `BRANDING.md` contract, `/me/calls`, `/me/directory`
