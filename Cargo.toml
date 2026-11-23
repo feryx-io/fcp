@@ -13,7 +13,7 @@ edition = "2021"
 version = "0.25.620"
 license = "MIT OR Apache-2.0"
 authors = ["FCP Team"]
-repository = "https://github.com/feryx-io/fcp.git"
+repository = "https://github.com/thevoiceguy/fcp.git"
 
 [workspace.dependencies]
 anyhow = "1"

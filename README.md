@@ -8,6 +8,10 @@ multi-region operation, on a SIP stack and a media stack of its own. It
 is an alternative to FreeSWITCH, Kamailio and Asterisk with memory safety,
 async I/O and observability built in.
 
+> **Status: pre-release.** FCP is under active development: its APIs,
+> configuration and database schema still change between releases, and it
+> is not yet recommended for production use.
+
 **What is done, partial or absent is in [STATUS.md](STATUS.md)**, the
 maintained source of truth. This file is the map.
 
@@ -122,8 +126,11 @@ the assistant that helps maintain it.
 
 ## License
 
-No license file is committed to this repository yet; until one is, the
-code is the owner's. Ask before redistributing.
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE)
+or [MIT license](LICENSE-MIT), at your option. Unless you state otherwise,
+any contribution you intentionally submit for inclusion in FCP, as defined
+in the Apache-2.0 license, is dual licensed as above, without any
+additional terms or conditions.
 
 ## Support
 
