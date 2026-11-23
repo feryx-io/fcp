@@ -490,3 +490,25 @@ async fn a_status_clears_itself_when_its_time_comes() {
     );
     assert!(store.get_chosen_status(&user).await.unwrap().is_none());
 }
+
+/// A user made after the tenant's presence was read is known at once, not
+/// when the tenant is next read: before v0.25.627 their idleness was
+/// dropped and they were shown as what they chose, signed in or not.
+#[tokio::test]
+async fn a_user_made_after_the_tenant_was_read_has_presence_at_once() {
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let (_, first) = signed_in(&app, "presence-first").await;
+    // Reads the tenant's people.
+    assert_eq!(shown(&app, &first).await["presence"]["state"], "offline");
+
+    let (_, late) = signed_in(&app, "presence-late").await;
+    assert_eq!(
+        shown(&app, &late).await["presence"]["state"],
+        "offline",
+        "known, with nothing registered; not unknown and shown as chosen"
+    );
+    let late_id: fcp_core::UserId = shown_user_id(&app, "presence-late").await.parse().unwrap();
+    assert!(people(&app).of(&app.tenant_a, &late_id).await.is_some());
+}
