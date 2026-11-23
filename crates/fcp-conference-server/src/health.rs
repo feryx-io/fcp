@@ -3646,6 +3646,10 @@ fn local_video_control(
     let room_number = key.room.as_str();
     let room = local_video_room(state, key)?;
     let mut json = control(&room).map_err(|e| (video_control_status(&e), e.to_string()))?;
+    // A host's stop frees the floor and the decode reserved for it:
+    // re-price now, not at the next five-second tick, so the presenter's
+    // next share is not refused for a budget nothing is using.
+    state.conference_handler.recompute_video_capacity();
     if let Some(map) = json.as_object_mut() {
         map.insert("room".into(), room_number.into());
     }
