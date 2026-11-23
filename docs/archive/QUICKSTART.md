@@ -11,7 +11,7 @@
 
 ```bash
 # Clone with submodules
-git clone --recursive https://github.com/thevoiceguy/fcp.git
+git clone --recursive https://github.com/feryx-io/fcp.git
 cd fcp
 
 # Build all workspace crates

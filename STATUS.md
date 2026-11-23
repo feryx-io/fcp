@@ -989,7 +989,7 @@ first fuzzing either has done in CI; FCP's weekly CI gains
 `submodule-nightlies`, which reads each submodule's latest completed
 Fuzz run from the GitHub API and fails when it is not a success or is
 two days old. Phase 2 done (v0.25.266): the Images workflow pushes the
-fourteen images to `ghcr.io/thevoiceguy/fcp-<name>` as `nightly` and the
+fourteen images to `ghcr.io/feryx-io/fcp-<name>` as `nightly` and the
 sha, every compose service names its image beside its build
 (`FCP_IMAGE_TAG`), and a `stack` job pulls them, brings the stack up,
 runs `compose_live.rs` (health, a tenant and users through the API,

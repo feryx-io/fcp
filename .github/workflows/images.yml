@@ -1,6 +1,6 @@
 # The shipped stack, built, published and run (docs/NIGHTLY_STACK.md phase
 # 2). Every night: the fifteen images are built one to a runner and
-# pushed to ghcr.io/thevoiceguy/fcp-<name> as `nightly` and as the commit
+# pushed to ghcr.io/feryx-io/fcp-<name> as `nightly` and as the commit
 # sha; then one runner pulls them, brings the stack up with the shipped
 # .env, carries a call through it with the testkit's phone, backs it up,
 # drops it, restores it and calls again. What the stack test over the
@@ -34,7 +34,7 @@ env:
   # this variable to configure them anyway.
   CMAKE_POLICY_VERSION_MINIMUM: "3.5"
   REGISTRY: ghcr.io
-  OWNER: thevoiceguy
+  OWNER: feryx-io
   IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
 
 jobs:

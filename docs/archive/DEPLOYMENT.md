@@ -28,7 +28,7 @@ This guide covers deploying FCP (Ferrous Communications Platform) in various env
 ### Step 1: Clone Repository
 
 ```bash
-git clone --recursive https://github.com/thevoiceguy/fcp.git
+git clone --recursive https://github.com/feryx-io/fcp.git
 cd fcp
 ```
 
@@ -565,7 +565,7 @@ docker-compose logs -f fcp-server
 ### Support
 
 - **Documentation**: https://fcp-docs.example.com
-- **Issues**: https://github.com/thevoiceguy/fcp/issues
+- **Issues**: https://github.com/feryx-io/fcp/issues
 - **Community**: https://discord.gg/fcp
 
 ---

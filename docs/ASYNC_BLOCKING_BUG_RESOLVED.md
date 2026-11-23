@@ -209,4 +209,4 @@ Result: Calls now establish successfully with two-way audio.
 
 ## Contact
 
-For questions about this issue, see the FCP repository: https://github.com/thevoiceguy/fcp
+For questions about this issue, see the FCP repository: https://github.com/feryx-io/fcp

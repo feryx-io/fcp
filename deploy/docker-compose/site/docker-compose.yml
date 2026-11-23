@@ -80,7 +80,7 @@ services:
   # site's copy of the tenant's configuration. What the cloud owns is
   # refused here with the cloud's address (`[api] managed_by`).
   fcp-admin:
-    image: ghcr.io/thevoiceguy/fcp-admin:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-admin:${FCP_IMAGE_TAG:-local}
     build:
       context: ../../..
       dockerfile: deploy/docker-compose/Dockerfile.admin
@@ -123,7 +123,7 @@ services:
   # trunk to the cloud's SBC over TLS and carries the site's calls,
   # cloud or no cloud (docs/HYBRID_CONTROL_PLANE.md §3.6, §3.8).
   fcp-call-manager:
-    image: ghcr.io/thevoiceguy/fcp-call-manager:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-call-manager:${FCP_IMAGE_TAG:-local}
     build:
       context: ../../..
       dockerfile: deploy/docker-compose/Dockerfile.call-manager
@@ -166,7 +166,7 @@ services:
   # the certificate, the site's secret, the sync cursor — is the
   # link-data volume: keep it (docs/SITE_SETUP.md, "Backing up").
   fcp-link:
-    image: ghcr.io/thevoiceguy/fcp-link:${FCP_IMAGE_TAG:-local}
+    image: ghcr.io/feryx-io/fcp-link:${FCP_IMAGE_TAG:-local}
     build:
       context: ../../..
       dockerfile: deploy/docker-compose/Dockerfile.link

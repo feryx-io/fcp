@@ -1482,7 +1482,7 @@ async fn service_provider_config() -> Response {
         StatusCode::OK,
         &json!({
             "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"],
-            "documentationUri": "https://github.com/thevoiceguy/fcp/blob/main/docs/SCIM.md",
+            "documentationUri": "https://github.com/feryx-io/fcp/blob/main/docs/SCIM.md",
             "patch": { "supported": true },
             "bulk": { "supported": false, "maxOperations": 0, "maxPayloadSize": 0 },
             "filter": { "supported": true, "maxResults": MAX_COUNT },

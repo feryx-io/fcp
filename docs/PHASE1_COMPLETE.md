@@ -540,7 +540,7 @@ The Ferrous Communications Platform has successfully completed all Phase 1 deliv
 ### Step 1: Environment Setup
 ```bash
 # Clone repository
-git clone --recursive https://github.com/thevoiceguy/fcp.git
+git clone --recursive https://github.com/feryx-io/fcp.git
 cd fcp
 
 # Configure environment

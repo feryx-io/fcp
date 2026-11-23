@@ -18,7 +18,7 @@ If you're cloning this repository, you need to initialize the git submodules (si
 
 ```bash
 # Clone with submodules
-git clone --recursive https://github.com/thevoiceguy/fcp.git
+git clone --recursive https://github.com/feryx-io/fcp.git
 
 # Or if already cloned without --recursive:
 git submodule update --init --recursive
@@ -172,7 +172,7 @@ fcp/
 │   └── fcp-jobs/                 # Async job worker (the CDR processor, webhooks, cleanup)
 │
 ├── external/                     # ── Git submodules (both public repos) ──
-│   ├── siphon-rs/                # SIP stack — https://github.com/thevoiceguy/siphon-rs
+│   ├── siphon-rs/                # SIP stack — https://github.com/feryx-io/siphon-rs
 │   │   ├── CLAUDE.md             # siphon-rs specific documentation
 │   │   ├── bins/
 │   │   │   └── siphond/          # Multi-mode SIP testing daemon
@@ -191,7 +191,7 @@ fcp/
 │   │       ├── sip-sdp/          # SDP support
 │   │       ├── sip-observe/      # Observability
 │   │       └── sip-testkit/      # Test utilities
-│   └── forge-media/              # Media stack — https://github.com/thevoiceguy/forge-media
+│   └── forge-media/              # Media stack — https://github.com/feryx-io/forge-media
 │       ├── CLAUDE.MD             # forge-media specific documentation
 │       ├── bins/                 # forge-sip-server, forge-test-daemon
 │       ├── crates/               # forge-core, forge-rtp, forge-sdp, forge-codecs,
@@ -527,8 +527,8 @@ proxy worker. The vision document keeps them as history; STATUS.md is authoritat
 
 FCP links two git submodules under `external/`, each maintained as its own repository:
 
-- **siphon-rs** (SIP stack) — https://github.com/thevoiceguy/siphon-rs
-- **forge-media** (media stack) — https://github.com/thevoiceguy/forge-media, which itself
+- **siphon-rs** (SIP stack) — https://github.com/feryx-io/siphon-rs
+- **forge-media** (media stack) — https://github.com/feryx-io/forge-media, which itself
   contains siphon-rs as a nested submodule (hence `--recursive` everywhere)
 
 Both repositories are **public**, so no credentials are needed to clone them. CI checks
@@ -542,7 +542,7 @@ siphon-rs release tag** (see `external/forge-media/crates/forge-sdp/Cargo.toml`)
 root `Cargo.toml` then patches that git source to the local submodule checkout:
 
 ```toml
-[patch."https://github.com/thevoiceguy/siphon-rs"]
+[patch."https://github.com/feryx-io/siphon-rs"]
 sip-sdp = { path = "external/siphon-rs/crates/sip-sdp" }
 ```
 

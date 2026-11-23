@@ -66,7 +66,7 @@ cd fcp
 3. Add upstream remote:
 
 ```bash
-git remote add upstream https://github.com/thevoiceguy/fcp.git
+git remote add upstream https://github.com/feryx-io/fcp.git
 ```
 
 4. Create a branch:
@@ -108,7 +108,7 @@ cargo test -- --nocapture
 ### 1. Check for Existing Issues
 
 Before starting work, check if there's an existing issue:
-- Browse [open issues](https://github.com/thevoiceguy/fcp/issues)
+- Browse [open issues](https://github.com/feryx-io/fcp/issues)
 - If none exists, create one describing the problem or feature
 - Wait for maintainer feedback before starting major work
 
@@ -418,8 +418,8 @@ cargo doc --no-deps 2>&1 | grep warning
 ### Getting Help
 
 - Check the [documentation](https://fcp-docs.example.com)
-- Search [existing issues](https://github.com/thevoiceguy/fcp/issues)
-- Ask in [GitHub Discussions](https://github.com/thevoiceguy/fcp/discussions)
+- Search [existing issues](https://github.com/feryx-io/fcp/issues)
+- Ask in [GitHub Discussions](https://github.com/feryx-io/fcp/discussions)
 - Join our [Discord server](https://discord.gg/fcp)
 
 ### Recognition
