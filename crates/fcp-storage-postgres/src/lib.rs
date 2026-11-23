@@ -1774,7 +1774,8 @@ impl TenantStore for PostgresStorage {
         .bind(serde_json::to_value(&tenant.diagnostics)?)
         .bind(serde_json::to_value(&tenant.video)?)
         .execute(self.writes())
-        .await?;
+        .await
+        .map_err(map_tenant_write_error)?;
 
         debug!(id = %tenant.id, name = %tenant.name, "Tenant stored");
         Ok(())
@@ -3132,6 +3133,19 @@ fn bind_cdr_filters<'q>(
 // ============================================================================
 // Helper Functions for Row Conversion
 // ============================================================================
+
+/// Map unique-constraint violations on tenant writes (two creates racing
+/// for one name) to Conflict (409).
+fn map_tenant_write_error(err: sqlx::Error) -> anyhow::Error {
+    if let Some(db_err) = err.as_database_error() {
+        if db_err.code().as_deref() == Some("23505") {
+            return anyhow::Error::new(fcp_core::Error::Storage(fcp_core::StorageError::Conflict(
+                "a tenant with this name already exists".to_string(),
+            )));
+        }
+    }
+    err.into()
+}
 
 /// Map unique-constraint violations on rate-plan writes to Conflict (409).
 fn map_rate_plan_write_error(err: sqlx::Error) -> anyhow::Error {
