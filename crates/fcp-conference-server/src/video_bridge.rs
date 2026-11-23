@@ -2563,6 +2563,23 @@ mod tests {
             serde_json::json!("presentation")
         );
 
+        // The budget charges Alice's screen while she presents; once the
+        // floor is free her content source stays (she may share again) but
+        // nothing of it is decoded, so it is no longer charged.
+        let capacity = crate::video_capacity::VideoCapacity::host(
+            vec![forge_core::VideoCodec::VP8],
+            crate::video_capacity::CostTable::phase0(),
+            64,
+            0.8,
+        );
+        let decode = |cost: &crate::video_capacity::Cost| {
+            cost.on_engine(
+                &forge_video::frame::MediaDevice::Host,
+                crate::video_capacity::Engine::Decode,
+            )
+        };
+        let presenting = decode(&capacity.room_cost(&video));
+
         // A host ends it: the floor is free and the composite is a grid again.
         let stopped = stop_content(&room).unwrap();
         assert_eq!(stopped["participant"], serde_json::json!("alice"));
@@ -2572,6 +2589,11 @@ mod tests {
         })
         .await;
         assert!(video.content().is_none());
+        let released = decode(&capacity.room_cost(&video));
+        assert!(
+            released < presenting,
+            "a released screen is not charged: {released} decode units, {presenting} while presenting"
+        );
 
         // The floor's story, as gateway sessions would hear it: Alice
         // granted, Carol refused (hers alone), Alice released by the host.

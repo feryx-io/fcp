@@ -815,11 +815,17 @@ impl VideoCapacity {
         let fps = st.target_fps.max(1);
         let mut cost = Cost::zero();
         let participants = video.participants();
+        // A shared screen is decoded only while its participant holds the
+        // floor: without it the room refuses its packets. A share stopped
+        // (released by re-INVITE) keeps its source until the content idle
+        // timeout, and charging it would refuse the next share.
+        let presenter = st.content.as_ref().map(|c| c.participant_id.as_str());
         for p in &participants {
+            let presenting = presenter == Some(p.participant_id.as_str());
             for s in p
                 .source
                 .iter()
-                .chain(p.content.iter())
+                .chain(p.content.iter().filter(|_| presenting))
                 .filter(|s| s.decoding)
             {
                 let resolution = if s.resolution.pixels() == 0 {
