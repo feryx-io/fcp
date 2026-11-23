@@ -1909,6 +1909,7 @@ impl ConferenceCallHandler {
             self.content_claims.remove(&claim_key);
             if video.release_content_with(&tile, forge_conference::video::ContentStop::Ended) {
                 debug!(room = %room_number, peer = %node, "The peer's share ended; floor released");
+                self.recompute_video_capacity();
             }
             return Ok(true);
         };
@@ -8656,6 +8657,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     ContentChange::Stopped => {
                         if video.release_content(&session.participant_id) {
                             info!(call_id = %call_id, "re-INVITE: the presenter stopped sharing; floor released");
+                            // Its decode was reserved when it was granted:
+                            // re-price now, not at the next five-second
+                            // tick, so a share at once after is not
+                            // refused for a budget nothing is using.
+                            self.recompute_video_capacity();
                         }
                     }
                     ContentChange::SharesAgain => {
