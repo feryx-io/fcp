@@ -16,6 +16,15 @@
 //! for the far end's answer. The bound also keeps the node's loopback legs,
 //! where one Call-ID is both a UAC and a UAS dialog of the same node, from
 //! waiting on themselves for longer than that.
+//!
+//! A response waits only for the responses before it in its call (a 180
+//! before its 200), never for a request: a request's handling can be
+//! waiting on that very response. A room's floor INFO relayed to the
+//! phone waited for the dialog the phone's re-INVITE held while it waited
+//! for the room's 200, and the 200 waited behind the INFO, so every share
+//! and stop took the full bound and the room resent its 200 for an ACK
+//! that came late. A request still waits for every message before it,
+//! responses included, so a BYE is not handled before the 200 it follows.
 
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -23,7 +32,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tracing::info;
 
 /// How long a message waits for the one before it in its call before it
@@ -37,10 +46,16 @@ pub struct CallLanes {
     inner: Arc<Inner>,
 }
 
+/// Set once a message's handling is done (or its task gone).
+type Done = watch::Receiver<bool>;
+
 struct Inner {
-    /// By Call-ID: the last message dispatched (its number) and the signal
-    /// the next message of the call waits on.
-    tails: DashMap<String, (u64, oneshot::Receiver<()>)>,
+    /// By Call-ID: the last request dispatched (its number) and the signal
+    /// for its end, which the next request waits on.
+    requests: DashMap<String, (u64, Done)>,
+    /// By Call-ID: the last response dispatched, which every later message
+    /// of the call waits on.
+    responses: DashMap<String, (u64, Done)>,
     next: AtomicU64,
     overtake_after: Duration,
 }
@@ -55,7 +70,8 @@ impl CallLanes {
     pub fn new(overtake_after: Duration) -> Self {
         Self {
             inner: Arc::new(Inner {
-                tails: DashMap::new(),
+                requests: DashMap::new(),
+                responses: DashMap::new(),
                 next: AtomicU64::new(0),
                 overtake_after,
             }),
@@ -74,19 +90,41 @@ impl CallLanes {
             tokio::spawn(handle);
             return;
         };
+        let response = payload.starts_with(b"SIP/2.0 ");
         let seq = self.inner.next.fetch_add(1, Ordering::Relaxed);
-        let (done, after_this) = oneshot::channel();
-        let before = self
-            .inner
-            .tails
-            .insert(call_id.clone(), (seq, after_this))
-            .map(|(_, before)| before);
+        let (done, after_this) = watch::channel(false);
+        // What this message waits for: the call's last response, and for a
+        // request the call's last request as well.
+        let mut before: Vec<Done> = Vec::with_capacity(2);
+        if response {
+            if let Some((_, last)) = self
+                .inner
+                .responses
+                .insert(call_id.clone(), (seq, after_this))
+            {
+                before.push(last);
+            }
+        } else {
+            if let Some(last) = self.inner.responses.get(&call_id) {
+                before.push(last.1.clone());
+            }
+            if let Some((_, last)) = self
+                .inner
+                .requests
+                .insert(call_id.clone(), (seq, after_this))
+            {
+                before.push(last);
+            }
+        }
         let inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
-            if let Some(before) = before {
-                // An error is the message before having finished without a
-                // word (its task gone): nothing left to wait for.
-                if tokio::time::timeout(inner.overtake_after, before)
+            if !before.is_empty() {
+                let all = futures::future::join_all(before.iter_mut().map(|rx| async move {
+                    // An error is the message before having finished
+                    // without a word (its task gone): nothing to wait for.
+                    let _ = rx.wait_for(|done| *done).await;
+                }));
+                if tokio::time::timeout(inner.overtake_after, all)
                     .await
                     .is_err()
                 {
@@ -98,18 +136,30 @@ impl CallLanes {
                 }
             }
             handle.await;
-            let _ = done.send(());
-            inner.tails.remove_if(&call_id, |_, (tail, _)| *tail == seq);
+            let _ = done.send(true);
+            let lane = if response {
+                &inner.responses
+            } else {
+                &inner.requests
+            };
+            lane.remove_if(&call_id, |_, (tail, _)| *tail == seq);
         });
     }
 
     /// Calls with a message being handled.
     pub fn len(&self) -> usize {
-        self.inner.tails.len()
+        let mut calls: std::collections::HashSet<String> = self
+            .inner
+            .requests
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+        calls.extend(self.inner.responses.iter().map(|e| e.key().clone()));
+        calls.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.tails.is_empty()
+        self.inner.requests.is_empty() && self.inner.responses.is_empty()
     }
 }
 
@@ -136,6 +186,68 @@ pub fn call_id_of(payload: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+    use tokio::sync::oneshot;
+
+    fn response(call_id: &str, what: &str) -> Bytes {
+        Bytes::from(format!(
+            "SIP/2.0 200 OK\r\nVia: SIP/2.0/UDP x;branch=z9hG4bK{what}\r\nCall-ID: {call_id}\r\nCSeq: 2 INVITE\r\n\r\n{what}"
+        ))
+    }
+
+    /// A request whose handling waits on a response of its own call (a
+    /// floor INFO relayed while the re-INVITE it waits on is out) does not
+    /// hold that response: the response is taken at once, not after the
+    /// bound.
+    #[tokio::test]
+    async fn a_response_is_not_held_behind_a_request_waiting_on_it() {
+        let lanes = CallLanes::new(Duration::from_secs(5));
+        let (answer, answered) = oneshot::channel::<()>();
+        let (handled, mut done) = tokio::sync::mpsc::unbounded_channel();
+        let info = handled.clone();
+        lanes.dispatch(&message("one@h", "info"), async move {
+            let _ = answered.await;
+            let _ = info.send("info");
+        });
+        lanes.dispatch(&response("one@h", "200"), async move {
+            let _ = answer.send(());
+            let _ = handled.send("200");
+        });
+        let started = std::time::Instant::now();
+        assert_eq!(done.recv().await, Some("200"));
+        assert_eq!(done.recv().await, Some("info"));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "held for {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A request still waits for a response before it in its call: a BYE
+    /// is not handled ahead of the 200 it follows.
+    #[tokio::test]
+    async fn a_request_waits_for_the_response_before_it() {
+        let lanes = CallLanes::new(Duration::from_secs(5));
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (all_done, mut finished) = tokio::sync::mpsc::unbounded_channel();
+        for (payload, what, takes) in [
+            (response("one@h", "200"), "200", 100),
+            (message("one@h", "bye"), "bye", 0),
+        ] {
+            let order = Arc::clone(&order);
+            let all_done = all_done.clone();
+            lanes.dispatch(&payload, async move {
+                tokio::time::sleep(Duration::from_millis(takes)).await;
+                order.lock().unwrap().push(what);
+                let _ = all_done.send(());
+            });
+        }
+        for _ in 0..2 {
+            finished.recv().await;
+        }
+        assert_eq!(*order.lock().unwrap(), ["200", "bye"]);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(lanes.is_empty(), "{} lanes left", lanes.len());
+    }
 
     fn message(call_id: &str, what: &str) -> Bytes {
         Bytes::from(format!(
