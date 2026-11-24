@@ -761,6 +761,12 @@ async fn run() -> Result<()> {
         }
     };
     exemptions(None).install();
+    // A source that keeps failing authentication is blocked
+    // (`docs/EDGE_SECURITY.md` §2.8).
+    fcp_sip::auth_block::install(
+        sbc_config.security.max_auth_failures_per_source,
+        sbc_config.security.auth_block_secs,
+    );
 
     let enforcement_for_tcp = Arc::clone(&enforcement_handler);
     let handler_dyn: Arc<dyn InboundMessageHandler> =

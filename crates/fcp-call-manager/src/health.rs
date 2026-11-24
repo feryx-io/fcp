@@ -418,6 +418,9 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
                 "evictions": stats.evictions,
             })
         }),
+        // Sources blocked for failing authentication
+        // (docs/EDGE_SECURITY.md §2.8); null when blocking is off.
+        "auth_block": fcp_sip::auth_block::json(),
         "admission": {
             "concurrent_calls": state.admission.concurrent_calls(),
             "current_cps": state.admission.current_cps(),
@@ -1175,6 +1178,10 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
         &fcp_sbc_core::AdmissionCounters::global().prometheus(&format!("node=\"{node}\"")),
     );
     body.push_str(&admission_gauges(&state.admission, &node));
+    // Sources blocked for failing authentication (docs/EDGE_SECURITY.md §2.8).
+    body.push_str(&fcp_sip::auth_block::prometheus(&format!(
+        "node=\"{node}\""
+    )));
     // What the node keeps for calls (#344).
     if let Some(handler) = &state.sip_handler {
         let held = handler.held();

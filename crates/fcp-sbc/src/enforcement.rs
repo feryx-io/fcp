@@ -128,6 +128,11 @@ impl InboundMessageHandler for SbcEnforcementHandler {
         stream: Option<mpsc::Sender<Bytes>>,
         peer_identity: Option<Arc<sip_transport::PeerIdentity>>,
     ) -> anyhow::Result<()> {
+        // A source that kept failing authentication is told nothing until
+        // its block ends (`docs/EDGE_SECURITY.md` §2.8).
+        if !fcp_sip::auth_block::admit(peer.ip()) {
+            return Ok(());
+        }
         // 0. SIP responses bypass security enforcement — they are replies to
         //    our own outbound requests and must reach the transaction layer.
         //    However, ingress HMR is still applied so trunk-specific header

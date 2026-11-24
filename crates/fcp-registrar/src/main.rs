@@ -165,6 +165,12 @@ async fn main() -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("[sip] trusted_sources: {e}"))?,
         )
         .install();
+    // A source that keeps failing authentication is blocked
+    // (`docs/EDGE_SECURITY.md` §2.8).
+    fcp_sip::auth_block::install(
+        config.sip.max_auth_failures_per_source,
+        config.sip.auth_block_secs,
+    );
     let (transport_dispatcher, _udp_socket) =
         transport::start_transports(&transport_config, tx).await?;
 
@@ -369,6 +375,11 @@ async fn handle_packet(
     admission: &Arc<dyn fcp_sip::admission::NodeAdmission>,
     packet: InboundPacket,
 ) {
+    // A source that kept failing authentication is told nothing until its
+    // block ends (`docs/EDGE_SECURITY.md` §2.8).
+    if !fcp_sip::auth_block::admit(packet.peer().ip()) {
+        return;
+    }
     // Try parsing as a request
     if let Some(req) = parse_request(packet.payload()) {
         let ctx = TransportContext::new(

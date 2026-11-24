@@ -472,6 +472,67 @@ logs and accepts it instead, for a client or a proxy on the way that signs
 another form of the address. SIPp is one: it signs `sip:<host>:<port>`
 unless given `-auth_uri`.
 
+### 2.8 A source may fail authentication for ever — fixed (v0.25.634)
+
+Found on D8 (`docs/DEEP_TESTING.md`). One internet credential scanner sent
+the node 35 million REGISTERs between 2026-10-25 and 2026-11-11, about 24 a
+second, guessing passwords for names it made up. That is under every limit
+the node had: the per-source message rate is 200 a second, and the
+per-source REGISTER rate is about how fast, not about whether anything
+worked. Every message was parsed, looked up in the database and answered,
+and until v0.25.532 every one was also written to `sip_trace_messages`,
+which filled the disk.
+
+Since v0.25.634 a source that fails digest authentication
+`max_auth_failures_per_source` times within a minute (default 20) is
+blocked for `auth_block_secs` (default 900, at most a day). While it is
+blocked, every message from it is dropped by the node's inbound handler
+before the parser (`fcp_sip::auth_block::admit`), so it costs no lookup and
+no answer, and the source is told nothing. Dropping it in siphon-rs's
+transport, before the copy into the handler's queue, would be cheaper
+still; that waits for FCP's move to the renamed `siphon-*` crates. The setting is in
+`[sip]` on the call manager and the standalone registrar and in
+`[core.security]` on the SBC; `0` turns it off. `fcp_sip::auth_block` keeps
+the counts and the blocks in each process's memory, so each node blocks for
+itself.
+
+A block refuses everyone behind an address, a whole office behind one NAT,
+so what counts as a failure is narrow:
+
+- **Only an answer to a challenge this node issued** and that is still live.
+  A request with no credentials is the first half of every sign-in, and a
+  nonce from anywhere else could come from anyone. Holding one of this
+  node's nonces proves the source received the 401, so a forged UDP source
+  address cannot get a stranger's phone blocked.
+- **Only wrong credentials**: a digest that does not match, a user who does
+  not exist, another realm. Right credentials on a stale nonce are not a
+  failure.
+- **Never from a source exempt from the per-source rate**
+  (`fcp_sip::ingress`): trusted sources and edges, trunks, cluster members
+  and bound sites carry other people's traffic. Behind an SBC the call
+  manager therefore never blocks; the SBC does.
+
+A phone with a wrong password retries every few minutes at most, which is
+far below 20 a minute. A client that retries a 401 on a fresh nonce, as
+siphon-rs's UAC does twice, spends two failures on one attempt.
+
+REGISTER, INVITE (including while the store is away) and the
+`message-summary` and shared-line SUBSCRIBEs are counted. The presence
+server's SUBSCRIBE and PUBLISH gate is not yet: its handler is not told
+where a request came from. A source it would have counted is still blocked
+for everything once REGISTER or INVITE has counted it.
+
+The call manager reports blocks on `/status` (`auth_block`: the sources
+blocked now with the seconds left, `blocks_total`, `dropped_total`) and on
+`/metrics` (`fcp_sip_auth_blocked_sources`, `fcp_sip_auth_blocks_total`,
+`fcp_sip_auth_blocked_dropped_total`), and each block and its end are
+logged. A block cannot be lifted early except by a restart; there is no
+list shared across nodes. Proved by
+`fcp-call-manager/tests/calls.rs`
+`a_source_that_keeps_failing_authentication_is_blocked` and
+`fcp_sip::auth`'s
+`only_wrong_credentials_on_our_own_challenge_count_toward_a_block`.
+
 ## 3. Goals
 
 1. A call is placed by someone the node has authenticated, not by

@@ -2012,6 +2012,12 @@ async fn run() -> Result<()> {
         exempt = exempt.check("cluster members", cm.sip_peer_check());
     }
     exempt.install();
+    // A source that keeps failing authentication is blocked
+    // (`docs/EDGE_SECURITY.md` §2.8).
+    fcp_sip::auth_block::install(
+        config.sip.max_auth_failures_per_source,
+        config.sip.auth_block_secs,
+    );
 
     let handler_dyn: Arc<dyn InboundMessageHandler> =
         Arc::clone(&handler) as Arc<dyn InboundMessageHandler>;
