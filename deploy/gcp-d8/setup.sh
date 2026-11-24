@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run on the D8 server as root by up.sh, with a GHCR token on stdin:
+# Run on the D8 server as root by up.sh:
 #   setup.sh <domain> <email, or empty> <public address>
 # Idempotent: the secrets are made once into /opt/d8/secrets.env and kept,
 # the configurations are edited again from the copy up.sh just unpacked.
@@ -74,11 +74,8 @@ fi
 mkdir -p /etc/letsencrypt/renewal-hooks/deploy
 ln -sf $D8/gcp-d8/install-certs.sh /etc/letsencrypt/renewal-hooks/deploy/fcp-d8.sh
 
-# The images, then nothing of the token left behind.
-docker login ghcr.io -u fcp-d8 --password-stdin
+# The images: public on ghcr.io/feryx-io, so no login.
 docker compose pull -q
-docker logout ghcr.io
-rm -f /root/.docker/config.json
 
 docker compose up -d certs
 docker compose wait certs >/dev/null || true

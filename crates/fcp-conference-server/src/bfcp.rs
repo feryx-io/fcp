@@ -141,6 +141,10 @@ struct Inner {
 pub struct Floors {
     inner: Mutex<Inner>,
     udp: OnceLock<Arc<UdpSocket>>,
+    /// Called once an endpoint has given a floor up ([`set_on_release`]).
+    ///
+    /// [`set_on_release`]: Self::set_on_release
+    on_release: OnceLock<Box<dyn Fn() + std::marker::Send + Sync>>,
 }
 
 impl Default for Floors {
@@ -158,6 +162,22 @@ impl Floors {
                 ..Default::default()
             }),
             udp: OnceLock::new(),
+            on_release: OnceLock::new(),
+        }
+    }
+
+    /// What to do once an endpoint has given its floor up or said
+    /// goodbye: the conference re-prices its video budget then, not at
+    /// its next tick, so a share straight after is not refused for a
+    /// budget the released one no longer uses. Set once; later calls are
+    /// ignored.
+    pub fn set_on_release(&self, f: Box<dyn Fn() + std::marker::Send + Sync>) {
+        let _ = self.on_release.set(f);
+    }
+
+    fn released(&self) {
+        if let Some(f) = self.on_release.get() {
+            f();
         }
     }
 
@@ -377,6 +397,7 @@ impl Floors {
     /// A datagram from an endpoint.
     pub fn datagram(&self, from: SocketAddr, bytes: &[u8]) {
         let now = Instant::now();
+        let mut released = false;
         let sends = {
             let mut inner = self.lock();
             let Ok(header) = Header::parse(bytes) else {
@@ -421,7 +442,7 @@ impl Floors {
                 }
                 UdpInbound::Stray => {}
                 UdpInbound::Request | UdpInbound::Unreadable => {
-                    process(
+                    released = process(
                         rf,
                         Transport::Unreliable,
                         bytes,
@@ -433,6 +454,11 @@ impl Floors {
             }
             sends
         };
+        // Re-priced before the answer goes: an endpoint that shares again
+        // as soon as it hears Released finds the budget given back.
+        if released {
+            self.released();
+        }
         self.send_all(sends);
     }
 
@@ -468,9 +494,15 @@ impl Floors {
                 *slot = Some(tx.clone());
             }
             let mut sends = Vec::new();
-            process(rf, Transport::Reliable, &bytes, None, now, &mut sends);
-            sends
+            let released = process(rf, Transport::Reliable, &bytes, None, now, &mut sends);
+            (sends, released)
         };
+        let (sends, released) = sends;
+        // Re-priced before the answer goes: an endpoint that shares again
+        // as soon as it hears Released finds the budget given back.
+        if released {
+            self.released();
+        }
         self.send_all(sends);
     }
 
@@ -635,7 +667,7 @@ fn process(
     from: Option<SocketAddr>,
     now: Instant,
     sends: &mut Vec<Send>,
-) {
+) -> bool {
     let handled = rf.server(transport).handle(bytes);
     if let Some(reply) = handled.reply {
         let user_id = reply.user_id;
@@ -650,6 +682,7 @@ fn process(
         }
     }
     deliver_all(rf, handled.notifications, now, sends);
+    let mut released = false;
     for event in handled.events {
         match event {
             Event::Requested {
@@ -657,11 +690,13 @@ fn process(
                 request_id,
                 ..
             } => decide(rf, transport, user_id, request_id, now, sends),
-            Event::Released { user_id, .. } => release(rf, user_id),
-            Event::Goodbye { user_id, .. } => release(rf, user_id),
+            Event::Released { user_id, .. } | Event::Goodbye { user_id, .. } => {
+                released |= release(rf, user_id)
+            }
             Event::Hello { .. } | Event::Acked { .. } => {}
         }
     }
+    released
 }
 
 /// A `FloorRequest` put to the room's floor: granted or denied at once.
@@ -724,19 +759,22 @@ fn refusal_text(why: &ContentRefusal) -> &'static str {
     }
 }
 
-/// The endpoint gave the floor up, or left.
-fn release(rf: &mut RoomFloor, user_id: u16) {
+/// The endpoint gave the floor up, or left; whether it held the room's
+/// floor.
+fn release(rf: &mut RoomFloor, user_id: u16) -> bool {
     let Some(user) = rf.users.get_mut(&user_id) else {
-        return;
+        return false;
     };
     user.granted = None;
     let Some(pid) = user.participant_id.clone() else {
-        return;
+        return false;
     };
-    if let Some(video) = rf.video() {
-        video.release_content(&pid);
-        video.set_participant_content_enabled(&pid, false);
-    }
+    let Some(video) = rf.video() else {
+        return false;
+    };
+    let held = video.release_content(&pid);
+    video.set_participant_content_enabled(&pid, false);
+    held
 }
 
 fn deliver_all(
@@ -872,6 +910,13 @@ mod tests {
         let room = room();
         let video = room.video().unwrap();
         let floors = Arc::new(Floors::new());
+        // How often the conference was told a floor was given up.
+        let releases = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&releases);
+        floors.set_on_release(Box::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let told = || releases.load(std::sync::atomic::Ordering::SeqCst);
         let server = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let to = server.local_addr().unwrap();
         let serving = tokio::spawn(Arc::clone(&floors).serve_udp(Arc::clone(&server)));
@@ -972,12 +1017,14 @@ mod tests {
             Some((rid, RequestStatus::Released))
         );
         assert!(video.content_holder().is_none());
+        assert_eq!(told(), 1, "the conference re-prices on the release");
         assert_eq!(
             video.request_content("alice"),
             Err(ContentRefusal::ParticipantDisabled)
         );
         let again = udp_ask(&alice, to, &release).await;
         assert_eq!(again, released);
+        assert_eq!(told(), 1, "a replay releases nothing");
 
         // Granted again, then stopped by the host: Revoked, with the
         // reason, and no request granted until renegotiated.
@@ -1066,6 +1113,11 @@ mod tests {
         let room = room();
         let video = room.video().unwrap();
         let floors = Arc::new(Floors::new());
+        let releases = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&releases);
+        floors.set_on_release(Box::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let to = listener.local_addr().unwrap();
         let serving = tokio::spawn(Arc::clone(&floors).serve_tcp(listener));
@@ -1149,6 +1201,11 @@ mod tests {
             Some((rid, RequestStatus::Released))
         );
         assert!(video.content_holder().is_none());
+        assert_eq!(
+            releases.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the conference re-prices on the release"
+        );
 
         // Another conference's id on this node: refused.
         stream
