@@ -306,8 +306,9 @@ impl ConferenceCallHandler {
     ) {
         // A notice sent as the call is joined can reach the call manager
         // before the room's 200 OK does, or the phone before its own: the
-        // dialog is not known there yet and the INFO is answered 481. It
-        // is sent again, a moment later, rather than lost.
+        // dialog is not known there yet, and the INFO is answered 481, or
+        // 500 or 408 by a leg still being set up. It is sent again, a
+        // moment later, rather than lost; only a refusal is final.
         for attempt in 1..=JOIN_NOTICE_ATTEMPTS {
             // The INFO's CSeq is taken from the session's dialog as it is
             // cloned, so two sent at once (a hand and the stage) differ.
@@ -340,21 +341,32 @@ impl ConferenceCallHandler {
                 .await
             {
                 Ok(resp) if (200..300).contains(&resp.start_line().code()) => return,
-                Ok(resp) if resp.start_line().code() == 481 && attempt < JOIN_NOTICE_ATTEMPTS => {
-                    debug!(call_id = %call_id, package, attempt, "An INFO before the dialog was known: again");
-                    tokio::time::sleep(JOIN_NOTICE_RETRY).await;
-                }
-                Ok(resp) => {
+                Ok(resp) if retried(resp.start_line().code()) && attempt < JOIN_NOTICE_ATTEMPTS => {
                     debug!(
                         call_id = %call_id,
                         package,
+                        attempt,
                         code = resp.start_line().code(),
-                        "An INFO refused"
+                        "An INFO not taken yet: again"
+                    );
+                    tokio::time::sleep(JOIN_NOTICE_RETRY).await;
+                }
+                Ok(resp) => {
+                    warn!(
+                        call_id = %call_id,
+                        package,
+                        attempt,
+                        code = resp.start_line().code(),
+                        "An INFO was not taken"
                     );
                     return;
                 }
+                Err(e) if attempt < JOIN_NOTICE_ATTEMPTS => {
+                    debug!(call_id = %call_id, package, attempt, error = %e, "An INFO failed: again");
+                    tokio::time::sleep(JOIN_NOTICE_RETRY).await;
+                }
                 Err(e) => {
-                    debug!(call_id = %call_id, package, error = %e, "An INFO failed");
+                    warn!(call_id = %call_id, package, attempt, error = %e, "An INFO failed");
                     return;
                 }
             }
@@ -362,8 +374,30 @@ impl ConferenceCallHandler {
     }
 }
 
-/// How often an INFO answered 481 is sent, and how far apart: a notice
+/// How often an INFO not taken yet is sent, and how far apart: a notice
 /// sent as a call is joined may beat the 200 OK to the call manager and
-/// the phone.
-const JOIN_NOTICE_ATTEMPTS: u32 = 5;
-const JOIN_NOTICE_RETRY: std::time::Duration = std::time::Duration::from_millis(300);
+/// the phone. Ten tries over about four and a half seconds.
+const JOIN_NOTICE_ATTEMPTS: u32 = 10;
+const JOIN_NOTICE_RETRY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Whether an INFO answered `code` may be taken if sent again: no dialog
+/// yet (481), no answer from the far leg yet (408), a leg still being set
+/// up (500) or busy (503). Anything else, a refusal included, is final.
+fn retried(code: u16) -> bool {
+    matches!(code, 408 | 481 | 500 | 503)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retried;
+
+    #[test]
+    fn a_join_notice_is_sent_again_unless_refused() {
+        for code in [408, 481, 500, 503] {
+            assert!(retried(code), "{code}");
+        }
+        for code in [200, 400, 403, 405, 415, 469, 489, 501] {
+            assert!(!retried(code), "{code}");
+        }
+    }
+}
