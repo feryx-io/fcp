@@ -450,9 +450,12 @@ async fn traces_find_their_tenant_and_rooms_name_who_was_recorded() {
         .await
         .unwrap();
     let traces = db.storage.sip_trace_store().unwrap();
-    for (call_id, tenant_id) in [
-        (call.to_string(), "_system"),
-        ("call-register".to_string(), "_system"),
+    // The call's trace of two days ago is adopted; one of ten days ago is
+    // past the week the adoption looks at, and goes with the unattributed.
+    for (call_id, tenant_id, age) in [
+        (call.to_string(), "_system", 2),
+        ("call-register".to_string(), "_system", 2),
+        (call.to_string(), "_system", 10),
     ] {
         traces
             .insert_sip_trace(&SipTraceMessage {
@@ -460,7 +463,7 @@ async fn traces_find_their_tenant_and_rooms_name_who_was_recorded() {
                 call_id,
                 sip_call_id: "x@y".into(),
                 tenant_id: tenant_id.into(),
-                timestamp: days_ago(2),
+                timestamp: days_ago(age),
                 direction: "inbound".into(),
                 method_or_status: "INVITE".into(),
                 cseq: "1 INVITE".into(),
@@ -508,13 +511,12 @@ async fn traces_find_their_tenant_and_rooms_name_who_was_recorded() {
         "{done:?}"
     );
     assert_eq!(
-        done.system_traces_deleted, 1,
-        "the registration's trace belongs to nobody"
+        done.system_traces_deleted, 2,
+        "the registration's trace belongs to nobody, and the call's of ten days ago was not adopted"
     );
-    assert_eq!(
-        traces.get_sip_traces(&call.to_string()).await.unwrap()[0].tenant_id,
-        tenant.to_string()
-    );
+    let kept = traces.get_sip_traces(&call.to_string()).await.unwrap();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].tenant_id, tenant.to_string());
 
     // A room recording names who was in it, and who joined later.
     let store = db.storage.recording_store().unwrap();

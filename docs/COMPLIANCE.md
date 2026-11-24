@@ -106,9 +106,11 @@ Since the compliance foundations (`docs/COMPLIANCE_FOLLOWUPS.md` §4, §7):
   are given the tenant of their call's stored record; each mailbox's own
   `retention_days` is applied; messages users deleted are purged after
   `[retention] deleted_voicemail_grace_days` (7); SIP traces that belong to
-  no tenant's call are removed after `[retention] system_trace_days`, and
+  no tenant's call are removed after `[retention] system_trace_days` (7
+  unset, kept at 0; the adoption looks at the last week's only), and
   files under the mounted directories that no row names after
-  `[retention] orphan_files_days` — both off unless set.
+  `[retention] orphan_files_days` (off unless set). A tenant's own call
+  traces are kept until its policy's `sip_trace_retention_days` is set.
 
 ### Conference recordings
 

@@ -156,11 +156,16 @@ impl SipTraceStore for PostgresSipTraceStore {
 
     async fn adopt_system_traces(&self) -> anyhow::Result<u64> {
         // A call's messages are captured as they cross the wire, before
-        // anything knows the call's tenant; its stored record does.
+        // anything knows the call's tenant; its stored record does. Only
+        // the last week's are looked at: a call's record is written within
+        // a day of its end, and a table of unattributed traces (a D8
+        // server's 36 million) was otherwise scanned whole every hour.
         let result = sqlx::query(
             "UPDATE sip_trace_messages t SET tenant_id = c.tenant_id
              FROM cdrs c
-             WHERE t.tenant_id = '_system' AND c.call_id = t.call_id",
+             WHERE t.tenant_id = '_system' AND t.call_id <> ''
+               AND t.timestamp > NOW() - INTERVAL '7 days'
+               AND c.call_id = t.call_id",
         )
         .execute(&self.pool)
         .await?;

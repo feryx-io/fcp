@@ -271,6 +271,7 @@ async fn main() -> Result<()> {
             system_traces_after: config
                 .retention
                 .system_trace_days
+                .filter(|d| *d > 0)
                 .map(|d| std::time::Duration::from_secs(u64::from(d) * 86_400)),
             deleted_voicemail_grace: std::time::Duration::from_secs(
                 u64::from(config.retention.deleted_voicemail_grace_days) * 86_400,
