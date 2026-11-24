@@ -13,8 +13,8 @@ bash down.sh                       # VM, firewall rules and address, everything 
 `up.sh` reserves the address `fcp-d8` (and stops if the name does not
 resolve to it yet), opens the firewall, makes the VM, copies
 `deploy/docker-compose` and this directory to `/opt/d8`, and runs
-`setup.sh` there with a GHCR token from `gh` on its standard input.
-`setup.sh`:
+`setup.sh` there. The images are public on `ghcr.io/feryx-io`, so no
+registry token is needed. `setup.sh`:
 - makes every `change-me` secret in `.env` random, once, into
   `/opt/d8/secrets.env`, sets `HOST_IP` to the address and runs the
   `nightly` images (`FCP_IMAGE_TAG=<sha> bash up.sh …` for another);
@@ -24,7 +24,7 @@ resolve to it yet), opens the firewall, makes the VM, copies
 - gets the certificate with certbot and installs it (`install-certs.sh`,
   also certbot's renewal hook) for the proxy, the call manager's SIPS and
   WSS, the WebRTC gateway and the SBC's TLS, in place of the compose CA's;
-- pulls, logs out of GHCR, and starts the stack (text to speech is Piper,
+- pulls the images and starts the stack (text to speech is Piper,
   part of it now);
 - puts the address on the loopback (the services reach one another at it)
   and has the default tenant claim the name.
