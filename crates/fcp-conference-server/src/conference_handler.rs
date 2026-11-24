@@ -2657,6 +2657,14 @@ impl ConferenceCallHandler {
         if let Ok(mut slot) = self.self_ref.write() {
             *slot = Arc::downgrade(self);
         }
+        // A floor given up over BFCP re-prices the budget at once, as a
+        // stop by re-INVITE does.
+        let me = Arc::downgrade(self);
+        self.bfcp.set_on_release(Box::new(move || {
+            if let Some(me) = me.upgrade() {
+                me.recompute_video_capacity();
+            }
+        }));
     }
 
     /// The handler itself, for a spawned task; `None` before
