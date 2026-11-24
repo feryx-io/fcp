@@ -7,10 +7,9 @@
 #                                       # Let's Encrypt's, for expiry notices
 #
 # The domain's A record must already name the address `fcp-d8` holds
-# (made here if missing; printed at the end). Needs gcloud and gh (a token
-# that can read the GHCR packages). Nothing secret is left on this machine:
-# the stack's secrets are made on the VM, the GHCR token is piped to
-# `docker login` there and logged out after the pull.
+# (made here if missing; printed at the end). Needs gcloud. The images are
+# public (ghcr.io/feryx-io), so no registry token goes to the VM, and the
+# stack's secrets are made there: nothing secret is left on this machine.
 set -euo pipefail
 
 DOMAIN=${1:?usage: up.sh <domain> [email]}
@@ -74,7 +73,7 @@ trap 'rm -rf "$tmp"' EXIT
 tar czf "$tmp/d8.tgz" -C "$HERE/.." docker-compose gcp-d8
 g compute scp --zone "$ZONE" --tunnel-through-iap "$tmp/d8.tgz" "$NAME:d8.tgz"
 ssh_ --command 'sudo mkdir -p /opt/d8 && sudo tar xzf d8.tgz -C /opt/d8 && rm d8.tgz'
-gh auth token | ssh_ --command "sudo FCP_IMAGE_TAG=${FCP_IMAGE_TAG:-nightly} bash /opt/d8/gcp-d8/setup.sh '$DOMAIN' '$EMAIL' '$IP'"
+ssh_ --command "sudo FCP_IMAGE_TAG=${FCP_IMAGE_TAG:-nightly} bash /opt/d8/gcp-d8/setup.sh '$DOMAIN' '$EMAIL' '$IP'"
 
 cat <<DONE
 
