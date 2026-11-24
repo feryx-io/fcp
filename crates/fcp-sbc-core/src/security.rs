@@ -67,6 +67,18 @@ pub struct SecurityConfig {
 
     /// Addresses and CIDR ranges exempt from `max_messages_per_source`.
     pub trusted_sources: Vec<String>,
+
+    /// Failed digest authentications from one source address within a
+    /// minute before it is blocked for `auth_block_secs`: nothing from it
+    /// is read until the block ends. Only wrong credentials answering a
+    /// challenge this node issued count, and never from a source exempt
+    /// from `max_messages_per_source`. `0` blocks nobody
+    /// (`docs/EDGE_SECURITY.md` §2.8).
+    pub max_auth_failures_per_source: u32,
+
+    /// How long a source that failed authentication too often is blocked,
+    /// in seconds (1 to 86,400).
+    pub auth_block_secs: u64,
 }
 
 impl Default for SecurityConfig {
@@ -83,6 +95,8 @@ impl Default for SecurityConfig {
             max_tracked_sources: 100_000,
             max_messages_per_source: fcp_sip::ingress::DEFAULT_MESSAGES_PER_SOURCE,
             trusted_sources: Vec::new(),
+            max_auth_failures_per_source: fcp_sip::auth_block::DEFAULT_MAX_AUTH_FAILURES,
+            auth_block_secs: fcp_sip::auth_block::DEFAULT_AUTH_BLOCK_SECS,
         }
     }
 }
@@ -99,6 +113,7 @@ impl SecurityConfig {
     /// - `max_tracked_sources` exceeds 10,000,000
     pub fn validate(&self) -> Result<(), String> {
         self.signaling_acl.validate("signaling_acl")?;
+        fcp_sip::auth_block::validate(self.max_auth_failures_per_source, self.auth_block_secs)?;
         if let Some(ref media) = self.media_acl {
             media.validate("media_acl")?;
         }

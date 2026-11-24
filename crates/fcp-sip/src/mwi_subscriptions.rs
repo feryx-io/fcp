@@ -179,7 +179,10 @@ impl MwiSubscriptions {
         }
 
         if let Some(registrar) = &self.registrar {
-            match registrar.authenticate_invite(request).await {
+            match registrar
+                .authenticate_invite(request, Some(peer.ip()))
+                .await
+            {
                 InviteAuth::Admitted { .. } | InviteAuth::NotRequired => {}
                 InviteAuth::WrongUser { .. } => {
                     info!(call_id = %call_id, "A message-summary SUBSCRIBE for someone else's mailbox: 403");

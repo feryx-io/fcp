@@ -392,11 +392,12 @@ impl Sca {
     // Subscriptions
     // ------------------------------------------------------------------
 
-    /// Answer a `call-info` or `line-seize` SUBSCRIBE.
+    /// Answer a `call-info` or `line-seize` SUBSCRIBE from `source`.
     pub async fn handle_subscribe(
         &self,
         request: &Request,
         handle: &sip_transaction::ServerTransactionHandle,
+        source: Option<std::net::IpAddr>,
     ) -> anyhow::Result<()> {
         let event = event_of(request).unwrap_or_default();
         let user = request_user(request).unwrap_or_default();
@@ -407,7 +408,7 @@ impl Sca {
         // Who is asking: credentials that may be the line (a device bound
         // to it, its owner), wearing the line's address.
         if let Some(registrar) = &self.registrar {
-            match registrar.authenticate_invite(request).await {
+            match registrar.authenticate_invite(request, source).await {
                 InviteAuth::Admitted { .. } | InviteAuth::NotRequired => {}
                 InviteAuth::WrongUser { authenticated, .. } => {
                     info!(line = %line.number, authenticated = %authenticated, "A shared-line SUBSCRIBE from credentials that are not the line's");

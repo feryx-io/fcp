@@ -12,6 +12,7 @@ pub mod ack_wait;
 pub mod adapters;
 pub mod admission;
 pub mod auth;
+pub mod auth_block;
 pub mod claims;
 pub mod class_of_service;
 pub use fcp_b2bua_core::body;

@@ -1067,7 +1067,14 @@ impl FcpRegistrar {
     /// request may wear. A user with valid credentials placing a call as
     /// their neighbour is refused outright rather than challenged, since
     /// no retry fixes it.
-    pub async fn authenticate_invite(&self, request: &Request) -> InviteAuth {
+    ///
+    /// `source` is where the request came from, counted toward blocking it
+    /// when the credentials are wrong (`crate::auth_block`).
+    pub async fn authenticate_invite(
+        &self,
+        request: &Request,
+        source: Option<std::net::IpAddr>,
+    ) -> InviteAuth {
         if !self.invite_auth_required() {
             return InviteAuth::NotRequired;
         }
@@ -1075,7 +1082,7 @@ impl FcpRegistrar {
             return InviteAuth::NotRequired;
         };
 
-        match authenticator.authenticate(request).await {
+        match authenticator.authenticate_at(request, source).await {
             crate::auth::AuthOutcome::Failed => InviteAuth::Challenge { stale: false },
             crate::auth::AuthOutcome::Stale => InviteAuth::Challenge { stale: true },
             crate::auth::AuthOutcome::WrongUri { username, signed } => {
@@ -1115,6 +1122,7 @@ impl FcpRegistrar {
         &self,
         request: &Request,
         remembered: &crate::auth::RememberedHa1,
+        source: Option<std::net::IpAddr>,
     ) -> InviteAuth {
         if !self.invite_auth_required() {
             return InviteAuth::NotRequired;
@@ -1123,7 +1131,7 @@ impl FcpRegistrar {
             return InviteAuth::NotRequired;
         };
         match authenticator
-            .authenticate_remembered(request, remembered)
+            .authenticate_remembered(request, remembered, source)
             .await
         {
             crate::auth::AuthOutcome::Failed => InviteAuth::Challenge { stale: false },
@@ -1149,10 +1157,11 @@ impl FcpRegistrar {
         &self,
         request: &Request,
         remembered: &crate::auth::RememberedHa1,
+        source: Option<std::net::IpAddr>,
     ) -> Option<String> {
         let authenticator = self.authenticator.as_ref()?;
         match authenticator
-            .authenticate_remembered(request, remembered)
+            .authenticate_remembered(request, remembered, source)
             .await
         {
             crate::auth::AuthOutcome::Authenticated { username } => Some(username),
@@ -1309,7 +1318,10 @@ impl FcpRegistrar {
                 }
 
                 // Verify authentication
-                match authenticator.authenticate(request).await {
+                match authenticator
+                    .authenticate_at(request, source_address.map(|a| a.ip()))
+                    .await
+                {
                     crate::auth::AuthOutcome::Authenticated { username } => {
                         debug!("Authentication successful");
                         auth_username = Some(username.clone());
@@ -3551,7 +3563,9 @@ mod tests {
         let storage = store_with_alice("fcp-test-invite-auth-none").await;
         let registrar = invite_registrar(storage, true);
         assert_eq!(
-            registrar.authenticate_invite(&invite("alice", None)).await,
+            registrar
+                .authenticate_invite(&invite("alice", None), None)
+                .await,
             InviteAuth::Challenge { stale: false }
         );
     }
@@ -3563,7 +3577,7 @@ mod tests {
         let nonce = issued_nonce(&registrar, &invite("alice", None));
         assert_eq!(
             registrar
-                .authenticate_invite(&invite("alice", Some(("alice", &nonce))))
+                .authenticate_invite(&invite("alice", Some(("alice", &nonce))), None)
                 .await,
             InviteAuth::Admitted {
                 username: "alice".to_string()
@@ -3577,7 +3591,7 @@ mod tests {
         let registrar = invite_registrar(storage, true);
         assert_eq!(
             registrar
-                .authenticate_invite(&invite("alice", Some(("alice", "invented"))))
+                .authenticate_invite(&invite("alice", Some(("alice", "invented"))), None)
                 .await,
             InviteAuth::Challenge { stale: true }
         );
@@ -3593,7 +3607,7 @@ mod tests {
         let nonce = issued_nonce(&registrar, &invite("bob", None));
         assert_eq!(
             registrar
-                .authenticate_invite(&invite("bob", Some(("alice", &nonce))))
+                .authenticate_invite(&invite("bob", Some(("alice", &nonce))), None)
                 .await,
             InviteAuth::WrongUser {
                 authenticated: "alice".to_string(),
@@ -3609,7 +3623,9 @@ mod tests {
         let storage = store_with_alice("fcp-test-invite-auth-off").await;
         let registrar = invite_registrar(storage, false);
         assert_eq!(
-            registrar.authenticate_invite(&invite("alice", None)).await,
+            registrar
+                .authenticate_invite(&invite("alice", None), None)
+                .await,
             InviteAuth::NotRequired
         );
     }
@@ -3624,7 +3640,9 @@ mod tests {
             .with_auth_invites(true);
         assert!(!registrar.invite_auth_required());
         assert_eq!(
-            registrar.authenticate_invite(&invite("alice", None)).await,
+            registrar
+                .authenticate_invite(&invite("alice", None), None)
+                .await,
             InviteAuth::NotRequired
         );
     }

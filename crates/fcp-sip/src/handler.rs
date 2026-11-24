@@ -1374,7 +1374,7 @@ impl SipMessageHandler {
             move |user: &str| memory.ha1_for_aor(&aor, user)
         };
         if registrar
-            .register_proves_remembered(request, &remembered)
+            .register_proves_remembered(request, &remembered, Some(peer.ip()))
             .await
             .is_some()
         {
@@ -3088,7 +3088,8 @@ impl SipMessageHandler {
                 // `docs/ENTERPRISE_CALLING.md` §3.9), in or out of dialog.
                 if let Some(sca) = &self.sca {
                     if crate::sca::Sca::handles_event(request) {
-                        if let Err(e) = sca.handle_subscribe(request, handle).await {
+                        if let Err(e) = sca.handle_subscribe(request, handle, Some(peer.ip())).await
+                        {
                             warn!(error = %e, "A shared-line SUBSCRIBE failed");
                             let response =
                                 self.create_simple_response(request, 500, "Server Internal Error");
@@ -3733,10 +3734,16 @@ impl SipMessageHandler {
                 let memory = Arc::clone(memory);
                 let tenant = tenant_id;
                 registrar
-                    .authenticate_invite_remembered(request, &move |user| memory.ha1(&tenant, user))
+                    .authenticate_invite_remembered(
+                        request,
+                        &move |user| memory.ha1(&tenant, user),
+                        Some(peer_ip),
+                    )
                     .await
             }
-            (Some(registrar), false, None) => registrar.authenticate_invite(request).await,
+            (Some(registrar), false, None) => {
+                registrar.authenticate_invite(request, Some(peer_ip)).await
+            }
             _ => crate::registrar::InviteAuth::NotRequired,
         };
         match invite_auth {
@@ -19876,6 +19883,11 @@ impl InboundMessageHandler for SipMessageHandler {
         stream: Option<mpsc::Sender<Bytes>>,
         peer_identity: Option<Arc<sip_transport::PeerIdentity>>,
     ) -> Result<()> {
+        // A source that kept failing authentication is told nothing until
+        // its block ends (`docs/EDGE_SECURITY.md` §2.8).
+        if !crate::auth_block::admit(peer.ip()) {
+            return Ok(());
+        }
         // What this node accepts at its SIP port
         // (`docs/EDGE_SECURITY.md` §2.4). Before the parser, and every
         // refusal here is silent: answering an address the node denies

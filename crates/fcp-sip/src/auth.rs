@@ -9,6 +9,7 @@ use sip_auth::{DigestAlgorithm, NonceManager, Qop};
 use sip_core::{Headers, Method, Request, Response, StatusLine};
 use sip_parse::parse_authorization_header;
 use smol_str::SmolStr;
+use std::net::IpAddr;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -70,6 +71,9 @@ pub struct Ha1Authenticator<S: Ha1CredentialStore> {
     /// ([`AuthOutcome::WrongUri`]) or only logged (`[registrar]
     /// digest_uri_check`).
     check_uri: bool,
+    /// Where a counted failure goes: the process's blocks, or a test's
+    /// list.
+    on_failure: fn(IpAddr),
 }
 
 impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
@@ -88,6 +92,7 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
             // retransmission from a replay, not a short reuse window.
             nonces: NonceManager::new(nonce_ttl).with_max_request_age(nonce_ttl),
             check_uri: true,
+            on_failure: crate::auth_block::note_failure,
         }
     }
 
@@ -215,7 +220,14 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
     /// and its nonce-count must not walk backwards
     /// (`docs/EDGE_SECURITY.md` §2.7).
     pub async fn authenticate(&self, request: &Request) -> AuthOutcome {
-        self.authenticate_from(request, None).await
+        self.authenticate_from(request, None, None).await
+    }
+
+    /// As [`authenticate`](Self::authenticate) for a request from
+    /// `source`, which is counted toward blocking it when the credentials
+    /// are wrong (`crate::auth_block`).
+    pub async fn authenticate_at(&self, request: &Request, source: Option<IpAddr>) -> AuthOutcome {
+        self.authenticate_from(request, None, source).await
     }
 
     /// As [`authenticate`](Self::authenticate), with the HA1 of the user
@@ -226,14 +238,29 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
         &self,
         request: &Request,
         remembered: &RememberedHa1,
+        source: Option<IpAddr>,
     ) -> AuthOutcome {
-        self.authenticate_from(request, Some(remembered)).await
+        self.authenticate_from(request, Some(remembered), source)
+            .await
+    }
+
+    /// Wrong credentials from `source`: counted toward blocking it only
+    /// when they answer a challenge this node issued and that is still
+    /// live, which proves the source received it (`crate::auth_block`).
+    fn refused(&self, source: Option<IpAddr>, nonce: &str) -> AuthOutcome {
+        if let Some(source) = source {
+            if self.nonces.verify(nonce) {
+                (self.on_failure)(source);
+            }
+        }
+        AuthOutcome::Failed
     }
 
     async fn authenticate_from(
         &self,
         request: &Request,
         remembered: Option<&RememberedHa1>,
+        source: Option<IpAddr>,
     ) -> AuthOutcome {
         let Some(auth_header) = request
             .headers()
@@ -263,7 +290,7 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
 
         if realm.as_str() != self.realm.as_str() {
             debug!(realm = %realm, "Refusing credentials for another realm");
-            return AuthOutcome::Failed;
+            return self.refused(source, nonce.as_str());
         }
 
         // The "password" in credentials is actually the pre-computed HA1 hash.
@@ -274,7 +301,7 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
         };
         let Some(creds) = creds else {
             debug!(username = %username, "Refusing credentials: no such user");
-            return AuthOutcome::Failed;
+            return self.refused(source, nonce.as_str());
         };
 
         let qop = auth.param("qop").and_then(|q| match q.as_str() {
@@ -296,7 +323,7 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
 
         if !fcp_core::secret::constant_time_eq(expected_response.as_bytes(), response.as_bytes()) {
             debug!(username = %username, "Refusing credentials: the digest does not match");
-            return AuthOutcome::Failed;
+            return self.refused(source, nonce.as_str());
         }
 
         // The password is proven. Now: is the nonce this node's, still
@@ -714,6 +741,81 @@ mod tests {
         let nonce = issued_nonce(&auth, &seed);
         let request = register(&nonce, Some("00000001"), "sip:alice@10.0.0.9");
         assert_eq!(auth.authenticate(&request).await, AuthOutcome::Failed);
+    }
+
+    /// Wrong credentials are counted against their source only on a nonce
+    /// this node issued, which proves the source received the challenge: a
+    /// forged source address never holds one (`docs/EDGE_SECURITY.md`
+    /// §2.8).
+    #[tokio::test]
+    async fn only_wrong_credentials_on_our_own_challenge_count_toward_a_block() {
+        static COUNTED: std::sync::Mutex<Vec<IpAddr>> = std::sync::Mutex::new(Vec::new());
+        fn count(ip: IpAddr) {
+            COUNTED.lock().unwrap().push(ip);
+        }
+        let counted = |ip: IpAddr| COUNTED.lock().unwrap().iter().filter(|c| **c == ip).count();
+        let mut wrong = Ha1Authenticator::new(
+            "fcp.local".to_string(),
+            OneUser {
+                username: "alice".to_string(),
+                ha1: ha1("alice", "fcp.local", "something-else"),
+            },
+        );
+        wrong.on_failure = count;
+        let seed = register("unused", Some("00000001"), "sip:alice@10.0.0.9");
+        let nonce = issued_nonce(&wrong, &seed);
+
+        // On a nonce from nowhere: never counted.
+        let forged: IpAddr = "192.0.2.61".parse().unwrap();
+        for _ in 0..5 {
+            let request = register("invented", Some("00000001"), "sip:alice@10.0.0.9");
+            assert_eq!(
+                wrong.authenticate_at(&request, Some(forged)).await,
+                AuthOutcome::Failed
+            );
+        }
+        assert_eq!(counted(forged), 0);
+
+        // No credentials at all: the first half of every sign-in.
+        let quiet: IpAddr = "192.0.2.62".parse().unwrap();
+        let bare = sip_parse::parse_request(&bytes::Bytes::from_static(
+            b"REGISTER sip:fcp.local SIP/2.0\r\n\
+              Via: SIP/2.0/UDP 10.0.0.9:5060;branch=z9hG4bK1\r\n\
+              From: <sip:alice@fcp.local>;tag=1\r\n\
+              To: <sip:alice@fcp.local>\r\n\
+              Call-ID: bare@10.0.0.9\r\n\
+              CSeq: 1 REGISTER\r\n\
+              Content-Length: 0\r\n\r\n",
+        ))
+        .unwrap();
+        for _ in 0..5 {
+            wrong.authenticate_at(&bare, Some(quiet)).await;
+        }
+        assert_eq!(counted(quiet), 0);
+
+        // Right credentials are never a failure.
+        let mut right = authenticator();
+        right.on_failure = count;
+        let mine: IpAddr = "192.0.2.63".parse().unwrap();
+        let seed = register("unused", Some("00000001"), "sip:alice@10.0.0.9");
+        let fresh = issued_nonce(&right, &seed);
+        let request = register(&fresh, Some("00000001"), "sip:alice@10.0.0.9");
+        assert!(matches!(
+            right.authenticate_at(&request, Some(mine)).await,
+            AuthOutcome::Authenticated { .. }
+        ));
+        assert_eq!(counted(mine), 0);
+
+        // Wrong credentials on our challenge: each one counts.
+        let scanner: IpAddr = "192.0.2.64".parse().unwrap();
+        for nc in ["00000001", "00000002"] {
+            let request = register(&nonce, Some(nc), "sip:alice@10.0.0.9");
+            assert_eq!(
+                wrong.authenticate_at(&request, Some(scanner)).await,
+                AuthOutcome::Failed
+            );
+        }
+        assert_eq!(counted(scanner), 2);
     }
 
     #[tokio::test]

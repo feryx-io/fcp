@@ -570,6 +570,64 @@ async fn one_source_cannot_spend_the_whole_node() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_source_that_keeps_failing_authentication_is_blocked() {
+    // `docs/EDGE_SECURITY.md` §2.8. On D8 a credential scanner sent one
+    // node 35 million REGISTERs in 17 days, under the per-source rate, and
+    // every one was looked up and answered. Here a scanner at 127.0.0.3
+    // guesses alice's password; at the limit it is blocked and told
+    // nothing more, while alice at 127.0.0.1 carries on.
+    let Some(stack) = Stack::start_node(
+        "local_ip = \"127.0.0.1\"\nmax_auth_failures_per_source = 6\nauth_block_secs = 600",
+        "",
+        "",
+        "",
+        40,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let scanner = Phone::bound_to("127.0.0.3:0", "alice", "guess", REALM, stack.sip)
+        .await
+        .unwrap();
+    // Each guess is two failures: the phone tries again on a fresh nonce.
+    for attempt in 1..=3 {
+        let code = scanner
+            .register()
+            .await
+            .unwrap_or_else(|e| panic!("guess {attempt}: {e}"));
+        assert!(matches!(code, 401 | 403), "guess {attempt} answered {code}");
+    }
+
+    // Blocked: nothing it sends is read, so nothing is answered.
+    assert!(
+        scanner.register().await.is_err(),
+        "a blocked source was answered"
+    );
+    let status = stack.get("/status").await;
+    let blocked = &status["auth_block"]["blocked"];
+    assert_eq!(blocked[0]["source"], "127.0.0.3", "{status}");
+    assert_eq!(blocked.as_array().map(Vec::len), Some(1), "{status}");
+    assert!(
+        status["auth_block"]["dropped_total"].as_u64() > Some(0),
+        "{status}"
+    );
+
+    // Everyone else is not.
+    let phone = stack.phone(&alice).await;
+    assert_eq!(phone.register().await.unwrap(), 200);
+    let (_, metrics) = http_get(&loopback(stack.http, "/metrics")).await.unwrap();
+    assert!(
+        metrics.contains("fcp_sip_auth_blocks_total{node=\"e2e-call-manager\"} 1"),
+        "{metrics}"
+    );
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_address_the_node_denies_is_told_nothing() {
     // `docs/EDGE_SECURITY.md` §2.4: the call manager had no address list
     // at all. A denied peer is dropped rather than answered — replying
