@@ -367,9 +367,10 @@ pub struct RetentionConfig {
     /// Unset leaves them.
     #[serde(default)]
     pub orphan_files_days: Option<u32>,
-    /// Remove SIP traces of no tenant's call (registrations, options)
-    /// after this many days. Unset keeps them.
-    #[serde(default)]
+    /// Remove SIP traces of no tenant's call after this many days: 7
+    /// unset, kept for good at 0. Left unbounded, a D8 server's table
+    /// grew to 30 GB from a scanner's REGISTERs and filled the disk.
+    #[serde(default = "default_system_trace_days")]
     pub system_trace_days: Option<u32>,
     /// Remove voicemail messages this many days after a user deleted them.
     #[serde(default = "default_deleted_voicemail_grace_days")]
@@ -384,11 +385,15 @@ fn default_deleted_voicemail_grace_days() -> u32 {
     7
 }
 
+fn default_system_trace_days() -> Option<u32> {
+    Some(7)
+}
+
 impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
             orphan_files_days: None,
-            system_trace_days: None,
+            system_trace_days: default_system_trace_days(),
             deleted_voicemail_grace_days: default_deleted_voicemail_grace_days(),
             extra_file_roots: Vec::new(),
         }
@@ -953,6 +958,15 @@ fn load_config_from_file(path: &Path) -> Result<AdminConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unattributed_sip_traces_are_kept_a_week_unless_said() {
+        let config: AdminConfig = toml::from_str("").unwrap();
+        assert_eq!(config.retention.system_trace_days, Some(7));
+        assert_eq!(RetentionConfig::default().system_trace_days, Some(7));
+        let config: AdminConfig = toml::from_str("[retention]\nsystem_trace_days = 0").unwrap();
+        assert_eq!(config.retention.system_trace_days, Some(0), "0 keeps them");
+    }
 
     #[test]
     fn test_default_config() {
