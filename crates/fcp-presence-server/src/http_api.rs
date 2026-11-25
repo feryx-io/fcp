@@ -238,6 +238,9 @@ async fn metrics(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl
         "watchers": watchers,
         "rls_subscriptions": rls_subs,
         "uptime_secs": state.start_time.elapsed().as_secs(),
+        // The node's, not the tenant's: sources blocked for failing
+        // authentication (`docs/EDGE_SECURITY.md` §2.8).
+        "auth_block": fcp_sip::auth_block::json(),
     }))
     .into_response()
 }

@@ -616,3 +616,112 @@ async fn a_parking_slots_lamp_lights_while_a_call_waits_in_it() {
     service.stop().await;
     db.drop_db().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_source_guessing_a_password_by_subscribe_is_blocked() {
+    // `docs/EDGE_SECURITY.md` §2.8: wrong credentials on a presence
+    // SUBSCRIBE count toward a block as a REGISTER's do — the presence
+    // handler was never told where a request came from, so a scanner
+    // turned away from REGISTER could go on guessing here.
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    let (sip_port, http) = (free_port(), free_port());
+    let rtp_start = allocate_rtp_range(20);
+    let dir = tempfile::tempdir().unwrap();
+    let config = format!(
+        r#"
+[service]
+node_id = "e2e-presence-block"
+
+[sip]
+udp_bind = "127.0.0.1:{sip_port}"
+tcp_bind = "127.0.0.1:{sip_port}"
+local_ip = "127.0.0.1"
+max_auth_failures_per_source = 6
+auth_block_secs = 600
+
+[registrar]
+auth_enabled = true
+realm = "{REALM}"
+
+[presence]
+enabled = true
+
+[storage]
+database_url = "{db}"
+
+[cdr]
+spool_dir = "{dir}/cdr-spool"
+
+[http]
+bind_address = "127.0.0.1:{http}"
+
+[media]
+rtp_port_start = {rtp_start}
+rtp_port_end = {rtp_end}
+prompts_dir = "{dir}/prompts"
+tts_cache_dir = "{dir}/tts-cache"
+recording_dir = "{dir}/recordings"
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        db = db.url(),
+        rtp_end = rtp_start + 20,
+        dir = dir.path().display(),
+    );
+    let service = Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
+    let sip = SocketAddr::from(([127, 0, 0, 1], sip_port));
+    let alice = seed.user("alice", "alice-pw", "1001").await;
+    let bob = seed.user("bob", "bob-pw", "1002").await;
+    let bob_aor = format!("sip:{}@{REALM}", bob.username);
+
+    // Each guess is two failures: the phone tries again on a fresh nonce.
+    let scanner = Phone::bound_to("127.0.0.3:0", &alice.username, "guess", REALM, sip)
+        .await
+        .unwrap();
+    for attempt in 1..=3 {
+        let sub = scanner
+            .subscribe(&bob_aor, "presence", 600, None)
+            .await
+            .unwrap_or_else(|e| panic!("guess {attempt}: {e}"));
+        assert!(
+            matches!(sub.code, 401 | 403),
+            "guess {attempt} answered {}",
+            sub.code
+        );
+    }
+    // Blocked: nothing it sends is read, so nothing is answered.
+    assert!(
+        scanner
+            .subscribe(&bob_aor, "presence", 600, None)
+            .await
+            .is_err(),
+        "a blocked source was answered"
+    );
+    let (_, status) = fcp_testkit::smoke::http_get(&loopback(http, "/status"))
+        .await
+        .unwrap();
+    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(
+        status["auth_block"]["blocked"][0]["source"], "127.0.0.3",
+        "{status}"
+    );
+
+    // Alice herself, from her own address, is not.
+    let phone = Phone::new(&alice.username, &alice.password, REALM, sip)
+        .await
+        .unwrap();
+    let sub = phone
+        .subscribe(&bob_aor, "presence", 600, None)
+        .await
+        .unwrap();
+    assert_eq!(sub.code, 200, "alice watches bob");
+
+    service.stop().await;
+    db.drop_db().await;
+}

@@ -3100,7 +3100,10 @@ impl SipMessageHandler {
                 }
                 // Check presence handler first (RFC 3856 presence, RFC 4235 dialog/BLF)
                 if let Some(ref pres) = self.presence_handler {
-                    if let Ok(()) = pres.handle_subscribe(request, handle).await {
+                    if let Ok(()) = pres
+                        .handle_subscribe(request, handle, Some(peer.ip()))
+                        .await
+                    {
                         return Ok(());
                     }
                 }
@@ -3158,7 +3161,7 @@ impl SipMessageHandler {
             Method::Publish => {
                 // RFC 3903 — presence PUBLISH
                 if let Some(ref pres) = self.presence_handler {
-                    if let Ok(()) = pres.handle_publish(request, handle).await {
+                    if let Ok(()) = pres.handle_publish(request, handle, Some(peer.ip())).await {
                         return Ok(());
                     }
                 }

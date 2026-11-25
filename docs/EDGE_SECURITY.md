@@ -491,7 +491,8 @@ before the parser (`fcp_sip::auth_block::admit`), so it costs no lookup and
 no answer, and the source is told nothing. Dropping it in siphon-rs's
 transport, before the copy into the handler's queue, would be cheaper
 still; that waits for FCP's move to the renamed `siphon-*` crates. The setting is in
-`[sip]` on the call manager and the standalone registrar and in
+`[sip]` on the call manager, the standalone registrar and the presence
+server and in
 `[core.security]` on the SBC; `0` turns it off. `fcp_sip::auth_block` keeps
 the counts and the blocks in each process's memory, so each node blocks for
 itself.
@@ -516,11 +517,12 @@ A phone with a wrong password retries every few minutes at most, which is
 far below 20 a minute. A client that retries a 401 on a fresh nonce, as
 siphon-rs's UAC does twice, spends two failures on one attempt.
 
-REGISTER, INVITE (including while the store is away) and the
-`message-summary` and shared-line SUBSCRIBEs are counted. The presence
-server's SUBSCRIBE and PUBLISH gate is not yet: its handler is not told
-where a request came from. A source it would have counted is still blocked
-for everything once REGISTER or INVITE has counted it.
+REGISTER, INVITE (including while the store is away), the
+`message-summary` and shared-line SUBSCRIBEs, and since v0.25.635 the
+presence and dialog SUBSCRIBEs and presence PUBLISHes are counted —
+`fcp_sip::presence::PresenceHandler` is now told where a request came from.
+The presence server blocks as the call manager does, with the same two
+keys in its `[sip]`, and reports `auth_block` on its `/v1/metrics`.
 
 The call manager reports blocks on `/status` (`auth_block`: the sources
 blocked now with the seconds left, `blocks_total`, `dropped_total`) and on
@@ -529,7 +531,9 @@ blocked now with the seconds left, `blocks_total`, `dropped_total`) and on
 logged. A block cannot be lifted early except by a restart; there is no
 list shared across nodes. Proved by
 `fcp-call-manager/tests/calls.rs`
-`a_source_that_keeps_failing_authentication_is_blocked` and
+`a_source_that_keeps_failing_authentication_is_blocked`,
+`fcp-call-manager/tests/presence.rs`
+`a_source_guessing_a_password_by_subscribe_is_blocked` and
 `fcp_sip::auth`'s
 `only_wrong_credentials_on_our_own_challenge_count_toward_a_block`.
 
