@@ -103,14 +103,17 @@ sealed again with the site's key; usage comes up with the site's records.
   voice, tenant)` and `TtsProvider::synthesize_for` (the remote provider
   sends `tenant_id` per request; others ignore it), the client's cache
   keyed by tenant, `warm` and `MediaManager::play_tts_for` taking one.
-  Passed: flows' Say and Gather (`FlowContext.tenant_id`, the call's),
+  Passed: a tenant's own flows' Say and Gather (`FlowContext.tenant_id`,
+  the call's; a flow of no tenant, the platform's or one made inline,
+  speaks as the platform),
   the flow and call handlers' prompts and spoken text, `say_into_call`,
-  find-me's confirm prompt, the emergency test readback (warmed and
-  played alike), prompts made and spoken again through the API, a
+  find-me's confirm prompt, prompts made and spoken again through the API, a
   user's typed greeting, a mailbox's personalized greeting, and the
   conference server's consent, dial-out, PIN and welcome speech. Still
   without a tenant: the call manager's and a queue's recording-consent
-  announcement (their plan carries none), the call manager's system
+  announcement (their plan carries none), the emergency test readback
+  (the platform's words, warmed once at startup for every tenant's
+  first test), the call manager's system
   prompt pre-generation and warm-up (the platform's, rightly). `en-US`
   stays where no user is at hand; a user's language arrives with S2's
   settings. Proved by `fcp-media/tests/tts_tenant.rs`.

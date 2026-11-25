@@ -16430,7 +16430,7 @@ impl SipMessageHandler {
         // Synthesized while the opening plays: the caller would otherwise
         // wait out the whole readback's synthesis after the answer.
         if let Some(tts) = self.media_manager.as_ref().and_then(|mm| mm.tts_service()) {
-            tts.warm(parts.clone(), Some("en-US"), Some(&tenant_id));
+            tts.warm(parts.clone(), Some("en-US"), None);
         }
         info!(
             call_id = %call_id,

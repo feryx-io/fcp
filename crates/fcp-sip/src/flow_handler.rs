@@ -581,8 +581,13 @@ impl FlowCallHandler {
             .execute(flow.clone(), call_id_core, initial_variables)
             .await?;
 
-        // What the flow says is spoken for the call's tenant.
-        context.tenant_id = Some(call.tenant_id);
+        // What a tenant's own flow says is spoken for the call's tenant. A
+        // flow of no tenant — the platform's, or one made inline (an
+        // emergency test's readback, whose opening is warmed once at
+        // startup) — speaks as the platform.
+        if flow.tenant_id.is_some() {
+            context.tenant_id = Some(call.tenant_id);
+        }
 
         // Set media session ID if available (needed for Play/Say nodes)
         if let Some(media_session_id) = call.media_session_id {
@@ -1595,11 +1600,12 @@ impl FlowCallHandler {
         next: String,
     ) -> Result<()> {
         info!(call_id = %call_id, "Flow's emergency test read back here");
-        // Spoken for the call's tenant, warmed and played alike.
-        let tenant = self.tenant_of(&call_id);
+        // The readback is the platform's, spoken without a tenant: its
+        // opening is warmed at startup for every tenant's first test call
+        // (`emergency::warm_test_opening`), and warmed and played alike.
         // Synthesized while the opening plays (`emergency::test_readback`).
         if let Some(tts) = self.media_manager.as_ref().and_then(|mm| mm.tts_service()) {
-            tts.warm(parts.clone(), Some("en-US"), tenant.as_ref());
+            tts.warm(parts.clone(), Some("en-US"), None);
         }
         let session = self
             .call_manager
@@ -1609,7 +1615,7 @@ impl FlowCallHandler {
         match (&self.media_manager, session) {
             (Some(mm), Some(session)) => {
                 for part in &parts {
-                    self.say(mm, &session, tenant.as_ref(), "", part).await;
+                    self.say(mm, &session, None, "", part).await;
                 }
             }
             _ => warn!(call_id = %call_id, "No media to read the emergency test back on"),
@@ -4025,7 +4031,7 @@ impl FlowCallHandler {
                                 language_value,
                                 voice_value,
                                 AudioTarget::Both,
-                                self.tenant_of(&call_id),
+                                context_guard.tenant_id,
                             )
                             .await
                         {
