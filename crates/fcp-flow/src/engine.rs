@@ -156,7 +156,12 @@ impl FlowEngine {
                     );
 
                     match tts_service
-                        .synthesize(&interpolated_text, Some(language), voice.as_deref())
+                        .synthesize_for(
+                            &interpolated_text,
+                            Some(language),
+                            voice.as_deref(),
+                            context.tenant_id.as_ref(),
+                        )
                         .await
                     {
                         Ok(audio_path) => {
@@ -872,7 +877,12 @@ impl FlowEngine {
                 };
                 let text = self.interpolate_variables(text, context)?;
                 match tts_service
-                    .synthesize(&text, Some(language), voice.as_deref())
+                    .synthesize_for(
+                        &text,
+                        Some(language),
+                        voice.as_deref(),
+                        context.tenant_id.as_ref(),
+                    )
                     .await
                 {
                     Ok(audio_path) => Ok(Some(audio_path.display().to_string())),
@@ -1117,6 +1127,10 @@ pub struct FlowContext {
 
     /// Callback to hangup the call (send BYE)
     pub hangup_callback: Option<HangupCallback>,
+
+    /// The call's tenant: what the flow says is spoken for it
+    /// (`docs/TENANT_SPEECH.md`).
+    pub tenant_id: Option<fcp_core::TenantId>,
 }
 
 impl FlowContext {
@@ -1148,6 +1162,7 @@ impl FlowContext {
             started_at: chrono::Utc::now(),
             answer_callback: None,
             hangup_callback: None,
+            tenant_id: None,
         }
     }
 

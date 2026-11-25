@@ -736,7 +736,7 @@ const TEST_OPENING: &str = "This is an emergency calling test. No emergency call
 /// Synthesize the test readback's opening into the TTS cache, so the first
 /// test call after a start hears it at the answer.
 pub fn warm_test_opening(tts: &std::sync::Arc<fcp_media::TtsService>) {
-    tts.warm(vec![TEST_OPENING.to_string()], Some("en-US"));
+    tts.warm(vec![TEST_OPENING.to_string()], Some("en-US"), None);
 }
 
 #[cfg(test)]
