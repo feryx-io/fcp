@@ -69,6 +69,10 @@ pub struct ApiState {
     /// admin; none elsewhere.
     pub people_presence: Option<crate::people_presence::PeoplePresence>,
 
+    /// `[retention] tenant_trace_days`: a tenant's SIP and flow traces are
+    /// kept this long when its policy sets no window (`None` keeps them).
+    pub tenant_trace_days: Option<u32>,
+
     /// SIP realm for authentication
     pub realm: String,
 
@@ -255,6 +259,7 @@ impl ApiState {
             queue_manager,
             presence_manager,
             people_presence: None,
+            tenant_trace_days: None,
             realm,
             default_tenant_id,
             start_time: std::time::Instant::now(),
@@ -307,6 +312,13 @@ impl ApiState {
     /// Work out each person's presence (`docs/PRESENCE.md`).
     pub fn with_people_presence(mut self, people: crate::people_presence::PeoplePresence) -> Self {
         self.people_presence = Some(people);
+        self
+    }
+
+    /// The platform's trace window for tenants that set none
+    /// (`[retention] tenant_trace_days`; `None` or 0 keeps them).
+    pub fn with_tenant_trace_days(mut self, days: Option<u32>) -> Self {
+        self.tenant_trace_days = days.filter(|d| *d > 0);
         self
     }
 
