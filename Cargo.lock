@@ -2757,11 +2757,13 @@ dependencies = [
  "fcp-storage-redis",
  "futures",
  "redis",
+ "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "utoipa",
  "uuid",
 ]

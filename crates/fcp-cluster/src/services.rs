@@ -276,6 +276,9 @@ impl ServiceBeacon {
     /// the beacon's own task and made again while Redis is away (the
     /// `redis` check fails meanwhile), so a process never waits on it.
     pub fn start(self, config: fcp_storage_redis::RedisConfig) -> BeaconHandle {
+        // The process's log lines go to the same Redis, under its id
+        // (`docs/LOG_VIEWER.md`).
+        crate::logging::start_shipping(&self.identity.id, config.clone());
         let (shutdown, shutdown_rx) = watch::channel(false);
         let health = self.health.clone();
         let task = tokio::spawn(self.run(config, shutdown_rx));

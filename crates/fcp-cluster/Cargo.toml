@@ -28,6 +28,8 @@ serde_json = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
+regex = "1"
 
 # Error handling
 anyhow = { workspace = true }

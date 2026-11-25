@@ -1098,35 +1098,11 @@ fn auto_detect_local_ip() -> Option<String> {
 
 /// Initialize tracing subscriber based on configuration.
 fn init_tracing(config: &IvrConfig) {
-    use tracing_subscriber::EnvFilter;
-
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
-
-    match config.logging.format.as_str() {
-        "json" => {
-            tracing_subscriber::fmt()
-                .with_target(false)
-                .with_level(true)
-                .json()
-                .with_env_filter(env_filter)
-                .init();
-        }
-        "compact" => {
-            tracing_subscriber::fmt()
-                .with_target(false)
-                .with_level(true)
-                .compact()
-                .with_env_filter(env_filter)
-                .init();
-        }
-        _ => {
-            tracing_subscriber::fmt()
-                .with_target(false)
-                .with_level(true)
-                .with_env_filter(env_filter)
-                .init();
-        }
+    // One setup for every binary, its lines shipped to Redis once the
+    // service beacon starts (`docs/LOG_VIEWER.md`).
+    if let Err(e) = fcp_cluster::logging::init(&config.logging.level, &config.logging.format, false)
+    {
+        eprintln!("logging: {e:#}");
     }
 }
 

@@ -33,7 +33,6 @@ use clap::Parser;
 use std::sync::Arc;
 use tokio::signal;
 use tracing::{error, info, warn};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::cli::Cli;
 use crate::config::{load_config, LinkFileConfig};
@@ -214,13 +213,11 @@ fn mask(config: &LinkFileConfig) -> LinkFileConfig {
 }
 
 fn init_tracing(config: &LinkFileConfig) {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(config.logging.level.clone()));
-    let registry = tracing_subscriber::registry().with(env_filter);
-    match config.logging.format.as_str() {
-        "json" => registry.with(fmt::layer().json()).init(),
-        "pretty" => registry.with(fmt::layer().pretty()).init(),
-        _ => registry.with(fmt::layer().compact()).init(),
+    // One setup for every binary, its lines shipped to Redis once the
+    // service beacon starts (`docs/LOG_VIEWER.md`).
+    if let Err(e) = fcp_cluster::logging::init(&config.logging.level, &config.logging.format, true)
+    {
+        eprintln!("logging: {e:#}");
     }
 }
 
