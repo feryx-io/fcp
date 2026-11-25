@@ -84,12 +84,21 @@ pub struct PolicyResponse {
     pub cdr_archived_before: Option<u64>,
     /// False until the tenant has saved a policy (defaults shown).
     pub configured: bool,
+    /// Days the platform keeps the tenant's SIP and flow traces when
+    /// `sip_trace_retention_days` or `flow_trace_retention_days` is null
+    /// (`[retention] tenant_trace_days`); null keeps them.
+    pub platform_trace_retention_days: Option<u32>,
     #[serde(with = "crate::time::epoch_secs")]
     #[schema(value_type = String, format = DateTime)]
     pub updated_at: u64,
 }
 
 impl PolicyResponse {
+    fn with_platform_traces(mut self, days: Option<u32>) -> Self {
+        self.platform_trace_retention_days = days;
+        self
+    }
+
     fn from_policy(
         p: CompliancePolicy,
         configured: bool,
@@ -115,6 +124,7 @@ impl PolicyResponse {
             cdr_archive_required: p.cdr_archive_required,
             cdr_archived_before: archived_before.map(unix_secs),
             configured,
+            platform_trace_retention_days: None,
             updated_at: unix_secs(p.updated_at),
         }
     }
@@ -178,8 +188,13 @@ where
 fn check_days(name: &str, days: Option<u32>) -> Result<(), ApiError> {
     if let Some(d) = days {
         if d == 0 || d > 36_500 {
+            let null = if name.ends_with("trace_retention_days") {
+                "null for the platform's default"
+            } else {
+                "null to keep forever"
+            };
             return Err(ApiError::BadRequest(format!(
-                "{name} must be between 1 and 36500 days, or null to keep forever"
+                "{name} must be between 1 and 36500 days, or {null}"
             )));
         }
     }
@@ -210,9 +225,10 @@ pub async fn get_policy(
     let configured = stored.is_some();
     let policy = stored.unwrap_or_else(|| CompliancePolicy::defaults(tenant.0));
     let archived = archived_before(&state, &tenant.0).await;
-    Ok(Json(PolicyResponse::from_policy(
-        policy, configured, archived,
-    )))
+    Ok(Json(
+        PolicyResponse::from_policy(policy, configured, archived)
+            .with_platform_traces(state.tenant_trace_days),
+    ))
 }
 
 #[utoipa::path(
@@ -356,7 +372,10 @@ pub async fn update_policy(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     info!(tenant_id = %tenant.0, "Compliance policy updated");
     let archived = archived_before(&state, &tenant.0).await;
-    Ok(Json(PolicyResponse::from_policy(policy, true, archived)))
+    Ok(Json(
+        PolicyResponse::from_policy(policy, true, archived)
+            .with_platform_traces(state.tenant_trace_days),
+    ))
 }
 
 // ─── Retention ───────────────────────────────────────────────────────────
@@ -432,7 +451,8 @@ pub async fn run_retention_now(
         .get_compliance_policy(&tenant.0)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .unwrap_or_else(|| CompliancePolicy::defaults(tenant.0));
+        .unwrap_or_else(|| CompliancePolicy::defaults(tenant.0))
+        .with_trace_default(state.tenant_trace_days);
     let actor = identity
         .as_ref()
         .map(|Extension(i)| i.actor())

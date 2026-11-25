@@ -2753,3 +2753,72 @@ async fn a_stream_is_one_recording_its_files_kept_until_retention_takes_it() {
 
     db.finish().await;
 }
+
+#[tokio::test]
+async fn a_tenant_that_sets_no_trace_window_gets_the_platforms() {
+    // `[retention] tenant_trace_days`: before it, a tenant's own traces
+    // were kept until it set a window, so one busy tenant could fill the
+    // disk. A tenant's own window still wins.
+    let db = require_db!();
+    let traces = db.storage.sip_trace_store().unwrap();
+    let trace = |tenant: TenantId, days: u64| SipTraceMessage {
+        id: 0,
+        call_id: CallId::new().to_string(),
+        sip_call_id: format!("{}@y", uuid::Uuid::new_v4().simple()),
+        tenant_id: tenant.to_string(),
+        timestamp: days_ago(days),
+        direction: "inbound".into(),
+        method_or_status: "INVITE".into(),
+        cseq: "1 INVITE".into(),
+        from_uri: "sip:alice@a.example".into(),
+        to_uri: "sip:bob@a.example".into(),
+        source_addr: String::new(),
+        dest_addr: String::new(),
+        transport: "udp".into(),
+        raw_message: String::new(),
+        node_id: None,
+    };
+    let unset = TenantId::new();
+    let longer = TenantId::new();
+    for t in [unset, longer] {
+        traces.insert_sip_trace(&trace(t, 40)).await.unwrap();
+        traces.insert_sip_trace(&trace(t, 5)).await.unwrap();
+    }
+    let count = |t: TenantId| {
+        let pool = db.pg.pool().clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM sip_trace_messages WHERE tenant_id = $1",
+            )
+            .bind(t.to_string())
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    // No policy: the platform's 30 days.
+    let policy = CompliancePolicy::defaults(unset).with_trace_default(Some(30));
+    assert_eq!(policy.sip_trace_retention_days, Some(30));
+    assert_eq!(policy.flow_trace_retention_days, Some(30));
+    assert!(policy.has_retention());
+    let report = run_retention(&db.storage, &policy, "retention-test").await;
+    assert_eq!(report.sip_traces_deleted, 1, "{:?}", report.errors);
+    assert_eq!(count(unset).await, 1);
+
+    // Its own 90 days keeps the 40-day-old trace.
+    let mut own = CompliancePolicy::defaults(longer);
+    own.sip_trace_retention_days = Some(90);
+    let policy = own.with_trace_default(Some(30));
+    assert_eq!(policy.sip_trace_retention_days, Some(90));
+    let report = run_retention(&db.storage, &policy, "retention-test").await;
+    assert_eq!(report.sip_traces_deleted, 0, "{:?}", report.errors);
+    assert_eq!(count(longer).await, 2);
+
+    // The platform's 0 keeps them.
+    let policy = CompliancePolicy::defaults(unset).with_trace_default(Some(0));
+    assert_eq!(policy.sip_trace_retention_days, None);
+    assert!(!policy.has_retention());
+
+    db.finish().await;
+}
