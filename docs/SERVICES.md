@@ -270,7 +270,7 @@ it went, start it, see it back; stop the TTS server, see voicemail `degraded` wi
 
 - No restart button. The admin is not the process supervisor (Docker, systemd,
   Kubernetes are); a page that cannot restart reliably everywhere should not offer to.
-- No logs. Finding a service's logs stays with the deployment's log store.
+- Logs are `docs/LOG_VIEWER.md`'s: since v0.25.642 every service's lines (redacted, at `info` and above) are kept in the cluster's Redis under `fcp:logs:<service id>`, the last 100,000 or 24 hours, for the admin's Logs page. A deployment's own log store, fed from stdout, keeps them longer.
 - The nginx proxy and Postgres, Redis, Prometheus themselves are not FCP services; the
   `database` and `redis` checks of every service stand in for the last two.
 

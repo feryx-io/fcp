@@ -1116,34 +1116,10 @@ async fn run() -> Result<()> {
 
 /// Initialize tracing subscriber.
 fn init_tracing(level: &str, format: &str) {
-    use tracing_subscriber::EnvFilter;
-
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
-
-    match format {
-        "json" => {
-            tracing_subscriber::fmt()
-                .with_target(false)
-                .with_level(true)
-                .json()
-                .with_env_filter(env_filter)
-                .init();
-        }
-        "compact" => {
-            tracing_subscriber::fmt()
-                .with_target(false)
-                .with_level(true)
-                .compact()
-                .with_env_filter(env_filter)
-                .init();
-        }
-        _ => {
-            tracing_subscriber::fmt()
-                .with_target(false)
-                .with_level(true)
-                .with_env_filter(env_filter)
-                .init();
-        }
+    // One setup for every binary, its lines shipped to Redis once the
+    // service beacon starts (`docs/LOG_VIEWER.md`).
+    if let Err(e) = fcp_cluster::logging::init(level, format, false) {
+        eprintln!("logging: {e:#}");
     }
 }
 

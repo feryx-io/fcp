@@ -41,46 +41,9 @@ use config::load_config;
 
 /// Initialize tracing/logging for fcp-api-gateway.
 fn init_tracing(config: &config::GatewayConfig) -> Result<()> {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-
-    let log_level = &config.logging.level;
-    let log_format = &config.logging.format;
-
-    // Create the EnvFilter from the log level
-    let env_filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(log_level))
-        .context("Failed to create log filter")?;
-
-    // Build the subscriber based on format
-    match log_format.as_str() {
-        "json" => {
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(fmt::layer().json())
-                .init();
-        }
-        "pretty" => {
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(fmt::layer().pretty())
-                .init();
-        }
-        "compact" => {
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(fmt::layer().compact())
-                .init();
-        }
-        _ => {
-            // Default to JSON for production
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(fmt::layer().json())
-                .init();
-        }
-    }
-
-    Ok(())
+    // One setup for every binary, its lines shipped to Redis once the
+    // service beacon starts (`docs/LOG_VIEWER.md`).
+    fcp_cluster::logging::init(&config.logging.level, &config.logging.format, true)
 }
 
 /// Health check handler
