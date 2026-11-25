@@ -125,7 +125,7 @@ export function DataTable<TData, TValue>({
             value={String(pagination.pageSize)}
             onValueChange={(v) => setPagination({ pageIndex: 0, pageSize: Number(v) })}
           >
-            <SelectTrigger className="h-8 w-20" aria-label="Rows per page"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="h-8 w-20" aria-label="Page size"><SelectValue /></SelectTrigger>
             <SelectContent>
               {PAGE_SIZES.map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
             </SelectContent>
