@@ -70,6 +70,16 @@ impl TtsProvider for RemoteTtsProvider {
     }
 
     async fn synthesize(&self, text: &str, language: &str, voice: Option<&str>) -> Result<Vec<u8>> {
+        self.synthesize_for(text, language, voice, None).await
+    }
+
+    async fn synthesize_for(
+        &self,
+        text: &str,
+        language: &str,
+        voice: Option<&str>,
+        tenant: Option<&str>,
+    ) -> Result<Vec<u8>> {
         let url = format!("{}/v1/synthesize", self.url);
 
         let body = SynthesizeRequest {
@@ -77,7 +87,8 @@ impl TtsProvider for RemoteTtsProvider {
             language,
             voice,
             provider: self.provider_override.as_deref(),
-            tenant_id: self.tenant_id.as_deref(),
+            // The request's tenant, else the one this client was made for.
+            tenant_id: tenant.or(self.tenant_id.as_deref()),
         };
 
         debug!(

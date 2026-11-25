@@ -160,11 +160,27 @@ impl TtsService {
         language: Option<&str>,
         voice: Option<&str>,
     ) -> Result<PathBuf> {
+        self.synthesize_for(text, language, voice, None).await
+    }
+
+    /// [`Self::synthesize`] for `tenant`'s call, prompt or mailbox
+    /// (`docs/TENANT_SPEECH.md`): the tenant is passed to the TTS server,
+    /// which speaks with the tenant's provider and voice where the request
+    /// names none, and kept apart in the cache, since the same words may
+    /// sound different for another tenant.
+    pub async fn synthesize_for(
+        &self,
+        text: &str,
+        language: Option<&str>,
+        voice: Option<&str>,
+        tenant: Option<&fcp_core::TenantId>,
+    ) -> Result<PathBuf> {
         let language = language.unwrap_or(&self.default_language);
         let voice = voice.or(self.default_voice.as_deref());
+        let tenant = tenant.map(|t| t.as_uuid().to_string());
 
         // Generate cache key
-        let cache_key = self.generate_cache_key(text, language, voice);
+        let cache_key = self.generate_cache_key(text, language, voice, tenant.as_deref());
 
         if let Some(path) = self.cached(&cache_key).await {
             return Ok(path);
@@ -172,7 +188,7 @@ impl TtsService {
         let lock = self.in_flight.entry(cache_key.clone()).or_default().clone();
         let _synthesizing = lock.lock().await;
         let result = self
-            .synthesize_uncached(text, language, voice, &cache_key)
+            .synthesize_uncached(text, language, voice, tenant.as_deref(), &cache_key)
             .await;
         self.in_flight.remove(&cache_key);
         result
@@ -180,13 +196,22 @@ impl TtsService {
 
     /// Synthesize `texts` into the cache in the background, so a call that
     /// speaks them one after another hears each without waiting for it.
-    pub fn warm(self: &Arc<Self>, texts: Vec<String>, language: Option<&str>) {
+    pub fn warm(
+        self: &Arc<Self>,
+        texts: Vec<String>,
+        language: Option<&str>,
+        tenant: Option<&fcp_core::TenantId>,
+    ) {
         let language = language.map(str::to_string);
+        let tenant = tenant.copied();
         for text in texts {
             let tts = Arc::clone(self);
             let language = language.clone();
             tokio::spawn(async move {
-                if let Err(e) = tts.synthesize(&text, language.as_deref(), None).await {
+                if let Err(e) = tts
+                    .synthesize_for(&text, language.as_deref(), None, tenant.as_ref())
+                    .await
+                {
                     warn!(error = %e, "TTS warm-up of a prompt failed");
                 }
             });
@@ -212,6 +237,7 @@ impl TtsService {
         text: &str,
         language: &str,
         voice: Option<&str>,
+        tenant: Option<&str>,
         cache_key: &str,
     ) -> Result<PathBuf> {
         // Whoever held the lock before us may have made it.
@@ -229,7 +255,7 @@ impl TtsService {
         // Synthesize audio
         let audio_data = self
             .provider
-            .synthesize(text, language, voice)
+            .synthesize_for(text, language, voice, tenant)
             .await
             .context("TTS synthesis failed")?;
 
@@ -269,7 +295,13 @@ impl TtsService {
     }
 
     /// Generate cache key from text, language, and voice.
-    fn generate_cache_key(&self, text: &str, language: &str, voice: Option<&str>) -> String {
+    fn generate_cache_key(
+        &self,
+        text: &str,
+        language: &str,
+        voice: Option<&str>,
+        tenant: Option<&str>,
+    ) -> String {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
@@ -278,6 +310,11 @@ impl TtsService {
         hasher.update(language.as_bytes());
         if let Some(v) = voice {
             hasher.update(v.as_bytes());
+        }
+        // A tenant's words are its own (`docs/TENANT_SPEECH.md`).
+        if let Some(t) = tenant {
+            hasher.update(b"\0tenant\0");
+            hasher.update(t.as_bytes());
         }
 
         format!("{:x}", hasher.finalize())
@@ -440,6 +477,19 @@ pub trait TtsProvider: Send + Sync {
     /// # Returns
     /// Audio data in WAV format (8kHz, 16-bit PCM mono)
     async fn synthesize(&self, text: &str, language: &str, voice: Option<&str>) -> Result<Vec<u8>>;
+
+    /// Synthesize for a tenant (`docs/TENANT_SPEECH.md`): a provider that
+    /// can say whose words these are (the shared TTS server, which picks the
+    /// tenant's provider and voice) is told; any other speaks as above.
+    async fn synthesize_for(
+        &self,
+        text: &str,
+        language: &str,
+        voice: Option<&str>,
+        _tenant: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        self.synthesize(text, language, voice).await
+    }
 
     /// List available voices for a language.
     async fn list_voices(&self, language: &str) -> Result<Vec<VoiceInfo>>;
@@ -780,8 +830,18 @@ mod tests {
         };
 
         assert_ne!(
-            service_a.generate_cache_key("hello", "en-US", Some("nova")),
-            service_b.generate_cache_key("hello", "en-US", Some("nova"))
+            service_a.generate_cache_key("hello", "en-US", Some("nova"), None),
+            service_b.generate_cache_key("hello", "en-US", Some("nova"), None)
+        );
+        // One tenant's words are kept apart from another's, and from none.
+        let a = service_a.generate_cache_key("hello", "en-US", None, Some("t-1"));
+        assert_ne!(
+            a,
+            service_a.generate_cache_key("hello", "en-US", None, Some("t-2"))
+        );
+        assert_ne!(
+            a,
+            service_a.generate_cache_key("hello", "en-US", None, None)
         );
     }
 
@@ -831,7 +891,7 @@ mod tests {
         });
 
         // A call reaching a sentence still being warmed waits for it.
-        service.warm(vec!["one".into(), "two".into()], Some("en-US"));
+        service.warm(vec!["one".into(), "two".into()], Some("en-US"), None);
         tokio::task::yield_now().await;
         let (a, b) = tokio::join!(
             service.synthesize("one", Some("en-US"), None),
