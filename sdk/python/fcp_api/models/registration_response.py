@@ -36,7 +36,7 @@ class RegistrationResponse:
             user_agent (None | str | Unset):
             q (float | None | Unset):
             node_id (None | str | Unset): The node that took the registration (its `[service] node_id`);
-                null for one written before v0.25.639 that has not re-registered.
+                null for one written before v0.25.644 that has not re-registered.
      """
 
     aor: str

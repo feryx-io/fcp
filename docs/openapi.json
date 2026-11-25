@@ -38655,7 +38655,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "The node that took the registration (its `[service] node_id`);\nnull for one written before v0.25.639 that has not re-registered."
+                  "description": "The node that took the registration (its `[service] node_id`);\nnull for one written before v0.25.644 that has not re-registered."
                 }
               }
             }
@@ -43504,7 +43504,7 @@
               "string",
               "null"
             ],
-            "description": "The node that took the registration (its `[service] node_id`);\nnull for one written before v0.25.639 that has not re-registered."
+            "description": "The node that took the registration (its `[service] node_id`);\nnull for one written before v0.25.644 that has not re-registered."
           }
         }
       },

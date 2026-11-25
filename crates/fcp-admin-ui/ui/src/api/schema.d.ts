@@ -12201,7 +12201,7 @@ export interface components {
                 expires_in_seconds: number;
                 /**
                  * @description The node that took the registration (its `[service] node_id`);
-                 *     null for one written before v0.25.639 that has not re-registered.
+                 *     null for one written before v0.25.644 that has not re-registered.
                  */
                 node_id?: string | null;
             }[];
@@ -13855,7 +13855,7 @@ export interface components {
             expires_in_seconds: number;
             /**
              * @description The node that took the registration (its `[service] node_id`);
-             *     null for one written before v0.25.639 that has not re-registered.
+             *     null for one written before v0.25.644 that has not re-registered.
              */
             node_id?: string | null;
         };
