@@ -28,19 +28,19 @@ fcp-media = { path = "../fcp-media" }
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 
 # SIP stack from siphon-rs
-sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
-sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
-sip-transport = { path = "../../external/siphon-rs/crates/sip-transport" }
-sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
-sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
-sip-auth = { path = "../../external/siphon-rs/crates/sip-auth" }
-sip-registrar = { path = "../../external/siphon-rs/crates/sip-registrar" }
-sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
-sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
-sip-ratelimit = { path = "../../external/siphon-rs/crates/sip-ratelimit" }
-sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
-sip-observe = { path = "../../external/siphon-rs/crates/sip-observe" }
-sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
+sip-core = { package = "siphon-core", path = "../../external/siphon-rs/crates/sip-core" }
+sip-parse = { package = "siphon-parse", path = "../../external/siphon-rs/crates/sip-parse" }
+sip-transport = { package = "siphon-transport", path = "../../external/siphon-rs/crates/sip-transport" }
+sip-transaction = { package = "siphon-transaction", path = "../../external/siphon-rs/crates/sip-transaction" }
+sip-dialog = { package = "siphon-dialog", path = "../../external/siphon-rs/crates/sip-dialog" }
+sip-auth = { package = "siphon-auth", path = "../../external/siphon-rs/crates/sip-auth" }
+sip-registrar = { package = "siphon-registrar", path = "../../external/siphon-rs/crates/sip-registrar" }
+sip-uac = { package = "siphon-uac", path = "../../external/siphon-rs/crates/sip-uac" }
+sip-uas = { package = "siphon-uas", path = "../../external/siphon-rs/crates/sip-uas" }
+sip-ratelimit = { package = "siphon-ratelimit", path = "../../external/siphon-rs/crates/sip-ratelimit" }
+sip-sdp = { package = "siphon-sdp", path = "../../external/siphon-rs/crates/sip-sdp" }
+sip-observe = { package = "siphon-observe", path = "../../external/siphon-rs/crates/sip-observe" }
+sip-dns = { package = "siphon-dns", path = "../../external/siphon-rs/crates/sip-dns" }
 
 # HTTP API
 axum = "0.7"

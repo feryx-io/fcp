@@ -38,7 +38,7 @@ cargo test --all
 
 # Run tests for a specific crate
 cargo test -p fcp-core
-cargo test -p sip-transaction
+cargo test -p fcp-sip
 
 # Run tests with output visible
 cargo test -- --nocapture
@@ -173,6 +173,7 @@ fcp/
 │
 ├── external/                     # ── Git submodules (both public repos) ──
 │   ├── siphon-rs/                # SIP stack — https://github.com/feryx-io/siphon-rs
+│   │   │                         # (directories sip-*, packages siphon-* on crates.io)
 │   │   ├── CLAUDE.md             # siphon-rs specific documentation
 │   │   ├── bins/
 │   │   │   └── siphond/          # Multi-mode SIP testing daemon
@@ -196,8 +197,8 @@ fcp/
 │       ├── bins/                 # forge-sip-server, forge-test-daemon
 │       ├── crates/               # forge-core, forge-rtp, forge-sdp, forge-codecs,
 │       │                         # forge-conference, forge-mixer, forge-webrtc,
-│       │                         # forge-siprec, forge-api, forge-transcoder, …
-│       └── external/siphon-rs/   # forge-media's own siphon-rs submodule (recursive)
+│                                 # forge-siprec, forge-api, forge-transcoder, …
+│                                 # (siphon-sdp and hep-rs from crates.io)
 │
 ├── tests/                        # Integration tests
 ├── migrations/                   # Database migrations
@@ -528,8 +529,8 @@ proxy worker. The vision document keeps them as history; STATUS.md is authoritat
 FCP links two git submodules under `external/`, each maintained as its own repository:
 
 - **siphon-rs** (SIP stack) — https://github.com/feryx-io/siphon-rs
-- **forge-media** (media stack) — https://github.com/feryx-io/forge-media, which itself
-  contains siphon-rs as a nested submodule (hence `--recursive` everywhere)
+- **forge-media** (media stack) — https://github.com/feryx-io/forge-media, which since
+  v2026.11.22 takes `siphon-sdp` and `hep-rs` from crates.io and has no submodule of its own
 
 Both repositories are **public**, so no credentials are needed to clone them. CI checks
 them out with `actions/checkout@v5` + `submodules: recursive` using the default
@@ -537,19 +538,26 @@ them out with `actions/checkout@v5` + `submodules: recursive` using the default
 
 ### The single sip-sdp rule
 
-forge-media's `forge-sdp` crate depends on `sip-sdp` via a **git dependency pinned to a
-siphon-rs release tag** (see `external/forge-media/crates/forge-sdp/Cargo.toml`). FCP's
-root `Cargo.toml` then patches that git source to the local submodule checkout:
+siphon-rs's crates are published as `siphon-*` (siphon-rs v2026.11.22.1); their
+directories are still `crates/sip-*`. FCP's crates depend on them by path under the old
+names, so the code keeps `use sip_core::…`:
 
 ```toml
-[patch."https://github.com/feryx-io/siphon-rs"]
-sip-sdp = { path = "external/siphon-rs/crates/sip-sdp" }
+sip-core = { package = "siphon-core", path = "../../external/siphon-rs/crates/sip-core" }
 ```
 
-This keeps the whole workspace resolving to a **single copy** of `sip-sdp` (mixing two
-copies breaks type compatibility between fcp-sip and forge-media). When bumping the
-siphon-rs submodule to a new tag, also update the tag in forge-sdp's git dependency so
-the patch and the pin stay consistent.
+forge-media's `forge-sdp` takes `siphon-sdp` from crates.io (as `sip-sdp`, the same way).
+FCP's root `Cargo.toml` patches that to the submodule checkout:
+
+```toml
+[patch.crates-io]
+siphon-sdp = { path = "external/siphon-rs/crates/sip-sdp" }
+```
+
+This keeps the whole workspace resolving to a **single copy** of `siphon-sdp` (mixing two
+copies breaks type compatibility between fcp-sip and forge-media). A patch only applies
+when the versions agree: when siphon-sdp's version changes, forge-sdp's requirement must
+still match the submodule's (`cargo tree -d` lists a second copy if not).
 
 ### Release-tag workflow for submodule changes
 

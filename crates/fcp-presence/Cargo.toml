@@ -10,7 +10,7 @@ description = "SIP Presence service for user availability tracking"
 [dependencies]
 fcp-core = { path = "../fcp-core" }
 fcp-events = { path = "../fcp-events" }
-sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
+sip-core = { package = "siphon-core", path = "../../external/siphon-rs/crates/sip-core" }
 async-trait = "0.1"
 anyhow = { workspace = true }
 serde = { workspace = true }

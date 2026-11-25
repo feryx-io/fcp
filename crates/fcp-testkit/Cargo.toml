@@ -50,15 +50,15 @@ axum = { version = "0.7", features = ["ws"] }
 futures-util = "0.3"
 
 # The phone: siphon-rs for SIP, forge-media for RTP and codecs.
-sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
-sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
-sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
-sip-transport = { path = "../../external/siphon-rs/crates/sip-transport", features = ["tls"] }
-sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
-sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
-sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
-sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
-sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
+sip-core = { package = "siphon-core", path = "../../external/siphon-rs/crates/sip-core" }
+sip-parse = { package = "siphon-parse", path = "../../external/siphon-rs/crates/sip-parse" }
+sip-transaction = { package = "siphon-transaction", path = "../../external/siphon-rs/crates/sip-transaction" }
+sip-transport = { package = "siphon-transport", path = "../../external/siphon-rs/crates/sip-transport", features = ["tls"] }
+sip-dialog = { package = "siphon-dialog", path = "../../external/siphon-rs/crates/sip-dialog" }
+sip-uac = { package = "siphon-uac", path = "../../external/siphon-rs/crates/sip-uac" }
+sip-uas = { package = "siphon-uas", path = "../../external/siphon-rs/crates/sip-uas" }
+sip-dns = { package = "siphon-dns", path = "../../external/siphon-rs/crates/sip-dns" }
+sip-sdp = { package = "siphon-sdp", path = "../../external/siphon-rs/crates/sip-sdp" }
 forge-rtp = { path = "../../external/forge-media/crates/forge-rtp" }
 forge-bwe = { path = "../../external/forge-media/crates/forge-bwe" }
 forge-codecs = { path = "../../external/forge-media/crates/forge-codecs" }

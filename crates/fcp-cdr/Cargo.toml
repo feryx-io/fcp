@@ -8,7 +8,7 @@ description = "The CDR pipeline: the record a node builds at hangup, the local s
 fcp-core = { path = "../fcp-core" }
 fcp-billing = { path = "../fcp-billing" }
 fcp-events = { path = "../fcp-events" }
-sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
+sip-sdp = { package = "siphon-sdp", path = "../../external/siphon-rs/crates/sip-sdp" }
 
 anyhow.workspace = true
 async-trait = "0.1"

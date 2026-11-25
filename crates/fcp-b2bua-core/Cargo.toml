@@ -14,11 +14,11 @@ fcp-billing = { path = "../fcp-billing" }
 fcp-cdr = { path = "../fcp-cdr" }
 
 # SIP stack dependencies (from siphon-rs)
-sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
-sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
-sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
-sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
-sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
+sip-core = { package = "siphon-core", path = "../../external/siphon-rs/crates/sip-core" }
+sip-parse = { package = "siphon-parse", path = "../../external/siphon-rs/crates/sip-parse" }
+sip-dialog = { package = "siphon-dialog", path = "../../external/siphon-rs/crates/sip-dialog" }
+sip-transaction = { package = "siphon-transaction", path = "../../external/siphon-rs/crates/sip-transaction" }
+sip-uac = { package = "siphon-uac", path = "../../external/siphon-rs/crates/sip-uac" }
 
 # Async runtime
 tokio.workspace = true
