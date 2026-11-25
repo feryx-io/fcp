@@ -38649,6 +38649,13 @@
                   "type": "integer",
                   "format": "int64",
                   "minimum": 0
+                },
+                "node_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The node that took the registration (its `[service] node_id`);\nnull for one written before v0.25.639 that has not re-registered."
                 }
               }
             }
@@ -43482,6 +43489,13 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node that took the registration (its `[service] node_id`);\nnull for one written before v0.25.639 that has not re-registered."
           }
         }
       },

@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   type ColumnDef,
   type ColumnFiltersState,
+  type PaginationState,
   type SortingState,
   flexRender,
   getCoreRowModel,
@@ -13,6 +14,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ChevronLeft, ChevronRight, Search } from 'lucide-react'
 
 interface DataTableProps<TData, TValue> {
@@ -22,6 +24,8 @@ interface DataTableProps<TData, TValue> {
   searchPlaceholder?: string
 }
 
+const PAGE_SIZES = [10, 25, 50, 100]
+
 export function DataTable<TData, TValue>({
   columns,
   data,
@@ -30,6 +34,7 @@ export function DataTable<TData, TValue>({
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
+  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 10 })
 
   const table = useReactTable({
     data,
@@ -39,9 +44,25 @@ export function DataTable<TData, TValue>({
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     onSortingChange: setSorting,
-    onColumnFiltersChange: setColumnFilters,
-    state: { sorting, columnFilters },
+    onColumnFiltersChange: (updater) => {
+      setColumnFilters(updater)
+      setPagination((p) => ({ ...p, pageIndex: 0 }))
+    },
+    onPaginationChange: setPagination,
+    // A page that refetches (every few seconds, some do) hands in new data;
+    // the table must stay on the page the reader chose, not jump to the
+    // first.
+    autoResetPageIndex: false,
+    state: { sorting, columnFilters, pagination },
   })
+
+  // Rows gone (a filter, a refetch with fewer): stay on the last page there is.
+  const pageCount = table.getPageCount()
+  useEffect(() => {
+    if (pageCount > 0 && pagination.pageIndex >= pageCount) {
+      setPagination((p) => ({ ...p, pageIndex: pageCount - 1 }))
+    }
+  }, [pageCount, pagination.pageIndex])
 
   return (
     <div className="space-y-4">
@@ -99,6 +120,16 @@ export function DataTable<TData, TValue>({
           {table.getFilteredRowModel().rows.length} row(s)
         </div>
         <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">Rows per page</span>
+          <Select
+            value={String(pagination.pageSize)}
+            onValueChange={(v) => setPagination({ pageIndex: 0, pageSize: Number(v) })}
+          >
+            <SelectTrigger className="h-8 w-20" aria-label="Rows per page"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {PAGE_SIZES.map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
+            </SelectContent>
+          </Select>
           <Button
             variant="outline"
             size="sm"
@@ -109,7 +140,7 @@ export function DataTable<TData, TValue>({
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <span className="text-sm text-muted-foreground">
-            Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}
+            Page {pagination.pageIndex + 1} of {Math.max(1, pageCount)}
           </span>
           <Button
             variant="outline"

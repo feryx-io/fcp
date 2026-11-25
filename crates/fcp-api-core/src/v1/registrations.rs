@@ -96,6 +96,9 @@ pub struct RegistrationResponse {
     #[schema(value_type = String, format = DateTime)]
     pub registered_at: std::time::SystemTime,
     pub expires_in_seconds: u64,
+    /// The node that took the registration (its `[service] node_id`);
+    /// null for one written before v0.25.639 that has not re-registered.
+    pub node_id: Option<String>,
 }
 
 impl From<Registration> for RegistrationResponse {
@@ -116,6 +119,7 @@ impl From<Registration> for RegistrationResponse {
             q: reg.q,
             registered_at: reg.registered_at,
             expires_in_seconds,
+            node_id: reg.node_id,
         }
     }
 }

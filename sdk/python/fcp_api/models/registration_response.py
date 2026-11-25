@@ -35,6 +35,8 @@ class RegistrationResponse:
             expires_in_seconds (int):
             user_agent (None | str | Unset):
             q (float | None | Unset):
+            node_id (None | str | Unset): The node that took the registration (its `[service] node_id`);
+                null for one written before v0.25.639 that has not re-registered.
      """
 
     aor: str
@@ -46,6 +48,7 @@ class RegistrationResponse:
     expires_in_seconds: int
     user_agent: None | str | Unset = UNSET
     q: float | None | Unset = UNSET
+    node_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -79,6 +82,12 @@ class RegistrationResponse:
         else:
             q = self.q
 
+        node_id: None | str | Unset
+        if isinstance(self.node_id, Unset):
+            node_id = UNSET
+        else:
+            node_id = self.node_id
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -95,6 +104,8 @@ class RegistrationResponse:
             field_dict["user_agent"] = user_agent
         if q is not UNSET:
             field_dict["q"] = q
+        if node_id is not UNSET:
+            field_dict["node_id"] = node_id
 
         return field_dict
 
@@ -143,6 +154,16 @@ class RegistrationResponse:
         q = _parse_q(d.pop("q", UNSET))
 
 
+        def _parse_node_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        node_id = _parse_node_id(d.pop("node_id", UNSET))
+
+
         registration_response = cls(
             aor=aor,
             contact=contact,
@@ -153,6 +174,7 @@ class RegistrationResponse:
             expires_in_seconds=expires_in_seconds,
             user_agent=user_agent,
             q=q,
+            node_id=node_id,
         )
 
 
