@@ -122,6 +122,20 @@ pub struct SipSection {
     #[serde(default)]
     pub trusted_sources: Vec<String>,
 
+    /// Failed digest authentications from one source address within a
+    /// minute before it is blocked for `auth_block_secs`: nothing from it
+    /// is read until the block ends. Only wrong credentials answering a
+    /// challenge this node issued count, and never from a source exempt
+    /// from `max_messages_per_source`. `0` blocks nobody
+    /// (`docs/EDGE_SECURITY.md` §2.8).
+    #[serde(default = "fcp_sip::auth_block::default_max_auth_failures")]
+    pub max_auth_failures_per_source: u32,
+
+    /// How long a source that failed authentication too often is blocked,
+    /// in seconds (1 to 86,400).
+    #[serde(default = "fcp_sip::auth_block::default_auth_block_secs")]
+    pub auth_block_secs: u64,
+
     /// UDP bind address.
     #[serde(default = "default_sip_bind")]
     pub udp_bind: String,
@@ -186,6 +200,8 @@ impl Default for SipSection {
         Self {
             max_messages_per_source: fcp_sip::ingress::DEFAULT_MESSAGES_PER_SOURCE,
             trusted_sources: Vec::new(),
+            max_auth_failures_per_source: fcp_sip::auth_block::DEFAULT_MAX_AUTH_FAILURES,
+            auth_block_secs: fcp_sip::auth_block::DEFAULT_AUTH_BLOCK_SECS,
             udp_bind: default_sip_bind(),
             tcp_bind: default_sip_bind(),
             ws_bind: None,
@@ -510,6 +526,8 @@ fn validate_http_config(http: &HttpSection) -> Result<()> {
 }
 
 fn validate_sip_config(sip: &SipSection) -> Result<()> {
+    fcp_sip::auth_block::validate(sip.max_auth_failures_per_source, sip.auth_block_secs)
+        .map_err(|e| anyhow::anyhow!("[sip] {e}"))?;
     // Shared bind address parsing and WSS TLS prerequisite check.
     fcp_sip::validate_sip_binds(
         &sip.udp_bind,

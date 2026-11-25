@@ -31,10 +31,15 @@ pub trait PresenceHandler: Send + Sync {
     ///
     /// Returns `Ok(())` if handled, `Err` if not a presence/dialog subscription
     /// (allowing fallback to B2BUA in-dialog handling).
+    ///
+    /// `source` is the address the request arrived from: a digest refused
+    /// on this node's own challenge counts toward blocking it
+    /// ([`crate::auth_block`]).
     async fn handle_subscribe(
         &self,
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
+        source: Option<std::net::IpAddr>,
     ) -> Result<()>;
 
     /// Handle a PUBLISH request for `event: presence` (RFC 3903).
@@ -46,10 +51,13 @@ pub trait PresenceHandler: Send + Sync {
     /// - Triggering NOTIFY to all watchers
     ///
     /// Returns `Ok(())` if handled, `Err` if not a presence PUBLISH.
+    ///
+    /// `source` as for [`handle_subscribe`](Self::handle_subscribe).
     async fn handle_publish(
         &self,
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
+        source: Option<std::net::IpAddr>,
     ) -> Result<()>;
 
     /// Notify all watchers of a presentity about a state change.
@@ -478,6 +486,7 @@ impl SipPresenceHandler {
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
         expected_aor: &str,
+        source: Option<std::net::IpAddr>,
     ) -> Result<bool> {
         let Some(auth) = &self.auth else {
             return Ok(true);
@@ -490,7 +499,7 @@ impl SipPresenceHandler {
             return Ok(false);
         };
 
-        match auth.authenticator.authenticate(request).await {
+        match auth.authenticator.authenticate_at(request, source).await {
             crate::auth::AuthOutcome::Authenticated { .. } => {}
             // A nonce this node did not issue, or one already spent, is
             // not proof; the client is told to retry against a fresh one.
@@ -840,9 +849,10 @@ impl SipPresenceHandler {
         ctx: &SubscribeContext,
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
+        source: Option<std::net::IpAddr>,
     ) -> Result<bool> {
         if !self
-            .authenticate_request_identity(request, handle, &ctx.watcher_aor)
+            .authenticate_request_identity(request, handle, &ctx.watcher_aor, source)
             .await?
         {
             return Ok(false);
@@ -1238,6 +1248,7 @@ impl PresenceHandler for SipPresenceHandler {
         &self,
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
+        source: Option<std::net::IpAddr>,
     ) -> Result<()> {
         let mut ctx = self.parse_subscribe_context(request)?;
         ctx.tenant_id = match self.tenant_of(&ctx.presentity_aor).await {
@@ -1281,7 +1292,10 @@ impl PresenceHandler for SipPresenceHandler {
             "Handling presence SUBSCRIBE"
         );
 
-        if !self.check_subscribe_auth(&ctx, request, handle).await? {
+        if !self
+            .check_subscribe_auth(&ctx, request, handle, source)
+            .await?
+        {
             return Ok(());
         }
 
@@ -1323,6 +1337,7 @@ impl PresenceHandler for SipPresenceHandler {
         &self,
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
+        source: Option<std::net::IpAddr>,
     ) -> Result<()> {
         // Check Event header — only handle "presence"
         let event =
@@ -1370,7 +1385,7 @@ impl PresenceHandler for SipPresenceHandler {
         let has_body = !body.is_empty();
 
         if !self
-            .authenticate_request_identity(request, handle, &presentity_aor)
+            .authenticate_request_identity(request, handle, &presentity_aor, source)
             .await?
         {
             return Ok(());
