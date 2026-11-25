@@ -86,6 +86,11 @@ url = "http://host.docker.internal:8084"
 server_url = "http://host.docker.internal:8090"
 gateway_url = "https://${HOST_IP}:8095"
 
+[tts]
+# The TTS server on the host's network: prompts are spoken and previewed in
+# the voices calls hear. FCP_ADMIN_TTS_AUTH_TOKEN authenticates.
+remote_url = "http://host.docker.internal:8093"
+
 [compliance]
 exports_dir = "/app/data/exports"
 

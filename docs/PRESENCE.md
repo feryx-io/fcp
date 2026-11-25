@@ -113,6 +113,7 @@ is what "only DND stops calls" means for them.
   above. `until` is RFC 3339, in the future, within 7 days.
 - `GET/POST /api/v1/me/presence/statuses`, `PUT/DELETE …/statuses/{id}`, and `PUT
   …/statuses/order`. Deleting the status in use makes the chosen status Available.
+- An administrator lists everyone's at `GET /api/v1/presence/people` (the Presence page, since v0.25.640)
 - An administrator reads anyone's at `GET /api/v1/users/{username}/presence`
   (`user_read`) and the admin UI's user page shows it.
 

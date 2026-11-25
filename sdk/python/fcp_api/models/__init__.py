@@ -334,6 +334,8 @@ from .page_parking_lot_response import PageParkingLotResponse
 from .page_parking_lot_response_data_item import PageParkingLotResponseDataItem
 from .page_pending_device_response import PagePendingDeviceResponse
 from .page_pending_device_response_data_item import PagePendingDeviceResponseDataItem
+from .page_person_presence_response import PagePersonPresenceResponse
+from .page_person_presence_response_data_item import PagePersonPresenceResponseDataItem
 from .page_personal_contact_response import PagePersonalContactResponse
 from .page_personal_contact_response_data_item import PagePersonalContactResponseDataItem
 from .page_phone_number_response import PagePhoneNumberResponse
@@ -408,6 +410,7 @@ from .parking_lot_request import ParkingLotRequest
 from .parking_lot_response import ParkingLotResponse
 from .password_login import PasswordLogin
 from .pending_device_response import PendingDeviceResponse
+from .person_presence_response import PersonPresenceResponse
 from .personal_contact_request import PersonalContactRequest
 from .personal_contact_response import PersonalContactResponse
 from .phone_number_response import PhoneNumberResponse
@@ -956,6 +959,8 @@ __all__ = (
     "PagePendingDeviceResponseDataItem",
     "PagePersonalContactResponse",
     "PagePersonalContactResponseDataItem",
+    "PagePersonPresenceResponse",
+    "PagePersonPresenceResponseDataItem",
     "PagePhoneNumberResponse",
     "PagePhoneNumberResponseDataItem",
     "PagePresenceResponse",
@@ -1030,6 +1035,7 @@ __all__ = (
     "PendingDeviceResponse",
     "PersonalContactRequest",
     "PersonalContactResponse",
+    "PersonPresenceResponse",
     "PhoneNumberResponse",
     "PlaceHoldRequest",
     "PlayRequest",

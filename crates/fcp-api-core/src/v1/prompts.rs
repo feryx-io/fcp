@@ -659,18 +659,51 @@ pub async fn download_audio(
 
     let prompt = ensure_prompt_tenant(load_prompt(prompt_store, &id).await?, &tenant.0, &id)?;
 
-    let audio_path = prompt
-        .audio_path
-        .ok_or_else(|| ApiError::NotFound("No audio file for this prompt".to_string()))?;
-
-    let data = tokio::fs::read(&audio_path)
-        .await
-        .map_err(|e| ApiError::NotFound(format!("Audio file not found: {}", e)))?;
+    // The file, where this process can read it.
+    let on_hand = match &prompt.audio_path {
+        Some(path) => tokio::fs::read(path)
+            .await
+            .ok()
+            .map(|data| (path.clone(), data)),
+        None => None,
+    };
+    // A spoken prompt with no file here (the file is another node's, or was
+    // never made: a call speaks it as it plays) is spoken now, as the call
+    // would hear it, so it can be previewed (D8 finding 68).
+    let (path, data) = match on_hand {
+        Some(found) => found,
+        None => {
+            let text = prompt
+                .tts_text
+                .as_deref()
+                .filter(|t| !t.trim().is_empty() && prompt.source_type == PromptSourceType::Tts)
+                .ok_or_else(|| ApiError::NotFound("No audio file for this prompt".to_string()))?;
+            let tts = state.tts_service.as_ref().ok_or_else(|| {
+                ApiError::ServiceUnavailable(
+                    "No audio here and no TTS service to speak it: set [tts] on the admin"
+                        .to_string(),
+                )
+            })?;
+            let spoken = tts
+                .synthesize(text, Some(&prompt.language), prompt.tts_voice.as_deref())
+                .await
+                .map_err(|e| ApiError::ServiceUnavailable(format!("TTS synthesis failed: {e}")))?;
+            let data = tokio::fs::read(&spoken)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Spoken audio unreadable: {e}")))?;
+            (spoken, data)
+        }
+    };
+    let mime = match path.extension().and_then(|e| e.to_str()) {
+        Some("mp3") => "audio/mpeg",
+        Some("ogg") | Some("opus") => "audio/ogg",
+        _ => "audio/wav",
+    };
 
     Ok((
         StatusCode::OK,
         [
-            (axum::http::header::CONTENT_TYPE, "audio/wav"),
+            (axum::http::header::CONTENT_TYPE, mime),
             (axum::http::header::CONTENT_DISPOSITION, "inline"),
         ],
         data,

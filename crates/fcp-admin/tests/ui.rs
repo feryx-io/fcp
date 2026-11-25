@@ -211,6 +211,10 @@ format = "compact"
         stopped_service(redis_url, http).await;
     }
 
+    // The default tenant's row, which a deployment has and a fresh
+    // database does not: branding's tables refer to it (branding.spec.ts).
+    fcp_testkit::Seed::new(db.url(), "ui.example").await;
+
     let admin = user(&url, "root", "super_admin").await;
     let tenant_admin = user(&url, "ta", "tenant_admin").await;
     let person = user(&url, "pat", "end_user").await;
@@ -218,6 +222,12 @@ format = "compact"
     let out = tokio::task::spawn_blocking(move || {
         Command::new("npx")
             .args(["playwright", "test"])
+            // FCP_UI_SPEC names spec files to run alone (e.g. `branding`).
+            .args(
+                std::env::var("FCP_UI_SPEC")
+                    .map(|v| v.split_whitespace().map(String::from).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            )
             .current_dir(ui_dir())
             .env("FCP_UI_URL", &url)
             .env("FCP_UI_TOKEN", TOKEN)
