@@ -9,7 +9,12 @@ platform.
 ## Retention policy
 
 `GET/PUT /api/v1/compliance/policy` holds one policy per tenant. Every
-window is a number of days or `null` (keep forever, the default):
+window is a number of days or `null` (keep forever, the default). The two
+trace windows are the exception: `null` takes the platform's
+`[retention] tenant_trace_days` on `fcp-admin` (30 unset, kept for good at
+0), shown on the policy as `platform_trace_retention_days`. A tenant that
+wants its traces kept longer sets its own window, up to 36500 days. Before
+v0.25.638 a tenant's traces were kept until it set one.
 
 | Field | What it deletes |
 |---|---|
@@ -110,7 +115,9 @@ Since the compliance foundations (`docs/COMPLIANCE_FOLLOWUPS.md` §4, §7):
   unset, kept at 0; the adoption looks at the last week's only), and
   files under the mounted directories that no row names after
   `[retention] orphan_files_days` (off unless set). A tenant's own call
-  traces are kept until its policy's `sip_trace_retention_days` is set.
+  traces are deleted in its run after its policy's `sip_trace_retention_days`
+  and `flow_trace_retention_days`, or `[retention] tenant_trace_days` (30)
+  where those are unset; a tenant with no policy saved is swept for them.
 
 ### Conference recordings
 

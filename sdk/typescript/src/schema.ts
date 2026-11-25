@@ -13224,6 +13224,13 @@ export interface components {
             cdr_archived_before?: number | null;
             /** @description False until the tenant has saved a policy (defaults shown). */
             configured: boolean;
+            /**
+             * Format: int32
+             * @description Days the platform keeps the tenant's SIP and flow traces when
+             *     `sip_trace_retention_days` or `flow_trace_retention_days` is null
+             *     (`[retention] tenant_trace_days`); null keeps them.
+             */
+            platform_trace_retention_days?: number | null;
             /** Format: date-time */
             updated_at: string;
         };

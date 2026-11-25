@@ -186,6 +186,17 @@ impl CompliancePolicy {
         }
     }
 
+    /// The policy the sweep applies: a SIP or flow trace window the tenant
+    /// left unset takes the platform's `[retention] tenant_trace_days`
+    /// (`None` or `Some(0)` keeps them). A tenant that wants its traces
+    /// longer sets its own window.
+    pub fn with_trace_default(mut self, platform_days: Option<u32>) -> Self {
+        let platform_days = platform_days.filter(|d| *d > 0);
+        self.sip_trace_retention_days = self.sip_trace_retention_days.or(platform_days);
+        self.flow_trace_retention_days = self.flow_trace_retention_days.or(platform_days);
+        self
+    }
+
     /// True when at least one retention window is set.
     pub fn has_retention(&self) -> bool {
         self.cdr_retention_days.is_some()
