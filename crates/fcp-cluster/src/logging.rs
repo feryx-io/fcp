@@ -36,11 +36,87 @@ use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Layer};
+use tracing_subscriber::{reload, EnvFilter, Layer};
 
 /// The stream a service's lines are kept in, under the key prefix.
 pub fn stream_key(service_id: &str) -> String {
     format!("logs:{service_id}")
+}
+
+/// The key a platform administrator sets, with an expiry, to change a
+/// service's level for a while (`docs/LOG_VIEWER.md` §2): `error`, `warn`,
+/// `info`, `debug` or `trace`. Gone, the configured level is back.
+pub fn level_key(service_id: &str) -> String {
+    format!("logs:level:{service_id}")
+}
+
+/// How long a level set from the page lasts.
+pub const LEVEL_SECS: u64 = 3600;
+
+/// The process's level, as configured and as set for now.
+struct Levels {
+    configured: String,
+    configured_ship: Option<Level>,
+    now: Mutex<Option<String>>,
+    reload: Box<dyn Fn(EnvFilter) -> Result<(), String> + Send + Sync>,
+}
+
+static LEVELS: OnceLock<Levels> = OnceLock::new();
+
+/// The ship layer's level, changed with the process's (0 = off).
+static SHIP_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn level_rank(level: Option<Level>) -> u8 {
+    match level {
+        None => 0,
+        Some(Level::ERROR) => 1,
+        Some(Level::WARN) => 2,
+        Some(Level::INFO) => 3,
+        Some(Level::DEBUG) => 4,
+        Some(Level::TRACE) => 5,
+    }
+}
+
+/// Apply a level set from the page, or with `None` go back to the
+/// configured one. A level that does not parse is ignored.
+pub fn set_level(level: Option<&str>) {
+    let Some(levels) = LEVELS.get() else { return };
+    let mut now = levels.now.lock().unwrap_or_else(|e| e.into_inner());
+    if now.as_deref() == level {
+        return;
+    }
+    let (filter, ship) = match level {
+        Some(l) => match (l.parse::<Level>(), EnvFilter::try_new(l)) {
+            (Ok(parsed), Ok(filter)) => (filter, Some(parsed)),
+            _ => return,
+        },
+        None => match EnvFilter::try_new(&levels.configured) {
+            Ok(filter) => (filter, levels.configured_ship),
+            Err(_) => return,
+        },
+    };
+    if (levels.reload)(filter).is_ok() {
+        // Shipping never goes quieter than it was configured to.
+        let ship = ship.max(levels.configured_ship);
+        SHIP_LEVEL.store(
+            if levels.configured_ship.is_some() {
+                level_rank(ship)
+            } else {
+                0
+            },
+            Ordering::Relaxed,
+        );
+        tracing::warn!(
+            level = level.unwrap_or(levels.configured.as_str()),
+            "Log level changed{}",
+            if level.is_some() {
+                " for an hour, from the admin"
+            } else {
+                ": back to the configured level"
+            }
+        );
+        *now = level.map(str::to_string);
+    }
 }
 
 /// One line as kept in Redis and read by the admin.
@@ -185,10 +261,21 @@ static SHIPPING: OnceLock<Shipping> = OnceLock::new();
 /// shown or not. Shipping waits for the service beacon. Calling it twice
 /// leaves the first in place.
 pub fn init(level: &str, format: &str, with_target: bool) -> anyhow::Result<()> {
-    let filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(level))
-        .map_err(|e| anyhow::anyhow!("log level {level:?}: {e}"))?;
+    let configured = std::env::var("RUST_LOG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| level.to_string());
+    let filter = EnvFilter::try_new(&configured)
+        .map_err(|e| anyhow::anyhow!("log level {configured:?}: {e}"))?;
+    let (filter, reload_handle) = reload::Layer::new(filter);
     let config = ShipConfig::from_env();
+    SHIP_LEVEL.store(level_rank(config.level), Ordering::Relaxed);
+    let _ = LEVELS.set(Levels {
+        configured,
+        configured_ship: config.level,
+        now: Mutex::new(None),
+        reload: Box::new(move |f| reload_handle.reload(f).map_err(|e| e.to_string())),
+    });
     let ship = config.level.map(|level| {
         let shipping = SHIPPING.get_or_init(|| {
             let (tx, rx) = mpsc::channel(QUEUE);
@@ -199,8 +286,8 @@ pub fn init(level: &str, format: &str, with_target: bool) -> anyhow::Result<()> 
                 dropped: AtomicU64::new(0),
             }
         });
+        let _ = level;
         ShipLayer {
-            level,
             tx: shipping.tx.clone(),
         }
     });
@@ -286,7 +373,6 @@ fn plain_tenant(t: String) -> String {
 }
 
 struct ShipLayer {
-    level: Level,
     tx: mpsc::Sender<LogRecord>,
 }
 
@@ -325,7 +411,7 @@ where
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
         let meta = event.metadata();
-        if *meta.level() > self.level {
+        if level_rank(Some(*meta.level())) > SHIP_LEVEL.load(Ordering::Relaxed) {
             return;
         }
         // Shipping must not ship its own client's lines.

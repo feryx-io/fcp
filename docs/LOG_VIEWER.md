@@ -134,6 +134,22 @@ the platform sees a site's trouble without reaching into it.
   counting how many of its lines carry the tenant.
 - **L3 — the API.** Query, tail, levels, export, the permissions and the
   tenant clamp; proved across two tenants.
+  **L3a done (v0.25.647):** `log_read` (tenant administrators and
+  read-only monitors; a platform administrator holds everything) and,
+  in fcp-admin (`logs.rs`, the admin's `[cluster] redis_url`):
+  `GET /logs` newest first across every service's stream, filtered by
+  `service`, `kind`, `level` (and worse), `tenant` (a platform
+  administrator's; `none` for the platform's own), `call_id`, `q` (any
+  case, message, target and fields), `since`/`until`, paged by the last
+  stream id; `GET /logs/export` as JSON Lines (audited, as every
+  `/export`); `GET /logs/levels` and `PUT /logs/levels/{service}`
+  (platform only): `fcp:logs:level:<id>` for an hour, which the service's
+  beacon takes up within a tick (`logging::set_level`, a reloaded filter;
+  shipping follows it, never quieter than configured) and gives back
+  when it expires or is deleted. A tenant's caller is held to lines
+  naming its tenant whatever it asks. Proved by `fcp-admin/tests/logs.rs`
+  and `fcp-cluster/tests/logs.rs`. **L3b:** the live tail
+  (`WS /logs/tail`), with the page.
 - **L4 — the page,** with a Playwright spec.
 - **L5 — sites,** `warn` and above up the link.
 - **L6 — OTLP export** (optional): the same layer sending to an

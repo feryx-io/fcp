@@ -237,6 +237,9 @@ pub enum Permission {
     /// The tenant's webhooks: endpoints, their secrets, deliveries and
     /// replays (docs/DEVELOPER_SURFACE.md §3, phase 5).
     WebhookManage,
+    /// The services' logs (`docs/LOG_VIEWER.md`): a tenant's lines only,
+    /// unless the caller is the platform's.
+    LogRead,
     /// The tenant's identity providers: who signs in through what, and
     /// the roles their groups give (docs/IDENTITY_AND_DEVICES.md phase 3).
     IdentityProviderManage,
@@ -326,6 +329,7 @@ impl FromStr for Permission {
             "extension_read" => Ok(Self::ExtensionRead),
             "extension_manage" => Ok(Self::ExtensionManage),
             "webhook_manage" => Ok(Self::WebhookManage),
+            "log_read" => Ok(Self::LogRead),
             "identity_provider_manage" => Ok(Self::IdentityProviderManage),
             "branding_manage" => Ok(Self::BrandingManage),
             "group_read" => Ok(Self::GroupRead),
@@ -403,6 +407,7 @@ impl Permission {
         Self::ExtensionRead,
         Self::ExtensionManage,
         Self::WebhookManage,
+        Self::LogRead,
         Self::IdentityProviderManage,
         Self::BrandingManage,
         Self::GroupRead,
@@ -458,6 +463,7 @@ impl Permission {
             Self::LocationRead | Self::LocationManage => "Locations",
             Self::ExtensionRead | Self::ExtensionManage => "Extensions",
             Self::WebhookManage => "Webhooks",
+            Self::LogRead => "Logs",
             Self::IdentityProviderManage => "Single sign-on",
             Self::BrandingManage => "Branding",
             Self::GroupRead | Self::GroupManage => "Groups",
@@ -531,6 +537,7 @@ impl Permission {
             Self::ExtensionRead => "extension_read",
             Self::ExtensionManage => "extension_manage",
             Self::WebhookManage => "webhook_manage",
+            Self::LogRead => "log_read",
             Self::IdentityProviderManage => "identity_provider_manage",
             Self::BrandingManage => "branding_manage",
             Self::GroupRead => "group_read",
@@ -606,6 +613,7 @@ impl Permission {
             Self::ExtensionRead => "View Extensions",
             Self::ExtensionManage => "Manage Extensions",
             Self::WebhookManage => "Manage Webhooks",
+            Self::LogRead => "View Logs",
             Self::IdentityProviderManage => "Manage Identity Providers",
             Self::BrandingManage => "Manage Branding",
             Self::GroupRead => "View Groups",
@@ -675,6 +683,11 @@ impl UserRole {
                 | WebhookManage,
                 _,
             ) => false,
+
+            // A tenant's own log lines: its administrator, and its
+            // read-only monitors (`docs/LOG_VIEWER.md`).
+            (TenantAdmin | ReadOnly, LogRead, _) => true,
+            (_, LogRead, _) => false,
 
             // Compliance belongs to whoever administers the tenant: the
             // policy decides what is deleted, holds stop deletion, and
