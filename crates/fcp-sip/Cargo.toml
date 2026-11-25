@@ -30,18 +30,18 @@ fcp-presence = { path = "../fcp-presence" }
 fcp-queue = { path = "../fcp-queue" }
 
 # SIP stack from siphon-rs (as path dependencies from submodule)
-sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
-sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
-sip-transport = { path = "../../external/siphon-rs/crates/sip-transport" }
-sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
-sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
-sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
-sip-auth = { path = "../../external/siphon-rs/crates/sip-auth" }
-sip-registrar = { path = "../../external/siphon-rs/crates/sip-registrar" }
-sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
-sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
-sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
-sip-ratelimit = { path = "../../external/siphon-rs/crates/sip-ratelimit" }
+sip-core = { package = "siphon-core", path = "../../external/siphon-rs/crates/sip-core" }
+sip-parse = { package = "siphon-parse", path = "../../external/siphon-rs/crates/sip-parse" }
+sip-transport = { package = "siphon-transport", path = "../../external/siphon-rs/crates/sip-transport" }
+sip-transaction = { package = "siphon-transaction", path = "../../external/siphon-rs/crates/sip-transaction" }
+sip-dialog = { package = "siphon-dialog", path = "../../external/siphon-rs/crates/sip-dialog" }
+sip-dns = { package = "siphon-dns", path = "../../external/siphon-rs/crates/sip-dns" }
+sip-auth = { package = "siphon-auth", path = "../../external/siphon-rs/crates/sip-auth" }
+sip-registrar = { package = "siphon-registrar", path = "../../external/siphon-rs/crates/sip-registrar" }
+sip-sdp = { package = "siphon-sdp", path = "../../external/siphon-rs/crates/sip-sdp" }
+sip-uac = { package = "siphon-uac", path = "../../external/siphon-rs/crates/sip-uac" }
+sip-uas = { package = "siphon-uas", path = "../../external/siphon-rs/crates/sip-uas" }
+sip-ratelimit = { package = "siphon-ratelimit", path = "../../external/siphon-rs/crates/sip-ratelimit" }
 
 # Common dependencies
 anyhow = { workspace = true }
@@ -75,5 +75,5 @@ tempfile = "3.23.0"
 futures = "0.3.31"
 
 [dev-dependencies]
-sip-testkit = { path = "../../external/siphon-rs/crates/sip-testkit" }
+sip-testkit = { package = "siphon-testkit", path = "../../external/siphon-rs/crates/sip-testkit" }
 tokio = { version = "1", features = ["full", "test-util"] }

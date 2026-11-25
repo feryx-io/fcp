@@ -33,9 +33,9 @@ forge-resampler = { path = "../../external/forge-media/crates/forge-resampler" }
 forge-sdp = { path = "../../external/forge-media/crates/forge-sdp" }
 
 # SIP dependencies (for SDP handling)
-sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
-sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
-sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
+sip-core = { package = "siphon-core", path = "../../external/siphon-rs/crates/sip-core" }
+sip-sdp = { package = "siphon-sdp", path = "../../external/siphon-rs/crates/sip-sdp" }
+sip-dialog = { package = "siphon-dialog", path = "../../external/siphon-rs/crates/sip-dialog" }
 
 # HTTP client (for remote mode and TTS providers)
 reqwest = { version = "0.12", features = ["json", "multipart"] }

@@ -24,12 +24,12 @@ fcp-cluster = { path = "../fcp-cluster" }
 fcp-storage-redis = { path = "../fcp-storage-redis" }
 
 # SIP stack from siphon-rs
-sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
-sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
-sip-transport = { path = "../../external/siphon-rs/crates/sip-transport", features = ["tls", "ws"] }
-sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
-sip-auth = { path = "../../external/siphon-rs/crates/sip-auth" }
-sip-observe = { path = "../../external/siphon-rs/crates/sip-observe" }
+sip-core = { package = "siphon-core", path = "../../external/siphon-rs/crates/sip-core" }
+sip-parse = { package = "siphon-parse", path = "../../external/siphon-rs/crates/sip-parse" }
+sip-transport = { package = "siphon-transport", path = "../../external/siphon-rs/crates/sip-transport", features = ["tls", "ws"] }
+sip-transaction = { package = "siphon-transaction", path = "../../external/siphon-rs/crates/sip-transaction" }
+sip-auth = { package = "siphon-auth", path = "../../external/siphon-rs/crates/sip-auth" }
+sip-observe = { package = "siphon-observe", path = "../../external/siphon-rs/crates/sip-observe" }
 
 # HTTP health endpoint
 axum = "0.7"

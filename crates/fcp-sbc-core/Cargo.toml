@@ -18,9 +18,9 @@ rust_decimal = { workspace = true }
 fcp-cluster = { path = "../fcp-cluster" }
 
 # SIP stack dependencies (from siphon-rs)
-sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
-sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
-sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
+sip-core = { package = "siphon-core", path = "../../external/siphon-rs/crates/sip-core" }
+sip-uac = { package = "siphon-uac", path = "../../external/siphon-rs/crates/sip-uac" }
+sip-dns = { package = "siphon-dns", path = "../../external/siphon-rs/crates/sip-dns" }
 
 # STIR/SHAKEN (PASSporT signing/verification)
 p256 = { version = "0.14", features = ["ecdsa", "pem"] }

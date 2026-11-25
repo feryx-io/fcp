@@ -35,14 +35,14 @@ forge-bwe = { path = "../../external/forge-media/crates/forge-bwe" }
 forge-conference = { path = "../../external/forge-media/crates/forge-conference" }
 
 # SIP stack from siphon-rs
-sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
-sip-transport = { path = "../../external/siphon-rs/crates/sip-transport" }
-sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
-sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
-sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
-sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
-sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
-sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
+sip-core = { package = "siphon-core", path = "../../external/siphon-rs/crates/sip-core" }
+sip-transport = { package = "siphon-transport", path = "../../external/siphon-rs/crates/sip-transport" }
+sip-transaction = { package = "siphon-transaction", path = "../../external/siphon-rs/crates/sip-transaction" }
+sip-dialog = { package = "siphon-dialog", path = "../../external/siphon-rs/crates/sip-dialog" }
+sip-dns = { package = "siphon-dns", path = "../../external/siphon-rs/crates/sip-dns" }
+sip-uac = { package = "siphon-uac", path = "../../external/siphon-rs/crates/sip-uac" }
+sip-sdp = { package = "siphon-sdp", path = "../../external/siphon-rs/crates/sip-sdp" }
+sip-parse = { package = "siphon-parse", path = "../../external/siphon-rs/crates/sip-parse" }
 
 # HTTP API
 axum = { version = "0.8", features = ["ws"] }

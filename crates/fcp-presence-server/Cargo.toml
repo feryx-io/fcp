@@ -32,11 +32,11 @@ fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 # SIP stack from siphon-rs
-sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
-sip-observe = { path = "../../external/siphon-rs/crates/sip-observe" }
-sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
-sip-transport = { path = "../../external/siphon-rs/crates/sip-transport" }
-sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
+sip-dns = { package = "siphon-dns", path = "../../external/siphon-rs/crates/sip-dns" }
+sip-observe = { package = "siphon-observe", path = "../../external/siphon-rs/crates/sip-observe" }
+sip-transaction = { package = "siphon-transaction", path = "../../external/siphon-rs/crates/sip-transaction" }
+sip-transport = { package = "siphon-transport", path = "../../external/siphon-rs/crates/sip-transport" }
+sip-uac = { package = "siphon-uac", path = "../../external/siphon-rs/crates/sip-uac" }
 
 # HTTP API
 axum = "0.7"
