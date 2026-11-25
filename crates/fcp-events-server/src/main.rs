@@ -37,7 +37,6 @@ use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::cli::Cli;
 use crate::config::{load_config, EventsConfig};
@@ -802,38 +801,9 @@ async fn main() -> Result<()> {
 
 /// Initialize tracing/logging
 fn init_logging(level: &str, format: &str) -> Result<()> {
-    let filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(level))
-        .context("Invalid log level")?;
-
-    match format {
-        "json" => {
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(fmt::layer().json())
-                .init();
-        }
-        "pretty" => {
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(fmt::layer().pretty())
-                .init();
-        }
-        "compact" => {
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(fmt::layer().compact())
-                .init();
-        }
-        _ => {
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(fmt::layer())
-                .init();
-        }
-    }
-
-    Ok(())
+    // One setup for every binary, its lines shipped to Redis once the
+    // service beacon starts (`docs/LOG_VIEWER.md`).
+    fcp_cluster::logging::init(level, format, true)
 }
 
 fn validate_listener_auth(config: &EventsConfig) -> Result<()> {

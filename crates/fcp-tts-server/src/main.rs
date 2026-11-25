@@ -411,30 +411,11 @@ async fn start_cluster(config: &TtsServerConfig) {
 // ---------------------------------------------------------------------------
 
 fn init_tracing(config: &TtsServerConfig) {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
-
-    match config.logging.format.as_str() {
-        "json" => {
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(fmt::layer().json())
-                .init();
-        }
-        "compact" => {
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(fmt::layer().compact())
-                .init();
-        }
-        _ => {
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(fmt::layer())
-                .init();
-        }
+    // One setup for every binary, its lines shipped to Redis once the
+    // service beacon starts (`docs/LOG_VIEWER.md`).
+    if let Err(e) = fcp_cluster::logging::init(&config.logging.level, &config.logging.format, true)
+    {
+        eprintln!("logging: {e:#}");
     }
 }
 
