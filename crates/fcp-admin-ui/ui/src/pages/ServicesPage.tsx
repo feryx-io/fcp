@@ -68,13 +68,13 @@ function useServiceEvents() {
 
 const columns: ColumnDef<ServiceView>[] = [
   {
-    accessorKey: 'state',
-    header: 'State',
-    cell: ({ row }) => (
-      <Badge variant={stateBadge(row.original.state)} title={STATE_HELP[row.original.state]}>
-        {row.original.state}
-      </Badge>
+    accessorKey: 'kind',
+    header: ({ column }) => (
+      <Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}>
+        Node Type <ArrowUpDown className="ml-2 h-4 w-4" />
+      </Button>
     ),
+    cell: ({ row }) => <Badge variant="secondary">{kindLabel(row.original.kind)}</Badge>,
   },
   {
     accessorKey: 'id',
@@ -90,33 +90,17 @@ const columns: ColumnDef<ServiceView>[] = [
     ),
   },
   {
-    accessorKey: 'kind',
-    header: ({ column }) => (
-      <Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}>
-        Kind <ArrowUpDown className="ml-2 h-4 w-4" />
-      </Button>
-    ),
-    cell: ({ row }) => <Badge variant="secondary">{kindLabel(row.original.kind)}</Badge>,
-  },
-  {
-    id: 'site',
-    header: 'Where',
-    accessorFn: (s) => s.site_name ?? s.site_id ?? '',
+    accessorKey: 'state',
+    header: 'State',
     cell: ({ row }) => (
-      <div className="text-xs">
-        <div>{row.original.site_name ?? row.original.site_id ?? 'Platform'}</div>
-        <div className="font-mono text-muted-foreground">{row.original.host}</div>
-      </div>
+      <Badge variant={stateBadge(row.original.state)} title={STATE_HELP[row.original.state]}>
+        {row.original.state}
+      </Badge>
     ),
-  },
-  {
-    accessorKey: 'version',
-    header: 'Version',
-    cell: ({ row }) => <span className="font-mono text-xs">{row.original.version}</span>,
   },
   {
     id: 'for',
-    header: 'For',
+    header: 'Uptime',
     cell: ({ row }) => {
       const s = row.original
       if (isDown(s)) {
@@ -142,6 +126,24 @@ const columns: ColumnDef<ServiceView>[] = [
         </div>
       )
     },
+  },
+  {
+    id: 'site',
+    header: 'Host',
+    accessorFn: (s) => s.site_name ?? s.site_id ?? '',
+    cell: ({ row }) => (
+      <div className="text-xs" title="The machine it runs on, and whether it is the platform's or a site's">
+        <div className="font-mono">{row.original.host}</div>
+        <div className="text-muted-foreground">
+          {row.original.site_id ? `Site: ${row.original.site_name ?? row.original.site_id}` : 'Platform'}
+        </div>
+      </div>
+    ),
+  },
+  {
+    accessorKey: 'version',
+    header: 'Version',
+    cell: ({ row }) => <span className="font-mono text-xs">{row.original.version}</span>,
   },
   {
     id: 'load',
@@ -254,9 +256,9 @@ export function ServicesPage() {
           </CardTitle>
           <div className="flex flex-wrap gap-2">
             <Select value={kind} onValueChange={(v) => set('kind', v)}>
-              <SelectTrigger className="w-40" aria-label="Kind"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-40" aria-label="Node type"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">Every kind</SelectItem>
+                <SelectItem value="all">Every node type</SelectItem>
                 {kinds.map((k) => <SelectItem key={k} value={k}>{kindLabel(k)}</SelectItem>)}
               </SelectContent>
             </Select>
@@ -269,7 +271,7 @@ export function ServicesPage() {
               </SelectContent>
             </Select>
             <Select value={where} onValueChange={(v) => set('site', v)}>
-              <SelectTrigger className="w-44" aria-label="Where"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-44" aria-label="Platform or site"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Everywhere</SelectItem>
                 <SelectItem value="platform">The platform</SelectItem>

@@ -467,6 +467,7 @@ mod tests {
                 prid: prid.into(),
             }),
             flow_node: None,
+            node_id: None,
         }
     }
 

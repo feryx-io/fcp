@@ -142,6 +142,7 @@ endpoint = "{url}"
             reg_id: None,
             push: Some(StandInApns::address("a1b2c3d4e5f6a7b8c9d0")),
             flow_node: None,
+            node_id: None,
         })
         .await
         .unwrap();

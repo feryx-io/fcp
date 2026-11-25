@@ -309,6 +309,7 @@ impl LocationStoreAdapter {
         registration.reg_id = details.reg_id;
         registration.push = details.push;
         registration.flow_node = details.flow_node;
+        registration.node_id = details.node_id;
         let aor = registration.aor.clone();
         let contact = registration.contact.clone();
         let instance = registration.instance_id.clone();
@@ -521,6 +522,7 @@ impl LocationStoreAdapter {
             reg_id: None,
             push: None,
             flow_node: None,
+            node_id: None,
         }
     }
 }
@@ -812,6 +814,10 @@ pub struct FcpRegistrar {
 
     /// This node, named on the bindings whose flows it holds.
     node_id: Option<String>,
+
+    /// This node's name, recorded on every binding it takes (the
+    /// Registrations page's Node): `node_id` where that is set.
+    node_label: Option<String>,
 }
 
 /// What a REGISTER says about its phone beyond the binding siphon-rs keeps.
@@ -824,6 +830,8 @@ pub(crate) struct BindingDetails {
     pub reg_id: Option<u32>,
     pub push: Option<fcp_core::push::PushAddress>,
     pub flow_node: Option<String>,
+    /// The node that took it.
+    pub node_id: Option<String>,
 }
 
 impl FcpRegistrar {
@@ -863,6 +871,7 @@ impl FcpRegistrar {
             provisioning_url: None,
             push: None,
             node_id: None,
+            node_label: None,
         };
         registrar.refresh_authenticator();
         registrar
@@ -966,7 +975,17 @@ impl FcpRegistrar {
 
     /// This node's id, recorded on the bindings whose flows it holds.
     pub fn with_node_id(mut self, node_id: impl Into<String>) -> Self {
-        self.node_id = Some(node_id.into());
+        let node_id = node_id.into();
+        self.node_label = Some(node_id.clone());
+        self.node_id = Some(node_id);
+        self
+    }
+
+    /// Record this node's name on every binding it takes, without naming
+    /// it as the holder of any flow: a standalone registrar, which relays
+    /// no calls, says who took a registration this way.
+    pub fn with_node_label(mut self, node: impl Into<String>) -> Self {
+        self.node_label = Some(node.into());
         self
     }
 
@@ -1668,6 +1687,7 @@ impl FcpRegistrar {
                 reg_id: parts.reg_id,
                 push: push.clone(),
                 flow_node: flow_token.and(self.node_id.clone()),
+                node_id: self.node_label.clone(),
             };
 
             match self
@@ -2499,6 +2519,7 @@ mod tests {
             reg_id: None,
             push: None,
             flow_node: None,
+            node_id: None,
         }
     }
 
@@ -3785,6 +3806,34 @@ mod tests {
         assert_eq!(rows[0].push, None);
         assert_eq!(rows[0].instance_id.as_deref(), Some(INSTANCE));
         // No flow, so no node holding one.
+        assert_eq!(rows[0].flow_node, None);
+        // But every binding names the node that took it (D8 finding 64).
+        assert_eq!(rows[0].node_id.as_deref(), Some("node-a"));
+    }
+
+    #[tokio::test]
+    async fn a_node_named_by_label_is_recorded_but_holds_no_flow() {
+        // A standalone registrar relays no calls: a call manager must never
+        // ring a phone through it, so its flows name no node, but the
+        // Registrations page still says it took the binding.
+        let dir = std::env::temp_dir().join("fcp-test-node-label");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let storage = Arc::new(FileBackedStorage::new(dir).await.unwrap());
+        let registrar = FcpRegistrar::new(storage, None, None, false)
+            .with_default_tenant_id(TenantId::nil())
+            .with_node_label("registrar-1");
+        let response = registrar
+            .handle_register_with_flow(
+                &bob_register_contact(&app_contact("", ";expires=600"), 1),
+                Some("flow-1"),
+            )
+            .await;
+        assert_eq!(response.start_line().code(), 200);
+        let rows = registrar
+            .get_registration_rows("sip:bob@example.com")
+            .await
+            .unwrap();
+        assert_eq!(rows[0].node_id.as_deref(), Some("registrar-1"));
         assert_eq!(rows[0].flow_node, None);
     }
 
