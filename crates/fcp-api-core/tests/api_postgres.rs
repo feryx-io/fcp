@@ -729,6 +729,7 @@ impl App {
                 reg_id: None,
                 push: None,
                 flow_node: None,
+                node_id: None,
             })
             .await
             .expect("put registration");

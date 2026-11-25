@@ -226,6 +226,7 @@ mod tests {
             reg_id: None,
             push: None,
             flow_node: None,
+            node_id: None,
         }
     }
 

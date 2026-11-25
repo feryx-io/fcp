@@ -1377,7 +1377,7 @@ impl RegistrationStore for PostgresStorage {
     async fn get_registrations(&self, aor: &str) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
             "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address,
-                    instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node
+                    instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node, node_id
              FROM registrations
              WHERE aor = $1
              ORDER BY q DESC NULLS LAST",
@@ -1401,7 +1401,7 @@ impl RegistrationStore for PostgresStorage {
     ) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
             "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address,
-                    instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node
+                    instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node, node_id
              FROM registrations
              WHERE tenant_id = $1 AND aor = $2
              ORDER BY q DESC NULLS LAST",
@@ -1425,8 +1425,8 @@ impl RegistrationStore for PostgresStorage {
 
         sqlx::query(
             "INSERT INTO registrations (tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address,
-                                        instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                                        instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node, node_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
              ON CONFLICT (tenant_id, aor, contact)
              DO UPDATE SET
                  expires_at = EXCLUDED.expires_at,
@@ -1443,7 +1443,8 @@ impl RegistrationStore for PostgresStorage {
                  pn_provider = EXCLUDED.pn_provider,
                  pn_param = EXCLUDED.pn_param,
                  pn_prid = EXCLUDED.pn_prid,
-                 flow_node = EXCLUDED.flow_node",
+                 flow_node = EXCLUDED.flow_node,
+                 node_id = EXCLUDED.node_id",
         )
         .bind(registration.tenant_id.to_string())
         .bind(&registration.aor)
@@ -1463,6 +1464,7 @@ impl RegistrationStore for PostgresStorage {
         .bind(registration.push.as_ref().map(|p| p.param.as_str()))
         .bind(registration.push.as_ref().map(|p| p.prid.as_str()))
         .bind(&registration.flow_node)
+        .bind(&registration.node_id)
         .execute(self.writes())
         .await?;
 
@@ -1547,7 +1549,7 @@ impl RegistrationStore for PostgresStorage {
     async fn get_all_registrations(&self) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
             "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address,
-                    instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node
+                    instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node, node_id
              FROM registrations
              WHERE expires_at > NOW()
              ORDER BY aor, q DESC NULLS LAST",
@@ -1569,7 +1571,7 @@ impl RegistrationStore for PostgresStorage {
     ) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
             "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address,
-                    instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node
+                    instance_id, reg_id, pn_provider, pn_param, pn_prid, flow_node, node_id
              FROM registrations
              WHERE tenant_id = $1 AND expires_at > NOW()
              ORDER BY aor, q DESC NULLS LAST",
@@ -3367,6 +3369,7 @@ fn row_to_registration(row: sqlx::postgres::PgRow) -> Result<Registration> {
             _ => None,
         },
         flow_node: row.try_get("flow_node").ok().flatten(),
+        node_id: row.try_get("node_id").ok().flatten(),
     })
 }
 

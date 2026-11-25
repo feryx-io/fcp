@@ -78,6 +78,19 @@ export function RegistrationsPage() {
       ),
     },
     {
+      accessorKey: 'node_id',
+      header: ({ column }) => (
+        <Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}>
+          Node <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      ),
+      cell: ({ row }) => (
+        <span className="font-mono text-xs" title="The node that took the registration">
+          {row.original.node_id ?? '—'}
+        </span>
+      ),
+    },
+    {
       accessorKey: 'user_agent',
       header: 'User Agent',
       cell: ({ row }) => (
