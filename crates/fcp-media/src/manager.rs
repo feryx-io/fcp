@@ -594,8 +594,23 @@ impl MediaManager {
         voice: Option<String>,
         target: AudioTarget,
     ) -> Result<String> {
+        self.play_tts_for(call_id, text, language, voice, target, None)
+            .await
+    }
+
+    /// [`Self::play_tts`] spoken for `tenant`, the call's
+    /// (`docs/TENANT_SPEECH.md`): the TTS server is told whose call it is.
+    pub async fn play_tts_for(
+        &self,
+        call_id: &CallId,
+        text: String,
+        language: String,
+        voice: Option<String>,
+        target: AudioTarget,
+        tenant: Option<fcp_core::TenantId>,
+    ) -> Result<String> {
         self.backend
-            .play_tts(call_id, text, language, voice, target)
+            .play_tts(call_id, text, language, voice, target, tenant)
             .await
     }
 

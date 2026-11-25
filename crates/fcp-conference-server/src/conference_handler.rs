@@ -3083,7 +3083,7 @@ impl ConferenceCallHandler {
             if let Some(tts) = &self.tts_service {
                 match tokio::time::timeout(
                     Duration::from_secs(10),
-                    tts.synthesize(RECORDING_CONSENT_TEXT, None, None),
+                    tts.synthesize_for(RECORDING_CONSENT_TEXT, None, None, Some(tenant_id)),
                 )
                 .await
                 {
@@ -3528,7 +3528,7 @@ impl ConferenceCallHandler {
                     if let Some(ref tts) = self.tts_service {
                         match tokio::time::timeout(
                             Duration::from_secs(10),
-                            tts.synthesize(tts_text, None, None),
+                            tts.synthesize_for(tts_text, None, None, Some(&tenant_id)),
                         )
                         .await
                         {
@@ -7155,7 +7155,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             if let Some(ref tts) = self.tts_service {
                 if pin_prompt_samples.is_none() {
                     if let Some(ref text) = meeting.pin_prompt_tts {
-                        match tts.synthesize(text, None, None).await {
+                        match tts
+                            .synthesize_for(text, None, None, Some(&key.tenant))
+                            .await
+                        {
                             Ok(path) => {
                                 let player =
                                     forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
@@ -7172,7 +7175,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 }
                 if invalid_pin_samples.is_none() {
                     if let Some(ref text) = meeting.invalid_pin_tts {
-                        match tts.synthesize(text, None, None).await {
+                        match tts
+                            .synthesize_for(text, None, None, Some(&key.tenant))
+                            .await
+                        {
                             Ok(path) => {
                                 let player =
                                     forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
@@ -8143,7 +8149,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 info!(room = %room_number, text = %welcome_text, "Synthesizing welcome message");
                 match tokio::time::timeout(
                     Duration::from_secs(5),
-                    tts.synthesize(&welcome_text, None, None),
+                    tts.synthesize_for(&welcome_text, None, None, Some(&key.tenant)),
                 )
                 .await
                 {
