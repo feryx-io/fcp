@@ -372,6 +372,12 @@ pub struct RetentionConfig {
     /// grew to 30 GB from a scanner's REGISTERs and filled the disk.
     #[serde(default = "default_system_trace_days")]
     pub system_trace_days: Option<u32>,
+    /// Remove a tenant's own SIP and flow traces after this many days when
+    /// its compliance policy sets no window of its own: 30 unset, kept for
+    /// good at 0. Before v0.25.638 a tenant's traces were kept until it
+    /// set one, so one busy tenant could fill the disk as the scanner did.
+    #[serde(default = "default_tenant_trace_days")]
+    pub tenant_trace_days: Option<u32>,
     /// Remove voicemail messages this many days after a user deleted them.
     #[serde(default = "default_deleted_voicemail_grace_days")]
     pub deleted_voicemail_grace_days: u32,
@@ -389,11 +395,16 @@ fn default_system_trace_days() -> Option<u32> {
     Some(7)
 }
 
+fn default_tenant_trace_days() -> Option<u32> {
+    Some(30)
+}
+
 impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
             orphan_files_days: None,
             system_trace_days: default_system_trace_days(),
+            tenant_trace_days: default_tenant_trace_days(),
             deleted_voicemail_grace_days: default_deleted_voicemail_grace_days(),
             extra_file_roots: Vec::new(),
         }
@@ -978,6 +989,9 @@ mod tests {
         assert_eq!(RetentionConfig::default().system_trace_days, Some(7));
         let config: AdminConfig = toml::from_str("[retention]\nsystem_trace_days = 0").unwrap();
         assert_eq!(config.retention.system_trace_days, Some(0), "0 keeps them");
+        assert_eq!(RetentionConfig::default().tenant_trace_days, Some(30));
+        let config: AdminConfig = toml::from_str("[retention]\ntenant_trace_days = 0").unwrap();
+        assert_eq!(config.retention.tenant_trace_days, Some(0), "0 keeps them");
     }
 
     #[test]

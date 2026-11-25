@@ -50,6 +50,10 @@ class PolicyResponse:
                 recorded.
             cdr_archived_before (int | None | Unset): Unix seconds: every one of the tenant's CDRs that started before
                 this is in the archive, confirmed. `null` when none is.
+            platform_trace_retention_days (int | None | Unset): Days the platform keeps the tenant's SIP and flow traces
+                when
+                `sip_trace_retention_days` or `flow_trace_retention_days` is null
+                (`[retention] tenant_trace_days`); null keeps them.
      """
 
     tenant_id: str
@@ -72,6 +76,7 @@ class PolicyResponse:
     recording_consent_prompt_id: None | str | Unset = UNSET
     recording_notice_interval_secs: int | None | Unset = UNSET
     cdr_archived_before: int | None | Unset = UNSET
+    platform_trace_retention_days: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -167,6 +172,12 @@ class PolicyResponse:
         else:
             cdr_archived_before = self.cdr_archived_before
 
+        platform_trace_retention_days: int | None | Unset
+        if isinstance(self.platform_trace_retention_days, Unset):
+            platform_trace_retention_days = UNSET
+        else:
+            platform_trace_retention_days = self.platform_trace_retention_days
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -204,6 +215,8 @@ class PolicyResponse:
             field_dict["recording_notice_interval_secs"] = recording_notice_interval_secs
         if cdr_archived_before is not UNSET:
             field_dict["cdr_archived_before"] = cdr_archived_before
+        if platform_trace_retention_days is not UNSET:
+            field_dict["platform_trace_retention_days"] = platform_trace_retention_days
 
         return field_dict
 
@@ -351,6 +364,16 @@ class PolicyResponse:
         cdr_archived_before = _parse_cdr_archived_before(d.pop("cdr_archived_before", UNSET))
 
 
+        def _parse_platform_trace_retention_days(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        platform_trace_retention_days = _parse_platform_trace_retention_days(d.pop("platform_trace_retention_days", UNSET))
+
+
         policy_response = cls(
             tenant_id=tenant_id,
             recording_consent=recording_consent,
@@ -372,6 +395,7 @@ class PolicyResponse:
             recording_consent_prompt_id=recording_consent_prompt_id,
             recording_notice_interval_secs=recording_notice_interval_secs,
             cdr_archived_before=cdr_archived_before,
+            platform_trace_retention_days=platform_trace_retention_days,
         )
 
 

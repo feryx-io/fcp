@@ -1,6 +1,6 @@
 // Presence (docs/PRESENCE.md): every person in the tenant and what others
 // see of them — what they chose, a call, DND, idle, offline when none of
-// their phones is registered — as the admin works it out. Until v0.25.640
+// their phones is registered — as the admin works it out. Until v0.25.645
 // this page listed the admin process's own presence table, which phones
 // subscribing to the call managers never fill (D8 finding 69).
 import { useQuery } from '@tanstack/react-query'

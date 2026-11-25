@@ -251,6 +251,7 @@ async fn main() -> Result<()> {
     {
         let sweep_storage = Arc::clone(&storage);
         let actor = format!("fcp-admin:{}", config.service.node_id);
+        let tenant_trace_days = config.retention.tenant_trace_days;
         let upkeep = fcp_core::compliance::UpkeepConfig {
             site_files: Some(
                 Arc::clone(&site_requests) as Arc<dyn fcp_core::compliance::SiteFileRemover>
@@ -315,13 +316,20 @@ async fn main() -> Result<()> {
                 let mut partition_cutoff = (!tenants.is_empty()).then_some(now);
                 for tenant in tenants {
                     let policy = match store.get_compliance_policy(&tenant.id).await {
-                        Ok(Some(p)) if p.has_retention() => p,
-                        Ok(_) => {
-                            partition_cutoff = None;
-                            continue;
-                        }
+                        Ok(p) => p
+                            .unwrap_or_else(|| {
+                                fcp_core::compliance::CompliancePolicy::defaults(tenant.id)
+                            })
+                            .with_trace_default(tenant_trace_days),
                         Err(e) => {
                             warn!(tenant_id = %tenant.id, error = %e, "Retention sweep: failed to load policy");
+                            continue;
+                        }
+                    };
+                    let policy = match policy {
+                        p if p.has_retention() => p,
+                        _ => {
+                            partition_cutoff = None;
                             continue;
                         }
                     };
@@ -675,6 +683,7 @@ async fn main() -> Result<()> {
         default_tenant_id,
     )
     .with_people_presence(people_presence)
+    .with_tenant_trace_days(config.retention.tenant_trace_days)
     .with_events_server_url(events_server_url.clone())
     .with_events_server_auth_token(config.events.auth_token.clone())
     .with_events_node_id(config.service.node_id.clone())
