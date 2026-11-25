@@ -1,6 +1,6 @@
 # Logs in the admin (D8 finding 63)
 
-Proposed 2026-11-25. Status: **design, awaiting the questions in §7.**
+Proposed 2026-11-25; every question in §7 agreed on its recommendation the same day.
 
 > 63. There is no way to easily view logs from the admin interface without
 > logging into each server. Can we implement a log viewer page where an

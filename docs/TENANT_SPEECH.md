@@ -1,6 +1,6 @@
 # Speech per tenant (D8 finding 67)
 
-Proposed 2026-11-25. Status: **design, awaiting the questions in §7.**
+Proposed 2026-11-25; every question in §7 agreed on its recommendation the same day.
 
 > 67. There is no TTS config page for FCP admin. This should be added and
 > be per tenant so TTS settings and providers can be configured.
