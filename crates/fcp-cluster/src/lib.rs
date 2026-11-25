@@ -13,6 +13,7 @@ pub mod call_leases;
 pub mod call_registry;
 pub mod conference_registry;
 pub mod line_appearances;
+pub mod logging;
 pub mod membership;
 pub mod node_client;
 pub mod reader;

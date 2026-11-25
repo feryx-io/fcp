@@ -119,6 +119,15 @@ the platform sees a site's trouble without reaching into it.
   by all fifteen binaries (the formats and environment variables kept),
   the Redis layer, records, redaction, the rate limit, the stream trim.
   Proved by a binary's lines arriving in its stream, redacted.
+  **Done (v0.25.642):** `fcp_cluster::logging::init` in every binary
+  (each one's `[logging] level`/`format` and `*_LOG_FORMAT` as before;
+  `RUST_LOG` still wins), stdout and shipped lines redacted
+  (`logging::redact`), records with `tenant_id`/`call_id` from the line
+  or its spans, shipping started by `ServiceBeacon::start` to
+  `fcp:logs:<service id>`. Tuned by the environment for now:
+  `FCP_LOG_SHIP` (`info`; a level, or `off`), `FCP_LOG_SHIP_LINES`
+  (100000), `FCP_LOG_SHIP_HOURS` (24), `FCP_LOG_SHIP_RATE` (500 a
+  second). Proved by `fcp-cluster/tests/logs.rs`.
 - **L2 — tenants on lines.** The API middleware's span, the SIP
   handler's call span recording the tenant, the flow, IVR, voicemail,
   conference and queue paths; measured by a test placing a call and
