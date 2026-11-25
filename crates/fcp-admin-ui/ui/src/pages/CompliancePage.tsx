@@ -156,6 +156,12 @@ const days = (text: string) => (text.trim() === '' ? null : Number(text))
 function PolicyTab() {
   const queryClient = useQueryClient()
   const policy = useQuery({ queryKey: ['compliance', 'policy'], queryFn: compliance.policy })
+  // A trace window left blank takes the platform's ([retention] tenant_trace_days).
+  const platformTraceDays = policy.data?.platform_trace_retention_days ?? null
+  const placeholderFor = (key: string) =>
+    key.endsWith('trace_retention_days') && platformTraceDays != null
+      ? `Platform default: ${platformTraceDays} days`
+      : 'Forever'
   const { data: promptList = [] } = useQuery({ queryKey: ['prompts'], queryFn: () => prompts.list() })
   const [form, setForm] = useState<Record<string, string>>({})
   const [consent, setConsent] = useState('none')
@@ -224,14 +230,16 @@ function PolicyTab() {
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Retention</h2>
         <p className="text-sm text-muted-foreground">
-          Days each kind of data is kept before the daily sweep deletes it. Blank keeps it forever.
-          Anything under a legal hold is kept regardless.
+          Days each kind of data is kept before the daily sweep deletes it. Blank keeps it forever,
+          except traces, which blank leaves to the platform's default. Anything under a legal hold is
+          kept regardless.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {RETENTION.map(({ key, label }) => (
             <div key={key} className="space-y-1">
               <Label htmlFor={key}>{label}</Label>
-              <Input id={key} type="number" min={1} max={36500} placeholder="Forever" {...field(key)} />
+              <Input id={key} type="number" min={1} max={36500}
+                placeholder={placeholderFor(key)} {...field(key)} />
             </div>
           ))}
         </div>
