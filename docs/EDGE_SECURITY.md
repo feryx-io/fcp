@@ -486,11 +486,15 @@ which filled the disk.
 Since v0.25.634 a source that fails digest authentication
 `max_auth_failures_per_source` times within a minute (default 20) is
 blocked for `auth_block_secs` (default 900, at most a day). While it is
-blocked, every message from it is dropped by the node's inbound handler
-before the parser (`fcp_sip::auth_block::admit`), so it costs no lookup and
-no answer, and the source is told nothing. Dropping it in siphon-rs's
-transport, before the copy into the handler's queue, would be cheaper
-still; that waits for FCP's move to the renamed `siphon-*` crates. The setting is in
+blocked, every message from it is dropped and the source is told nothing.
+Since v0.25.637 (siphon-rs v2026.11.25) the drop is in siphon-rs's
+transport (`set_ingress_block`, asking `fcp_sip::auth_block::admit`): a
+blocked source's UDP packets and TCP, TLS and WebSocket frames are dropped
+unread, before the rate limiter, the parser and the handler's queue, and
+its new connections are closed as they are accepted, before a TLS
+handshake. A connection it already had stays open but carries nothing
+until the idle timeout. Before v0.25.637 the node's inbound handler dropped
+the message, after the transport had read and queued it. The setting is in
 `[sip]` on the call manager, the standalone registrar and the presence
 server and in
 `[core.security]` on the SBC; `0` turns it off. `fcp_sip::auth_block` keeps
