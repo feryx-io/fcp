@@ -7,9 +7,10 @@
 //! for names it made up. Every one was parsed, looked up and answered.
 //!
 //! A source that fails authentication `max_failures` times within a minute
-//! is blocked for `block_secs`: every message from it is dropped at the
-//! node's inbound handler, before the parser ([`admit`]), and it is told
-//! nothing.
+//! is blocked for `block_secs`: the SIP transport drops every message from
+//! it unread, before the rate limiter and the parser, and closes its TCP,
+//! TLS and WebSocket connections as they are accepted (siphon-transport's
+//! `set_ingress_block`, asking [`admit`]). It is told nothing.
 //!
 //! What counts as a failure is narrow, because a block refuses everything
 //! behind an address — a whole office behind one NAT:
@@ -180,6 +181,7 @@ fn installed() -> Option<Arc<AuthBlock>> {
 pub fn install(max_failures: u32, block_secs: u64) {
     if max_failures == 0 {
         *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = None;
+        sip_transport::set_ingress_block(None);
         info!(
             "Sources failing SIP authentication are not blocked (max_auth_failures_per_source = 0)"
         );
@@ -190,6 +192,9 @@ pub fn install(max_failures: u32, block_secs: u64) {
         Duration::from_secs(block_secs.clamp(1, MAX_AUTH_BLOCK_SECS)),
     ));
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(guard);
+    // The transport asks before it reads a packet or frame, or keeps a
+    // connection it has just accepted.
+    sip_transport::set_ingress_block(Some(Arc::new(|ip| !admit(ip))));
     info!(
         max_failures,
         block_secs, "Sources failing SIP authentication this often in a minute are blocked"
@@ -210,8 +215,9 @@ pub fn is_blocked(source: IpAddr) -> bool {
 }
 
 /// Whether a message from `source` is read at all: `false` for a blocked
-/// source, whose message is counted as dropped. Asked by every inbound
-/// handler before it parses anything.
+/// source, whose message (or connection) is counted as dropped. Asked by
+/// the SIP transport for every packet, frame and accepted connection, and
+/// again by the inbound handlers.
 pub fn admit(source: IpAddr) -> bool {
     let Some(guard) = installed() else {
         return true;

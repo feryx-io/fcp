@@ -615,6 +615,21 @@ async fn a_source_that_keeps_failing_authentication_is_blocked() {
         "{status}"
     );
 
+    // The transport refuses it (siphon-rs's `set_ingress_block`): a new TCP
+    // connection from it is closed as it is accepted, before anything is
+    // read.
+    {
+        use tokio::io::AsyncReadExt;
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.3:0".parse().unwrap()).unwrap();
+        let mut stream = socket.connect(stack.sip).await.expect("tcp connect");
+        let mut buf = [0u8; 64];
+        let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
+            .await
+            .expect("a blocked source's connection is closed");
+        assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+    }
+
     // Everyone else is not.
     let phone = stack.phone(&alice).await;
     assert_eq!(phone.register().await.unwrap(), 200);
