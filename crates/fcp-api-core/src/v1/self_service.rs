@@ -988,8 +988,9 @@ pub async fn synthesize_voicemail_greeting(
     let voice = body.voice.as_deref();
 
     // Synthesize audio via TTS
+    let tenant = resolve_tenant_from_claims(&claims, &state);
     let cached_path = tts_service
-        .synthesize(&body.text, Some(language), voice)
+        .synthesize_for(&body.text, Some(language), voice, Some(&tenant))
         .await
         .map_err(|e| ApiError::ServiceUnavailable(format!("TTS synthesis failed: {}", e)))?;
 

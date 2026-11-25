@@ -399,7 +399,7 @@ pub async fn create_prompt(
             let tts_text = prompt.tts_text.as_deref().unwrap_or("");
             let voice = req.tts_voice.as_deref();
             match tts_service
-                .synthesize(tts_text, Some(language), voice)
+                .synthesize_for(tts_text, Some(language), voice, prompt.tenant_id.as_ref())
                 .await
             {
                 Ok(cached_path) => {
@@ -514,7 +514,12 @@ pub async fn update_prompt(
         let tts_text = prompt.tts_text.as_deref().unwrap_or("");
         let voice = prompt.tts_voice.as_deref();
         let cached_path = tts_service
-            .synthesize(tts_text, Some(&prompt.language), voice)
+            .synthesize_for(
+                tts_text,
+                Some(&prompt.language),
+                voice,
+                prompt.tenant_id.as_ref(),
+            )
             .await
             .map_err(|e| ApiError::ServiceUnavailable(format!("TTS synthesis failed: {e}")))?;
         let tenant_dir = prompts_dir.join(prompt.owner_dir());
@@ -758,7 +763,7 @@ pub async fn synthesize_prompt(
 
     // Synthesize via TTS service
     let cached_path = tts_service
-        .synthesize(&tts_text, Some(language), voice)
+        .synthesize_for(&tts_text, Some(language), voice, prompt.tenant_id.as_ref())
         .await
         .map_err(|e| ApiError::ServiceUnavailable(format!("TTS synthesis failed: {}", e)))?;
 

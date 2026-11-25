@@ -16430,7 +16430,7 @@ impl SipMessageHandler {
         // Synthesized while the opening plays: the caller would otherwise
         // wait out the whole readback's synthesis after the answer.
         if let Some(tts) = self.media_manager.as_ref().and_then(|mm| mm.tts_service()) {
-            tts.warm(parts.clone(), Some("en-US"));
+            tts.warm(parts.clone(), Some("en-US"), None);
         }
         info!(
             call_id = %call_id,
@@ -17561,12 +17561,13 @@ impl SipMessageHandler {
             .clone()
             .unwrap_or_else(|| "you".to_string());
         let spoken = media
-            .play_tts(
+            .play_tts_for(
                 &session,
                 format!("Call for {name}. Press 1 to accept."),
                 "en".to_string(),
                 None,
                 fcp_media::AudioTarget::ParticipantB,
+                Some(call.tenant_id),
             )
             .await;
         if spoken.is_err() {
@@ -19534,12 +19535,13 @@ impl SipMessageHandler {
     ) -> std::result::Result<String, crate::call_control::CallControlError> {
         let (media, session) = self.answered_media(call_id)?;
         media
-            .play_tts(
+            .play_tts_for(
                 &session,
                 text.to_string(),
                 language.unwrap_or("en-US").to_string(),
                 voice.map(str::to_string),
                 target,
+                self.call_manager.get_call(call_id).map(|c| c.tenant_id),
             )
             .await
             .map_err(|e| crate::call_control::CallControlError::new(503, e.to_string()))

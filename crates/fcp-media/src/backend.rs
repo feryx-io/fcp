@@ -286,6 +286,7 @@ pub trait MediaBackend: Send + Sync {
         language: String,
         voice: Option<String>,
         target: AudioTarget,
+        tenant: Option<fcp_core::TenantId>,
     ) -> Result<String>;
 
     /// Play a generated tone into the call
@@ -1886,6 +1887,7 @@ pub mod embedded {
             language: String,
             voice: Option<String>,
             target: AudioTarget,
+            tenant: Option<fcp_core::TenantId>,
         ) -> Result<String> {
             debug!(
                 ?call_id,
@@ -1905,7 +1907,7 @@ pub mod embedded {
 
             // Synthesize text to WAV file (cached by TtsService)
             let audio_path = tts
-                .synthesize(&text, Some(&language), voice.as_deref())
+                .synthesize_for(&text, Some(&language), voice.as_deref(), tenant.as_ref())
                 .await
                 .map_err(|e| Error::InvalidState(format!("TTS synthesis failed: {}", e)))?;
 

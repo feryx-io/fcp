@@ -112,18 +112,24 @@ pub async fn refresh(
     }
     let tts = tts.context("no TTS service to speak the personalized greeting")?;
     let samples = match &source {
-        Source::Spoken(name) => read_pcm(&tts.synthesize(&sentence(name), None, None).await?)?,
+        Source::Spoken(name) => read_pcm(
+            &tts.synthesize_for(&sentence(name), None, None, Some(&mailbox.tenant_id))
+                .await?,
+        )?,
         Source::Spliced {
             name_audio,
             fallback,
-        } => match spliced(tts, greetings_dir, name_audio).await {
+        } => match spliced(tts, greetings_dir, name_audio, &mailbox.tenant_id).await {
             Ok(samples) => samples,
             Err(e) => {
                 let name = fallback
                     .as_deref()
                     .context("the recorded name is unreadable and the owner has no name")?;
                 warn!(mailbox_id = %mailbox.id, error = %e, "Recorded name unreadable; the greeting speaks the name");
-                read_pcm(&tts.synthesize(&sentence(name), None, None).await?)?
+                read_pcm(
+                    &tts.synthesize_for(&sentence(name), None, None, Some(&mailbox.tenant_id))
+                        .await?,
+                )?
             }
         },
     };
@@ -147,12 +153,23 @@ pub async fn refresh(
 const RATE: u32 = 8000;
 
 /// The two halves spoken, the recorded name between them.
-async fn spliced(tts: &TtsService, greetings_dir: &Path, name_audio: &Path) -> Result<Vec<i16>> {
+async fn spliced(
+    tts: &TtsService,
+    greetings_dir: &Path,
+    name_audio: &Path,
+    tenant: &fcp_core::TenantId,
+) -> Result<Vec<i16>> {
     crate::validate_path_within_dir(name_audio, greetings_dir)
         .context("the recorded name is outside the greetings directory")?;
     let name = read_pcm(name_audio)?;
-    let before = read_pcm(&tts.synthesize(BEFORE_NAME, None, None).await?)?;
-    let after = read_pcm(&tts.synthesize(AFTER_NAME, None, None).await?)?;
+    let before = read_pcm(
+        &tts.synthesize_for(BEFORE_NAME, None, None, Some(tenant))
+            .await?,
+    )?;
+    let after = read_pcm(
+        &tts.synthesize_for(AFTER_NAME, None, None, Some(tenant))
+            .await?,
+    )?;
     let gap = vec![0i16; (RATE / 8) as usize];
     Ok([before, gap.clone(), trim_silence(name), gap, after].concat())
 }
