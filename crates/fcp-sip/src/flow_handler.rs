@@ -581,6 +581,14 @@ impl FlowCallHandler {
             .execute(flow.clone(), call_id_core, initial_variables)
             .await?;
 
+        // What a tenant's own flow says is spoken for the call's tenant. A
+        // flow of no tenant — the platform's, or one made inline (an
+        // emergency test's readback, whose opening is warmed once at
+        // startup) — speaks as the platform.
+        if flow.tenant_id.is_some() {
+            context.tenant_id = Some(call.tenant_id);
+        }
+
         // Set media session ID if available (needed for Play/Say nodes)
         if let Some(media_session_id) = call.media_session_id {
             context.set_media_session_id(media_session_id);
@@ -1592,9 +1600,12 @@ impl FlowCallHandler {
         next: String,
     ) -> Result<()> {
         info!(call_id = %call_id, "Flow's emergency test read back here");
+        // The readback is the platform's, spoken without a tenant: its
+        // opening is warmed at startup for every tenant's first test call
+        // (`emergency::warm_test_opening`), and warmed and played alike.
         // Synthesized while the opening plays (`emergency::test_readback`).
         if let Some(tts) = self.media_manager.as_ref().and_then(|mm| mm.tts_service()) {
-            tts.warm(parts.clone(), Some("en-US"));
+            tts.warm(parts.clone(), Some("en-US"), None);
         }
         let session = self
             .call_manager
@@ -2530,12 +2541,13 @@ impl FlowCallHandler {
                 }
             }
         }
-        mm.play_tts(
+        mm.play_tts_for(
             cid,
             text.to_string(),
             "en-US".to_string(),
             None,
             AudioTarget::Both,
+            tenant.copied(),
         )
         .await
         .ok()
@@ -2876,12 +2888,13 @@ impl FlowCallHandler {
                 }
                 // 2. TTS fallback
                 match mm
-                    .play_tts(
+                    .play_tts_for(
                         &cid,
                         fallback_text,
                         "en-US".to_string(),
                         None,
                         AudioTarget::Both,
+                        prompt_tenant,
                     )
                     .await
                 {
@@ -2951,12 +2964,13 @@ impl FlowCallHandler {
                     if pid.is_none() {
                         if let Some(ref text) = dynamic_text {
                             pid = mm
-                                .play_tts(
+                                .play_tts_for(
                                     &cid,
                                     text.clone(),
                                     "en-US".to_string(),
                                     None,
                                     AudioTarget::Both,
+                                    prompt_tenant,
                                 )
                                 .await
                                 .ok();
@@ -2964,12 +2978,13 @@ impl FlowCallHandler {
                     }
                     pid
                 } else if let Some(ref text) = dynamic_text {
-                    mm.play_tts(
+                    mm.play_tts_for(
                         &cid,
                         text.clone(),
                         "en-US".to_string(),
                         None,
                         AudioTarget::Both,
+                        prompt_tenant,
                     )
                     .await
                     .ok()
@@ -4010,12 +4025,13 @@ impl FlowCallHandler {
 
                         // Start TTS playback
                         match media_manager
-                            .play_tts(
+                            .play_tts_for(
                                 &session_id,
                                 text_value,
                                 language_value,
                                 voice_value,
                                 AudioTarget::Both,
+                                context_guard.tenant_id,
                             )
                             .await
                         {

@@ -2655,7 +2655,6 @@ dependencies = [
  "parking_lot 0.12.5",
  "prometheus",
  "rand 0.8.6",
- "redis",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
