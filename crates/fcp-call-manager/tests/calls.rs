@@ -3162,6 +3162,7 @@ async fn a_dead_registration_does_not_delay_the_answer() {
             reg_id: None,
             push: None,
             flow_node: None,
+            node_id: None,
         })
         .await
         .unwrap();

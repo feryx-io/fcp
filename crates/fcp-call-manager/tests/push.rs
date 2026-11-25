@@ -40,6 +40,7 @@ fn app_binding(
         reg_id: Some(1),
         push: Some(push),
         flow_node: None,
+        node_id: None,
     }
 }
 

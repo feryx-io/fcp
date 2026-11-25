@@ -12199,6 +12199,11 @@ export interface components {
                 registered_at: string;
                 /** Format: int64 */
                 expires_in_seconds: number;
+                /**
+                 * @description The node that took the registration (its `[service] node_id`);
+                 *     null for one written before v0.25.644 that has not re-registered.
+                 */
+                node_id?: string | null;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -13848,6 +13853,11 @@ export interface components {
             registered_at: string;
             /** Format: int64 */
             expires_in_seconds: number;
+            /**
+             * @description The node that took the registration (its `[service] node_id`);
+             *     null for one written before v0.25.644 that has not re-registered.
+             */
+            node_id?: string | null;
         };
         ReleaseHoldRequest: {
             reason: string;

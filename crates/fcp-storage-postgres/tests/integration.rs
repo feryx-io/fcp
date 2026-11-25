@@ -174,6 +174,7 @@ fn registration(tenant_id: TenantId, aor: &str, contact: &str, ttl: Duration) ->
         reg_id: None,
         push: None,
         flow_node: None,
+        node_id: None,
     }
 }
 
@@ -454,6 +455,7 @@ async fn a_push_binding_keeps_its_instance_and_where_to_wake_it() {
     row.reg_id = Some(1);
     row.flow_token = Some("flow-1".into());
     row.flow_node = Some("node-a".into());
+    row.node_id = Some("node-a".into());
     row.push = Some(fcp_core::push::PushAddress {
         provider: "fcm".into(),
         param: "anvil-12345".into(),
@@ -465,6 +467,7 @@ async fn a_push_binding_keeps_its_instance_and_where_to_wake_it() {
     assert_eq!(back[0].instance_id, row.instance_id);
     assert_eq!(back[0].reg_id, Some(1));
     assert_eq!(back[0].flow_node.as_deref(), Some("node-a"));
+    assert_eq!(back[0].node_id.as_deref(), Some("node-a"));
     assert_eq!(back[0].push, row.push);
     let left = back[0]
         .expires_at
