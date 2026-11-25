@@ -402,9 +402,20 @@ async fn handle_packet(
         let registrar = Arc::clone(registrar);
         let admission = Arc::clone(admission);
         let peer = packet.peer();
-        tokio::spawn(async move {
-            dispatcher::dispatch_request(&req, handle, &registrar, Some(&admission), peer).await;
-        });
+        // The request's lines name its tenant once the registrar knows it
+        // (`docs/LOG_VIEWER.md` L2).
+        let span = tracing::info_span!(
+            "sip",
+            method = %req.method().as_str(),
+            tenant_id = tracing::field::Empty,
+        );
+        tokio::spawn(tracing::Instrument::instrument(
+            async move {
+                dispatcher::dispatch_request(&req, handle, &registrar, Some(&admission), peer)
+                    .await;
+            },
+            span,
+        ));
         return;
     }
 

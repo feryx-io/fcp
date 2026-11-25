@@ -695,7 +695,12 @@ impl Ha1CredentialStore for CredentialStoreAdapter {
         request: &Request,
     ) -> Option<sip_auth::Credentials> {
         let tenant_id = match self.resolve_tenant(request, username).await {
-            Ok(tenant_id) => tenant_id,
+            Ok(tenant_id) => {
+                // The request's lines name the tenant from here on
+                // (`docs/LOG_VIEWER.md` L2).
+                tracing::Span::current().record("tenant_id", tracing::field::display(tenant_id));
+                tenant_id
+            }
             Err(e) => {
                 debug!(username = %username, error = %e, "Failed to resolve tenant for SIP digest auth");
                 return None;

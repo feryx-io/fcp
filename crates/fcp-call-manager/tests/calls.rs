@@ -76,6 +76,18 @@ impl Stack {
         extra: &str,
         rtp_ports: u16,
     ) -> Option<Self> {
+        Self::start_storing(local_ip, registrar, media, extra, "", rtp_ports).await
+    }
+
+    /// As [`Stack::start_node`], with `storage` added to `[storage]`.
+    async fn start_storing(
+        local_ip: &str,
+        registrar: &str,
+        media: &str,
+        extra: &str,
+        storage: &str,
+        rtp_ports: u16,
+    ) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -102,6 +114,7 @@ realm = "{REALM}"
 
 [storage]
 database_url = "{db}"
+{storage}
 
 [cdr]
 spool_dir = "{dir}/cdr-spool"
@@ -133,6 +146,7 @@ format = "compact"
             rtp_end = rtp_start + rtp_ports,
             dir = dir.path().display(),
             registrar = registrar,
+            storage = storage,
             media = media.replace("{dir}", &dir.path().display().to_string()),
             extra = extra.replace("{dir}", &dir.path().display().to_string()),
         );
@@ -4061,5 +4075,98 @@ async fn a_rooms_roster_and_floor_cross_the_call_manager_in_the_call() {
     again.answered(SOON).await.unwrap();
     assert_eq!(again.hangup().await.unwrap(), 200);
     assert!(room_call.ended(SOON).await);
+    stack.finish().await;
+}
+
+/// `docs/LOG_VIEWER.md` L2: a call's log lines name its tenant. The node
+/// ships its lines to its Redis; every line naming the call names the
+/// tenant too, and there are some.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_calls_log_lines_name_its_tenant() {
+    let Some(redis) = fcp_testkit::cluster::private_redis_url() else {
+        eprintln!("skipped: FCP_TEST_REDIS_URL is not set");
+        return;
+    };
+    let Some(stack) = Stack::start_storing(
+        r#"local_ip = "127.0.0.1""#,
+        "",
+        "",
+        "",
+        &format!(r#"redis_url = "{redis}""#),
+        40,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let (_alice, alice_phone, bob, bob_phone) = two_phones(&stack).await;
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice_phone).await;
+    };
+    let _bob_call = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+
+    let tenant = stack.seed.tenant_id.as_uuid().to_string();
+    let client = redis::Client::open(redis.as_str()).unwrap();
+    let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+    let mut records: Vec<serde_json::Value> = Vec::new();
+    for _ in 0..50 {
+        let entries: Vec<(String, Vec<(String, String)>)> = redis::cmd("XRANGE")
+            .arg("fcp:logs:e2e-call-manager")
+            .arg("-")
+            .arg("+")
+            .query_async(&mut conn)
+            .await
+            .unwrap_or_default();
+        records = entries
+            .into_iter()
+            .flat_map(|(_, fields)| fields)
+            .filter_map(|(_, v)| serde_json::from_str(&v).ok())
+            .collect();
+        if records.iter().any(|r| {
+            r["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("Creating new call"))
+        }) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    // The node's call (a SIP library's `call_id` is the SIP Call-ID).
+    let call_id = records
+        .iter()
+        .find(|r| {
+            r["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("Creating new call"))
+        })
+        .and_then(|r| r["call_id"].as_str())
+        .unwrap_or_else(|| panic!("the call's creation shipped: {records:#?}"))
+        .to_string();
+    let of_the_call: Vec<&serde_json::Value> = records
+        .iter()
+        .filter(|r| r["call_id"].as_str() == Some(call_id.as_str()))
+        .collect();
+    let tagged = records
+        .iter()
+        .filter(|r| r["tenant_id"].as_str() == Some(tenant.as_str()))
+        .count();
+    eprintln!(
+        "{} lines shipped, {} name a call, {tagged} name the tenant",
+        records.len(),
+        of_the_call.len()
+    );
+    assert!(tagged >= 3, "few lines name the tenant: {records:#?}");
+    let untagged: Vec<_> = of_the_call
+        .iter()
+        .filter(|r| r["tenant_id"].as_str() != Some(tenant.as_str()))
+        .collect();
+    assert!(
+        untagged.is_empty(),
+        "lines naming the call but not its tenant: {untagged:#?}"
+    );
     stack.finish().await;
 }

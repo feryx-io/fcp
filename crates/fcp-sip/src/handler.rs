@@ -957,7 +957,7 @@ impl SipMessageHandler {
                 let Some(media) = media.upgrade() else {
                     return;
                 };
-                tokio::spawn(async move {
+                crate::spawn_here(async move {
                     // Already ended by its own path: nothing to do.
                     if media.terminate_session(&session).await.is_ok() {
                         debug!(media_session_id = %session, "Ended the media session of an unanswered call");
@@ -980,7 +980,7 @@ impl SipMessageHandler {
             let transcript_dir = dir.clone();
             let max_bytes = settings.transcript_max_bytes;
 
-            tokio::spawn(async move {
+            crate::spawn_here(async move {
                 while let Some(entry) = rx.recv().await {
                     let filename = format!("{}.log", entry.call_id.replace(':', "_"));
                     let path = transcript_dir.join(&filename);
@@ -1673,7 +1673,7 @@ impl SipMessageHandler {
         if missing.is_empty() {
             return;
         }
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             crate::push::push_bindings(&sender, &registrar, &missing, &cancel, None).await;
         });
     }
@@ -1752,7 +1752,7 @@ impl SipMessageHandler {
         const MAX_WAIT_FOR_ANSWER: Duration = Duration::from_secs(600);
 
         let handler = self.clone();
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             let started = std::time::Instant::now();
             let established_at = loop {
                 match handler.call_manager.get_call(&call_id) {
@@ -2136,7 +2136,7 @@ impl SipMessageHandler {
         let dialog_manager = Arc::clone(&self.dialog_manager);
         let locks = Arc::clone(&self.mid_dialog_lock);
         let call_id = *call_id;
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             while let Some(digit) = digits.recv().await {
                 // A digit heard in the audio is in what the trunk hears
                 // already; only telephone-event needs carrying.
@@ -2993,7 +2993,7 @@ impl SipMessageHandler {
                     let handler = self.clone();
                     let request_clone = request.clone();
                     let handle_clone = handle.clone();
-                    tokio::spawn(async move {
+                    crate::spawn_here(async move {
                         if let Err(e) = handler
                             .handle_invite(&request_clone, &handle_clone, peer, peer_identity)
                             .await
@@ -3267,6 +3267,7 @@ impl SipMessageHandler {
                 .call_manager
                 .find_by_invite_call_id(call_id_hdr.as_str())
             {
+                call.note_on_span();
                 info!(call_id = %call.id, "CANCEL matched call; marking as failed");
 
                 // One update marks the call cancelled and takes what the
@@ -3333,7 +3334,7 @@ impl SipMessageHandler {
                 // it if it answered.
                 if let Some((outbound, target)) = chosen {
                     info!(call_id = %call.id, "Ending the chosen B-leg: CANCEL, or BYE if it answered");
-                    tokio::spawn(Self::cancel_or_bye_fork_leg_with(
+                    crate::spawn_here(Self::cancel_or_bye_fork_leg_with(
                         self.uac.clone(),
                         Arc::clone(&self.dialog_manager),
                         call.id,
@@ -6947,7 +6948,7 @@ impl SipMessageHandler {
                                                                                     *session_id;
                                                                                 let mm2 =
                                                                                     Arc::clone(mm);
-                                                                                tokio::spawn(
+                                                                                crate::spawn_here(
                                                                                     async move {
                                                                                         if let Err(e) = mm2.terminate_session(&sid).await {
                                                                                         tracing::debug!(error = %e, "Failed to terminate pre-allocated media session for server target");
@@ -8181,7 +8182,7 @@ impl SipMessageHandler {
             let handler = self.clone();
             let request_clone = request.clone();
             let a_leg_handle_arc = Arc::new(a_leg_handle.clone());
-            tokio::spawn(async move {
+            crate::spawn_here(async move {
                 if let Err(e) = handler
                     .handle_parallel_forking(
                         request_clone,
@@ -8330,7 +8331,7 @@ impl SipMessageHandler {
         let a_leg_handle_arc = Arc::new(a_leg_handle.clone());
         let call_id_clone = call_id;
 
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             if let Err(e) = handler
                 .handle_parallel_forking(
                     request_clone,
@@ -9123,7 +9124,7 @@ impl SipMessageHandler {
         // Set once the relay is done with the ringing it was handed, so an
         // answer right behind it waits its turn (#313).
         let (relay_settled_tx, mut relay_settled) = tokio::sync::watch::channel(false);
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             let _settled = SettleOnDrop(relay_settled_tx);
             if let Some(b_leg_provisional) = provisional_rx.recv().await {
                 let already_rebound = call_manager_clone
@@ -9330,7 +9331,7 @@ impl SipMessageHandler {
                         if *code == 430 && self.push_waits.undefer(&call_id, token).is_some() {
                             info!(call_id = %call_id, "A phone's flow on another node is gone: waking it");
                             let handler = self.clone();
-                            tokio::spawn(async move {
+                            crate::spawn_here(async move {
                                 handler.push_waiting(call_id).await;
                             });
                         } else {
@@ -9522,7 +9523,7 @@ impl SipMessageHandler {
                     target = %target,
                     "CANCELing non-winning B-leg {}", i
                 );
-                tokio::spawn(Self::cancel_or_bye_fork_leg_with(
+                crate::spawn_here(Self::cancel_or_bye_fork_leg_with(
                     self.uac.clone(),
                     Arc::clone(&self.dialog_manager),
                     call_id,
@@ -9554,7 +9555,7 @@ impl SipMessageHandler {
                     info!(call_id = %call_id, target = %target, "Find-me answer not confirmed; dropping that leg");
                     let dialog = handle.dialog.read().await.clone();
                     if let Some(uac) = self.uac.clone() {
-                        tokio::spawn(async move {
+                        crate::spawn_here(async move {
                             let _ = tokio::time::timeout(Duration::from_secs(10), uac.bye(&dialog))
                                 .await;
                         });
@@ -9624,7 +9625,7 @@ impl SipMessageHandler {
                     winner = %target,
                     "The callee answered as the caller cancelled; hanging up the answered leg"
                 );
-                tokio::spawn(Self::cancel_or_bye_fork_leg_with(
+                crate::spawn_here(Self::cancel_or_bye_fork_leg_with(
                     self.uac.clone(),
                     Arc::clone(&self.dialog_manager),
                     call_id,
@@ -10815,6 +10816,7 @@ impl SipMessageHandler {
             "mid_dialog_forward",
             method = "REINVITE",
             call_id = %call.id,
+            tenant_id = %call.tenant_id,
             src_dialog = ?src_dialog_id,
             dst_dialog = ?target_dialog.id(),
             cseq = ?cseq
@@ -11390,6 +11392,7 @@ impl SipMessageHandler {
             "mid_dialog_forward",
             method = "SUBSCRIBE",
             call_id = %call.id,
+            tenant_id = %call.tenant_id,
             src_dialog = ?src_dialog_id,
             dst_dialog = ?target_dialog.id(),
             cseq = ?cseq
@@ -11536,6 +11539,7 @@ impl SipMessageHandler {
             "mid_dialog_forward",
             method = "NOTIFY",
             call_id = %call.id,
+            tenant_id = %call.tenant_id,
             src_dialog = ?src_dialog_id,
             dst_dialog = ?target_dialog.id(),
             cseq = ?cseq
@@ -11791,6 +11795,7 @@ impl SipMessageHandler {
             "mid_dialog_forward",
             method = "UPDATE",
             call_id = %call.id,
+            tenant_id = %call.tenant_id,
             src_dialog = ?src_dialog_id,
             dst_dialog = ?target_dialog.id(),
             cseq = ?cseq
@@ -12009,6 +12014,7 @@ impl SipMessageHandler {
             "mid_dialog_forward",
             method = "INFO",
             call_id = %call.id,
+            tenant_id = %call.tenant_id,
             src_dialog = ?src_dialog_id,
             dst_dialog = ?target_dialog.id(),
             cseq = ?cseq
@@ -12153,6 +12159,7 @@ impl SipMessageHandler {
             "mid_dialog_forward",
             method = "REFER",
             call_id = %call.id,
+            tenant_id = %call.tenant_id,
             src_dialog = ?src_dialog_id,
             dst_dialog = ?target_dialog.id(),
             cseq = ?cseq
@@ -12704,7 +12711,7 @@ impl SipMessageHandler {
         let flow_registry = Arc::clone(&self.flow_registry);
         let recorder = Arc::clone(&self.call_recorder);
         let media_manager = self.media_manager.clone();
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             let mut attempts = 0;
             loop {
                 attempts += 1;
@@ -13140,11 +13147,15 @@ impl SipMessageHandler {
                     .find_map(|p| p.trim().strip_prefix("tag=").map(str::to_string))
             })
         };
-        self.call_manager.find_by_request_dialog(
+        let call = self.call_manager.find_by_request_dialog(
             dialog_call_id,
             tag("To").as_deref(),
             tag("From").as_deref(),
-        )
+        );
+        if let Some(call) = &call {
+            call.note_on_span();
+        }
+        call
     }
 
     /// Find call and which leg the request belongs to.
@@ -13397,7 +13408,7 @@ impl SipMessageHandler {
         let dm = self.dialog_manager.clone();
         let uac = self.uac.clone();
         let serving = Arc::clone(&self.serving);
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             let mut rx = stm.subscribe().await;
             while let Some(evt) = rx.recv().await {
                 match evt {
@@ -13439,7 +13450,7 @@ impl SipMessageHandler {
         let cm = self.call_manager.clone();
         let metrics = self.metrics.clone();
 
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -13486,7 +13497,7 @@ impl SipMessageHandler {
         let sub_created = Arc::clone(&self.subscription_created_at);
         let metrics = self.metrics.clone();
 
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -13739,7 +13750,7 @@ impl SipMessageHandler {
             ticket: Some(migration.ticket),
             old_node_gone: false,
         };
-        tokio::spawn(ctx.run());
+        crate::spawn_here(ctx.run());
         self.create_simple_response(request, 202, "Accepted")
     }
 
@@ -14378,7 +14389,7 @@ impl SipMessageHandler {
                             };
                             let drop = self.leg_dropper(referrer_dialog, flow);
                             let call_id = call.id;
-                            tokio::spawn(async move {
+                            crate::spawn_here(async move {
                                 if let Err(e) = crate::conference_migration::report_refer_outcome(
                                     &uac,
                                     &local_uri,
@@ -14426,7 +14437,7 @@ impl SipMessageHandler {
             target.replaces.clone(),
             true,
         );
-        tokio::spawn(run.run());
+        crate::spawn_here(run.run());
         self.create_simple_response(request, 202, "Accepted")
     }
 
@@ -14862,7 +14873,7 @@ impl SipMessageHandler {
     /// `spawn_bye_with_retry` it touches no call: the slot it was in may
     /// already hold another leg.
     fn drop_leg(&self, dialog: sip_dialog::Dialog, flow_token: Option<String>) {
-        tokio::spawn(self.leg_dropper(dialog, flow_token));
+        crate::spawn_here(self.leg_dropper(dialog, flow_token));
     }
 
     fn leg_dropper(
@@ -15616,7 +15627,7 @@ impl SipMessageHandler {
                 if let Some(ref cp) = self.cluster_parking {
                     let cp = Arc::clone(cp);
                     let slot = slot.clone();
-                    tokio::spawn(async move {
+                    crate::spawn_here(async move {
                         if let Err(e) = cp.cluster_unpark(&tenant, &slot).await {
                             tracing::warn!(slot = %slot, error = %e, "Failed to clean up cluster parking entry");
                         }
@@ -15653,7 +15664,7 @@ impl SipMessageHandler {
                             warn!(slot = %slot, "Stale cluster parking entry for this node, cleaning up");
                             let cp = Arc::clone(cp);
                             let slot = slot.clone();
-                            tokio::spawn(async move {
+                            crate::spawn_here(async move {
                                 if let Err(e) = cp.cluster_unpark(&tenant, &slot).await {
                                     tracing::warn!(slot = %slot, error = %e, "Failed to clean up cluster parking entry");
                                 }
@@ -15936,7 +15947,7 @@ impl SipMessageHandler {
         info!(call_id = %call_id, slot, target, "A parked call sent on");
         let handler = Arc::clone(self);
         let target = target.to_string();
-        tokio::spawn(async move { handler.send_parked_call(&parked, &target, None).await });
+        crate::spawn_here(async move { handler.send_parked_call(&parked, &target, None).await });
         Ok(call_id)
     }
 
@@ -17274,7 +17285,7 @@ impl SipMessageHandler {
                 // together they overflow a worker's stack and
                 // abort the process. A spawned task is polled
                 // from the top of one.
-                let teardown = tokio::spawn(async move {
+                let teardown = crate::spawn_here(async move {
                     if let Some(call_entry) = call_manager.get_call(&call_id) {
                         if call_entry.media_anchored {
                             if let (Some(ref media_session_id), Some(ref media_mgr)) =
@@ -18427,7 +18438,7 @@ impl SipMessageHandler {
             notify_referrer: true,
             fallback: None,
         };
-        tokio::spawn(run.run());
+        crate::spawn_here(run.run());
         self.confirm_feature(request, handle, call_id, "Call pushed.")
             .await
     }
@@ -19504,7 +19515,7 @@ impl SipMessageHandler {
         }
         info!(call_id = %call.id, keep = keep.as_str(), target = %user, "Transfer asked by the API");
         let run = self.transfer_run(uac, &call, referrer, referrer_dialog, user, None, false);
-        tokio::spawn(run.run());
+        crate::spawn_here(run.run());
         Ok(())
     }
 
@@ -19643,7 +19654,7 @@ impl SipMessageHandler {
                 old_node_gone: true,
             };
             let this = Arc::clone(self);
-            tokio::spawn(async move {
+            crate::spawn_here(async move {
                 let call_id = ctx.call_id;
                 match ctx.rescue().await {
                     Ok(()) => {
@@ -19767,7 +19778,7 @@ impl SipMessageHandler {
         };
         let recorder = Arc::clone(&self.call_recorder);
         let call_id = *call_id;
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             use crate::recording::{RecordingError, RecordingPath};
             match recorder.start(&call_id, source, RecordingPath::wav()).await {
                 Ok(_) | Err(RecordingError::AlreadyRecording) => {}
@@ -19795,7 +19806,7 @@ impl SipMessageHandler {
         let call_manager = Arc::clone(&self.call_manager);
         let media_manager = Arc::clone(mm);
         let call_id = call.id;
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             if let Ok(stats) = media_manager.get_session_stats(&session_id).await {
                 call_manager.set_rtp_stats(&call_id, rtp_stats_from(&stats));
             }
@@ -19817,7 +19828,7 @@ impl SipMessageHandler {
         let recorder = Arc::clone(&self.call_recorder);
         let call_id = call.id;
         let media = anchored_media(call, self.media_manager.as_ref());
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             recorder.call_ended(&call_id).await;
             close_media(&call_manager, &call_id, media, teardown, what).await;
             let _ = call_manager.terminate_call_with(&call_id, reason);
@@ -19990,6 +20001,14 @@ impl InboundMessageHandler for SipMessageHandler {
                         return Ok(());
                     }
                 }
+                // As every request, its lines name its call and tenant.
+                let _span = tracing::info_span!(
+                    "sip",
+                    method = "ACK",
+                    tenant_id = tracing::field::Empty,
+                    call_id = tracing::field::Empty,
+                )
+                .entered();
                 if let Err(e) = self.handle_ack(&req) {
                     error!("Failed to handle ACK: {}", e);
                 }
@@ -20010,17 +20029,30 @@ impl InboundMessageHandler for SipMessageHandler {
                 .receive_request(req.clone(), ctx)
                 .await;
 
-            // Handle request and send response(s)
-            if let Err(e) = self
-                .handle_request(
+            // Handle request and send response(s), inside a span whose
+            // tenant and call are recorded once known, so every line of
+            // the request names them (`docs/LOG_VIEWER.md` L2).
+            let span = tracing::info_span!(
+                "sip",
+                method = %req.method().as_str(),
+                sip_call_id = sip_parse::header(req.headers(), "Call-ID")
+                    .map(|c| c.as_str().to_string())
+                    .unwrap_or_default(),
+                tenant_id = tracing::field::Empty,
+                call_id = tracing::field::Empty,
+            );
+            if let Err(e) = tracing::Instrument::instrument(
+                self.handle_request(
                     &req,
                     &handle,
                     peer,
                     transport,
                     stream_for_register,
                     peer_identity,
-                )
-                .await
+                ),
+                span,
+            )
+            .await
             {
                 // A request inside a dialog this node does not have is the
                 // sender's mistake, not this node's (RFC 3261 §12.2.2).
@@ -20112,7 +20144,7 @@ fn spawn_provisional_listener(
     call_id: fcp_b2bua_core::CallId,
 ) {
     // Spawn provisional listener task (loops until first 180+ response)
-    tokio::spawn(async move {
+    crate::spawn_here(async move {
         // If early media is suppressed, skip provisional relay entirely
         if early_media_policy == fcp_b2bua_core::EarlyMediaPolicy::None {
             debug!(
@@ -20196,7 +20228,7 @@ fn spawn_race_task(
     flow_token: Option<String>,
     call_id: fcp_b2bua_core::CallId,
 ) -> tokio::task::JoinHandle<LegFinal> {
-    tokio::spawn(async move {
+    crate::spawn_here(async move {
         debug!(
             call_id = %call_id,
             target = %target,
@@ -21827,7 +21859,7 @@ impl ConferenceMigration {
         self.notify_old_node(200, "OK").await;
         let old = self.old_b_dialog.clone();
         let uac = Arc::clone(&self.uac);
-        tokio::spawn(async move {
+        crate::spawn_here(async move {
             let _ = tokio::time::timeout(MIGRATION_STEP_TIMEOUT, uac.bye(&old)).await;
         });
         Ok(())
