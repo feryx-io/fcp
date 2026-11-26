@@ -740,7 +740,15 @@ async fn the_roster_is_told_whole_then_by_what_changes_and_only_to_a_participant
         )
         .await
         .unwrap();
-    assert_eq!(sub.code, 200);
+    if sub.code != 200 {
+        // Seen on CI under load: say why, with what the services logged.
+        stack
+            .fail_with_logs(&format!(
+                "Alice's roster SUBSCRIBE naming her call was answered {}",
+                sub.code
+            ))
+            .await;
+    }
     let (state, first) = roster(&alice, &sub.call_id).await;
     assert!(state.starts_with("active;expires="), "{state}");
     assert!(first.contains("state=\"full\" version=\"1\""), "{first}");
